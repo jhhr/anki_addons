@@ -1,3 +1,4 @@
+from typing import Callable, Optional
 from aqt.gui_hooks import sync_will_start, media_sync_did_start_or_stop
 
 from aqt import mw
@@ -15,7 +16,7 @@ from .sync_actions import (
 )
 
 
-def build_action(fun, text, shortcut=None):
+def build_action(fun: Callable[[], None], text: str, shortcut: Optional[str] = None) -> QAction:
     """fun -- without argument
     text -- the text in the menu
     """
