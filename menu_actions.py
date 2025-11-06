@@ -100,7 +100,6 @@ def read_configs_menu_action():
         loaded_addons,
         disabled_addons,
         missing_addons,
-        is_menu_action=True,
     )
     showInfo(message, title="Addon Config Sync", textFormat="rich")
 
