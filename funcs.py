@@ -21,7 +21,11 @@ from aqt.qt import (
 from aqt.utils import showInfo, tooltip
 
 
-def save_configs_on_sync():
+def save_configs_on_sync(
+    saved_addons: list[str],
+    disabled_addons: list[str],
+    skipped_addons: list[str],
+):
     """
     Saves the configs from the addon folder to the media folder, if they have changed or
     don't exist in the media folder yet.
@@ -31,6 +35,10 @@ def save_configs_on_sync():
     However, if the file has been modified in AnkiWeb, it will not be overwritten.
     Thus, the first device to sync will have its changes uploaded, and the other devices will
     download those.
+
+    saved_addons: List of addon IDs to mutate, for feedback purposes
+    disabled_addons: List of addon IDs that are disabled, for feedback purposes
+    skipped_addons: List of addon IDs that were skipped, for feedback purposes
     :return:
     """
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
@@ -46,20 +54,43 @@ def save_configs_on_sync():
         if meta_json.is_file():
             # If the destination media file doesn't exist, or the meta.json file has changed,
             # copy the meta.json file to the media folder
+            saved_addon = False
             if not dest_file.is_file():
                 shutil.copy(meta_json, dest_file)
+                saved_addon = True
             elif not filecmp.cmp(meta_json, dest_file, False):
                 # To trigger Anki to sync the file, remove the old one and copy the new one
                 os.remove(dest_file)
                 shutil.copy(meta_json, dest_file)
+                saved_addon = True
+
+            # Update feedback lists
+            if saved_addon:
+                saved_addons.append(addon_dir.name)
+                if is_addon_disabled(meta_json):
+                    disabled_addons.append(addon_dir.name)
+        else:
+            # No meta.json file to save, skip
+            skipped_addons.append(addon_dir.name)
 
 
-def read_configs_on_sync(media_sync_status: bool):
+def read_configs_on_sync(
+    loaded_addons: list[str],
+    disabled_addons: list[str],
+    missing_addons: list[str],
+    on_finish_callback: callable,
+    media_sync_status: bool,
+):
     """
     Read the configs from the media folder and copy them to the addon folder.
     This is run after media sync has finished and save_configs_on_sync has run.
     Changes made in AnkiWeb will have been downloaded to the media folder,
     and those are then copied to the addon folder.
+
+    loaded_addons: List of addon IDs to mutate, for feedback purposes
+    disabled_addons: List of addon IDs that are disabled, for feedback purposes
+    missing_addons: List of addon IDs that were missing, for feedback purposes
+    media_sync_status: Arg from Anki, whether media sync is still in progress
     """
     # If media_sync_status is True, then media sync is still in progress, and we should not read
     # the configs yet
@@ -68,6 +99,11 @@ def read_configs_on_sync(media_sync_status: bool):
 
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
+
+    # Get all addon directories that exist
+    existing_addon_ids = {
+        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
+    }
 
     for addon_dir in anki_addons_path.iterdir():
         if not addon_dir.is_dir():
@@ -81,6 +117,24 @@ def read_configs_on_sync(media_sync_status: bool):
             if not meta_json.is_file() or not filecmp.cmp(meta_json, dest_file, False):
                 # The files don't match, so copy the dest file to the meta.json
                 shutil.copy(dest_file, meta_json)
+                # Update feedback lists
+                loaded_addons.append(addon_dir.name)
+                if is_addon_disabled(dest_file):
+                    disabled_addons.append(addon_dir.name)
+                if addon_dir.name not in existing_addon_ids:
+                    missing_addons.append(addon_dir.name)
+
+    on_finish_callback()
+
+
+def is_addon_disabled(meta_json_path: Path) -> bool:
+    """Check if an addon is marked as disabled in its meta.json file."""
+    try:
+        with open(meta_json_path, "r", encoding="utf-8") as f:
+            meta_data = json.load(f)
+            return meta_data.get("disabled", False)
+    except Exception:
+        return False  # If we can't read the file, assume it's not disabled
 
 
 def save_configs_menu_action():
@@ -104,19 +158,25 @@ def save_configs_menu_action():
             shutil.copy(meta_json, dest_file)
             saved_addons.append(addon_dir.name)
 
-            # Check if addon is disabled
-            try:
-                with open(meta_json, "r", encoding="utf-8") as f:
-                    meta_data = json.load(f)
-                    if meta_data.get("disabled", False):
-                        disabled_addons.append(addon_dir.name)
-            except Exception:
-                pass  # If we can't read the file, just skip the disabled check
+            if is_addon_disabled(meta_json):
+                disabled_addons.append(addon_dir.name)
         else:
             skipped_addons.append(addon_dir.name)
 
     # Prepare feedback message
     message = "<b>Save Configs Complete!</b><br><br>"
+    message += get_save_configs_message(saved_addons, disabled_addons, skipped_addons)
+    showInfo(message, title="Addon Config Sync", textFormat="rich")
+
+
+def get_save_configs_message(
+    saved_addons: list[str],
+    disabled_addons: list[str],
+    skipped_addons: list[str],
+    is_menu_action: bool = False,
+) -> str:
+    """Get feedback message after saving configs"""
+    message = ""
 
     if saved_addons:
         message += f"<b>✓ Saved {len(saved_addons)} addon config(s):</b><br>"
@@ -141,9 +201,10 @@ def save_configs_menu_action():
             message += f"&nbsp;&nbsp;• ... and {len(skipped_addons) - 5} more<br>"
         message += "<br>"
 
-    message += "<i>Remember to sync to upload configs to AnkiWeb!</i>"
+    if is_menu_action:
+        message += "<i>Remember to sync to upload configs to AnkiWeb!</i>"
 
-    showInfo(message, title="Addon Config Sync", textFormat="rich")
+    return message
 
 
 def read_configs_menu_action():
@@ -188,7 +249,15 @@ def read_configs_menu_action():
 
     # Prepare feedback message
     message = "<b>Read Configs Complete!</b><br><br>"
+    message += get_read_configs_message(loaded_addons, disabled_addons, missing_addons)
+    showInfo(message, title="Addon Config Sync", textFormat="rich")
 
+
+def get_read_configs_message(
+    loaded_addons: list[str], disabled_addons: list[str], missing_addons: list[str]
+) -> str:
+    """Get feedback message after reading configs"""
+    message = ""
     if loaded_addons:
         message += f"<b>✓ Loaded {len(loaded_addons)} addon config(s):</b><br>"
         for addon_id in loaded_addons[:10]:  # Show first 10
@@ -219,12 +288,15 @@ def read_configs_menu_action():
         )
 
     if loaded_addons:
-        message += "<i>Restart Anki to apply the loaded configs and enable/disable states.</i>"
+        message += (
+            "<i>Some addons may require a restart of Anki to apply the loaded configs and"
+            " enable/disable states.</i>"
+        )
 
-    showInfo(message, title="Addon Config Sync", textFormat="rich")
+    return message
 
 
-def showMissingAddons():
+def show_missing_addons():
     """Show a list of addon codes that have synced configs but are not installed"""
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")

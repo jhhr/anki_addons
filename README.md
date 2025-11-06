@@ -4,13 +4,15 @@ Note that some addons will require restarting Anki for them to load the new conf
 
 ## Addon options
 
-By default the addon will save configs to the media fodler when you sync Anki. This can be disabled in this addon's config by setting `run_on_sync: false`: Main window > Add-ons > Addon Config Sync > Config (on the right)
+By default the addon will save configs to the media folder when you sync Anki. This can be disabled in this addon's config by setting `run_on_sync: false`: Main window > Add-ons > Addon Config Sync > Config (on the right)
 
 ### Usage with auto-sync
 
 1. Edit configs on device A
 2. Sync Anki on device A
 3. Sync Anki on device B
+
+The addon option `show_summary_on_sync` can be enabled to show a feedback message during auto-sync as well. This defaults to `false`.
 
 #### Conflicting change handling during auto-sync
 

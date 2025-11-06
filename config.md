@@ -1,6 +1,7 @@
 ## Addon options
 
-`run_on_sync`: Configs are saved and read during syncing. This can overwrite configs one way of the other. Defaults to `true`. Set to `false` if you only want read and save configs manually.
+- `run_on_sync`: Configs are saved and read during syncing. This can overwrite configs one way of the other. Defaults to `true`. Set to `false` if you only want read and save configs manually.
+- `show_summary_on_sync`: When ´run_on_sync` is enabled, also show a message once it finishes like what is shown when you save/read configs using the menu actions.
 
 ### Conflicting change handling during sync
 

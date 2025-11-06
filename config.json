@@ -1,3 +1,4 @@
 {
-  "run_on_sync": true
+  "run_on_sync": true,
+  "show_summary_on_sync": false
 }
