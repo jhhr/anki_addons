@@ -104,7 +104,7 @@ def read_configs_menu_action():
     showInfo(message, title="Addon Config Sync", textFormat="rich")
 
 
-def show_missing_addons():
+def show_missing_addons() -> None:
     """Show a list of addon codes that have synced configs but are not installed"""
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
