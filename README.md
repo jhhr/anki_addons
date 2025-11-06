@@ -101,3 +101,8 @@ Same as above
 ## BEWARE
 
 - As you are about to save your recently edited configs for syncing to another device, accidentally clicking Read Configs instead will overwrite your current edits. A proper syncing system should remove this shortfall (TODO soon).
+
+# Links
+
+- [Github](https://github.com/jhhr/anki-addon-config-sync)
+- [Anki forums thread](https://forums.ankiweb.net/t/addon-for-syncing-addon-configs/45118)
