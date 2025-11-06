@@ -1,0 +1,133 @@
+import json
+import shutil
+from pathlib import Path
+
+from aqt import mw
+from aqt.qt import QMessageBox
+from aqt.utils import showInfo
+from .utils import is_addon_disabled
+
+from .messages import get_read_configs_message, get_save_configs_message
+from .show_missing_addons_dialog import show_missing_addons_dialog
+
+
+def save_configs_menu_action():
+    """
+    Save all addon configs from the addon folder to the media folder.
+    Shows a summary dialog of what was saved."""
+    anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
+    media_path = Path(mw.pm.profileFolder(), "collection.media")
+
+    saved_addons = []
+    disabled_addons = []
+    skipped_addons = []
+
+    for addon_dir in anki_addons_path.iterdir():
+        if not addon_dir.is_dir():
+            continue
+
+        meta_json = addon_dir / "meta.json"
+        if meta_json.is_file():
+            dest_file = media_path / f"_{addon_dir.name}_meta.json"
+            shutil.copy(meta_json, dest_file)
+            saved_addons.append(addon_dir.name)
+
+            if is_addon_disabled(meta_json):
+                disabled_addons.append(addon_dir.name)
+        else:
+            skipped_addons.append(addon_dir.name)
+
+    # Prepare feedback message
+    message = "<b>Save Configs Complete!</b><br><br>"
+    message += get_save_configs_message(saved_addons, disabled_addons, skipped_addons)
+    showInfo(message, title="Addon Config Sync", textFormat="rich")
+
+
+def read_configs_menu_action():
+    """Read all addon configs from the media folder to the addon folder.
+    Shows a summary dialog of what was loaded and which addons are missing.
+    Will overwrite existing configs in the addon folder, possibly destroying local changes
+    that have not saved into the media folder yet."""
+
+    # Show confirmation dialog before proceeding
+    reply = QMessageBox.question(
+        mw,
+        "Confirm Read Configs",
+        "<b>Read all synced addon configs?</b><br><br>This will overwrite existing configs in the"
+        " addon folder with synced versions from AnkiWeb.<br><br><i>Any local changes that haven't"
+        " been saved will be lost.</i>",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
+    media_path = Path(mw.pm.profileFolder(), "collection.media")
+
+    # Get all addon directories that exist
+    existing_addon_ids = {
+        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
+    }
+
+    # Get all synced config files from media folder
+    synced_config_files = [f for f in media_path.glob("_*_meta.json")]
+    # Remove leading _ and trailing _meta.json
+    synced_addon_ids = [f.name[1:-10] for f in synced_config_files]
+
+    loaded_addons = []
+    disabled_addons = []
+    missing_addons = []
+
+    for addon_id in synced_addon_ids:
+        if addon_id in existing_addon_ids:
+            meta_json = media_path / f"_{addon_id}_meta.json"
+            dest_file = anki_addons_path / addon_id / "meta.json"
+            shutil.copy(meta_json, dest_file)
+            loaded_addons.append(addon_id)
+
+            # Check if addon will be disabled
+            try:
+                with open(meta_json, "r", encoding="utf-8") as f:
+                    meta_data = json.load(f)
+                    if meta_data.get("disabled", False):
+                        disabled_addons.append(addon_id)
+            except Exception:
+                pass  # If we can't read the file, just skip the disabled check
+        else:
+            missing_addons.append(addon_id)
+
+    # Prepare feedback message
+    message = "<b>Read Configs Complete!</b><br><br>"
+    message += get_read_configs_message(loaded_addons, disabled_addons, missing_addons)
+    showInfo(message, title="Addon Config Sync", textFormat="rich")
+
+
+def show_missing_addons():
+    """Show a list of addon codes that have synced configs but are not installed"""
+    anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
+    media_path = Path(mw.pm.profileFolder(), "collection.media")
+
+    # Get all addon directories that exist
+    existing_addon_ids = {
+        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
+    }
+
+    # Get all synced config files from media folder
+    synced_config_files = [f for f in media_path.glob("_*_meta.json")]
+    # Remove leading _ and trailing _meta.json
+    synced_addon_ids = [f.name[1:-10] for f in synced_config_files]
+
+    missing_addons = [
+        addon_id for addon_id in synced_addon_ids if addon_id not in existing_addon_ids
+    ]
+
+    if not missing_addons:
+        message = "<b>No Missing Addons!</b><br><br>"
+        message += "All synced addon configs have their addons installed.<br><br>"
+        message += "<i>Run 'Read Configs' to load the configurations.</i>"
+        showInfo(message, title="Missing Addons", textFormat="rich")
+    else:
+        # Show custom dialog with copy button
+        show_missing_addons_dialog(missing_addons)

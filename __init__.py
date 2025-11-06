@@ -3,15 +3,15 @@ from aqt.gui_hooks import sync_will_start, media_sync_did_start_or_stop
 from aqt import mw
 from aqt.qt import QAction
 from aqt.utils import showInfo
-
-from .funcs import (
-    read_configs_menu_action,
+from .menu_actions import (
     save_configs_menu_action,
+    read_configs_menu_action,
+    show_missing_addons,
+)
+from .messages import get_read_configs_message, get_save_configs_message
+from .sync_actions import (
     save_configs_on_sync,
     read_configs_on_sync,
-    get_read_configs_message,
-    get_save_configs_message,
-    show_missing_addons,
 )
 
 
