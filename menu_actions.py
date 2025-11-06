@@ -39,7 +39,12 @@ def save_configs_menu_action():
 
     # Prepare feedback message
     message = "<b>Save Configs Complete!</b><br><br>"
-    message += get_save_configs_message(saved_addons, disabled_addons, skipped_addons)
+    message += get_save_configs_message(
+        saved_addons,
+        disabled_addons,
+        skipped_addons,
+        is_menu_action=True,
+    )
     showInfo(message, title="Addon Config Sync", textFormat="rich")
 
 
@@ -100,7 +105,12 @@ def read_configs_menu_action():
 
     # Prepare feedback message
     message = "<b>Read Configs Complete!</b><br><br>"
-    message += get_read_configs_message(loaded_addons, disabled_addons, missing_addons)
+    message += get_read_configs_message(
+        loaded_addons,
+        disabled_addons,
+        missing_addons,
+        is_menu_action=True,
+    )
     showInfo(message, title="Addon Config Sync", textFormat="rich")
 
 
