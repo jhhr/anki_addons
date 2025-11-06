@@ -236,6 +236,10 @@ def _showMissingAddonsDialog(missing_addons):
 
     main_layout.addWidget(list_frame)
 
+    # Delete all button right below the addon list
+    delete_all_button = QPushButton(f"🗑️ Delete All {len(addon_list)} Configs")
+    main_layout.addWidget(delete_all_button)
+
     # Bottom section (not scrollable)
     # Space-separated list for easy copying
     copy_label = QLabel("<br><b>Copy all codes (space-separated):</b>")
@@ -261,9 +265,6 @@ def _showMissingAddonsDialog(missing_addons):
     copy_button = QPushButton("📋 Copy to Clipboard")
     button_layout.addWidget(copy_button)
 
-    delete_all_button = QPushButton("🗑️ Delete All Synced Configs")
-    button_layout.addWidget(delete_all_button)
-
     close_button = QPushButton("Close")
     close_button.clicked.connect(dialog.accept)
     button_layout.addWidget(close_button)
@@ -276,8 +277,8 @@ def _showMissingAddonsDialog(missing_addons):
         """Update the dialog UI to reflect the current addon_list"""
         # Update header
         header.setText(
-            f"<b>Found {len(addon_list)} addon(s) to install:</b><br>"
-            "<i>These addons have synced configs but are not installed yet.</i>"
+            f"<b>Found {len(addon_list)} configs with no addon installed for them:</b><br>"
+            "<i>You can install missing addons or delete unnecessary files.</i>"
         )
 
         # Clear existing addon rows
@@ -299,8 +300,8 @@ def _showMissingAddonsDialog(missing_addons):
             addon_row.addWidget(addon_label)
             addon_row.addStretch()
 
-            delete_btn = QPushButton("🗑️ Delete")
-            delete_btn.setMaximumWidth(120)
+            delete_btn = QPushButton("🗑️ Delete file")
+            delete_btn.setMaximumWidth(140)
             delete_btn.clicked.connect(lambda checked, aid=addon_id: on_delete_single(aid))
             addon_row.addWidget(delete_btn)
 
@@ -327,7 +328,7 @@ def _showMissingAddonsDialog(missing_addons):
 
         # Close dialog if no addons left
         if len(addon_list) == 0:
-            tooltip("All synced configs deleted! ✓", period=2000)
+            tooltip("All configs for missing addons deleted! ✓", period=2000)
             dialog.accept()
 
     def on_delete_single(addon_id):
@@ -337,12 +338,12 @@ def _showMissingAddonsDialog(missing_addons):
             update_ui()
 
     def on_delete_all():
-        """Handle deletion of all addon configs"""
+        """Handle deletion of all configs for missing addons"""
         reply = QMessageBox.question(
             dialog,
             "Confirm Delete All",
             "Are you sure you want to delete synced configs for all"
-            f" {len(addon_list)} addon(s)?<br><br><i>This action cannot be undone.</i>",
+            f" {len(addon_list)} missing addon(s)?<br><br><i>This action cannot be undone.</i>",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
