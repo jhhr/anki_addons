@@ -152,6 +152,7 @@ def show_missing_addons_dialog(missing_addons: list[str]) -> None:
         try:
             copy_button.clicked.disconnect()
         except Exception:
+            # Ignore if not connected
             pass
         copy_button.clicked.connect(lambda: copy_to_clipboard(space_separated))
 
@@ -159,6 +160,7 @@ def show_missing_addons_dialog(missing_addons: list[str]) -> None:
         try:
             delete_all_button.clicked.disconnect()
         except Exception:
+            # Ignore if not connected
             pass
         delete_all_button.clicked.connect(on_delete_all)
         delete_all_button.setEnabled(len(addon_list) > 0)
