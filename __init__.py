@@ -82,8 +82,6 @@ def read_on_sync(media_sync_status: bool):
                 or sync_saved_addons
                 or sync_missing_addons
                 or sync_disabled_addons
-                or sync_loaded_addons
-                or sync_missing_addons
             ):
                 # Show summary dialog
                 message = "<b>Auto-Sync Configs Complete!</b><br><br>"
