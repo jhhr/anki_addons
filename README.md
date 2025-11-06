@@ -35,7 +35,7 @@ Main window > Tools -> Sync Addon Configs
 
 The menu functions are usable regardless of whether auto-sync is enabled.
 
-- **Save Configs**: Writes all current addon configs into files in the media folder. Shows a summary of saved configs. Note that if you perform the same action on a different device
+- **Save Configs**: Writes all current addon configs into files in the media folder. Shows a summary of saved configs. Note that if you perform the same action on a different device without syncing you will run into the same conflicting changes situation as with auto-syncing.
 - **Read Configs**: Reads all addon configs from files in the media folder and overwrites current addon configs. Shows which configs were loaded and which addons are missing.
 - **Show Missing Addons**: Displays a list of addon codes for synced configs where the addon is not yet installed. Includes a space-separated list and a "Copy to Clipboard" button for easy installation.
 
