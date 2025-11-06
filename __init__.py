@@ -77,7 +77,7 @@ def read_on_sync(media_sync_status: bool):
         # read_configs_on_sync handles this by accepting a callback function that it will
         # call once it actually finishes reading configs.
         def on_finish_callback():
-            if config.get("show_summary_on_sync", True) and (
+            if config.get("show_summary_on_sync", False) and (
                 sync_loaded_addons
                 or sync_saved_addons
                 or sync_missing_addons
