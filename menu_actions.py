@@ -14,7 +14,7 @@ from .messages import get_read_configs_message, get_save_configs_message
 from .show_missing_addons_dialog import show_missing_addons_dialog
 
 
-def save_configs_menu_action():
+def save_configs_menu_action() -> None:
     """
     Save all addon configs from the addon folder to the media folder.
     Shows a summary dialog of what was saved."""

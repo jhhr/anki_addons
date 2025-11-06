@@ -16,7 +16,7 @@ from aqt.qt import (
 from aqt.utils import showInfo, tooltip
 
 
-def show_missing_addons_dialog(missing_addons):
+def show_missing_addons_dialog(missing_addons: list[str]) -> None:
     """
     Show a custom dialog for missing addons with ability to delete configs or copy addon
     codes to clipboard.
@@ -213,14 +213,14 @@ def show_missing_addons_dialog(missing_addons):
     dialog.exec()
 
 
-def copy_to_clipboard(text):
+def copy_to_clipboard(text: str) -> None:
     """Copy text to clipboard and show confirmation"""
     clipboard = QApplication.clipboard()
     clipboard.setText(text)
     tooltip("Copied to clipboard! ✓", period=2000)
 
 
-def delete_synced_config(addon_id):
+def delete_synced_config(addon_id: str) -> bool:
     """Delete the synced config file for a specific addon
 
     Returns:

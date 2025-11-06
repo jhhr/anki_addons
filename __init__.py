@@ -46,7 +46,7 @@ sync_loaded_addons = []
 sync_missing_addons = []
 
 
-def sync_on_save():
+def sync_on_save() -> None:
     """Save configs on sync, if the option is enabled."""
     # Reset lists
     sync_saved_addons.clear()
@@ -63,7 +63,7 @@ def sync_on_save():
         )
 
 
-def read_on_sync(media_sync_status: bool):
+def read_on_sync(media_sync_status: bool) -> None:
     """Read configs on sync, if the option is enabled."""
     # Reset lists, we use the same disabled addons list for both save and read
     sync_loaded_addons.clear()
