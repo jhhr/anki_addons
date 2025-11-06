@@ -12,6 +12,9 @@ from aqt.qt import (
     QTextEdit,
     QMessageBox,
     QApplication,
+    QScrollArea,
+    QWidget,
+    QFrame,
 )
 from aqt.utils import showInfo, tooltip
 
@@ -185,33 +188,64 @@ def _showMissingAddonsDialog(missing_addons):
     dialog.setWindowTitle("Missing Addons")
     dialog.setMinimumWidth(600)
 
+    # Limit dialog height to 80% of screen height
+    screen = dialog.screen()
+    if screen:
+        screen_height = screen.availableGeometry().height()
+        max_height = int(screen_height * 0.8)
+        dialog.setMaximumHeight(max_height)
+
     # Internal state - list of addons currently displayed
     addon_list = missing_addons.copy()
 
-    layout = QVBoxLayout()
+    # Main layout for the dialog
+    main_layout = QVBoxLayout()
 
-    # Header message
+    # Header message (not scrollable)
     header = QLabel()
     header.setWordWrap(True)
-    layout.addWidget(header)
+    main_layout.addWidget(header)
+
+    # Create a frame to contain the addon list
+    list_frame = QFrame()
+    list_frame.setFrameShape(QFrame.Shape.StyledPanel)
+    list_frame.setFrameShadow(QFrame.Shadow.Sunken)
+    frame_layout = QVBoxLayout(list_frame)
+    frame_layout.setContentsMargins(0, 0, 0, 0)
+
+    # Create scroll area for the addon list
+    scroll_area = QScrollArea()
+    scroll_area.setWidgetResizable(True)
+    scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+
+    # Widget to contain the scrollable content
+    scroll_content = QWidget()
+    scroll_layout = QVBoxLayout(scroll_content)
 
     # List of addon codes with delete buttons
     codes_label = QLabel("<br><b>Addon codes:</b>")
-    layout.addWidget(codes_label)
+    scroll_layout.addWidget(codes_label)
 
     # Create a container for the list of addons with delete buttons
     addons_container_widget = QVBoxLayout()
-    layout.addLayout(addons_container_widget)
+    scroll_layout.addLayout(addons_container_widget)
 
+    scroll_layout.addStretch()
+    scroll_area.setWidget(scroll_content)
+    frame_layout.addWidget(scroll_area)
+
+    main_layout.addWidget(list_frame)
+
+    # Bottom section (not scrollable)
     # Space-separated list for easy copying
     copy_label = QLabel("<br><b>Copy all codes (space-separated):</b>")
-    layout.addWidget(copy_label)
+    main_layout.addWidget(copy_label)
 
     # Text box with space-separated codes
     text_box = QTextEdit()
     text_box.setReadOnly(True)
     text_box.setMaximumHeight(60)
-    layout.addWidget(text_box)
+    main_layout.addWidget(text_box)
 
     # Instructions
     instructions = QLabel(
@@ -219,7 +253,7 @@ def _showMissingAddonsDialog(missing_addons):
         "<i>Go to: Tools → Add-ons → Get Add-ons... and paste the codes above.</i>"
     )
     instructions.setWordWrap(True)
-    layout.addWidget(instructions)
+    main_layout.addWidget(instructions)
 
     # Buttons
     button_layout = QHBoxLayout()
@@ -234,9 +268,9 @@ def _showMissingAddonsDialog(missing_addons):
     close_button.clicked.connect(dialog.accept)
     button_layout.addWidget(close_button)
 
-    layout.addLayout(button_layout)
+    main_layout.addLayout(button_layout)
 
-    dialog.setLayout(layout)
+    dialog.setLayout(main_layout)
 
     def update_ui():
         """Update the dialog UI to reflect the current addon_list"""
