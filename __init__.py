@@ -117,7 +117,7 @@ def read_on_sync(media_sync_status: bool):
 
 
 # Register hooks for auto-sync
-# Since the funcs checks this addon's config when the run, the hooks can always be active and
+# Since the funcs check this addon's config when they run, the hooks can always be active and
 # editing the config doesn't require restarting Anki.
 sync_will_start.append(sync_on_save)
 media_sync_did_start_or_stop.append(read_on_sync)
