@@ -2,6 +2,7 @@ import filecmp
 import os
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from aqt import mw
 
@@ -69,7 +70,7 @@ def read_configs_on_sync(
     loaded_addons: list[str],
     disabled_addons: list[str],
     missing_addons: list[str],
-    on_finish_callback: callable,
+    on_finish_callback: Callable[[], None],
     media_sync_status: bool,
 ):
     """
