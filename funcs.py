@@ -337,10 +337,10 @@ def show_missing_addons():
         showInfo(message, title="Missing Addons", textFormat="rich")
     else:
         # Show custom dialog with copy button
-        _showMissingAddonsDialog(missing_addons)
+        _show_missing_addons_dialog(missing_addons)
 
 
-def _showMissingAddonsDialog(missing_addons):
+def _show_missing_addons_dialog(missing_addons):
     """Show a custom dialog for missing addons with copy to clipboard functionality"""
     dialog = QDialog(mw)
     dialog.setWindowTitle("Missing Addons")
@@ -474,7 +474,7 @@ def _showMissingAddonsDialog(missing_addons):
             copy_button.clicked.disconnect()
         except Exception:
             pass
-        copy_button.clicked.connect(lambda: _copyToClipboard(space_separated))
+        copy_button.clicked.connect(lambda: _copy_to_clipboard(space_separated))
 
         # Update delete all button
         try:
@@ -491,7 +491,7 @@ def _showMissingAddonsDialog(missing_addons):
 
     def on_delete_single(addon_id):
         """Handle deletion of a single addon config"""
-        if _deleteSyncedConfig(addon_id):
+        if _delete_synced_config(addon_id):
             addon_list.remove(addon_id)
             update_ui()
 
@@ -511,7 +511,7 @@ def _showMissingAddonsDialog(missing_addons):
             failed_addons = []
 
             for addon_id in addon_list[:]:  # Copy list to avoid modification during iteration
-                if _deleteSyncedConfig(addon_id):
+                if _delete_synced_config(addon_id):
                     deleted_count += 1
                 else:
                     failed_addons.append(addon_id)
@@ -533,14 +533,14 @@ def _showMissingAddonsDialog(missing_addons):
     dialog.exec()
 
 
-def _copyToClipboard(text):
+def _copy_to_clipboard(text):
     """Copy text to clipboard and show confirmation"""
     clipboard = QApplication.clipboard()
     clipboard.setText(text)
     tooltip("Copied to clipboard! ✓", period=2000)
 
 
-def _deleteSyncedConfig(addon_id):
+def _delete_synced_config(addon_id):
     """Delete the synced config file for a specific addon
 
     Returns:
