@@ -4,7 +4,11 @@ from pathlib import Path
 from aqt import mw
 from aqt.qt import QMessageBox
 from aqt.utils import showInfo
-from .utils import is_addon_disabled
+from .utils import (
+    is_addon_disabled,
+    get_existing_addons,
+    get_configs_in_media,
+)
 
 from .messages import get_read_configs_message, get_save_configs_message
 from .show_missing_addons_dialog import show_missing_addons_dialog
@@ -70,15 +74,8 @@ def read_configs_menu_action():
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
 
-    # Get all addon directories that exist
-    existing_addon_ids = {
-        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
-    }
-
-    # Get all synced config files from media folder
-    synced_config_files = [f for f in media_path.glob("_*_meta.json")]
-    # Remove leading _ and trailing _meta.json
-    synced_addon_ids = [f.name[1:-10] for f in synced_config_files]
+    existing_addon_ids = get_existing_addons(anki_addons_path)
+    synced_addon_ids = get_configs_in_media(media_path)
 
     loaded_addons = []
     disabled_addons = []

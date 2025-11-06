@@ -5,7 +5,11 @@ from pathlib import Path
 
 from aqt import mw
 
-from .utils import is_addon_disabled
+from .utils import (
+    is_addon_disabled,
+    get_existing_addons,
+    get_configs_in_media,
+)
 
 
 def save_configs_on_sync(
@@ -87,28 +91,24 @@ def read_configs_on_sync(
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
 
-    # Get all addon directories that exist
-    existing_addon_ids = {
-        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
-    }
+    existing_addon_ids = get_existing_addons(anki_addons_path)
+    synced_addon_ids = get_configs_in_media(media_path)
 
-    for addon_dir in anki_addons_path.iterdir():
-        if not addon_dir.is_dir():
-            continue
+    for addon_id in synced_addon_ids:
+        if addon_id in existing_addon_ids:
+            meta_json = media_path / f"_{addon_id}_meta.json"
+            dest_file = anki_addons_path / addon_id / "meta.json"
 
-        meta_json = addon_dir / "meta.json"
-        dest_file = media_path / f"_{addon_dir.name}_meta.json"
-
-        # do we have a dest file that differs from the current meta.json file?
-        if dest_file.is_file():
-            if not meta_json.is_file() or not filecmp.cmp(meta_json, dest_file, False):
-                # The files don't match, so copy the dest file to the meta.json
-                shutil.copy(dest_file, meta_json)
-                # Update feedback lists
-                loaded_addons.append(addon_dir.name)
-                if is_addon_disabled(dest_file):
-                    disabled_addons.append(addon_dir.name)
-                if addon_dir.name not in existing_addon_ids:
-                    missing_addons.append(addon_dir.name)
+            # do we have a dest file that differs from the current meta.json file?
+            if dest_file.is_file():
+                if not meta_json.is_file() or not filecmp.cmp(meta_json, dest_file, False):
+                    # The files don't match, so copy the dest file to the meta.json
+                    shutil.copy(dest_file, meta_json)
+                    # Update feedback lists
+                    loaded_addons.append(addon_id)
+                    if is_addon_disabled(dest_file):
+                        disabled_addons.append(addon_id)
+        else:
+            missing_addons.append(addon_id)
 
     on_finish_callback()
