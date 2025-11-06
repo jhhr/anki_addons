@@ -162,6 +162,7 @@ def show_missing_addons_dialog(missing_addons):
             pass
         delete_all_button.clicked.connect(on_delete_all)
         delete_all_button.setEnabled(len(addon_list) > 0)
+        delete_all_button.setText(f"🗑️ Delete All {len(addon_list)} Configs")
 
         # Close dialog if no addons left
         if len(addon_list) == 0:
