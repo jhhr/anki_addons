@@ -12,7 +12,7 @@ By default the addon will save configs to the media folder when you sync Anki. T
 2. Sync Anki on device A
 3. Sync Anki on device B
 
-The addon option `show_summary_on_sync` can be enabled to show a feedback message during auto-sync as well. This defaults to `false`.
+The addon option `show_summary_on_sync` can be enabled to show a feedback message during auto-sync as well. This defaults to `false`. The auto-sync only reports configs that had changes saved or loaded. Addons that have no config to save aren't reported on.
 
 #### Conflicting change handling during auto-sync
 
