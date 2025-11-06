@@ -1,4 +1,3 @@
-import json
 import shutil
 from pathlib import Path
 
@@ -93,13 +92,8 @@ def read_configs_menu_action():
             loaded_addons.append(addon_id)
 
             # Check if addon will be disabled
-            try:
-                with open(meta_json, "r", encoding="utf-8") as f:
-                    meta_data = json.load(f)
-                    if meta_data.get("disabled", False):
-                        disabled_addons.append(addon_id)
-            except Exception:
-                pass  # If we can't read the file, just skip the disabled check
+            if is_addon_disabled(meta_json):
+                disabled_addons.append(addon_id)
         else:
             missing_addons.append(addon_id)
 
