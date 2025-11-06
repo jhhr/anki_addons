@@ -71,6 +71,10 @@ Same as above
 5. Click "Read Configs" to load the configurations
 6. (If some addons need it) Restart Anki to apply the loaded configs
 
+#### Take care with Read Configs menu action
+
+As you are about to save your recently edited configs for syncing to another device, accidentally clicking Read Configs instead will overwrite your current edits.
+
 ## Features
 
 - **Complete Config Sync**: Syncs all addon configurations including:
@@ -97,10 +101,6 @@ Same as above
 - Remember to sync after saving and before reading on the other device.
 - **Restart Anki after reading configs** to ensure all settings and enable/disable states take effect.
 - The enabled/disabled state of each addon is automatically synced along with other configurations.
-
-## BEWARE
-
-- As you are about to save your recently edited configs for syncing to another device, accidentally clicking Read Configs instead will overwrite your current edits. A proper syncing system should remove this shortfall (TODO soon).
 
 # Links
 
