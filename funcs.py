@@ -212,6 +212,21 @@ def read_configs_menu_action():
     Shows a summary dialog of what was loaded and which addons are missing.
     Will overwrite existing configs in the addon folder, possibly destroying local changes
     that have not saved into the media folder yet."""
+
+    # Show confirmation dialog before proceeding
+    reply = QMessageBox.question(
+        mw,
+        "Confirm Read Configs",
+        "<b>Read all synced addon configs?</b><br><br>This will overwrite existing configs in the"
+        " addon folder with synced versions from AnkiWeb.<br><br><i>Any local changes that haven't"
+        " been saved will be lost.</i>",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+
+    if reply != QMessageBox.StandardButton.Yes:
+        return
+
     anki_addons_path = Path(mw.pm.addonFolder()).resolve(strict=True)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
 
