@@ -111,3 +111,27 @@ def show_non_blocking_info(
 
     dialog.show()  # Use show() instead of exec() for non-blocking
     return dialog
+
+
+def ordered(obj: object) -> object:
+    """
+    Return a JSON-serializable object with its keys deeply sorted.
+    Useful for comparing JSON objects.
+    """
+    if isinstance(obj, dict):
+        return sorted((k, ordered(v)) for k, v in obj.items())
+    if isinstance(obj, list):
+        return sorted(ordered(x) for x in obj)
+    else:
+        return obj
+
+
+def json_files_deep_equal(file1: Path, file2: Path) -> bool:
+    """Compare two JSON files for deep equality, ignoring key order."""
+    try:
+        with open(file1, "r", encoding="utf-8") as f1, open(file2, "r", encoding="utf-8") as f2:
+            obj1 = json.load(f1)
+            obj2 = json.load(f2)
+            return ordered(obj1) == ordered(obj2)
+    except Exception:
+        return False  # If we can't read the files, assume they are not equal

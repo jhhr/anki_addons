@@ -10,6 +10,7 @@ from .utils import (
     is_addon_disabled,
     get_existing_addons,
     get_configs_in_media,
+    json_files_deep_equal,
 )
 
 
@@ -50,7 +51,9 @@ def save_configs_on_sync(
             if not dest_file.is_file():
                 shutil.copy(meta_json, dest_file)
                 saved_addon = True
-            elif not filecmp.cmp(meta_json, dest_file, False):
+            elif not filecmp.cmp(meta_json, dest_file, False) and not json_files_deep_equal(
+                meta_json, dest_file
+            ):
                 # To trigger Anki to sync the file, remove the old one and copy the new one
                 os.remove(dest_file)
                 shutil.copy(meta_json, dest_file)
@@ -102,7 +105,10 @@ def read_configs_on_sync(
 
             # do we have a dest file that differs from the current meta.json file?
             if dest_file.is_file():
-                if not meta_json.is_file() or not filecmp.cmp(meta_json, dest_file, False):
+                if not meta_json.is_file() or (
+                    not filecmp.cmp(meta_json, dest_file, False)
+                    and not json_files_deep_equal(meta_json, dest_file)
+                ):
                     # The files don't match, so copy the dest file to the meta.json
                     shutil.copy(dest_file, meta_json)
                     # Update feedback lists
