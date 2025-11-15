@@ -3,7 +3,6 @@ from aqt.gui_hooks import sync_will_start, media_sync_did_start_or_stop
 
 from aqt import mw
 from aqt.qt import QAction
-from aqt.utils import showInfo
 from .menu_actions import (
     save_configs_menu_action,
     read_configs_menu_action,
@@ -14,6 +13,7 @@ from .sync_actions import (
     save_configs_on_sync,
     read_configs_on_sync,
 )
+from .utils import show_non_blocking_info
 
 
 def build_action(fun: Callable[[], None], text: str, shortcut: Optional[str] = None) -> QAction:
@@ -98,7 +98,7 @@ def read_on_sync(media_sync_status: bool) -> None:
                     disabled_addons=sync_disabled_addons,
                     missing_addons=sync_missing_addons,
                 )
-                showInfo(message, title="Addon Config Sync", textFormat="rich")
+                show_non_blocking_info(message, title="Addon Config Sync", textFormat="rich")
             else:
                 # log to console when not showing in UI
                 print("Auto-Sync configs done, summary lists:")
