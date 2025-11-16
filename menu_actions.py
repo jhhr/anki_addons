@@ -110,9 +110,7 @@ def show_missing_addons() -> None:
     media_path = Path(mw.pm.profileFolder(), "collection.media")
 
     # Get all addon directories that exist
-    existing_addon_ids = {
-        addon_dir.name for addon_dir in anki_addons_path.iterdir() if addon_dir.is_dir()
-    }
+    existing_addon_ids = get_existing_addons(anki_addons_path)
 
     # Get all synced config files from media folder
     synced_config_files = [f for f in media_path.glob("_*_meta.json")]
