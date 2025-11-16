@@ -29,13 +29,13 @@ def save_configs_menu_action() -> None:
         if not addon_dir.is_dir():
             continue
 
-        meta_json = addon_dir / "meta.json"
-        if meta_json.is_file():
-            dest_file = media_path / f"_{addon_dir.name}_meta.json"
-            shutil.copy(meta_json, dest_file)
+        addon_meta_json = addon_dir / "meta.json"
+        if addon_meta_json.is_file():
+            media_meta_json = media_path / f"_{addon_dir.name}_meta.json"
+            shutil.copy(addon_meta_json, media_meta_json)
             saved_addons.append(addon_dir.name)
 
-            if is_addon_disabled(meta_json):
+            if is_addon_disabled(addon_meta_json):
                 disabled_addons.append(addon_dir.name)
         else:
             skipped_addons.append(addon_dir.name)
@@ -83,13 +83,13 @@ def read_configs_menu_action():
 
     for addon_id in synced_addon_ids:
         if addon_id in existing_addon_ids:
-            meta_json = media_path / f"_{addon_id}_meta.json"
-            dest_file = anki_addons_path / addon_id / "meta.json"
-            shutil.copy(meta_json, dest_file)
+            media_meta_json = media_path / f"_{addon_id}_meta.json"
+            addon_meta_json = anki_addons_path / addon_id / "meta.json"
+            shutil.copy(media_meta_json, addon_meta_json)
             loaded_addons.append(addon_id)
 
             # Check if addon will be disabled
-            if is_addon_disabled(meta_json):
+            if is_addon_disabled(media_meta_json):
                 disabled_addons.append(addon_id)
         else:
             missing_addons.append(addon_id)

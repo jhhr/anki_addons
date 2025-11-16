@@ -41,28 +41,28 @@ def save_configs_on_sync(
         if not addon_dir.is_dir():
             continue
 
-        meta_json = addon_dir / "meta.json"
-        dest_file = media_path / f"_{addon_dir.name}_meta.json"
+        addon_meta_json = addon_dir / "meta.json"
+        media_meta_json = media_path / f"_{addon_dir.name}_meta.json"
 
-        if meta_json.is_file():
+        if addon_meta_json.is_file():
             # If the destination media file doesn't exist, or the meta.json file has changed,
             # copy the meta.json file to the media folder
             saved_addon = False
-            if not dest_file.is_file():
-                shutil.copy(meta_json, dest_file)
+            if not media_meta_json.is_file():
+                shutil.copy(addon_meta_json, media_meta_json)
                 saved_addon = True
-            elif not filecmp.cmp(meta_json, dest_file, False) and not json_files_deep_equal(
-                meta_json, dest_file
-            ):
+            elif not filecmp.cmp(
+                addon_meta_json, media_meta_json, False
+            ) and not json_files_deep_equal(addon_meta_json, media_meta_json):
                 # To trigger Anki to sync the file, remove the old one and copy the new one
-                os.remove(dest_file)
-                shutil.copy(meta_json, dest_file)
+                os.remove(media_meta_json)
+                shutil.copy(addon_meta_json, media_meta_json)
                 saved_addon = True
 
             # Update feedback lists
             if saved_addon:
                 saved_addons.append(addon_dir.name)
-                if is_addon_disabled(meta_json):
+                if is_addon_disabled(addon_meta_json):
                     disabled_addons.append(addon_dir.name)
         else:
             # No meta.json file to save, skip
@@ -100,20 +100,20 @@ def read_configs_on_sync(
 
     for addon_id in synced_addon_ids:
         if addon_id in existing_addon_ids:
-            meta_json = media_path / f"_{addon_id}_meta.json"
-            dest_file = anki_addons_path / addon_id / "meta.json"
+            media_meta_json = media_path / f"_{addon_id}_meta.json"
+            addon_meta_json = anki_addons_path / addon_id / "meta.json"
 
             # do we have a dest file that differs from the current meta.json file?
-            if dest_file.is_file():
-                if not meta_json.is_file() or (
-                    not filecmp.cmp(meta_json, dest_file, False)
-                    and not json_files_deep_equal(meta_json, dest_file)
+            if addon_meta_json.is_file():
+                if not media_meta_json.is_file() or (
+                    not filecmp.cmp(media_meta_json, addon_meta_json, False)
+                    and not json_files_deep_equal(media_meta_json, addon_meta_json)
                 ):
                     # The files don't match, so copy the dest file to the meta.json
-                    shutil.copy(dest_file, meta_json)
+                    shutil.copy(media_meta_json, addon_meta_json)
                     # Update feedback lists
                     loaded_addons.append(addon_id)
-                    if is_addon_disabled(dest_file):
+                    if is_addon_disabled(addon_meta_json):
                         disabled_addons.append(addon_id)
         else:
             missing_addons.append(addon_id)
