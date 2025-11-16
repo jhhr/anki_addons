@@ -121,7 +121,7 @@ def ordered(obj: object) -> object:
     if isinstance(obj, dict):
         return sorted((k, ordered(v)) for k, v in obj.items())
     if isinstance(obj, list):
-        return sorted(ordered(x) for x in obj)
+        return [ordered(x) for x in obj]  # Preserve order
     else:
         return obj
 
