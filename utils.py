@@ -133,5 +133,5 @@ def json_files_deep_equal(file1: Path, file2: Path) -> bool:
             obj1 = json.load(f1)
             obj2 = json.load(f2)
             return ordered(obj1) == ordered(obj2)
-    except Exception:
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False  # If we can't read the files, assume they are not equal
