@@ -112,10 +112,8 @@ def show_missing_addons() -> None:
     # Get all addon directories that exist
     existing_addon_ids = get_existing_addons(anki_addons_path)
 
-    # Get all synced config files from media folder
-    synced_config_files = [f for f in media_path.glob("_*_meta.json")]
-    # Remove leading _ and trailing _meta.json
-    synced_addon_ids = [f.name[1:-10] for f in synced_config_files]
+    # Get all synced addon IDs from media folder
+    synced_addon_ids = get_configs_in_media(media_path)
 
     missing_addons = [
         addon_id for addon_id in synced_addon_ids if addon_id not in existing_addon_ids
