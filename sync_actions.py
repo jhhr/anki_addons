@@ -164,18 +164,20 @@ def read_configs_on_sync(
             media_meta_json = media_path / f"_{addon_id}_meta.json"
             addon_meta_json = anki_addons_path / addon_id / "meta.json"
 
-            # do we have a dest file that differs from the current meta.json file?
-            if addon_meta_json.is_file():
-                if not media_meta_json.is_file() or (
+            # Copy when destination config is missing, or when it differs from media.
+            if media_meta_json.is_file() and (
+                not addon_meta_json.is_file()
+                or (
                     not filecmp.cmp(media_meta_json, addon_meta_json, False)
                     and not json_files_deep_equal(media_meta_json, addon_meta_json)
-                ):
-                    loaded_addons.append(addon_id)
-                    if apply_to_addons:
-                        shutil.copy(media_meta_json, addon_meta_json)
-                        mark_addon_updated(addon_id)
-                        if is_addon_disabled(addon_meta_json):
-                            disabled_addons.append(addon_id)
+                )
+            ):
+                loaded_addons.append(addon_id)
+                if apply_to_addons:
+                    shutil.copy(media_meta_json, addon_meta_json)
+                    mark_addon_updated(addon_id)
+                    if is_addon_disabled(addon_meta_json):
+                        disabled_addons.append(addon_id)
         else:
             missing_addons.append(addon_id)
 
