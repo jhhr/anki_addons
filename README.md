@@ -55,9 +55,9 @@ Set in the manager dialog (radio buttons):
    - Opens the manager dialog non-blocking, prefiltered to changed or not-installed entries.
    - Ignored addons are skipped.
 
-## Sync now button
+## Sync media only now button
 
-The manager includes **Sync now**, which triggers Anki sync in download-focused mode for this add-on flow and refreshes statuses when sync finishes.
+The manager includes **Sync media only now**, which triggers Anki sync for media only. Configs in the media folder will be update but will not yet overwrite addon configs. This refreshes statuses when sync finishes.
 
 ## Notes
 
@@ -68,3 +68,4 @@ The manager includes **Sync now**, which triggers Anki sync in download-focused 
 
 - [Github](https://github.com/jhhr/anki-addon-config-sync)
 - [Anki forums thread](https://forums.ankiweb.net/t/addon-for-syncing-addon-configs/45118)
+
