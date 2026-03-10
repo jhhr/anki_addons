@@ -68,6 +68,7 @@ class AddonConfigManagerDialog(QDialog):
         super().__init__(parent or mw)
         self.setWindowTitle("Manage Addon Configs")
         self.resize(1400, 760)
+        self.apply_screen_size_limits()
 
         self.self_addon_id = Path(__file__).resolve().parent.name
         self.config = get_main_config()
@@ -240,6 +241,18 @@ class AddonConfigManagerDialog(QDialog):
 
         self.refresh_rows()
         self.update_bulk_controls()
+
+    def apply_screen_size_limits(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if not screen:
+            return
+
+        available = screen.availableGeometry()
+        max_height = int(available.height() * 0.92)
+        self.setMaximumHeight(max_height)
+
+        if self.height() > max_height:
+            self.resize(self.width(), max_height)
 
     def refresh_rows(self) -> None:
         self.config = get_main_config()
