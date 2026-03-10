@@ -1,34 +1,70 @@
-This addon will save and load your current addon configs into Anki's media files folder.
-Saving and loading is done on syncing.
+# Addon Config Sync
 
-# How to use
+Sync add-on `meta.json` configs across devices by storing copies in Anki's media folder and syncing those through AnkiWeb.
 
-1. Edit configs on device A
-2. Sync on device A
-3. Sync on device B.
+## Open the manager
 
-- Some addons will require restarting Anki for them to load the new configs.
+Main window → Tools → **Manage Addon Configs**
 
-## Conflicting changes
+This is the main UI for all operations.
 
-In a nutshell, **the first device to sync to AnkiWeb** is the one whose addon config edits will overwrite conflicting configs when syncing on other devices.
-It appears that changes to a media file in AnkiWeb trumps not yet uploaded changes to the same media file which is why the first to sync wins.
+## What the manager shows
 
-In more detail:
+- One row per known add-on config (installed add-ons with `meta.json`, and media-only configs for not-installed add-ons).
+- Status per row:
+  - **Changed**: installed `meta.json` differs from media copy (click status to view diff + modified times).
+  - **Not installed**: config exists in media but add-on is not installed locally.
+  - **Updated**: config was overwritten in this Anki session.
+  - **Up to date**: no relevant difference.
 
-1. Edit configs on device A without syncing.
-2. Edit configs on device B without syncing.
+## Per-add-on and bulk actions
 
-Device A and B now have conflicting changes.
+Each row supports:
 
-3. Sync on device A. Edited configs files are uploaded to AnkiWeb
-4. Sync on device B. Config files are downloaded from Ankiweb, overwriting conflicting edits on device B
+- Save to local media (addon → media)
+- Overwrite from local media (media → addon)
+- Remove from local media
+- Install add-on (when not installed)
+- Ignore toggle
 
-### Recommendation
+Top action buttons apply to selected rows (with shift-range select support).
 
-Immediately after editing configs on one device, sync on that device and then sync on your other devices.
+## Filtering and sorting
 
-# Links
+- Filter by add-on name.
+- Filter by status dimensions (Changed / Installed / Updated).
+- Filter by Ignore state.
+- Header sorting supports Addon, Status, and Ignore columns with ascending/descending/none cycling.
+
+## Sync modes
+
+Set in the manager dialog (radio buttons):
+
+1. **Update configs on Sync** (default)
+   - During normal sync, changed local addon configs are saved to media before media sync.
+   - Downloaded media config changes are applied automatically to installed addons after media sync.
+   - Ignored addons are skipped.
+
+2. **Update configs on Sync, show summary**
+   - Same behavior as mode 1.
+   - After sync, opens the manager dialog **only if at least one addon config was updated**.
+
+3. **Ask about changes to configs**
+   - Still saves local changes to media on sync.
+   - Does **not** auto-overwrite addon configs from downloaded media.
+   - Opens the manager dialog non-blocking, prefiltered to changed or not-installed entries.
+   - Ignored addons are skipped.
+
+## Sync now button
+
+The manager includes **Sync now**, which triggers Anki sync in download-focused mode for this add-on flow and refreshes statuses when sync finishes.
+
+## Notes
+
+- Some add-ons may require an Anki restart after config overwrite.
+- The first device to upload a conflicting media config generally wins on subsequent device syncs.
+
+## Links
 
 - [Github](https://github.com/jhhr/anki-addon-config-sync)
 - [Anki forums thread](https://forums.ankiweb.net/t/addon-for-syncing-addon-configs/45118)
