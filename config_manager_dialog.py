@@ -223,7 +223,7 @@ class AddonConfigManagerDialog(QDialog):
 
         sync_now_column = QVBoxLayout()
         sync_now_column.setContentsMargins(8, 0, 0, 0)
-        self.sync_now_btn = QPushButton("Sync now")
+        self.sync_now_btn = QPushButton("Sync media only now")
         self.sync_now_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.sync_now_btn.setMinimumWidth(180)
         self.sync_now_btn.setMinimumHeight(52)
@@ -820,10 +820,11 @@ class AddonConfigManagerDialog(QDialog):
 
         sync_actions.SUPPRESS_SYNC_FINISH_CALLBACKS.append(on_sync_finish)
 
-        if hasattr(mw, "on_sync_button_clicked"):
-            mw.on_sync_button_clicked()
-        elif hasattr(mw, "on_sync_button"):
-            mw.on_sync_button()
+        if hasattr(mw, "media_syncer"):
+            if mw.media_syncer.is_syncing():
+                mw.media_syncer.show_sync_log()
+            if not mw.media_syncer.is_syncing():
+                mw.media_syncer.start()
         else:
             sync_actions.SUPPRESS_AUTO_SYNC_ACTIONS = False
             showInfo("Could not trigger sync from this Anki build.", title="Download from remote")
