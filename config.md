@@ -23,5 +23,5 @@ In more detail:
 
 Device A and B now have conflicting changes.
 
-1. Sync on device A. Edited configs files are uploaded to AnkiWeb
-2. Sync on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
+3. Sync on device A. Edited configs files are uploaded to AnkiWeb
+4. Sync on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
