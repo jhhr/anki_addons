@@ -238,7 +238,7 @@ def delete_synced_config(addon_id: str) -> bool:
             return True
         except Exception as e:
             showInfo(
-                f"Error deleting config for {addon_id}: {str(e)}", title="Error", textFormat="rich"
+                f"Error deleting config for {addon_id}: {str(e)}", title="Error", textFormat="plain"
             )
             return False
     else:
