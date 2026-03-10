@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from aqt import mw
 from aqt.qt import (
@@ -135,3 +135,38 @@ def json_files_deep_equal(file1: Path, file2: Path) -> bool:
             return ordered(obj1) == ordered(obj2)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False  # If we can't read the files, assume they are not equal
+
+
+def get_addon_module_name() -> str:
+    package_name = __package__ or __name__
+    return package_name.split(".")[0]
+
+
+def get_main_config() -> dict[str, Any]:
+    config = mw.addonManager.getConfig(get_addon_module_name()) or {}
+    if "addon_settings" not in config or not isinstance(config["addon_settings"], dict):
+        config["addon_settings"] = {}
+    if "ask_on_sync" not in config:
+        config["ask_on_sync"] = False
+    if "run_on_sync" not in config:
+        config["run_on_sync"] = True
+    if "show_summary_on_sync" not in config:
+        config["show_summary_on_sync"] = False
+    return config
+
+
+def write_main_config(config: dict[str, Any]) -> None:
+    mw.addonManager.writeConfig(get_addon_module_name(), config)
+
+
+def is_addon_ignored(config: dict[str, Any], addon_id: str) -> bool:
+    addon_settings = config.get("addon_settings", {})
+    per_addon = addon_settings.get(addon_id, {})
+    return bool(per_addon.get("ignore", False))
+
+
+def set_addon_ignored(config: dict[str, Any], addon_id: str, ignored: bool) -> dict[str, Any]:
+    addon_settings = config.setdefault("addon_settings", {})
+    per_addon = addon_settings.setdefault(addon_id, {})
+    per_addon["ignore"] = ignored
+    return config

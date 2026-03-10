@@ -1,4 +1,6 @@
 {
   "run_on_sync": true,
-  "show_summary_on_sync": false
+  "show_summary_on_sync": false,
+  "ask_on_sync": false,
+  "addon_settings": {}
 }

@@ -12,7 +12,11 @@ By default the addon will save configs to the media folder when you sync Anki. T
 2. Sync Anki on device A
 3. Sync Anki on device B
 
-The addon option `show_summary_on_sync` can be enabled to show a feedback message during auto-sync as well. This defaults to `false`. The auto-sync only reports configs that had changes saved or loaded. Addons that have no config to save aren't reported on.
+The addon has three sync modes configurable in **Manage Addon Configs**:
+
+1. **Update configs on Sync** (default)
+2. **Update configs on Sync, show summary** (opens manager dialog after sync)
+3. **Ask about changes to configs** (does not auto-overwrite; opens manager dialog pre-filtered to changes/missing)
 
 #### Conflicting change handling during auto-sync
 
@@ -26,8 +30,8 @@ In more detail:
 
 Device A and B now have conflicting changes.
 
-3. Sync Anki on device A. Edited configs files are uploaded to AnkiWeb
-4. Sync Anki on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
+1. Sync Anki on device A. Edited configs files are uploaded to AnkiWeb
+2. Sync Anki on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
 
 ## Menu Options
 
@@ -35,6 +39,7 @@ Main window > Tools -> Sync Addon Configs
 
 The menu functions are usable regardless of whether auto-sync is enabled.
 
+- **Manage Addon Configs**: Opens a table-based config manager for per-addon actions, ignore toggles, filtering, diffs, and sync mode selection.
 - **Save Configs**: Writes all current addon configs into files in the media folder. Shows a summary of saved configs. Note that if you perform the same action on a different device without syncing you will run into the same conflicting changes situation as with auto-syncing.
 - **Read Configs**: Reads all addon configs from files in the media folder and overwrites current addon configs. Shows which configs were loaded and which addons are missing.
 - **Show Missing Addons**: Displays a list of addon codes for synced configs where the addon is not yet installed. Includes a space-separated list and a "Copy to Clipboard" button for easy installation.

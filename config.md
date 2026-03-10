@@ -1,7 +1,15 @@
 ## Addon options
 
-- `run_on_sync`: Configs are saved and read during syncing. This can overwrite configs one way of the other. Defaults to `true`. Set to `false` if you only want read and save configs manually.
-- `show_summary_on_sync`: When `run_on_sync` is enabled, also show a message once it finishes like what is shown when you save/read configs using the menu actions.
+- `run_on_sync`: Configs are saved and read during syncing. Defaults to `true`.
+- `show_summary_on_sync`: When `run_on_sync` is enabled, open the config manager dialog after syncing.
+- `ask_on_sync`: Ask mode. When syncing downloads changed configs, open the config manager dialog (non-blocking) pre-filtered to changed/missing addons instead of overwriting addon configs automatically.
+- `addon_settings`: Per-addon settings map keyed by addon id. Currently supports `ignore`.
+
+Only one sync mode should be active at a time:
+
+1. `run_on_sync: true`, `show_summary_on_sync: false`, `ask_on_sync: false`
+2. `run_on_sync: true`, `show_summary_on_sync: true`, `ask_on_sync: false`
+3. `run_on_sync: false`, `show_summary_on_sync: false`, `ask_on_sync: true`
 
 ### Conflicting change handling during sync
 
@@ -15,5 +23,5 @@ In more detail:
 
 Device A and B now have conflicting changes.
 
-3. Sync on device A. Edited configs files are uploaded to AnkiWeb
-4. Sync on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
+1. Sync on device A. Edited configs files are uploaded to AnkiWeb
+2. Sync on device B. Config files are downloaded from AnkiWeb, overwriting conflicting edits on device B
