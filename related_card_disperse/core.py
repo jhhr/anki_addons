@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Optional
 
 
 def normalize_card_id_result(result: Any) -> list[int]:
@@ -50,12 +50,30 @@ def split_note_type_names(target_note_types: str) -> list[str]:
     return [n for n in target_note_types.strip('"').split('", "') if n]
 
 
-def cap_card_ids(card_ids: list[int], cap: int) -> tuple[list[int], int]:
+def cap_card_ids(
+    card_ids: list[int],
+    cap: int,
+    due_by_id: Optional[dict[int, int]] = None,
+) -> tuple[list[int], int]:
+    """Trim ``card_ids`` to ``cap`` entries, returning ``(kept, dropped_count)``.
+
+    Without ``due_by_id`` the caller's ordering decides who survives. With it --
+    and only once the cap actually bites, which is meant to be rare -- the cards
+    due latest are the ones dropped, so a capped run still disperses whatever is
+    coming up soonest. Survivors keep the caller's ordering either way.
+    """
     if cap <= 0:
         return [], len(card_ids)
     if len(card_ids) <= cap:
         return card_ids, 0
-    return card_ids[:cap], len(card_ids) - cap
+    if due_by_id is None:
+        return card_ids[:cap], len(card_ids) - cap
+    # An id missing from the map has no known due date; sort it last so a known
+    # due date always wins a place over an unknown one.
+    unknown_due = max(due_by_id.values(), default=0) + 1
+    by_due = sorted(card_ids, key=lambda cid: (due_by_id.get(cid, unknown_due), cid))
+    kept = set(by_due[:cap])
+    return [cid for cid in card_ids if cid in kept], len(card_ids) - cap
 
 
 def group_overlapping_sets(groups: list[set[int]]) -> list[set[int]]:

@@ -30,10 +30,9 @@ from .shared.scheduling.due_dates import due_to_date, get_fuzz_range
 class QueryResolution:
     raw_count: int
     filtered_count: int
-    dropped_trigger_count: int
     capped_count: int
     card_ids: list[int]
-    raw_related_ids: set[int]
+    due_by_id: dict[int, int]
     error: Optional[str] = None
 
 
@@ -127,18 +126,26 @@ def _as_query_or_ids(
     return query, [], None
 
 
-def _post_filter_review_cards(card_ids: list[int]) -> list[int]:
+def _post_filter_review_cards(card_ids: list[int]) -> tuple[list[int], dict[int, int]]:
+    """Keep the live review cards among ``card_ids``, preserving the given order.
+
+    The due day comes back from the same row, so callers get it for free: that
+    is what lets capping drop the cards due latest rather than whichever rows
+    the DB happened to return first.
+    """
     if not card_ids:
-        return []
+        return [], {}
     rows = mw.col.db.all(
         f"""
-        SELECT id, type, queue
+        SELECT id, type, queue, CASE WHEN odid == 0 THEN due ELSE odue END
         FROM cards
         WHERE id IN {ids2str(card_ids)}
         """
     )
-    allowed = [cid for cid, ctype, queue in rows if ctype == CARD_TYPE_REV and queue != -1]
-    return dedupe_preserve_order(allowed)
+    due_by_id = {
+        cid: due for cid, ctype, queue, due in rows if ctype == CARD_TYPE_REV and queue != -1
+    }
+    return [cid for cid in dedupe_preserve_order(card_ids) if cid in due_by_id], due_by_id
 
 
 def resolve_rule_candidates(
@@ -146,42 +153,47 @@ def resolve_rule_candidates(
     reviewed_card: Card,
     config: Config,
     *,
-    drop_trigger_card: bool,
     apply_cap: bool = True,
 ) -> QueryResolution:
     """Resolve one rule's related cards for a reviewed card.
+
+    The reviewed card is always part of the group -- it anchors the dispersal,
+    and its own due date is free to move with the rest -- so a query that only
+    finds one sibling still has two cards to spread apart. It is exempt from the
+    cap, which counts the *related* cards.
 
     When ``apply_cap`` is False, ``card_ids`` is the full filtered list and
     ``capped_count`` is always 0.
     """
     query, direct_ids, error = _as_query_or_ids(rule, reviewed_card)
     if error:
-        return QueryResolution(0, 0, 0, 0, [], set(), error=error)
+        return QueryResolution(0, 0, 0, [], {}, error=error)
 
     if query is not None:
         found_ids = list(mw.col.find_cards(query))
     else:
         found_ids = direct_ids
 
-    raw_ids = dedupe_preserve_order(found_ids)
-    state_filtered = _post_filter_review_cards(raw_ids)
-    filtered_count = max(0, len(raw_ids) - len(state_filtered))
-    filtered = state_filtered
-    if drop_trigger_card:
-        filtered = [cid for cid in filtered if cid != reviewed_card.id]
-    dropped_trigger_count = max(0, len(state_filtered) - len(filtered))
+    raw_ids = dedupe_preserve_order([reviewed_card.id, *found_ids])
+    filtered, due_by_id = _post_filter_review_cards(raw_ids)
+    filtered_count = max(0, len(raw_ids) - len(filtered))
+
+    # The reviewed card can itself fail the review-state filter (it was just
+    # answered into learning, say); only anchor with it when it survived.
+    trigger_id = reviewed_card.id if reviewed_card.id in due_by_id else None
+    related = [cid for cid in filtered if cid != trigger_id]
 
     if apply_cap:
-        capped, capped_count = cap_card_ids(filtered, _rule_cap(rule, config))
+        capped_related, capped_count = cap_card_ids(related, _rule_cap(rule, config), due_by_id)
     else:
-        capped, capped_count = filtered, 0
+        capped_related, capped_count = related, 0
+    card_ids = [trigger_id, *capped_related] if trigger_id is not None else capped_related
     return QueryResolution(
         raw_count=len(raw_ids),
         filtered_count=filtered_count,
-        dropped_trigger_count=dropped_trigger_count,
         capped_count=capped_count,
-        card_ids=capped,
-        raw_related_ids=set(filtered),
+        card_ids=card_ids,
+        due_by_id=due_by_id,
     )
 
 
@@ -329,7 +341,7 @@ def run_rule_for_reviewed_card(
         )
     processed_rule_card_pairs.add(pair_key)
 
-    query_result = resolve_rule_candidates(rule, reviewed_card, config, drop_trigger_card=True)
+    query_result = resolve_rule_candidates(rule, reviewed_card, config)
     rule_name = _rule_name(rule)
     if query_result.error:
         return RuleOutcome(
@@ -342,7 +354,7 @@ def run_rule_for_reviewed_card(
             summarize_outcome(
                 rule_name,
                 query_result.raw_count,
-                query_result.filtered_count + query_result.dropped_trigger_count,
+                query_result.filtered_count,
                 query_result.capped_count,
                 0,
                 "skipped(empty or single card)",
@@ -361,7 +373,7 @@ def run_rule_for_reviewed_card(
             summarize_outcome(
                 rule_name,
                 query_result.raw_count,
-                query_result.filtered_count + query_result.dropped_trigger_count,
+                query_result.filtered_count,
                 query_result.capped_count,
                 0,
                 outcome_text,
@@ -374,7 +386,7 @@ def run_rule_for_reviewed_card(
         summarize_outcome(
             rule_name,
             query_result.raw_count,
-            query_result.filtered_count + query_result.dropped_trigger_count,
+            query_result.filtered_count,
             query_result.capped_count,
             len(details),
             "dispersed",
@@ -406,27 +418,32 @@ def run_sync_grouped(
         for rule in sync_rules:
             rule_guid = rule["guid"]
             if rule_guid not in by_rule:
-                by_rule[rule_guid] = {"rule": rule, "sets": []}
+                by_rule[rule_guid] = {"rule": rule, "sets": [], "dues": {}}
             resolution = resolve_rule_candidates(
                 rule,
                 reviewed_card,
                 config,
-                drop_trigger_card=False,
                 apply_cap=False,
             )
-            if resolution.error or not resolution.card_ids:
+            # A lone card is nothing to disperse against; skip it here rather
+            # than emitting a "single card" line per remotely reviewed card.
+            if resolution.error or len(resolution.card_ids) <= 1:
                 continue
             by_rule[rule_guid]["sets"].append(set(resolution.card_ids))
+            by_rule[rule_guid]["dues"].update(resolution.due_by_id)
 
     for entry in by_rule.values():
         rule: RelatedRule = entry["rule"]
         sets: list[set[int]] = entry["sets"]
+        due_by_id: dict[int, int] = entry["dues"]
         if not sets:
             continue
         grouped = group_overlapping_sets(sets) if config.dedupe_sync_groups else sets
         for group in grouped:
-            group_ids = dedupe_preserve_order(list(group))
-            capped_ids, capped_count = cap_card_ids(group_ids, _rule_cap(rule, config))
+            group_ids = sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid))
+            capped_ids, capped_count = cap_card_ids(
+                group_ids, _rule_cap(rule, config), due_by_id
+            )
             if len(capped_ids) <= 1:
                 messages.append(
                     summarize_outcome(_rule_name(rule), len(group_ids), 0, capped_count, 0, "skipped(empty or single card)")
