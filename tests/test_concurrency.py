@@ -151,6 +151,31 @@ class MemoryBudgetTests(MemoryStubTestCase):
         self.assertIsNone(conc.memory_budget())
 
 
+class MemoryLimitConfigTests(MemoryStubTestCase):
+    def test_a_numeric_memory_limit_is_interpreted_as_megabytes(self):
+        self.assertEqual(
+            conc.configured_memory_limit_bytes({"memory_limit": 900}, 32 * GB), 900 * MB
+        )
+
+    def test_a_percent_memory_limit_is_interpreted_as_a_share_of_total_ram(self):
+        self.assertEqual(
+            conc.configured_memory_limit_bytes({"memory_limit": "12.5%"}, 32 * GB), 4 * GB
+        )
+
+    def test_percent_limits_need_total_memory_to_be_known(self):
+        self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": "25%"}, 0), 0)
+
+    def test_invalid_limits_are_treated_as_disabled(self):
+        self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": "oops"}, 32 * GB), 0)
+        self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": "0%"}, 32 * GB), 0)
+        self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": -1}, 32 * GB), 0)
+
+    def test_invalid_limits_are_logged(self):
+        with mock.patch.object(conc.logger, "warning") as warning:
+            self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": "oops"}, 32 * GB), 0)
+        self.assertTrue(warning.called)
+
+
 class MaxConcurrencyTests(MemoryStubTestCase):
     def test_the_ceiling_is_the_budget_divided_by_what_a_slot_costs(self):
         self.memory.total = 8 * GB
@@ -670,10 +695,19 @@ class GateAdaptationTests(GateTestCase):
         self.assertEqual(gate.limit, 8)
 
     async def test_the_limit_halves_when_the_process_passes_a_configured_memory_limit(self):
-        gate = self.make_gate(config={"memory_limit_mb": 900})
+        gate = self.make_gate(config={"memory_limit": 900})
         gate.limit, gate.max_limit = 16, 256
         gate.in_flight = gate.limit
         self.memory.rss = 1000 * MB
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 8)
+
+    async def test_the_limit_halves_when_the_process_passes_a_percent_memory_limit(self):
+        self.memory.total = 32 * GB
+        gate = self.make_gate(config={"memory_limit": "10%"})
+        gate.limit, gate.max_limit = 16, 256
+        gate.in_flight = gate.limit
+        self.memory.rss = int(3.3 * GB)
         await gate._adapt_once()
         self.assertEqual(gate.limit, 8)
 
@@ -694,7 +728,7 @@ class GateAdaptationTests(GateTestCase):
         actually fall is checked by
         test_process_memory_reports_current_usage_not_a_high_water_mark.
         """
-        gate = self.make_gate(config={"memory_limit_mb": 900})
+        gate = self.make_gate(config={"memory_limit": 900})
         gate.limit, gate.max_limit = 16, 256
         gate.in_flight = gate.limit
 

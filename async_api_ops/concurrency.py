@@ -213,7 +213,7 @@ def _macos_process_memory() -> Optional[int]:
 
     This used to read resource.getrusage().ru_maxrss, which is a high-water mark: it never
     falls, and both callers of process_memory() need it to. The pressure response in
-    _adapt_once would latch on once a configured memory_limit_mb had been crossed even
+    _adapt_once would latch on once a configured memory_limit had been crossed even
     momentarily, halving concurrency every two seconds down to 1 for the life of the process,
     and MemoryEstimator would re-baseline each window from a value that only rises, so it
     measured no growth and never learned what an op costs.
@@ -275,6 +275,60 @@ def format_bytes(value: Optional[int]) -> str:
     if value >= 1024 * MB:
         return f"{value / (1024 * MB):.1f} GB"
     return f"{value / MB:.0f} MB"
+
+
+def configured_memory_limit_bytes(config: Optional[dict], total_memory: int) -> int:
+    """Configured RSS hard cap in bytes.
+
+    `memory_limit` accepts either an MB quantity (number) or a percentage string
+    like "25%" of total RAM.
+    """
+    config = config or {}
+    value = config.get("memory_limit", 0)
+
+    def warn_invalid(reason: str) -> None:
+        logger.warning(
+            "Ignoring invalid memory_limit (%r): %s. Expected a positive MB number"
+            " or a percentage string like '25%%'.",
+            value,
+            reason,
+        )
+
+    # bool is a subclass of int; treating true as 1 MB would be surprising.
+    if isinstance(value, bool):
+        warn_invalid("booleans are not supported")
+        return 0
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        if text.endswith("%"):
+            if total_memory <= 0:
+                warn_invalid("total RAM is unknown, so percentage limits cannot be resolved")
+                return 0
+            try:
+                percent = float(text[:-1].strip())
+            except ValueError:
+                warn_invalid("could not parse percentage")
+                return 0
+            if percent <= 0:
+                warn_invalid("percentage must be greater than 0")
+                return 0
+            return int(total_memory * (percent / 100.0))
+        try:
+            value = float(text)
+        except ValueError:
+            warn_invalid("could not parse MB value")
+            return 0
+
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value * MB)
+
+    if value != 0:
+        warn_invalid("MB value must be greater than 0")
+
+    return 0
 
 
 # --- The gate ----------------------------------------------------------------------------
@@ -594,11 +648,9 @@ class ConcurrencyGate:
         on_ceiling_changed: Optional[Callable[[int], None]] = None,
     ):
         config = config or {}
-        memory_limit_mb = int(config.get("memory_limit_mb", 0) or 0)
-
         total, available = system_memory() or (0, 0)
         self.total_memory = total
-        self.memory_limit = memory_limit_mb * MB if memory_limit_mb > 0 else 0
+        self.memory_limit = configured_memory_limit_bytes(config, total)
         self.reserve = memory_reserve(total) if total else 0
         # A user-set ceiling the gate must never grow past, even after re-measuring
         self.configured_max = int(config.get("max_concurrent_requests", 0) or 0)

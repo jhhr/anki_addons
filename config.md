@@ -84,9 +84,9 @@ costing more than about 8 MB per task are limited by memory rather than by the b
   what it will get, and a small one holds a device below what its free RAM would otherwise permit.
   Where free memory cannot be probed at all there is nothing to adapt against, and your value is
   used exactly as given (the default there is a static 8).
-- `memory_limit_mb`: Default `0` (automatic — keep at least 512 MB, or 10% of total RAM,
-  free). A value above `0` caps how much memory the Anki process may use before the addon starts
-  backing off.
+- `memory_limit`: Default `0` (disabled). Set a number for MB (for example `900`) or a percent
+  string of total RAM (for example `"15%"`). Once the Anki process RSS passes that cap, the addon
+  starts backing off concurrency. A value of `0` leaves this hard cap off.
 
 The progress dialog shows the current limit, free memory, and the measured cost per task once a
 window has completed.

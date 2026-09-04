@@ -34,7 +34,7 @@
   "ignore_current_word_lists": false,
   "replace_existing_matched_words": false,
   "max_concurrent_requests": 0,
-  "memory_limit_mb": 0,
+  "memory_limit": 0,
   "max_request_retries": 5,
   "max_retry_wait_seconds": 120,
   "request_timeout": 180,
