@@ -63,6 +63,9 @@ UNNAMED_RULE_LABEL = "New rule"
 DIALOG_HEIGHT_FRACTION = 0.95
 DIALOG_EDGE_MARGIN_PX = 8
 
+# Gap between the reordering buttons and the add/save/delete ones in the footer.
+FOOTER_GROUP_SPACING_PX = 24
+
 # The rule list only ever holds short names, so it is capped at whichever is
 # narrower: room for this many characters, or this fraction of the dialog.
 RULE_LIST_CHARS = 50
@@ -87,12 +90,36 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
     """
 
     def __init__(self, parent=None):
-        footer = QHBoxLayout()
+        # Every button that acts on a rule sits in the footer, outside the
+        # scroll area: a long query scrolls the editor, and Save has to stay
+        # reachable without scrolling back down for it. The message explaining
+        # a disabled Save belongs next to it, for the same reason.
+        self.move_up_btn = QPushButton("Move up")
+        self.move_down_btn = QPushButton("Move down")
+        self.new_btn = QPushButton("New rule")
+        self.save_rule_btn = QPushButton("Save rule")
+        self.remove_rule_btn = QPushButton("Delete rule")
         self.save_all_btn = QPushButton("Save")
         self.cancel_btn = QPushButton("Cancel")
-        footer.addStretch(1)
-        footer.addWidget(self.save_all_btn)
-        footer.addWidget(self.cancel_btn)
+
+        self.validation_label = QLabel()
+        self.validation_label.setWordWrap(True)
+        self.validation_label.setStyleSheet("color: #d9534f;")
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.move_up_btn)
+        button_row.addWidget(self.move_down_btn)
+        button_row.addSpacing(FOOTER_GROUP_SPACING_PX)
+        button_row.addWidget(self.new_btn)
+        button_row.addWidget(self.save_rule_btn)
+        button_row.addWidget(self.remove_rule_btn)
+        button_row.addStretch(1)
+        button_row.addWidget(self.save_all_btn)
+        button_row.addWidget(self.cancel_btn)
+
+        footer = QVBoxLayout()
+        footer.addWidget(self.validation_label)
+        footer.addLayout(button_row)
 
         # ScrollableQDialog's own sizing is 60% of the screen width, which is
         # narrower than this editor needs; size it ourselves instead.
@@ -141,8 +168,8 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         split = QHBoxLayout()
         root.addLayout(split)
 
-        # Left: rule list + ordering controls. Given no stretch, so it takes
-        # only the width _apply_rule_list_width allows it.
+        # Left: the rule list. Given no stretch, so it takes only the width
+        # _apply_rule_list_width allows it.
         self.left_box = QWidget(self)
         left = QVBoxLayout(self.left_box)
         left.setContentsMargins(0, 0, 0, 0)
@@ -151,13 +178,6 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         left.addWidget(QLabel("Rules"))
         self.rule_list = QListWidget(self)
         left.addWidget(self.rule_list)
-
-        order_row = QHBoxLayout()
-        self.move_up_btn = QPushButton("Move up", self)
-        self.move_down_btn = QPushButton("Move down", self)
-        order_row.addWidget(self.move_up_btn)
-        order_row.addWidget(self.move_down_btn)
-        left.addLayout(order_row)
 
         # Right: editor, taking all the width the rule list does not.
         right_box = QWidget(self)
@@ -224,20 +244,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         form.addRow(self.query_code)
 
         right.addWidget(self.editor)
-
-        self.validation_label = QLabel(self)
-        self.validation_label.setWordWrap(True)
-        self.validation_label.setStyleSheet("color: #d9534f;")
-        right.addWidget(self.validation_label)
-
-        action_row = QHBoxLayout()
-        self.new_btn = QPushButton("New rule", self)
-        self.save_rule_btn = QPushButton("Save rule", self)
-        self.remove_rule_btn = QPushButton("Delete rule", self)
-        action_row.addWidget(self.new_btn)
-        action_row.addWidget(self.save_rule_btn)
-        action_row.addWidget(self.remove_rule_btn)
-        right.addLayout(action_row)
+        right.addStretch(1)
 
         self.rule_list.currentRowChanged.connect(self._on_rule_selected)
         self.move_up_btn.clicked.connect(self._move_up)
