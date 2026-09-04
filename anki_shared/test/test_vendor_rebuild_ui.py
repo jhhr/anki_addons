@@ -86,6 +86,21 @@ class TestStartupOffer:
         assert added == [("/addon", "Test Addon")]
 
 
+class TestLogging:
+    def test_the_module_logger_has_a_handler_of_its_own(self):
+        """Without one, logging's last resort writes to stderr and Anki reports a crash.
+
+        Everything this module logs is a condition it has already put in a dialog, so the
+        stderr copy was a second and scarier report of something that had been handled.
+        """
+        import logging
+
+        assert any(
+            isinstance(handler, logging.NullHandler)
+            for handler in vendor_rebuild_ui.logger.handlers
+        )
+
+
 class TestOnDemand:
     def test_a_healthy_install_can_still_ask_for_the_compiled_half(self, ui):
         vendor_rebuild_ui._rebuild_on_demand("/addon", "Test Addon")

@@ -4,7 +4,10 @@
 result, which stays the fast path. What it cannot do is follow Anki's Python: the launcher
 updates the interpreter independently of any addon, and a tree built for 3.13 is dead weight
 on 3.14 - silently, since most packages carrying a compiled half fall back to pure Python
-rather than raising. `vendor_path.vendor_health` notices; this puts it right.
+rather than raising. Nor is the drift only forwards: a pip-installed Anki (the `(ao)` builds)
+runs on whatever Python the user already had, which here was 3.10. `vendor_path.vendor_health`
+notices either way; this puts it right, using requirements.txt's python_full_version markers to
+land on versions that actually install on the interpreter doing the installing.
 
 The result lands in `<addon>/user_files/lib`, because Anki sends the whole addon directory to
 the trash on every update and restores only `user_files` from a backup.
@@ -47,6 +50,12 @@ _DROP_ENTRIES = ("bin", "Scripts", "__pycache__")
 # distributions is a different matter. This is only here so a wedged pip cannot hold the
 # progress dialog open for the rest of the session.
 _TIMEOUT_SECONDS = 900
+
+# How much of pip's output to put in the failure dialog. The line cap is the load-bearing
+# one: pip answers an unsatisfiable pin by listing every release of the package, which for
+# rapidfuzz is two thousand characters on one line, and a box sized to fit runs off screen.
+_MESSAGE_LINES = 5
+_MESSAGE_LINE_CHARS = 200
 
 
 def can_rebuild() -> Optional[str]:
@@ -205,7 +214,12 @@ def _run(command: list[str], timeout: int) -> "subprocess.CompletedProcess[str]"
 
 
 def _failure_message(result: "subprocess.CompletedProcess[str]") -> str:
-    tail = (result.stderr or result.stdout or "").strip().splitlines()[-5:]
+    """The tail of pip's output, trimmed to something a message box can show."""
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    tail = [
+        line if len(line) <= _MESSAGE_LINE_CHARS else line[:_MESSAGE_LINE_CHARS] + "..."
+        for line in lines[-_MESSAGE_LINES:]
+    ]
     return f"pip exited with {result.returncode}:\n" + ("\n".join(tail) or "no output")
 
 

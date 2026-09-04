@@ -39,6 +39,13 @@ from .vendor_rebuild import (
 )
 
 logger = logging.getLogger(__name__)
+# Anki turns anything written to stderr into an "an error occurred" report, and logging's
+# last-resort handler writes there whenever a record finds no handler anywhere up the chain -
+# which is exactly the state at startup, before the addon attaches a file handler of its own.
+# Everything logged in this module already has a dialog, so the stderr copy was a second,
+# scarier report of something that had been handled. A NullHandler is enough to stop it, and
+# records still reach the addon's real handlers whenever it has any.
+logger.addHandler(logging.NullHandler())
 
 _PROGRESS_LABEL = "Rebuilding helper packages..."
 

@@ -119,6 +119,28 @@ class TestRebuildLibs:
         assert vendor_path.vendor_health(str(tmp_path)) is None
 
 
+class TestFailureMessage:
+    def test_a_very_long_pip_line_is_trimmed(self):
+        """pip answers an unsatisfiable pin with every release of the package on one line."""
+        versions = ", ".join(f"3.{n}.0" for n in range(200))
+        result = subprocess.CompletedProcess(
+            [], 1, "", f"ERROR: Could not find a version (from versions: {versions})"
+        )
+        message = vendor_rebuild._failure_message(result)
+        assert max(len(line) for line in message.splitlines()) < 250
+        assert "Could not find a version" in message
+
+    def test_only_the_tail_is_kept(self):
+        lines = "\n".join(f"line {n}" for n in range(50))
+        result = subprocess.CompletedProcess([], 1, "", lines)
+        message = vendor_rebuild._failure_message(result)
+        assert "line 49" in message and "line 40" not in message
+
+    def test_silent_failure_still_says_something(self):
+        message = vendor_rebuild._failure_message(subprocess.CompletedProcess([], 2, "", ""))
+        assert "no output" in message and "2" in message
+
+
 class TestNotAskingTwice:
     def test_a_fresh_install_is_due(self, tmp_path):
         assert vendor_rebuild.prompt_is_due(str(tmp_path))

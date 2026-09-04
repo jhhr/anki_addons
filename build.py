@@ -242,6 +242,18 @@ PRIMARY_PLATFORM = "win_amd64"
 # one falls back to pure Python rather than raising.
 VENDOR_PYTHON_VERSION = "3.13"
 
+# The floor the pins have to stay valid down to, which is not the same number. The shipped
+# lib/ is resolved for VENDOR_PYTHON_VERSION, but the *runtime* rebuild re-resolves the same
+# file with whatever Python the user's Anki has - and there are Ankis on 3.10 (the pip-installed
+# `(ao)` builds run on the system Python). Compiled against 3.13 alone, requirements.txt pins
+# rapidfuzz 3.14.6, which requires >=3.11, and the rebuild dies there. Compiled with this floor,
+# uv forks the resolution and emits `; python_full_version` markers, so each Python gets the
+# newest version that supports it and the >=3.11 branch is unchanged.
+#
+# 3.9 because that is aqt's own Requires-Python: no Anki runs on less, so nothing is gained by
+# resolving further back.
+VENDOR_PYTHON_FLOOR = "3.9"
+
 VENDOR_MANIFEST = ".vendored.json"
 # The direct dependencies, and the fully pinned set compiled from them. requirements.txt is
 # the only one either half reads: `vendor` resolves it here, and the addon re-resolves it on
@@ -249,12 +261,16 @@ VENDOR_MANIFEST = ".vendored.json"
 REQUIREMENTS_IN = "requirements.in"
 REQUIREMENTS_TXT = "requirements.txt"
 REQUIREMENTS_HEADER = """# Compiled from requirements.in by build.py vendor; do not edit by hand.
-#    uv pip compile requirements.in --universal --python-version {version} -o requirements.txt
+#    uv pip compile requirements.in --universal --python-version {floor} -o requirements.txt
 #
 # Pinned because `build.py vendor` is no longer the only thing that reads it: the addon
 # rebuilds lib/ on the user's own machine when the shipped one does not fit their Python
 # (anki_shared/utils/vendor_rebuild.py). Unpinned, two users rebuilding a year apart would
 # get different versions, and a breaking release would land on them and not on the developer.
+#
+# The `python_full_version` markers are why the floor above is not the {version} lib/ itself is
+# built for: that rebuild runs on the user's Python, which can be older, and a single pin for
+# the newest version would simply not install there.
 """
 # uv's own bookkeeping and console scripts; an addon can never run either.
 VENDOR_SKIP_ENTRIES = {"bin", ".lock"}
@@ -313,10 +329,11 @@ def compile_requirements(addon: Addon, uv: str) -> Path:
             # Named relative to the addon, and run from there: uv writes the input's path
             # into its `# via` comments, and an absolute one would differ per machine.
             uv, "pip", "compile", REQUIREMENTS_IN,
-            # Without this uv pins for the machine it runs on, and the result would be a lock
-            # that only describes one of the five platforms lib/ is built for.
+            # Without this uv pins for the machine it runs on, and the result would be a
+            # lock describing one of the five platforms and one Python version. It is also
+            # what lets the resolution fork on python_full_version; see VENDOR_PYTHON_FLOOR.
             "--universal",
-            "--python-version", VENDOR_PYTHON_VERSION,
+            "--python-version", VENDOR_PYTHON_FLOOR,
             "--quiet",
             "-o", str(scratch),
         ],
@@ -330,7 +347,9 @@ def compile_requirements(addon: Addon, uv: str) -> Path:
         line for line in scratch.read_text("utf-8").splitlines() if not line.startswith("#")
     ]
     compiled.write_text(
-        REQUIREMENTS_HEADER.format(version=VENDOR_PYTHON_VERSION)
+        REQUIREMENTS_HEADER.format(
+            version=VENDOR_PYTHON_VERSION, floor=VENDOR_PYTHON_FLOOR
+        )
         + "\n".join(body).strip("\n")
         + "\n",
         "utf-8",
