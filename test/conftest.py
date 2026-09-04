@@ -15,6 +15,7 @@ for _mod_name in [
     "anki.cards",
     "anki.notes",
     "anki.consts",
+    "anki.models",
     "aqt",
 ]:
     sys.modules.setdefault(_mod_name, MagicMock())

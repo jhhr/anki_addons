@@ -235,7 +235,9 @@ class _ReadOnlyCard:
         return f"<_ReadOnlyCard id={card_id}>"
 
 
-def execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
+def execute_code_core(
+    code: str, note: Note, extra_globals: Optional[dict] = None
+) -> Tuple[Any, Optional[str]]:
     """Compile and run user-provided code in a restricted namespace.
 
     The code is wrapped in a function body so that ``return`` statements work
@@ -246,6 +248,9 @@ def execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
         ``return``).  ``{{field}}`` markers have already been interpolated.
     :param note: The current source note, available as ``note`` inside the
         code.
+    :param extra_globals: Extra names to expose inside the code, for callers
+        whose context holds more than a note — the card being reviewed, say.
+        Applied last, so a caller may also replace a standard name.
     :return: ``(raw_result, error_message)`` — *error_message* is ``None``
         on success.  *raw_result* is ``None`` when the code returns nothing or
         when an error occurred.
@@ -278,6 +283,8 @@ def execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
         "cards": [_ReadOnlyCard(c, note_type) for c in note_cards],
         "get_card_last_reps": get_card_last_reps,
     }
+    if extra_globals:
+        exec_globals.update(extra_globals)
 
     try:
         compiled = compile(wrapped, "<copy_anywhere_code>", "exec")
@@ -315,18 +322,21 @@ def execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
     return exec_globals.get("_result", None), None
 
 
-def execute_code_for_field(code: str, note: Note) -> Tuple[Union[str, None], Optional[str]]:
+def execute_code_for_field(
+    code: str, note: Note, extra_globals: Optional[dict] = None
+) -> Tuple[Union[str, None], Optional[str]]:
     """Execute user-provided Python code expected to return a single string.
 
     :param code: The Python code to run (function body, may include
         ``return``).  ``{{field}}`` markers have already been interpolated.
     :param note: The current source note, available as ``note`` inside the
         code.
+    :param extra_globals: Extra names to expose inside the code.
     :return: ``(result_string|None, error_message)`` — *error_message* is
         ``None`` on success.  ``None`` result indicates no return value or an
         error.
     """
-    result, error = execute_code_core(code, note)
+    result, error = execute_code_core(code, note, extra_globals)
     if error:
         return None, error
     if result is None:
