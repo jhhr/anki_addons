@@ -12,6 +12,7 @@ from aqt.qt import QAction, qconnect, QMenu
 from .configuration import Config, run_on_configuration_change
 from .ease import init_ease_adjust_review_hook
 from .ease.auto_ease_factor import adjust_ease
+from .ease.fsrs_ops import adjust_fsrs_revlog
 from .ease.export import export_ease_factors, import_ease_factors
 from .schedule import init_schedule_review_hook
 from .schedule.advance import advance
@@ -145,7 +146,9 @@ def adjust_ease_recent(did):
 
 
 menu_adjust_ease = build_action(adjust_ease, "Adjust ease factors in all decks")
+menu_adjust_fsrs = build_action(adjust_fsrs_revlog, "Adjust fsrs revlog for all cards (FSRS only)")
 add_action_to_gear(adjust_ease, lambda: "Adjust ease factor for all cards")
+add_action_to_gear(adjust_fsrs_revlog, lambda: "Adjust fsrs revlog for all cards (FSRS only)")
 menu_adjust_ease_recent = build_action(
     adjust_ease_recent,
     f"Adjust ease factors for cards reviewed in the last {config.days_to_reschedule} days",
@@ -172,6 +175,7 @@ menu_for_helper.addAction(menu_disperse_siblings)
 menu_for_helper.addSeparator()
 menu_for_helper.addAction(menu_adjust_ease)
 menu_for_helper.addAction(menu_adjust_ease_recent)
+menu_for_helper.addAction(menu_adjust_fsrs)
 
 menu_apply_free_days = build_action(free_days, "Apply free days now")
 
@@ -220,6 +224,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     custom_scheduler_menu = menu.addMenu("Custom Scheduler")
     postpone_action = QAction("Postpone", browser)
     adjust_ease_action = QAction("Adjust Ease", browser)
+    adjust_fsrs_action = QAction("Adjust FSRS Revlog", browser)
     qconnect(
         postpone_action.triggered,
         lambda: postpone(card_ids=browser.selectedNotesAsCards(), parent=browser),
@@ -228,8 +233,13 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         adjust_ease_action.triggered,
         lambda: adjust_ease(card_ids=browser.selectedNotesAsCards(), parent=browser),
     )
+    qconnect(
+        adjust_fsrs_action.triggered,
+        lambda: adjust_fsrs_revlog(card_ids=browser.selectedNotesAsCards(), parent=browser),
+    )
     custom_scheduler_menu.addAction(postpone_action)
     custom_scheduler_menu.addAction(adjust_ease_action)
+    custom_scheduler_menu.addAction(adjust_fsrs_action)
 
 
 browser_will_show_context_menu.append(on_browser_will_show_context_menu)
