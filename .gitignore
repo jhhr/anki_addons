@@ -10,6 +10,10 @@ __pycache__/
 # inside the junction target and must stay per-device.
 meta.json
 
-.idea/
-.vscode/
+# Scoped to the repo root so that the addons' own .gitignore files keep control
+# of their editor dirs (copy_anywhere tracks a .vscode/launch.json).
+/.idea/
+/.vscode/
+
 .pytest_cache/
+.mypy_cache/

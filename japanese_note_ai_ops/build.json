@@ -1,0 +1,11 @@
+{
+  "package": "simple_anki_ai_prompts",
+  "name": "Simple Anki AI Prompts",
+  "dev_dir_name": "simple_anki_ai_prompts",
+  "human_version": "1.0.0",
+  "homepage": "https://github.com/jhhr/anki_addons",
+  "shared": [
+    "jp_text_processing"
+  ],
+  "exclude": []
+}

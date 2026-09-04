@@ -1,0 +1,9 @@
+{
+  "package": "anki_desired_retention",
+  "name": "Desired Retention in Card Stats",
+  "dev_dir_name": "anki_desired_retention",
+  "human_version": "1.0.0",
+  "homepage": "https://github.com/jhhr/anki_addons",
+  "shared": [],
+  "exclude": []
+}
