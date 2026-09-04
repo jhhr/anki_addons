@@ -1344,11 +1344,11 @@ async def run_plans_rolling(
     into. Recomputing the budget on every refill is what lets a raised limit take effect at
     once rather than at the next boundary.
 
-    The first pass is still a barrier, because the memory estimator needs a window that both
-    starts and ends with nothing in flight to tell the window's own cost apart from memory the
-    run has accumulated. It is also much the cheapest pass to pay it on: the limit is still at
-    its starting value, so the pass is a fraction of the size a window reaches later. After it
-    the run rolls, and the adapt loop's memory-pressure response is what holds the limit down.
+    Nothing is a barrier any more. The first pass used to be one, because the memory estimator
+    measured RSS growth across a window and needed that window to both start and end with
+    nothing in flight to tell its own cost apart from memory the run had accumulated. The
+    estimator now fits memory against the live task count instead, which separates the two
+    without needing a moment of quiet - so the driver only has to keep reporting that count.
 
     Shared per-run state (word locks, generated meanings) lives in the caller's closure and is
     unaffected by which plans happen to be in flight together.
@@ -1363,19 +1363,13 @@ async def run_plans_rolling(
     live_cost = 0.0
     index = 0
     cancelled = False
-    # The first pass is the measured one; see the docstring
-    measuring = True
-    measured_api_tasks = 0
-
-    # Nothing is in flight here, so this is a clean baseline to measure that pass against
-    gate.begin_window()
 
     done_queue: "asyncio.Queue[asyncio.Task]" = asyncio.Queue()
     cancel_manager = CancelManager(live, cancel_state, progress_updater=progress_updater)
 
     def fill() -> None:
         """Start plans until the budget is spent or there are none left."""
-        nonlocal index, live_cost, measured_api_tasks
+        nonlocal index, live_cost
         budget = max(1, gate.limit * TASK_QUEUE_DEPTH)
         # Always start at least one plan, however many tasks it turns out to want, so a note
         # costing more than the whole budget cannot stall the run
@@ -1397,7 +1391,6 @@ async def run_plans_rolling(
                 live[task] = share
                 task.add_done_callback(done_queue.put_nowait)
             live_cost += cost
-            measured_api_tasks += plan.task_count
 
     def stop_for_cancel() -> None:
         """Unwind the run: cancel whatever is live and let go of everything queued.
@@ -1422,17 +1415,12 @@ async def run_plans_rolling(
                 cancelled = True
                 break
 
-            # While measuring, nothing new starts until the pass has drained
-            if not (measuring and live):
-                fill()
-                if measuring:
-                    # The API tasks are alive from here, whether or not they hold a gate slot
-                    # yet, and each holds its note and prompt. That count is what the pass's
-                    # memory growth has to be divided by to get what one task costs. Not
-                    # len(live): spawn() also creates per-word-list and per-note bookkeeping
-                    # tasks, which hold no prompt and would only dilute the average.
-                    gate.note_window_tasks(measured_api_tasks)
-                    progress_updater.update_progress()
+            fill()
+            # The API tasks are alive from here, whether or not they hold a gate slot yet, and
+            # each holds its note and prompt. That count is what the estimator fits memory
+            # against. live_cost and not len(live): spawn() also creates per-word-list and
+            # per-note bookkeeping tasks, which hold no prompt and would only dilute it.
+            gate.note_live_tasks(live_cost)
             if not live:
                 # Plans left over with nothing running means fill() stopped early, which it
                 # only does for a cancel that arrived while it was starting them
@@ -1463,11 +1451,9 @@ async def run_plans_rolling(
                 cancelled = True
                 break
 
-            if measuring and not live:
-                # Fold the pass into what we know an op of this kind costs, which may move the
-                # ceiling; the gate may also have resized under memory pressure while it ran
-                gate.end_window()
-                measuring = False
+            # Reported again now that the finished tasks have let their notes and prompts go,
+            # so the fit sees the count come down as well as go up
+            gate.note_live_tasks(live_cost)
     finally:
         cancel_manager.mark_work_complete()
         if not cancel_manager.monitor_task.done():

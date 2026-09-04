@@ -107,23 +107,15 @@ class FakeGate:
 
     def __init__(self, limit: int = 4):
         self.limit = limit
-        self.begun = 0
-        self.ended = 0
-        self.window_tasks: "list[int]" = []
+        self.live_counts: "list[float]" = []
         self.aborted = False
 
     @property
     def budget(self) -> int:
         return self.limit * DEPTH
 
-    def begin_window(self) -> None:
-        self.begun += 1
-
-    def note_window_tasks(self, count: int) -> None:
-        self.window_tasks.append(count)
-
-    def end_window(self) -> None:
-        self.ended += 1
+    def note_live_tasks(self, count: float) -> None:
+        self.live_counts.append(count)
 
     def abort(self) -> None:
         self.aborted = True
@@ -159,11 +151,15 @@ class RollingDriverTest(unittest.TestCase):
             )
         )
 
-    async def past_the_first_pass(self, work: Workload, gate: FakeGate) -> "asyncio.Task":
-        """Start the run and let the measured barrier pass complete."""
+    async def at_full_budget(self, work: Workload, gate: FakeGate) -> "asyncio.Task":
+        """Start the run and let it fill the budget.
+
+        Used to be `past_the_first_pass`, which had to release the whole of that pass and wait
+        for it: the first pass was a barrier so the memory estimator could measure it against a
+        moment with nothing in flight. The estimator fits against the live task count now and
+        needs no such moment, so a started run is at its budget immediately.
+        """
         runner = self.start(work, gate)
-        await settle()
-        work.release_all()
         await settle()
         return runner
 
@@ -181,8 +177,13 @@ class RollingDriverTest(unittest.TestCase):
 
     # --- the barrier and the rolling refill -----------------------------------------------
 
-    def test_the_first_pass_is_a_barrier(self):
-        """The estimator needs a pass that both starts and ends with nothing in flight."""
+    def test_the_first_pass_is_not_a_barrier(self):
+        """It used to be one, so the RSS estimator got a window with nothing in flight.
+
+        The estimator fits memory against the live task count instead, which tells a task's
+        cost apart from the run's accumulation without needing a quiet moment - so the first
+        pass rolls like every other, and the run stops paying a serialised pass for it.
+        """
 
         async def main():
             work, gate = Workload(200), FakeGate(limit=4)
@@ -190,17 +191,12 @@ class RollingDriverTest(unittest.TestCase):
             await settle()
             self.assertEqual(work.started, gate.budget)
 
-            # All but one released: a rolling refill would top the budget back up, but the
-            # measured pass must wait for the last of it
+            # Under the barrier this started nothing at all until the last of the pass landed
             work.release(gate.budget - 1)
             await settle()
-            self.assertEqual(work.started, gate.budget)
-            self.assertEqual(gate.ended, 0)
+            self.assertEqual(work.started, gate.budget * 2 - 1)
+            self.assertEqual(work.in_flight, gate.budget)
 
-            work.release_all()
-            await settle()
-            self.assertEqual(gate.ended, 1)
-            self.assertEqual(work.started, gate.budget * 2)
             await self.finish(work, runner)
 
         self.run_async(main())
@@ -210,7 +206,7 @@ class RollingDriverTest(unittest.TestCase):
 
         async def main():
             work, gate = Workload(200), FakeGate(limit=4)
-            runner = await self.past_the_first_pass(work, gate)
+            runner = await self.at_full_budget(work, gate)
             started = work.started
 
             work.release(1)
@@ -232,7 +228,7 @@ class RollingDriverTest(unittest.TestCase):
 
         async def main():
             work, gate = Workload(400), FakeGate(limit=2)
-            runner = await self.past_the_first_pass(work, gate)
+            runner = await self.at_full_budget(work, gate)
             self.assertEqual(work.in_flight, 2 * DEPTH)
 
             gate.limit = 6
@@ -249,7 +245,7 @@ class RollingDriverTest(unittest.TestCase):
 
         async def main():
             work, gate = Workload(400), FakeGate(limit=8)
-            runner = await self.past_the_first_pass(work, gate)
+            runner = await self.at_full_budget(work, gate)
             self.assertEqual(work.in_flight, 8 * DEPTH)
 
             gate.limit = 2
@@ -283,14 +279,34 @@ class RollingDriverTest(unittest.TestCase):
 
     # --- what the plans cost --------------------------------------------------------------
 
-    def test_the_first_pass_is_measured_against_its_api_tasks(self):
+    def test_the_live_api_task_count_is_reported_as_it_moves(self):
+        """What the estimator fits memory against, so it has to rise and fall with the run."""
+
         async def main():
             work, gate = Workload(200), FakeGate(limit=4)
-            runner = await self.past_the_first_pass(work, gate)
-            self.assertEqual(gate.begun, 1)
-            self.assertEqual(gate.ended, 1)
-            # Measured before any of the pass finished, so it saw the whole of it
-            self.assertEqual(gate.window_tasks, [gate.budget])
+            runner = await self.at_full_budget(work, gate)
+            self.assertEqual(gate.live_counts[-1], gate.budget)
+
+            work.release(gate.budget)
+            await settle()
+            # Reported after the completions were taken off and again after the refill, so the
+            # fit sees the count come down as well as go back up
+            self.assertLess(min(gate.live_counts), gate.budget)
+            self.assertEqual(gate.live_counts[-1], gate.budget)
+            await self.finish(work, runner)
+
+        self.run_async(main())
+
+    def test_the_reported_count_is_api_tasks_not_task_objects(self):
+        """A plan's bookkeeping tasks hold no prompt and would only dilute the figure."""
+
+        async def main():
+            work, gate = Workload(60, task_count=3, tasks_per_plan=3), FakeGate(limit=2)
+            runner = self.start(work, gate)
+            await settle()
+            # Three plans of three API calls started, spread over nine task objects
+            self.assertEqual(work.started, 9)
+            self.assertEqual(gate.live_counts[-1], 9)
             await self.finish(work, runner)
 
         self.run_async(main())

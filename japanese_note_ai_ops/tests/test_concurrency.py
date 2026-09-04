@@ -51,6 +51,48 @@ class StubMemory:
         return None if self.probe_failed else self.rss
 
 
+class StubTracemalloc:
+    """Stands in for the tracemalloc module, so a test can move the traced total by hand.
+
+    Swapped in for the module rather than for concurrency's traced_memory(), so that probe's
+    own handling of "is anything tracing at all?" is under test too.
+    """
+
+    def __init__(self, current: int = 100 * MB, tracing: bool = False):
+        self.current = current
+        self.tracing = tracing
+        self.starts = 0
+        self.stops = 0
+
+    def is_tracing(self) -> bool:
+        return self.tracing
+
+    def start(self, frames: int = 1) -> None:
+        self.tracing = True
+        self.starts += 1
+
+    def stop(self) -> None:
+        self.tracing = False
+        self.stops += 1
+
+    def get_traced_memory(self):
+        return self.current, self.current
+
+
+class StubClock:
+    """Stands in for the time module. The estimator throttles its probing and stops tracing
+    after a while, and neither should be tested by making a test wait."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 # The real functions, captured once at import. A test that wants one of them back must take
 # it from here rather than reading it off the module, which by then holds a stub.
 REAL_SYSTEM_MEMORY = conc.system_memory
@@ -71,15 +113,35 @@ def restore_memory_probes() -> None:
     conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
 
 
-class MemoryStubTestCase(unittest.TestCase):
-    """Replaces the memory probes and the estimates file for the duration of a test."""
+class MemoryStubs:
+    """Replaces the memory probes, the tracing module, the clock and the estimates file.
 
-    def setUp(self):
+    A mixin because the gate's tests are async and so need a different TestCase underneath,
+    while wanting exactly the same machine stubbed out from under them.
+    """
+
+    def install_stubs(self) -> None:
         self.memory = StubMemory()
         install_memory_stubs(self.memory)
+        self.tracing = StubTracemalloc()
+        self.clock = StubClock()
+        self._real_tracemalloc = conc.tracemalloc
+        self._real_time = conc.time
+        conc.tracemalloc = self.tracing
+        conc.time = self.clock
+
+    def remove_stubs(self) -> None:
+        conc.tracemalloc = self._real_tracemalloc
+        conc.time = self._real_time
+        restore_memory_probes()
+
+
+class MemoryStubTestCase(MemoryStubs, unittest.TestCase):
+    def setUp(self):
+        self.install_stubs()
 
     def tearDown(self):
-        restore_memory_probes()
+        self.remove_stubs()
 
 
 # --- Reading the machine -------------------------------------------------------------------
@@ -268,75 +330,214 @@ class ConcurrencyLimitsTests(MemoryStubTestCase):
 
 
 class MemoryEstimatorTests(MemoryStubTestCase):
-    def measure(self, baseline: int, peak: int, in_flight: int, tasks: int = 0):
-        """Run one window: baseline at the start, `peak` reached with `in_flight` tasks.
+    """What one live task costs, fitted against how many of them are alive.
 
-        `tasks` is the whole window, the queued ones included, as the bulk ops report it.
-        """
+    The measurement this replaced differenced RSS across a window that had to begin and end
+    with nothing in flight, which is why every run serialised its first pass. These cases are
+    mostly about the two things that bought: that memory the run accumulates is separated out
+    rather than charged to the tasks, and that a task count coming back down is information
+    rather than a spoiled window.
+    """
+
+    def feed(self, estimator, points, rss=None):
+        """Sample at each (live tasks, traced bytes) point, a sampling interval apart."""
+        for index, (live, traced) in enumerate(points):
+            self.tracing.current = traced
+            if rss is not None:
+                self.memory.rss = rss(index, live)
+            self.clock.advance(conc.SAMPLE_INTERVAL_SECONDS)
+            estimator.note_live_tasks(live)
+
+    def line(self, per_task, base=100 * MB, counts=None):
+        """A run whose memory is `base` plus `per_task` for every live task."""
+        counts = range(0, 40, 2) if counts is None else counts
+        return [(live, base + per_task * live) for live in counts]
+
+    def measure(self, points, **kwargs):
         estimator = conc.MemoryEstimator("op")
-        self.memory.rss = baseline
-        estimator.begin_window()
-        if tasks:
-            estimator.note_tasks(tasks)
-        self.memory.rss = peak
-        estimator.sample(self.memory.rss, in_flight)
-        return estimator, estimator.end_window()
+        estimator.start()
+        self.feed(estimator, points, **kwargs)
+        return estimator, estimator.refit()
 
-    def test_growth_is_attributed_across_the_tasks_that_caused_it(self):
-        _, per_task = self.measure(baseline=500 * MB, peak=540 * MB, in_flight=10)
-        self.assertEqual(per_task, 4 * MB)
+    # --- the fit --------------------------------------------------------------------------
 
-    def test_the_queued_tasks_are_charged_for_their_own_memory(self):
-        # A window is TASK_QUEUE_DEPTH times the limit in tasks and every one of them holds a
-        # note and a prompt from the moment it is created. Dividing the window's growth by the
-        # ten holding a slot said each task cost four times what it does.
-        _, per_task = self.measure(baseline=500 * MB, peak=540 * MB, in_flight=10, tasks=40)
-        self.assertEqual(per_task, 1 * MB)
+    def test_the_slope_is_what_one_live_task_costs(self):
+        _, per_task = self.measure(self.line(4 * MB))
+        self.assertAlmostEqual(per_task, 4 * MB, delta=1024)
 
-    def test_a_window_smaller_than_the_queue_is_measured_as_it_ran(self):
-        # The last window of a run holds whatever notes were left, not a full queue's worth
-        _, per_task = self.measure(baseline=500 * MB, peak=540 * MB, in_flight=10, tasks=16)
-        self.assertEqual(per_task, 2.5 * MB)
+    def test_memory_the_run_accumulates_is_not_charged_to_the_tasks(self):
+        """The reason there is no barrier any more.
 
-    def test_a_window_never_counts_fewer_tasks_than_ran_at_once(self):
-        # Whatever the caller reports, a task holding a slot is a live task
-        _, per_task = self.measure(baseline=500 * MB, peak=540 * MB, in_flight=10, tasks=4)
-        self.assertEqual(per_task, 4 * MB)
+        A run collects results as it goes, and that memory is never given back. Differencing
+        against a baseline could only tell it apart from per-task cost by taking the baseline
+        at a moment when nothing was in flight. Here it is the intercept: the task count goes
+        up and down while the accumulation only goes up, so the fit separates them.
+        """
+        counts = [4, 20, 36, 8, 28, 12, 32, 16, 24, 40, 6, 30]
+        points = [
+            (live, 100 * MB + 4 * MB * live + 3 * MB * index)
+            for index, live in enumerate(counts)
+        ]
+        _, per_task = self.measure(points)
+        self.assertAlmostEqual(per_task, 4 * MB, delta=MB // 2)
 
-    def test_a_window_that_never_ran_enough_at_once_teaches_nothing(self):
-        # One task's growth says nothing about what running fifty would cost
-        _, per_task = self.measure(baseline=500 * MB, peak=540 * MB, in_flight=1)
+    def test_a_growing_run_is_not_charged_the_memory_it_accumulates_while_growing(self):
+        """The case a fit on task count alone gets wrong, and the reason time is a term too.
+
+        The adapt loop raises the limit as a run settles in, so the live count climbs with the
+        clock - and the memory the run is keeping climbs with it. Against task count alone the
+        two cannot be told apart and the accumulation lands in the per-task figure: on a
+        workload built to have a known answer, that read 1.5x high.
+        """
+        counts, live = [], 8
+        for step in range(60):
+            live = min(80, int(live * 1.06) + 1)
+            # tasks finishing and being replaced, on top of the trend
+            counts.append(live + (4 if step % 2 else -4))
+        points = [
+            (live, 100 * MB + 4 * MB * live + 2 * MB * index)
+            for index, live in enumerate(counts)
+        ]
+        _, per_task = self.measure(points)
+        self.assertAlmostEqual(per_task, 4 * MB, delta=MB // 2)
+
+    def test_a_task_count_that_moves_only_with_the_clock_falls_back_to_one_predictor(self):
+        """Nothing in these samples can say whether memory followed the tasks or the time.
+
+        A single monotone ramp and no jitter, which a real run does not produce - tasks finish
+        at their own pace - but an answer is still better than a division by a determinant of
+        nearly zero.
+        """
+        points = [(live, 100 * MB + 4 * MB * live) for live in range(0, 40, 2)]
+        _, per_task = self.measure(points)
+        self.assertAlmostEqual(per_task, 4 * MB, delta=1024)
+
+    def test_a_task_count_that_comes_back_down_is_a_measurement_not_a_spoiled_window(self):
+        """Under RSS this read as zero growth and taught nothing; traced memory really falls."""
+        points = self.line(4 * MB, counts=[0, 8, 16, 24, 32, 40, 32, 24, 16, 8, 0, 8])
+        _, per_task = self.measure(points)
+        self.assertAlmostEqual(per_task, 4 * MB, delta=1024)
+
+    def test_a_run_whose_memory_does_not_move_teaches_nothing(self):
+        _, per_task = self.measure(self.line(0))
         self.assertIsNone(per_task)
 
-    def test_reused_memory_teaches_nothing(self):
-        # The allocator already held the pages, so RSS did not move
-        _, per_task = self.measure(baseline=500 * MB, peak=500 * MB, in_flight=10)
+    def test_too_few_samples_teach_nothing(self):
+        _, per_task = self.measure(self.line(4 * MB, counts=range(0, 12, 2)))
+        self.assertIsNone(per_task)
+
+    def test_samples_without_spread_teach_nothing(self):
+        """Every reading taken at the same task count is noise divided by nearly nothing."""
+        points = [(8, 100 * MB + index * MB) for index in range(20)]
+        _, per_task = self.measure(points)
         self.assertIsNone(per_task)
 
     def test_an_implausibly_large_measurement_is_clamped(self):
-        _, per_task = self.measure(baseline=0, peak=8 * GB, in_flight=2)
+        _, per_task = self.measure(self.line(512 * MB))
         self.assertEqual(per_task, conc.MAX_PER_TASK_MEMORY)
 
     def test_an_implausibly_small_measurement_is_clamped(self):
         # Otherwise a near-zero cost would divide the budget into a limit of millions
-        _, per_task = self.measure(baseline=500 * MB, peak=500 * MB + 100, in_flight=50)
+        _, per_task = self.measure(self.line(1024))
         self.assertEqual(per_task, conc.MIN_PER_TASK_MEMORY)
 
-    def test_within_a_run_the_largest_window_wins(self):
+    def test_within_a_run_the_largest_fit_wins(self):
         # What has to fit in RAM is the peak, not the average
         estimator = conc.MemoryEstimator("op")
-        self.memory.rss = 500 * MB
-        estimator.begin_window()
-        self.memory.rss = 540 * MB
-        estimator.sample(self.memory.rss, 10)
-        self.assertEqual(estimator.end_window(), 4 * MB)
+        estimator.start()
+        self.feed(estimator, self.line(4 * MB))
+        self.assertAlmostEqual(estimator.refit(), 4 * MB, delta=1024)
 
-        self.memory.rss = 500 * MB
-        estimator.begin_window()
-        self.memory.rss = 510 * MB
-        estimator.sample(self.memory.rss, 10)
-        self.assertIsNone(estimator.end_window(), "a cheaper window must not lower the estimate")
-        self.assertEqual(estimator.measured, 4 * MB)
+        self.feed(estimator, self.line(1 * MB, base=200 * MB))
+        self.assertIsNone(estimator.refit(), "a cheaper stretch must not lower the estimate")
+        self.assertAlmostEqual(estimator.measured, 4 * MB, delta=1024)
+
+    # --- the two series -------------------------------------------------------------------
+
+    def test_rss_measures_it_when_nothing_is_tracing(self):
+        """Old Anki, another addon's tracing turned off - the fit still has a series to use."""
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.tracing.tracing = False
+        self.feed(
+            estimator,
+            self.line(0),
+            rss=lambda index, live: 500 * MB + 4 * MB * live,
+        )
+        self.assertAlmostEqual(estimator.refit(), 4 * MB, delta=1024)
+
+    def test_traced_allocations_win_over_rss(self):
+        """RSS ratchets, so on a warm run it reads high; the traced figure is the honest one."""
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.feed(
+            estimator,
+            self.line(4 * MB),
+            rss=lambda index, live: 500 * MB + 20 * MB * live,
+        )
+        self.assertAlmostEqual(estimator.refit(), 4 * MB, delta=1024)
+
+    def test_a_traced_total_that_does_not_rise_does_not_fall_back_to_rss(self):
+        """RSS would answer with the run's accumulation, which is the thing being excluded."""
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.feed(
+            estimator,
+            self.line(0),
+            rss=lambda index, live: 500 * MB + 20 * MB * live,
+        )
+        self.assertIsNone(estimator.refit())
+
+    # --- tracing lifecycle ----------------------------------------------------------------
+
+    def test_tracing_is_started_and_stopped_again(self):
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.assertTrue(self.tracing.is_tracing())
+        estimator.stop()
+        self.assertFalse(self.tracing.is_tracing())
+        self.assertEqual((self.tracing.starts, self.tracing.stops), (1, 1))
+
+    def test_somebody_elses_tracing_is_read_but_not_taken_over(self):
+        """Another addon, or a developer with a profiler open. Stopping it is not ours to do."""
+        self.tracing.tracing = True
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        estimator.stop()
+        self.assertTrue(self.tracing.is_tracing())
+        self.assertEqual((self.tracing.starts, self.tracing.stops), (0, 0))
+
+    def test_tracing_stops_once_there_has_been_long_enough_to_fit(self):
+        """Tracing charges every allocation in the process; a run should not pay it throughout."""
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.feed(estimator, self.line(4 * MB))
+        estimator.refit()
+        self.assertTrue(self.tracing.is_tracing())
+
+        self.clock.advance(conc.MEASURE_SECONDS)
+        estimator.refit()
+        self.assertFalse(self.tracing.is_tracing())
+
+    def test_sampling_stops_when_measuring_does(self):
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.feed(estimator, self.line(4 * MB))
+        estimator.stop()
+        before = len(estimator._traced)
+        self.feed(estimator, self.line(4 * MB))
+        self.assertEqual(len(estimator._traced), before)
+
+    def test_probing_is_throttled(self):
+        """The driver reports on every completion, which on a fast op is thousands of times."""
+        estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        for live in range(50):
+            self.tracing.current = 100 * MB + 4 * MB * live
+            estimator.note_live_tasks(live)  # no clock advance: all within one interval
+        self.assertEqual(len(estimator._traced), 1)
+
+    # --- what it starts from --------------------------------------------------------------
 
     def test_a_stored_estimate_is_used_until_something_is_measured(self):
         estimator = conc.MemoryEstimator("op", stored=3 * MB)
@@ -348,29 +549,20 @@ class MemoryEstimatorTests(MemoryStubTestCase):
         self.assertEqual(estimator.estimate, conc.DEFAULT_PER_TASK_MEMORY)
         self.assertFalse(estimator.from_measurement)
 
-    def test_end_window_without_a_baseline_teaches_nothing(self):
-        estimator = conc.MemoryEstimator("op")
-        self.assertIsNone(estimator.end_window())
+    def test_refitting_nothing_teaches_nothing(self):
+        self.assertIsNone(conc.MemoryEstimator("op").refit())
 
-    def test_a_window_started_without_a_working_probe_teaches_nothing(self):
-        # Rather than measuring growth against a baseline it never had
+    def test_a_probe_that_fails_for_a_tick_only_costs_that_series_that_sample(self):
+        """psutil can stop answering part way through - a WMI hiccup, a missing /proc."""
         estimator = conc.MemoryEstimator("op")
+        estimator.start()
+        self.feed(estimator, self.line(4 * MB, counts=range(0, 20, 2)))
         self.memory.probe_failed = True
-        estimator.begin_window()
+        self.feed(estimator, self.line(4 * MB, counts=range(20, 40, 2)))
         self.memory.probe_failed = False
-        self.memory.rss = 900 * MB
-        estimator.sample(self.memory.rss, 10)
-        self.assertIsNone(estimator.end_window())
+        self.assertAlmostEqual(estimator.refit(), 4 * MB, delta=1024)
+        self.assertLess(len(estimator._rss), len(estimator._traced))
 
-    def test_a_probe_that_fails_for_one_tick_leaves_the_peak_alone(self):
-        # A missing reading is not a reading of zero
-        estimator = conc.MemoryEstimator("op")
-        self.memory.rss = 500 * MB
-        estimator.begin_window()
-        self.memory.rss = 540 * MB
-        estimator.sample(self.memory.rss, 10)
-        estimator.sample(None, 10)
-        self.assertEqual(estimator.end_window(), 4 * MB)
 
 
 class EstimatesFileTests(MemoryStubTestCase):
@@ -480,15 +672,14 @@ class EstimatesFileTests(MemoryStubTestCase):
 # --- The gate ---------------------------------------------------------------------------------
 
 
-class GateTestCase(unittest.IsolatedAsyncioTestCase):
+class GateTestCase(MemoryStubs, unittest.IsolatedAsyncioTestCase):
     """Async tests against a gate with stubbed memory."""
 
     def setUp(self):
-        self.memory = StubMemory()
-        install_memory_stubs(self.memory)
+        self.install_stubs()
 
     def tearDown(self):
-        restore_memory_probes()
+        self.remove_stubs()
 
     def make_gate(self, limit=None, max_limit=None, config=None):
         # Every gate records the ceilings it reports, so any test can assert on them
@@ -504,19 +695,18 @@ class GateTestCase(unittest.IsolatedAsyncioTestCase):
             gate.max_limit = max_limit
         return gate
 
-    def measure_window(self, gate, baseline, peak, in_flight, tasks=0):
-        """Run one window through the gate, ending with `peak` reached by `in_flight` tasks.
+    def measure_cost(self, gate, per_task, base=100 * MB):
+        """Report a run whose traced memory rises by `per_task` for every live task.
 
-        `tasks` is the whole window as the bulk ops report it, queued ones included; left out,
-        the window is measured as though every task alive was holding a slot.
+        The drivers report the live count on every refill and every batch of completions; this
+        is that, shaped into a straight line so the fit has one answer to find.
         """
-        self.memory.rss = baseline
-        gate.begin_window()
-        if tasks:
-            gate.note_window_tasks(tasks)
-        self.memory.rss = peak
-        gate.estimator.sample(self.memory.rss, in_flight)
-        gate.end_window()
+        gate.estimator.start()
+        for live in range(0, 40, 2):
+            self.tracing.current = int(base + per_task * live)
+            self.clock.advance(conc.SAMPLE_INTERVAL_SECONDS)
+            gate.note_live_tasks(live)
+        gate._apply_estimate()
 
     async def settle(self):
         """Let queued tasks reach their next await."""
@@ -716,49 +906,49 @@ class GateAdaptationTests(GateTestCase):
         await gate._adapt_once()
         self.assertGreater(gate.limit, 8)
 
-    async def test_a_measured_window_can_raise_the_ceiling(self):
+    async def test_a_measurement_can_raise_the_ceiling(self):
         # The op turned out cheaper than the default guess, so more of it fits
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB  # budget = 2GB, so 1MB/task gives a ceiling of 256
         gate = self.make_gate()
         gate.max_limit = 32
 
-        self.measure_window(gate, baseline=500 * MB, peak=504 * MB, in_flight=4)  # 1MB/task
+        self.measure_cost(gate, 1 * MB)
 
         self.assertEqual(gate.max_limit, conc.MAX_AUTO_CONCURRENCY)
 
-    async def test_a_measured_window_can_lower_the_ceiling_and_the_limit_with_it(self):
+    async def test_a_measurement_can_lower_the_ceiling_and_the_limit_with_it(self):
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB  # budget = 2GB
         gate = self.make_gate(limit=200, max_limit=256)
 
         # 128MB over 2 live tasks, so 64MB each and 256MB for a slot and its queue
-        self.measure_window(gate, baseline=500 * MB, peak=628 * MB, in_flight=2)
+        self.measure_cost(gate, 64 * MB)
 
         self.assertEqual(gate.max_limit, 2 * GB // (64 * MB * conc.TASK_QUEUE_DEPTH))
         self.assertLessEqual(gate.limit, gate.max_limit)
 
-    async def test_a_windows_queued_tasks_count_towards_what_one_costs(self):
-        # The same window, now reported in full: the 128MB was 40 tasks' doing, not 2, so a
-        # task costs a fortieth of it and the ceiling lands far higher
+    async def test_the_queued_tasks_count_towards_what_one_costs(self):
+        # The drivers report every task alive, not just the ones holding a slot: the queued
+        # ones hold a note and a prompt too, and charging their memory to the running tasks
+        # would put a task's cost at TASK_QUEUE_DEPTH times what it is.
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB
         gate = self.make_gate(limit=200, max_limit=256)
 
-        self.measure_window(gate, baseline=500 * MB, peak=628 * MB, in_flight=10, tasks=40)
+        self.measure_cost(gate, 4 * MB)
 
-        self.assertEqual(gate.estimator.measured, 3.2 * MB)
-        self.assertEqual(gate.max_limit, int(2 * GB // (3.2 * MB * conc.TASK_QUEUE_DEPTH)))
+        self.assertEqual(gate.estimator.measured, 4 * MB)
+        self.assertEqual(gate.max_limit, 2 * GB // (4 * MB * conc.TASK_QUEUE_DEPTH))
 
     async def test_a_configured_maximum_survives_re_measuring(self):
         gate = self.make_gate(config={"max_concurrent_requests": 10})
-        self.measure_window(gate, baseline=500 * MB, peak=501 * MB, in_flight=50)  # very cheap
+        self.measure_cost(gate, 20 * 1024)  # very cheap
         self.assertEqual(gate.max_limit, 10)
 
-    async def test_a_window_that_measured_nothing_leaves_the_ceiling_alone(self):
+    async def test_a_run_that_measured_nothing_leaves_the_ceiling_alone(self):
         gate = self.make_gate(limit=16, max_limit=64)
-        gate.begin_window()
-        gate.end_window()
+        gate._apply_estimate()
         self.assertEqual(gate.max_limit, 64)
 
     async def test_probes_that_start_failing_mid_run_do_not_break_the_adapt_loop(self):
@@ -779,23 +969,21 @@ class GateAdaptationTests(GateTestCase):
         self.assertLessEqual(gate.limit, gate.max_limit)
         self.assertEqual(gate.available_memory, 0)
 
-    async def test_a_window_whose_memory_is_freed_still_measures_its_peak(self):
-        """What has to fit in RAM is the high-water mark of the window, not where it ended.
-
-        Tasks release their notes and response buffers as they finish, so by the time the last
-        one is done the process has usually given the memory back. Measuring at that point
-        would put the per-task cost at nothing and the ceiling at its maximum.
+    async def test_memory_being_freed_again_is_measured_rather_than_discarded(self):
+        """Tasks let go of their notes and response buffers as they finish, and the traced
+        total falls with them. That is the fit's evidence, not a spoiled measurement: the old
+        RSS difference read the same run as zero growth and threw it away.
         """
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB
         gate = self.make_gate()
+        gate.estimator.start()
 
-        self.memory.rss = 500 * MB
-        gate.begin_window()
-        self.memory.rss = 628 * MB  # 2 tasks at 64MB each, both in flight
-        gate.estimator.sample(self.memory.rss, 2)
-        self.memory.rss = 500 * MB  # both finished and their memory was freed
-        gate.end_window()
+        for live in [0, 8, 16, 24, 32, 40, 32, 24, 16, 8, 0, 8]:
+            self.tracing.current = 500 * MB + 64 * MB * live
+            self.clock.advance(conc.SAMPLE_INTERVAL_SECONDS)
+            gate.note_live_tasks(live)
+        gate._apply_estimate()
 
         self.assertEqual(gate.estimator.measured, 64 * MB)
 
@@ -804,9 +992,9 @@ class CeilingReportingTests(GateTestCase):
     """The connection pool is sized from the ceiling, so it has to hear when the ceiling moves.
 
     set_connection_pool_size runs once at the start of a run, from a ceiling worked out from
-    the starting guess at what a task costs. end_window can move that ceiling after measuring
-    the real cost, and without this the pool keeps the size it was given: every request past it
-    is a fresh TCP and TLS handshake plus a "connection pool is full" warning.
+    the starting guess at what a task costs. Fitting the real cost can move that ceiling, and
+    without this the pool keeps the size it was given: every request past it is a fresh TCP and
+    TLS handshake plus a "connection pool is full" warning.
     """
 
     async def test_a_raised_ceiling_is_reported(self):
@@ -815,7 +1003,7 @@ class CeilingReportingTests(GateTestCase):
         gate = self.make_gate()
         gate.max_limit = 32
 
-        self.measure_window(gate, baseline=500 * MB, peak=504 * MB, in_flight=4)
+        self.measure_cost(gate, 1 * MB)
 
         self.assertEqual(self.reported_ceilings, [conc.MAX_AUTO_CONCURRENCY])
 
@@ -825,14 +1013,13 @@ class CeilingReportingTests(GateTestCase):
         gate = self.make_gate(limit=200, max_limit=256)
 
         # 64MB per live task, so 256MB per slot and its queue
-        self.measure_window(gate, baseline=500 * MB, peak=628 * MB, in_flight=2)
+        self.measure_cost(gate, 64 * MB)
 
         self.assertEqual(self.reported_ceilings, [2 * GB // (64 * MB * conc.TASK_QUEUE_DEPTH)])
 
-    async def test_a_window_that_measured_nothing_reports_nothing(self):
+    async def test_a_run_that_measured_nothing_reports_nothing(self):
         gate = self.make_gate(limit=16, max_limit=64)
-        gate.begin_window()
-        gate.end_window()
+        gate._apply_estimate()
         self.assertEqual(self.reported_ceilings, [])
 
     async def test_a_measurement_that_leaves_the_ceiling_where_it_was_reports_nothing(self):
@@ -843,7 +1030,7 @@ class CeilingReportingTests(GateTestCase):
         gate = self.make_gate()
         self.assertEqual(gate.max_limit, conc.MAX_AUTO_CONCURRENCY)
 
-        self.measure_window(gate, baseline=500 * MB, peak=504 * MB, in_flight=4)
+        self.measure_cost(gate, 1 * MB)
 
         self.assertEqual(gate.max_limit, conc.MAX_AUTO_CONCURRENCY)
         self.assertEqual(self.reported_ceilings, [])
@@ -854,7 +1041,7 @@ class CeilingReportingTests(GateTestCase):
         gate = self.make_gate()
         self.assertFalse(gate.adaptive)
 
-        self.measure_window(gate, baseline=500 * MB, peak=504 * MB, in_flight=4)
+        self.measure_cost(gate, 1 * MB)
 
         self.assertEqual(self.reported_ceilings, [])
 
@@ -863,7 +1050,7 @@ class CeilingReportingTests(GateTestCase):
         self.memory.available = 8 * GB
         gate = conc.ConcurrencyGate({}, op_key="test op")
         gate.max_limit = 32
-        self.measure_window(gate, baseline=500 * MB, peak=504 * MB, in_flight=4)
+        self.measure_cost(gate, 1 * MB)
         self.assertEqual(gate.max_limit, conc.MAX_AUTO_CONCURRENCY)
 
 

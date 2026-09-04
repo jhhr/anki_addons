@@ -20,12 +20,22 @@ now, not a high-water mark. The pressure response and the per-task measurement b
 number to be able to fall - a peak latches the first on and makes the second measure zero
 growth. macOS is where that has actually bitten, when process memory came from
 resource.ru_maxrss. memory_info().rss is current usage; the test named for it is the guard.
+
+RSS turns out to fail that requirement too, just further down. Freed memory goes back to the
+allocator rather than to the OS, so RSS ratchets, and a measurement built on it needed the run
+to arrange a moment with nothing in flight to have any baseline to measure against. The
+per-task cost is therefore measured from tracemalloc, whose total does come back down, and is
+fitted against the live task count rather than differenced against a baseline - so it needs no
+such moment, and the runs no longer serialise their first pass to provide one. RSS is still
+measured alongside it, as the fallback and as the second opinion. See MemoryEstimator.
 """
 
 import asyncio
 import json
 import logging
 import os
+import time
+import tracemalloc
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
@@ -136,6 +146,22 @@ def process_memory() -> Optional[int]:
         return int(_process.memory_info().rss)
     except Exception as e:
         _warn_probe_unavailable("process memory", e)
+        return None
+
+
+def traced_memory() -> Optional[int]:
+    """Bytes of live Python allocations, or None when nothing is tracing them.
+
+    Two counter reads, so it costs nothing to call. The expense of tracemalloc is not here but
+    in the tracing itself, which charges every allocation in the process - which is why the
+    estimator only keeps it on for the first stretch of a run.
+    """
+    if not tracemalloc.is_tracing():
+        return None
+    try:
+        return int(tracemalloc.get_traced_memory()[0])
+    except Exception as e:
+        _warn_probe_unavailable("traced memory", e)
         return None
 
 
@@ -301,8 +327,27 @@ ESTIMATES_VERSION = 2
 # Weight given to a new run's measurement when blending it into the stored value. Low enough
 # that one unusual run doesn't throw the estimate off, high enough to track real changes.
 ESTIMATE_BLEND = 0.4
-# A measurement needs at least this many tasks running concurrently to mean anything
-MIN_SAMPLE_IN_FLIGHT = 2
+# One frame per traced allocation. The estimator only ever reads the total, so a deeper
+# traceback would be detail nothing looks at - and it is not free detail: measured on this
+# addon's own shape of work, parsing a 28 KB JSON response, tracing costs 6.1x at one frame
+# and 23.6x at ten.
+TRACE_FRAMES = 1
+# How long into a run to keep tracing. Long enough for the limit to have moved and the fit to
+# have settled, and no longer, because of that 6.1x. It buys the run more than it costs: the
+# first pass used to be serialised outright to give the old measurement a clean window, and
+# that 6.1x is on parsing, which is a millisecond or two beside the request it came from.
+# What one task costs does not change halfway through a run.
+MEASURE_SECONDS = 30.0
+# Probing is throttled to this, because the driver reports a live-task count on every batch of
+# completions - far more often than a fit needs, and each sample is a syscall for RSS.
+SAMPLE_INTERVAL_SECONDS = 0.25
+# Samples kept for the fit; at the interval above, the whole of the measuring window.
+SLOPE_SAMPLE_CAPACITY = 120
+# Below this there are not enough points to fit anything meaningful
+MIN_SLOPE_SAMPLES = 8
+# ...and the live-task count has to have actually moved across them, or the "slope" is only
+# the noise in the memory readings divided by nearly nothing.
+MIN_SLOPE_SPREAD = 4
 
 
 def _estimates_path() -> Path:
@@ -414,23 +459,94 @@ def save_per_task_estimate(op_key: str, value: float) -> None:
             pass
 
 
+class _Fit:
+    """Least squares of a memory reading against the number of live tasks, and against time.
+
+    Fitting is what removes the need for a quiet baseline. A run accumulates memory that has
+    nothing to do with how many tasks are in flight - the results it has collected, the notes
+    it has touched - and in a fit that accumulation is not the answer but a term to be
+    separated out. The measurement this replaced could only separate it by arranging a moment
+    when nothing was in flight, which is what the first pass of every run was made to be.
+
+    Time is the second predictor rather than only the intercept, and it is doing real work.
+    The accumulation grows with elapsed time, and so does the live task count, because the
+    adapt loop raises the limit as a run settles in. Against task count alone the two cannot
+    be told apart and the accumulation is charged to the tasks: on a workload built to have a
+    known answer, that read 1.5x high. Regressing on both attributes the time trend to time.
+
+    The sample window is bounded so the fit follows the run rather than averaging over all of
+    it.
+    """
+
+    def __init__(self, capacity: int = SLOPE_SAMPLE_CAPACITY):
+        self._samples: "deque[tuple[float, float, float]]" = deque(maxlen=capacity)
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def add(self, live_tasks: float, memory: float, at: float) -> None:
+        self._samples.append((float(live_tasks), float(memory), float(at)))
+
+    def slope(self) -> Optional[float]:
+        """Bytes per live task, or None if these samples cannot support an answer."""
+        count = len(self._samples)
+        if count < MIN_SLOPE_SAMPLES:
+            return None
+        live = [tasks for tasks, _, _ in self._samples]
+        if max(live) - min(live) < MIN_SLOPE_SPREAD:
+            # Every sample was taken at effectively the same task count, so there is no slope
+            # here to find - only the noise in the memory readings, divided by nearly nothing.
+            return None
+        memory = [used for _, used, _ in self._samples]
+        elapsed = [at for _, _, at in self._samples]
+        mean_live = sum(live) / count
+        mean_memory = sum(memory) / count
+        mean_elapsed = sum(elapsed) / count
+        d_live = [value - mean_live for value in live]
+        d_memory = [value - mean_memory for value in memory]
+        d_elapsed = [value - mean_elapsed for value in elapsed]
+
+        live_live = sum(value * value for value in d_live)
+        elapsed_elapsed = sum(value * value for value in d_elapsed)
+        live_elapsed = sum(a * b for a, b in zip(d_live, d_elapsed))
+        live_memory = sum(a * b for a, b in zip(d_live, d_memory))
+        elapsed_memory = sum(a * b for a, b in zip(d_elapsed, d_memory))
+
+        determinant = live_live * elapsed_elapsed - live_elapsed * live_elapsed
+        if determinant <= 0:
+            # The task count moved in lockstep with the clock and nothing here can say which of
+            # them the memory followed. One predictor is better than a confident wrong answer.
+            return live_memory / live_live if live_live > 0 else None
+        return (elapsed_elapsed * live_memory - live_elapsed * elapsed_memory) / determinant
+
+
 class MemoryEstimator:
-    """Measures what one live task of a given op actually costs.
+    """Measures what one live task of a given op costs, and remembers it for next time.
 
-    Measured per window of tasks. The bulk ops process notes in windows, and between windows
-    nothing is in flight, which gives a clean baseline: memory that has accumulated over the
-    run so far (results dicts and the like) is absorbed into the new baseline, so only the
-    growth caused by the window's concurrent tasks is attributed to per-task cost.
+    Two series are fitted against the same live-task counts:
 
-    The growth is divided by how many tasks were alive to cause it, which is the whole window
-    and not just the few holding a gate slot: every task is created up front and holds its note
-    and prompt from then on, so a window is TASK_QUEUE_DEPTH times the limit in tasks. Dividing
-    by the slots alone charged the queue's memory to the running tasks and put the cost of one
-    at several times what it is.
+    * **Traced Python allocations**, from tracemalloc. This is what drives the estimate.
+    * **RSS**, from psutil. The fallback for a runtime that will not trace, and otherwise a
+      second opinion, logged beside the traced figure so the two can be compared on real runs.
 
-    Within a run the largest measurement wins, because what has to fit in RAM is the peak, not
-    the average. Across runs the value is blended into the stored one so a single odd run
-    doesn't skew it.
+    RSS is no longer the primary because it cannot fall. Freed memory goes back to the
+    allocator, not to the OS, so RSS ratchets: it rises over the first busy stretch and then
+    stays there whatever the task count does afterwards. That is why the measurement this
+    replaced needed a pass that both began and ended with nothing in flight, and why it threw
+    away every window whose growth came out at or below zero - which, once a run is warm, is
+    most of them. tracemalloc's total falls the moment a task's objects are freed, so the fit
+    sees the task count come down as well as go up, and no barrier has to be arranged for it.
+
+    What tracemalloc does not see is memory allocated outside Python's allocator: a C
+    extension's own buffers, and anything allocated before tracing began. The part that scales
+    with the task count is covered - urllib3 hands response bodies back as Python `bytes` and
+    the prompts are Python strings. The notes are not, because they are loaded before the run
+    starts; but they are a fixed cost of the run rather than the cost of one more live task,
+    so a per-task figure is right to leave them out.
+
+    Within a run the largest fit wins, because what has to fit in RAM is the peak rather than
+    the average. Across runs the value is blended into the stored one, so a single odd run
+    does not skew it.
     """
 
     def __init__(self, op_key: Optional[str], stored: Optional[float] = None):
@@ -438,58 +554,135 @@ class MemoryEstimator:
         self.measured: Optional[float] = None
         self.estimate: float = float(stored) if stored else DEFAULT_PER_TASK_MEMORY
         self.from_measurement = bool(stored)
-        self._baseline: Optional[int] = None
-        self._peak_rss = 0
-        self._peak_in_flight = 0
-        self._peak_tasks = 0
+        self._traced = _Fit()
+        self._rss = _Fit()
+        self._live_tasks = 0.0
+        self._measuring = False
+        self._owns_tracing = False
+        self._started_at: Optional[float] = None
+        self._sampled_at: Optional[float] = None
+        self._fitted_at_samples = -1
 
-    def begin_window(self) -> None:
-        """Called when nothing is in flight, to re-baseline."""
-        rss = process_memory()
-        self._baseline = rss
-        self._peak_rss = rss or 0
-        self._peak_in_flight = 0
-        self._peak_tasks = 0
+    def start(self) -> None:
+        """Begin measuring, tracing Python allocations unless something else already is."""
+        self._measuring = True
+        self._started_at = time.monotonic()
+        if tracemalloc.is_tracing():
+            # Somebody else's tracing - another addon, or a developer with a debugger open.
+            # Reading the total is fine; stopping it is not ours to do.
+            logger.debug("tracemalloc is already tracing; reading it without taking it over")
+            return
+        try:
+            # One frame per allocation: only the total is ever read here, so deeper tracebacks
+            # would be time and memory spent on detail nothing looks at.
+            tracemalloc.start(TRACE_FRAMES)
+            self._owns_tracing = True
+        except Exception as e:
+            _warn_probe_unavailable("traced memory", e)
 
-    def sample(self, rss: Optional[int], in_flight: int) -> None:
+    def stop(self) -> None:
+        """Stop measuring, and stop tracing if this is what started it."""
+        self._measuring = False
+        if not self._owns_tracing:
+            return
+        self._owns_tracing = False
+        try:
+            tracemalloc.stop()
+        except Exception as e:
+            logger.debug("Could not stop tracemalloc: %s", e)
+
+    def note_live_tasks(self, count: float) -> None:
+        """How many of the op's API tasks are alive right now, and a sample at that count.
+
+        Every one of them holds its note and its prompt from the moment it is created, whether
+        or not it has a gate slot yet, so this is the number memory scales with. The driver
+        reports it on every refill and every batch of completions, which is where the fit gets
+        most of its samples and all of its spread.
+        """
+        self._live_tasks = max(0.0, float(count))
+        self.sample()
+
+    def sample(self, rss: Optional[int] = None, in_flight: Optional[int] = None) -> None:
+        """Record memory at the current live-task count.
+
+        `rss` saves a second probe for a caller that has just read it anyway. `in_flight` is a
+        floor on the live count, for a caller driving the gate without reporting one of its own.
+        """
+        if not self._measuring:
+            return
+        now = time.monotonic()
+        if (
+            self._sampled_at is not None
+            and now - self._sampled_at < SAMPLE_INTERVAL_SECONDS
+        ):
+            # The driver reports on every completion, which on a fast op is far more often than
+            # a fit needs. Throttling bounds the probing rather than the reporting.
+            return
+        self._sampled_at = now
+        at = now - (self._started_at if self._started_at is not None else now)
+        live = max(self._live_tasks, float(in_flight or 0))
+        traced = traced_memory()
+        if traced is not None:
+            self._traced.add(live, traced, at)
+        if rss is None:
+            rss = process_memory()
         if rss is not None:
-            self._peak_rss = max(self._peak_rss, rss)
-        self._peak_in_flight = max(self._peak_in_flight, in_flight)
+            self._rss.add(live, rss, at)
 
-    def note_tasks(self, count: int) -> None:
-        """Called with how many API tasks the window has alive, once they have been created."""
-        self._peak_tasks = max(self._peak_tasks, count)
+    def refit(self) -> Optional[float]:
+        """Fit the samples collected so far. Returns the new estimate when it rises.
 
-    def end_window(self) -> Optional[float]:
-        """Fold this window into the estimate. Returns the new estimate if it changed."""
-        rss = process_memory()
-        self.sample(rss, 0)
-        baseline = self._baseline
-        self._baseline = None
-        if baseline is None or self._peak_in_flight < MIN_SAMPLE_IN_FLIGHT:
+        A traced slope that comes out at or below zero is taken at face value rather than
+        falling back to the RSS one: it means this stretch of the run does not show a per-task
+        cost, and RSS - which only ever ratchets upward - would answer the question with the
+        run's accumulation instead.
+        """
+        if (
+            self._measuring
+            and self._started_at is not None
+            and time.monotonic() - self._started_at >= MEASURE_SECONDS
+        ):
+            # Tracing charges every allocation in the process, and what one task costs does not
+            # change halfway through a run, so there is nothing left to buy by paying past here.
+            # Checked before the short-circuit below, which would otherwise leave tracing on for
+            # the rest of a run whose samples had stopped changing.
+            logger.debug("Measured for %.0fs; stopping tracing", MEASURE_SECONDS)
+            self.stop()
+
+        samples = len(self._traced) + len(self._rss)
+        if samples == self._fitted_at_samples:
+            # Nothing new to fit. Worth checking because sampling stops well before the run
+            # does, and the adapt loop goes on calling this every couple of seconds regardless.
             return None
-        growth = self._peak_rss - baseline
-        if growth <= 0:
-            # Memory the allocator already held was reused; that tells us nothing new
+        self._fitted_at_samples = samples
+
+        traced_slope = self._traced.slope()
+        rss_slope = self._rss.slope()
+        if traced_slope is not None and rss_slope is not None:
+            # The comparison the RSS series is kept for. On a warm run the RSS slope is
+            # expected to read high, because the ratchet is in it.
+            logger.debug(
+                "Per-task fit for %r over %d samples: traced %s, rss %s",
+                self.op_key,
+                len(self._traced),
+                format_bytes(int(traced_slope)),
+                format_bytes(int(rss_slope)),
+            )
+        per_task = traced_slope if traced_slope is not None else rss_slope
+        if per_task is None or per_task <= 0:
             return None
-        # A task holding a slot is alive too, so the live count can never be below the
-        # in-flight peak; taking the larger also keeps the measurement honest for a caller
-        # that runs tasks through the gate without reporting a window at all.
-        live_tasks = max(self._peak_tasks, self._peak_in_flight)
-        per_task = growth / live_tasks
         per_task = min(MAX_PER_TASK_MEMORY, max(MIN_PER_TASK_MEMORY, per_task))
         if self.measured is not None and per_task <= self.measured:
             return None
-        self.measured = per_task
         previous = self.estimate
+        self.measured = per_task
         self.estimate = per_task
         self.from_measurement = True
         logger.debug(
-            "Measured per-task memory for %r: %s over %d live tasks, %d of them at once (was %s)",
+            "Measured per-task memory for %r: %s from %s (was %s)",
             self.op_key,
             format_bytes(int(per_task)),
-            live_tasks,
-            self._peak_in_flight,
+            "traced allocations" if traced_slope is not None else "rss",
             format_bytes(int(previous)),
         )
         return per_task
@@ -600,11 +793,6 @@ class ConcurrencyGate:
                         self._wake_waiters(1)
                 raise
         self.in_flight += 1
-        # Recorded here rather than left to the adapt tick: a window that began and finished
-        # between two ticks sampled an in-flight peak of zero, and end_window then threw its
-        # measurement away as too small to mean anything. A short op could go a whole run
-        # without ever being measured, and start the next one from the default guess again.
-        self.estimator.sample(None, self.in_flight)
 
     def release(self) -> None:
         self.in_flight -= 1
@@ -621,6 +809,11 @@ class ConcurrencyGate:
 
     def start_adapting(self) -> None:
         """Begin watching memory and resizing the limit. No-op when not adaptive."""
+        if self.adaptive:
+            # Only when the number can be used. Without a memory budget the limit is static
+            # whatever a task turns out to cost, and tracing every allocation to learn a figure
+            # nothing will read is a cost with no return.
+            self.estimator.start()
         if not self.adaptive and not self.memory_limit:
             return
         if self._adapt_task and not self._adapt_task.done():
@@ -639,27 +832,28 @@ class ConcurrencyGate:
     def finish(self) -> None:
         """End of the run: stop adapting and remember what this op cost."""
         self.stop_adapting()
+        # One last fit while the samples are still the ones the run ended on. A run shorter
+        # than an adapt tick would otherwise finish having never fitted at all.
+        self._apply_estimate()
+        self.estimator.stop()
         self.estimator.persist()
 
-    def begin_window(self) -> None:
-        """Called by the bulk ops before starting a window of tasks, with nothing in flight."""
-        self.estimator.begin_window()
-
-    def note_window_tasks(self, count: int) -> None:
-        """Called by the bulk ops with the number of API tasks a window created.
+    def note_live_tasks(self, count: float) -> None:
+        """Called by the drivers with how many of the op's API tasks are alive right now.
 
         The gate only ever sees the ones holding a slot, and they are a quarter of the tasks
         alive - the rest are queued on acquire(), holding their note and prompt meanwhile. The
-        estimator needs the whole count, or it charges the queue's memory to the running tasks.
+        estimate is per live task, so it needs the whole count or it charges the queue's memory
+        to the running tasks.
 
         Only the API tasks, though: an op that also creates bookkeeping tasks to write its
-        results back would otherwise divide the window's growth by more tasks than caused it.
+        results back would otherwise spread the memory over more tasks than are holding any.
         """
-        self.estimator.note_tasks(count)
+        self.estimator.note_live_tasks(count)
 
-    def end_window(self) -> None:
-        """Called once a window's tasks have all finished."""
-        if self.estimator.end_window() is None:
+    def _apply_estimate(self) -> None:
+        """Refit what a task costs, and move the ceiling if the answer changed."""
+        if self.estimator.refit() is None:
             return
         if not self.adaptive:
             # Nothing to adapt against; we still learn the cost for next time
@@ -699,6 +893,7 @@ class ConcurrencyGate:
         available = memory[1] if memory else None
         self.available_memory = available or 0
         self.estimator.sample(rss, self.in_flight)
+        self._apply_estimate()
 
         under_pressure = (available is not None and self.reserve and available < self.reserve) or (
             rss is not None and self.memory_limit and rss > self.memory_limit
