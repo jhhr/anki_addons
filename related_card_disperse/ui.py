@@ -55,9 +55,13 @@ CAP_MAX = 9999
 # What an as-yet-unnamed rule is called in the list.
 UNNAMED_RULE_LABEL = "New rule"
 
-# The dialog opens at the full available screen width -- the editor's query
-# fields are wide, and anything narrower made the scroll area scroll sideways.
+# The dialog opens at nearly the full available screen width -- the editor's
+# query fields are wide, and anything narrower made the scroll area scroll
+# sideways. resize() sizes the client area, so at the exact screen width the
+# window frame -- and with it the resize handles -- lands off-screen and the
+# dialog cannot be resized horizontally; inset it by the frame's worth.
 DIALOG_HEIGHT_FRACTION = 0.95
+DIALOG_EDGE_MARGIN_PX = 8
 
 # The rule list only ever holds short names, so it is capped at whichever is
 # narrower: room for this many characters, or this fraction of the dialog.
@@ -261,8 +265,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         if screen is None:
             return
         available = screen.availableGeometry()
-        self.resize(available.width(), int(available.height() * DIALOG_HEIGHT_FRACTION))
-        self.move(available.x(), available.y())
+        self.resize(
+            available.width() - DIALOG_EDGE_MARGIN_PX * 2,
+            int(available.height() * DIALOG_HEIGHT_FRACTION),
+        )
+        self.move(available.x() + DIALOG_EDGE_MARGIN_PX, available.y())
 
     def _apply_rule_list_width(self) -> None:
         metrics = QFontMetrics(self.rule_list.font())
