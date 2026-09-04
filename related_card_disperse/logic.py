@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from anki.cards import Card
 from anki.consts import CARD_TYPE_REV
+from anki.errors import NotFoundError
 from anki.stats import REVLOG_CRAM
 from anki.stats_pb2 import CardStatsResponse
 from anki.utils import ids2str
@@ -53,6 +54,9 @@ class RuleOutcome:
 
 
 StatsCache = dict[int, CardStatsResponse]
+
+# (label, value, max) -> whether the user asked to cancel.
+ProgressReporter = Callable[[str, int, int], bool]
 
 
 def _rule_name(rule: RelatedRule) -> str:
@@ -398,18 +402,36 @@ def run_rule_for_reviewed_card(
 
 
 def run_sync_grouped(
-    reviewed_cards: list[Card],
+    reviewed_card_ids: list[int],
     config: Config,
+    report: Optional[ProgressReporter] = None,
 ) -> list[str]:
+    """Disperse the groups the remotely reviewed cards belong to.
+
+    Takes ids rather than cards: a card reviewed and then deleted on another
+    device still leaves revlog rows behind, so the caller cannot hand over Card
+    objects without risking NotFoundError.
+    """
     messages: list[str] = []
-    if not reviewed_cards:
+    if not reviewed_card_ids:
         return messages
 
     stats_cache: StatsCache = {}
     undo_entry = mw.col.add_custom_undo_entry("Disperse related cards after sync")
 
+    total_cards = len(reviewed_card_ids)
     by_rule: dict[str, dict[str, Any]] = {}
-    for reviewed_card in reviewed_cards:
+    for index, reviewed_cid in enumerate(reviewed_card_ids):
+        if report is not None and (index % 10 == 0 or index == total_cards - 1):
+            if report(
+                f"Collecting related cards: {index + 1}/{total_cards}", index + 1, total_cards
+            ):
+                break
+        try:
+            reviewed_card = mw.col.get_card(reviewed_cid)
+        except NotFoundError:
+            # Deleted between the existence check and now.
+            continue
         note = reviewed_card.note()
         note_type = note.note_type()
         if not note_type:
@@ -432,6 +454,7 @@ def run_sync_grouped(
             by_rule[rule_guid]["sets"].append(set(resolution.card_ids))
             by_rule[rule_guid]["dues"].update(resolution.due_by_id)
 
+    planned: list[tuple[RelatedRule, list[int], dict[int, int]]] = []
     for entry in by_rule.values():
         rule: RelatedRule = entry["rule"]
         sets: list[set[int]] = entry["sets"]
@@ -440,46 +463,93 @@ def run_sync_grouped(
             continue
         grouped = group_overlapping_sets(sets) if config.dedupe_sync_groups else sets
         for group in grouped:
-            group_ids = sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid))
-            capped_ids, capped_count = cap_card_ids(
-                group_ids, _rule_cap(rule, config), due_by_id
+            planned.append(
+                (rule, sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid)), due_by_id)
             )
-            if len(capped_ids) <= 1:
-                messages.append(
-                    summarize_outcome(_rule_name(rule), len(group_ids), 0, capped_count, 0, "skipped(empty or single card)")
-                )
-                continue
-            plan = build_disperse_plan(capped_ids, stats_cache)
-            if _is_noop_plan(plan):
-                outcome_text = (
-                    "skipped(non-overlapping due ranges)"
-                    if plan.min_gap == 0
-                    else "skipped(already optimally placed)"
-                )
-                messages.append(
-                    summarize_outcome(
-                        _rule_name(rule),
-                        len(group_ids),
-                        0,
-                        capped_count,
-                        0,
-                        outcome_text,
-                    )
-                )
-                continue
-            details = apply_disperse_plan(plan, undo_entry)
+
+    total_groups = len(planned)
+    for index, (rule, group_ids, due_by_id) in enumerate(planned):
+        if report is not None and report(
+            f"Dispersing group {index + 1}/{total_groups}", index, total_groups
+        ):
+            break
+        capped_ids, capped_count = cap_card_ids(group_ids, _rule_cap(rule, config), due_by_id)
+        if len(capped_ids) <= 1:
             messages.append(
                 summarize_outcome(
                     _rule_name(rule),
                     len(group_ids),
                     0,
                     capped_count,
-                    len(details),
-                    "dispersed",
+                    0,
+                    "skipped(empty or single card)",
                 )
             )
+            continue
+        plan = build_disperse_plan(capped_ids, stats_cache)
+        if _is_noop_plan(plan):
+            outcome_text = (
+                "skipped(non-overlapping due ranges)"
+                if plan.min_gap == 0
+                else "skipped(already optimally placed)"
+            )
+            messages.append(
+                summarize_outcome(
+                    _rule_name(rule),
+                    len(group_ids),
+                    0,
+                    capped_count,
+                    0,
+                    outcome_text,
+                )
+            )
+            continue
+        details = apply_disperse_plan(plan, undo_entry)
+        messages.append(
+            summarize_outcome(
+                _rule_name(rule),
+                len(group_ids),
+                0,
+                capped_count,
+                len(details),
+                "dispersed",
+            )
+        )
 
     return messages
+
+
+def run_sync_disperse_in_background(
+    reviewed_card_ids: list[int],
+    config: Config,
+    on_done: Callable[[list[str]], None],
+) -> None:
+    """Run the sync dispersal off the UI thread.
+
+    sync_did_finish fires on the UI thread and this does a find_cards per card
+    per rule plus per-card stats lookups, which froze Anki for the length of a
+    large remote-review sync. Progress is reported and cancellable.
+    """
+
+    def report(label: str, value: int, maximum: int) -> bool:
+        mw.taskman.run_on_main(lambda: mw.progress.update(label=label, value=value, max=maximum))
+        return mw.progress.want_cancel()
+
+    def task() -> list[str]:
+        return run_sync_grouped(reviewed_card_ids, config, report)
+
+    def done(future) -> None:
+        mw.progress.finish()
+        messages = future.result()
+        mw.reset()
+        on_done(messages)
+
+    mw.progress.start(
+        label="Dispersing related cards",
+        max=len(reviewed_card_ids),
+        immediate=False,
+    )
+    mw.taskman.run_in_background(task, done)
 
 
 def maximize_due_gap(points_dict: Dict[int, Tuple[int, int]]) -> tuple[int, dict[int, int]]:

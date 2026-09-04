@@ -27,6 +27,7 @@ for _mod_name in [
     "anki.cards",
     "anki.notes",
     "anki.consts",
+    "anki.errors",
     "anki.models",
     "anki.stats",
     "anki.stats_pb2",
