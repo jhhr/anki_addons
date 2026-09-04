@@ -1,0 +1,20 @@
+{
+    "load_balance": false,
+    "free_days": [],
+    "days_to_reschedule": 7,
+    "auto_reschedule_after_sync": false,
+    "auto_disperse_after_sync": false,
+    "auto_disperse": true,
+    "mature_ivl": 21,
+    "debug_notify": false,
+    "leash": 100,
+    "max_ease": 5000,
+    "min_ease": 1000,
+    "moving_average_weight": 0.2,
+    "stats_enabled": true,
+    "stats_duration": 5000,
+    "target_ratio": 0.85,
+    "reviews_only": false,
+    "auto_adjust_ease_after_review": true,
+    "auto_adjust_ease_on_review": false
+}
