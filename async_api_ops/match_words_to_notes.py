@@ -1206,11 +1206,20 @@ def get_matching_notes_for_word_and_reading(
     hiragana_reading_suru = to_hiragana(reading + "する")
     matching_notes: list[Note] = []
 
+    # One turn with the collection for every note the query hit, rather than taking and
+    # releasing it per note and letting every other waiting thread in between
+    fetched = {
+        note.id: note
+        for note in col_get_notes(
+            note_id for note_id in note_ids if note_id not in notes_to_update_dict
+        )
+    }
+
     for note_id in note_ids:
         note = (
-            col_get_note(note_id)
-            if note_id not in notes_to_update_dict
-            else notes_to_update_dict[note_id]
+            notes_to_update_dict[note_id]
+            if note_id in notes_to_update_dict
+            else fetched.get(note_id)
         )
         if note and word_reading_field in note:
             if compare_readings(
@@ -1298,7 +1307,11 @@ async def match_single_word_in_word_tuple(
                 reading,
                 all_generated_meanings_dict,
             )
-        matching_notes = get_matching_notes_for_word_and_reading(
+        # A whole-collection regex search plus a note fetch, both queueing for the collection
+        # behind the worker threads' searches. Run on the loop thread it would block the event
+        # loop for that whole wait: cancellation polling, adapting and progress all stop.
+        matching_notes = await asyncio.to_thread(
+            get_matching_notes_for_word_and_reading,
             word=word,
             reading=reading,
             word_kanjified_field=word_kanjified_field,
