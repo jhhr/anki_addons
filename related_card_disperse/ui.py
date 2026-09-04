@@ -100,8 +100,12 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.default_cap.setMaximum(CAP_MAX)
         self.default_cap.setValue(self.config.default_max_related_cards)
 
-        self.show_no_overlap = QCheckBox("Show skipped outcome when due ranges do not overlap", self)
-        self.show_no_overlap.setChecked(self.config.show_no_overlap_outcome)
+        self.show_unchanged = QCheckBox("Report runs that rescheduled nothing", self)
+        self.show_unchanged.setToolTip(
+            "Also show a tooltip when a rule found nothing to move -- because the cards'"
+            " due ranges are too tight to separate, or they are already spread out."
+        )
+        self.show_unchanged.setChecked(self.config.show_unchanged_outcome)
 
         self.dedupe_sync_groups = QCheckBox(
             "Dedupe overlapping related-card groups during sync", self
@@ -109,7 +113,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.dedupe_sync_groups.setChecked(self.config.dedupe_sync_groups)
 
         global_form.addRow("Default max related cards per execution", self.default_cap)
-        global_form.addRow(self.show_no_overlap)
+        global_form.addRow(self.show_unchanged)
         global_form.addRow(self.dedupe_sync_groups)
 
         root.addWidget(global_box)
@@ -450,7 +454,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self._commit_form()
         self.config.update_global(
             default_cap=self.default_cap.value(),
-            show_no_overlap=self.show_no_overlap.isChecked(),
+            show_unchanged=self.show_unchanged.isChecked(),
             dedupe_sync=self.dedupe_sync_groups.isChecked(),
         )
         self.config.replace_rules(self.rules)

@@ -32,7 +32,7 @@ class RelatedRule(TypedDict):
 class ConfigData(TypedDict):
     version: str
     default_max_related_cards: int
-    show_no_overlap_outcome: bool
+    show_unchanged_outcome: bool
     dedupe_sync_groups: bool
     rules: list[RelatedRule]
 
@@ -72,7 +72,12 @@ def default_rule() -> RelatedRule:
 def migrate_data(data: dict) -> ConfigData:
     data.setdefault("version", "1.0.0")
     data.setdefault("default_max_related_cards", 20)
-    data.setdefault("show_no_overlap_outcome", True)
+    # Renamed: the flag never had anything to do with overlap. It gates
+    # reporting of runs that rescheduled nothing.
+    if "show_unchanged_outcome" not in data and "show_no_overlap_outcome" in data:
+        data["show_unchanged_outcome"] = data["show_no_overlap_outcome"]
+    data.pop("show_no_overlap_outcome", None)
+    data.setdefault("show_unchanged_outcome", True)
     data.setdefault("dedupe_sync_groups", True)
     rules = data.get("rules", []) or []
 
@@ -110,7 +115,7 @@ def migrate_data(data: dict) -> ConfigData:
 
     data["rules"] = normalized_rules
     data["default_max_related_cards"] = max(1, int(data["default_max_related_cards"]))
-    data["show_no_overlap_outcome"] = bool(data["show_no_overlap_outcome"])
+    data["show_unchanged_outcome"] = bool(data["show_unchanged_outcome"])
     data["dedupe_sync_groups"] = bool(data["dedupe_sync_groups"])
     return data  # type: ignore[return-value]
 
@@ -120,7 +125,7 @@ class Config:
         self.data: ConfigData = {
             "version": "1.0.0",
             "default_max_related_cards": 20,
-            "show_no_overlap_outcome": True,
+            "show_unchanged_outcome": True,
             "dedupe_sync_groups": True,
             "rules": [],
         }
@@ -140,16 +145,18 @@ class Config:
         return self.data["default_max_related_cards"]
 
     @property
-    def show_no_overlap_outcome(self) -> bool:
-        return self.data["show_no_overlap_outcome"]
+    def show_unchanged_outcome(self) -> bool:
+        return self.data["show_unchanged_outcome"]
 
     @property
     def dedupe_sync_groups(self) -> bool:
         return self.data["dedupe_sync_groups"]
 
-    def update_global(self, *, default_cap: int, show_no_overlap: bool, dedupe_sync: bool) -> None:
+    def update_global(
+        self, *, default_cap: int, show_unchanged: bool, dedupe_sync: bool
+    ) -> None:
         self.data["default_max_related_cards"] = max(1, int(default_cap))
-        self.data["show_no_overlap_outcome"] = bool(show_no_overlap)
+        self.data["show_unchanged_outcome"] = bool(show_unchanged)
         self.data["dedupe_sync_groups"] = bool(dedupe_sync)
         self.save()
 

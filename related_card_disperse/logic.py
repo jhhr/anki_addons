@@ -337,6 +337,19 @@ def _is_noop_plan(plan: DispersePlan) -> bool:
     return plan.best_due_dates == plan.current_dues
 
 
+def _noop_outcome_text(plan: DispersePlan) -> str:
+    """Say why a plan moved nothing.
+
+    A min_gap of 0 means no arrangement separates every pair of adjacent cards
+    by even a day -- their due ranges are too narrow, or too crowded, to pull
+    apart. That is the opposite of the ranges not overlapping, which is the easy
+    case: cards already spread out score a large gap.
+    """
+    if plan.min_gap == 0:
+        return "skipped(due ranges too tight to separate)"
+    return "skipped(already optimally placed)"
+
+
 def run_rule_for_reviewed_card(
     rule: RelatedRule,
     reviewed_card: Card,
@@ -376,11 +389,6 @@ def run_rule_for_reviewed_card(
 
     plan = build_disperse_plan(query_result.card_ids, stats_cache)
     if _is_noop_plan(plan):
-        outcome_text = (
-            "skipped(non-overlapping due ranges)"
-            if plan.min_gap == 0
-            else "skipped(already optimally placed)"
-        )
         return RuleOutcome(
             summarize_outcome(
                 rule_name,
@@ -388,7 +396,7 @@ def run_rule_for_reviewed_card(
                 query_result.filtered_count,
                 query_result.capped_count,
                 0,
-                outcome_text,
+                _noop_outcome_text(plan),
             ),
             0,
         )
@@ -483,34 +491,31 @@ def run_sync_grouped(
             break
         capped_ids, capped_count = cap_card_ids(group_ids, _rule_cap(rule, config), due_by_id)
         if len(capped_ids) <= 1:
-            messages.append(
-                summarize_outcome(
-                    _rule_name(rule),
-                    len(group_ids),
-                    0,
-                    capped_count,
-                    0,
-                    "skipped(empty or single card)",
+            if config.show_unchanged_outcome:
+                messages.append(
+                    summarize_outcome(
+                        _rule_name(rule),
+                        len(group_ids),
+                        0,
+                        capped_count,
+                        0,
+                        "skipped(empty or single card)",
+                    )
                 )
-            )
             continue
         plan = build_disperse_plan(capped_ids, stats_cache)
         if _is_noop_plan(plan):
-            outcome_text = (
-                "skipped(non-overlapping due ranges)"
-                if plan.min_gap == 0
-                else "skipped(already optimally placed)"
-            )
-            messages.append(
-                summarize_outcome(
-                    _rule_name(rule),
-                    len(group_ids),
-                    0,
-                    capped_count,
-                    0,
-                    outcome_text,
+            if config.show_unchanged_outcome:
+                messages.append(
+                    summarize_outcome(
+                        _rule_name(rule),
+                        len(group_ids),
+                        0,
+                        capped_count,
+                        0,
+                        _noop_outcome_text(plan),
+                    )
                 )
-            )
             continue
         details = apply_disperse_plan(plan, undo_entry)
         messages.append(

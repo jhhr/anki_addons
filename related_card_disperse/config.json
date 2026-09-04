@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "default_max_related_cards": 20,
-  "show_no_overlap_outcome": true,
+  "show_unchanged_outcome": true,
   "dedupe_sync_groups": true,
   "rules": []
 }

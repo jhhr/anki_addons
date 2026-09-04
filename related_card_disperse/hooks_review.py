@@ -36,7 +36,7 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
             answer_undo_entry,
             processed_rule_card_pairs,
         )
-        if outcome.updated > 0 or config.show_no_overlap_outcome:
+        if outcome.updated > 0 or config.show_unchanged_outcome:
             messages.append(outcome.message)
 
     if messages:
