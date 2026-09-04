@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Union
 from anki.notes import Note
 
 from ..configuration import CardActionDict
-from .execute_code import execute_code_core
+from ..shared.interpolate.execute_code import execute_code_core
 
 
 def execute_code_for_files(

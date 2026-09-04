@@ -2,14 +2,14 @@ from typing import Optional
 
 from anki.notes import Note
 
-from .jp_text_processing.kana.kana_highlight import (
+from ..shared.jp_text_processing.kana.kana_highlight import (
     kana_filter,
     kana_highlight,
 )
-from ..utils.logger import Logger
+from ..shared.utils.logger import Logger
 
-from .jp_text_processing.all_types.main_types import WithTagsDef
-from .jp_text_processing.kana.construct_wrapped_furi_word import FuriReconstruct
+from ..shared.jp_text_processing.all_types.main_types import WithTagsDef
+from ..shared.jp_text_processing.kana.construct_wrapped_furi_word import FuriReconstruct
 
 
 def kana_highlight_process(

@@ -18,9 +18,9 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip, getText, showWarning
 
-from ..utils import (
-    write_custom_data,
-    RepresentsInt,
+from ..utils import RepresentsInt
+from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.scheduling.due_dates import (
     update_card_due_ivl,
     get_last_review_date,
 )

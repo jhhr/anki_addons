@@ -13,8 +13,8 @@ from aqt.gui_hooks import (
     editor_did_load_note,
 )
 
-from ..utils.write_custom_data import write_custom_data
-from ..utils.logger import Logger
+from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.utils.logger import Logger
 from ..utils.merge_cards import merge_cards
 from ..configuration import (
     Config,

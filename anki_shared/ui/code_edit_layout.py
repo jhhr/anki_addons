@@ -27,7 +27,7 @@ from aqt.qt import (
 )
 
 from .pasteable_text_edit import PasteableTextEdit
-from ..logic.interpolate_fields import (
+from ..interpolate.interpolate_fields import (
     ARG_SEPARATOR,
     ARG_VALIDATORS,
     CARD_VALUE_RE,

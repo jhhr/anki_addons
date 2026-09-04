@@ -32,13 +32,13 @@ from ..configuration import (
     DIRECTION_DESTINATION_TO_SOURCES,
 )
 
-from .multi_combo_box import MultiComboBox
+from ..shared.ui.multi_combo_box import MultiComboBox
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
-from .interpolated_text_edit import InterpolatedTextEditLayout
-from .code_edit_layout import CodeEditLayout
+from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
+from ..shared.ui.code_edit_layout import CodeEditLayout
 from .code_notices import FILE_CODE_NOTICE
-from .toggle_switch import ToggleSwitch
-from ..logic.interpolate_fields import (
+from ..shared.ui.toggle_switch import ToggleSwitch
+from ..shared.interpolate.interpolate_fields import (
     DESTINATION_PREFIX,
     NOTE_ID,
     CARD_IVL,

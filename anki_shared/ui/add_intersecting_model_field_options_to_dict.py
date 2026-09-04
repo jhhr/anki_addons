@@ -3,7 +3,7 @@ from typing import Optional
 from anki.models import NotetypeDict
 from aqt import mw
 
-from ..logic.interpolate_fields import CARD_VALUES, intr_format
+from ..interpolate.interpolate_fields import CARD_VALUES, intr_format
 
 
 def get_intersecting_model_fields(

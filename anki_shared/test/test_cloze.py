@@ -1,6 +1,6 @@
 import pytest
 
-from _anki_addon.logic.interpolate_fields import (
+from anki_shared.interpolate.interpolate_fields import (
     extract_cloze_patterns,
     get_fields_from_text,
     interpolate_from_text,

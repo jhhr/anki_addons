@@ -1,6 +1,6 @@
 from aqt import mw
 
-from ..logic.interpolate_fields import CARD_VALUES, intr_format
+from ..interpolate.interpolate_fields import CARD_VALUES, intr_format
 from typing import Optional, Union
 
 from anki.consts import MODEL_CLOZE

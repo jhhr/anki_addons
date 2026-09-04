@@ -9,25 +9,19 @@ from .configuration import Config
 from .ease.auto_ease_factor import adjust_ease
 from .schedule.disperse_siblings import disperse_siblings
 from .schedule.reschedule import reschedule
+from .shared.anki.sync_hook_base import create_comparelog, review_cid_remote
 
 
-def create_comparelog(local_rids: List[int], texts: List[str]) -> None:
+def start_sync(local_rids: List[int], texts: List[str]) -> None:
     texts.clear()
-    local_rids.clear()
-    local_rids.extend([id for id in mw.col.db.list("SELECT id FROM revlog")])
+    create_comparelog(local_rids)
 
 
-def review_cid_remote(remote_reviewed_cids: List[int], local_rids: List[int]):
-    local_rid_string = ids2str(local_rids)
-    remote_reviewed_cids.extend(
-        [
-            cid for cid in mw.col.db.list(f"""SELECT DISTINCT cid
-            FROM revlog
-            WHERE id NOT IN {local_rid_string}
-            AND type < 4
-            """)  # type: 0=Learning, 1=Review, 2=relearn, 3=filtered, 4=Manual
-        ]
-    )
+def collect_remote_reviews(
+    remote_reviewed_cids: List[int], local_rids: List[int]
+) -> None:
+    remote_reviewed_cids.clear()
+    remote_reviewed_cids.extend(review_cid_remote(local_rids))
 
 
 def auto_reschedule(remote_reviewed_cids: List[int], texts: List[str]):
@@ -103,8 +97,10 @@ def init_sync_hook():
     remote_reviewed_cids = []
     texts = []
 
-    sync_will_start.append(lambda: create_comparelog(local_rids, texts))
-    sync_did_finish.append(lambda: review_cid_remote(remote_reviewed_cids, local_rids))
+    sync_will_start.append(lambda: start_sync(local_rids, texts))
+    sync_did_finish.append(
+        lambda: collect_remote_reviews(remote_reviewed_cids, local_rids)
+    )
 
     # sync_did_finish.append(lambda: auto_adjust_ease(remote_reviewed_cids, texts))
     sync_did_finish.append(lambda: auto_reschedule(remote_reviewed_cids, texts))

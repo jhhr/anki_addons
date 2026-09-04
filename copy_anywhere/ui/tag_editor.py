@@ -16,7 +16,7 @@ from ..configuration import (
     CopyModeType,
 )
 
-from .multi_combo_box import MultiComboBox
+from ..shared.ui.multi_combo_box import MultiComboBox
 
 
 from .edit_state import EditState

@@ -2,7 +2,7 @@ from typing import Union
 from aqt import mw
 from anki.cards import Card
 
-from .logger import Logger
+from ..shared.utils.logger import Logger
 
 
 def move_card_to_deck(

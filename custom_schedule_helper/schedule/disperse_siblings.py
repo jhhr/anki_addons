@@ -12,11 +12,11 @@ from ..configuration import Config
 enable_load_balance = None
 free_days = None
 version = None
-from ..utils import (
+from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.scheduling.due_dates import (
     filter_revlogs,
     get_last_review_date,
     update_card_due_ivl,
-    write_custom_data,
     get_fuzz_range,
     due_to_date,
 )

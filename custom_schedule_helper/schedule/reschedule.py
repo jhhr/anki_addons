@@ -21,10 +21,7 @@ from aqt.utils import tooltip, showWarning
 from ..configuration import Config
 from ..utils import (
     get_rev_conf,
-    get_fuzz_range,
-    update_card_due_ivl,
     rotate_number_by_k,
-    write_custom_data,
     check_custom_scheduler,
     CustomSchedulerNotFoundError,
     DeckParamError,
@@ -34,6 +31,11 @@ from ..utils import (
     SCHEDULER_NAME,
     DAYS_UPPER_PARAM,
     MIN_AGAIN_MULT_PARAM,
+)
+from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.scheduling.due_dates import (
+    get_fuzz_range,
+    update_card_due_ivl,
 )
 
 LOG = False

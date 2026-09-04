@@ -20,7 +20,7 @@ from aqt import reviewer
 from aqt.utils import tooltip
 
 from ..configuration import Config
-from ..utils import write_custom_data
+from ..shared.anki.write_custom_data import write_custom_data
 
 LOG = True
 

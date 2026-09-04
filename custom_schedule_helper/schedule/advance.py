@@ -8,11 +8,11 @@ from anki.utils import ids2str
 from aqt import mw
 from aqt.utils import tooltip, getText, showWarning
 
-from ..utils import (
-    RepresentsInt,
+from ..utils import RepresentsInt
+from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.scheduling.due_dates import (
     get_last_review_date,
     update_card_due_ivl,
-    write_custom_data,
 )
 
 

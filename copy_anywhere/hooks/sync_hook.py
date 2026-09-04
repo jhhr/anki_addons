@@ -1,30 +1,9 @@
-from typing import List
-
-from anki.utils import ids2str
 from aqt import mw
 from aqt.gui_hooks import sync_will_start, sync_did_finish
 from aqt.utils import tooltip
 
 from ..configuration import Config
 from ..logic.copy_fields import copy_fields
-
-
-def create_comparelog(local_rids: List[int], texts: List[str]) -> None:
-    assert mw.col.db is not None
-    texts.clear()
-    local_rids.clear()
-    local_rids.extend([id for id in mw.col.db.list("SELECT id FROM revlog")])
-
-
-def review_cid_remote(local_rids: List[int]):
-    assert mw.col.db is not None
-    local_rid_string = ids2str(local_rids)
-    remote_reviewed_cids = [cid for cid in mw.col.db.list(f"""SELECT DISTINCT cid
-            FROM revlog
-            WHERE id NOT IN {local_rid_string}
-            AND type < 4
-            """)]
-    return remote_reviewed_cids
 
 
 class SyncResult:

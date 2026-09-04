@@ -7,12 +7,12 @@ from anki.utils import ids2str
 from aqt import mw
 from aqt.qt import QCheckBox, QLabel
 
-from ..logic.interpolate_fields import (
+from ..shared.interpolate.interpolate_fields import (
     BASE_NOTE_MENU_DICT,
     DESTINATION_PREFIX,
     VARIABLES_KEY,
 )
-from .interpolated_text_edit import make_validate_dict
+from ..shared.ui.interpolated_text_edit import make_validate_dict
 from .note_menu_dicts import get_new_base_dict
 
 from ..configuration import (
@@ -25,13 +25,13 @@ from ..configuration import (
     get_variables_dict_from_variable_defs,
 )
 
-from .add_model_options_to_dict import add_model_options_to_dict
-from .add_intersecting_model_field_options_to_dict import (
+from ..shared.ui.add_model_options_to_dict import add_model_options_to_dict
+from ..shared.ui.add_intersecting_model_field_options_to_dict import (
     add_intersecting_model_field_options_to_dict,
     get_intersecting_model_fields,
 )
-from .multi_combo_box import MultiComboBox
-from .required_text_input import RequiredLineEdit
+from ..shared.ui.multi_combo_box import MultiComboBox
+from ..shared.ui.required_text_input import RequiredLineEdit
 
 
 @dataclass

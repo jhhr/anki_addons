@@ -1,10 +1,10 @@
 from anki.notes import Note
 
-from .jp_text_processing.word.word_highlight import (
+from ..shared.jp_text_processing.word.word_highlight import (
     word_highlight,
 )
 
-from ..utils.logger import Logger
+from ..shared.utils.logger import Logger
 
 
 def word_highlight_process(

@@ -29,16 +29,16 @@ from aqt.utils import tooltip
 
 from .edit_state import EditState
 
-from .auto_resizing_text_edit import AutoResizingTextEdit
-from .interpolated_text_edit import InterpolatedTextEditLayout
-from ..logic.interpolate_fields import (
+from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
+from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
+from ..shared.interpolate.interpolate_fields import (
     intr_format,
 )
-from .required_text_input import RequiredLineEdit
+from ..shared.ui.required_text_input import RequiredLineEdit
 
-from .list_input import ListInputWidget
-from .required_combobox import RequiredCombobox
-from .multi_combo_box import MultiComboBox
+from ..shared.ui.list_input import ListInputWidget
+from ..shared.ui.required_combobox import RequiredCombobox
+from ..shared.ui.multi_combo_box import MultiComboBox
 
 if qtmajor > 5:
     WindowModal = Qt.WindowModality.WindowModal
@@ -75,7 +75,7 @@ from ..configuration import (
     COPY_MODE_ACROSS_NOTES,
 )
 
-from ..logic.jp_text_processing.kana.kana_highlight import FuriReconstruct
+from ..shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
 
 
 class ClickableLabel(QLabel):

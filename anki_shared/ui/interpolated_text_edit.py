@@ -6,7 +6,7 @@ from aqt.qt import (
 )
 
 from .pasteable_text_edit import PasteableTextEdit
-from ..logic.interpolate_fields import (
+from ..interpolate.interpolate_fields import (
     get_fields_from_text,
     intr_format,
     ARG_SEPARATOR,

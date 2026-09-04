@@ -48,23 +48,23 @@ from ..configuration import (
     is_regex_process,
     is_word_highlight_process,
 )
-from ..ui.auto_resizing_text_edit import AutoResizingTextEdit
+from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..utils.duplicate_note import (
     duplicate_note,
 )
 from ..utils.file_exists_in_media_folder import file_exists_in_media_folder
-from ..utils.logger import Logger
+from ..shared.utils.logger import Logger
 from ..utils.move_card_to_deck import move_card_to_deck
-from ..utils.write_custom_data import write_custom_data
+from ..shared.anki.write_custom_data import write_custom_data
 from ..utils.write_to_media_folder import write_to_media_folder
-from .execute_code import execute_code_for_field
+from ..shared.interpolate.execute_code import execute_code_for_field
 from .execute_code_wrappers import (
     execute_code_for_card_action,
     execute_code_for_files,
 )
 from .FatalProcessError import FatalProcessError
 from .fonts_check_process import fonts_check_process
-from .interpolate_fields import QUERY_NOTE_INDEX, TARGET_NOTES_COUNT, interpolate_from_text
+from ..shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX, TARGET_NOTES_COUNT, interpolate_from_text
 from .kana_highlight_process import WithTagsDef, kana_highlight_process
 from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
 from .regex_process import regex_process

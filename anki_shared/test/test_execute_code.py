@@ -1,4 +1,4 @@
-from _anki_addon.logic.execute_code import execute_code_core, execute_code_for_field
+from anki_shared.interpolate.execute_code import execute_code_core, execute_code_for_field
 
 
 class FakeNote:

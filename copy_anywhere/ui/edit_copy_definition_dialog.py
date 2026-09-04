@@ -34,12 +34,12 @@ from .copy_field_to_file_editor import CopyFieldToFileEditor
 from .field_to_variable_editor import CopyFieldToVariableEditor
 from .tag_editor import TagEditor
 from .card_actions_editor import CardActionsEditor
-from .grouped_combo_box import GroupedComboBox
-from .interpolated_text_edit import InterpolatedTextEditLayout
-from .required_combobox import RequiredCombobox
-from .required_text_input import RequiredLineEdit
-from .scrollable_dialog import ScrollableQDialog
-from .multi_combo_box import MultiComboBox
+from ..shared.ui.grouped_combo_box import GroupedComboBox
+from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
+from ..shared.ui.required_combobox import RequiredCombobox
+from ..shared.ui.required_text_input import RequiredLineEdit
+from ..shared.ui.scrollable_dialog import ScrollableQDialog
+from ..shared.ui.multi_combo_box import MultiComboBox
 from ..configuration import (
     Config,
     CopyDefinition,
@@ -52,10 +52,10 @@ from ..configuration import (
     SelectCardByType,
     SELECT_CARD_BY_VALUES,
 )
-from ..logic.interpolate_fields import (
+from ..shared.interpolate.interpolate_fields import (
     intr_format,
 )
-from ..utils.block_signals import block_signals
+from ..shared.utils.block_signals import block_signals
 
 if qtmajor > 5:
     WindowModal = Qt.WindowModality.WindowModal

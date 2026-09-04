@@ -6,7 +6,7 @@ from typing import Optional
 from aqt import mw
 
 from .FatalProcessError import FatalProcessError
-from ..utils.logger import Logger
+from ..shared.utils.logger import Logger
 
 
 def fonts_check_process(

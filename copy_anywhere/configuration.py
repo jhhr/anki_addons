@@ -5,13 +5,13 @@ from typing import Literal, Optional, Sequence, TypedDict, Union
 from aqt import mw
 from typing_extensions import TypeGuard
 
-from .logic.interpolate_fields import (
+from .shared.interpolate.interpolate_fields import (
     TARGET_NOTES_COUNT,
     QUERY_NOTE_INDEX,
     intr_format,
 )
-from .logic.jp_text_processing.kana.kana_highlight import FuriReconstruct
-from .utils.logger import LogLevel
+from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
+from .shared.utils.logger import LogLevel
 
 tag = mw.addonManager.addonFromModule(__name__)
 

@@ -6,7 +6,7 @@ itself.  The notices below describe what a *copy definition* expects the code
 to return, which only means something here, so they live outside the widget.
 """
 
-from .code_edit_layout import (
+from ..shared.ui.code_edit_layout import (
     CODE_NOTICE_HTML_WARNING,
     CODE_NOTICE_PREFIX,
     code_notice_available_names,

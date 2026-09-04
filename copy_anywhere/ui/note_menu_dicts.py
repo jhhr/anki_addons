@@ -7,7 +7,7 @@ entries for it belong to this addon rather than to the interpolation layer.
 """
 
 from ..configuration import COPY_MODE_WITHIN_NOTE, CopyModeType
-from ..logic.interpolate_fields import (
+from ..shared.interpolate.interpolate_fields import (
     BASE_NOTE_MENU_DICT,
     DESTINATION_PREFIX,
     NOTE_CARD_COUNT,

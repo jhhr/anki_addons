@@ -33,11 +33,11 @@ from ..configuration import (
     CardAction,
     CopyDefinition,
 )
-from .code_edit_layout import CodeEditLayout
+from ..shared.ui.code_edit_layout import CodeEditLayout
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .edit_state import EditState
-from .grouped_combo_box import GroupedComboBox
-from .toggle_switch import ToggleSwitch
+from ..shared.ui.grouped_combo_box import GroupedComboBox
+from ..shared.ui.toggle_switch import ToggleSwitch
 
 base_description = """<p>Configure actions to perform on any destination note's card types.
             Select a card type from the dropdown to configure its action.</p>"""

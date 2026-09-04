@@ -21,7 +21,7 @@ from aqt.qt import (
 )
 
 from .edit_copy_definition_dialog import EditCopyDefinitionDialog
-from .scrollable_dialog import ScrollableQDialog
+from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
     Config,
     CopyDefinition,
@@ -29,7 +29,7 @@ from ..configuration import (
 from ..logic.copy_fields import (
     copy_fields,
 )
-from ..utils.make_query_string import make_query_string
+from ..shared.utils.make_query_string import make_query_string
 
 if qtmajor > 5:
     WindowModal = Qt.WindowModality.WindowModal

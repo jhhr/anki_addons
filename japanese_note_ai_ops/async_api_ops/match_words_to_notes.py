@@ -35,15 +35,15 @@ from ..configuration import (
     RawOneMeaningWordType,
 )
 from ..kana_conv import to_hiragana
-from ..sync_local_ops.jp_text_processing.kana.check_word_reading_type import (
+from ..shared.jp_text_processing.kana.check_word_reading_type import (
     WordReadingType,
     check_word_reading_type,
 )
-from ..sync_local_ops.jp_text_processing.kana.kana_highlight import (
+from ..shared.jp_text_processing.kana.kana_highlight import (
     WithTagsDef,
     kana_highlight,
 )
-from ..sync_local_ops.jp_text_processing.kana.make_furigana_from_reading import (
+from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
     make_furigana_from_reading,
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback

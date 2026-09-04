@@ -11,7 +11,7 @@ from aqt.qt import (
     qtmajor,
 )
 
-from .required_text_input import RequiredLineEdit
+from ..shared.ui.required_text_input import RequiredLineEdit
 from ..configuration import ALL_FIELD_TO_VARIABLE_PROCESS_NAMES, CopyDefinition
 
 if qtmajor > 5:
@@ -22,10 +22,10 @@ else:
     QFrameShadowRaised = QFrame.Raised  # type: ignore
 
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
-from .interpolated_text_edit import InterpolatedTextEditLayout
-from .code_edit_layout import CodeEditLayout
-from .toggle_switch import ToggleSwitch
-from ..logic.interpolate_fields import (
+from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
+from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.toggle_switch import ToggleSwitch
+from ..shared.interpolate.interpolate_fields import (
     BASE_NOTE_MENU_DICT,
     NOTE_ID,
     CARD_IVL,

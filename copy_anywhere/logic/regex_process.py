@@ -3,9 +3,9 @@ import sys
 from typing import Optional
 
 try:
-    from ..utils.logger import Logger
+    from ..shared.utils.logger import Logger
 except ImportError:
-    from utils.logger import Logger
+    from shared.utils.logger import Logger
 
 
 def regex_process(
