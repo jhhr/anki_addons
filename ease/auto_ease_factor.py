@@ -313,7 +313,7 @@ def adjust_ease_factors_background(
             print("new factor", card.factor)
 
         mw.col.update_card(card)
-        # This is a deck adjustment, so mergin undo entries is not possible due to the
+        # This is a deck adjustment, so merging undo entries is not possible due to the
         # db.execute() call in suggested_factor
         cnt += 1
         if cnt % 200 == 0:
