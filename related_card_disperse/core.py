@@ -117,6 +117,27 @@ def cap_card_ids(
     return [cid for cid in card_ids if cid in kept], len(card_ids) - cap
 
 
+def remaining_note_cards(
+    remaining: list[int],
+    anchor_card_id: int,
+    covered_card_ids: Iterable[int],
+) -> list[int]:
+    """The note's cards still needing a run of their own after one anchor ran.
+
+    A rule run anchored on one card of a note usually finds the note's other
+    cards too, and dispersing those again from their own anchor would redo the
+    same group; whichever cards the rule's query returned are therefore done.
+
+    The anchor is dropped whether or not the query returned it. A query that
+    deliberately omits the card it was triggered from -- one gated to a card
+    type the anchor is not, say -- would otherwise never take itself off the
+    queue, and the caller would run it forever.
+    """
+    covered = set(covered_card_ids)
+    covered.add(anchor_card_id)
+    return [cid for cid in remaining if cid not in covered]
+
+
 def group_overlapping_sets(groups: list[set[int]]) -> list[set[int]]:
     pending = deque(set(g) for g in groups if g)
     merged: list[set[int]] = []

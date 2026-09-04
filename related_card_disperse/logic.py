@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from anki.cards import Card
@@ -19,6 +19,7 @@ from .core import (
     group_overlapping_sets,
     normalize_card_id_result,
     qualified_card_type_name,
+    remaining_note_cards,
     reviewed_card_variables,
     split_quoted_names,
     summarize_outcome,
@@ -36,6 +37,11 @@ class QueryResolution:
     capped_count: int
     card_ids: list[int]
     due_by_id: dict[int, int]
+    # Every id the query returned, before the review-state filter and the cap
+    # narrowed it to what is worth rescheduling. A browser run reads this to
+    # tell which of a note's cards a rule has already accounted for: a card the
+    # query found but the filter dropped would find the very same group again.
+    raw_ids: list[int] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -53,6 +59,9 @@ class DispersePlan:
 class RuleOutcome:
     message: str
     updated: int
+    # The rule's raw query result, as QueryResolution.raw_ids; empty when the
+    # rule never got as far as resolving one.
+    covered_ids: list[int] = field(default_factory=list)
 
 
 StatsCache = dict[int, CardStatsResponse]
@@ -244,6 +253,7 @@ def resolve_rule_candidates(
         capped_count=capped_count,
         card_ids=card_ids,
         due_by_id=due_by_id,
+        raw_ids=raw_ids,
     )
 
 
@@ -423,6 +433,7 @@ def run_rule_for_reviewed_card(
                 "skipped(empty or single card)",
             ),
             0,
+            query_result.raw_ids,
         )
 
     plan = build_disperse_plan(query_result.card_ids, stats_cache)
@@ -437,6 +448,7 @@ def run_rule_for_reviewed_card(
                 _noop_outcome_text(plan),
             ),
             0,
+            query_result.raw_ids,
         )
 
     details = apply_disperse_plan(plan, undo_entry)
@@ -452,6 +464,7 @@ def run_rule_for_reviewed_card(
         + "<br>"
         + "<br>".join(details),
         len(details),
+        query_result.raw_ids,
     )
 
 
@@ -603,6 +616,264 @@ def run_sync_disperse_in_background(
     mw.progress.start(
         label="Dispersing related cards",
         max=len(reviewed_card_ids),
+        immediate=False,
+    )
+    mw.taskman.run_in_background(task, done)
+
+
+@dataclass
+class NoteRuleRun:
+    """One rule's share of a note: which of its cards to anchor a run on."""
+
+    rule: RelatedRule
+    card_ids: list[int]
+    # True when the rule names card types, and so gets a run per eligible card.
+    # False when it applies to the whole note, and one run may cover the rest.
+    per_card: bool
+
+
+# A selection can be tens of thousands of notes, and keeping an outcome line
+# for every rule run over them would cost more memory than the dispersal
+# itself. Past this many, only the count is kept.
+BROWSER_MESSAGE_LIMIT = 50
+
+
+@dataclass
+class BrowserRunResult:
+    messages: list[str] = field(default_factory=list)
+    # Outcome lines dropped once BROWSER_MESSAGE_LIMIT was reached.
+    suppressed_messages: int = 0
+    updated: int = 0
+    rule_runs: int = 0
+    notes: int = 0
+    anchor_cards: int = 0
+    cancelled: bool = False
+
+
+def plan_note_rule_runs(
+    rules: list[RelatedRule],
+    note_type_name: str,
+    card_type_names: dict[int, str],
+    ordered_card_ids: list[int],
+) -> list[NoteRuleRun]:
+    """Split one note's cards among the rules that apply to it.
+
+    A rule naming card types gets a run per card of those types: the user has
+    said which cards trigger it, and two card types of one note pointed at the
+    same group is their call to make, not something to optimise away.
+
+    A rule naming none applies to every card of the note, and its query almost
+    always finds the note's siblings from any of them, so its cards are handed
+    over as a queue for the caller to work through with ``remaining_note_cards``
+    rather than as a list of runs to make.
+    """
+    runs: list[NoteRuleRun] = []
+    for rule in rules:
+        eligible = [
+            cid
+            for cid in ordered_card_ids
+            if get_applicable_rules([rule], note_type_name, card_type_names.get(cid, ""))
+        ]
+        if not eligible:
+            continue
+        runs.append(
+            NoteRuleRun(
+                rule=rule,
+                card_ids=eligible,
+                per_card=bool(split_quoted_names(rule.get("target_card_types", ""))),
+            )
+        )
+    return runs
+
+
+def _record_browser_outcome(
+    outcome: RuleOutcome,
+    config: Config,
+    result: BrowserRunResult,
+) -> None:
+    result.rule_runs += 1
+    result.updated += outcome.updated
+    if outcome.updated == 0 and not config.show_unchanged_outcome:
+        return
+    if len(result.messages) < BROWSER_MESSAGE_LIMIT:
+        result.messages.append(outcome.message)
+    else:
+        result.suppressed_messages += 1
+
+
+def _disperse_browser_card(
+    card: Card,
+    config: Config,
+    stats_cache: StatsCache,
+    undo_entry: int,
+    processed_rule_card_pairs: set[tuple[str, int]],
+    result: BrowserRunResult,
+) -> None:
+    note_type = card.note().note_type()
+    if not note_type:
+        return
+    rules = get_applicable_rules(config.rules, note_type["name"], card_type_name_for(card))
+    if not rules:
+        return
+    result.anchor_cards += 1
+    for rule in rules:
+        _record_browser_outcome(
+            run_rule_for_reviewed_card(
+                rule, card, config, stats_cache, undo_entry, processed_rule_card_pairs
+            ),
+            config,
+            result,
+        )
+
+
+def _disperse_browser_note(
+    note_id: int,
+    config: Config,
+    stats_cache: StatsCache,
+    undo_entry: int,
+    processed_rule_card_pairs: set[tuple[str, int]],
+    result: BrowserRunResult,
+) -> None:
+    cards: dict[int, Card] = {}
+    ordered: list[int] = []
+    for cid in mw.col.card_ids_of_note(note_id):
+        try:
+            cards[cid] = mw.col.get_card(cid)
+        except NotFoundError:
+            continue
+        ordered.append(cid)
+    if not ordered:
+        return
+    note_type = cards[ordered[0]].note().note_type()
+    if not note_type:
+        return
+
+    card_type_names = {cid: card_type_name_for(card) for cid, card in cards.items()}
+    runs = plan_note_rule_runs(config.rules, note_type["name"], card_type_names, ordered)
+    if not runs:
+        return
+    result.notes += 1
+
+    for run in runs:
+        if run.per_card:
+            for cid in run.card_ids:
+                result.anchor_cards += 1
+                _record_browser_outcome(
+                    run_rule_for_reviewed_card(
+                        run.rule,
+                        cards[cid],
+                        config,
+                        stats_cache,
+                        undo_entry,
+                        processed_rule_card_pairs,
+                    ),
+                    config,
+                    result,
+                )
+            continue
+        remaining = list(run.card_ids)
+        while remaining:
+            anchor = remaining[0]
+            result.anchor_cards += 1
+            outcome = run_rule_for_reviewed_card(
+                run.rule,
+                cards[anchor],
+                config,
+                stats_cache,
+                undo_entry,
+                processed_rule_card_pairs,
+            )
+            _record_browser_outcome(outcome, config, result)
+            remaining = remaining_note_cards(remaining, anchor, outcome.covered_ids)
+
+
+def run_browser_disperse(
+    config: Config,
+    *,
+    note_ids: Optional[list[int]] = None,
+    card_ids: Optional[list[int]] = None,
+    report: Optional[ProgressReporter] = None,
+) -> BrowserRunResult:
+    """Disperse a browser selection on demand, with no review to trigger it.
+
+    Reviews done on another device do not run the review hook, and a rule added
+    after the fact has never run at all; either way the next session still holds
+    the cards those rules would have moved. This is the way to catch up without
+    answering them.
+
+    Rules are matched on note and card type only: the on-review and on-sync
+    flags say which *automatic* trigger a rule wants, and an explicit run from
+    the browser is neither of them.
+
+    Pass ``note_ids`` for a notes-mode selection, whose whole notes are handled
+    a rule at a time, or ``card_ids`` for a cards-mode one, where each selected
+    card anchors its own runs because the selection already says which cards
+    the user meant.
+    """
+    result = BrowserRunResult()
+    stats_cache: StatsCache = {}
+    processed_rule_card_pairs: set[tuple[str, int]] = set()
+    undo_entry = mw.col.add_custom_undo_entry("Disperse related cards")
+
+    if note_ids:
+        total = len(note_ids)
+        for index, nid in enumerate(note_ids):
+            if report is not None and report(f"Dispersing note {index + 1}/{total}", index, total):
+                result.cancelled = True
+                break
+            _disperse_browser_note(
+                nid, config, stats_cache, undo_entry, processed_rule_card_pairs, result
+            )
+        return result
+
+    selected = card_ids or []
+    total = len(selected)
+    for index, cid in enumerate(selected):
+        if report is not None and report(f"Dispersing card {index + 1}/{total}", index, total):
+            result.cancelled = True
+            break
+        try:
+            card = mw.col.get_card(cid)
+        except NotFoundError:
+            continue
+        _disperse_browser_card(
+            card, config, stats_cache, undo_entry, processed_rule_card_pairs, result
+        )
+    return result
+
+
+def run_browser_disperse_in_background(
+    config: Config,
+    on_done: Callable[[BrowserRunResult], None],
+    *,
+    note_ids: Optional[list[int]] = None,
+    card_ids: Optional[list[int]] = None,
+    parent: Optional[Any] = None,
+) -> None:
+    """Run a browser selection's dispersal off the UI thread, as sync does.
+
+    A selection can be thousands of notes, each costing a find_cards per rule
+    plus per-card stats lookups, so it gets the same cancellable progress
+    treatment as a large remote-review sync.
+    """
+
+    def report(label: str, value: int, maximum: int) -> bool:
+        mw.taskman.run_on_main(lambda: mw.progress.update(label=label, value=value, max=maximum))
+        return mw.progress.want_cancel()
+
+    def task() -> BrowserRunResult:
+        return run_browser_disperse(config, note_ids=note_ids, card_ids=card_ids, report=report)
+
+    def done(future) -> None:
+        mw.progress.finish()
+        result = future.result()
+        mw.reset()
+        on_done(result)
+
+    mw.progress.start(
+        label="Dispersing related cards",
+        max=len(note_ids or card_ids or []),
+        parent=parent,
         immediate=False,
     )
     mw.taskman.run_in_background(task, done)
