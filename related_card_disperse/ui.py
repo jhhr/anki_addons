@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from copy import deepcopy
 from typing import Optional
 
@@ -50,8 +49,20 @@ QUERY_CODE_NOTICE = (
 CAP_USES_DEFAULT = 0
 CAP_MAX = 9999
 
+# What an as-yet-unnamed rule is called in the list.
+UNNAMED_RULE_LABEL = "New rule"
+
 
 class RelatedCardDisperseDialog(ScrollableQDialog):
+    """Rule editor.
+
+    The list is the single source of truth: the editor always edits the rule at
+    ``_current_index`` and writes back into it before anything moves the
+    selection, so there is no such thing as an unsaved rule floating outside the
+    list. "New rule" therefore appends a row and selects it rather than blanking
+    the form and hoping the next Save figures out what was meant.
+    """
+
     def __init__(self, parent=None):
         footer = QHBoxLayout()
         self.save_all_btn = QPushButton("Save")
@@ -67,7 +78,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.config.load()
         self.rules: list[RelatedRule] = deepcopy(self.config.rules)
 
+        # Guards the handlers that react to user edits while the form is being
+        # populated from a rule, or the selection moved programmatically.
         self._building_ui = False
+        # The row the editor is currently editing; -1 when there is no rule.
+        self._current_index = -1
 
         root = QVBoxLayout(self.inner_widget)
 
@@ -115,8 +130,8 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         right = QVBoxLayout()
         split.addLayout(right, 2)
 
-        editor = QWidget(self)
-        form = QFormLayout(editor)
+        self.editor = QWidget(self)
+        form = QFormLayout(self.editor)
 
         self.rule_name = QLineEdit(self)
         self.rule_name.setPlaceholderText("Optional name")
@@ -163,7 +178,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         form.addRow(self.query_text_widget)
         form.addRow(self.query_code)
 
-        right.addWidget(editor)
+        right.addWidget(self.editor)
 
         action_row = QHBoxLayout()
         self.new_btn = QPushButton("New rule", self)
@@ -186,16 +201,10 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
 
         model = self.note_types.model()
         if model is not None:
-            model.dataChanged.connect(lambda *_: self._update_query_options())
+            model.dataChanged.connect(lambda *_: self._on_note_types_changed())
 
         self._refresh_rule_list()
-        if self.rules:
-            self.rule_list.setCurrentRow(0)
-        else:
-            self._building_ui = True
-            self._set_form_from_rule(default_rule())
-            self._building_ui = False
-            self._update_query_options()
+        self._select_row(0 if self.rules else -1)
 
     def _populate_note_types(self) -> None:
         self.note_types.blockSignals(True)
@@ -222,12 +231,33 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.query_text.update_options(options, validate)
         self.query_code.update_options(options, validate)
 
+    def _on_note_types_changed(self) -> None:
+        if self._building_ui:
+            return
+        self._update_query_options()
+        self._autofill_rule_name()
+
+    def _autofill_rule_name(self) -> None:
+        """Name a still-unnamed rule after the note type it was pointed at."""
+        if self.rule_name.text().strip():
+            return
+        names = self._selected_note_type_names()
+        if not names:
+            return
+        self.rule_name.setText(names[0])
+        item = self.rule_list.item(self._current_index)
+        if item is not None:
+            item.setText(names[0])
+
+    @staticmethod
+    def _rule_label(rule: RelatedRule) -> str:
+        return rule.get("name") or UNNAMED_RULE_LABEL
+
     def _refresh_rule_list(self) -> None:
         self.rule_list.blockSignals(True)
         self.rule_list.clear()
-        for idx, rule in enumerate(self.rules, start=1):
-            name = rule.get("name") or f"Rule {idx}"
-            self.rule_list.addItem(name)
+        for rule in self.rules:
+            self.rule_list.addItem(self._rule_label(rule))
         self.rule_list.blockSignals(False)
 
     def _on_use_code_toggled(self, checked: bool) -> None:
@@ -256,12 +286,12 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             return []
         return [n for n in target_note_types.strip('"').split('", "') if n]
 
-    def _current_rule(self) -> RelatedRule:
+    def _form_to_rule(self, guid: str) -> RelatedRule:
         cap = self.rule_cap.value()
         cap_value: Optional[int] = None if cap == CAP_USES_DEFAULT else cap
 
         return RelatedRule(
-            guid="",
+            guid=guid,
             name=self.rule_name.text().strip(),
             target_note_types=self._serialize_selected_note_types(),
             related_card_query=self.query_text.get_text(),
@@ -272,74 +302,91 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             max_related_cards=cap_value,
         )
 
-    def _on_rule_selected(self, row: int) -> None:
-        if row < 0 or row >= len(self.rules):
-            return
+    # -------------------------------------------------------------------------
+    # Selection / editing
+    # -------------------------------------------------------------------------
+
+    def _commit_form(self) -> None:
+        """Write the editor's contents back into the rule it is editing."""
+        index = self._current_index
+        if 0 <= index < len(self.rules):
+            self.rules[index] = self._form_to_rule(self.rules[index]["guid"])
+
+    def _load_row(self, row: int) -> None:
+        self._current_index = row
+        has_rule = 0 <= row < len(self.rules)
         self._building_ui = True
         try:
-            self._set_form_from_rule(self.rules[row])
+            self._set_form_from_rule(self.rules[row] if has_rule else default_rule())
         finally:
             self._building_ui = False
         self._update_query_options()
+        self.editor.setEnabled(has_rule)
+        self.save_rule_btn.setEnabled(has_rule)
+        self.remove_rule_btn.setEnabled(has_rule)
+        self.move_up_btn.setEnabled(has_rule)
+        self.move_down_btn.setEnabled(has_rule)
+
+    def _select_row(self, row: int) -> None:
+        """Move the selection ourselves, without the commit-on-leave handler."""
+        self._building_ui = True
+        try:
+            self.rule_list.setCurrentRow(row)
+        finally:
+            self._building_ui = False
+        self._load_row(row)
+
+    def _on_rule_selected(self, row: int) -> None:
+        if self._building_ui:
+            return
+        # _current_index still points at the row being left.
+        self._commit_form()
+        self._load_row(row)
 
     def _new_rule(self) -> None:
-        self._building_ui = True
-        try:
-            self._set_form_from_rule(default_rule())
-            self.note_types.setCurrentText("")
-        finally:
-            self._building_ui = False
-        self._update_query_options()
-        self.rule_list.clearSelection()
+        self._commit_form()
+        self.rules.append(default_rule())
+        self._refresh_rule_list()
+        self._select_row(len(self.rules) - 1)
 
     def _save_rule(self) -> None:
-        rule = self._current_rule()
-
-        current_row = self.rule_list.currentRow()
-        if current_row < 0:
-            rule["guid"] = str(uuid.uuid4())
-            self.rules.append(rule)
-            current_row = len(self.rules) - 1
-        else:
-            existing = self.rules[current_row]
-            rule["guid"] = existing["guid"]
-            self.rules[current_row] = rule
-
+        if self._current_index < 0:
+            return
+        row = self._current_index
+        self._commit_form()
         self._refresh_rule_list()
-        self.rule_list.setCurrentRow(current_row)
+        self._select_row(row)
 
     def _delete_rule(self) -> None:
-        row = self.rule_list.currentRow()
+        row = self._current_index
         if row < 0 or row >= len(self.rules):
             return
         self.rules.pop(row)
+        # Nothing to commit into any more: the edited rule is gone.
+        self._current_index = -1
         self._refresh_rule_list()
-        if self.rules:
-            self.rule_list.setCurrentRow(max(0, row - 1))
-        else:
-            self._new_rule()
+        self._select_row(min(row, len(self.rules) - 1) if self.rules else -1)
 
     def _move_up(self) -> None:
-        row = self.rule_list.currentRow()
-        if row <= 0:
+        row = self._current_index
+        if row <= 0 or row >= len(self.rules):
             return
+        self._commit_form()
         self.rules[row - 1], self.rules[row] = self.rules[row], self.rules[row - 1]
         self._refresh_rule_list()
-        self.rule_list.setCurrentRow(row - 1)
+        self._select_row(row - 1)
 
     def _move_down(self) -> None:
-        row = self.rule_list.currentRow()
+        row = self._current_index
         if row < 0 or row >= len(self.rules) - 1:
             return
+        self._commit_form()
         self.rules[row + 1], self.rules[row] = self.rules[row], self.rules[row + 1]
         self._refresh_rule_list()
-        self.rule_list.setCurrentRow(row + 1)
+        self._select_row(row + 1)
 
     def _save_all(self) -> None:
-        # Persist currently edited unsaved rule if list selection is active.
-        if self.rule_list.currentRow() >= 0:
-            self._save_rule()
-
+        self._commit_form()
         self.config.update_global(
             default_cap=self.default_cap.value(),
             show_no_overlap=self.show_no_overlap.isChecked(),
