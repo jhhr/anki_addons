@@ -94,8 +94,8 @@ GROWTH_RATE = 0.25
 # How many tasks to have queued behind the gate, as a multiple of the current limit. Some
 # queue is needed: a slot must be claimed the instant one frees, and the gate can only tell
 # it is the bottleneck (and so may grow) while tasks are waiting on it. Kept small because
-# queued tasks hold their note and prompt in memory just like running ones - which is also why
-# both halves of the memory arithmetic count them: see memory_per_slot and MemoryEstimator.
+# queued tasks are counted by both halves of the memory arithmetic, which have to agree with
+# each other: see memory_per_slot and MemoryEstimator.
 TASK_QUEUE_DEPTH = 4
 
 
@@ -170,7 +170,12 @@ def format_bytes(value: Optional[int]) -> str:
         return "?"
     if value >= 1024 * MB:
         return f"{value / (1024 * MB):.1f} GB"
-    return f"{value / MB:.0f} MB"
+    if value >= MB:
+        return f"{value / MB:.0f} MB"
+    # Per-task costs live down here, and rounding them to whole megabytes showed the honest
+    # answer for a cheap task as "0 MB/task" in the progress dialog - which reads as a broken
+    # measurement rather than a small one.
+    return f"{value / 1024:.0f} KB"
 
 
 def configured_memory_limit_bytes(config: Optional[dict], total_memory: int) -> int:
@@ -265,10 +270,16 @@ def max_possible_concurrency(config: Optional[dict] = None) -> int:
 def memory_per_slot(per_task_memory: float) -> float:
     """What one place in the limit really costs in memory.
 
-    Not one task's worth: the ops keep TASK_QUEUE_DEPTH tasks alive per slot so a freed slot is
-    claimed the instant it opens, and a queued task holds its note and its prompt exactly like
-    a running one does. Budgeting a slot at one task's cost would plan a limit whose window
-    needs TASK_QUEUE_DEPTH times the memory the budget allowed for.
+    The multiplier is here because the estimate on the other side is divided by the same thing.
+    What is measured is memory per *live* task, and the drivers keep TASK_QUEUE_DEPTH tasks
+    alive for every slot - so if a slot's work costs C, the measurement comes out at C /
+    TASK_QUEUE_DEPTH and this puts it back.
+
+    It is not that a queued task costs what a running one does. It costs almost nothing: every
+    task parks on `await gate.acquire()` as its first statement, so a queued one holds a
+    reference to a note that was already loaded and nothing else - no prompt, no request, no
+    response, all of which come after the slot is granted. The two factors have to keep
+    matching each other, and both are TASK_QUEUE_DEPTH, which is what makes the ceiling right.
     """
     return max(per_task_memory, MIN_PER_TASK_MEMORY) * TASK_QUEUE_DEPTH
 
@@ -544,6 +555,12 @@ class MemoryEstimator:
     starts; but they are a fixed cost of the run rather than the cost of one more live task,
     so a per-task figure is right to leave them out.
 
+    Expect the number to be small, and to be a *quarter* of what a running task costs: three
+    live tasks in four are parked on `gate.acquire()` and have allocated nothing at all. That
+    is the convention memory_per_slot multiplies back out - see it - and not a fault, but it
+    does mean a cheap op measures near MIN_PER_TASK_MEMORY, where the clamp starts hiding what
+    was actually fitted. refit() logs both figures for that reason.
+
     Within a run the largest fit wins, because what has to fit in RAM is the peak rather than
     the average. Across runs the value is blended into the stored one, so a single odd run
     does not skew it.
@@ -594,10 +611,13 @@ class MemoryEstimator:
     def note_live_tasks(self, count: float) -> None:
         """How many of the op's API tasks are alive right now, and a sample at that count.
 
-        Every one of them holds its note and its prompt from the moment it is created, whether
-        or not it has a gate slot yet, so this is the number memory scales with. The driver
-        reports it on every refill and every batch of completions, which is where the fit gets
-        most of its samples and all of its spread.
+        Live, not in flight, because that is the count memory_per_slot divides back out again;
+        see it for why the two have to agree. Most of them are parked on `gate.acquire()` and
+        have allocated nothing yet, so the figure this produces is roughly what one task costs
+        divided by TASK_QUEUE_DEPTH - small, and small enough to sit on MIN_PER_TASK_MEMORY.
+
+        The driver reports it on every refill and every batch of completions, which is where
+        the fit gets most of its samples and all of its spread.
         """
         self._live_tasks = max(0.0, float(count))
         self.sample()
@@ -668,21 +688,26 @@ class MemoryEstimator:
                 format_bytes(int(traced_slope)),
                 format_bytes(int(rss_slope)),
             )
-        per_task = traced_slope if traced_slope is not None else rss_slope
-        if per_task is None or per_task <= 0:
+        fitted = traced_slope if traced_slope is not None else rss_slope
+        if fitted is None or fitted <= 0:
             return None
-        per_task = min(MAX_PER_TASK_MEMORY, max(MIN_PER_TASK_MEMORY, per_task))
+        per_task = min(MAX_PER_TASK_MEMORY, max(MIN_PER_TASK_MEMORY, fitted))
         if self.measured is not None and per_task <= self.measured:
             return None
         previous = self.estimate
         self.measured = per_task
         self.estimate = per_task
         self.from_measurement = True
+        # The fitted figure is logged beside the one that is kept, because a value sitting on
+        # a clamp is not a measurement of that value - it is the fit saying "smaller than this
+        # floor" or "larger than this ceiling", and the two read identically otherwise.
         logger.debug(
-            "Measured per-task memory for %r: %s from %s (was %s)",
+            "Measured per-task memory for %r: %s from %s (fitted %s%s, was %s)",
             self.op_key,
             format_bytes(int(per_task)),
             "traced allocations" if traced_slope is not None else "rss",
+            format_bytes(int(fitted)),
+            " - clamped" if int(per_task) != int(fitted) else "",
             format_bytes(int(previous)),
         )
         return per_task

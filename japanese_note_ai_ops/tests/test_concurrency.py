@@ -153,6 +153,14 @@ class FormatBytesTests(unittest.TestCase):
         self.assertEqual(conc.format_bytes(2 * GB), "2.0 GB")
         self.assertEqual(conc.format_bytes(None), "?")
 
+    def test_a_small_per_task_cost_is_not_rounded_away(self):
+        """The progress dialog showed an honestly cheap task as "0 MB/task", which reads as a
+        broken measurement rather than a small one. Per-task costs live below a megabyte: the
+        estimate is per *live* task and three in four are parked on the gate."""
+        self.assertEqual(conc.format_bytes(conc.MIN_PER_TASK_MEMORY), "512 KB")
+        self.assertEqual(conc.format_bytes(400 * 1024), "400 KB")
+        self.assertEqual(conc.format_bytes(MB), "1 MB")
+
 
 class MemoryProbeTests(unittest.TestCase):
     def test_the_reserve_is_a_share_of_total_memory_with_a_floor(self):

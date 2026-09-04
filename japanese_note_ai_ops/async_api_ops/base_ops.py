@@ -1334,8 +1334,8 @@ async def run_plans_rolling(
 ) -> bool:
     """Run every plan, keeping the task budget full instead of processing fixed windows.
 
-    A task holds its note and its prompt for as long as it lives, so only so many of them may
-    exist at once. That budget is `gate.limit * TASK_QUEUE_DEPTH`, the same figure the window
+    A task holds its note, and once it has a slot its prompt and its response, for as long as
+    it lives, so only so many of them may exist at once. That budget is `gate.limit * TASK_QUEUE_DEPTH`, the same figure the window
     size used to be; what changed is that it is refilled as individual tasks finish rather
     than after a whole window has. Waiting for a whole window drained the gate from full to
     empty at every boundary - the slowest request in the window held `limit - 1` slots idle
@@ -1416,10 +1416,11 @@ async def run_plans_rolling(
                 break
 
             fill()
-            # The API tasks are alive from here, whether or not they hold a gate slot yet, and
-            # each holds its note and prompt. That count is what the estimator fits memory
-            # against. live_cost and not len(live): spawn() also creates per-word-list and
-            # per-note bookkeeping tasks, which hold no prompt and would only dilute it.
+            # The API tasks are alive from here, whether or not they hold a gate slot yet.
+            # That count is what the estimator fits memory against - live and not in flight,
+            # because concurrency.memory_per_slot divides the same TASK_QUEUE_DEPTH back out.
+            # live_cost and not len(live): spawn() also creates per-word-list and per-note
+            # bookkeeping tasks, which never touch the gate and would only dilute it.
             gate.note_live_tasks(live_cost)
             if not live:
                 # Plans left over with nothing running means fill() stopped early, which it
@@ -1753,9 +1754,9 @@ async def bulk_notes_op(
     cancelled = False
 
     try:
-        # Every task holds onto its note and prompt for as long as it lives, so they are not
-        # all created up front: a plan is only the closure that will create one when the
-        # rolling driver has room for it.
+        # Every task holds onto its note for as long as it lives, and its prompt and response
+        # from the moment it has a gate slot, so they are not all created up front: a plan is
+        # only the closure that will create one when the rolling driver has room for it.
         def make_plan(note: Note) -> NotePlan:
             def handle_op_error(e: Exception) -> None:
                 logger.error(f"Error during operation with note {note.id}: {e}")
