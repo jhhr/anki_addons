@@ -5,7 +5,14 @@
   "human_version": "1.0.0",
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [
-    "jp_text_processing"
+    "jp_text_processing",
+    "utils"
   ],
-  "exclude": []
+  "exclude": [],
+  "vendor_keep": [
+    "mdict_query"
+  ],
+  "vendor_no_binaries": [
+    "rapidfuzz"
+  ]
 }
