@@ -6,7 +6,9 @@ from typing import Optional
 from aqt import mw
 from aqt.qt import (
     QCheckBox,
+    QFontMetrics,
     QFormLayout,
+    QGuiApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -53,6 +55,17 @@ CAP_MAX = 9999
 # What an as-yet-unnamed rule is called in the list.
 UNNAMED_RULE_LABEL = "New rule"
 
+# The dialog opens at the full available screen width -- the editor's query
+# fields are wide, and anything narrower made the scroll area scroll sideways.
+DIALOG_HEIGHT_FRACTION = 0.95
+
+# The rule list only ever holds short names, so it is capped at whichever is
+# narrower: room for this many characters, or this fraction of the dialog.
+RULE_LIST_CHARS = 50
+RULE_LIST_WIDTH_FRACTION = 0.30
+# Frame, margins and a possible vertical scrollbar, on top of the text itself.
+RULE_LIST_CHROME_PX = 40
+
 QUERY_REQUIRED_MESSAGE = (
     "A related card query is required while dispersal is enabled: an empty query matches"
     " the whole collection."
@@ -77,8 +90,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         footer.addWidget(self.save_all_btn)
         footer.addWidget(self.cancel_btn)
 
-        super().__init__(parent or mw, footer_layout=footer)
+        # ScrollableQDialog's own sizing is 60% of the screen width, which is
+        # narrower than this editor needs; size it ourselves instead.
+        super().__init__(parent or mw, footer_layout=footer, no_fixed_size=True)
         self.setWindowTitle("Related Card Disperse")
+        self._resize_to_screen()
 
         self.config = Config()
         self.config.load()
@@ -121,9 +137,12 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         split = QHBoxLayout()
         root.addLayout(split)
 
-        # Left: rule list + ordering controls
-        left = QVBoxLayout()
-        split.addLayout(left, 1)
+        # Left: rule list + ordering controls. Given no stretch, so it takes
+        # only the width _apply_rule_list_width allows it.
+        self.left_box = QWidget(self)
+        left = QVBoxLayout(self.left_box)
+        left.setContentsMargins(0, 0, 0, 0)
+        split.addWidget(self.left_box, 0)
 
         left.addWidget(QLabel("Rules"))
         self.rule_list = QListWidget(self)
@@ -136,9 +155,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         order_row.addWidget(self.move_down_btn)
         left.addLayout(order_row)
 
-        # Right: editor
-        right = QVBoxLayout()
-        split.addLayout(right, 2)
+        # Right: editor, taking all the width the rule list does not.
+        right_box = QWidget(self)
+        right = QVBoxLayout(right_box)
+        right.setContentsMargins(0, 0, 0, 0)
+        split.addWidget(right_box, 1)
 
         self.editor = QWidget(self)
         form = QFormLayout(self.editor)
@@ -231,8 +252,30 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         if model is not None:
             model.dataChanged.connect(lambda *_: self._on_note_types_changed())
 
+        self._apply_rule_list_width()
         self._refresh_rule_list()
         self._select_row(0 if self.rules else -1)
+
+    def _resize_to_screen(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        self.resize(available.width(), int(available.height() * DIALOG_HEIGHT_FRACTION))
+        self.move(available.x(), available.y())
+
+    def _apply_rule_list_width(self) -> None:
+        metrics = QFontMetrics(self.rule_list.font())
+        chars_width = metrics.averageCharWidth() * RULE_LIST_CHARS + RULE_LIST_CHROME_PX
+        self.left_box.setMaximumWidth(
+            min(chars_width, int(self.width() * RULE_LIST_WIDTH_FRACTION))
+        )
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        # Fired during construction too, before the left column exists.
+        if hasattr(self, "left_box"):
+            self._apply_rule_list_width()
 
     def _populate_note_types(self) -> None:
         self.note_types.blockSignals(True)
