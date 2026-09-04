@@ -31,6 +31,7 @@ from .shared.ui.code_edit_layout import (
 from .shared.ui.interpolated_text_edit import InterpolatedTextEditLayout, make_validate_dict
 from .shared.ui.multi_combo_box import MultiComboBox
 from .shared.ui.scrollable_dialog import ScrollableQDialog
+from .shared.ui.toggle_switch import ToggleSwitch
 
 
 QUERY_CODE_NOTICE = (
@@ -51,6 +52,11 @@ CAP_MAX = 9999
 
 # What an as-yet-unnamed rule is called in the list.
 UNNAMED_RULE_LABEL = "New rule"
+
+QUERY_REQUIRED_MESSAGE = (
+    "A related card query is required while dispersal is enabled: an empty query matches"
+    " the whole collection."
+)
 
 
 class RelatedCardDisperseDialog(ScrollableQDialog):
@@ -136,6 +142,8 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.rule_name = QLineEdit(self)
         self.rule_name.setPlaceholderText("Optional name")
 
+        self.enabled = ToggleSwitch("Disperse related cards for these note types", self)
+
         self.note_types = MultiComboBox(self)
         self._populate_note_types()
 
@@ -151,7 +159,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.query_text = InterpolatedTextEditLayout(
             label="Related card query",
             options_dict={},
-            description="Use browser query syntax and interpolate with {{Field}}.",
+            description=(
+                "Use browser query syntax and interpolate with {{Field}}. Required while"
+                " dispersal is enabled. A new rule starts with the reviewed note's own"
+                " cards, i.e. plain sibling dispersal."
+            ),
             height=120,
             placeholder_text='"deck:My deck" "Front:*{{Front}}*"',
             is_required=False,
@@ -163,13 +175,17 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             parent=self,
             options_dict={},
             label="Query code",
-            description="Return a query string or list of card ids.",
+            description=(
+                "Return a query string or list of card ids. Required while dispersal is"
+                " enabled."
+            ),
             notice=QUERY_CODE_NOTICE,
             is_required=False,
         )
         self.query_code.hide()
 
         form.addRow("Rule name", self.rule_name)
+        form.addRow(self.enabled)
         form.addRow("Target note types", self.note_types)
         form.addRow(self.on_review)
         form.addRow(self.on_sync)
@@ -179,6 +195,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         form.addRow(self.query_code)
 
         right.addWidget(self.editor)
+
+        self.validation_label = QLabel(self)
+        self.validation_label.setWordWrap(True)
+        self.validation_label.setStyleSheet("color: #d9534f;")
+        right.addWidget(self.validation_label)
 
         action_row = QHBoxLayout()
         self.new_btn = QPushButton("New rule", self)
@@ -198,6 +219,9 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.save_all_btn.clicked.connect(self._save_all)
         self.cancel_btn.clicked.connect(self.reject)
         self.use_code.toggled.connect(self._on_use_code_toggled)
+        self.enabled.toggled.connect(self._on_enabled_toggled)
+        self.query_text.text_edit.textChanged.connect(self._update_validation_state)
+        self.query_code.text_edit.textChanged.connect(self._update_validation_state)
 
         model = self.note_types.model()
         if model is not None:
@@ -245,29 +269,65 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         if not names:
             return
         self.rule_name.setText(names[0])
-        item = self.rule_list.item(self._current_index)
-        if item is not None:
-            item.setText(names[0])
+        self._relabel_current_row()
 
     @staticmethod
-    def _rule_label(rule: RelatedRule) -> str:
-        return rule.get("name") or UNNAMED_RULE_LABEL
+    def _rule_label(name: str, enabled: bool) -> str:
+        label = name or UNNAMED_RULE_LABEL
+        return label if enabled else f"{label} (disabled)"
 
     def _refresh_rule_list(self) -> None:
         self.rule_list.blockSignals(True)
         self.rule_list.clear()
         for rule in self.rules:
-            self.rule_list.addItem(self._rule_label(rule))
+            self.rule_list.addItem(
+                self._rule_label(rule.get("name", ""), rule.get("enabled", True))
+            )
         self.rule_list.blockSignals(False)
+
+    def _relabel_current_row(self) -> None:
+        item = self.rule_list.item(self._current_index)
+        if item is not None:
+            item.setText(
+                self._rule_label(self.rule_name.text().strip(), self.enabled.isChecked())
+            )
 
     def _on_use_code_toggled(self, checked: bool) -> None:
         self.query_text_widget.setVisible(not checked)
         self.query_code.setVisible(checked)
         if checked and not self.query_code.get_text().strip():
             self.query_code.set_text(f"return {repr(self.query_text.get_text())}")
+        self._update_validation_state()
+
+    def _on_enabled_toggled(self, _checked: bool) -> None:
+        self._relabel_current_row()
+        self._update_validation_state()
+
+    def _active_query_text(self) -> str:
+        if self.use_code.isChecked():
+            return self.query_code.get_text()
+        return self.query_text.get_text()
+
+    def _rule_is_valid(self) -> bool:
+        """An enabled rule needs a query; a disabled one is never run."""
+        if self._current_index < 0 or not self.enabled.isChecked():
+            return True
+        return bool(self._active_query_text().strip())
+
+    def _update_validation_state(self) -> None:
+        required = self.enabled.isChecked() and self._current_index >= 0
+        in_code_mode = self.use_code.isChecked()
+        self.query_text.text_edit.set_required(required and not in_code_mode)
+        self.query_code.text_edit.set_required(required and in_code_mode)
+
+        valid = self._rule_is_valid()
+        self.validation_label.setText("" if valid else QUERY_REQUIRED_MESSAGE)
+        self.save_all_btn.setEnabled(valid)
+        self.save_rule_btn.setEnabled(valid and self._current_index >= 0)
 
     def _set_form_from_rule(self, rule: RelatedRule) -> None:
         self.rule_name.setText(rule.get("name", ""))
+        self.enabled.setChecked(rule.get("enabled", True))
         self.note_types.setCurrentText("")
         for note_type_name in self._decode_note_types(rule.get("target_note_types", "")):
             self.note_types.addSelectedItem(note_type_name)
@@ -293,6 +353,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         return RelatedRule(
             guid=guid,
             name=self.rule_name.text().strip(),
+            enabled=self.enabled.isChecked(),
             target_note_types=self._serialize_selected_note_types(),
             related_card_query=self.query_text.get_text(),
             use_code=self.use_code.isChecked(),
@@ -322,10 +383,10 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             self._building_ui = False
         self._update_query_options()
         self.editor.setEnabled(has_rule)
-        self.save_rule_btn.setEnabled(has_rule)
         self.remove_rule_btn.setEnabled(has_rule)
         self.move_up_btn.setEnabled(has_rule)
         self.move_down_btn.setEnabled(has_rule)
+        self._update_validation_state()
 
     def _select_row(self, row: int) -> None:
         """Move the selection ourselves, without the commit-on-leave handler."""

@@ -79,6 +79,8 @@ def get_applicable_rules(
 ) -> list[RelatedRule]:
     result: list[RelatedRule] = []
     for rule in rules:
+        if not rule.get("enabled", True):
+            continue
         if on_review and not rule.get("on_review", True):
             continue
         if on_sync and not rule.get("on_sync", True):
@@ -115,6 +117,8 @@ def _as_query_or_ids(
         if error:
             return None, [], error
         if isinstance(result, str):
+            if not result.strip():
+                return None, [], "code returned an empty query"
             return result, [], None
         try:
             return None, normalize_card_id_result(result), None
@@ -127,6 +131,10 @@ def _as_query_or_ids(
         return None, [], f"invalid fields in query: {', '.join(invalid_fields)}"
     if query is None:
         return None, [], "could not interpolate query"
+    if not query.strip():
+        # find_cards("") matches the whole collection, which would reschedule
+        # every review card in it.
+        return None, [], "empty query"
     return query, [], None
 
 

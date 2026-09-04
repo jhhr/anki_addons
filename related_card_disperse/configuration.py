@@ -5,13 +5,21 @@ from typing import Optional, TypedDict
 
 from aqt import mw
 
+from .shared.interpolate.interpolate_fields import NOTE_ID, intr_format
+
 
 tag = mw.addonManager.addonFromModule(__name__)
+
+# What a new rule starts with: the reviewed note's own cards, i.e. plain
+# sibling dispersal. Anything is better than an empty query, which
+# find_cards reads as the whole collection.
+DEFAULT_RELATED_CARD_QUERY = "nid:" + intr_format(NOTE_ID)
 
 
 class RelatedRule(TypedDict):
     guid: str
     name: str
+    enabled: bool
     target_note_types: str
     related_card_query: str
     use_code: bool
@@ -50,8 +58,9 @@ def default_rule() -> RelatedRule:
     return RelatedRule(
         guid=str(uuid.uuid4()),
         name="",
+        enabled=True,
         target_note_types="",
-        related_card_query="",
+        related_card_query=DEFAULT_RELATED_CARD_QUERY,
         use_code=False,
         query_code="",
         on_review=True,
@@ -74,6 +83,7 @@ def migrate_data(data: dict) -> ConfigData:
         base = default_rule()
         base["guid"] = str(maybe_rule.get("guid") or uuid.uuid4())
         base["name"] = str(maybe_rule.get("name") or "")
+        base["enabled"] = bool(maybe_rule.get("enabled", True))
         base["target_note_types"] = _normalize_note_types(
             maybe_rule.get("target_note_types")
         )
@@ -91,6 +101,11 @@ def migrate_data(data: dict) -> ConfigData:
                 base["max_related_cards"] = as_int if as_int > 0 else None
             except (TypeError, ValueError):
                 base["max_related_cards"] = None
+        # A rule with nothing to run cannot be left enabled: an empty query
+        # reaches find_cards(""), which matches the entire collection.
+        active_query = base["query_code"] if base["use_code"] else base["related_card_query"]
+        if not active_query.strip():
+            base["enabled"] = False
         normalized_rules.append(base)
 
     data["rules"] = normalized_rules
