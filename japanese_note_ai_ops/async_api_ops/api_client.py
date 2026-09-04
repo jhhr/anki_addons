@@ -16,7 +16,7 @@ import threading
 import time
 import weakref
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
@@ -361,26 +361,65 @@ def classify_response(provider: str, response: "requests.Response") -> tuple[str
     return ResponseAction.FAIL, None
 
 
+# The limit buckets a successful response can report, as (remaining header, reset header).
+# Which ones a model actually sends varies: Anthropic has a combined tokens bucket on some
+# tiers and separate input and output ones on others, and returns only the buckets that apply.
+ANTHROPIC_LIMIT_BUCKETS = (
+    ("anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-reset"),
+    ("anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-tokens-reset"),
+    ("anthropic-ratelimit-input-tokens-remaining", "anthropic-ratelimit-input-tokens-reset"),
+    ("anthropic-ratelimit-output-tokens-remaining", "anthropic-ratelimit-output-tokens-reset"),
+)
+# OpenAI's shape, which Together follows
+OPENAI_LIMIT_BUCKETS = (
+    ("x-ratelimit-remaining-requests", "x-ratelimit-reset-requests"),
+    ("x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens"),
+)
+
+
+def exhausted_bucket_waits(
+    headers, buckets: tuple, parse_reset: "Callable[[Optional[str]], Optional[float]]"
+) -> list:
+    """How long each spent bucket says it needs. Buckets with headroom, or absent, contribute
+    nothing - a header the provider did not send is not a bucket at zero."""
+    waits = []
+    for remaining_header, reset_header in buckets:
+        remaining = headers.get(remaining_header)
+        if remaining is None or int(remaining) > 0:
+            continue
+        wait = parse_reset(headers.get(reset_header))
+        if wait is not None:
+            waits.append(wait)
+    return waits
+
+
 def preemptive_cooldown(provider: str, response: "requests.Response") -> Optional[float]:
     """On a successful response, check whether we just used up the last of a limit bucket.
 
     Returns how long to hold off before the next request to this model, or None when there is
     still headroom. Turns most would-be rejections into a wait.
+
+    Tokens count as much as requests here, and usually more: prompts this size exhaust a
+    minute's tokens well before its requests, so watching only the requests bucket means the
+    first sign of a token limit is the 429 this is meant to avoid. Every bucket the provider
+    reports is checked, and the longest reset among the spent ones wins - clearing the requests
+    bucket while the token bucket still has forty seconds to run only earns that 429 later.
     """
     headers = response.headers
     try:
         if provider == ANTHROPIC:
-            remaining = headers.get("anthropic-ratelimit-requests-remaining")
-            if remaining is not None and int(remaining) <= 0:
-                return parse_rfc3339_reset(headers.get("anthropic-ratelimit-requests-reset"))
+            waits = exhausted_bucket_waits(
+                headers, ANTHROPIC_LIMIT_BUCKETS, parse_rfc3339_reset
+            )
         elif provider in (OPENAI, TOGETHER):
-            remaining = headers.get("x-ratelimit-remaining-requests")
-            if remaining is not None and int(remaining) <= 0:
-                return parse_go_duration(headers.get("x-ratelimit-reset-requests"))
+            waits = exhausted_bucket_waits(headers, OPENAI_LIMIT_BUCKETS, parse_go_duration)
+        else:
+            # Gemini does not return remaining-quota headers
+            return None
     except (TypeError, ValueError):
+        # A provider that omits a header or reshapes one must not break a successful response
         return None
-    # Gemini does not return remaining-quota headers
-    return None
+    return max(waits) if waits else None
 
 
 # --- Rate limit tracking -----------------------------------------------------------------
@@ -760,7 +799,7 @@ def post_with_retry(
             rate_limit_tracker.note_success(key, sent_at=sent_at)
             hold_off = preemptive_cooldown(provider, response)
             if hold_off:
-                logger.debug("Model %s is out of request quota, holding off %.1fs", key, hold_off)
+                logger.debug("Model %s is out of quota, holding off %.1fs", key, hold_off)
                 rate_limit_tracker.note_rate_limited(key, hold_off)
             return response
 

@@ -374,6 +374,104 @@ class PreemptiveCooldownTests(unittest.TestCase):
         )
         self.assertEqual(api.preemptive_cooldown(api.OPENAI, response), 30.0)
 
+    def test_anthropic_out_of_tokens_although_requests_are_fine(self):
+        # TPM is the binding limit for prompts this size, so watching requests alone would let
+        # the next call walk straight into the 429 this exists to avoid
+        response = FakeResponse(
+            200,
+            headers={
+                "anthropic-ratelimit-requests-remaining": "48",
+                "anthropic-ratelimit-requests-reset": rfc3339_in(5),
+                "anthropic-ratelimit-tokens-remaining": "0",
+                "anthropic-ratelimit-tokens-reset": rfc3339_in(25),
+            },
+        )
+        hold = api.preemptive_cooldown(api.ANTHROPIC, response)
+        self.assertIsNotNone(hold)
+        self.assertGreater(hold, 20.0)
+
+    def test_anthropic_out_of_input_tokens(self):
+        # Some tiers report input and output separately instead of one combined bucket
+        response = FakeResponse(
+            200,
+            headers={
+                "anthropic-ratelimit-input-tokens-remaining": "0",
+                "anthropic-ratelimit-input-tokens-reset": rfc3339_in(25),
+                "anthropic-ratelimit-output-tokens-remaining": "8000",
+                "anthropic-ratelimit-output-tokens-reset": rfc3339_in(25),
+            },
+        )
+        hold = api.preemptive_cooldown(api.ANTHROPIC, response)
+        self.assertIsNotNone(hold)
+        self.assertGreater(hold, 20.0)
+
+    def test_anthropic_waits_for_the_last_bucket_to_clear_not_the_first(self):
+        # Coming back when requests reset, with the token bucket still spent, just earns a 429
+        response = FakeResponse(
+            200,
+            headers={
+                "anthropic-ratelimit-requests-remaining": "0",
+                "anthropic-ratelimit-requests-reset": rfc3339_in(5),
+                "anthropic-ratelimit-input-tokens-remaining": "0",
+                "anthropic-ratelimit-input-tokens-reset": rfc3339_in(50),
+            },
+        )
+        hold = api.preemptive_cooldown(api.ANTHROPIC, response)
+        self.assertIsNotNone(hold)
+        self.assertGreater(hold, 45.0)
+
+    def test_anthropic_ignores_buckets_that_still_have_headroom(self):
+        response = FakeResponse(
+            200,
+            headers={
+                "anthropic-ratelimit-requests-remaining": "5",
+                "anthropic-ratelimit-requests-reset": rfc3339_in(25),
+                "anthropic-ratelimit-tokens-remaining": "12000",
+                "anthropic-ratelimit-tokens-reset": rfc3339_in(25),
+            },
+        )
+        self.assertIsNone(api.preemptive_cooldown(api.ANTHROPIC, response))
+
+    def test_openai_out_of_tokens_although_requests_are_fine(self):
+        response = FakeResponse(
+            200,
+            headers={
+                "x-ratelimit-remaining-requests": "120",
+                "x-ratelimit-reset-requests": "2s",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "45s",
+            },
+        )
+        self.assertEqual(api.preemptive_cooldown(api.OPENAI, response), 45.0)
+
+    def test_openai_waits_for_the_last_bucket_to_clear_not_the_first(self):
+        response = FakeResponse(
+            200,
+            headers={
+                "x-ratelimit-remaining-requests": "0",
+                "x-ratelimit-reset-requests": "6s",
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "1m30s",
+            },
+        )
+        self.assertEqual(api.preemptive_cooldown(api.OPENAI, response), 90.0)
+
+    def test_together_out_of_tokens(self):
+        # Together follows OpenAI's header shape, so it goes through the same buckets
+        response = FakeResponse(
+            200,
+            headers={
+                "x-ratelimit-remaining-tokens": "0",
+                "x-ratelimit-reset-tokens": "20s",
+            },
+        )
+        self.assertEqual(api.preemptive_cooldown(api.TOGETHER, response), 20.0)
+
+    def test_a_spent_bucket_with_no_reset_header_is_not_a_wait(self):
+        # Nothing says how long to hold off, so the retry path's backoff is the better answer
+        response = FakeResponse(200, headers={"x-ratelimit-remaining-tokens": "0"})
+        self.assertIsNone(api.preemptive_cooldown(api.OPENAI, response))
+
     def test_gemini_returns_no_quota_headers(self):
         self.assertIsNone(api.preemptive_cooldown(api.GEMINI, FakeResponse(200)))
 
