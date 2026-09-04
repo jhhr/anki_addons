@@ -21,7 +21,7 @@ from .core import (
     summarize_outcome,
 )
 from .shared.anki.write_custom_data import write_custom_data
-from .shared.interpolate.execute_code import execute_code_core
+from .shared.interpolate.execute_code import ReadOnlyCard, ReadOnlyNote, execute_code_core
 from .shared.interpolate.interpolate_fields import interpolate_from_text
 from .shared.scheduling.due_dates import due_to_date, get_fuzz_range
 
@@ -98,10 +98,16 @@ def _as_query_or_ids(
             return None, [], f"invalid fields in code: {', '.join(invalid_fields)}"
         if interpolated_code is None:
             return None, [], "could not interpolate query code"
+        note_type = note.note_type()
         result, error = execute_code_core(
             interpolated_code,
             note,
-            extra_globals={"reviewed_card": reviewed_card, "reviewed_note": note},
+            extra_globals={
+                # Wrapped like the names execute_code_core sets up itself: user
+                # code reads the reviewed card and note, it never mutates them.
+                "reviewed_card": ReadOnlyCard(reviewed_card, note_type),
+                "reviewed_note": ReadOnlyNote(note),
+            },
         )
         if error:
             return None, [], error
