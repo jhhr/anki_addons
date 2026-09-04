@@ -1,0 +1,15 @@
+# Materialised by `python build.py link` / `install`; never committed, so no
+# device needs core.symlinks or Developer Mode.
+*/shared/
+
+dist/
+__pycache__/
+*.py[cod]
+
+# Anki's per-install addon state (includes the enabled/disabled flag). It lives
+# inside the junction target and must stay per-device.
+meta.json
+
+.idea/
+.vscode/
+.pytest_cache/
