@@ -12,13 +12,24 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.qt import QAction, qconnect, QMenu
 
-# Put the vendored 'lib' on sys.path - both the flat half and this platform's binaries -
-# before anything that imports from it. Nothing below may move above this line.
-from .shared.utils.vendor_path import add_vendor_paths  # noqa: E402
+# Put the vendored 'lib' on sys.path - the locally rebuilt tree if there is one, then the
+# shipped halves - before anything that imports from it. Nothing below may move above this line.
+from .shared.utils.vendor_path import add_vendor_paths, vendor_health  # noqa: E402
 
-add_vendor_paths(os.path.dirname(os.path.abspath(__file__)))
+ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
+ADDON_NAME = "Simple Anki AI Prompts"
+
+add_vendor_paths(ADDON_DIR)
+
+# Two string comparisons and a small JSON read, so it runs at every startup - and it has to,
+# because Anki's launcher updates Anki's Python independently of any addon, and a lib built for
+# the previous one degrades silently rather than raising. It also has to run here, while
+# sys.path is as add_vendor_paths just left it and before anything has imported from it.
+# Acting on the verdict needs a main window, so that waits for main_window_did_init.
+VENDOR_HEALTH = vendor_health(ADDON_DIR)
 
 # E402 - module level import not at top of file
+from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 from .utils import get_field_config  # noqa: E402
 from .async_api_ops.diagnostics import WORKER_THREAD_PREFIX  # noqa: E402
 
@@ -439,3 +450,8 @@ gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_men
 
 # Register to field unfocus hook
 gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
+
+# Offer to rebuild the vendored packages when they do not fit this machine, and put the same
+# rebuild in the Tools menu for anyone who wants rapidfuzz's compiled half - which the shipped
+# lib/ leaves out, because five platforms of it is ~30 MB.
+install_rebuild_ui(ADDON_DIR, ADDON_NAME, VENDOR_HEALTH)
