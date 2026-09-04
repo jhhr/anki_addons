@@ -12,7 +12,6 @@ def init_addon() -> None:
     init_review_hook()
     init_sync_hook()
 
-    menu = mw.form.menuTools.addMenu("Related Card Disperse")
-    configure_action = QAction("Configure rules", mw)
+    configure_action = QAction("Related Card Disperse", mw)
     configure_action.triggered.connect(lambda: show_config_dialog(mw))
-    menu.addAction(configure_action)
+    mw.form.menuTools.addAction(configure_action)
