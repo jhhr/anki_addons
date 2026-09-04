@@ -27,7 +27,7 @@ for _mod_name in [
 #      on the current directory name.
 # Each stub carries a __path__ pointing to the real directory on disk so that
 # Python finds and loads actual .py files on first import, and so that relative
-# imports inside those files (e.g. `from ..utils.to_lowercase_dict import ...`)
+# imports inside those files (e.g. `from .to_lowercase_dict import ...`)
 # still resolve to the real modules.
 _STABLE_PACKAGE = "_anki_addon"
 for _base in [_addon_real_name, _STABLE_PACKAGE]:
