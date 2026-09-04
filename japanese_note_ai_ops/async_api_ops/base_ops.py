@@ -776,7 +776,12 @@ class CancelManager:
         progress_updater: Optional["AsyncTaskProgressUpdater"] = None,
     ):
         self.cancel_requested = False
-        self.tasks = tasks  # List of tasks to cancel if needed
+        self.tasks = tasks  # Live tasks to cancel if needed; the rolling driver mutates it
+        # Set once no more tasks will be started. The rolling driver refills its live set as
+        # tasks finish, so an all-done set is normally the moment just before the next ones
+        # start rather than the end of the run - without this the monitor would exit on the
+        # first such gap and stop polling for cancellation for the rest of the run.
+        self.work_complete = False
         self.cancel_state = cancel_state or CancelState()
         self.progress_updater = progress_updater
         # Lets whoever is waiting on the tasks stop waiting the moment cancel is requested,
@@ -847,6 +852,10 @@ class CancelManager:
         """Check if cancellation has been requested."""
         return self.cancel_requested
 
+    def mark_work_complete(self) -> None:
+        """Say that no more tasks will be started, so the monitor may stop once they drain."""
+        self.work_complete = True
+
     async def monitor_for_cancellation(self):
         """Monitor for cancellation requests and cancel all tasks if requested."""
         try:
@@ -858,7 +867,7 @@ class CancelManager:
                     break
 
                 # Check if all tasks are completed naturally
-                if all(task.done() for task in self.tasks):
+                if self.work_complete and all(task.done() for task in self.tasks):
                     logger.debug("All tasks completed naturally, exiting monitor")
                     break
 
@@ -870,58 +879,64 @@ class CancelManager:
             # Just exit the task when cancelled
 
 
-async def await_tasks_or_cancel(
-    tasks: "list[asyncio.Task]", cancel_manager: CancelManager
-) -> None:
-    """Wait for a window's tasks, but stop waiting the instant cancellation is requested.
+def drain_task_errors(tasks: "Sequence[asyncio.Task]") -> None:
+    """Read the results of finished tasks so nothing they raised goes unreported.
 
-    Waiting for the tasks to unwind is not safe to rely on. A task blocked in a worker thread
-    detaches when cancelled, but nothing can interrupt the blocking HTTP request itself, and
-    any task that swallows the cancellation or is stuck on something uninterruptible would
-    hold the whole run open - which is what made cancelling hang for minutes on one straggler.
-
-    So on cancellation we simply stop waiting. The tasks are cancelled and abandoned; their
-    requests finish in their own threads and the results are discarded (post_with_retry throws
-    away anything that arrives after a cancel), and the run moves on to saving what it already
-    has.
+    Neither asyncio.wait nor a done callback reads its tasks' results, so anything a finished
+    task raised is still sitting in it unretrieved. process_op handles its own errors, so
+    reaching here with one means something got past it and is worth seeing rather than being
+    reported much later against a closed loop.
     """
-    started = time.monotonic()
-    if not tasks:
-        # asyncio.wait rejects an empty set, where gather was happy with one
-        return
-    # A task rather than asyncio.gather: cancelling a gather leaves a future holding a
-    # CancelledError that nothing reads, and asyncio complains about it on the console once the
-    # loop has closed and the callback that would have read it can no longer run. A cancelled
-    # task is simply cancelled, with nothing left to retrieve.
-    all_done: "asyncio.Future[Any]" = asyncio.ensure_future(asyncio.wait(tasks))
-    cancel_waiter: "asyncio.Future[Any]" = asyncio.ensure_future(cancel_manager.wait_cancelled())
-    waiting: "set[asyncio.Future[Any]]" = {all_done, cancel_waiter}
-    try:
-        await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        cancel_waiter.cancel()
-        abandoned = 0
-        if not all_done.done():
-            all_done.cancel()
-            abandoned = sum(1 for t in tasks if not t.done())
-        # asyncio.wait does not read its tasks' results, so anything a finished task raised is
-        # still sitting in it unretrieved. process_op handles its own errors, so reaching here
-        # with one means something got past it and is worth seeing rather than being reported
-        # much later against a closed loop.
-        for task in tasks:
-            if task.done() and not task.cancelled():
-                error = task.exception()
-                if error is not None:
-                    logger.error("Task failed: %s", error)
-                    print_error_traceback(error, logger)
-        log_phase(
-            "await window tasks",
-            started,
-            tasks=len(tasks),
-            cancelled=cancel_manager.is_cancel_requested(),
-            abandoned=abandoned,
-            threads=threading.active_count(),
+    for task in tasks:
+        if task.done() and not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.error("Task failed: %s", error)
+                print_error_traceback(error, logger)
+
+
+async def wait_for_completions(
+    done_queue: "asyncio.Queue[asyncio.Task]",
+    cancel_manager: CancelManager,
+) -> "list[asyncio.Task]":
+    """Wait until at least one task has finished, and return every task that has.
+
+    Completions arrive on a queue fed by each task's done callback rather than by handing the
+    whole live set to asyncio.wait: waking on every single completion is the whole point of
+    the rolling driver, and asyncio.wait adds and then removes a callback on every task it is
+    given, so doing it once per completion would cost a pass over the live set thousands of
+    times a run.
+
+    Returns an empty list if cancellation was requested first. Waiting for the tasks to unwind
+    is not safe to rely on: a task blocked in a worker thread detaches when cancelled, but
+    nothing can interrupt the blocking HTTP request itself, and any task that swallows the
+    cancellation or is stuck on something uninterruptible would hold the whole run open -
+    which is what made cancelling hang for minutes on one straggler. So on cancellation we
+    simply stop waiting. The tasks are cancelled and abandoned; their requests finish in their
+    own threads and the results are discarded (post_with_retry throws away anything that
+    arrives after a cancel), and the run moves on to saving what it already has.
+    """
+    finished: "list[asyncio.Task]" = []
+    if done_queue.empty():
+        # A future rather than awaiting the queue directly: this has to be able to lose the
+        # race to cancellation without swallowing a completion, and a cancelled Queue.get
+        # takes nothing off the queue.
+        next_done: "asyncio.Future[Any]" = asyncio.ensure_future(done_queue.get())
+        cancel_waiter: "asyncio.Future[Any]" = asyncio.ensure_future(
+            cancel_manager.wait_cancelled()
         )
+        try:
+            await asyncio.wait({next_done, cancel_waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            cancel_waiter.cancel()
+            if next_done.done() and not next_done.cancelled():
+                finished.append(next_done.result())
+            else:
+                next_done.cancel()
+    # Whatever else piled up while we were away, so a batch of completions costs one wake-up
+    while not done_queue.empty():
+        finished.append(done_queue.get_nowait())
+    return finished
 
 
 class AsyncTaskProgressUpdater:
@@ -1310,6 +1325,165 @@ class NotePlan(NamedTuple):
     spawn: Callable[[list[asyncio.Task]], None]
 
 
+async def run_plans_rolling(
+    plans: "Sequence[NotePlan]",
+    gate: ConcurrencyGate,
+    progress_updater: AsyncTaskProgressUpdater,
+    cancel_state: CancelState,
+    label: str,
+) -> bool:
+    """Run every plan, keeping the task budget full instead of processing fixed windows.
+
+    A task holds its note and its prompt for as long as it lives, so only so many of them may
+    exist at once. That budget is `gate.limit * TASK_QUEUE_DEPTH`, the same figure the window
+    size used to be; what changed is that it is refilled as individual tasks finish rather
+    than after a whole window has. Waiting for a whole window drained the gate from full to
+    empty at every boundary - the slowest request in the window held `limit - 1` slots idle
+    while it finished - and because the adapt loop only raises the limit while the gate is
+    saturated, those idle stretches also cost the run the concurrency it was entitled to grow
+    into. Recomputing the budget on every refill is what lets a raised limit take effect at
+    once rather than at the next boundary.
+
+    The first pass is still a barrier, because the memory estimator needs a window that both
+    starts and ends with nothing in flight to tell the window's own cost apart from memory the
+    run has accumulated. It is also much the cheapest pass to pay it on: the limit is still at
+    its starting value, so the pass is a fraction of the size a window reaches later. After it
+    the run rolls, and the adapt loop's memory-pressure response is what holds the limit down.
+
+    Shared per-run state (word locks, generated meanings) lives in the caller's closure and is
+    unaffected by which plans happen to be in flight together.
+
+    Returns True if the run was cancelled.
+    """
+    # Only the live tasks, so a long run does not accumulate finished ones. The value is the
+    # share of its plan's API task count that the task carries: a plan can spawn several tasks
+    # while the budget is spent in API tasks, so splitting the plan's count evenly over them
+    # lets the budget be repaid task by task as they finish.
+    live: "dict[asyncio.Task, float]" = {}
+    live_cost = 0.0
+    index = 0
+    cancelled = False
+    # The first pass is the measured one; see the docstring
+    measuring = True
+    measured_api_tasks = 0
+
+    # Nothing is in flight here, so this is a clean baseline to measure that pass against
+    gate.begin_window()
+
+    done_queue: "asyncio.Queue[asyncio.Task]" = asyncio.Queue()
+    cancel_manager = CancelManager(live, cancel_state, progress_updater=progress_updater)
+
+    def fill() -> None:
+        """Start plans until the budget is spent or there are none left."""
+        nonlocal index, live_cost, measured_api_tasks
+        budget = max(1, gate.limit * TASK_QUEUE_DEPTH)
+        # Always start at least one plan, however many tasks it turns out to want, so a note
+        # costing more than the whole budget cannot stall the run
+        while index < len(plans) and (not live or live_cost < budget):
+            if mw.progress.want_cancel():
+                return
+            plan = plans[index]
+            index += 1
+            spawned: "list[asyncio.Task]" = []
+            plan.spawn(spawned)
+            if not spawned:
+                continue
+            # A plan with no API tasks of its own still creates the bookkeeping tasks that
+            # write its note back, so it cannot count as free: a run of them would never spend
+            # the budget and every note would be started at once.
+            cost = float(max(1, plan.task_count))
+            share = cost / len(spawned)
+            for task in spawned:
+                live[task] = share
+                task.add_done_callback(done_queue.put_nowait)
+            live_cost += cost
+            measured_api_tasks += plan.task_count
+
+    def stop_for_cancel() -> None:
+        """Unwind the run: cancel whatever is live and let go of everything queued.
+
+        Reached both from the driver noticing the cancel itself and from the monitor having
+        noticed it first, so it has to cope with the teardown already having been done. Both
+        halves matter while the run is rolling: unlike a window boundary, there are live tasks
+        and tasks queued on the gate at every point in it.
+        """
+        if not cancel_manager.is_cancel_requested():
+            cancel_manager.request_cancel()
+        marker = time.monotonic()
+        gate.abort()
+        log_phase(f"{label}: gate.abort", marker)
+
+    started = time.monotonic()
+    try:
+        while True:
+            if mw.progress.want_cancel() or cancel_state.is_cancelled():
+                logger.debug("%s: cancelled, returning results so far", label)
+                stop_for_cancel()
+                cancelled = True
+                break
+
+            # While measuring, nothing new starts until the pass has drained
+            if not (measuring and live):
+                fill()
+                if measuring:
+                    # The API tasks are alive from here, whether or not they hold a gate slot
+                    # yet, and each holds its note and prompt. That count is what the pass's
+                    # memory growth has to be divided by to get what one task costs. Not
+                    # len(live): spawn() also creates per-word-list and per-note bookkeeping
+                    # tasks, which hold no prompt and would only dilute the average.
+                    gate.note_window_tasks(measured_api_tasks)
+                    progress_updater.update_progress()
+            if not live:
+                # Plans left over with nothing running means fill() stopped early, which it
+                # only does for a cancel that arrived while it was starting them
+                if index < len(plans):
+                    logger.debug("%s: cancelled while starting tasks", label)
+                    stop_for_cancel()
+                    cancelled = True
+                break
+
+            try:
+                finished = await wait_for_completions(done_queue, cancel_manager)
+            except asyncio.CancelledError:
+                # Someone cancelled the op's own task. Swallowed rather than propagated so the
+                # run still gets to save the results it already has, as it does for a cancel
+                # that comes in through the progress dialog.
+                logger.debug("%s: cancelled while waiting for tasks", label)
+                stop_for_cancel()
+                cancelled = True
+                break
+            drain_task_errors(finished)
+            for task in finished:
+                live_cost -= live.pop(task, 0.0)
+            live_cost = max(0.0, live_cost)
+
+            if cancel_manager.is_cancel_requested():
+                logger.debug("%s: cancelled, returning results so far", label)
+                stop_for_cancel()
+                cancelled = True
+                break
+
+            if measuring and not live:
+                # Fold the pass into what we know an op of this kind costs, which may move the
+                # ceiling; the gate may also have resized under memory pressure while it ran
+                gate.end_window()
+                measuring = False
+    finally:
+        cancel_manager.mark_work_complete()
+        if not cancel_manager.monitor_task.done():
+            cancel_manager.monitor_task.cancel()
+        log_phase(
+            f"{label}: run plans",
+            started,
+            plans=len(plans),
+            started_plans=index,
+            cancelled=cancelled,
+            abandoned=sum(1 for task in live if not task.done()),
+            threads=threading.active_count(),
+        )
+    return cancelled
+
+
 async def bulk_nested_notes_op(
     message: str,
     config: dict,
@@ -1363,7 +1537,6 @@ async def bulk_nested_notes_op(
     rate_limit_tracker.reset()
 
     cancel_state = CancelState()
-    cancel_manager: Optional[CancelManager] = None
 
     # Work out what every note needs doing before starting any of it. This pass is synchronous
     # and creates no tasks - it only reads the notes, which are in memory already - so it costs
@@ -1404,73 +1577,17 @@ async def bulk_nested_notes_op(
     progress_updater.start_autoupdate()
 
     try:
-        # Every task holds onto its note, prompt and config for as long as it lives. Creating
-        # them all up front is what runs the machine out of memory, so notes are processed in
-        # windows instead: only the current window's tasks exist at once. The window is sized by
-        # the tasks the notes in it will produce rather than by note count, since that is what
-        # decides the memory - a few times the gate limit, so tasks queue behind the gate rather
-        # than the run stalling between windows. Shared per-run state (word locks, generated
-        # meanings) lives in the caller's closure and carries across windows.
-        task_budget = max(1, gate.limit * TASK_QUEUE_DEPTH)
-        index = 0
-        while index < len(plans):
-            if mw.progress.want_cancel() or cancel_state.is_cancelled():
-                break
-            window: list[NotePlan] = []
-            window_task_count = 0
-            # Always take at least one note, however many tasks it turns out to want
-            while index < len(plans) and (not window or window_task_count < task_budget):
-                window.append(plans[index])
-                # A plan with no API tasks of its own still creates the bookkeeping tasks that
-                # write its note back, so it cannot count as free: a run of them would never
-                # move the budget and every note would land in one window.
-                window_task_count += max(1, plans[index].task_count)
-                index += 1
-
-            # Nothing is in flight here, so this is a clean baseline to measure the window's
-            # concurrent memory use against
-            gate.begin_window()
-
-            tasks: list[asyncio.Task] = []
-            window_api_tasks = 0
-            for note_plan in window:
-                if mw.progress.want_cancel():
-                    break
-                note_plan.spawn(tasks)
-                window_api_tasks += note_plan.task_count
-            if not tasks:
-                continue
-            # The API tasks are alive from here, whether or not they hold a gate slot yet, and
-            # each holds its note and prompt. That count is what the window's memory growth has
-            # to be divided by to get what one task costs. Not len(tasks): spawn() also creates
-            # a per-word-list and a per-note bookkeeping task, which hold no prompt and would
-            # only dilute the average - and task_count is the unit the budget above is spent
-            # in, so both halves of the memory arithmetic stay in the same one.
-            gate.note_window_tasks(window_api_tasks)
-            progress_updater.update_progress()
-
-            cancel_manager = CancelManager(
-                tasks, cancel_state=cancel_state, progress_updater=progress_updater
-            )
-            try:
-                await await_tasks_or_cancel(tasks, cancel_manager)
-            except asyncio.CancelledError:
-                logger.debug("Cancelling bulk operation")
-            finally:
-                if not cancel_manager.monitor_task.done():
-                    cancel_manager.monitor_task.cancel()
-
-            if cancel_manager.is_cancel_requested():
-                logger.debug("Bulk operation was cancelled, returning results so far")
-                marker = time.monotonic()
-                gate.abort()
-                log_phase("nested op: gate.abort", marker)
-                break
-
-            # Fold this window into what we know an op of this kind costs, which may move the
-            # ceiling; the gate may also have resized under memory pressure while it ran
-            gate.end_window()
-            task_budget = max(1, gate.limit * TASK_QUEUE_DEPTH)
+        # Every task holds onto its note, prompt and config for as long as it lives, so they
+        # are not all created up front: a plan is only the closure that will create one when
+        # the rolling driver has room for it.
+        if await run_plans_rolling(
+            plans,
+            gate=gate,
+            progress_updater=progress_updater,
+            cancel_state=cancel_state,
+            label="nested op",
+        ):
+            logger.debug("Bulk operation was cancelled, returning results so far")
     finally:
         marker = time.monotonic()
         gate.finish()
@@ -1647,45 +1764,21 @@ async def bulk_notes_op(
         logger.debug(f"Bulk notes op success for note {note.id}, was_success: {was_success}")
 
     cancel_state = CancelState()
-    cancel_manager: Optional[CancelManager] = None
     cancelled = False
 
     try:
-        # Notes are processed in windows so only the current window's tasks exist at once;
-        # a task holds onto its note and prompt for as long as it lives, so creating one per
-        # note up front is what runs a smaller machine out of memory. The window is a few
-        # times the gate limit so tasks queue behind it rather than the run stalling between
-        # windows.
-        window_size = max(1, gate.limit * TASK_QUEUE_DEPTH)
-        index = 0
-        while index < len(notes):
-            if mw.progress.want_cancel() or cancel_state.is_cancelled():
-                logger.debug("Bulk notes op cancelled before starting tasks")
-                cancelled = True
-                break
-            window = notes[index : index + window_size]
-            index += window_size
+        # Every task holds onto its note and prompt for as long as it lives, so they are not
+        # all created up front: a plan is only the closure that will create one when the
+        # rolling driver has room for it.
+        def make_plan(note: Note) -> NotePlan:
+            def handle_op_error(e: Exception) -> None:
+                logger.error(f"Error during operation with note {note.id}: {e}")
+                print_error_traceback(e, logger)
 
-            # Nothing is in flight here, so this is a clean baseline to measure the window's
-            # concurrent memory use against
-            gate.begin_window()
+            def handle_op_result(was_success: bool) -> None:
+                handle_op_success(note, was_success)
 
-            tasks: list[asyncio.Task] = []
-            for note in window:
-
-                def handle_error(current_note, e):
-                    logger.error(f"Error during operation with note {current_note.id}: {e}")
-                    print_error_traceback(e, logger)
-
-                handle_op_error = partial(
-                    lambda current_note, e: handle_error(current_note, e),
-                    note,
-                )
-
-                handle_op_result = partial(
-                    lambda current_note, was_success: handle_op_success(current_note, was_success),
-                    note,
-                )
+            def spawn(tasks: "list[asyncio.Task]") -> None:
                 process_note = make_inner_bulk_op(
                     config=config,
                     op=op,
@@ -1696,9 +1789,6 @@ async def bulk_notes_op(
                     cancel_state=cancel_state,
                     one_task_per_op=True,
                 )
-                if mw.progress.want_cancel():
-                    logger.debug("Bulk notes op cancelled before starting tasks")
-                    break
                 tasks.append(
                     asyncio.create_task(
                         process_note(
@@ -1710,39 +1800,16 @@ async def bulk_notes_op(
                         )
                     )
                 )
-            if not tasks:
-                continue
-            # All of them are alive from here, whether or not they hold a gate slot yet, and
-            # each holds its note and prompt. That count is what the window's memory growth
-            # has to be divided by to get what one task costs.
-            gate.note_window_tasks(len(tasks))
-            progress_updater.update_progress()
 
-            cancel_manager = CancelManager(
-                tasks, cancel_state, progress_updater=progress_updater
-            )
-            try:
-                logger.debug("Bulk notes op awaiting %d tasks", len(tasks))
-                await await_tasks_or_cancel(tasks, cancel_manager)
-            except asyncio.CancelledError:
-                logger.debug("Bulk notes op asyncio.CancelledError caught")
-                cancel_manager.request_cancel()
-            finally:
-                if not cancel_manager.monitor_task.done():
-                    cancel_manager.monitor_task.cancel()
+            return NotePlan(task_count=1, spawn=spawn)
 
-            if cancel_manager.is_cancel_requested():
-                logger.debug("Bulk notes op cancellation requested, returning early")
-                marker = time.monotonic()
-                gate.abort()
-                log_phase("bulk op: gate.abort", marker)
-                cancelled = True
-                break
-
-            # Fold this window into what we know an op of this kind costs, which may move the
-            # ceiling; the gate may also have resized under memory pressure while it ran
-            gate.end_window()
-            window_size = max(1, gate.limit * TASK_QUEUE_DEPTH)
+        cancelled = await run_plans_rolling(
+            [make_plan(note) for note in notes],
+            gate=gate,
+            progress_updater=progress_updater,
+            cancel_state=cancel_state,
+            label="bulk op",
+        )
     finally:
         marker = time.monotonic()
         gate.finish()
