@@ -1,0 +1,9 @@
+{
+  "package": "anki_spotify_desktop_link",
+  "name": "Spotify Desktop Link",
+  "dev_dir_name": "anki_spotify_desktop_link",
+  "human_version": "1.0.0",
+  "homepage": "https://github.com/jhhr/anki_addons",
+  "shared": [],
+  "exclude": []
+}
