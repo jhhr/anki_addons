@@ -10,23 +10,30 @@ word and can create notes and call several other ops, while translating a field 
 request — so the cost is measured while running rather than assumed, and remembered per op for
 next time.
 
-Memory probing is stdlib-only (ctypes on Windows, /proc on Linux, vm_stat and ps on macOS)
-because Anki's bundled Python has no psutil. Whatever the source, every probe has to report
-what is in use now rather than a high-water mark: the pressure response and the per-task
-measurement both depend on the number being able to fall.
+Memory is read through psutil, vendored per platform because its wheels are abi3 and so
+outlive Anki's Python upgrades - which the hand-written ctypes, /proc, vm_stat and ps probes
+this replaced were meant to avoid needing, at the cost of four platform paths and a thread to
+run the two macOS subprocesses off.
+
+What psutil does not change is the requirement every probe has to meet: report what is in use
+now, not a high-water mark. The pressure response and the per-task measurement both need the
+number to be able to fall - a peak latches the first on and makes the second measure zero
+growth. macOS is where that has actually bitten, when process memory came from
+resource.ru_maxrss. memory_info().rss is current usage; the test named for it is the guard.
 """
 
 import asyncio
-import ctypes
 import json
 import logging
 import os
-import subprocess
-import sys
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
+
+try:
+    import psutil  # type: ignore
+except ImportError:  # the addon's lib/ was not vendored; see build.py vendor
+    psutil = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -98,175 +105,38 @@ def _warn_probe_unavailable(what: str, error: Exception) -> None:
         )
 
 
-class _MemoryStatusEx(ctypes.Structure):
-    _fields_ = [
-        ("dwLength", ctypes.c_ulong),
-        ("dwMemoryLoad", ctypes.c_ulong),
-        ("ullTotalPhys", ctypes.c_ulonglong),
-        ("ullAvailPhys", ctypes.c_ulonglong),
-        ("ullTotalPageFile", ctypes.c_ulonglong),
-        ("ullAvailPageFile", ctypes.c_ulonglong),
-        ("ullTotalVirtual", ctypes.c_ulonglong),
-        ("ullAvailVirtual", ctypes.c_ulonglong),
-        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-    ]
-
-
-class _ProcessMemoryCounters(ctypes.Structure):
-    _fields_ = [
-        ("cb", ctypes.c_ulong),
-        ("PageFaultCount", ctypes.c_ulong),
-        ("PeakWorkingSetSize", ctypes.c_size_t),
-        ("WorkingSetSize", ctypes.c_size_t),
-        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-        ("PagefileUsage", ctypes.c_size_t),
-        ("PeakPagefileUsage", ctypes.c_size_t),
-    ]
-
-
-def _windows_api():
-    """Bind the two memory calls with explicit prototypes.
-
-    The prototypes matter: left untyped, GetCurrentProcess's return value is truncated to a
-    32-bit int and the handle it yields is rejected.
-    """
-    import ctypes.wintypes as wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GlobalMemoryStatusEx.restype = wintypes.BOOL
-    kernel32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(_MemoryStatusEx)]
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.GetCurrentProcess.argtypes = []
-
-    psapi = ctypes.WinDLL("psapi", use_last_error=True)
-    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-    psapi.GetProcessMemoryInfo.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(_ProcessMemoryCounters),
-        wintypes.DWORD,
-    ]
-    return kernel32, psapi
-
-
-def _windows_system_memory() -> Optional[tuple[int, int]]:
-    kernel32, _ = _windows_api()
-    status = _MemoryStatusEx()
-    status.dwLength = ctypes.sizeof(_MemoryStatusEx)
-    if not kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-        raise OSError(ctypes.get_last_error())
-    return int(status.ullTotalPhys), int(status.ullAvailPhys)
-
-
-def _windows_process_memory() -> Optional[int]:
-    kernel32, psapi = _windows_api()
-    counters = _ProcessMemoryCounters()
-    counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
-    handle = kernel32.GetCurrentProcess()
-    if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-        raise OSError(ctypes.get_last_error())
-    return int(counters.WorkingSetSize)
-
-
-def _linux_system_memory() -> Optional[tuple[int, int]]:
-    total = available = None
-    with open("/proc/meminfo", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("MemTotal:"):
-                total = int(line.split()[1]) * 1024
-            elif line.startswith("MemAvailable:"):
-                available = int(line.split()[1]) * 1024
-            if total is not None and available is not None:
-                break
-    if total is None or available is None:
-        return None
-    return total, available
-
-
-def _linux_process_memory() -> Optional[int]:
-    with open("/proc/self/statm", encoding="utf-8") as f:
-        resident_pages = int(f.read().split()[1])
-    # os.sysconf and the resource module below are POSIX-only; these branches only run when
-    # sys.platform says so, but a type check on Windows can't see that
-    return resident_pages * os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
-
-
-def _macos_system_memory() -> Optional[tuple[int, int]]:
-    sysconf = os.sysconf  # type: ignore[attr-defined]
-    total = sysconf("SC_PHYS_PAGES") * sysconf("SC_PAGE_SIZE")
-    page_size = sysconf("SC_PAGE_SIZE")
-    output = subprocess.run(
-        ["vm_stat"], capture_output=True, text=True, timeout=5, check=True
-    ).stdout
-    free_pages = 0
-    for line in output.splitlines():
-        # Free plus inactive is the closest analogue to Linux's MemAvailable
-        if line.startswith("Pages free:") or line.startswith("Pages inactive:"):
-            free_pages += int(line.split(":")[1].strip().rstrip("."))
-    return total, free_pages * page_size
-
-
-def _macos_process_memory() -> Optional[int]:
-    """Current resident size, via ps.
-
-    This used to read resource.getrusage().ru_maxrss, which is a high-water mark: it never
-    falls, and both callers of process_memory() need it to. The pressure response in
-    _adapt_once would latch on once a configured memory_limit had been crossed even
-    momentarily, halving concurrency every two seconds down to 1 for the life of the process,
-    and MemoryEstimator would re-baseline each window from a value that only rises, so it
-    measured no growth and never learned what an op costs.
-
-    ps costs a process spawn, on top of the one _macos_system_memory already makes for vm_stat
-    every adapt tick. That is the price of a reading that can go down. It was preferred to a
-    ctypes libproc binding because a wrong struct layout there would fail silently on a
-    platform this is not developed on, leaving the gate quietly unable to adapt.
-    """
-    # ps reports RSS in kilobytes
-    output = subprocess.run(
-        ["ps", "-o", "rss=", "-p", str(os.getpid())],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=True,
-    ).stdout
-    return int(output.strip()) * 1024
+# Made once and reused: constructing a psutil.Process re-reads the process's creation time to
+# prove the pid has not been recycled, and the adapt loop asks every two seconds about a
+# process that is always this one.
+_process = None
 
 
 def system_memory() -> Optional[tuple[int, int]]:
     """Total and available physical memory in bytes, or None if it can't be determined."""
+    if psutil is None:
+        _warn_probe_unavailable("system memory", ImportError("psutil is not importable"))
+        return None
     try:
-        if sys.platform == "win32":
-            return _windows_system_memory()
-        if sys.platform == "darwin":
-            return _macos_system_memory()
-        if sys.platform.startswith("linux"):
-            return _linux_system_memory()
+        memory = psutil.virtual_memory()
     except Exception as e:
         _warn_probe_unavailable("system memory", e)
         return None
-    return None
+    return int(memory.total), int(memory.available)
 
 
 def process_memory() -> Optional[int]:
     """This process's resident memory in bytes, or None if it can't be determined."""
+    global _process
+    if psutil is None:
+        _warn_probe_unavailable("process memory", ImportError("psutil is not importable"))
+        return None
     try:
-        if sys.platform == "win32":
-            return _windows_process_memory()
-        if sys.platform == "darwin":
-            return _macos_process_memory()
-        if sys.platform.startswith("linux"):
-            return _linux_process_memory()
+        if _process is None:
+            _process = psutil.Process()
+        return int(_process.memory_info().rss)
     except Exception as e:
         _warn_probe_unavailable("process memory", e)
         return None
-    return None
-
-
-def _read_memory_probes() -> "tuple[Optional[tuple[int, int]], Optional[int]]":
-    """Both probes in one call, so one hop to a thread covers the pair."""
-    return system_memory(), process_memory()
 
 
 def format_bytes(value: Optional[int]) -> str:
@@ -675,10 +545,6 @@ class ConcurrencyGate:
         self.available_memory = available
         self._waiters: deque[asyncio.Future] = deque()
         self._adapt_task: Optional[asyncio.Task] = None
-        # One thread of its own for the memory probes; see _probe_memory. Not the loop's
-        # default executor, whose threads are all busy running the op's tasks - a probe queued
-        # behind them would stall adaptation exactly when memory is tightest.
-        self._probe_executor: Optional[ThreadPoolExecutor] = None
         self._aborted = False
 
         logger.debug(
@@ -763,21 +629,12 @@ class ConcurrencyGate:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if self._probe_executor is None:
-            self._probe_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="simple_anki_ai_prompts_memprobe"
-            )
         self._adapt_task = loop.create_task(self._adapt_loop())
 
     def stop_adapting(self) -> None:
         if self._adapt_task:
             self._adapt_task.cancel()
             self._adapt_task = None
-        if self._probe_executor is not None:
-            # Not waited for: a probe already inside a subprocess call has its own timeout and
-            # nothing depends on its answer any more
-            self._probe_executor.shutdown(wait=False)
-            self._probe_executor = None
 
     def finish(self) -> None:
         """End of the run: stop adapting and remember what this op cost."""
@@ -832,19 +689,13 @@ class ConcurrencyGate:
         except asyncio.CancelledError:
             pass
 
-    async def _probe_memory(self) -> "tuple[Optional[tuple[int, int]], Optional[int]]":
-        """Read both probes off the event loop.
-
-        On macOS each one spawns a subprocess with a five-second timeout, so reading them here
-        directly blocked the loop twice every two seconds - and the loop is what polls for
-        cancellation and redraws the progress dialog.
-        """
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._probe_executor, _read_memory_probes)
-
     async def _adapt_once(self) -> None:
-        # Sampled every tick both for the hard cap and to learn what a task costs
-        memory, rss = await self._probe_memory()
+        # Sampled every tick both for the hard cap and to learn what a task costs. Read on the
+        # loop: psutil is one syscall each - GlobalMemoryStatusEx, host_statistics64 or
+        # /proc/meminfo, then GetProcessMemoryInfo, task_info or /proc/self/statm - where the
+        # probes this replaced spawned two subprocesses per tick on macOS and so needed a
+        # thread of their own to keep off the loop that polls for cancellation.
+        memory, rss = system_memory(), process_memory()
         available = memory[1] if memory else None
         self.available_memory = available or 0
         self.estimator.sample(rss, self.in_flight)

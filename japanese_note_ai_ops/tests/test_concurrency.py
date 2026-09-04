@@ -19,7 +19,6 @@ CeilingReportingTests.
 import asyncio
 import json
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -114,10 +113,10 @@ class MemoryProbeTests(unittest.TestCase):
         self.assertGreater(rss, 0)
 
     def test_the_probes_report_bytes(self):
-        # Every one of these reads a source with its own units - kilobytes from /proc, pages
-        # from vm_stat - so a missing multiplication is the easy mistake, and magnitude alone
-        # catches it: a machine with under a gigabyte of RAM will not be running Anki, and a
-        # Python process holding under 5MB does not exist
+        # psutil reports bytes on every platform, so this is here to catch the probes being
+        # rewritten against something that does not - and magnitude alone catches it: a
+        # machine with under a gigabyte of RAM will not be running Anki, and a Python process
+        # holding under 5MB does not exist
         total, _ = conc.system_memory()
         self.assertGreater(total, 1 * GB, "system memory looks like kilobytes, not bytes")
         rss = conc.process_memory()
@@ -644,30 +643,6 @@ class GateAcquireReleaseTests(GateTestCase):
 
 
 class GateAdaptationTests(GateTestCase):
-    async def test_the_probes_run_off_the_event_loop(self):
-        # On macOS each probe spawns a subprocess with a five-second timeout, twice every two
-        # seconds. On the loop that is what polls for cancellation and redraws the progress
-        # dialog, so the probes must not be read there.
-        loop_thread = threading.current_thread()
-        stub = self.memory.system_memory
-        probe_threads: list = []
-
-        def recording_probe():
-            probe_threads.append(threading.current_thread())
-            return stub()
-
-        gate = self.make_gate(limit=8)
-        # Only the adapt tick is at issue; the gate's one-off reads while being built are not
-        conc.system_memory = recording_probe
-        gate.start_adapting()
-        try:
-            await gate._adapt_once()
-        finally:
-            gate.stop_adapting()
-
-        self.assertTrue(probe_threads)
-        self.assertNotIn(loop_thread, probe_threads)
-
     async def test_a_saturated_gate_grows_while_memory_is_comfortable(self):
         gate = self.make_gate(limit=16, max_limit=256)
         gate.in_flight = gate.limit
@@ -908,11 +883,10 @@ class MemoryProbeContractTests(unittest.TestCase):
         latches the first on forever - halving concurrency every two seconds down to 1 for the
         rest of the session - and makes the second measure zero growth.
 
-        macOS is the platform this catches: _macos_process_memory used to return
-        resource.ru_maxrss, a high-water mark, and now shells out to `ps -o rss=` instead. That
-        replacement has not been run on a Mac yet, so this test is what will say whether it
-        works - along with test_the_probes_report_bytes, which catches the KB-to-bytes
-        conversion `ps` needs and `ru_maxrss` did not.
+        macOS is the platform this catches: process memory there came from
+        resource.ru_maxrss, a high-water mark, before a `ps -o rss=` subprocess and now
+        psutil's memory_info().rss. Neither replacement has been run on a Mac, so this test is
+        what will say whether the current one works.
         """
         size = 256 * MB
         before = conc.process_memory()
@@ -931,6 +905,76 @@ class MemoryProbeContractTests(unittest.TestCase):
             size // 4,
             "the probe did not fall after the memory was freed, so it reports a peak",
         )
+
+
+class NoPsutilTests(unittest.TestCase):
+    """What happens when psutil is not there - lib/ unvendored, or built for another platform.
+
+    The gate already copes with a probe that returns None: concurrency_limits gives it a static
+    NO_PROBE_CONCURRENCY and turns adaptation off, and several tests above drive that through
+    the stub. What none of them cover is the step before it, which is now the only place the
+    whole scheme can fail - psutil missing has to become None rather than an ImportError
+    escaping into the adapt loop.
+    """
+
+    def setUp(self):
+        self.saved = (conc.psutil, conc._process, conc._probe_warning_logged)
+        conc.psutil = None
+        conc._process = None
+        # Logged once per process, so a run of this class must not depend on test order
+        conc._probe_warning_logged = False
+        conc.load_per_task_estimates = lambda: {}
+
+    def tearDown(self):
+        conc.psutil, conc._process, conc._probe_warning_logged = self.saved
+        conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
+
+    def test_both_probes_return_none(self):
+        self.assertIsNone(conc.system_memory())
+        self.assertIsNone(conc.process_memory())
+
+    def test_a_gate_falls_back_to_a_static_limit(self):
+        gate = conc.ConcurrencyGate({}, op_key="test op")
+        self.assertFalse(gate.adaptive)
+        self.assertEqual(gate.limit, conc.NO_PROBE_CONCURRENCY)
+
+    def test_a_probe_that_raises_is_reported_as_unavailable_rather_than_propagating(self):
+        # psutil can raise where a container or a hardened kernel hides what it reads
+        class Exploding:
+            def virtual_memory(self):
+                raise OSError("denied")
+
+            def Process(self):
+                raise OSError("denied")
+
+        conc.psutil = Exploding()
+        self.assertIsNone(conc.system_memory())
+        self.assertIsNone(conc.process_memory())
+
+
+class ProcessHandleTests(unittest.TestCase):
+    def test_the_process_handle_is_made_once_and_reused(self):
+        # psutil.Process() re-reads the process's creation time to prove the pid has not been
+        # recycled. The adapt loop asks every two seconds about a process that is always ours.
+        saved = (conc.psutil, conc._process)
+        made = []
+
+        class Counting:
+            def Process(self):
+                made.append(1)
+                return self
+
+            def memory_info(self):
+                return type("Info", (), {"rss": 123})()
+
+        conc.psutil = Counting()
+        conc._process = None
+        try:
+            self.assertEqual(conc.process_memory(), 123)
+            self.assertEqual(conc.process_memory(), 123)
+        finally:
+            conc.psutil, conc._process = saved
+        self.assertEqual(len(made), 1)
 
 
 if __name__ == "__main__":

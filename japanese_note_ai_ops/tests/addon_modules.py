@@ -3,9 +3,13 @@
 The add-on's __init__.py imports aqt, which only exists inside Anki, so importing
 `simple_anki_ai_prompts.async_api_ops.api_client` the normal way needs a running Anki. The
 modules these tests cover - api_client and concurrency - deliberately depend on nothing but
-the stdlib and requests, so they can be loaded straight from their files and tested on their
-own. Keeping them that way is worth some care: an `aqt` import added to either one takes the
-whole suite offline.
+the stdlib and the add-on's own vendored lib/, so they can be loaded straight from their files
+and tested on their own. Keeping them that way is worth some care: an `aqt` import added to
+either one takes the whole suite offline.
+
+Putting lib/ on sys.path is the one thing __init__.py does that these modules still need, so
+it happens here instead - through the same helper, so a test resolves psutil and requests the
+way Anki will rather than a way only the test knows about.
 """
 
 import importlib.util
@@ -15,6 +19,11 @@ from types import ModuleType
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 OPS_DIR = ADDON_ROOT / "async_api_ops"
+
+sys.path.insert(0, str(ADDON_ROOT.parent / "anki_shared" / "utils"))
+from vendor_path import add_vendor_paths  # noqa: E402
+
+add_vendor_paths(str(ADDON_ROOT))
 
 
 def load_addon_module(name: str) -> ModuleType:
