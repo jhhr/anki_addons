@@ -1,4 +1,0 @@
-[submodule "logic/jp_text_processing"]
-	path = logic/jp_text_processing
-	url = https://github.com/jhhr/jp_text_processing.git
-	branch = main

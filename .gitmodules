@@ -1,0 +1,4 @@
+[submodule "anki_shared/jp_text_processing"]
+	path = anki_shared/jp_text_processing
+	url = https://github.com/jhhr/jp_text_processing.git
+	branch = main
