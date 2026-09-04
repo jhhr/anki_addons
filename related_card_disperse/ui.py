@@ -5,10 +5,8 @@ from copy import deepcopy
 from typing import Optional
 
 from aqt import mw
-from aqt.utils import showWarning
 from aqt.qt import (
     QCheckBox,
-    QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -33,6 +31,7 @@ from .shared.ui.code_edit_layout import (
 )
 from .shared.ui.interpolated_text_edit import InterpolatedTextEditLayout, make_validate_dict
 from .shared.ui.multi_combo_box import MultiComboBox
+from .shared.ui.scrollable_dialog import ScrollableQDialog
 
 
 QUERY_CODE_NOTICE = (
@@ -45,12 +44,24 @@ QUERY_CODE_NOTICE = (
     + CODE_NOTICE_HTML_WARNING
 )
 
+# The cap spin box uses its minimum as "no override": Qt then shows the special
+# value text instead of the number, and clamps anything typed into range, so an
+# out-of-range cap can never reach the config in the first place.
+CAP_USES_DEFAULT = 0
+CAP_MAX = 9999
 
-class RelatedCardDisperseDialog(QDialog):
+
+class RelatedCardDisperseDialog(ScrollableQDialog):
     def __init__(self, parent=None):
-        super().__init__(parent or mw)
+        footer = QHBoxLayout()
+        self.save_all_btn = QPushButton("Save")
+        self.cancel_btn = QPushButton("Cancel")
+        footer.addStretch(1)
+        footer.addWidget(self.save_all_btn)
+        footer.addWidget(self.cancel_btn)
+
+        super().__init__(parent or mw, footer_layout=footer)
         self.setWindowTitle("Related Card Disperse")
-        self.resize(1000, 700)
 
         self.config = Config()
         self.config.load()
@@ -58,14 +69,14 @@ class RelatedCardDisperseDialog(QDialog):
 
         self._building_ui = False
 
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.inner_widget)
 
         global_box = QWidget(self)
         global_form = QFormLayout(global_box)
 
         self.default_cap = QSpinBox(self)
         self.default_cap.setMinimum(1)
-        self.default_cap.setMaximum(9999)
+        self.default_cap.setMaximum(CAP_MAX)
         self.default_cap.setValue(self.config.default_max_related_cards)
 
         self.show_no_overlap = QCheckBox("Show skipped outcome when due ranges do not overlap", self)
@@ -117,8 +128,10 @@ class RelatedCardDisperseDialog(QDialog):
         self.on_sync = QCheckBox("Run for remotely reviewed cards after sync", self)
         self.use_code = QCheckBox("Use code mode", self)
 
-        self.rule_cap = QLineEdit(self)
-        self.rule_cap.setPlaceholderText("Optional override (positive integer)")
+        self.rule_cap = QSpinBox(self)
+        self.rule_cap.setMinimum(CAP_USES_DEFAULT)
+        self.rule_cap.setMaximum(CAP_MAX)
+        self.rule_cap.setSpecialValueText("Use default")
 
         self.query_text = InterpolatedTextEditLayout(
             label="Related card query",
@@ -160,14 +173,6 @@ class RelatedCardDisperseDialog(QDialog):
         action_row.addWidget(self.save_rule_btn)
         action_row.addWidget(self.remove_rule_btn)
         right.addLayout(action_row)
-
-        footer = QHBoxLayout()
-        self.save_all_btn = QPushButton("Save", self)
-        self.cancel_btn = QPushButton("Cancel", self)
-        footer.addStretch(1)
-        footer.addWidget(self.save_all_btn)
-        footer.addWidget(self.cancel_btn)
-        root.addLayout(footer)
 
         self.rule_list.currentRowChanged.connect(self._on_rule_selected)
         self.move_up_btn.clicked.connect(self._move_up)
@@ -240,7 +245,7 @@ class RelatedCardDisperseDialog(QDialog):
         self.on_review.setChecked(rule.get("on_review", True))
         self.on_sync.setChecked(rule.get("on_sync", True))
         self.use_code.setChecked(rule.get("use_code", False))
-        self.rule_cap.setText("" if rule.get("max_related_cards") is None else str(rule["max_related_cards"]))
+        self.rule_cap.setValue(rule.get("max_related_cards") or CAP_USES_DEFAULT)
         self.query_text.set_text(rule.get("related_card_query", ""))
         self.query_code.set_text(rule.get("query_code", ""))
         self._on_use_code_toggled(self.use_code.isChecked())
@@ -252,15 +257,8 @@ class RelatedCardDisperseDialog(QDialog):
         return [n for n in target_note_types.strip('"').split('", "') if n]
 
     def _current_rule(self) -> RelatedRule:
-        cap_raw = self.rule_cap.text().strip()
-        cap_value: Optional[int]
-        if not cap_raw:
-            cap_value = None
-        else:
-            cap = int(cap_raw)
-            if cap <= 0:
-                raise ValueError("max_related_cards must be positive")
-            cap_value = cap
+        cap = self.rule_cap.value()
+        cap_value: Optional[int] = None if cap == CAP_USES_DEFAULT else cap
 
         return RelatedRule(
             guid="",
@@ -295,11 +293,7 @@ class RelatedCardDisperseDialog(QDialog):
         self.rule_list.clearSelection()
 
     def _save_rule(self) -> None:
-        try:
-            rule = self._current_rule()
-        except ValueError:
-            showWarning("Max related cards must be a positive integer.")
-            return
+        rule = self._current_rule()
 
         current_row = self.rule_list.currentRow()
         if current_row < 0:
