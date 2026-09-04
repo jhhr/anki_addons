@@ -3,9 +3,11 @@ __pycache__
 meta.json
 .idea
 .vscode
-# dependencies need to be installed on each device separately with
-# pip3 install -t lib --no-cache-dir --python-version 3.9 --only-binary=:all: -r requirements.txt
+# Built by `python build.py vendor japanese_note_ai_ops` from requirements.txt, for every
+# platform Anki runs on. The pins are the record; the tree itself is too big to commit.
 lib/*
+# Anki's per-install state, plus the lib/ the addon rebuilds here when the shipped one does
+# not fit this machine's Python (anki_shared/utils/vendor_rebuild.py).
 user_files/*
 logs/
 output/
