@@ -1,0 +1,13 @@
+{
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "extraPaths": [
+    "C:\\Users\\jrk\\AppData\\Local\\Programs\\Python\\Python310\\Lib\\site-packages"
+  ],
+  "exclude": [
+    "**/lib/**",
+    "**/shared/**",
+    "**/.venv/**",
+    "**/dist/**"
+  ]
+}
