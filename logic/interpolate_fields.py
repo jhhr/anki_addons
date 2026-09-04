@@ -22,7 +22,6 @@ from .to_lowercase_dict import to_lowercase_dict
 ARG_SEPARATOR = "=="
 
 SOURCE_NOTE_DATA_KEY = "__Source_Note_Data"
-DESTINATION_NOTE_DATA_KEY = "__Destination_Note_Data"
 DESTINATION_PREFIX = "__Dest__"
 SOURCE_PREFIX = "__Source__"
 
@@ -289,20 +288,6 @@ BASE_NOTE_MENU_DICT = {
         "All tags": intr_format(NOTE_TAGS),
         "Has tag": intr_format(NOTE_HAS_TAG),
         "No. of different card types": intr_format(NOTE_CARD_COUNT),
-    },
-}
-
-# For across copy mode only, used for the destination note
-DESTINATION_NOTE_MENU_DICT = {
-    # The note being used to query
-    DESTINATION_NOTE_DATA_KEY: {
-        "Destination Note Type ID (mid:)": intr_format(f"{DESTINATION_PREFIX}{NOTE_TYPE_ID}"),
-        "Destination Note ID (nid:)": intr_format(f"{DESTINATION_PREFIX}{NOTE_ID}"),
-        "Destination note all tags": intr_format(f"{DESTINATION_PREFIX}{NOTE_TAGS}"),
-        "Destination note has tag": intr_format(f"{DESTINATION_PREFIX}{NOTE_HAS_TAG}"),
-        "Destination No. different card types": intr_format(
-            f"{DESTINATION_PREFIX}{NOTE_CARD_COUNT}"
-        ),
     },
 }
 

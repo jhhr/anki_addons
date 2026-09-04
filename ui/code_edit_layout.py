@@ -15,7 +15,7 @@ be swapped in host editors without touching surrounding code:
 
 import ast
 import textwrap
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 from aqt.qt import (
     QFont,
@@ -39,51 +39,44 @@ from ..logic.interpolate_fields import (
 
 CODE_NOTICE_PREFIX = "\u26a0 <b>Code mode</b> \u2014 write the body of a function that "
 
-CODE_NOTICE_AVAILABLE_NAMES = (
-    "<tt>{{Field}}</tt> markers are resolved before execution.<br>"
-    "Available names: <tt>re</tt>, <tt>json</tt>, <tt>html</tt>, <tt>print</tt>, "
-    "<tt>find_cards</tt>, <tt>find_notes</tt>, <tt>note</tt>, "
-    "<tt>cards</tt> (list of destination note&#39;s cards), <tt>get_card_last_reps</tt>. "
-    "<small>Built-ins are restricted to a safe subset.</small>"
-)
-
-_CODE_NOTICE_HTML_WARNING = (
+CODE_NOTICE_HTML_WARNING = (
     "<small>\u26a0 Fields containing HTML (quotes, tags) can break string literals \u2014 "
     'prefer <tt>note["Field Name"]</tt> over <tt>"{{Field Name}}"</tt>.</small>'
 )
 
-FIELD_CODE_NOTICE = (
-    CODE_NOTICE_PREFIX
-    + "<b>returns a string</b>. "
-    + CODE_NOTICE_AVAILABLE_NAMES
-    + "<br>"
-    + _CODE_NOTICE_HTML_WARNING
-)
-
-FILE_CODE_NOTICE = (
-    CODE_NOTICE_PREFIX
-    + "<b>returns a <tt>list</tt> of <tt>(filename, content)</tt> string tuples</b>. "
-    "Each tuple will be written as a separate file. "
-    + CODE_NOTICE_AVAILABLE_NAMES
-    + "<br>"
-    "<small>Example: "
-    "<tt>return [('_file.html', '&lt;b&gt;' + note['Field'] + '&lt;/b&gt;')]</tt>"
-    "</small><br>"
-    + _CODE_NOTICE_HTML_WARNING
+# The names execute_code_core always places in the namespace, as
+# (name, parenthesised description) pairs.
+CODE_NOTICE_CORE_NAMES: tuple[tuple[str, str], ...] = (
+    ("re", ""),
+    ("json", ""),
+    ("html", ""),
+    ("print", ""),
+    ("find_cards", ""),
+    ("find_notes", ""),
+    ("note", ""),
+    ("cards", "the note&#39;s cards"),
+    ("get_card_last_reps", ""),
 )
 
 
-CARD_ACTION_CODE_NOTICE = (
-    CODE_NOTICE_PREFIX
-    + "<b>returns a <tt>dict</tt> or <tt>None</tt></b>. Return <tt>None</tt> to skip all actions"
-    " for this card type. The dict may include any of these keys (all"
-    " optional):<br>\u2014<tt>change_deck</tt>: str (deck name) <br>\u2014 <tt>set_flag</tt>: int"
-    " 0\u20137 (0=no flag, 1=red, 2=orange, 3=green, 4=blue, 5=pink, 6=turquoise, 7=purple)"
-    " <br>\u2014 <tt>suspend</tt>: bool <br>\u2014 <tt>bury</tt>: bool <br>\u2014"
-    " <tt>set_desired_retention</tt>: float 0.01\u20130.99 or custom-data key (str)<br>"
-    + CODE_NOTICE_AVAILABLE_NAMES
-    + _CODE_NOTICE_HTML_WARNING
-)
+def code_notice_available_names(
+    extra_names: Sequence[Tuple[str, str]] = (),
+) -> str:
+    """Render the 'available names' half of a code-mode notice.
+
+    :param extra_names: (name, description) pairs for anything the caller adds
+        to the namespace via ``execute_code_core``'s ``extra_globals``, so the
+        notice matches what the code can actually reach.
+    """
+    rendered = [
+        f"<tt>{name}</tt>" + (f" ({desc})" if desc else "")
+        for name, desc in (*CODE_NOTICE_CORE_NAMES, *extra_names)
+    ]
+    return (
+        "<tt>{{Field}}</tt> markers are resolved before execution.<br>"
+        "Available names: " + ", ".join(rendered) + ". "
+        "<small>Built-ins are restricted to a safe subset.</small>"
+    )
 
 
 class CodeEditLayout(QWidget):

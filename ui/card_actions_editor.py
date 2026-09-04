@@ -33,7 +33,8 @@ from ..configuration import (
     CardAction,
     CopyDefinition,
 )
-from .code_edit_layout import CodeEditLayout, CARD_ACTION_CODE_NOTICE
+from .code_edit_layout import CodeEditLayout
+from .code_notices import CARD_ACTION_CODE_NOTICE
 from .edit_state import EditState
 from .grouped_combo_box import GroupedComboBox
 from .toggle_switch import ToggleSwitch

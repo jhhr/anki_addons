@@ -35,24 +35,18 @@ from ..configuration import (
 from .multi_combo_box import MultiComboBox
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
 from .interpolated_text_edit import InterpolatedTextEditLayout
-from .code_edit_layout import CodeEditLayout, FILE_CODE_NOTICE
+from .code_edit_layout import CodeEditLayout
+from .code_notices import FILE_CODE_NOTICE
 from .toggle_switch import ToggleSwitch
 from ..logic.interpolate_fields import (
-    BASE_NOTE_MENU_DICT,
     DESTINATION_PREFIX,
-    DESTINATION_NOTE_MENU_DICT,
     NOTE_ID,
     CARD_IVL,
     CARD_TYPE,
     intr_format,
 )
 from .edit_state import EditState
-
-
-def get_new_base_dict(copy_mode: CopyModeType) -> dict:
-    if copy_mode == COPY_MODE_WITHIN_NOTE:
-        return DESTINATION_NOTE_MENU_DICT.copy()
-    return DESTINATION_NOTE_MENU_DICT | BASE_NOTE_MENU_DICT
+from .note_menu_dicts import get_new_base_dict
 
 
 class FieldInputsDict(TypedDict):

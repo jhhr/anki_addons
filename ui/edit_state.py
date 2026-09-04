@@ -11,9 +11,9 @@ from ..logic.interpolate_fields import (
     BASE_NOTE_MENU_DICT,
     DESTINATION_PREFIX,
     VARIABLES_KEY,
-    DESTINATION_NOTE_MENU_DICT,
 )
 from .interpolated_text_edit import make_validate_dict
+from .note_menu_dicts import get_new_base_dict
 
 from ..configuration import (
     COPY_MODE_WITHIN_NOTE,
@@ -44,12 +44,6 @@ class CallbackEntry:
     def __call__(self, *args, **kwargs):
         """Allow CallbackEntry to be called like a function"""
         return self.callback(*args, **kwargs)
-
-
-def get_new_base_dict(copy_mode: CopyModeType) -> dict:
-    if copy_mode == COPY_MODE_WITHIN_NOTE:
-        return DESTINATION_NOTE_MENU_DICT.copy()
-    return DESTINATION_NOTE_MENU_DICT | BASE_NOTE_MENU_DICT
 
 
 def call_callbacks(callbacks: list[CallbackEntry], **args):
