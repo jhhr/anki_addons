@@ -1,3 +1,5 @@
+import pytest
+
 from related_card_disperse.core import (
     cap_card_ids,
     dedupe_preserve_order,
@@ -15,6 +17,20 @@ def test_normalize_card_id_result_int_and_digit_string():
 
 def test_normalize_card_id_result_iterable_of_ids():
     assert normalize_card_id_result([1, "2", 3]) == [1, 2, 3]
+
+
+def test_normalize_card_id_result_none():
+    assert normalize_card_id_result(None) == []
+
+
+def test_normalize_card_id_result_invalid_string_raises():
+    with pytest.raises(ValueError):
+        normalize_card_id_result("deck:test")
+
+
+def test_normalize_card_id_result_invalid_iterable_item_raises():
+    with pytest.raises(ValueError):
+        normalize_card_id_result([1, "abc"])
 
 
 def test_dedupe_preserve_order():

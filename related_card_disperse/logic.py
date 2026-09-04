@@ -30,6 +30,7 @@ from .shared.scheduling.due_dates import due_to_date, get_fuzz_range
 class QueryResolution:
     raw_count: int
     filtered_count: int
+    dropped_trigger_count: int
     capped_count: int
     card_ids: list[int]
     raw_related_ids: set[int]
@@ -40,6 +41,7 @@ class QueryResolution:
 class DispersePlan:
     card_ids: list[int]
     due_ranges: dict[int, tuple[int, int]]
+    current_dues: dict[int, int]
     last_reviews: dict[int, int]
     best_due_dates: dict[int, int]
     min_gap: int
@@ -139,10 +141,16 @@ def resolve_rule_candidates(
     config: Config,
     *,
     drop_trigger_card: bool,
+    apply_cap: bool = True,
 ) -> QueryResolution:
+    """Resolve one rule's related cards for a reviewed card.
+
+    When ``apply_cap`` is False, ``card_ids`` is the full filtered list and
+    ``capped_count`` is always 0.
+    """
     query, direct_ids, error = _as_query_or_ids(rule, reviewed_card)
     if error:
-        return QueryResolution(0, 0, 0, [], set(), error=error)
+        return QueryResolution(0, 0, 0, 0, [], set(), error=error)
 
     if query is not None:
         found_ids = list(mw.col.find_cards(query))
@@ -150,14 +158,21 @@ def resolve_rule_candidates(
         found_ids = direct_ids
 
     raw_ids = dedupe_preserve_order(found_ids)
-    filtered = _post_filter_review_cards(raw_ids)
+    state_filtered = _post_filter_review_cards(raw_ids)
+    filtered_count = max(0, len(raw_ids) - len(state_filtered))
+    filtered = state_filtered
     if drop_trigger_card:
         filtered = [cid for cid in filtered if cid != reviewed_card.id]
+    dropped_trigger_count = max(0, len(state_filtered) - len(filtered))
 
-    capped, capped_count = cap_card_ids(filtered, _rule_cap(rule, config))
+    if apply_cap:
+        capped, capped_count = cap_card_ids(filtered, _rule_cap(rule, config))
+    else:
+        capped, capped_count = filtered, 0
     return QueryResolution(
         raw_count=len(raw_ids),
-        filtered_count=max(0, len(raw_ids) - len(filtered)),
+        filtered_count=filtered_count,
+        dropped_trigger_count=dropped_trigger_count,
         capped_count=capped_count,
         card_ids=capped,
         raw_related_ids=set(filtered),
@@ -215,15 +230,15 @@ def _get_due_range(
     due = card.odue if card.odid else card.due
 
     stats = _get_stats(card.id, stats_cache)
-    last_review = _last_review_date(card, stats.revlog)
+    revlogs = _filter_revlogs(stats.revlog)
+    last_review = _last_review_date(card, revlogs)
 
     new_ivl = int(round(9 * ivl * (1 / desired_retention - 1)))
     new_ivl = min(new_ivl, maximum_interval)
 
-    if new_ivl <= 2.5:
+    if new_ivl <= 2:
         return (due, due), last_review
 
-    revlogs = _filter_revlogs(stats.revlog)
     last_elapsed_days = int((revlogs[0].time - revlogs[1].time) / 86400) if len(revlogs) >= 2 else 0
 
     min_ivl, max_ivl = get_fuzz_range(new_ivl, last_elapsed_days)
@@ -243,10 +258,12 @@ def _get_due_range(
 
 def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> DispersePlan:
     due_ranges: dict[int, tuple[int, int]] = {}
+    current_dues: dict[int, int] = {}
     last_reviews: dict[int, int] = {}
 
     for cid in card_ids:
         card = mw.col.get_card(cid)
+        current_dues[cid] = card.odue if card.odid else card.due
         due_range, last_review = _get_due_range(
             card,
             desired_retention=_get_desired_retention(card),
@@ -260,6 +277,7 @@ def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> Dispers
     return DispersePlan(
         card_ids=card_ids,
         due_ranges=due_ranges,
+        current_dues=current_dues,
         last_reviews=last_reviews,
         best_due_dates=best_due_dates,
         min_gap=min_gap,
@@ -283,6 +301,10 @@ def apply_disperse_plan(plan: DispersePlan, undo_entry: int) -> list[str]:
             f"Dispersed card {cid} from {due_to_date(old_due)} to {due_to_date(adjusted_due)}"
         )
     return messages
+
+
+def _is_noop_plan(plan: DispersePlan) -> bool:
+    return plan.best_due_dates == plan.current_dues
 
 
 def run_rule_for_reviewed_card(
@@ -314,7 +336,7 @@ def run_rule_for_reviewed_card(
             summarize_outcome(
                 rule_name,
                 query_result.raw_count,
-                query_result.filtered_count,
+                query_result.filtered_count + query_result.dropped_trigger_count,
                 query_result.capped_count,
                 0,
                 "skipped(empty or single card)",
@@ -323,15 +345,20 @@ def run_rule_for_reviewed_card(
         )
 
     plan = build_disperse_plan(query_result.card_ids, stats_cache)
-    if plan.min_gap == 0:
+    if _is_noop_plan(plan):
+        outcome_text = (
+            "skipped(non-overlapping due ranges)"
+            if plan.min_gap == 0
+            else "skipped(already optimally placed)"
+        )
         return RuleOutcome(
             summarize_outcome(
                 rule_name,
                 query_result.raw_count,
-                query_result.filtered_count,
+                query_result.filtered_count + query_result.dropped_trigger_count,
                 query_result.capped_count,
                 0,
-                "skipped(non-overlapping due ranges)",
+                outcome_text,
             ),
             0,
         )
@@ -341,7 +368,7 @@ def run_rule_for_reviewed_card(
         summarize_outcome(
             rule_name,
             query_result.raw_count,
-            query_result.filtered_count,
+            query_result.filtered_count + query_result.dropped_trigger_count,
             query_result.capped_count,
             len(details),
             "dispersed",
@@ -363,17 +390,6 @@ def run_sync_grouped(
     stats_cache: StatsCache = {}
     undo_entry = mw.col.add_custom_undo_entry("Disperse related cards after sync")
 
-    for card in reviewed_cards:
-        note = card.note()
-        note_type = note.note_type()
-        if not note_type:
-            continue
-        note_type_name = note_type["name"]
-        sync_rules = get_applicable_rules(config.rules, note_type_name, on_sync=True)
-        for rule in sync_rules:
-            # placeholder; per-rule grouping happens below
-            _ = rule
-
     by_rule: dict[str, dict[str, Any]] = {}
     for reviewed_card in reviewed_cards:
         note = reviewed_card.note()
@@ -385,7 +401,13 @@ def run_sync_grouped(
             rule_guid = rule["guid"]
             if rule_guid not in by_rule:
                 by_rule[rule_guid] = {"rule": rule, "sets": []}
-            resolution = resolve_rule_candidates(rule, reviewed_card, config, drop_trigger_card=False)
+            resolution = resolve_rule_candidates(
+                rule,
+                reviewed_card,
+                config,
+                drop_trigger_card=False,
+                apply_cap=False,
+            )
             if resolution.error or not resolution.card_ids:
                 continue
             by_rule[rule_guid]["sets"].append(set(resolution.card_ids))
@@ -405,7 +427,12 @@ def run_sync_grouped(
                 )
                 continue
             plan = build_disperse_plan(capped_ids, stats_cache)
-            if plan.min_gap == 0:
+            if _is_noop_plan(plan):
+                outcome_text = (
+                    "skipped(non-overlapping due ranges)"
+                    if plan.min_gap == 0
+                    else "skipped(already optimally placed)"
+                )
                 messages.append(
                     summarize_outcome(
                         _rule_name(rule),
@@ -413,7 +440,7 @@ def run_sync_grouped(
                         0,
                         capped_count,
                         0,
-                        "skipped(non-overlapping due ranges)",
+                        outcome_text,
                     )
                 )
                 continue
@@ -432,31 +459,29 @@ def run_sync_grouped(
     return messages
 
 
-def maximize_due_gap(points_dict: Dict[int, Tuple[int, int]]):
-    points_list = [(k, v) for k, v in points_dict.items()]
+def maximize_due_gap(points_dict: Dict[int, Tuple[int, int]]) -> tuple[int, dict[int, int]]:
+    """Return the maximum minimum gap and the assigned due date per card id."""
+    if not points_dict:
+        return 0, {}
+    points_list = list(points_dict.items())
     points_list.sort(key=lambda x: x[1][1])
 
     intervals_only = [interval for _, interval in points_list]
     max_min_gap, initial_arrangement = find_max_min_gap_and_arrangement(intervals_only)
 
-    optimized_arrangement = initial_arrangement.copy()
-
-    for i in range(len(points_list)):
-        left_limit, right_limit = points_list[i][1]
-        if i > 0:
-            left_limit = max(left_limit, optimized_arrangement[i - 1] + max_min_gap)
-        if i < len(points_list) - 1:
-            right_limit = min(right_limit, optimized_arrangement[i + 1] - max_min_gap)
-        optimized_arrangement[i] = max(left_limit, right_limit)
-
     optimized_arrangement_dict = {
-        points_list[i][0]: optimized_arrangement[i] for i in range(len(points_list))
+        points_list[i][0]: initial_arrangement[i] for i in range(len(points_list))
     }
 
     return max_min_gap, optimized_arrangement_dict
 
 
-def find_max_min_gap_and_arrangement(points):
+def find_max_min_gap_and_arrangement(
+    points: list[tuple[int, int]],
+) -> tuple[int, list[int]]:
+    """Binary-search the largest feasible minimum gap and one valid arrangement."""
+    if not points:
+        return 0, []
     points.sort(key=lambda x: x[1])
     min_gap = 0
     max_gap = points[-1][1] - points[0][0]

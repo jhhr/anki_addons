@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
-from typing import Optional, cast
+from typing import Optional
 
 from aqt import mw
+from aqt.utils import showWarning
 from aqt.qt import (
     QCheckBox,
     QDialog,
@@ -232,7 +233,10 @@ class RelatedCardDisperseDialog(QDialog):
 
     def _set_form_from_rule(self, rule: RelatedRule) -> None:
         self.rule_name.setText(rule.get("name", ""))
-        self.note_types.setCurrentText(", ".join(split_note for split_note in self._decode_note_types(rule.get("target_note_types", ""))))
+        self.note_types.setCurrentText("")
+        for note_type_name in self._decode_note_types(rule.get("target_note_types", "")):
+            self.note_types.addSelectedItem(note_type_name)
+        self.note_types.updateText()
         self.on_review.setChecked(rule.get("on_review", True))
         self.on_sync.setChecked(rule.get("on_sync", True))
         self.use_code.setChecked(rule.get("use_code", False))
@@ -254,7 +258,9 @@ class RelatedCardDisperseDialog(QDialog):
             cap_value = None
         else:
             cap = int(cap_raw)
-            cap_value = cap if cap > 0 else None
+            if cap <= 0:
+                raise ValueError("max_related_cards must be positive")
+            cap_value = cap
 
         return RelatedRule(
             guid="",
@@ -292,6 +298,7 @@ class RelatedCardDisperseDialog(QDialog):
         try:
             rule = self._current_rule()
         except ValueError:
+            showWarning("Max related cards must be a positive integer.")
             return
 
         current_row = self.rule_list.currentRow()

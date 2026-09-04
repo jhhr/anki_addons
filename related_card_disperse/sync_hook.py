@@ -12,6 +12,7 @@ from .shared.anki.sync_hook_base import create_comparelog, review_cid_remote
 
 
 def _on_sync_start(local_rids: List[int]) -> None:
+    local_rids.clear()
     create_comparelog(local_rids)
 
 

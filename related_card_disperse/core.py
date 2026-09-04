@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from typing import Any
 
@@ -58,10 +59,10 @@ def cap_card_ids(card_ids: list[int], cap: int) -> tuple[list[int], int]:
 
 
 def group_overlapping_sets(groups: list[set[int]]) -> list[set[int]]:
-    pending = [set(g) for g in groups if g]
+    pending = deque(set(g) for g in groups if g)
     merged: list[set[int]] = []
     while pending:
-        current = pending.pop(0)
+        current = pending.popleft()
         changed = True
         while changed:
             changed = False
@@ -72,7 +73,7 @@ def group_overlapping_sets(groups: list[set[int]]) -> list[set[int]]:
                     changed = True
                 else:
                     next_pending.append(maybe)
-            pending = next_pending
+            pending = deque(next_pending)
         merged.append(current)
     return merged
 
