@@ -18,7 +18,9 @@ from .core import (
     dedupe_preserve_order,
     group_overlapping_sets,
     normalize_card_id_result,
-    split_note_type_names,
+    qualified_card_type_name,
+    reviewed_card_variables,
+    split_quoted_names,
     summarize_outcome,
 )
 from .shared.anki.write_custom_data import write_custom_data
@@ -70,14 +72,37 @@ def _rule_cap(rule: RelatedRule, config: Config) -> int:
     return config.default_max_related_cards
 
 
+def card_type_name_for(card: Card) -> str:
+    """The reviewed card's card type name, or "" when it cannot be resolved.
+
+    Every card of a cloze note shares the one template name, which is what a
+    cloze rule wants: the card types worth telling apart are the ones that show
+    different fields, and cloze ordinals of the same template do not.
+    """
+    try:
+        template = card.template()
+    except Exception:
+        return ""
+    return template.get("name", "") if template else ""
+
+
 def get_applicable_rules(
     rules: list[RelatedRule],
     note_type_name: str,
+    card_type_name: str,
     *,
     on_review: bool = False,
     on_sync: bool = False,
 ) -> list[RelatedRule]:
+    """The rules that should run for a card of ``note_type_name``/``card_type_name``.
+
+    A rule with no card type targets runs for every card of the note types it
+    targets, which is what every rule written before card type targeting did.
+    One with targets is a gate: a card outside them does not run the rule at
+    all, so its query is never even resolved.
+    """
     result: list[RelatedRule] = []
+    qualified_name = qualified_card_type_name(note_type_name, card_type_name)
     for rule in rules:
         if not rule.get("enabled", True):
             continue
@@ -85,9 +110,13 @@ def get_applicable_rules(
             continue
         if on_sync and not rule.get("on_sync", True):
             continue
-        targets = split_note_type_names(rule.get("target_note_types", ""))
-        if note_type_name in targets:
-            result.append(rule)
+        targets = split_quoted_names(rule.get("target_note_types", ""))
+        if note_type_name not in targets:
+            continue
+        card_targets = split_quoted_names(rule.get("target_card_types", ""))
+        if card_targets and qualified_name not in card_targets:
+            continue
+        result.append(rule)
     return result
 
 
@@ -96,9 +125,16 @@ def _as_query_or_ids(
     reviewed_card: Card,
 ) -> tuple[Optional[str], list[int], Optional[str]]:
     note = reviewed_card.note()
+    # Which card was reviewed is not something note-level interpolation can
+    # reach, and a query gated to one card type usually wants to name it.
+    variables = reviewed_card_variables(
+        card_type_name_for(reviewed_card), getattr(reviewed_card, "ord", 0)
+    )
     if rule.get("use_code", False):
         code = rule.get("query_code", "")
-        interpolated_code, invalid_fields = interpolate_from_text(code, source_note=note)
+        interpolated_code, invalid_fields = interpolate_from_text(
+            code, source_note=note, variable_values_dict=variables
+        )
         if invalid_fields:
             return None, [], f"invalid fields in code: {', '.join(invalid_fields)}"
         if interpolated_code is None:
@@ -126,7 +162,9 @@ def _as_query_or_ids(
             return None, [], str(exc)
 
     query_template = rule.get("related_card_query", "")
-    query, invalid_fields = interpolate_from_text(query_template, source_note=note)
+    query, invalid_fields = interpolate_from_text(
+        query_template, source_note=note, variable_values_dict=variables
+    )
     if invalid_fields:
         return None, [], f"invalid fields in query: {', '.join(invalid_fields)}"
     if query is None:
@@ -452,7 +490,12 @@ def run_sync_grouped(
         note_type = note.note_type()
         if not note_type:
             continue
-        sync_rules = get_applicable_rules(config.rules, note_type["name"], on_sync=True)
+        sync_rules = get_applicable_rules(
+            config.rules,
+            note_type["name"],
+            card_type_name_for(reviewed_card),
+            on_sync=True,
+        )
         for rule in sync_rules:
             rule_guid = rule["guid"]
             if rule_guid not in by_rule:

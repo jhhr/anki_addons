@@ -5,6 +5,7 @@ from typing import Optional, TypedDict
 
 from aqt import mw
 
+from .core import join_quoted_names
 from .shared.interpolate.interpolate_fields import NOTE_ID, intr_format
 
 
@@ -21,6 +22,7 @@ class RelatedRule(TypedDict):
     name: str
     enabled: bool
     target_note_types: str
+    target_card_types: str
     related_card_query: str
     use_code: bool
     query_code: str
@@ -45,12 +47,12 @@ def save_config(data: ConfigData) -> None:
     mw.addonManager.writeConfig(tag, data)
 
 
-def _normalize_note_types(value: object) -> str:
+def _normalize_name_list(value: object) -> str:
+    """Accept either the stored `"A", "B"` string or a plain list of names."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        names = [str(v) for v in value if str(v).strip()]
-        return '"' + '", "'.join(names) + '"' if names else ""
+        return join_quoted_names([str(v) for v in value if str(v).strip()])
     return ""
 
 
@@ -60,6 +62,7 @@ def default_rule() -> RelatedRule:
         name="",
         enabled=True,
         target_note_types="",
+        target_card_types="",
         related_card_query=DEFAULT_RELATED_CARD_QUERY,
         use_code=False,
         query_code="",
@@ -89,9 +92,10 @@ def migrate_data(data: dict) -> ConfigData:
         base["guid"] = str(maybe_rule.get("guid") or uuid.uuid4())
         base["name"] = str(maybe_rule.get("name") or "")
         base["enabled"] = bool(maybe_rule.get("enabled", True))
-        base["target_note_types"] = _normalize_note_types(
-            maybe_rule.get("target_note_types")
-        )
+        base["target_note_types"] = _normalize_name_list(maybe_rule.get("target_note_types"))
+        # Absent means "every card type of the targeted note types", which is
+        # what rules written before card type targeting existed did.
+        base["target_card_types"] = _normalize_name_list(maybe_rule.get("target_card_types"))
         base["related_card_query"] = str(maybe_rule.get("related_card_query") or "")
         base["use_code"] = bool(maybe_rule.get("use_code", False))
         base["query_code"] = str(maybe_rule.get("query_code") or "")

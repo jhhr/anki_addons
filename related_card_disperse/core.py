@@ -44,10 +44,51 @@ def dedupe_preserve_order(values: list[int]) -> list[int]:
     return out
 
 
-def split_note_type_names(target_note_types: str) -> list[str]:
-    if not target_note_types:
+# Separates the note type from the card type in a fully qualified card type
+# name. Same spelling as copy_anywhere's, so a name copied between the two
+# addons' configs means the same thing in both.
+CARD_TYPE_SEPARATOR = "<::>"
+
+
+def split_quoted_names(value: str) -> list[str]:
+    """Split a `"A", "B"` name list, as note type and card type targets are stored."""
+    if not value:
         return []
-    return [n for n in target_note_types.strip('"').split('", "') if n]
+    return [n for n in value.strip('"').split('", "') if n]
+
+
+def join_quoted_names(names: list[str]) -> str:
+    """Inverse of ``split_quoted_names``; an empty list gives an empty string."""
+    kept = [n for n in names if n]
+    return '"' + '", "'.join(kept) + '"' if kept else ""
+
+
+def qualified_card_type_name(note_type_name: str, card_type_name: str) -> str:
+    """The name a card type target is stored under: note type plus card type.
+
+    Card type names are only unique within a note type, and a rule can target
+    several note types at once, so the note type has to travel with the name.
+    """
+    return f"{note_type_name}{CARD_TYPE_SEPARATOR}{card_type_name}"
+
+
+# Interpolation variables describing the card whose review triggered the rule.
+# The note-level {{Field}} vocabulary cannot see it -- interpolation resolves
+# against a note -- so these are handed in as variables instead.
+REVIEWED_CARD_TEMPLATE = "__Reviewed_Card_Template"
+REVIEWED_CARD_ORD = "__Reviewed_Card_Ord"
+
+
+def reviewed_card_variables(card_type_name: str, card_ord: int) -> dict[str, object]:
+    """Values for the reviewed-card interpolation variables.
+
+    ``card_ord`` is taken 0-based, as Anki stores it, and exposed 1-based so it
+    can be dropped straight into a ``card:N`` search term.
+    """
+    return {
+        REVIEWED_CARD_TEMPLATE: card_type_name,
+        REVIEWED_CARD_ORD: card_ord + 1,
+    }
 
 
 def cap_card_ids(

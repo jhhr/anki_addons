@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Optional
 
+from anki.models import NotetypeDict
 from aqt import mw
 from aqt.qt import (
     QCheckBox,
@@ -20,7 +21,14 @@ from aqt.qt import (
 )
 
 from .configuration import Config, RelatedRule, default_rule
-from .shared.interpolate.interpolate_fields import BASE_NOTE_MENU_DICT
+from .core import (
+    REVIEWED_CARD_ORD,
+    REVIEWED_CARD_TEMPLATE,
+    join_quoted_names,
+    qualified_card_type_name,
+    split_quoted_names,
+)
+from .shared.interpolate.interpolate_fields import BASE_NOTE_MENU_DICT, intr_format
 from .shared.ui.add_intersecting_model_field_options_to_dict import (
     add_intersecting_model_field_options_to_dict,
 )
@@ -35,6 +43,18 @@ from .shared.ui.multi_combo_box import MultiComboBox
 from .shared.ui.scrollable_dialog import ScrollableQDialog
 from .shared.ui.toggle_switch import ToggleSwitch
 
+
+# The reviewed card is not something note-level {{Field}} interpolation can
+# reach, so it is offered as its own menu group of variables.
+REVIEWED_CARD_MENU_DICT = {
+    "Reviewed card": {
+        "Card type name": intr_format(REVIEWED_CARD_TEMPLATE),
+        "Card number (card:N)": intr_format(REVIEWED_CARD_ORD),
+    },
+}
+
+ALL_CARD_TYPES_PLACEHOLDER = "All card types"
+NO_NOTE_TYPE_PLACEHOLDER = "First, select a target note type"
 
 QUERY_CODE_NOTICE = (
     CODE_NOTICE_PREFIX
@@ -196,6 +216,14 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.note_types = MultiComboBox(self)
         self._populate_note_types()
 
+        # Optional narrowing of the note type targets: which cards of those note
+        # types actually trigger the rule. Empty means all of them.
+        self.card_types = MultiComboBox(self)
+        self.card_types.setToolTip(
+            "Leave empty to run for every card of the targeted note types. Selecting card"
+            " types gates the rule: a card outside them does not run the query at all."
+        )
+
         self.on_review = QCheckBox("Run on reviewer_did_answer_card", self)
         self.on_sync = QCheckBox("Run for remotely reviewed cards after sync", self)
         self.use_code = QCheckBox("Use code mode", self)
@@ -211,7 +239,10 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             description=(
                 "Use browser query syntax and interpolate with {{Field}}. Required while"
                 " dispersal is enabled. A new rule starts with the reviewed note's own"
-                " cards, i.e. plain sibling dispersal."
+                " cards, i.e. plain sibling dispersal. The Reviewed card menu holds"
+                " variables for the card that triggered the rule, e.g. append"
+                " <tt>card:{{__Reviewed_Card_Ord}}</tt> to keep only the cards of the"
+                " same card number as the reviewed one."
             ),
             height=120,
             placeholder_text='"deck:My deck" "Front:*{{Front}}*"',
@@ -236,6 +267,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         form.addRow("Rule name", self.rule_name)
         form.addRow(self.enabled)
         form.addRow("Target note types", self.note_types)
+        form.addRow("Target card types (optional)", self.card_types)
         form.addRow(self.on_review)
         form.addRow(self.on_sync)
         form.addRow(self.use_code)
@@ -301,17 +333,47 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
     def _selected_note_type_names(self) -> list[str]:
         return list(self.note_types.currentData() or [])
 
-    def _serialize_selected_note_types(self) -> str:
-        names = self._selected_note_type_names()
-        return '"' + '", "'.join(names) + '"' if names else ""
+    def _selected_card_type_names(self) -> list[str]:
+        return list(self.card_types.currentData() or [])
+
+    def _selected_models(self) -> list[NotetypeDict]:
+        models = [mw.col.models.by_name(name) for name in self._selected_note_type_names()]
+        return [m for m in models if m]
+
+    def _populate_card_types(self, selected: Optional[list[str]] = None) -> None:
+        """Refill the card type list from the selected note types.
+
+        Card type names are only unique within a note type, so the items are
+        fully qualified. Anything selected for a note type that is no longer
+        targeted disappears with it, rather than lingering as a target that can
+        never match.
+        """
+        keep = set(self._selected_card_type_names() if selected is None else selected)
+        models = self._selected_models()
+        self.card_types.blockSignals(True)
+        try:
+            self.card_types.clear()
+            for model in models:
+                for template in model.get("tmpls", []):
+                    name = qualified_card_type_name(model["name"], template.get("name", ""))
+                    self.card_types.addItem(name)
+                    if name in keep:
+                        self.card_types.addSelectedItem(name)
+        finally:
+            self.card_types.blockSignals(False)
+        self.card_types.updateText()
+        has_note_types = bool(models)
+        self.card_types.setEnabled(has_note_types)
+        self.card_types.setPlaceholderText(
+            ALL_CARD_TYPES_PLACEHOLDER if has_note_types else NO_NOTE_TYPE_PLACEHOLDER
+        )
 
     def _update_query_options(self) -> None:
-        selected = self._selected_note_type_names()
         options = BASE_NOTE_MENU_DICT.copy()
-        models = [mw.col.models.by_name(name) for name in selected]
-        models = [m for m in models if m]
+        models = self._selected_models()
         if models:
             add_intersecting_model_field_options_to_dict(models, options)
+        options.update(REVIEWED_CARD_MENU_DICT)
         validate = make_validate_dict(options)
         self.query_text.update_options(options, validate)
         self.query_code.update_options(options, validate)
@@ -319,6 +381,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
     def _on_note_types_changed(self) -> None:
         if self._building_ui:
             return
+        self._populate_card_types()
         self._update_query_options()
         self._autofill_rule_name()
 
@@ -390,9 +453,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.rule_name.setText(rule.get("name", ""))
         self.enabled.setChecked(rule.get("enabled", True))
         self.note_types.setCurrentText("")
-        for note_type_name in self._decode_note_types(rule.get("target_note_types", "")):
+        for note_type_name in split_quoted_names(rule.get("target_note_types", "")):
             self.note_types.addSelectedItem(note_type_name)
         self.note_types.updateText()
+        # Depends on the note types just set, so it cannot be hoisted above them.
+        self._populate_card_types(split_quoted_names(rule.get("target_card_types", "")))
         self.on_review.setChecked(rule.get("on_review", True))
         self.on_sync.setChecked(rule.get("on_sync", True))
         self.use_code.setChecked(rule.get("use_code", False))
@@ -400,12 +465,6 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.query_text.set_text(rule.get("related_card_query", ""))
         self.query_code.set_text(rule.get("query_code", ""))
         self._on_use_code_toggled(self.use_code.isChecked())
-
-    @staticmethod
-    def _decode_note_types(target_note_types: str) -> list[str]:
-        if not target_note_types:
-            return []
-        return [n for n in target_note_types.strip('"').split('", "') if n]
 
     def _form_to_rule(self, guid: str) -> RelatedRule:
         cap = self.rule_cap.value()
@@ -415,7 +474,8 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             guid=guid,
             name=self.rule_name.text().strip(),
             enabled=self.enabled.isChecked(),
-            target_note_types=self._serialize_selected_note_types(),
+            target_note_types=join_quoted_names(self._selected_note_type_names()),
+            target_card_types=join_quoted_names(self._selected_card_type_names()),
             related_card_query=self.query_text.get_text(),
             use_code=self.use_code.isChecked(),
             query_code=self.query_code.get_text(),

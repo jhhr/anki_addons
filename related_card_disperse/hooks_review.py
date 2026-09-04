@@ -6,7 +6,7 @@ from aqt.gui_hooks import reviewer_did_answer_card
 from aqt.utils import tooltip
 
 from .configuration import Config
-from .logic import get_applicable_rules, run_rule_for_reviewed_card
+from .logic import card_type_name_for, get_applicable_rules, run_rule_for_reviewed_card
 
 
 def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
@@ -18,7 +18,9 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
     if not note_type:
         return
 
-    rules = get_applicable_rules(config.rules, note_type["name"], on_review=True)
+    rules = get_applicable_rules(
+        config.rules, note_type["name"], card_type_name_for(card), on_review=True
+    )
     if not rules:
         return
 

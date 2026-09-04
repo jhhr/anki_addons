@@ -4,8 +4,11 @@ from related_card_disperse.core import (
     cap_card_ids,
     dedupe_preserve_order,
     group_overlapping_sets,
+    join_quoted_names,
     normalize_card_id_result,
-    split_note_type_names,
+    qualified_card_type_name,
+    reviewed_card_variables,
+    split_quoted_names,
     summarize_outcome,
 )
 
@@ -37,9 +40,28 @@ def test_dedupe_preserve_order():
     assert dedupe_preserve_order([3, 2, 3, 1, 2]) == [3, 2, 1]
 
 
-def test_split_note_type_names():
-    assert split_note_type_names('"Basic", "Cloze"') == ["Basic", "Cloze"]
-    assert split_note_type_names("") == []
+def test_split_quoted_names():
+    assert split_quoted_names('"Basic", "Cloze"') == ["Basic", "Cloze"]
+    assert split_quoted_names("") == []
+
+
+def test_join_quoted_names_round_trips():
+    names = ["Basic", "Basic<::>Card 1"]
+    assert split_quoted_names(join_quoted_names(names)) == names
+    assert join_quoted_names([]) == ""
+    assert join_quoted_names([""]) == ""
+
+
+def test_qualified_card_type_name():
+    assert qualified_card_type_name("Basic", "Card 1") == "Basic<::>Card 1"
+
+
+def test_reviewed_card_variables_ord_is_one_based():
+    # Anki stores ord 0-based; card:N searches are 1-based.
+    assert reviewed_card_variables("Card 2", 1) == {
+        "__Reviewed_Card_Template": "Card 2",
+        "__Reviewed_Card_Ord": 2,
+    }
 
 
 def test_cap_card_ids():
