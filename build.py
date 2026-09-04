@@ -58,6 +58,9 @@ EXCLUDE_FILES = {
     # and Anki rewrites it on install anyway.
     "meta.json", ".gitignore", ".gitmodules", ".gitattributes",
     "pytest.ini", "build.json", "manifest.json",
+    # The pinned requirements.txt compiled from this does ship - the runtime rebuild reads
+    # it - but the source it was compiled from is a build-time input only.
+    "requirements.in",
 }
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".ankiaddon"}
 EXCLUDE_PATTERNS = (re.compile(r".*_tests\.py$"),)
@@ -240,6 +243,19 @@ PRIMARY_PLATFORM = "win_amd64"
 VENDOR_PYTHON_VERSION = "3.13"
 
 VENDOR_MANIFEST = ".vendored.json"
+# The direct dependencies, and the fully pinned set compiled from them. requirements.txt is
+# the only one either half reads: `vendor` resolves it here, and the addon re-resolves it on
+# the user's machine when the shipped lib/ does not fit their Python.
+REQUIREMENTS_IN = "requirements.in"
+REQUIREMENTS_TXT = "requirements.txt"
+REQUIREMENTS_HEADER = """# Compiled from requirements.in by build.py vendor; do not edit by hand.
+#    uv pip compile requirements.in --universal --python-version {version} -o requirements.txt
+#
+# Pinned because `build.py vendor` is no longer the only thing that reads it: the addon
+# rebuilds lib/ on the user's own machine when the shipped one does not fit their Python
+# (anki_shared/utils/vendor_rebuild.py). Unpinned, two users rebuilding a year apart would
+# get different versions, and a breaking release would land on them and not on the developer.
+"""
 # uv's own bookkeeping and console scripts; an addon can never run either.
 VENDOR_SKIP_ENTRIES = {"bin", ".lock"}
 EXTENSION_SUFFIXES = (".pyd", ".so", ".dylib", ".dll")
@@ -270,6 +286,57 @@ def find_uv() -> str:
         "vendor needs uv, which is not on PATH and was not found bundled with Anki.\n"
         "Install it from https://docs.astral.sh/uv/ and try again."
     )
+
+
+def compile_requirements(addon: Addon, uv: str) -> Path:
+    """Recompile <addon>/requirements.txt from requirements.in when the .in is newer.
+
+    Pinning is not cosmetic here: the runtime rebuild re-resolves this file on the user's
+    machine, so an unpinned entry means the version they get depends on the day they rebuild.
+    Keeping the direct requirements in a separate .in is what stops the pins from burying
+    which four packages this addon actually asked for.
+    """
+    source = addon.path / REQUIREMENTS_IN
+    compiled = addon.path / REQUIREMENTS_TXT
+    if not source.is_file():
+        return compiled
+    if compiled.is_file() and compiled.stat().st_mtime >= source.stat().st_mtime:
+        return compiled
+
+    print(f"  compiling {addon.path.name}/{REQUIREMENTS_TXT} from {REQUIREMENTS_IN}")
+    # uv reads the input before writing the output, but they are the same directory and a
+    # failed run must not leave a truncated pin file behind either.
+    scratch = ROOT / "build" / f"{addon.path.name}-requirements.txt"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            # Named relative to the addon, and run from there: uv writes the input's path
+            # into its `# via` comments, and an absolute one would differ per machine.
+            uv, "pip", "compile", REQUIREMENTS_IN,
+            # Without this uv pins for the machine it runs on, and the result would be a lock
+            # that only describes one of the five platforms lib/ is built for.
+            "--universal",
+            "--python-version", VENDOR_PYTHON_VERSION,
+            "--quiet",
+            "-o", str(scratch),
+        ],
+        cwd=addon.path,
+        check=True,
+    )
+    # uv's own header records the absolute path it was invoked with, which differs per
+    # machine and would show up as a diff on every developer's re-vendor. The `# via` lines
+    # are indented and stay: they are the record of which four requirements are direct.
+    body = [
+        line for line in scratch.read_text("utf-8").splitlines() if not line.startswith("#")
+    ]
+    compiled.write_text(
+        REQUIREMENTS_HEADER.format(version=VENDOR_PYTHON_VERSION)
+        + "\n".join(body).strip("\n")
+        + "\n",
+        "utf-8",
+    )
+    scratch.unlink()
+    return compiled
 
 
 def is_extension(name: str) -> bool:
@@ -456,9 +523,9 @@ def clear_previous_vendoring(
 
 
 def vendor_addon(addon: Addon, uv: str) -> None:
-    requirements = addon.path / "requirements.txt"
+    requirements = compile_requirements(addon, uv)
     if not requirements.is_file():
-        print(f"skip {addon.path.name}: no requirements.txt")
+        print(f"skip {addon.path.name}: no {REQUIREMENTS_TXT}")
         return
 
     keep = set(addon.meta.get("vendor_keep", []))

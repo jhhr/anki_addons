@@ -1,4 +1,23 @@
-requests
-json-repair
-rapidfuzz
-psutil
+# Compiled from requirements.in by build.py vendor; do not edit by hand.
+#    uv pip compile requirements.in --universal --python-version 3.13 -o requirements.txt
+#
+# Pinned because `build.py vendor` is no longer the only thing that reads it: the addon
+# rebuilds lib/ on the user's own machine when the shipped one does not fit their Python
+# (anki_shared/utils/vendor_rebuild.py). Unpinned, two users rebuilding a year apart would
+# get different versions, and a breaking release would land on them and not on the developer.
+certifi==2026.7.22
+    # via requests
+charset-normalizer==3.5.1
+    # via requests
+idna==3.19
+    # via requests
+json-repair==0.63.4
+    # via -r requirements.in
+psutil==7.2.2
+    # via -r requirements.in
+rapidfuzz==3.14.6
+    # via -r requirements.in
+requests==2.34.2
+    # via -r requirements.in
+urllib3==2.7.0
+    # via requests
