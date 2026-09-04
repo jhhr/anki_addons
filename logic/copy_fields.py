@@ -57,9 +57,9 @@ from ..utils.logger import Logger
 from ..utils.move_card_to_deck import move_card_to_deck
 from ..utils.write_custom_data import write_custom_data
 from ..utils.write_to_media_folder import write_to_media_folder
-from .execute_code import (
+from .execute_code import execute_code_for_field
+from .execute_code_wrappers import (
     execute_code_for_card_action,
-    execute_code_for_field,
     execute_code_for_files,
 )
 from .FatalProcessError import FatalProcessError

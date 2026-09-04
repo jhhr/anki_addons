@@ -19,15 +19,15 @@ What IS allowed: the explicit allowlist below (``re``, ``json``, ``html``,
 
 Public API
 ----------
-``execute_code_for_field(code, note, cards=None)``
+``execute_code_core(code, note)``
+    Run the code and return its raw result, for callers that validate the
+    return value themselves.
+
+``execute_code_for_field(code, note)``
     Execute code expected to return a single string value.
 
-``execute_code_for_files(code, note, cards=None)``
-    Execute code expected to return a list of ``(filename, content)`` string
-    tuples, each of which will be written as a separate file.
-
-``execute_code_for_card_action(code, note, cards=None)``
-    Execute code expected to return a ``CardActionDict`` or ``None``.
+Wrappers whose expected return value is specific to this addon's features
+live in ``execute_code_wrappers.py``.
 """
 
 import html
@@ -43,7 +43,6 @@ from anki.notes import Note
 from anki.models import NotetypeDict
 from aqt import mw
 
-from ..configuration import CardActionDict
 from .interpolate_fields import (
     get_card_last_reps,
     get_card_type_as_string,
@@ -236,7 +235,7 @@ class _ReadOnlyCard:
         return f"<_ReadOnlyCard id={card_id}>"
 
 
-def _execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
+def execute_code_core(code: str, note: Note) -> Tuple[Any, Optional[str]]:
     """Compile and run user-provided code in a restricted namespace.
 
     The code is wrapped in a function body so that ``return`` statements work
@@ -327,99 +326,9 @@ def execute_code_for_field(code: str, note: Note) -> Tuple[Union[str, None], Opt
         ``None`` on success.  ``None`` result indicates no return value or an
         error.
     """
-    result, error = _execute_code_core(code, note)
+    result, error = execute_code_core(code, note)
     if error:
         return None, error
     if result is None:
         return None, None
     return str(result), None
-
-
-def execute_code_for_files(
-    code: str, note: Note
-) -> Tuple[Union[list[tuple[str, str]], None], Optional[str]]:
-    """Execute user-provided Python code expected to return a list of file tuples.
-
-    The code must ``return`` a ``list`` of ``(filename, content)`` pairs where
-    both elements are strings.  Each pair will be written as a separate file.
-
-    :param code: The Python code to run (function body, may include
-        ``return``).  ``{{field}}`` markers have already been interpolated.
-    :param note: The current source note, available as ``note`` inside the
-        code.
-    :return: ``(file_tuples|None, error_message)`` — *error_message* is
-        ``None`` on success.  ``None`` result indicates no return value or an
-        error.
-    """
-    result, error = _execute_code_core(code, note)
-    if error:
-        return None, error
-    if result is None:
-        return None, None
-
-    if not isinstance(result, list):
-        return None, f"Expected a list of (filename, content) tuples, got {type(result).__name__}"
-
-    validated: list[tuple[str, str]] = []
-    for i, item in enumerate(result):
-        if not isinstance(item, tuple) or len(item) != 2:
-            return None, f"Item {i} must be a 2-tuple of (filename, content), got: {item!r}"
-        fname, fcontent = item
-        if not isinstance(fname, str):
-            return None, f"Item {i} filename must be a str, got {type(fname).__name__}"
-        if not isinstance(fcontent, str):
-            return None, f"Item {i} content must be a str, got {type(fcontent).__name__}"
-        validated.append((fname, fcontent))
-
-    return validated, None
-
-
-def execute_code_for_card_action(
-    code: str, note: Note
-) -> Tuple[Optional[CardActionDict], Optional[str]]:
-    """Execute user-provided Python code expected to return a CardActionDict or None.
-
-    The code must ``return`` a ``dict`` with any combination of the optional
-    ``CardActionDict`` keys (``change_deck``, ``set_flag``, ``suspend``,
-    ``bury``, ``set_desired_retention``), or ``None`` to skip all actions for
-    this card type.
-
-    :param code: The Python code to run (function body, may include
-        ``return``).  ``{{field}}`` markers have already been interpolated.
-    :param note: The destination note, available as ``note`` inside the code.
-    :return: ``(CardActionDict|None, error_message)`` — *error_message* is
-        ``None`` on success.  ``None`` result means skip all actions.
-    """
-    result, error = _execute_code_core(code, note)
-    if error:
-        return None, error
-    if result is None:
-        return None, None
-    if not isinstance(result, dict):
-        return None, f"Expected a dict or None, got {type(result).__name__}"
-
-    # Validate each known key's type if present.
-    change_deck = result.get("change_deck")
-    if change_deck is not None and not isinstance(change_deck, (str, int)):
-        return None, f"'change_deck' must be str, int, or None; got {type(change_deck).__name__}"
-    set_flag = result.get("set_flag")
-    if set_flag is not None:
-        if isinstance(set_flag, bool) or not isinstance(set_flag, int) or not (0 <= set_flag <= 7):
-            return None, f"'set_flag' must be an int 0\u20137 or None; got {set_flag!r}"
-    suspend = result.get("suspend")
-    if suspend is not None and not isinstance(suspend, bool):
-        return None, f"'suspend' must be True, False, or None; got {type(suspend).__name__}"
-    bury = result.get("bury")
-    if bury is not None and not isinstance(bury, bool):
-        return None, f"'bury' must be True, False, or None; got {type(bury).__name__}"
-    set_dr = result.get("set_desired_retention")
-    if set_dr is not None and not isinstance(set_dr, (float, int, str)):
-        return (
-            None,
-            (
-                "'set_desired_retention' must be float, int, str, or None;"
-                f" got {type(set_dr).__name__}"
-            ),
-        )
-
-    return result, None  # type: ignore[return-value]
