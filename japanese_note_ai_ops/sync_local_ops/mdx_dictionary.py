@@ -519,8 +519,7 @@ class MDXDictionary:
         conn = sqlite3.connect(db_path)
         try:
             cursor = conn.execute(
-                "SELECT key_text FROM MDX_INDEX WHERE key_text >= ? AND key_text < ?"
-                " LIMIT ?",
+                "SELECT key_text FROM MDX_INDEX WHERE key_text >= ? AND key_text < ? LIMIT ?",
                 (prefix, upper, max_results),
             )
             return [row[0] for row in cursor.fetchall()]
