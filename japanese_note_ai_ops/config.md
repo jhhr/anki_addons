@@ -64,13 +64,16 @@ lower limit than a desktop, and a heavy op gets a lower limit than a light one, 
 configuration. While a run is going, the limit is lowered if free memory gets low and raised
 again when it recovers. The progress dialog shows the current value.
 
-The per-task cost is measured, not guessed. Notes are processed in windows, and between windows
-nothing is in flight, which gives a clean baseline — memory that has accumulated over the run so
-far is absorbed into it, so only growth caused by the concurrent tasks counts. The largest
-measurement in a run wins, since what has to fit in RAM is the peak. The result is remembered per
-op in `user_files/memory_estimates.json` and blended with the previous value, so the first run of
-an op learns what it costs and later runs start out sized correctly. Deleting that file just
-means the ops get measured again from the default guess.
+The per-task cost is measured, not guessed, while the run is going. What changes as a run
+proceeds is how many of the op's tasks are alive at once, and the addon fits Python's traced
+allocation total against that count as it moves — so what comes out is what one more live task
+adds, and everything allocated before the run started is left out of it. Nothing has to be
+paused or emptied for that: the count rises and falls by itself as tasks start and finish, and
+the traced total follows it down as well as up. The largest fit in a run wins, since what has to
+fit in RAM is the peak. The result is remembered per op in `user_files/memory_estimates.json` and
+blended with the previous value, so the first run of an op learns what it costs and later runs
+start out sized correctly. Deleting that file just means the ops get measured again from the
+default guess.
 
 While nothing is configured there is also a backstop of 256 concurrent tasks, which only exists to
 stop a very cheap op on a very empty machine from opening an absurd number of connections at once.
@@ -88,8 +91,8 @@ costing more than about 8 MB per task are limited by memory rather than by the b
   string of total RAM (for example `"15%"`). Once the Anki process RSS passes that cap, the addon
   starts backing off concurrency. A value of `0` leaves this hard cap off.
 
-The progress dialog shows the current limit, free memory, and the measured cost per task once a
-window has completed.
+The progress dialog shows the current limit, free memory, and the measured cost per task once
+enough of the run has been measured to fit one.
 
 ### request_timeout
 
