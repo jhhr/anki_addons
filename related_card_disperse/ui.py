@@ -166,6 +166,14 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.default_cap.setMaximum(CAP_MAX)
         self.default_cap.setValue(self.config.default_max_related_cards)
 
+        # 0 means the whole session: one card per related group per day, which
+        # is what Anki's own sibling burying does.
+        self.bury_min_gap = QSpinBox(self)
+        self.bury_min_gap.setMinimum(0)
+        self.bury_min_gap.setMaximum(CAP_MAX)
+        self.bury_min_gap.setSpecialValueText("whole session")
+        self.bury_min_gap.setValue(self.config.bury_min_gap)
+
         self.hide_review_report = QCheckBox("Don't show report during review", self)
         self.hide_review_details = QCheckBox("Don't show details in report during review", self)
         self.hide_review_unchanged = QCheckBox(
@@ -182,6 +190,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.dedupe_sync_groups.setChecked(self.config.dedupe_sync_groups)
 
         global_form.addRow("Default max related cards per execution", self.default_cap)
+        global_form.addRow("Bury a related card within this many cards", self.bury_min_gap)
         global_form.addRow(self.hide_review_report)
         global_form.addRow(self.hide_review_details)
         global_form.addRow(self.hide_review_unchanged)
@@ -578,6 +587,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self._commit_form()
         self.config.update_global(
             default_cap=self.default_cap.value(),
+            bury_min_gap=self.bury_min_gap.value(),
             hide_review_report=self.hide_review_report.isChecked(),
             hide_review_details=self.hide_review_details.isChecked(),
             hide_review_unchanged=self.hide_review_unchanged.isChecked(),

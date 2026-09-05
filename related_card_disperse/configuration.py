@@ -33,6 +33,7 @@ class RelatedRule(TypedDict):
 class ConfigData(TypedDict):
     version: str
     default_max_related_cards: int
+    bury_min_gap: int
     hide_review_report: bool
     hide_review_details: bool
     hide_review_unchanged: bool
@@ -89,6 +90,7 @@ def migrate_data(data: dict) -> ConfigData:
     data.setdefault("hide_review_details", False)
     data.setdefault("hide_review_unchanged", False)
     data.setdefault("dedupe_sync_groups", True)
+    data.setdefault("bury_min_gap", 0)
     rules = data.get("rules", []) or []
 
     normalized_rules: list[RelatedRule] = []
@@ -130,6 +132,10 @@ def migrate_data(data: dict) -> ConfigData:
     data["hide_review_details"] = bool(data["hide_review_details"])
     data["hide_review_unchanged"] = bool(data["hide_review_unchanged"])
     data["dedupe_sync_groups"] = bool(data["dedupe_sync_groups"])
+    try:
+        data["bury_min_gap"] = max(0, int(data["bury_min_gap"]))
+    except (TypeError, ValueError):
+        data["bury_min_gap"] = 0
     return data  # type: ignore[return-value]
 
 
@@ -138,6 +144,7 @@ class Config:
         self.data: ConfigData = {
             "version": "1.0.0",
             "default_max_related_cards": 20,
+            "bury_min_gap": 0,
             "hide_review_report": False,
             "hide_review_details": False,
             "hide_review_unchanged": False,
@@ -175,16 +182,29 @@ class Config:
     def dedupe_sync_groups(self) -> bool:
         return self.data["dedupe_sync_groups"]
 
+    @property
+    def bury_min_gap(self) -> int:
+        """How close two related cards may come before one is buried.
+
+        Counted in cards of the session, and 0 means the whole session -- one
+        card per related group per day, which is what Anki's own sibling burying
+        does. A larger session is where a gap earns its keep: two related cards
+        eighty cards apart in a hundred-card sitting are not really colliding.
+        """
+        return self.data["bury_min_gap"]
+
     def update_global(
         self,
         *,
         default_cap: int,
+        bury_min_gap: int,
         hide_review_report: bool,
         hide_review_details: bool,
         hide_review_unchanged: bool,
         dedupe_sync: bool,
     ) -> None:
         self.data["default_max_related_cards"] = max(1, int(default_cap))
+        self.data["bury_min_gap"] = max(0, int(bury_min_gap))
         self.data["hide_review_report"] = bool(hide_review_report)
         self.data["hide_review_details"] = bool(hide_review_details)
         self.data["hide_review_unchanged"] = bool(hide_review_unchanged)

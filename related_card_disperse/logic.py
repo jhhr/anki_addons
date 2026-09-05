@@ -190,12 +190,20 @@ def _as_query_or_ids(
     return query, [], None
 
 
-def _post_filter_review_cards(card_ids: list[int]) -> tuple[list[int], dict[int, int]]:
+def _post_filter_review_cards(
+    card_ids: list[int],
+    require_review_state: bool = True,
+) -> tuple[list[int], dict[int, int]]:
     """Keep the live review cards among ``card_ids``, preserving the given order.
 
     The due day comes back from the same row, so callers get it for free: that
     is what lets capping drop the cards due latest rather than whichever rows
     the DB happened to return first.
+
+    ``require_review_state`` is for callers that have already decided which
+    cards are in play -- a session's queue, say -- and only want the rule's
+    relations. Dropping a relearning card there would let a related pair through
+    that the caller can see is about to be shown together.
     """
     if not card_ids:
         return [], {}
@@ -205,7 +213,9 @@ def _post_filter_review_cards(card_ids: list[int]) -> tuple[list[int], dict[int,
         WHERE id IN {ids2str(card_ids)}
         """)
     due_by_id = {
-        cid: due for cid, ctype, queue, due in rows if ctype == CARD_TYPE_REV and queue != -1
+        cid: due
+        for cid, ctype, queue, due in rows
+        if not require_review_state or (ctype == CARD_TYPE_REV and queue != -1)
     }
     return [cid for cid in dedupe_preserve_order(card_ids) if cid in due_by_id], due_by_id
 
@@ -216,6 +226,7 @@ def resolve_rule_candidates(
     config: Config,
     *,
     apply_cap: bool = True,
+    require_review_state: bool = True,
 ) -> QueryResolution:
     """Resolve one rule's related cards for a reviewed card.
 
@@ -237,7 +248,7 @@ def resolve_rule_candidates(
         found_ids = direct_ids
 
     raw_ids = dedupe_preserve_order([reviewed_card.id, *found_ids])
-    filtered, due_by_id = _post_filter_review_cards(raw_ids)
+    filtered, due_by_id = _post_filter_review_cards(raw_ids, require_review_state)
     filtered_count = max(0, len(raw_ids) - len(filtered))
 
     # The reviewed card can itself fail the review-state filter (it was just

@@ -197,3 +197,42 @@ DUE_ORDERED_REVIEW_ORDERS = frozenset(
 
 def review_order_uses_due(review_order: int) -> bool:
     return review_order in DUE_ORDERED_REVIEW_ORDERS
+
+
+def select_cards_to_bury(
+    order: list[int],
+    neighbours: dict[int, set[int]],
+    min_gap: int = 0,
+) -> tuple[list[int], list[int]]:
+    """Split a session into the cards to keep and the cards to bury.
+
+    ``order`` is the session in the order the deck will show it, and
+    ``neighbours`` maps a card to the related cards that are also in the
+    session. Walking in that order and burying any card that already has a
+    related card kept ahead of it leaves a maximal run with no two related
+    cards in it, and keeps whichever member of each collision the deck would
+    have shown first.
+
+    ``min_gap`` counts *kept* cards, because a buried card is not shown and so
+    does not push the ones behind it any further apart: with a gap of 10 a card
+    is buried only when a related card sits within the last ten cards that
+    survived. A gap of 0 means the whole session, i.e. one card per group.
+    """
+    kept: list[int] = []
+    kept_index: dict[int, int] = {}
+    buried: list[int] = []
+    for cid in order:
+        collides = False
+        for other in neighbours.get(cid, ()):
+            index = kept_index.get(other)
+            if index is None:
+                continue
+            if min_gap <= 0 or (len(kept) - index) < min_gap:
+                collides = True
+                break
+        if collides:
+            buried.append(cid)
+        else:
+            kept_index[cid] = len(kept)
+            kept.append(cid)
+    return kept, buried
