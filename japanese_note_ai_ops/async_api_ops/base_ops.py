@@ -1516,7 +1516,7 @@ async def bulk_nested_notes_op(
 
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
-    # gate says when it moves it and the pool follows, rather than staying at the guess.
+    # gate says when it raises it and the pool follows, rather than staying at the guess.
     gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=set_connection_pool_size)
     progress_updater.gate = gate
     gate.start_adapting()
@@ -1562,6 +1562,11 @@ async def bulk_nested_notes_op(
     # Only now that the total is known: until this point the periodic updater would be drawing
     # a task line whose total is still growing, over the preparation line
     progress_updater.start_autoupdate()
+
+    # And only now can the gate decide whether measuring this run is worth what it costs - it
+    # needs the task count, and the pass above is exactly the allocation-heavy stretch that
+    # would have been traced for nothing had measuring started with the adapt loop.
+    gate.begin_measuring(planned_tasks)
 
     try:
         # Every task holds onto its note, prompt and config for as long as it lives, so they
@@ -1733,10 +1738,13 @@ async def bulk_notes_op(
 
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
-    # gate says when it moves it and the pool follows, rather than staying at the guess.
+    # gate says when it raises it and the pool follows, rather than staying at the guess.
     gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=set_connection_pool_size)
     progress_updater.gate = gate
     gate.start_adapting()
+    # One task per note here, and no planning pass to wait for, so the run's size is already
+    # known - but the decision is the same one the nested op makes after planning.
+    gate.begin_measuring(len(notes))
     set_connection_pool_size(gate.max_limit)
     rate_limit_tracker.reset()
 

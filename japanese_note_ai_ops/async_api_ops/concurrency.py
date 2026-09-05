@@ -29,6 +29,28 @@ fitted against the live task count rather than differenced against a baseline - 
 such moment, and the runs no longer serialise their first pass to provide one. RSS is still
 measured alongside it, as the fallback and as the second opinion. See MemoryEstimator.
 
+tracemalloc is also the one part of this that is not free, and it is not cheap: it charges
+every allocation in the process - Anki's as well as this addon's - at roughly 4x on parsing a
+response and 10x on ordinary object churn, and its trace table adds about 53 bytes per live
+allocation, a third again on top of what it is measuring. Everything else here is noise beside
+a request: an adapt tick is two psutil syscalls and two least-squares passes over 120 samples,
+about 116us every two seconds, and the driver's live-count reports are a fifth of a
+microsecond each.
+
+So the tracing is bought rather than assumed. tracing_would_pay asks, before the estimator
+starts, whether a fit could change what the gate does: a run of too few tasks cannot be fitted
+at all, and on a machine with room to spare the budget divided by the backstop puts the
+threshold well above what an op is believed to cost, so the ceiling would come out at the
+backstop whatever the fit said. The asymmetry is the right way round - a constrained machine
+has a small budget, so a low threshold, and is where tracing is switched on. An unmeasured op
+clears the margin on its first run and the value that run stores is what makes the next one
+skip it.
+
+The same figure has to come off the RSS readings while tracing is on, for two different
+reasons: the trace table grows with the live allocation count, so in the estimator it is the
+instrument weighing itself and being charged to the tasks, and in the pressure check it is a
+cost that lowering the limit cannot recover. See tracing_overhead.
+
 Alongside all of that sits one limit that has nothing to do with memory: cpu_bound_section,
 which rations cores rather than megabytes. The gate above may let hundreds of tasks be in
 flight, which is right when a task in flight is waiting on a socket and wrong when it is
@@ -243,7 +265,8 @@ def traced_memory() -> Optional[int]:
 
     Two counter reads, so it costs nothing to call. The expense of tracemalloc is not here but
     in the tracing itself, which charges every allocation in the process - which is why the
-    estimator only keeps it on for the first stretch of a run.
+    estimator does not switch it on unless a fit could change the gate's ceiling
+    (tracing_would_pay), and keeps it on only for the first stretch of a run when it does.
     """
     if not tracemalloc.is_tracing():
         return None
@@ -509,6 +532,95 @@ MIN_SLOPE_SAMPLES = 8
 # ...and the live-task count has to have actually moved across them, or the "slope" is only
 # the noise in the memory readings divided by nearly nothing.
 MIN_SLOPE_SPREAD = 4
+# How far above what a task is already believed to cost the deciding threshold may sit before
+# measuring stops being worth what it costs. Four means an op has to have quadrupled in cost
+# since it was last measured for the fit to have anything to say; see tracing_would_pay.
+MEASUREMENT_MARGIN = 4.0
+
+
+def ceiling_threshold(configured_max: int = 0) -> Optional[float]:
+    """The per-task cost at which a measurement starts changing the ceiling.
+
+    max_concurrency_for is `min(backstop, budget // memory_per_slot)`. Below this figure the
+    division comes out above the backstop and the backstop is the answer, whatever the fit
+    says - so a fit that lands below it has been computed and then multiplied by zero.
+
+    None when memory cannot be probed, which is also when there is no budget to divide.
+    """
+    budget = memory_budget()
+    if budget is None:
+        return None
+    backstop = configured_max if configured_max > 0 else MAX_AUTO_CONCURRENCY
+    return budget / (backstop * TASK_QUEUE_DEPTH)
+
+
+def tracing_would_pay(
+    per_task_memory: float, planned_tasks: int, configured_max: int = 0
+) -> "tuple[bool, str]":
+    """Whether measuring this run can change what the gate does. Returns (worth it, why).
+
+    Tracing is the one part of this module that is not free: it charges every allocation in
+    the process, not just this addon's, at roughly 4x on parsing a response and 10x on
+    ordinary object churn, and its trace table adds about 53 bytes per live allocation. That
+    is worth paying for a number the gate will act on and not otherwise, so this asks whether
+    it can act on it before the estimator starts.
+
+    Three ways the answer is no:
+
+    * The run is too short for a fit. The live-task count has to span MIN_SLOPE_SPREAD for
+      slope() to return anything at all, and a run of fewer tasks than that never can - so
+      such a run traces for its whole length and provably produces nothing.
+    * No fit could reach the threshold. Fitted values are clamped to MAX_PER_TASK_MEMORY, so
+      a threshold above that clamp cannot be cleared by any measurement.
+    * The threshold is far above what this op is already believed to cost. On a machine with
+      room the budget is large, the threshold is correspondingly large, and an op measured at
+      the floor would have to have grown several times over for the ceiling to move. The
+      asymmetry here is the right way round: a constrained machine has a small budget and so
+      a small threshold, and is exactly where this returns True.
+
+    An op that has never been measured is believed to cost DEFAULT_PER_TASK_MEMORY, which on
+    a typical desktop clears the margin - so a new op is measured once, and the value that
+    measurement stores is then what makes later runs skip it.
+    """
+    if planned_tasks <= MIN_SLOPE_SPREAD:
+        return False, (
+            f"only {planned_tasks} tasks, too few for the live count to span"
+            f" {MIN_SLOPE_SPREAD}"
+        )
+    threshold = ceiling_threshold(configured_max)
+    if threshold is None:
+        return False, "memory cannot be probed, so the limit is static"
+    if threshold > MAX_PER_TASK_MEMORY:
+        return False, (
+            f"the ceiling only moves above {format_bytes(int(threshold))} per task, past the"
+            f" {format_bytes(MAX_PER_TASK_MEMORY)} clamp on a fitted value"
+        )
+    believed = max(per_task_memory, MIN_PER_TASK_MEMORY)
+    if threshold > believed * MEASUREMENT_MARGIN:
+        return False, (
+            f"the ceiling only moves above {format_bytes(int(threshold))} per task and this"
+            f" op is believed to cost {format_bytes(int(believed))}"
+        )
+    return True, (
+        f"the ceiling moves above {format_bytes(int(threshold))} per task, within reach of"
+        f" the {format_bytes(int(believed))} this op is believed to cost"
+    )
+
+
+def tracing_overhead() -> int:
+    """Bytes of RSS that tracemalloc's own trace table is occupying.
+
+    Roughly 53 bytes per live traced allocation, which on this addon's shape of work is about
+    a third again on top of what it is measuring. It has to come off an RSS reading before
+    either of the two things that read one can use it - see MemoryEstimator.sample.
+    """
+    if not tracemalloc.is_tracing():
+        return 0
+    try:
+        return int(tracemalloc.get_tracemalloc_memory())
+    except Exception as e:
+        logger.debug("Could not read tracemalloc's own memory use: %s", e)
+        return 0
 
 
 def _estimates_path() -> Path:
@@ -687,8 +799,11 @@ class MemoryEstimator:
     Two series are fitted against the same live-task counts:
 
     * **Traced Python allocations**, from tracemalloc. This is what drives the estimate.
-    * **RSS**, from psutil. The fallback for a runtime that will not trace, and otherwise a
-      second opinion, logged beside the traced figure so the two can be compared on real runs.
+    * **RSS**, from psutil, less whatever tracemalloc's own trace table weighs. The fallback
+      for a runtime that will not trace, and otherwise a second opinion, logged beside the
+      traced figure so the two can be compared on real runs. The subtraction is what keeps it
+      a second opinion: the table grows with the live allocation count, so left in it would
+      be the instrument's own weight, charged to the tasks it correlates with.
 
     RSS is no longer the primary because it cannot fall. Freed memory goes back to the
     allocator, not to the OS, so RSS ratchets: it rises over the first busy stretch and then
@@ -731,7 +846,11 @@ class MemoryEstimator:
         self._fitted_at_samples = -1
 
     def start(self) -> None:
-        """Begin measuring, tracing Python allocations unless something else already is."""
+        """Begin measuring, tracing Python allocations unless something else already is.
+
+        Whether this is worth its cost at all is the gate's decision, not this one's; see
+        ConcurrencyGate.begin_measuring and tracing_would_pay.
+        """
         self._measuring = True
         self._started_at = time.monotonic()
         if tracemalloc.is_tracing():
@@ -775,8 +894,10 @@ class MemoryEstimator:
     def sample(self, rss: Optional[int] = None, in_flight: Optional[int] = None) -> None:
         """Record memory at the current live-task count.
 
-        `rss` saves a second probe for a caller that has just read it anyway. `in_flight` is a
-        floor on the live count, for a caller driving the gate without reporting one of its own.
+        `rss` saves a second probe for a caller that has just read it anyway, and is expected
+        raw: the trace table comes off here so that every caller gets the same treatment.
+        `in_flight` is a floor on the live count, for a caller driving the gate without
+        reporting one of its own.
         """
         if not self._measuring:
             return
@@ -797,7 +918,12 @@ class MemoryEstimator:
         if rss is None:
             rss = process_memory()
         if rss is not None:
-            self._rss.add(live, rss, at)
+            # The trace table is in RSS, and it grows with the number of live allocations -
+            # which is to say with the live task count, the very thing this is being fitted
+            # against. Left in, the instrument reading its own weight would be charged to the
+            # tasks, and the series kept as a second opinion on the traced one would be partly
+            # a copy of it. Taken off, RSS is again a reading the tracing did not affect.
+            self._rss.add(live, max(0, rss - tracing_overhead()), at)
 
     def refit(self) -> Optional[float]:
         """Fit the samples collected so far. Returns the new estimate when it rises.
@@ -903,10 +1029,12 @@ class ConcurrencyGate:
             config, self.estimator.estimate
         )
 
-        # Told whenever the ceiling moves. The connection pool is sized from the ceiling and is
+        # Told when the ceiling rises. The connection pool is sized from the ceiling and is
         # created before the op has been measured, so without this it keeps the size that came
         # from the starting guess: every request past it then pays a fresh TCP and TLS
         # handshake, and urllib3 logs a "connection pool is full" warning for each one.
+        # Not told when it falls - see _apply_estimate. Resizing costs every idle connection
+        # in the pool, and a pool larger than the ceiling costs nothing.
         self.on_ceiling_changed = on_ceiling_changed
 
         self.in_flight = 0
@@ -987,14 +1115,16 @@ class ConcurrencyGate:
                 woken += 1
 
     def start_adapting(self) -> None:
-        """Begin watching memory and resizing the limit. No-op when not adaptive."""
+        """Begin watching memory and resizing the limit. No-op when not adaptive.
+
+        Measuring does not start here. It needs the run's task count, which the drivers only
+        know once they have planned the notes - and the planning pass itself is a long
+        allocation-heavy stretch that would be traced at ~10x while contributing no samples at
+        all, because nothing reports a live task count until tasks exist. begin_measuring is
+        the second half of this, called once planning is done.
+        """
         # This run's collection cost, not the previous run's
         collection_pressure.reset()
-        if self.adaptive:
-            # Only when the number can be used. Without a memory budget the limit is static
-            # whatever a task turns out to cost, and tracing every allocation to learn a figure
-            # nothing will read is a cost with no return.
-            self.estimator.start()
         if not self.adaptive and not self.memory_limit:
             return
         if self._adapt_task and not self._adapt_task.done():
@@ -1004,6 +1134,32 @@ class ConcurrencyGate:
         except RuntimeError:
             return
         self._adapt_task = loop.create_task(self._adapt_loop())
+
+    def begin_measuring(self, planned_tasks: int) -> None:
+        """Start measuring what a task costs, if this run can act on the answer.
+
+        Called by the drivers after planning, with the number of tasks the run will create.
+        Both halves of the question need that number: a run too short to move the live count
+        cannot be fitted, and a run whose fit could not move the ceiling has nothing to learn.
+        See tracing_would_pay, which is where the whole decision lives.
+
+        Skipping costs the run nothing it was going to get. The stored estimate still sizes
+        the ceiling, the adapt loop still grows and backs off against real memory, and the
+        pressure response - which is what actually protects the machine - is untouched.
+        """
+        if not self.adaptive:
+            # Without a memory budget the limit is static whatever a task turns out to cost,
+            # so a figure nothing will read is a cost with no return.
+            logger.debug("Not measuring %r: the limit is static", self.estimator.op_key)
+            return
+        worth_it, why = tracing_would_pay(
+            self.estimator.estimate, planned_tasks, self.configured_max
+        )
+        if not worth_it:
+            logger.debug("Not measuring %r: %s", self.estimator.op_key, why)
+            return
+        logger.debug("Measuring %r: %s", self.estimator.op_key, why)
+        self.estimator.start()
 
     def stop_adapting(self) -> None:
         if self._adapt_task:
@@ -1048,10 +1204,16 @@ class ConcurrencyGate:
             self.max_limit,
             new_max,
         )
+        previous_max = self.max_limit
         self.max_limit = new_max
         if self.limit > self.max_limit:
             self.limit = self.max_limit
-        if self.on_ceiling_changed:
+        if self.on_ceiling_changed and new_max > previous_max:
+            # Only upward. Resizing the pool drops every session and with it every idle
+            # keep-alive connection, so the next wave of requests each pay a fresh TCP and TLS
+            # handshake - which is the cost this callback exists to avoid, not to cause. It is
+            # worth paying to make room the run is about to use; it buys nothing on the way
+            # down, where a pool larger than the ceiling is simply a pool that will not fill.
             self.on_ceiling_changed(new_max)
         # A raised ceiling isn't applied at once: the adapt loop grows the limit towards it
         # only while memory stays comfortable.
@@ -1075,6 +1237,16 @@ class ConcurrencyGate:
         self.available_memory = available or 0
         self.estimator.sample(rss, self.in_flight)
         self._apply_estimate()
+
+        # The trace table comes off before the hard cap is judged, for the same reason it comes
+        # off the estimator's series but a different argument. It is real memory the process is
+        # really using; what it is not is memory the limit can do anything about. Halving
+        # concurrency does not shrink a trace table, so leaving it in would make the controller
+        # respond to a cost its one actuator cannot touch - and would spend a user's configured
+        # memory_limit on the apparatus measuring it. tracing_would_pay keeps the table small
+        # or absent in the first place; this is what makes the reading right regardless.
+        if rss is not None:
+            rss = max(0, rss - tracing_overhead())
 
         # Sampled every tick whether or not it is read below, so the window it covers is one
         # tick rather than however long it has been since the gate last considered growing

@@ -37,6 +37,10 @@ class StubMemory:
 
     `total`/`available` answer system_memory; `rss` answers process_memory and can be moved
     during a test to simulate the process growing or shrinking.
+
+    `rss` is the raw reading, as the real probe gives it: whatever tracemalloc's trace table
+    weighs is already inside it. Tests about that exclusion have to set it that way round, or
+    they pass whether or not the exclusion happens.
     """
 
     def __init__(self, total: int = 32 * GB, available: int = 16 * GB, rss: int = 500 * MB):
@@ -59,9 +63,12 @@ class StubTracemalloc:
     own handling of "is anything tracing at all?" is under test too.
     """
 
-    def __init__(self, current: int = 100 * MB, tracing: bool = False):
+    def __init__(self, current: int = 100 * MB, tracing: bool = False, overhead: int = 0):
         self.current = current
         self.tracing = tracing
+        # What the trace table itself occupies. Real tracemalloc charges about 53 bytes per
+        # live traced allocation, and it lands in RSS like anything else.
+        self.overhead = overhead
         self.starts = 0
         self.stops = 0
 
@@ -78,6 +85,9 @@ class StubTracemalloc:
 
     def get_traced_memory(self):
         return self.current, self.current
+
+    def get_tracemalloc_memory(self):
+        return self.overhead
 
 
 class StubClock:
@@ -770,6 +780,149 @@ class EstimatesFileTests(MemoryStubTestCase):
         conc.save_per_task_estimate("Making meanings", 1 * MB)
 
 
+# --- Paying for the measurement --------------------------------------------------------------
+
+
+class TracingOverheadTests(MemoryStubTestCase):
+    """The trace table is in RSS, and has to come off before either reader uses one."""
+
+    def test_nothing_to_subtract_when_nothing_is_tracing(self):
+        self.tracing.tracing = False
+        self.tracing.overhead = 40 * MB
+        # Real tracemalloc answers with a small fixed figure even when stopped; the question
+        # asked here is whether tracing is on, not what the module weighs.
+        self.assertEqual(conc.tracing_overhead(), 0)
+
+    def test_the_table_is_reported_while_tracing(self):
+        self.tracing.tracing = True
+        self.tracing.overhead = 40 * MB
+        self.assertEqual(conc.tracing_overhead(), 40 * MB)
+
+    def test_a_probe_that_raises_is_not_an_error(self):
+        def boom():
+            raise RuntimeError("no")
+
+        self.tracing.tracing = True
+        self.tracing.get_tracemalloc_memory = boom
+        self.assertEqual(conc.tracing_overhead(), 0)
+
+
+class CeilingThresholdTests(MemoryStubTestCase):
+    """Where the per-task cost has to get before the fit stops being multiplied by zero."""
+
+    def test_the_threshold_is_the_budget_spread_over_a_full_backstop(self):
+        self.memory.total = 8 * GB
+        self.memory.available = 8 * GB  # budget = 2GB
+        self.assertEqual(
+            conc.ceiling_threshold(),
+            2 * GB / (conc.MAX_AUTO_CONCURRENCY * conc.TASK_QUEUE_DEPTH),
+        )
+
+    def test_a_configured_max_takes_the_backstops_place(self):
+        self.memory.total = 8 * GB
+        self.memory.available = 8 * GB
+        self.assertEqual(conc.ceiling_threshold(16), 2 * GB / (16 * conc.TASK_QUEUE_DEPTH))
+
+    def test_no_budget_means_no_threshold(self):
+        self.memory.probe_failed = True
+        self.assertIsNone(conc.ceiling_threshold())
+
+    def test_a_tight_machine_puts_the_threshold_within_reach(self):
+        # The asymmetry that matters: less free memory, lower threshold, so the machine that
+        # needs the measurement is the one that gets it
+        self.memory.total = 4 * GB
+        self.memory.available = 4 * GB
+        roomy = conc.ceiling_threshold()
+
+        self.memory.available = 700 * MB
+        tight = conc.ceiling_threshold()
+
+        self.assertLess(tight, roomy)
+
+
+class TracingWouldPayTests(MemoryStubTestCase):
+    """Tracing is bought, not assumed - it is the one part of this module that is not free."""
+
+    def setUp(self):
+        super().setUp()
+        # An ordinary desktop: 8GB free of 16GB, so a budget of 3.2GB and a ceiling that only
+        # moves once a task costs more than 3.2MB
+        self.memory.total = 16 * GB
+        self.memory.available = 8 * GB
+
+    # 4MB clears the margin on this machine, so these two isolate the length gate: whatever
+    # they answer is about the number of tasks and not about the ceiling arithmetic.
+    WORTH_MEASURING = 4 * MB
+
+    def test_a_run_too_short_to_fit_is_not_traced(self):
+        worth_it, why = conc.tracing_would_pay(self.WORTH_MEASURING, conc.MIN_SLOPE_SPREAD)
+        self.assertFalse(worth_it)
+        self.assertIn("too few", why)
+
+    def test_a_run_of_one_more_task_than_the_spread_is_long_enough(self):
+        # The spread is a floor on the count the fit needs to see, not on the run
+        worth_it, _ = conc.tracing_would_pay(
+            self.WORTH_MEASURING, conc.MIN_SLOPE_SPREAD + 1
+        )
+        self.assertTrue(worth_it)
+
+    def test_a_static_limit_is_not_traced(self):
+        self.memory.probe_failed = True
+        worth_it, why = conc.tracing_would_pay(conc.MIN_PER_TASK_MEMORY, 500)
+        self.assertFalse(worth_it)
+        self.assertIn("static", why)
+
+    def test_a_threshold_past_the_clamp_can_never_be_reached(self):
+        # A machine so empty that no fitted value could bring the ceiling down, because
+        # fitted values are clamped well below where it would have to get
+        self.memory.total = 4096 * GB
+        self.memory.available = 4096 * GB
+        self.assertGreater(conc.ceiling_threshold(), conc.MAX_PER_TASK_MEMORY)
+        worth_it, why = conc.tracing_would_pay(conc.MIN_PER_TASK_MEMORY, 5000)
+        self.assertFalse(worth_it)
+        self.assertIn("clamp", why)
+
+    def test_an_op_measured_at_the_floor_is_not_measured_again(self):
+        # The threshold is 3.2MB and the op is known to cost the 512KB floor: it would have to
+        # have grown sixfold for the ceiling to move, so there is nothing here to learn
+        worth_it, why = conc.tracing_would_pay(conc.MIN_PER_TASK_MEMORY, 5000)
+        self.assertFalse(worth_it)
+        self.assertIn("believed to cost", why)
+
+    def test_an_op_believed_expensive_enough_is_measured(self):
+        worth_it, _ = conc.tracing_would_pay(4 * MB, 5000)
+        self.assertTrue(worth_it)
+
+    def test_the_margin_is_inclusive_at_its_edge(self):
+        """A threshold exactly at the margin is measured, not skipped.
+
+        Which way the boundary falls is not arbitrary: an 8GB machine with all of it free
+        lands precisely here, and measuring one run it did not need costs a run, where
+        skipping one it did need costs the ceiling for as long as the estimate stands.
+        """
+        self.memory.total = 8 * GB
+        self.memory.available = 8 * GB  # budget 2GB -> threshold exactly 2MB
+        self.assertEqual(
+            conc.ceiling_threshold(), conc.MIN_PER_TASK_MEMORY * conc.MEASUREMENT_MARGIN
+        )
+
+        worth_it, _ = conc.tracing_would_pay(conc.MIN_PER_TASK_MEMORY, 5000)
+
+        self.assertTrue(worth_it)
+
+    def test_an_unmeasured_op_is_measured_once(self):
+        # A new op is believed to cost DEFAULT_PER_TASK_MEMORY, which clears the margin here -
+        # so it is measured, and the value it stores is what makes the next run skip it
+        worth_it, _ = conc.tracing_would_pay(conc.DEFAULT_PER_TASK_MEMORY, 5000)
+        self.assertTrue(worth_it)
+
+    def test_a_tight_machine_measures_even_a_cheap_op(self):
+        self.memory.total = 4 * GB
+        self.memory.available = 700 * MB
+        worth_it, _ = conc.tracing_would_pay(conc.MIN_PER_TASK_MEMORY, 5000)
+        self.assertTrue(worth_it)
+
+
 # --- The gate ---------------------------------------------------------------------------------
 
 
@@ -1250,13 +1403,162 @@ class GateAdaptationTests(GateTestCase):
         self.assertEqual(gate.estimator.measured, 64 * MB)
 
 
+class BeginMeasuringTests(GateTestCase):
+    """Tracing starts only when the run can act on what it would learn.
+
+    start_adapting no longer starts it. The drivers know the run's task count only once they
+    have planned the notes, and that planning pass is itself a long allocation-heavy stretch
+    that would have been traced at ~10x while reporting no live task count at all.
+    """
+
+    def gate_on(self, total, available, stored=None, planned=5000, config=None):
+        self.memory.total = total
+        self.memory.available = available
+        gate = self.make_gate(config=config)
+        if stored is not None:
+            gate.estimator.estimate = stored
+        gate.start_adapting()
+        gate.begin_measuring(planned)
+        return gate
+
+    async def test_start_adapting_alone_does_not_trace(self):
+        self.memory.total = 4 * GB
+        self.memory.available = 700 * MB
+        gate = self.make_gate()
+
+        gate.start_adapting()
+
+        self.assertFalse(self.tracing.is_tracing())
+        self.assertEqual(self.tracing.starts, 0)
+        gate.stop_adapting()
+
+    async def test_a_constrained_machine_measures(self):
+        gate = self.gate_on(4 * GB, 700 * MB, stored=conc.MIN_PER_TASK_MEMORY)
+        self.assertTrue(self.tracing.is_tracing())
+        gate.stop_adapting()
+
+    async def test_a_roomy_machine_with_a_measured_op_does_not(self):
+        # The value the first run stored is what makes this one skip it
+        gate = self.gate_on(16 * GB, 8 * GB, stored=conc.MIN_PER_TASK_MEMORY)
+        self.assertFalse(self.tracing.is_tracing())
+        gate.stop_adapting()
+
+    async def test_a_roomy_machine_with_an_unmeasured_op_measures_once(self):
+        gate = self.gate_on(16 * GB, 8 * GB, stored=conc.DEFAULT_PER_TASK_MEMORY)
+        self.assertTrue(self.tracing.is_tracing())
+        gate.stop_adapting()
+
+    async def test_a_short_run_does_not_measure(self):
+        gate = self.gate_on(4 * GB, 700 * MB, planned=conc.MIN_SLOPE_SPREAD)
+        self.assertFalse(self.tracing.is_tracing())
+        gate.stop_adapting()
+
+    async def test_a_non_adaptive_gate_does_not_measure(self):
+        self.memory.probe_failed = True
+        gate = self.make_gate()
+        self.assertFalse(gate.adaptive)
+
+        gate.start_adapting()
+        gate.begin_measuring(5000)
+
+        self.assertFalse(self.tracing.is_tracing())
+
+    async def test_a_skipped_run_still_adapts_and_still_backs_off(self):
+        """Skipping the measurement gives up the ceiling, not the protection.
+
+        The pressure response is what actually keeps a run off the machine's back, and it
+        works off free memory rather than off anything the estimator produces.
+        """
+        gate = self.gate_on(16 * GB, 8 * GB, stored=conc.MIN_PER_TASK_MEMORY, planned=5000)
+        self.assertFalse(self.tracing.is_tracing())
+        gate.limit = 64
+        gate.in_flight = 64
+
+        self.memory.available = 100 * MB  # under the reserve
+        await gate._adapt_once()
+
+        self.assertEqual(gate.limit, 32)
+        gate.stop_adapting()
+
+
+class TraceTableExclusionTests(GateTestCase):
+    """The trace table is in RSS, and both things that read an RSS have to see past it."""
+
+    async def test_the_rss_series_excludes_the_table(self):
+        gate = self.make_gate()
+        gate.estimator.start()
+        self.tracing.overhead = 30 * MB
+        self.memory.rss = 500 * MB
+
+        gate.estimator.sample()
+
+        live, rss, _ = gate.estimator._rss._samples[-1]
+        self.assertEqual(rss, 470 * MB)
+
+    async def test_a_caller_supplied_rss_is_treated_the_same(self):
+        # _adapt_once passes the reading it already took; it must not be exempt
+        gate = self.make_gate()
+        gate.estimator.start()
+        self.tracing.overhead = 30 * MB
+
+        gate.estimator.sample(rss=500 * MB)
+
+        _, rss, _ = gate.estimator._rss._samples[-1]
+        self.assertEqual(rss, 470 * MB)
+
+    async def test_nothing_is_subtracted_when_not_tracing(self):
+        gate = self.make_gate()
+        gate.estimator.start()
+        self.tracing.tracing = False
+        self.tracing.overhead = 30 * MB
+
+        gate.estimator.sample(rss=500 * MB)
+
+        _, rss, _ = gate.estimator._rss._samples[-1]
+        self.assertEqual(rss, 500 * MB)
+
+    async def test_the_hard_cap_is_not_tripped_by_the_trace_table(self):
+        """A configured memory_limit is spent on the run, not on the instrument.
+
+        Halving the limit cannot shrink a trace table, so a controller that counted it would
+        be backing off from a cost its one actuator does not touch.
+
+        The reading is 620MB *including* a 40MB table, which is how a real RSS arrives - so
+        the run itself is at 580MB, inside the 600MB the user asked for, and the only thing
+        over the line is the measuring.
+        """
+        gate = self.make_gate(limit=64, config={"memory_limit": 600})
+        gate.estimator.start()
+        self.tracing.overhead = 40 * MB
+        self.memory.rss = 620 * MB
+
+        await gate._adapt_once()
+
+        self.assertEqual(gate.limit, 64)
+
+    async def test_the_hard_cap_still_bites_on_the_runs_own_memory(self):
+        # 740MB with the same 40MB table in it, so the run is at 700MB and genuinely over
+        gate = self.make_gate(limit=64, config={"memory_limit": 600})
+        gate.estimator.start()
+        self.tracing.overhead = 40 * MB
+        self.memory.rss = 740 * MB
+
+        await gate._adapt_once()
+
+        self.assertEqual(gate.limit, 32)
+
+
 class CeilingReportingTests(GateTestCase):
-    """The connection pool is sized from the ceiling, so it has to hear when the ceiling moves.
+    """The connection pool is sized from the ceiling, so it has to hear the ceiling rise.
 
     set_connection_pool_size runs once at the start of a run, from a ceiling worked out from
-    the starting guess at what a task costs. Fitting the real cost can move that ceiling, and
+    the starting guess at what a task costs. Fitting the real cost can raise that ceiling, and
     without this the pool keeps the size it was given: every request past it is a fresh TCP and
     TLS handshake plus a "connection pool is full" warning.
+
+    Only upward, though. Reporting is not free - it drops every session and with it every idle
+    keep-alive connection - so a ceiling coming down would pay the handshakes this exists to
+    avoid, to buy a smaller pool, which is a pool that will simply not fill.
     """
 
     async def test_a_raised_ceiling_is_reported(self):
@@ -1269,7 +1571,7 @@ class CeilingReportingTests(GateTestCase):
 
         self.assertEqual(self.reported_ceilings, [conc.MAX_AUTO_CONCURRENCY])
 
-    async def test_a_lowered_ceiling_is_reported(self):
+    async def test_a_lowered_ceiling_is_applied_but_not_reported(self):
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB  # budget = 2GB
         gate = self.make_gate(limit=200, max_limit=256)
@@ -1277,7 +1579,12 @@ class CeilingReportingTests(GateTestCase):
         # 64MB per live task, so 256MB per slot and its queue
         self.measure_cost(gate, 64 * MB)
 
-        self.assertEqual(self.reported_ceilings, [2 * GB // (64 * MB * conc.TASK_QUEUE_DEPTH)])
+        # The gate honours it: this is the case the measurement exists for
+        self.assertEqual(gate.max_limit, 2 * GB // (64 * MB * conc.TASK_QUEUE_DEPTH))
+        self.assertLessEqual(gate.limit, gate.max_limit)
+        # ...but the pool is left alone. It is already larger than the new ceiling, so every
+        # connection the run can now want is one it can already reuse.
+        self.assertEqual(self.reported_ceilings, [])
 
     async def test_a_run_that_measured_nothing_reports_nothing(self):
         gate = self.make_gate(limit=16, max_limit=64)
