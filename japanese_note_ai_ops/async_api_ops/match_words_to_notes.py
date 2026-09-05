@@ -598,6 +598,16 @@ def json_result_corrector(json_result: str) -> str:
     return json_result + "]}"
 
 
+# Note ids a collection query matched, kept for the length of one run and keyed by the query
+# itself, so it covers the word, the reading and every field name that went into building it.
+#
+# Sound because a run does not write to the collection: every update_notes, remove_notes and
+# add_note happens in the cleanup phase after the ops are done, and notes an op creates live in
+# notes_to_add_dict, which the matching layers on top of these results rather than searching
+# for. So a query asked twice during a run has the same answer both times.
+NoteSearchCache = dict[str, Sequence[NoteId]]
+
+
 class MatchOpArgs(TypedDict):
     current_note: Note
     note_type: NotetypeDict
@@ -1159,16 +1169,6 @@ def compare_readings(
         f" {hiragana_reading} and {hiragana_reading_suru}"
     )
     return note_hiragana_reading in [hiragana_reading, hiragana_reading_suru]
-
-
-# Note ids a collection query matched, kept for the length of one run and keyed by the query
-# itself, so it covers the word, the reading and every field name that went into building it.
-#
-# Sound because a run does not write to the collection: every update_notes, remove_notes and
-# add_note happens in the cleanup phase after the ops are done, and notes an op creates live in
-# notes_to_add_dict, which the matching layers on top of these results rather than searching
-# for. So a query asked twice during a run has the same answer both times.
-NoteSearchCache = dict[str, Sequence[NoteId]]
 
 
 async def get_matching_notes_for_word_and_reading(
