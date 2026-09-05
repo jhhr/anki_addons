@@ -108,7 +108,8 @@ TASK_QUEUE_DEPTH = 4
 # Share of the time the collection's one permit must be busy before the gate treats it as the
 # run's bottleneck and stops growing. Not 1.0: the sample covers a couple of seconds and a few
 # turns, so it is noisy, and a limit held one tick too long costs far less than a limit that
-# keeps climbing past the point where climbing does anything.
+# keeps climbing past the point where climbing does anything. Because it is noisy, reading it
+# once latches a ceiling rather than skipping one tick of growth - see _adapt_once.
 COLLECTION_SATURATED = 0.85
 
 # How many CPU-bound sections may run at once, over and above the core count. The gate's own
@@ -911,6 +912,9 @@ class ConcurrencyGate:
         self.in_flight = 0
         self.available_memory = available
         self.collection_use = 0.0
+        # The highest limit the collection has shown it can serve this run, once it has shown
+        # anything. None until the collection first reads saturated; see _adapt_once.
+        self.collection_ceiling: Optional[int] = None
         self._waiters: deque[asyncio.Future] = deque()
         self._adapt_task: Optional[asyncio.Task] = None
         self._aborted = False
@@ -1098,7 +1102,7 @@ class ConcurrencyGate:
 
         # Only grow when the gate itself is the bottleneck; if tasks aren't queueing up, a
         # bigger limit wouldn't be used anyway.
-        if self.adaptive and self.limit < self.max_limit and self.in_flight >= self.limit:
+        if self.adaptive and self.in_flight >= self.limit:
             if collection is not None and collection[0] >= COLLECTION_SATURATED:
                 # Every slot is taken, but by tasks queueing for a resource that serves one at
                 # a time. Raising the limit here adds waiters, not work: throughput is already
@@ -1106,24 +1110,46 @@ class ConcurrencyGate:
                 # queue each of them has to wait through. Left where it is, the limit settles
                 # at the point where the collection became the constraint, which is as far as
                 # concurrency is worth taking for this op.
-                logger.debug(
-                    "Collection busy %.0f%% of the last window (%.2fs per turn), holding"
-                    " concurrency at %d rather than growing towards %d",
-                    100 * collection[0],
-                    collection[1],
-                    self.limit,
-                    self.max_limit,
-                )
+                #
+                # So it *latches* rather than vetoing this one tick. The sample covers two
+                # seconds and a few turns, so it is noisy, and a run where the collection is
+                # the constraint throughout still reads below the threshold on some ticks -
+                # sixteen of them in one measured run. Growth is geometric, and 1.25 ** 16 is
+                # 35x: those sixteen ticks alone took the limit from 16 to its 512 backstop in
+                # 86 seconds, past a collection that had been saturated for 80% of the run.
+                # Vetoing four ticks in five caps nothing while the fifth compounds.
+                if self.collection_ceiling != self.limit:
+                    logger.debug(
+                        "Collection busy %.0f%% of the last window (%.2fs per turn), holding"
+                        " concurrency at %d rather than growing towards %d",
+                        100 * collection[0],
+                        collection[1],
+                        self.limit,
+                        self.max_limit,
+                    )
+                self.collection_ceiling = self.limit
+                return
+            if self.collection_ceiling is not None:
+                # Recovering from a latch is one slot per tick where growing is geometric.
+                # The collection reading idle for a tick is what the noise looks like, so it
+                # cannot be allowed to buy back a quarter of the limit; a collection that has
+                # genuinely stopped being the constraint - the run's searches replaced by an
+                # index, say - keeps reading idle, and half a minute of that is 15 slots.
+                self.collection_ceiling += 1
+            ceiling = self.max_limit
+            if self.collection_ceiling is not None:
+                ceiling = min(ceiling, self.collection_ceiling)
+            if self.limit >= ceiling:
                 return
             previous = self.limit
-            self.limit = min(self.max_limit, self.limit + max(1, int(self.limit * GROWTH_RATE)))
+            self.limit = min(ceiling, self.limit + max(1, int(self.limit * GROWTH_RATE)))
             self._wake_waiters(self.limit - self.in_flight)
             logger.debug(
                 "Memory comfortable (avail=%s), raising concurrency %d -> %d (ceiling %d)",
                 format_bytes(available),
                 previous,
                 self.limit,
-                self.max_limit,
+                ceiling,
             )
 
     def status_text(self) -> str:
@@ -1135,4 +1161,6 @@ class ConcurrencyGate:
             text += f" | {format_bytes(int(self.estimator.measured))}/task"
         if self.collection_use:
             text += f" | Collection {self.collection_use:.0%}"
+        if self.collection_ceiling is not None:
+            text += f" (cap {self.collection_ceiling})"
         return text

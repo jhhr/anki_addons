@@ -1015,6 +1015,81 @@ class GateAdaptationTests(GateTestCase):
         await gate._adapt_once()
         self.assertGreater(gate.limit, 16)
 
+    async def test_a_busy_collection_seen_once_caps_the_ticks_that_read_idle(self):
+        """The bug this exists for: vetoing a tick caps nothing when growth is geometric.
+
+        A run whose collection is the constraint throughout still reads below the threshold on
+        some ticks - the sample covers two seconds and a few turns. One measured run had
+        sixteen such ticks, and 1.25 ** 16 is 35x: the limit went from 16 to its 512 backstop
+        in 86 seconds past a collection that was busy 80% of the time.
+        """
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(1.9)
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 16)
+
+        # Sixteen ticks that read idle, exactly the shape that reached 512 before
+        for _ in range(16):
+            self.clock.advance(2.0)
+            conc.collection_pressure.record(0.1)
+            gate.in_flight = gate.limit
+            await gate._adapt_once()
+        self.assertEqual(gate.limit, 32)
+
+    async def test_the_cap_follows_the_limit_down_and_back_up_again(self):
+        # Recovery is linear, so a collection that has genuinely stopped being the constraint
+        # gets the limit back - it just takes ticks proportional to the slots, not four of them
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(1.9)
+        await gate._adapt_once()
+        self.assertEqual(gate.collection_ceiling, 16)
+
+        for _ in range(60):
+            self.clock.advance(2.0)
+            gate.in_flight = gate.limit
+            await gate._adapt_once()
+        self.assertEqual(gate.limit, 76)
+
+    async def test_a_collection_that_stays_busy_never_lifts_the_cap(self):
+        gate = self.make_gate(limit=16, max_limit=256)
+        for _ in range(20):
+            self.clock.advance(2.0)
+            conc.collection_pressure.record(1.9)
+            gate.in_flight = gate.limit
+            await gate._adapt_once()
+        self.assertEqual(gate.limit, 16)
+
+    async def test_an_op_that_never_touches_the_collection_is_never_capped(self):
+        # Nothing has been shown about a collection nobody used, so growth stays geometric
+        gate = self.make_gate(limit=16, max_limit=256)
+        for _ in range(3):
+            self.clock.advance(2.0)
+            gate.in_flight = gate.limit
+            await gate._adapt_once()
+        self.assertIsNone(gate.collection_ceiling)
+        self.assertEqual(gate.limit, 31)
+
+    async def test_the_cap_is_what_the_collection_could_serve_not_where_memory_left_us(self):
+        # Memory pressure halves the limit regardless; the cap it grows back to is still the
+        # one the collection showed, so the run does not have to re-learn it
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(1.9)
+        await gate._adapt_once()
+
+        self.memory.available = 100 * MB
+        gate.in_flight = gate.limit
+        self.clock.advance(2.0)
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 8)
+        self.assertEqual(gate.collection_ceiling, 16)
+
     async def test_a_busy_collection_does_not_stop_the_gate_shrinking(self):
         # Memory pressure still wins: the machine matters more than the throughput argument
         self.clock.advance(2.0)
