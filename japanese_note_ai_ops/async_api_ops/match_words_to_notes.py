@@ -60,11 +60,11 @@ from .base_ops import (
 from .concurrency import ConcurrencyGate
 from .collection_access import (
     find_notes as col_find_notes,
-    find_notes_async as col_find_notes_async,
     get_note as col_get_note,
     get_notes as col_get_notes,
     get_notes_async as col_get_notes_async,
 )
+from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
 from .extract_words import word_lists_str_format
 from .make_all_meanings import (
@@ -598,16 +598,6 @@ def json_result_corrector(json_result: str) -> str:
     return json_result + "]}"
 
 
-# Note ids a collection query matched, kept for the length of one run and keyed by the query
-# itself, so it covers the word, the reading and every field name that went into building it.
-#
-# Sound because a run does not write to the collection: every update_notes, remove_notes and
-# add_note happens in the cleanup phase after the ops are done, and notes an op creates live in
-# notes_to_add_dict, which the matching layers on top of these results rather than searching
-# for. So a query asked twice during a run has the same answer both times.
-NoteSearchCache = dict[str, Sequence[NoteId]]
-
-
 class MatchOpArgs(TypedDict):
     current_note: Note
     note_type: NotetypeDict
@@ -621,7 +611,7 @@ class MatchOpArgs(TypedDict):
     all_generated_meanings_dict: GeneratedMeaningsDictType
     notes_to_add_dict: dict[str, list[Note]]
     notes_to_update_dict: dict[NoteId, Note]
-    note_search_cache: NoteSearchCache
+    word_note_index: WordIndex
     cancel_state: CancelState
     word_list_field: str
     word_kanjified_field: str
@@ -682,6 +672,7 @@ def create_new_note_without_matching(
     all_generated_meanings_dict = match_op_args["all_generated_meanings_dict"]
     processed_word_tuples = match_op_args["processed_word_tuples"]
     word_index = match_op_args["word_index"]
+    word_note_index = match_op_args["word_note_index"]
     word_list_key = match_op_args["word_list_key"]
 
     new_note = Note(col=mw.col, model=note_type)
@@ -726,15 +717,18 @@ def create_new_note_without_matching(
     #   the sequence, same for (on)(rX)
     # - if there is no marker, this should have none
     marker_regex = rf"^{word} ?(?:\((?:kun|on)\))?(?:\(r\d+\))?(?:\(m\d+\))?$"
-    marker_note_query = f'"{word_sort_field}:re:{marker_regex}"'
-    marker_note_ids = col_find_notes(marker_note_query)
+    # Answered from the run's word index. As a collection search this was a whole-collection
+    # regex scan - 484 of them in one measured run, finding six notes between them - and it
+    # ran on a pool thread waiting its turn behind every other search the run was doing.
+    marker_note_ids = word_note_index.marker_note_ids(word, marker_regex)
     unedited_marker_note_ids = [nid for nid in marker_note_ids if nid not in notes_to_update_dict]
-    # Fetch unedited marker notes from db
+    # Fetch unedited marker notes from db - the index has their sort fields, but these get
+    # their markers rewritten, so what is wanted here is the note itself
     marker_notes = col_get_notes(unedited_marker_note_ids)
     if unedited_marker_note_ids:
         logger.debug(
             f"{log_prefix}Fetched {len(marker_notes)} unedited marker notes from DB,"
-            f" query: {marker_note_query}, sort fields:"
+            f" regex: {marker_regex}, sort fields:"
             f" {[note[word_sort_field] for note in marker_notes]}"
         )
     # Fetch rest from notes_to_update_dict
@@ -1174,88 +1168,79 @@ def compare_readings(
 async def get_matching_notes_for_word_and_reading(
     word: str,
     reading: str,
-    word_kanjified_field: str,
-    word_normal_field: str,
-    word_reading_field: str,
-    word_sort_field: str,
     notes_to_update_dict: dict[NoteId, Note],
     log_prefix: str,
+    word_note_index: WordIndex,
     only_note_id: Optional[NoteId] = None,
-    note_search_cache: Optional[NoteSearchCache] = None,
 ) -> list[Note]:
+    """The existing notes for this word whose reading matches it too.
+
+    Answered from the run's word index rather than by searching the collection. The search
+    this replaces was a whole-collection scan per call - the fields it looked in are note
+    fields and nothing indexes them - and it ran hundreds of times a run to retrieve a couple
+    of notes each. word_index.py has why one pass over the notes table can stand in for all
+    of them.
+    """
     # Entries for words starting with the honorific prefix may use the kanji or hiragana so
-    # query for both
-    go_word_query = ""
+    # look for both
+    kanjified_values = [word, f"{word}する"]
+    normal_values = [word, f"{word}する"]
     if word.startswith("御"):
-        go_word_query = ""
         if reading[0] == "お":
             o_word = "お" + word[1:]
-            go_word_query = (
-                f' OR "{word_kanjified_field}:{o_word}" OR "{word_normal_field}:{o_word}"'
-            )
+            kanjified_values.append(o_word)
+            normal_values.append(o_word)
         elif reading[0] == "ご":
             go_word = "ご" + word[1:]
-            go_word_query = (
-                f' OR "{word_kanjified_field}:{go_word}" OR "{word_normal_field}:{go_word}"'
-            )
-    alt_reading_query = ""
-    # If word contains no kanji, we can search for a match using only its reading
+            kanjified_values.append(go_word)
+            normal_values.append(go_word)
+    # If word contains no kanji, we can find a match using only its reading
     if not re.search(r"[一-龯]", word):
-        alt_reading_query = f' OR "{word_normal_field}:{reading}"'
+        normal_values.append(reading)
 
-    word_query = (
-        f'("{word_kanjified_field}:{word}" OR "{word_normal_field}:{word}"'
-        f" {alt_reading_query}{go_word_query})"
+    note_ids = word_note_index.matching_note_ids(
+        kanjified_values, normal_values, only_note_id=only_note_id
     )
-    word_query_suru = f'("{word_kanjified_field}:{word}する" OR "{word_normal_field}:{word}する")'
-    no_x_in_sort_field = rf'-"{word_sort_field}:re:\(x\d\)"'
-    query = f"({word_query} OR {word_query_suru}) {no_x_in_sort_field}"
-    if only_note_id is not None:
-        query += f" nid:{only_note_id}"
-    note_ids: Optional[Sequence[NoteId]] = (
-        None if note_search_cache is None else note_search_cache.get(query)
-    )
-    if note_ids is None:
-        logger.debug(f"{log_prefix}Searching for notes with query: {query}")
-        note_ids = await col_find_notes_async(query)
-        if note_search_cache is not None:
-            # No lock around the miss: two tasks racing on one query would each run a search
-            # and store the same answer, which costs a duplicate search and nothing else. The
-            # case worth avoiding - the many tasks that share a hot word - cannot race, because
-            # they are already serialised behind that word's entry in word_locks_dict.
-            note_search_cache[query] = note_ids
-    else:
-        logger.debug(f"{log_prefix}Reusing cached search for query: {query}")
-    # Filter by reading matches, we don't do this in the query since it's not easy to check
-    # for a reading where some parts are in katakana
+    logger.debug(f"{log_prefix}Word index has {len(note_ids)} notes for the word")
 
+    # Filter by reading matches, which we don't fold into the lookup since it's not easy to
+    # check for a reading where some parts are in katakana. The index knows every note's
+    # reading, so this happens before anything is fetched rather than after - it discards
+    # most of the hits, so that is most of the fetching saved.
     hiragana_reading = to_hiragana(reading)
     hiragana_reading_suru = to_hiragana(reading + "する")
-    matching_notes: list[Note] = []
+    matching_ids: list[NoteId] = []
+    for note_id in note_ids:
+        note_reading = word_note_index.reading(note_id)
+        # None means the notetype has no reading field at all, so the note cannot match
+        if note_reading is None:
+            continue
+        if compare_readings(
+            note_reading,
+            hiragana_reading,
+            hiragana_reading_suru,
+            log_prefix,
+        ):
+            matching_ids.append(note_id)
 
-    # One turn with the collection for every note the query hit, rather than taking and
-    # releasing it per note and letting every other waiting thread in between
+    # One turn with the collection for all of them, rather than taking and releasing it per
+    # note and letting every other waiting thread in between
     fetched = {
         note.id: note
         for note in await col_get_notes_async(
-            note_id for note_id in note_ids if note_id not in notes_to_update_dict
+            note_id for note_id in matching_ids if note_id not in notes_to_update_dict
         )
     }
 
-    for note_id in note_ids:
+    matching_notes: list[Note] = []
+    for note_id in matching_ids:
         note = (
             notes_to_update_dict[note_id]
             if note_id in notes_to_update_dict
             else fetched.get(note_id)
         )
-        if note and word_reading_field in note:
-            if compare_readings(
-                note[word_reading_field],
-                hiragana_reading,
-                hiragana_reading_suru,
-                log_prefix,
-            ):
-                matching_notes.append(note)
+        if note is not None:
+            matching_notes.append(note)
     return matching_notes
 
 
@@ -1304,7 +1289,6 @@ async def match_single_word_in_word_tuple(
 
     model = config.get("match_words_model", "")
     word_kanjified_field = match_op_args["word_kanjified_field"]
-    word_normal_field = match_op_args["word_normal_field"]
     word_reading_field = match_op_args["word_reading_field"]
     word_sort_field = match_op_args["word_sort_field"]
     meaning_field = match_op_args["meaning_field"]
@@ -1348,20 +1332,16 @@ async def match_single_word_in_word_tuple(
                 reading,
                 all_generated_meanings_dict,
             )
-        # A whole-collection regex search plus a note fetch, both queueing for the
+        # An index lookup plus a note fetch, only the second of which queues for the
         # collection. Awaited rather than handed to a thread: the wait is for a turn with the
         # collection and nothing else, so it costs a coroutine here instead of a pool thread
         # parked in a semaphore, and the loop keeps polling for cancellation throughout.
         matching_notes = await get_matching_notes_for_word_and_reading(
             word=word,
             reading=reading,
-            word_kanjified_field=word_kanjified_field,
-            word_normal_field=word_normal_field,
-            word_reading_field=word_reading_field,
-            word_sort_field=word_sort_field,
             notes_to_update_dict=notes_to_update_dict,
             log_prefix=log_prefix,
-            note_search_cache=match_op_args["note_search_cache"],
+            word_note_index=match_op_args["word_note_index"],
         )
         for i in range(len(matching_notes)):
             # Check if the note needs to have its meaning mapped to generated meanings first as
@@ -1919,7 +1899,7 @@ def match_words_to_notes(
     note_type: NotetypeDict,
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
-    note_search_cache: NoteSearchCache,
+    word_note_index_cache: WordIndexCache,
     replace_existing: bool = False,
 ) -> tuple[int, Optional[Callable[[list[asyncio.Task]], None]]]:
     """
@@ -1957,6 +1937,8 @@ def match_words_to_notes(
     :param word_locks_dict (dict): A dict of asyncio locks for each word being processed. Used to avoid
             two match_ops don't create new duplicate words
     :param word_lock (asyncio.Lock): A lock to protect access to the word_locks_dict dict.
+    :param word_note_index_cache (WordIndexCache): The run's word index, shared by every note,
+            built by the first task that needs it.
     :param replace_existing (bool): If True, replace existing matched words with new matches.
             Otherwise, words that already have a note match will be skipped during processing and
             returned as is.
@@ -2040,6 +2022,17 @@ def match_words_to_notes(
         reading: str,
         multi_meaning_index: Optional[int] = None,
     ) -> bool:
+        # Awaited outside the word lock, so the one task that ends up building it does not
+        # hold up the tasks for other words while it does. Everything after this point reads
+        # the index synchronously, including create_new_note_without_matching in its thread.
+        word_note_index = await word_note_index_cache.get(
+            WordFields(
+                kanjified=word_kanjified_field,
+                normal=word_normal_field,
+                reading=word_reading_field,
+                sort=word_sort_field,
+            )
+        )
         return await match_single_word_in_word_tuple(
             config=config,
             word_lock=word_lock,
@@ -2059,7 +2052,7 @@ def match_words_to_notes(
                 all_generated_meanings_dict=all_generated_meanings_dict,
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
-                note_search_cache=note_search_cache,
+                word_note_index=word_note_index,
                 cancel_state=cancel_state,
                 word_list_field=word_list_field,
                 word_kanjified_field=word_kanjified_field,
@@ -2345,7 +2338,7 @@ def match_words_to_notes_for_note(
     all_generated_meanings_dict: GeneratedMeaningsDictType,
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
-    note_search_cache: NoteSearchCache,
+    word_note_index_cache: WordIndexCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: bool = False,
 ) -> Optional[NotePlan]:
@@ -2376,6 +2369,8 @@ def match_words_to_notes_for_note(
             two tasks simultaneously accessing notes_to_add_dict (which is keyed by word) so that
             two match_ops don't create new duplicate words
         word_lock (asyncio.Lock): A lock to protect access to the word_locks_dict dict.
+        word_note_index_cache (WordIndexCache): The run's word index, shared by every note,
+            built by the first task that needs it.
         limit_words_and_readings (list): If provided, only process these words and reading tuples
             instead of all words in the note.
         reprocess_words (bool): If True, when limit_words_and_readings is provided,
@@ -2585,7 +2580,7 @@ def match_words_to_notes_for_note(
                 note_type=note_type,
                 word_locks_dict=word_locks_dict,
                 word_lock=word_lock,
-                note_search_cache=note_search_cache,
+                word_note_index_cache=word_note_index_cache,
                 replace_existing=replace_existing,
             )
             planned_task_count += word_list_task_count
@@ -2674,8 +2669,9 @@ def bulk_match_words_to_notes(
     # Dictionary to track locks per word to prevent race conditions
     word_locks_dict: dict[str, asyncio.Lock] = {}
     word_lock = asyncio.Lock()  # Lock to safely create new word locks
-    # Shared by every note in the run: the hot words repeat across notes, not within one
-    note_search_cache: NoteSearchCache = {}
+    # Shared by every note in the run, and filled by whichever task gets to it first: one pass
+    # over the notes table answers every word, reading and marker query the run will ask
+    word_note_index_cache = WordIndexCache()
 
     def inner_op(
         config: dict,
@@ -2703,7 +2699,7 @@ def bulk_match_words_to_notes(
             all_generated_meanings_dict=all_generated_meanings_dict,
             word_locks_dict=word_locks_dict,
             word_lock=word_lock,
-            note_search_cache=note_search_cache,
+            word_note_index_cache=word_note_index_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
         )

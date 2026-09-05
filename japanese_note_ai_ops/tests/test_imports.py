@@ -27,6 +27,7 @@ STARTUP_MODULES = [
     "api_client",
     "concurrency",
     "collection_access",
+    "word_index",
     "diagnostics",
     "base_ops",
     "clean_meaning",
