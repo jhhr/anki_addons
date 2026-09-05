@@ -142,8 +142,13 @@ def install() -> None:
     sys.meta_path.append(_StubFinder())
 
 
-def load_ops_module(name: str) -> ModuleType:
-    """Load async_api_ops/<name>.py as part of a synthetic add-on package."""
+def load_ops_module(name: str, subdir: str = "async_api_ops") -> ModuleType:
+    """Load <subdir>/<name>.py as part of a synthetic add-on package.
+
+    `subdir` is here so `sync_local_ops` can be reached the same way: mdx_dictionary imports
+    aqt and reaches sideways into the package for html_stripping, configuration and the
+    concurrency gate, so it needs exactly this treatment and nothing more.
+    """
     install()
 
     if PACKAGE not in sys.modules:
@@ -151,16 +156,19 @@ def load_ops_module(name: str) -> ModuleType:
         root.__path__ = [str(ADDON_ROOT)]
         sys.modules[PACKAGE] = root
 
-        ops = ModuleType(f"{PACKAGE}.async_api_ops")
-        ops.__path__ = [str(ADDON_ROOT / "async_api_ops")]
-        sys.modules[f"{PACKAGE}.async_api_ops"] = ops
-        setattr(root, "async_api_ops", ops)
+    root = sys.modules[PACKAGE]
+    package_name = f"{PACKAGE}.{subdir}"
+    if package_name not in sys.modules:
+        ops = ModuleType(package_name)
+        ops.__path__ = [str(ADDON_ROOT / subdir)]
+        sys.modules[package_name] = ops
+        setattr(root, subdir, ops)
 
-    dotted = f"{PACKAGE}.async_api_ops.{name}"
+    dotted = f"{package_name}.{name}"
     if dotted in sys.modules:
         return sys.modules[dotted]
 
-    path = ADDON_ROOT / "async_api_ops" / f"{name}.py"
+    path = ADDON_ROOT / subdir / f"{name}.py"
     spec = importlib.util.spec_from_file_location(dotted, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not build a spec for {path}")
