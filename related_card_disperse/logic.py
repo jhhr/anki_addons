@@ -361,11 +361,24 @@ def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> Dispers
 
 
 def apply_disperse_plan(plan: DispersePlan, undo_entry: int) -> list[str]:
+    """Write the plan's due dates, skipping every card it did not actually move.
+
+    The skip has to be per card, not per plan. A group usually mixes cards the
+    optimiser could place with cards it had to leave where they were, and the
+    ``today + 1`` floor below turns "leave it where it was" into "make it due
+    tomorrow" for anything already overdue -- which is how a run over a large
+    backlog ended up stacking most of a deck onto one day. A card whose assigned
+    date equals its current one is finished; it never reaches the floor.
+    """
     messages: list[str] = []
     for cid, due in plan.best_due_dates.items():
         card = mw.col.get_card(cid)
         old_due = card.odue if card.odid else card.due
+        if due == old_due:
+            continue
         adjusted_due = max(due, mw.col.sched.today + 1)
+        if adjusted_due == old_due:
+            continue
         if card.odid:
             card.odue = max(adjusted_due, 1)
         else:
