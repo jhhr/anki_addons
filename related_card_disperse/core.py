@@ -170,3 +170,22 @@ def summarize_outcome(
         f"{rule_name}: candidates={candidates}, filtered={filtered_out}, "
         f"capped={capped_out}, updated={updated}, outcome={outcome}"
     )
+
+
+# Deck-preset review orders that actually sort by due date, as
+# DeckConfig.Config.ReviewCardOrder numbers. Anki hands the deck's review order
+# straight to the SQL that gathers due cards, and the daily limit then truncates
+# that stream -- so under any *other* order the due date decides only whether a
+# card joins today's pool, never where in it the card lands. Moving a due date
+# around inside the past is therefore a no-op for every order not listed here.
+DUE_ORDERED_REVIEW_ORDERS = frozenset(
+    {
+        0,  # DAY
+        1,  # DAY_THEN_DECK
+        2,  # DECK_THEN_DAY
+    }
+)
+
+
+def review_order_uses_due(review_order: int) -> bool:
+    return review_order in DUE_ORDERED_REVIEW_ORDERS

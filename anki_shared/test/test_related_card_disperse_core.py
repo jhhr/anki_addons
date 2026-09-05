@@ -7,6 +7,7 @@ from related_card_disperse.core import (
     join_quoted_names,
     normalize_card_id_result,
     qualified_card_type_name,
+    review_order_uses_due,
     reviewed_card_variables,
     split_quoted_names,
     summarize_outcome,
@@ -98,3 +99,8 @@ def test_group_overlapping_sets_merges_transitively():
 def test_summarize_outcome_shape():
     text = summarize_outcome("Rule A", 10, 3, 2, 5, "dispersed")
     assert text == "Rule A: candidates=10, filtered=3, capped=2, updated=5, outcome=dispersed"
+
+
+def test_only_due_date_orders_let_a_due_date_decide_anything():
+    """Every other order ignores due entirely once a card is in the day's pool."""
+    assert [o for o in range(12) if review_order_uses_due(o)] == [0, 1, 2]

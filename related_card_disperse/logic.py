@@ -20,6 +20,7 @@ from .core import (
     normalize_card_id_result,
     qualified_card_type_name,
     remaining_note_cards,
+    review_order_uses_due,
     reviewed_card_variables,
     split_quoted_names,
     summarize_outcome,
@@ -53,6 +54,10 @@ class DispersePlan:
     last_reviews: dict[int, int]
     best_due_dates: dict[int, int]
     min_gap: int
+    # Cards pinned at their current due date because they are backlogged in a
+    # deck whose review order ignores due dates. They still anchor the group;
+    # they just cannot be part of the answer.
+    backlogged: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -296,12 +301,48 @@ def _max_interval(card: Card) -> int:
     return int(deck_conf.get("rev", {}).get("maxIvl", 36500))
 
 
+def _deck_orders_by_due(card: Card, order_cache: dict[int, bool]) -> bool:
+    """Whether the card's home deck sorts its reviews by due date.
+
+    The home deck, not the current one: a card sitting in a filtered deck is
+    shown in that deck's build order and takes its real due date back with it
+    when it leaves, so its preset is the one that decides whether moving that
+    date is worth anything.
+    """
+    deck_id = card.odid if card.odid else card.did
+    cached = order_cache.get(deck_id)
+    if cached is not None:
+        return cached
+    try:
+        deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
+        uses_due = review_order_uses_due(int(deck_conf.get("reviewOrder", 0)))
+    except Exception:
+        # Assume the order does use due dates: that is Anki's default, and
+        # guessing it wrong here would silently stop dispersing a deck.
+        uses_due = True
+    order_cache[deck_id] = uses_due
+    return uses_due
+
+
 def _get_due_range(
     card: Card,
     desired_retention: float,
     maximum_interval: int,
     stats_cache: StatsCache,
-) -> tuple[tuple[int, int], int]:
+    orders_by_due: bool = True,
+) -> tuple[tuple[int, int], int, bool]:
+    """The days this card may be moved to, its last review day, and whether it
+    was pinned for being backlogged.
+
+    A card that is already overdue has left the part of the schedule a due date
+    controls. Anki gathers every card with ``due <= today`` into one pool and
+    sorts that pool by the deck's review order; unless that order is a due-date
+    one, where inside the past the date sits changes nothing about when the card
+    comes up. Moving it into the future, meanwhile, postpones a card that is
+    already late. So in a deck that does not order by due date, a backlogged
+    card is pinned: it still anchors the group, and the cards that can still be
+    moved arrange themselves around it.
+    """
     ivl = card.ivl
     due = card.odue if card.odid else card.due
 
@@ -309,11 +350,14 @@ def _get_due_range(
     revlogs = _filter_revlogs(stats.revlog)
     last_review = _last_review_date(card, revlogs)
 
+    if due < mw.col.sched.today and not orders_by_due:
+        return (due, due), last_review, True
+
     new_ivl = int(round(9 * ivl * (1 / desired_retention - 1)))
     new_ivl = min(new_ivl, maximum_interval)
 
     if new_ivl <= 2:
-        return (due, due), last_review
+        return (due, due), last_review, False
 
     last_elapsed_days = int((revlogs[0].time - revlogs[1].time) / 86400) if len(revlogs) >= 2 else 0
 
@@ -329,25 +373,30 @@ def _get_due_range(
     else:
         due_range = (due, due)
 
-    return due_range, last_review
+    return due_range, last_review, False
 
 
 def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> DispersePlan:
     due_ranges: dict[int, tuple[int, int]] = {}
     current_dues: dict[int, int] = {}
     last_reviews: dict[int, int] = {}
+    backlogged: set[int] = set()
+    order_cache: dict[int, bool] = {}
 
     for cid in card_ids:
         card = mw.col.get_card(cid)
         current_dues[cid] = card.odue if card.odid else card.due
-        due_range, last_review = _get_due_range(
+        due_range, last_review, is_backlogged = _get_due_range(
             card,
             desired_retention=_get_desired_retention(card),
             maximum_interval=_max_interval(card),
             stats_cache=stats_cache,
+            orders_by_due=_deck_orders_by_due(card, order_cache),
         )
         due_ranges[cid] = due_range
         last_reviews[cid] = last_review
+        if is_backlogged:
+            backlogged.add(cid)
 
     min_gap, best_due_dates = maximize_due_gap(due_ranges)
     return DispersePlan(
@@ -357,6 +406,7 @@ def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> Dispers
         last_reviews=last_reviews,
         best_due_dates=best_due_dates,
         min_gap=min_gap,
+        backlogged=backlogged,
     )
 
 
