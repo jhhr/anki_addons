@@ -1,6 +1,6 @@
 # Custom Schedule Helper
 
-Custom Schedule Helper is an Anki add-on duplicating most of the functionalites of the F4SRSAnki Helper
+Custom Schedule Helper is an Anki add-on duplicating most of the functionalities of the F4SRSAnki Helper
 but instead a different custom scheduling setup.
 
 ## Copied F4SRSAnki
