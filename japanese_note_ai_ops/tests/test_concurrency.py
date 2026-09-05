@@ -89,6 +89,10 @@ class StubClock:
     def monotonic(self) -> float:
         return self.now
 
+    # CollectionPressure times on perf_counter, for the resolution; same stub clock behind it
+    def perf_counter(self) -> float:
+        return self.now
+
     def advance(self, seconds: float) -> None:
         self.now += seconds
 

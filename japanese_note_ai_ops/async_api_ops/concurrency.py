@@ -123,20 +123,27 @@ class CollectionPressure:
 
     Lives here rather than in collection_access so that concurrency.py keeps to the stdlib and
     stays loadable, and testable, outside a running Anki.
+
+    Timed on perf_counter rather than monotonic. Windows resolves monotonic to about 15.6ms,
+    which is coarser than a good many turns with the collection - a cached get_note among them
+    - and every one of those reads as a hold of exactly zero. The error is one-directional:
+    utilisation comes out lower than it is, so the gate sees headroom that is not there and
+    grows into a collection that is already the bottleneck, which is the reading this class
+    exists to prevent.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._held = 0.0
         self._turns = 0
-        self._since = time.monotonic()
+        self._since = time.perf_counter()
 
     def reset(self) -> None:
         """Start a fresh window. Called when a run begins adapting."""
         with self._lock:
             self._held = 0.0
             self._turns = 0
-            self._since = time.monotonic()
+            self._since = time.perf_counter()
 
     def record(self, held_seconds: float) -> None:
         """One completed turn holding the collection."""
@@ -151,7 +158,7 @@ class CollectionPressure:
         follows the run instead of averaging over all of it.
         """
         with self._lock:
-            now = time.monotonic()
+            now = time.perf_counter()
             elapsed = now - self._since
             held, turns = self._held, self._turns
             self._held, self._turns, self._since = 0.0, 0, now
