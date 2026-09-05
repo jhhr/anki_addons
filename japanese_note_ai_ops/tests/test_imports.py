@@ -28,6 +28,7 @@ STARTUP_MODULES = [
     "concurrency",
     "collection_access",
     "word_index",
+    "note_cache",
     "diagnostics",
     "base_ops",
     "clean_meaning",

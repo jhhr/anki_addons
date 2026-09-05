@@ -18,6 +18,7 @@ from anki_stubs import load_ops_module
 from test_word_index import FIELDS, VOCAB_MID, VOCAB_ORDS, vocab_row
 
 wi = load_ops_module("word_index")
+nc = load_ops_module("note_cache")
 mwtn = load_ops_module("match_words_to_notes")
 
 
@@ -29,19 +30,26 @@ class FakeNote:
 
 
 class LookupTestCase(unittest.TestCase):
+    """The collection is the one thing under this function that is not the index.
+
+    Faked at note_cache's own seam rather than this function's, so what the tests see in
+    self.fetched is what actually reached the collection - the run's note cache included.
+    """
+
     def setUp(self):
         self.fetched: "list[list[int]]" = []
-        self.real_get_notes = mwtn.col_get_notes_async
+        self.real_get_notes = nc.get_notes_async
 
         async def fake_get_notes_async(note_ids):
             ids = list(note_ids)
             self.fetched.append(ids)
             return [FakeNote(note_id) for note_id in ids]
 
-        mwtn.col_get_notes_async = fake_get_notes_async
+        nc.get_notes_async = fake_get_notes_async
+        self.note_cache = nc.NoteCache()
 
     def tearDown(self):
-        mwtn.col_get_notes_async = self.real_get_notes
+        nc.get_notes_async = self.real_get_notes
 
     def lookup(self, word, reading, *rows, notes_to_update_dict=None):
         index = wi.WordIndex.from_rows(FIELDS, {VOCAB_MID: VOCAB_ORDS}, list(rows))
@@ -52,6 +60,7 @@ class LookupTestCase(unittest.TestCase):
                 notes_to_update_dict=notes_to_update_dict or {},
                 log_prefix="test--",
                 word_note_index=index,
+                note_cache=self.note_cache,
             )
         )
         return [note.id for note in notes]
@@ -140,8 +149,37 @@ class FetchingTests(LookupTestCase):
 
     def test_nothing_is_fetched_when_no_note_matches(self):
         self.assertEqual(self.lookup("彼女", "かのじょ", vocab_row(1, "私", "私", "わたし", "私")), [])
-        # get_notes_async short-circuits an empty list, but it should not even be asked
-        self.assertEqual(self.fetched, [[]])
+        # The collection is not asked at all, not even for an empty list of ids
+        self.assertEqual(self.fetched, [])
+
+    def test_a_note_the_run_already_fetched_is_not_fetched_again(self):
+        # Why the cache exists: a hot word is looked up once per sentence that mentions it,
+        # and every one of those lookups used to re-fetch the same notes
+        rows = [vocab_row(1, "私", "私", "わたし", "私")]
+        self.assertEqual(self.lookup("私", "わたし", *rows), [1])
+        self.assertEqual(self.lookup("私", "わたし", *rows), [1])
+        self.assertEqual(self.fetched, [[1]])
+
+    def test_the_same_note_object_comes_back_each_time(self):
+        # Every reader prefers notes_to_update_dict for a note that has been edited, so a
+        # cached object is only handed out for notes nobody has touched - but it has to be the
+        # same object, or an edit made through one copy would be invisible through the other
+        rows = [vocab_row(1, "私", "私", "わたし", "私")]
+        index = wi.WordIndex.from_rows(FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows)
+
+        def fetch():
+            return asyncio.run(
+                mwtn.get_matching_notes_for_word_and_reading(
+                    word="私",
+                    reading="わたし",
+                    notes_to_update_dict={},
+                    log_prefix="test--",
+                    word_note_index=index,
+                    note_cache=self.note_cache,
+                )
+            )
+
+        self.assertIs(fetch()[0], fetch()[0])
 
     def test_an_already_edited_note_is_used_rather_than_fetched_again(self):
         edited = FakeNote(1)
@@ -158,6 +196,7 @@ class FetchingTests(LookupTestCase):
                 word_note_index=wi.WordIndex.from_rows(
                     FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows
                 ),
+                note_cache=self.note_cache,
             )
         )
         self.assertEqual(self.fetched, [[2]])

@@ -62,8 +62,8 @@ from .collection_access import (
     find_notes as col_find_notes,
     get_note as col_get_note,
     get_notes as col_get_notes,
-    get_notes_async as col_get_notes_async,
 )
+from .note_cache import NoteCache
 from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
 from .extract_words import word_lists_str_format
@@ -612,6 +612,7 @@ class MatchOpArgs(TypedDict):
     notes_to_add_dict: dict[str, list[Note]]
     notes_to_update_dict: dict[NoteId, Note]
     word_note_index: WordIndex
+    note_cache: NoteCache
     cancel_state: CancelState
     word_list_field: str
     word_kanjified_field: str
@@ -1171,6 +1172,7 @@ async def get_matching_notes_for_word_and_reading(
     notes_to_update_dict: dict[NoteId, Note],
     log_prefix: str,
     word_note_index: WordIndex,
+    note_cache: NoteCache,
     only_note_id: Optional[NoteId] = None,
 ) -> list[Note]:
     """The existing notes for this word whose reading matches it too.
@@ -1223,14 +1225,13 @@ async def get_matching_notes_for_word_and_reading(
         ):
             matching_ids.append(note_id)
 
-    # One turn with the collection for all of them, rather than taking and releasing it per
-    # note and letting every other waiting thread in between
-    fetched = {
-        note.id: note
-        for note in await col_get_notes_async(
-            note_id for note_id in matching_ids if note_id not in notes_to_update_dict
-        )
-    }
+    # One turn with the collection for the ones the run has not already fetched, rather than
+    # taking and releasing it per note and letting every other waiting thread in between. The
+    # hot words are asked for once per sentence that mentions them, so most of these ids have
+    # been fetched already; note_cache.py has why serving them from memory is sound.
+    fetched = await note_cache.get_notes(
+        note_id for note_id in matching_ids if note_id not in notes_to_update_dict
+    )
 
     matching_notes: list[Note] = []
     for note_id in matching_ids:
@@ -1342,6 +1343,7 @@ async def match_single_word_in_word_tuple(
             notes_to_update_dict=notes_to_update_dict,
             log_prefix=log_prefix,
             word_note_index=match_op_args["word_note_index"],
+            note_cache=match_op_args["note_cache"],
         )
         for i in range(len(matching_notes)):
             # Check if the note needs to have its meaning mapped to generated meanings first as
@@ -1900,6 +1902,7 @@ def match_words_to_notes(
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
     word_note_index_cache: WordIndexCache,
+    note_cache: NoteCache,
     replace_existing: bool = False,
 ) -> tuple[int, Optional[Callable[[list[asyncio.Task]], None]]]:
     """
@@ -1939,6 +1942,8 @@ def match_words_to_notes(
     :param word_lock (asyncio.Lock): A lock to protect access to the word_locks_dict dict.
     :param word_note_index_cache (WordIndexCache): The run's word index, shared by every note,
             built by the first task that needs it.
+    :param note_cache (NoteCache): The run's fetched notes, shared by every note, so a note the
+            run has already retrieved is not retrieved again.
     :param replace_existing (bool): If True, replace existing matched words with new matches.
             Otherwise, words that already have a note match will be skipped during processing and
             returned as is.
@@ -2053,6 +2058,7 @@ def match_words_to_notes(
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
                 word_note_index=word_note_index,
+                note_cache=note_cache,
                 cancel_state=cancel_state,
                 word_list_field=word_list_field,
                 word_kanjified_field=word_kanjified_field,
@@ -2339,6 +2345,7 @@ def match_words_to_notes_for_note(
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
     word_note_index_cache: WordIndexCache,
+    note_cache: NoteCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: bool = False,
 ) -> Optional[NotePlan]:
@@ -2371,6 +2378,8 @@ def match_words_to_notes_for_note(
         word_lock (asyncio.Lock): A lock to protect access to the word_locks_dict dict.
         word_note_index_cache (WordIndexCache): The run's word index, shared by every note,
             built by the first task that needs it.
+        note_cache (NoteCache): The run's fetched notes, shared by every note, so a note the run
+            has already retrieved is not retrieved again.
         limit_words_and_readings (list): If provided, only process these words and reading tuples
             instead of all words in the note.
         reprocess_words (bool): If True, when limit_words_and_readings is provided,
@@ -2581,6 +2590,7 @@ def match_words_to_notes_for_note(
                 word_locks_dict=word_locks_dict,
                 word_lock=word_lock,
                 word_note_index_cache=word_note_index_cache,
+                note_cache=note_cache,
                 replace_existing=replace_existing,
             )
             planned_task_count += word_list_task_count
@@ -2672,6 +2682,9 @@ def bulk_match_words_to_notes(
     # Shared by every note in the run, and filled by whichever task gets to it first: one pass
     # over the notes table answers every word, reading and marker query the run will ask
     word_note_index_cache = WordIndexCache()
+    # Shared for the same reason and on the same argument: a run never writes to the
+    # collection, so the second fetch of a note can only return what the first did
+    note_cache = NoteCache()
 
     def inner_op(
         config: dict,
@@ -2700,6 +2713,7 @@ def bulk_match_words_to_notes(
             word_locks_dict=word_locks_dict,
             word_lock=word_lock,
             word_note_index_cache=word_note_index_cache,
+            note_cache=note_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
         )
