@@ -27,6 +27,7 @@ from rapidfuzz.distance import Levenshtein  # type: ignore
 from ..configuration import (
     MEANING_MAPPED_TAG,
     MEANINGS_DICT_FILE,
+    NO_DICTIONARY_ENTRY_TAG,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
     MultiMeaningMatchedWordType,
@@ -1232,6 +1233,20 @@ def get_matching_notes_for_word_and_reading(
     return matching_notes
 
 
+def needs_meaning_mapping(note: Note) -> bool:
+    """Whether cleaning this note could still map its meaning to a generated one.
+
+    MEANING_MAPPED_TAG is only ever added when a note is mapped against generated meanings,
+    and a word with no dictionary entry never gets any made - make_all_meanings_for_word
+    returns NO_DICTIONARY_ENTRY before generating. So its notes cannot reach the mapping path
+    and cannot pick up the tag, and checking the mapped tag alone sends every pass back into
+    clean_meaning_in_note to redo work whose outcome cannot change.
+
+    make_all_meanings uses the same pair of tags to decide a word is done with.
+    """
+    return not note.has_tag(MEANING_MAPPED_TAG) and not note.has_tag(NO_DICTIONARY_ENTRY_TAG)
+
+
 async def match_single_word_in_word_tuple(
     config: dict,
     word_lock: asyncio.Lock,
@@ -1332,7 +1347,7 @@ async def match_single_word_in_word_tuple(
                 if note_id not in notes_to_update_dict
                 else notes_to_update_dict[note_id]
             )
-            if not note.has_tag(MEANING_MAPPED_TAG):
+            if needs_meaning_mapping(note):
                 # The op will add the note to notes_to_update_dict if it edits it
                 logger.debug(
                     f"{log_prefix}Cleaning meaning in note {note[word_sort_field]} before matching"
@@ -1449,7 +1464,7 @@ async def match_single_word_in_word_tuple(
                 if note_id not in notes_to_update_dict
                 else notes_to_update_dict[note_id]
             )
-            if not note.has_tag(MEANING_MAPPED_TAG):
+            if needs_meaning_mapping(note):
                 logger.debug(
                     f"{log_prefix}Mapping meanings for note {note[word_sort_field]} before matching"
                 )
