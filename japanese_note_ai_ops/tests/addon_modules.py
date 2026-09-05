@@ -19,6 +19,7 @@ from types import ModuleType
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 OPS_DIR = ADDON_ROOT / "async_api_ops"
+DEFAULT_SUBDIR = "async_api_ops"
 
 sys.path.insert(0, str(ADDON_ROOT.parent / "anki_shared" / "utils"))
 from vendor_path import add_vendor_paths  # noqa: E402
@@ -26,9 +27,14 @@ from vendor_path import add_vendor_paths  # noqa: E402
 add_vendor_paths(str(ADDON_ROOT))
 
 
-def load_addon_module(name: str) -> ModuleType:
-    """Load async_api_ops/<name>.py as a standalone module."""
-    path = OPS_DIR / f"{name}.py"
+def load_addon_module(name: str, subdir: str = DEFAULT_SUBDIR) -> ModuleType:
+    """Load <subdir>/<name>.py as a standalone module.
+
+    Only for modules that keep to the stdlib and the vendored lib/, whatever directory they
+    live in: mdx_memo sits beside the aqt-importing mdx_dictionary but imports neither it nor
+    anything else of the add-on's, which is what lets it be tested this way.
+    """
+    path = ADDON_ROOT / subdir / f"{name}.py"
     if not path.exists():
         raise FileNotFoundError(f"No module {name} at {path}")
     spec = importlib.util.spec_from_file_location(f"addon_under_test_{name}", path)

@@ -17,6 +17,7 @@ except ImportError:
 from ..html_stripping import strip_html_advanced
 from ..configuration import ADDON_USER_FILES_DIR
 from ..async_api_ops.concurrency import cpu_bound_section
+from .mdx_memo import DefinitionMemo
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +550,8 @@ class AnkiMDXHelper:
         """
         self.multi_dict: Union[MultiDictionaryQuery, None] = None
         self._init_failed = False
+        # One scan per distinct lookup for the life of the process; see mdx_memo.
+        self.memo = DefinitionMemo()
 
     def load_mdx_dictionaries_if_needed(
         self, config: dict[str, Any], show_progress: bool = False, finish_progress: bool = True
@@ -588,6 +591,9 @@ class AnkiMDXHelper:
                 self.multi_dict = None
                 return None
 
+            # Memoised answers belong to the dictionaries that gave them, so a fresh set of
+            # dictionaries starts from nothing. Today this only ever runs once per process.
+            self.memo.clear()
             return self
         except Exception as e:
             print(f"Failed to initialize MDX helper: {e}")
@@ -616,12 +622,33 @@ class AnkiMDXHelper:
         if self.multi_dict is None:
             return None
 
-        # The query is regex and dict work over the loaded indexes - no socket, no collection -
-        # so it needs a core, and the callers reach it from asyncio.to_thread on a pool sized
-        # for waiting rather than for computing. Both bulk paths arrive here (a word's meanings
-        # being generated, and a note's meaning being cleaned), so the bound belongs on the
-        # lookup rather than on either caller. Only the query is inside: the LLM call that
-        # follows it in both callers waits on the network and must not hold a core.
+        # A lookup is up to 28 full scans of the dictionaries' key tables and was measured to
+        # be the entire length of a bulk run, so the same word is never looked up twice. The
+        # memo is consulted before the CPU gate below, since a remembered answer needs no core;
+        # see mdx_memo for why the results can be kept.
+        key = (word, reading, pick_dictionary, max_length)
+        result = self.memo.get(
+            key, lambda: self._build_definition_text(word, reading, pick_dictionary, max_length)
+        )
+        logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
+        return result.value
+
+    def _build_definition_text(
+        self,
+        word: str,
+        reading: Optional[str],
+        pick_dictionary: PickDictionaryResult,
+        max_length: Optional[int],
+    ) -> Union[str, None]:
+        """Scan the dictionaries for real. Called at most once per distinct lookup."""
+        assert self.multi_dict is not None
+
+        # The query is SQLite full table scans over the dictionaries' key indexes - no socket,
+        # no collection - so it needs a core, and the callers reach it from asyncio.to_thread
+        # on a pool sized for waiting rather than for computing. Both bulk paths arrive here (a
+        # word's meanings being generated, and a note's meaning being cleaned), so the bound
+        # belongs on the lookup rather than on either caller. Only the query is inside: the LLM
+        # call that follows it in both callers waits on the network and must not hold a core.
         with cpu_bound_section():
             if reading:
                 results = self.multi_dict.query_all_japanese(
