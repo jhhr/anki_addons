@@ -16,6 +16,7 @@ except ImportError:
 
 from ..html_stripping import strip_html_advanced
 from ..configuration import ADDON_USER_FILES_DIR
+from ..async_api_ops.concurrency import cpu_bound_section
 
 logger = logging.getLogger(__name__)
 
@@ -615,18 +616,28 @@ class AnkiMDXHelper:
         if self.multi_dict is None:
             return None
 
-        if reading:
-            results = self.multi_dict.query_all_japanese(
-                word,
-                reading,
-                strip_html_tags=True,
-                preserve_structure=True,
-                pick_dictionary=pick_dictionary,
-            )
-        else:
-            results = self.multi_dict.query(
-                word, strip_html_tags=True, preserve_structure=True, pick_dictionary=pick_dictionary
-            )
+        # The query is regex and dict work over the loaded indexes - no socket, no collection -
+        # so it needs a core, and the callers reach it from asyncio.to_thread on a pool sized
+        # for waiting rather than for computing. Both bulk paths arrive here (a word's meanings
+        # being generated, and a note's meaning being cleaned), so the bound belongs on the
+        # lookup rather than on either caller. Only the query is inside: the LLM call that
+        # follows it in both callers waits on the network and must not hold a core.
+        with cpu_bound_section():
+            if reading:
+                results = self.multi_dict.query_all_japanese(
+                    word,
+                    reading,
+                    strip_html_tags=True,
+                    preserve_structure=True,
+                    pick_dictionary=pick_dictionary,
+                )
+            else:
+                results = self.multi_dict.query(
+                    word,
+                    strip_html_tags=True,
+                    preserve_structure=True,
+                    pick_dictionary=pick_dictionary,
+                )
 
         if not results:
             return None

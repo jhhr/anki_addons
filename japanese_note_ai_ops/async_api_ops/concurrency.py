@@ -28,6 +28,11 @@ per-task cost is therefore measured from tracemalloc, whose total does come back
 fitted against the live task count rather than differenced against a baseline - so it needs no
 such moment, and the runs no longer serialise their first pass to provide one. RSS is still
 measured alongside it, as the fallback and as the second opinion. See MemoryEstimator.
+
+Alongside all of that sits one limit that has nothing to do with memory: cpu_bound_section,
+which rations cores rather than megabytes. The gate above may let hundreds of tasks be in
+flight, which is right when a task in flight is waiting on a socket and wrong when it is
+computing. See CPU_BOUND_HEADROOM.
 """
 
 import asyncio
@@ -38,6 +43,7 @@ import threading
 import time
 import tracemalloc
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -104,6 +110,15 @@ TASK_QUEUE_DEPTH = 4
 # turns, so it is noisy, and a limit held one tick too long costs far less than a limit that
 # keeps climbing past the point where climbing does anything.
 COLLECTION_SATURATED = 0.85
+
+# How many CPU-bound sections may run at once, over and above the core count. The gate's own
+# limit is calibrated for work that waits - a collection turn, a request on a socket - where a
+# thread costs nothing while it is parked, so an over-generous ceiling is free. MDX dictionary
+# lookups are the opposite: regex and dict work over index files, which needs a core rather
+# than a socket, and handing 300 runnable threads to 4 cores buys no throughput while
+# multiplying every latency by the oversubscription factor. The headroom is for the part of a
+# lookup that does wait - reading the index file off disk - so a core is not left idle.
+CPU_BOUND_HEADROOM = 1
 
 
 class CollectionPressure:
@@ -338,6 +353,67 @@ def max_possible_concurrency(config: Optional[dict] = None) -> int:
     config = config or {}
     configured = int(config.get("max_concurrent_requests", 0) or 0)
     return max(configured, MAX_AUTO_CONCURRENCY)
+
+
+def cpu_bound_concurrency() -> int:
+    """How many CPU-bound sections may run at once.
+
+    Sized off the machine, not off the gate: the gate's limit says how many tasks may be in
+    flight, and a task in flight is nearly always waiting for something. This says how many of
+    them may be *computing*, which no amount of memory makes bigger than the core count.
+    """
+    return max(1, os.cpu_count() or 1) + CPU_BOUND_HEADROOM
+
+
+_cpu_bound_gate: Optional[threading.Semaphore] = None
+_cpu_bound_gate_lock = threading.Lock()
+
+
+def _cpu_bound_gate_instance() -> threading.Semaphore:
+    """The process-wide CPU-bound gate, built on first use.
+
+    Deliberately a threading primitive and deliberately process-wide. An asyncio.Semaphore
+    binds to the loop it is first awaited on, and every bulk op builds a fresh loop, so an
+    asyncio one would have to be rebuilt per run and would fail loudly if it were not. The
+    thing being rationed - cores - is shared by every loop and every thread the addon runs, so
+    one gate for the process is also the more accurate model.
+    """
+    global _cpu_bound_gate
+    with _cpu_bound_gate_lock:
+        if _cpu_bound_gate is None:
+            _cpu_bound_gate = threading.Semaphore(cpu_bound_concurrency())
+        return _cpu_bound_gate
+
+
+@contextmanager
+def cpu_bound_section():
+    """Hold a CPU slot for the duration of the block.
+
+    For work that computes rather than waits, called from a worker thread. Blocking that
+    thread is the point: it is already off the event loop, and a thread blocked here is a
+    thread the scheduler is not rotating through a core to no purpose.
+
+    Wrap only the computing part. Anything that waits on a socket or on the collection must be
+    outside the block, or the slot sits idle while it waits and the core goes unused.
+    """
+    gate = _cpu_bound_gate_instance()
+    gate.acquire()
+    try:
+        yield
+    finally:
+        gate.release()
+
+
+def _set_cpu_bound_limit(limit: Optional[int]) -> None:
+    """Rebuild the gate at a given size, or at the default when limit is None. Tests only.
+
+    Replaces the semaphore rather than resizing it, so it must not be called while any section
+    is running - the slots held against the old one are simply forgotten.
+    """
+    global _cpu_bound_gate
+    with _cpu_bound_gate_lock:
+        size = limit if limit is not None else cpu_bound_concurrency()
+        _cpu_bound_gate = threading.Semaphore(size)
 
 
 def memory_per_slot(per_task_memory: float) -> float:

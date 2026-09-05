@@ -19,6 +19,7 @@ CeilingReportingTests.
 import asyncio
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -298,6 +299,92 @@ class MaxConcurrencyTests(MemoryStubTestCase):
         self.assertEqual(conc.max_possible_concurrency({}), conc.MAX_AUTO_CONCURRENCY)
         self.assertEqual(conc.max_possible_concurrency({"max_concurrent_requests": 400}), 400)
         self.assertEqual(conc.max_possible_concurrency(None), conc.MAX_AUTO_CONCURRENCY)
+
+
+class CpuBoundGateTests(unittest.TestCase):
+    """The bound on work that computes rather than waits.
+
+    Separate from the gate above and sized differently on purpose: the gate rations memory and
+    lets hundreds of tasks wait at once, which is right for sockets and wrong for cores. What
+    is checked here is that the limit follows the machine, that it actually holds under
+    threads, and that a slot comes back when a section raises - a leaked slot would shrink the
+    limit by one for the life of the process, silently.
+    """
+
+    def tearDown(self):
+        conc._set_cpu_bound_limit(None)
+
+    def test_the_limit_follows_the_core_count_not_the_gate_ceiling(self):
+        with mock.patch.object(conc.os, "cpu_count", return_value=4):
+            self.assertEqual(conc.cpu_bound_concurrency(), 4 + conc.CPU_BOUND_HEADROOM)
+        with mock.patch.object(conc.os, "cpu_count", return_value=32):
+            self.assertEqual(conc.cpu_bound_concurrency(), 32 + conc.CPU_BOUND_HEADROOM)
+        # Far below MAX_AUTO_CONCURRENCY, which is what the pool running these sections is
+        # sized against: that is the whole point of the separate limit
+        with mock.patch.object(conc.os, "cpu_count", return_value=4):
+            self.assertLess(conc.cpu_bound_concurrency(), conc.MAX_AUTO_CONCURRENCY)
+
+    def test_an_unknown_core_count_still_allows_work_through(self):
+        # os.cpu_count returns None when the platform will not say. A limit of 0 would park
+        # every lookup forever
+        with mock.patch.object(conc.os, "cpu_count", return_value=None):
+            self.assertGreaterEqual(conc.cpu_bound_concurrency(), 1)
+
+    def test_no_more_sections_run_at_once_than_the_limit_allows(self):
+        conc._set_cpu_bound_limit(3)
+        # Party of 4: the three holders plus this thread, so the assertions below start only
+        # once all three slots are provably taken
+        everyone_in = threading.Barrier(4, timeout=5)
+        release = threading.Event()
+
+        def hold():
+            with conc.cpu_bound_section():
+                everyone_in.wait()
+                release.wait(5)
+
+        # daemon: a regression that leaks a slot leaves these blocked for good, and a
+        # non-daemon thread in that state hangs the whole test run instead of failing it
+        holders = [threading.Thread(target=hold, daemon=True) for _ in range(3)]
+        for thread in holders:
+            thread.start()
+        try:
+            everyone_in.wait()
+
+            got_in = threading.Event()
+
+            def fourth():
+                with conc.cpu_bound_section():
+                    got_in.set()
+
+            extra = threading.Thread(target=fourth, daemon=True)
+            extra.start()
+            # The fourth is over the limit and must wait, however long the three hold
+            self.assertFalse(got_in.wait(0.2))
+            release.set()
+            # ...and must get through the moment one of them lets go
+            self.assertTrue(got_in.wait(5))
+            extra.join(5)
+        finally:
+            release.set()
+            for thread in holders:
+                thread.join(5)
+
+    def test_a_section_that_raises_gives_its_slot_back(self):
+        conc._set_cpu_bound_limit(1)
+        with self.assertRaises(ValueError):
+            with conc.cpu_bound_section():
+                raise ValueError("lookup blew up")
+
+        entered = threading.Event()
+
+        def after():
+            with conc.cpu_bound_section():
+                entered.set()
+
+        thread = threading.Thread(target=after, daemon=True)
+        thread.start()
+        self.assertTrue(entered.wait(5))
+        thread.join(5)
 
 
 class ConcurrencyLimitsTests(MemoryStubTestCase):
