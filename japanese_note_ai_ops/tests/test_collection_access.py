@@ -226,6 +226,64 @@ class CancellationTests(CollectionAccessTestCase):
         self.assertEqual(self.col.finds, ["held"])
 
 
+class WorkerLifetimeTests(CollectionAccessTestCase):
+    """The worker is shared and process-wide, so one job must never be able to end it.
+
+    Nothing restarts it while it is still alive, and callers on the blocking path are parked
+    in result() waiting to be woken by it, so a worker that dies takes every job queued behind
+    the one that killed it and hangs everyone waiting for those.
+    """
+
+    def assert_worker_survives(self, job: "object") -> None:
+        worker = ca._worker_thread()
+        ca._jobs.put(job)
+        # Queued behind the bad job, so it can only be answered by a worker that got past it.
+        # Asked from a thread with a deadline rather than inline, because the failure being
+        # guarded against is exactly a caller parked in result() with nothing left alive to
+        # wake it: inline, a regression here hangs the whole suite instead of failing.
+        answered: list = []
+        follower = threading.Thread(
+            target=lambda: answered.append(list(ca.find_notes("after it"))), daemon=True
+        )
+        follower.start()
+        follower.join(10)
+        self.assertEqual(answered, [[1, 2, 3]], "the worker did not get past the bad job")
+        self.assertTrue(worker.is_alive())
+        self.assertIs(ca._worker_thread(), worker)
+
+    def test_a_job_whose_loop_is_closed_is_skipped_rather_than_run(self):
+        # An op's teardown closes its loop while jobs it submitted can still be queued here.
+        # Nobody is left awaiting them, so running them only delays the jobs that do have
+        # callers - and answering them raised out of the worker and killed it.
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        loop.close()
+        job = ca._Job("orphaned", lambda: self.col.find_notes("orphaned"), loop, future)
+        self.assert_worker_survives(job)
+        self.assertEqual(self.col.finds, ["after it"])
+
+    def test_a_loop_that_closes_while_a_job_runs_does_not_kill_the_worker(self):
+        """The narrow race the skip cannot cover: open when checked, closed when answered."""
+
+        class ClosingLoop:
+            def is_closed(self):
+                return False
+
+            def call_soon_threadsafe(self, *args):
+                raise RuntimeError("Event loop is closed")
+
+        self.assert_worker_survives(ca._Job("racing", lambda: None, ClosingLoop(), object()))
+
+    def test_an_unexpected_failure_does_not_kill_the_worker(self):
+        """Nothing should get this far, but "should" is not what keeps the collection alive."""
+
+        class BadLoop:
+            def is_closed(self):
+                raise ValueError("not a loop at all")
+
+        self.assert_worker_survives(ca._Job("broken", lambda: None, BadLoop(), object()))
+
+
 class EventLoopTests(CollectionAccessTestCase, unittest.IsolatedAsyncioTestCase):
     async def test_awaiting_a_turn_returns_the_result(self):
         self.assertEqual(list(await ca.find_notes_async("q")), [1, 2, 3])

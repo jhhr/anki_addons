@@ -134,7 +134,17 @@ class _Job:
 
     def settle(self, value: Any, error: "Optional[BaseException]") -> None:
         if self.future is not None and self.loop is not None:
-            self.loop.call_soon_threadsafe(self._settle_future, value, error)
+            try:
+                self.loop.call_soon_threadsafe(self._settle_future, value, error)
+            except RuntimeError:
+                # The loop this was awaited on is closed. An op's teardown closes its loop
+                # while jobs it submitted can still be queued here, and by then there is
+                # nothing left awaiting this one - the task went with the loop. Dropping the
+                # answer is the whole of the handling. What matters is that this does not
+                # escape into the worker, which is shared and not restarted while it is still
+                # alive: killing it strands every job queued behind this one, and their
+                # callers block in result() forever.
+                logger.debug("Dropped the answer to %s, its event loop is closed", self.what)
             return
         self.value, self.error = value, error
         self.done.set()
@@ -163,28 +173,43 @@ _worker_lock = threading.Lock()
 
 def _run_jobs() -> None:
     while True:
-        job = _jobs.get()
-        if _giving_up(job.run, job.exempt):
-            # Drained rather than run. Nothing here has touched the backend yet, so a
-            # cancelled run empties its whole queue in the time it takes to pop it, and only
-            # the job already running has to be waited out.
-            job.settle(None, RunCancelled(job.what))
-            continue
-        started = time.perf_counter()
-        value: Any = None
-        error: "Optional[BaseException]" = None
         try:
-            value = job.fn()
-        except BaseException as raised:  # noqa: BLE001 - handed to whoever is waiting
-            error = raised
-        # Recorded before the caller is woken, so a turn is always accounted for by the time
-        # the caller can observe anything. Only the holding is counted, and only here: this
-        # thread is the collection, so the time it spends running jobs is exactly the time the
-        # collection is occupied. What the queue behind it costs is the thing the gate uses
-        # this to avoid causing. Nothing waits on this - the next job cannot start until this
-        # loop comes round regardless - so it is off the critical path either way.
-        collection_pressure.record(time.perf_counter() - started)
-        job.settle(value, error)
+            _run_one_job(_jobs.get())
+        except BaseException:  # noqa: BLE001 - this thread must outlive any one job
+            # Nothing should reach here: a job's own failure is handed to whoever is waiting
+            # for it. But this thread is the collection for the whole process and nothing
+            # restarts it while it is alive, so anything that did escape would strand every
+            # job queued after it. A log is a better outcome than a dead worker.
+            logger.exception("Collection worker survived an unexpected failure")
+
+
+def _run_one_job(job: _Job) -> None:
+    if _giving_up(job.run, job.exempt):
+        # Drained rather than run. Nothing here has touched the backend yet, so a
+        # cancelled run empties its whole queue in the time it takes to pop it, and only
+        # the job already running has to be waited out.
+        job.settle(None, RunCancelled(job.what))
+        return
+    if job.loop is not None and job.loop.is_closed():
+        # Nobody is waiting for this any more, so spending a turn with the collection on it
+        # would only delay the jobs that still have callers.
+        logger.debug("Skipped %s, its event loop is closed", job.what)
+        return
+    started = time.perf_counter()
+    value: Any = None
+    error: "Optional[BaseException]" = None
+    try:
+        value = job.fn()
+    except BaseException as raised:  # noqa: BLE001 - handed to whoever is waiting
+        error = raised
+    # Recorded before the caller is woken, so a turn is always accounted for by the time the
+    # caller can observe anything. Only the holding is counted, and only here: this thread is
+    # the collection, so the time it spends running jobs is exactly the time the collection is
+    # occupied. What the queue behind it costs is the thing the gate uses this to avoid
+    # causing. Nothing waits on this - the next job cannot start until the worker comes round
+    # again regardless - so it is off the critical path either way.
+    collection_pressure.record(time.perf_counter() - started)
+    job.settle(value, error)
 
 
 def _worker_thread() -> threading.Thread:
