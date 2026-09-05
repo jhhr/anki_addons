@@ -609,6 +609,7 @@ class MatchOpArgs(TypedDict):
     all_generated_meanings_dict: GeneratedMeaningsDictType
     notes_to_add_dict: dict[str, list[Note]]
     notes_to_update_dict: dict[NoteId, Note]
+    note_search_cache: NoteSearchCache
     cancel_state: CancelState
     word_list_field: str
     word_kanjified_field: str
@@ -1158,6 +1159,16 @@ def compare_readings(
     return note_hiragana_reading in [hiragana_reading, hiragana_reading_suru]
 
 
+# Note ids a collection query matched, kept for the length of one run and keyed by the query
+# itself, so it covers the word, the reading and every field name that went into building it.
+#
+# Sound because a run does not write to the collection: every update_notes, remove_notes and
+# add_note happens in the cleanup phase after the ops are done, and notes an op creates live in
+# notes_to_add_dict, which the matching layers on top of these results rather than searching
+# for. So a query asked twice during a run has the same answer both times.
+NoteSearchCache = dict[str, Sequence[NoteId]]
+
+
 def get_matching_notes_for_word_and_reading(
     word: str,
     reading: str,
@@ -1168,6 +1179,7 @@ def get_matching_notes_for_word_and_reading(
     notes_to_update_dict: dict[NoteId, Note],
     log_prefix: str,
     only_note_id: Optional[NoteId] = None,
+    note_search_cache: Optional[NoteSearchCache] = None,
 ) -> list[Note]:
     # Entries for words starting with the honorific prefix may use the kanji or hiragana so
     # query for both
@@ -1198,8 +1210,20 @@ def get_matching_notes_for_word_and_reading(
     query = f"({word_query} OR {word_query_suru}) {no_x_in_sort_field}"
     if only_note_id is not None:
         query += f" nid:{only_note_id}"
-    logger.debug(f"{log_prefix}Searching for notes with query: {query}")
-    note_ids: Sequence[NoteId] = col_find_notes(query)
+    note_ids: Optional[Sequence[NoteId]] = (
+        None if note_search_cache is None else note_search_cache.get(query)
+    )
+    if note_ids is None:
+        logger.debug(f"{log_prefix}Searching for notes with query: {query}")
+        note_ids = col_find_notes(query)
+        if note_search_cache is not None:
+            # No lock around the miss: two tasks racing on one query would each run a search
+            # and store the same answer, which costs a duplicate search and nothing else. The
+            # case worth avoiding - the many tasks that share a hot word - cannot race, because
+            # they are already serialised behind that word's entry in word_locks_dict.
+            note_search_cache[query] = note_ids
+    else:
+        logger.debug(f"{log_prefix}Reusing cached search for query: {query}")
     # Filter by reading matches, we don't do this in the query since it's not easy to check
     # for a reading where some parts are in katakana
 
@@ -1335,6 +1359,7 @@ async def match_single_word_in_word_tuple(
             word_sort_field=word_sort_field,
             notes_to_update_dict=notes_to_update_dict,
             log_prefix=log_prefix,
+            note_search_cache=match_op_args["note_search_cache"],
         )
         for i in range(len(matching_notes)):
             # Check if the note needs to have its meaning mapped to generated meanings first as
@@ -1892,6 +1917,7 @@ def match_words_to_notes(
     note_type: NotetypeDict,
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
+    note_search_cache: NoteSearchCache,
     replace_existing: bool = False,
 ) -> tuple[int, Optional[Callable[[list[asyncio.Task]], None]]]:
     """
@@ -2031,6 +2057,7 @@ def match_words_to_notes(
                 all_generated_meanings_dict=all_generated_meanings_dict,
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
+                note_search_cache=note_search_cache,
                 cancel_state=cancel_state,
                 word_list_field=word_list_field,
                 word_kanjified_field=word_kanjified_field,
@@ -2316,6 +2343,7 @@ def match_words_to_notes_for_note(
     all_generated_meanings_dict: GeneratedMeaningsDictType,
     word_locks_dict: dict[str, asyncio.Lock],
     word_lock: asyncio.Lock,
+    note_search_cache: NoteSearchCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: bool = False,
 ) -> Optional[NotePlan]:
@@ -2555,6 +2583,7 @@ def match_words_to_notes_for_note(
                 note_type=note_type,
                 word_locks_dict=word_locks_dict,
                 word_lock=word_lock,
+                note_search_cache=note_search_cache,
                 replace_existing=replace_existing,
             )
             planned_task_count += word_list_task_count
@@ -2643,6 +2672,8 @@ def bulk_match_words_to_notes(
     # Dictionary to track locks per word to prevent race conditions
     word_locks_dict: dict[str, asyncio.Lock] = {}
     word_lock = asyncio.Lock()  # Lock to safely create new word locks
+    # Shared by every note in the run: the hot words repeat across notes, not within one
+    note_search_cache: NoteSearchCache = {}
 
     def inner_op(
         config: dict,
@@ -2670,6 +2701,7 @@ def bulk_match_words_to_notes(
             all_generated_meanings_dict=all_generated_meanings_dict,
             word_locks_dict=word_locks_dict,
             word_lock=word_lock,
+            note_search_cache=note_search_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
         )
