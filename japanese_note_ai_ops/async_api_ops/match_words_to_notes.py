@@ -943,6 +943,7 @@ def create_new_note_without_matching(
         all_generated_meanings_dict=all_generated_meanings_dict,
         allow_update_all_meanings=True,
         allow_reupdate_existing=True,
+        word_note_index=word_note_index,
     )
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
@@ -1370,6 +1371,7 @@ async def match_single_word_in_word_tuple(
                     all_generated_meanings_dict=all_generated_meanings_dict,
                     allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
+                    word_note_index=match_op_args["word_note_index"],
                 )
             # Replace note in list each time, this will include the cases where an earlier op
             # modified notes coming later in the list
@@ -1486,6 +1488,7 @@ async def match_single_word_in_word_tuple(
                     all_generated_meanings_dict=all_generated_meanings_dict,
                     allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
+                    word_note_index=match_op_args["word_note_index"],
                 )
             # Replace note in list each time, this will include the cases where an earlier op
             # modified notes coming later in the list and we didn't call clean_meaning_in_note again

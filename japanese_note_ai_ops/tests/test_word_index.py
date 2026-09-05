@@ -219,6 +219,108 @@ class MarkerQueryTests(unittest.TestCase):
         self.assertEqual(self.marker_ids(index, "abc"), [1])
 
 
+class MeaningGroupTests(unittest.TestCase):
+    """The whole-collection regex get_other_meaning_notes asks per note that needs cleaning.
+
+    Five terms ANDed together, and a test per term for what it drops - a note in the group
+    that is missed is a meaning that gets regenerated instead of reworked, and a note wrongly
+    included is a note whose meaning gets overwritten from another word's group.
+    """
+
+    def group_ids(self, index, reading="わたし", normal="私", kanjified="私", exclude=None):
+        return index.meaning_group_note_ids(
+            reading=reading,
+            normal_value=normal,
+            kanjified_value=kanjified,
+            exclude_note_id=exclude,
+        )
+
+    def test_the_group_is_the_notes_carrying_a_meaning_marker(self):
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "私", "わたし", "私 (m2)"),
+        )
+        self.assertEqual(self.group_ids(index), [1, 2])
+
+    def test_a_note_without_a_meaning_marker_is_not_in_the_group(self):
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "私", "わたし", "私 (r2)"),
+        )
+        self.assertEqual(self.group_ids(index), [1])
+
+    def test_a_note_marked_excluded_is_not_in_the_group(self):
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "私", "わたし", "私 (m2)(x1)"),
+        )
+        self.assertEqual(self.group_ids(index), [1])
+
+    def test_the_asking_note_is_left_out(self):
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "私", "わたし", "私 (m2)"),
+        )
+        self.assertEqual(self.group_ids(index, exclude=2), [1])
+
+    def test_a_different_reading_is_a_different_group(self):
+        # Same word, different reading: 私(わたし) and 私(わたくし) are separate entries
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "私", "わたくし", "私 (m1)"),
+        )
+        self.assertEqual(self.group_ids(index), [1])
+
+    def test_either_word_field_puts_a_note_in_the_group(self):
+        # The query ORs the two, so a note that only carries the word in one of them counts
+        index = build(
+            vocab_row(1, "", "私", "わたし", "私 (m1)"),
+            vocab_row(2, "私", "", "わたし", "私 (m2)"),
+            vocab_row(3, "彼女", "彼女", "わたし", "彼女 (m1)"),
+        )
+        self.assertEqual(self.group_ids(index), [1, 2])
+
+    def test_a_notetype_without_a_reading_field_cannot_be_in_a_group(self):
+        # `reading:R` is a field search, and a field search only matches notes that have it
+        no_reading = wi.FieldOrds(kanjified=12, normal=10, reading=None, sort=0)
+        index = build(
+            vocab_row(1, "私", "私", "わたし", "私 (m1)"),
+            (2, 999, wi.FIELD_SEPARATOR.join(["私 (m2)"] + [""] * 9 + ["私", "", "私"])),
+            ords_by_mid={VOCAB_MID: VOCAB_ORDS, 999: no_reading},
+        )
+        self.assertEqual(self.group_ids(index), [1])
+
+    def test_matching_ignores_case_and_unicode_composition(self):
+        # Same folding as every other lookup: Anki's field search compares this way
+        index = build(vocab_row(1, "ABC", "abc", "エー", "abc (m1)"))
+        self.assertEqual(self.group_ids(index, reading="エー", normal="ABC", kanjified="abc"), [1])
+
+    def test_a_note_with_no_word_at_all_cannot_be_answered_here(self):
+        # `field:` with nothing after it asks for an empty field, and the word maps hold no
+        # empty keys - so the caller has to fall back to the search rather than get []
+        index = build(vocab_row(1, "私", "私", "わたし", "私 (m1)"))
+        self.assertIsNone(self.group_ids(index, normal="", kanjified=""))
+
+    def test_only_one_word_field_filled_in_is_still_answerable(self):
+        index = build(vocab_row(1, "", "私", "わたし", "私 (m1)"))
+        self.assertEqual(self.group_ids(index, normal="私", kanjified=""), [1])
+
+    def test_an_index_over_other_fields_is_not_trusted(self):
+        # Two notetypes can be configured differently; a query written against one set of
+        # field names cannot be answered by an index built over another
+        index = build(vocab_row(1, "私", "私", "わたし", "私 (m1)"))
+        self.assertTrue(
+            index.covers(
+                kanjified="vocab-kanjified", normal="vocab", reading="vocab-kana", sort="vocab-key"
+            )
+        )
+        self.assertFalse(
+            index.covers(
+                kanjified="word", normal="vocab", reading="vocab-kana", sort="vocab-key"
+            )
+        )
+
+
 class ReadNotesTests(unittest.TestCase):
     """The one collection turn: which notetypes get scanned, and what is asked of the db."""
 

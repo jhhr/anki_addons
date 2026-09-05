@@ -13,7 +13,9 @@ from collections.abc import Sequence
 from .collection_access import (
     find_notes as col_find_notes,
     get_note as col_get_note,
+    get_notes as col_get_notes,
 )
+from .word_index import WordIndex
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -86,8 +88,19 @@ def get_other_meaning_notes(
     notes_to_update_dict: Optional[dict[NoteId, Note]] = None,
     allow_reupdate_existing: bool = False,
     include_pending_notes: bool = True,
+    word_note_index: Optional[WordIndex] = None,
 ) -> list[Note]:
-    """Get notes in the same meaning group as ``note``, excluding ``note`` itself."""
+    """Get notes in the same meaning group as ``note``, excluding ``note`` itself.
+
+    Answered from the run's word index when it has one, and by searching the collection when
+    it does not. The search is a whole-collection regex over the sort field - the fields it
+    looks in are note fields and nothing indexes them - and it ran 898 times in one run to
+    retrieve six notes in total. `word_index.meaning_group_note_ids` has the term-by-term
+    translation; `word_index.py` has why one pass over the notes table can stand in for it.
+
+    :param word_note_index: The run's index, if the caller has one. Ops that run outside a
+        matching run pass nothing and get the search.
+    """
     note_type = note.note_type()
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
@@ -117,11 +130,40 @@ def get_other_meaning_notes(
         f' ("{word_normal_field}:{note[word_normal_field]}" OR'
         f' "{word_field}:{note[word_field]}")'
     )
-    other_meaning_note_ids = col_find_notes(meaning_notes_query)
+    other_meaning_note_ids: Optional[Sequence[NoteId]] = None
+    answered_by = "index"
+    if word_note_index is not None and word_note_index.covers(
+        kanjified=word_field,
+        normal=word_normal_field,
+        reading=word_reading_field,
+        sort=word_sort_field,
+    ):
+        other_meaning_note_ids = word_note_index.meaning_group_note_ids(
+            reading=note[word_reading_field],
+            normal_value=note[word_normal_field],
+            kanjified_value=note[word_field],
+            exclude_note_id=note.id if note.id > 0 else None,
+        )
+    if other_meaning_note_ids is None:
+        answered_by = "search"
+        other_meaning_note_ids = col_find_notes(meaning_notes_query)
+
     notes_to_update_dict = notes_to_update_dict or {}
+    # Fetched in one turn with the collection rather than one turn each: a group is a handful
+    # of notes, and taking and releasing the collection per note let every other waiting caller
+    # in between. Only the ones not already in hand are asked for.
+    ids_to_fetch = [
+        onid
+        for onid in other_meaning_note_ids
+        if allow_reupdate_existing or onid not in notes_to_update_dict
+    ]
+    # Deliberately not the run's note cache: `allow_reupdate_existing` means this caller wants
+    # the collection's copy rather than whatever the run has edited, and a cache would hand it
+    # the edited object instead.
+    fetched = {fetched_note.id: fetched_note for fetched_note in col_get_notes(ids_to_fetch)}
     other_meaning_notes = [
         (
-            col_get_note(onid)
+            fetched[onid]
             if allow_reupdate_existing or onid not in notes_to_update_dict
             else notes_to_update_dict[onid]
         )
@@ -151,7 +193,8 @@ def get_other_meaning_notes(
                     other_meaning_notes.append(pending_note)
 
     logger.debug(
-        f"Other meaning notes count: {len(other_meaning_notes)}, query: {meaning_notes_query}"
+        f"Other meaning notes count: {len(other_meaning_notes)}, by {answered_by}, query:"
+        f" {meaning_notes_query}"
     )
     return other_meaning_notes
 
@@ -720,6 +763,7 @@ def clean_meaning_in_note(
     allow_update_all_meanings: Optional[bool] = True,
     allow_reupdate_existing: Optional[bool] = False,
     other_meaning_notes: Optional[Sequence[Note]] = None,
+    word_note_index: Optional[WordIndex] = None,
 ) -> bool:
     """
     Clean or update the meaning field in a given note using an AI model.
@@ -735,6 +779,8 @@ def clean_meaning_in_note(
     :param allow_reupdate_existing: Allows re-updating notes that are already marked as updated.
     :param other_meaning_notes: Optional replacement list of notes with meanings for the
         update_all_meanings_for_word function.
+    :param word_note_index: The run's word index, if the caller has one. Passed straight to
+        get_other_meaning_notes, which uses it instead of a whole-collection search.
     :return: True if the note was modified, False otherwise.
     """
     note_type = note.note_type()
@@ -799,6 +845,7 @@ def clean_meaning_in_note(
                 notes_to_update_dict=notes_to_update_dict,
                 allow_reupdate_existing=allow_reupdate_existing,
                 include_pending_notes=True,
+                word_note_index=word_note_index,
             )
             all_meaning_notes = other_meaning_notes + [note]
 

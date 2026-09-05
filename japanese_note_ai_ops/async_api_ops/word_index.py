@@ -50,6 +50,13 @@ FIELD_SEPARATOR = "\x1f"
 # case-insensitive unless told otherwise.
 X_MARKER_RE = re.compile(r"\(x\d\)", re.IGNORECASE)
 
+# The two terms the meaning-group query puts on the sort field, as this module's own regexes.
+# Deliberately not X_MARKER_RE: that query spells the exclusion `x\d+`, without the brackets
+# and with more than one digit allowed, and an index that answers a query has to answer the
+# query as written rather than as it might have been.
+MEANING_MARKER_RE = re.compile(r"m\d+", re.IGNORECASE)
+GROUP_EXCLUDED_RE = re.compile(r"x\d+", re.IGNORECASE)
+
 
 def index_key(value: str) -> str:
     """The form a field value is indexed and looked up under.
@@ -204,6 +211,79 @@ class WordIndex:
         return sorted(
             note_id for note_id in candidates if pattern.search(self.sort_of.get(note_id, ""))
         )
+
+    def covers(self, kanjified: str, normal: str, reading: str, sort: str) -> bool:
+        """Whether this index was built over exactly these four fields.
+
+        A caller with its own field names has to ask before it trusts a lookup: two notetypes
+        can be configured differently, and an index built over one set of fields cannot answer
+        a query written against another. The matching op happens to configure `word_field` and
+        `word_kanjified_field` to the same field, which is what lets one index serve both, but
+        nothing makes that true of every profile.
+        """
+        return self.fields == WordFields(
+            kanjified=kanjified, normal=normal, reading=reading, sort=sort
+        )
+
+    def meaning_group_note_ids(
+        self,
+        reading: str,
+        normal_value: str,
+        kanjified_value: str,
+        exclude_note_id: "Optional[NoteId]" = None,
+    ) -> "Optional[list[NoteId]]":
+        """The other notes in one note's meaning group, or None if it cannot be answered here.
+
+        The search this replaces is `get_other_meaning_notes`'s, a whole-collection regex over
+        the sort field run once per note that needed cleaning - 898 of them in one run, to
+        retrieve six notes in total. Spelled out, it asks for notes that carry a meaning marker
+        and no exclusion marker, share this note's reading, and match it in either word field:
+
+            sort:re:m\\d+ -sort:re:x\\d+ -nid:N "reading:R" ("normal:V" OR "kanjified:W")
+
+        Each of those terms is a field this index already holds. The `re:` terms become the two
+        module regexes above, the field terms become the same collation-folded exact match the
+        rest of the index uses, and the OR becomes a union of the two word maps.
+
+        None means the caller has to fall back to the search: both word values being empty is
+        the one case this cannot express, because `field:` with nothing after it asks for notes
+        whose field is empty and the word maps deliberately hold no empty keys. It is not a
+        case any real note reaches - a vocab note with neither word field filled in has nothing
+        to group by - but answering it wrongly would silently split a meaning group.
+
+        The one place a lookup can differ from the search is a word or reading containing an
+        Anki search metacharacter (`*` and `_` are wildcards inside a quoted field term). The
+        index matches such a value literally, which is what the caller passing a note's own
+        field value means by it.
+        """
+        normal_key = index_key(normal_value) if normal_value else ""
+        kanjified_key = index_key(kanjified_value) if kanjified_value else ""
+        if not normal_key and not kanjified_key:
+            return None
+
+        found: "set[NoteId]" = set()
+        if normal_key:
+            found.update(self.by_normal.get(normal_key, ()))
+        if kanjified_key:
+            found.update(self.by_kanjified.get(kanjified_key, ()))
+        if exclude_note_id is not None:
+            found.discard(exclude_note_id)
+
+        reading_key = index_key(reading)
+        matching: "list[NoteId]" = []
+        for note_id in found:
+            note_reading = self.reading_of.get(note_id)
+            # None is a notetype with no reading field at all, which a `reading:R` term cannot
+            # match however R is spelled
+            if note_reading is None or index_key(note_reading) != reading_key:
+                continue
+            sort_value = self.sort_of.get(note_id, "")
+            if not MEANING_MARKER_RE.search(sort_value):
+                continue
+            if GROUP_EXCLUDED_RE.search(sort_value):
+                continue
+            matching.append(note_id)
+        return sorted(matching)
 
 
 def _read_notes(fields: WordFields) -> "tuple[dict[int, FieldOrds], list[tuple[int, int, str]]]":
