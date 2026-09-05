@@ -6,5 +6,6 @@
   "hide_review_details": false,
   "hide_review_unchanged": false,
   "dedupe_sync_groups": true,
+  "disperse_siblings_default": false,
   "rules": []
 }

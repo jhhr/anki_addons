@@ -19,7 +19,10 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
         return
 
     rules = get_applicable_rules(
-        config.rules, note_type["name"], card_type_name_for(card), on_review=True
+        config.rules_for_model(note_type),
+        note_type["name"],
+        card_type_name_for(card),
+        on_review=True,
     )
     if not rules:
         return

@@ -145,6 +145,10 @@ def run_note(monkeypatch, cards, rules, covered_by, show_unchanged=True):
         def __init__(self, rules):
             self.rules = rules
 
+        def rules_for_model(self, _model):
+            # The default sibling toggle is off here: only the rules given run.
+            return self.rules
+
     result = logic.BrowserRunResult()
     logic._disperse_browser_note(1, FakeConfig(rules), {}, 0, set(), result)
     return anchors, result

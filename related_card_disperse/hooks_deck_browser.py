@@ -28,7 +28,7 @@ def run_disperse_on_deck(deck_id: int) -> None:
     """
     config = Config()
     config.load()
-    if not config.rules:
+    if not config.has_any_rules():
         tooltip("No rules configured")
         return
     run_deck_bury_disperse_in_background(deck_id, config, _show_result)

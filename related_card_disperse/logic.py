@@ -584,7 +584,7 @@ def run_sync_grouped(
         if not note_type:
             continue
         sync_rules = get_applicable_rules(
-            config.rules,
+            config.rules_for_model(note_type),
             note_type["name"],
             card_type_name_for(reviewed_card),
             on_sync=True,
@@ -776,7 +776,9 @@ def _disperse_browser_card(
     note_type = card.note().note_type()
     if not note_type:
         return
-    rules = get_applicable_rules(config.rules, note_type["name"], card_type_name_for(card))
+    rules = get_applicable_rules(
+        config.rules_for_model(note_type), note_type["name"], card_type_name_for(card)
+    )
     if not rules:
         return
     result.anchor_cards += 1
@@ -812,7 +814,9 @@ def _disperse_browser_note(
         return
 
     card_type_names = {cid: card_type_name_for(card) for cid, card in cards.items()}
-    runs = plan_note_rule_runs(config.rules, note_type["name"], card_type_names, ordered)
+    runs = plan_note_rule_runs(
+        config.rules_for_model(note_type), note_type["name"], card_type_names, ordered
+    )
     if not runs:
         return
     result.notes += 1

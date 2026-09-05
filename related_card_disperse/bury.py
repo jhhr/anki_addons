@@ -215,7 +215,9 @@ def session_relations(
         note_type = card.note().note_type()
         if not note_type:
             continue
-        rules = get_applicable_rules(config.rules, note_type["name"], card_type_name_for(card))
+        rules = get_applicable_rules(
+            config.rules_for_model(note_type), note_type["name"], card_type_name_for(card)
+        )
         for rule in rules:
             rule_runs += 1
             # No cap: the cap bounds how many cards one run will reschedule,
