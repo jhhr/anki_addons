@@ -165,10 +165,18 @@ def summarize_outcome(
     capped_out: int,
     updated: int,
     outcome: str,
+    backlogged: int = 0,
 ) -> str:
+    """One line per rule run. ``backlogged`` is only spelled out when it bit.
+
+    A backlogged card is one the run pinned rather than moved, so a run that
+    reports a large candidate count and a small updated count is not losing
+    cards silently -- that field says where they went.
+    """
+    backlog_part = f"backlogged={backlogged}, " if backlogged else ""
     return (
         f"{rule_name}: candidates={candidates}, filtered={filtered_out}, "
-        f"capped={capped_out}, updated={updated}, outcome={outcome}"
+        f"capped={capped_out}, {backlog_part}updated={updated}, outcome={outcome}"
     )
 
 

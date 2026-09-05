@@ -453,7 +453,13 @@ def _noop_outcome_text(plan: DispersePlan) -> str:
     by even a day -- their due ranges are too narrow, or too crowded, to pull
     apart. That is the opposite of the ranges not overlapping, which is the easy
     case: cards already spread out score a large gap.
+
+    Backlog is checked first because it is the answer whenever it applies: a
+    group whose cards are all pinned has no arrangement to look for, and saying
+    the ranges were too tight would be technically true and useless.
     """
+    if plan.backlogged and len(plan.backlogged) >= len(plan.card_ids):
+        return "skipped(backlogged; due dates do not order these decks)"
     if plan.min_gap == 0:
         return "skipped(due ranges too tight to separate)"
     return "skipped(already optimally placed)"
@@ -507,6 +513,7 @@ def run_rule_for_reviewed_card(
                 query_result.capped_count,
                 0,
                 _noop_outcome_text(plan),
+                len(plan.backlogged),
             ),
             0,
             query_result.raw_ids,
@@ -520,7 +527,8 @@ def run_rule_for_reviewed_card(
             query_result.filtered_count,
             query_result.capped_count,
             len(details),
-            "dispersed",
+            "dispersed" if details else _noop_outcome_text(plan),
+            len(plan.backlogged),
         )
         + "<br>"
         + "<br>".join(details),
@@ -629,6 +637,7 @@ def run_sync_grouped(
                     capped_count,
                     0,
                     _noop_outcome_text(plan),
+                    len(plan.backlogged),
                 )
             )
             continue
@@ -640,7 +649,8 @@ def run_sync_grouped(
                 0,
                 capped_count,
                 len(details),
-                "dispersed",
+                "dispersed" if details else _noop_outcome_text(plan),
+                len(plan.backlogged),
             )
         )
 
