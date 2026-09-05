@@ -113,6 +113,7 @@ class StubClock:
 REAL_SYSTEM_MEMORY = conc.system_memory
 REAL_PROCESS_MEMORY = conc.process_memory
 REAL_LOAD_PER_TASK_ESTIMATES = conc.load_per_task_estimates
+REAL_SAVE_PER_TASK_ESTIMATE = conc.save_per_task_estimate
 
 
 def install_memory_stubs(memory: StubMemory) -> None:
@@ -120,12 +121,17 @@ def install_memory_stubs(memory: StubMemory) -> None:
     conc.process_memory = memory.process_memory
     # Never read the real user_files estimates: they differ per machine and per run
     conc.load_per_task_estimates = lambda: {}
+    # ...and never write them. The gate persists a measurement as soon as it has one rather
+    # than only from finish(), so without this every gate test that measures anything leaves
+    # a "test op" entry in the add-on's own user_files.
+    conc.save_per_task_estimate = lambda op_key, value: None
 
 
 def restore_memory_probes() -> None:
     conc.system_memory = REAL_SYSTEM_MEMORY
     conc.process_memory = REAL_PROCESS_MEMORY
     conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
+    conc.save_per_task_estimate = REAL_SAVE_PER_TASK_ESTIMATE
 
 
 class MemoryStubs:
@@ -683,9 +689,10 @@ class EstimatesFileTests(MemoryStubTestCase):
         self.path = Path(self._tempdir.name) / "memory_estimates.json"
         self._real_path = conc._estimates_path
         conc._estimates_path = lambda: self.path
-        # Undo MemoryStubTestCase's stub - these tests exercise the real reader, pointed at a
-        # temporary file rather than the add-on's own user_files
+        # Undo MemoryStubTestCase's stubs - these tests exercise the real reader and writer,
+        # pointed at a temporary file rather than the add-on's own user_files
         conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
+        conc.save_per_task_estimate = REAL_SAVE_PER_TASK_ESTIMATE
 
     def tearDown(self):
         conc._estimates_path = self._real_path
@@ -1297,6 +1304,244 @@ class GateAdaptationTests(GateTestCase):
         for _ in range(4):
             await gate._adapt_once()
         self.assertEqual(gate.limit, conc.MIN_CONCURRENCY)
+
+
+class GateMemoryPressureTests(GateTestCase):
+    """Backing off from memory, telling the memory the limit owns from the memory it does not.
+
+    Nine rounds of measurement passed a green suite while this path walked one machine's runs
+    to a limit of 1 and held them there for 86% of their wall clock, because every test above
+    asserts on a single tick of a machine with 16 GB free. These are the sequences.
+    """
+
+    async def run_pressure(self, gate, ticks=1, drained=True):
+        """Adapt ticks against a machine that is short of memory throughout.
+
+        `drained` is whether the tasks holding the slots a cut took away have finished. The
+        gate cannot evict them, so until they have, the cut it just made has not landed.
+        """
+        for _ in range(ticks):
+            if drained:
+                gate.in_flight = min(gate.in_flight, gate.limit)
+            self.clock.advance(conc.ADAPT_INTERVAL_SECONDS)
+            await gate._adapt_once()
+
+    async def test_the_first_cut_is_still_made(self):
+        # The response is not being switched off: a machine short of memory still gets fewer
+        # tasks out of this run
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        await self.run_pressure(gate)
+        self.assertEqual(gate.limit, 32)
+
+    async def test_a_cut_that_has_not_drained_yet_is_not_repeated(self):
+        """The first cause of the sawtooth: eight halvings in fourteen seconds.
+
+        Lowering the limit evicts nothing, it stops new acquires. Until the tasks holding the
+        extra slots have finished, the machine has not been asked the question, let alone
+        answered it.
+        """
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = 64
+        self.memory.available = 100 * MB
+
+        await self.run_pressure(gate)
+        self.assertEqual(gate.limit, 32)
+        # in_flight stays at 64 throughout: nothing has finished
+        await self.run_pressure(gate, ticks=8, drained=False)
+        self.assertEqual(gate.limit, 32)
+
+    async def test_a_machine_whose_memory_the_run_does_not_own_is_cut_once_and_no_further(self):
+        """Round 9 tablet problem, as a sequence.
+
+        `available` sat under the reserve for the rest of the run whatever the limit did:
+        nineteen minutes at a limit of 1 recovered 0.9 GB of a 7.0 GB RSS, and the ramp back
+        out ran with RSS flat. The controller was reading a quantity its one actuator does not
+        move, so it halved 32 times and reached a limit it then held for 86.4% of the run.
+        """
+        gate = self.make_gate(limit=261, max_limit=261)
+        gate.in_flight = gate.limit
+        self.memory.available = int(1.6 * GB)  # under the 3.2 GB reserve, and staying there
+
+        await self.run_pressure(gate, ticks=60)
+
+        # One cut, then held: the machine never answered, so it was never asked again
+        self.assertEqual(gate.limit, 130)
+        self.assertGreater(gate.limit, conc.MIN_AUTO_CONCURRENCY)
+
+    async def test_a_cut_that_does_free_memory_is_repeated(self):
+        # The other half of the same test: where lowering the limit is what frees the memory,
+        # the loop closes and the response goes on until the machine is comfortable
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+
+        await self.run_pressure(gate)
+        self.assertEqual(gate.limit, 32)
+        for expected in (16, 8, 4):
+            self.memory.available += 2 * conc.PRESSURE_RESPONSE_MIN_GAIN
+            await self.run_pressure(gate)
+            self.assertEqual(gate.limit, expected)
+
+    async def test_the_machine_arm_stops_at_the_least_concurrency_worth_sizing_for(self):
+        """MIN_AUTO_CONCURRENCY is the floor max_concurrency_for already refuses to go below.
+
+        The pressure path floored at MIN_CONCURRENCY, so the controller was allowed to drive a
+        run four times below the point the same module calls the minimum worth sizing an op
+        for. On work that is mostly parked on a socket, a limit of 1 is not a memory saving,
+        it is a stall.
+        """
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        for _ in range(10):
+            # Every cut appears to work, so the response is never held back
+            self.memory.available += 2 * conc.PRESSURE_RESPONSE_MIN_GAIN
+            await self.run_pressure(gate)
+        self.assertEqual(gate.limit, conc.MIN_AUTO_CONCURRENCY)
+
+    async def test_the_run_own_memory_against_its_own_cap_still_goes_all_the_way_down(self):
+        # The arm the limit does own. Here halving really is the remedy, so it keeps the lower
+        # floor and is never held back for want of a response.
+        gate = self.make_gate(config={"memory_limit": 900})
+        gate.limit, gate.max_limit = 64, 256
+        gate.in_flight = gate.limit
+        self.memory.rss = 1000 * MB
+        for _ in range(10):
+            await self.run_pressure(gate)
+        self.assertEqual(gate.limit, conc.MIN_CONCURRENCY)
+
+    async def test_recovery_walks_back_to_the_limit_that_tripped_rather_than_sprinting(self):
+        """Geometric recovery against geometric collapse is a stable and useless cycle.
+
+        One measured run climbed 1 to 151 in forty seconds and fell back in twelve: forty
+        useful seconds per cycle, then minutes of waiting for another process to free memory.
+        """
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        await self.run_pressure(gate)
+        # Latched where the cut left the run, not at the limit that tripped: latching at the
+        # latter lets geometric growth put the run back onto it in four ticks, which is the
+        # same sawtooth with a smaller amplitude rather than no sawtooth.
+        self.assertEqual(gate.pressure_ceiling, 32)
+
+        self.memory.available = 16 * GB
+        for _ in range(6):
+            gate.in_flight = gate.limit
+            self.clock.advance(conc.ADAPT_INTERVAL_SECONDS)
+            await gate._adapt_once()
+        # Six ticks is six slots, not six geometric steps. The round 9 ramp went 1 -> 151 in
+        # forty seconds because nothing stood between the limit and max_limit.
+        self.assertEqual(gate.limit, 38)
+
+    async def test_a_fresh_episode_measures_its_own_response(self):
+        # A hold is not permanent: memory that comes back and goes again is a new question
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        await self.run_pressure(gate, ticks=5)
+        self.assertEqual(gate.limit, 32)
+
+        # Idle, so this tick clears the episode without also growing the limit
+        self.memory.available = 16 * GB
+        gate.in_flight = 0
+        self.clock.advance(conc.ADAPT_INTERVAL_SECONDS)
+        await gate._adapt_once()
+        self.assertIsNone(gate._pressure_probe)
+
+        self.memory.available = 100 * MB
+        await self.run_pressure(gate)
+        self.assertEqual(gate.limit, 16)
+
+    async def test_the_progress_dialog_says_where_memory_capped_the_run(self):
+        gate = self.make_gate(limit=64, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        await self.run_pressure(gate)
+        self.assertIn("Memory cap 32", gate.status_text())
+
+
+class GateCeilingRefitTests(GateTestCase):
+    """The ceiling tracks free memory for the whole run, not just the instant of construction.
+
+    `max_limit` used to move only from `_apply_estimate`, which stops having anything to say
+    once measuring stops at 30 seconds. One measured 72-minute run contains exactly one
+    ceiling change, at 29 seconds; four runs of the same work on the same tablet were given
+    ceilings of 4, 6, 20 and 69 purely from what was free when each one launched.
+    """
+
+    async def test_a_machine_that_frees_memory_gets_a_higher_ceiling(self):
+        self.memory.total = 16 * GB
+        self.memory.available = 3 * GB
+        gate = self.make_gate()
+        launched_with = gate.max_limit
+
+        self.memory.available = 12 * GB
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertGreater(gate.max_limit, launched_with)
+
+    async def test_a_machine_that_fills_up_gets_a_lower_ceiling_and_the_limit_follows(self):
+        self.memory.total = 16 * GB
+        self.memory.available = 12 * GB
+        gate = self.make_gate(limit=200)
+
+        # Still above the reserve, so this is not the pressure path, just less to spend
+        self.memory.available = 4 * GB
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertLess(gate.max_limit, 200)
+        self.assertLessEqual(gate.limit, gate.max_limit)
+
+    async def test_a_reading_that_barely_moves_leaves_the_ceiling_alone(self):
+        # Free memory jitters by a few megabytes between ticks; without hysteresis the ceiling
+        # and the log line would move on nearly every one of them
+        self.memory.total = 16 * GB
+        self.memory.available = 12 * GB
+        gate = self.make_gate()
+        before = gate.max_limit
+
+        self.memory.available += 8 * MB
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertEqual(gate.max_limit, before)
+
+    async def test_a_probe_that_stops_answering_does_not_shrink_the_ceiling(self):
+        # No reading is not the same as a machine that has filled up. The ceiling budgeted
+        # from the last real reading stands.
+        gate = self.make_gate(limit=16, max_limit=64)
+        self.memory.probe_failed = True
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertEqual(gate.max_limit, 64)
+
+    async def test_a_configured_maximum_still_caps_a_re_read_ceiling(self):
+        self.memory.total = 16 * GB
+        self.memory.available = 2 * GB
+        gate = self.make_gate(config={"max_concurrent_requests": 10})
+        self.memory.available = 15 * GB
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertEqual(gate.max_limit, 10)
+
+    async def test_a_measurement_is_kept_as_soon_as_it_is_made(self):
+        """A run that is killed used to throw its measurement away.
+
+        `persist()` ran only from `finish()`, so the machine whose runs get killed - the slow
+        one, the one that most needs to know what the op costs - was the one that never
+        learned it.
+        """
+        saved: list = []
+        conc.save_per_task_estimate = lambda op_key, value: saved.append((op_key, value))
+        self.memory.total = 8 * GB
+        self.memory.available = 8 * GB
+        gate = self.make_gate()
+
+        self.measure_cost(gate, 4 * MB)
+
+        self.assertEqual(saved, [("test op", 4 * MB)])
 
     async def test_the_gate_recovers_once_the_pressure_passes(self):
         """Backing off has to be temporary, which is why the probe must report current usage.

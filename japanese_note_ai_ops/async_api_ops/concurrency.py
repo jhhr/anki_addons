@@ -134,6 +134,21 @@ TASK_QUEUE_DEPTH = 4
 # once latches a ceiling rather than skipping one tick of growth - see _adapt_once.
 COLLECTION_SATURATED = 0.85
 
+# What the machine's free memory has to rise by before a cut to the limit counts as having
+# worked. The pressure response is a control loop, and on a machine where the run's own RSS is
+# not what crossed the reserve line its actuator does not move its input: one measured tablet
+# run halved the limit 32 times, took it 261 -> 1 in fourteen seconds, and then held 1 for
+# nineteen minutes while RSS fell 7.0 GB -> 6.1 GB entirely because other processes let go.
+# So the second cut of an episode has to show that the first one bought something. 64MB is
+# well above the noise in a `available` reading and well below what dropping half the limit
+# would free if the limit were really what was holding the memory.
+PRESSURE_RESPONSE_MIN_GAIN = 64 * MB
+# How far the ceiling re-read off free memory has to move before it is worth applying. The
+# budget is recomputed every tick now rather than once at construction, and free memory
+# jitters by a few megabytes between two ticks; without this the ceiling - and with it the
+# log - would move on nearly every one of them.
+CEILING_HYSTERESIS = 0.10
+
 # How many CPU-bound sections may run at once, over and above the core count. The gate's own
 # limit is calibrated for work that waits - a collection turn, a request on a socket - where a
 # thread costs nothing while it is parked, so an over-generous ceiling is free. MDX dictionary
@@ -1028,6 +1043,14 @@ class ConcurrencyGate:
         self.limit, self.max_limit, self.adaptive = concurrency_limits(
             config, self.estimator.estimate
         )
+        # The ceiling as free memory last implied it. Kept beside max_limit so the adapt loop
+        # can tell a ceiling that has genuinely moved from one that has not: it re-reads the
+        # budget every tick, and comparing against what it last computed rather than against
+        # max_limit itself means a re-read that agrees with the last one leaves the ceiling
+        # exactly as it found it. This is what stops the run being decided by the single
+        # instant the gate was constructed - four runs of the same work on the same tablet got
+        # ceilings of 4, 6, 20 and 69 purely from what happened to be free at launch.
+        self._ceiling_from_budget = self.max_limit
 
         # Told when the ceiling rises. The connection pool is sized from the ceiling and is
         # created before the op has been measured, so without this it keeps the size that came
@@ -1043,6 +1066,15 @@ class ConcurrencyGate:
         # The highest limit the collection has shown it can serve this run, once it has shown
         # anything. None until the collection first reads saturated; see _adapt_once.
         self.collection_ceiling: Optional[int] = None
+        # The same shape for memory: the limit that was in force when the machine last crossed
+        # a memory line, so recovery walks back one slot per tick instead of sprinting to a
+        # ceiling that is known to trip it. None until pressure is first seen.
+        self.pressure_ceiling: Optional[int] = None
+        # (limit left by the last cut, free memory read at that moment). The evidence for
+        # whether cutting the limit does anything to the reading that triggered it; None
+        # between pressure episodes. See _respond_to_pressure.
+        self._pressure_probe: Optional[tuple[int, int]] = None
+        self._pressure_held = False
         self._waiters: deque[asyncio.Future] = deque()
         self._adapt_task: Optional[asyncio.Task] = None
         self._aborted = False
@@ -1192,20 +1224,62 @@ class ConcurrencyGate:
         """Refit what a task costs, and move the ceiling if the answer changed."""
         if self.estimator.refit() is None:
             return
+        # Written out as soon as it is known rather than only from finish(). A run that is
+        # killed - which on a slow machine is how the long ones tend to end - used to throw
+        # its measurement away and leave the next run starting from the stale stored value,
+        # so the machine that most needs to know what this op costs was the one that never
+        # learned it. Measuring stops at MEASURE_SECONDS, so this writes a handful of times
+        # at the very start of a run and never again.
+        self.estimator.persist()
         if not self.adaptive:
             # Nothing to adapt against; we still learn the cost for next time
             return
         new_max = max_concurrency_for(self.estimator.estimate, self.configured_max)
+        self._set_max_limit(
+            new_max, f"per-task memory now {format_bytes(int(self.estimator.estimate))}"
+        )
+
+    def _refresh_ceiling(self) -> None:
+        """Re-read what free memory allows, and move the ceiling if it has really changed.
+
+        `max_limit` used to be computed once, inside `__init__`, from the free memory of that
+        instant, and then only ever revisited by `_apply_estimate` - which stops having
+        anything to say once measuring stops at MEASURE_SECONDS. One measured 72-minute run
+        contains exactly one ceiling change, at 29 seconds. That makes the whole run a
+        function of what happened to be free at launch: four runs of the same work on the same
+        tablet were given ceilings of 4, 6, 20 and 69.
+
+        The budget is one syscall the adapt tick has already made, so re-reading it is free.
+        Comparing the new figure against the last one this computed - rather than against
+        `max_limit` - is deliberate: it makes this a detector of change in the machine rather
+        than an overwriter of a ceiling something else set.
+        """
+        if not self.adaptive:
+            return
+        if memory_budget() is None:
+            # No reading this tick. The ceiling budgeted from the last real one still stands;
+            # a probe that has started failing must not be read as a machine that has filled.
+            return
+        new_max = max_concurrency_for(self.estimator.estimate, self.configured_max)
+        moved = abs(new_max - self._ceiling_from_budget)
+        if moved == 0 or moved < self._ceiling_from_budget * CEILING_HYSTERESIS:
+            return
+        self._ceiling_from_budget = new_max
+        self._set_max_limit(new_max, f"free memory now {format_bytes(self.available_memory)}")
+
+    def _set_max_limit(self, new_max: int, why: str) -> None:
+        """Move the ceiling, and the limit with it when the ceiling has come down past it."""
         if new_max == self.max_limit:
             return
         logger.debug(
-            "Per-task memory now %s, adjusting concurrency ceiling %d -> %d",
-            format_bytes(int(self.estimator.estimate)),
+            "%s, adjusting concurrency ceiling %d -> %d",
+            why[:1].upper() + why[1:],
             self.max_limit,
             new_max,
         )
         previous_max = self.max_limit
         self.max_limit = new_max
+        self._ceiling_from_budget = new_max
         if self.limit > self.max_limit:
             self.limit = self.max_limit
         if self.on_ceiling_changed and new_max > previous_max:
@@ -1253,24 +1327,46 @@ class ConcurrencyGate:
         collection = collection_pressure.sample()
         self.collection_use = collection[0] if collection else 0.0
 
-        under_pressure = (available is not None and self.reserve and available < self.reserve) or (
-            rss is not None and self.memory_limit and rss > self.memory_limit
+        # One line per tick, unconditionally. Everything else here logs only when it acts, and
+        # the two states worth measuring are both states in which nothing acts: a gate pinned
+        # at its ceiling stops assessing the collection, and a gate pinned at MIN_CONCURRENCY
+        # under pressure stops moving the limit. Both fall silent, and a silence in the
+        # raising/lowering stream reads as calm - one measured run's worst stall was 23
+        # minutes and appears in that stream as a gap between timestamps. So the collection
+        # share, which is sampled every tick anyway and otherwise reaches only the progress
+        # dialog, has never been in a log across nine rounds of reading them.
+        logger.debug(
+            "Gate tick: %d/%d in flight, ceiling %d, collection %.0f%% (%.3fs per turn),"
+            " avail=%s rss=%s, caps collection=%s memory=%s",
+            self.in_flight,
+            self.limit,
+            self.max_limit,
+            100 * self.collection_use,
+            collection[1] if collection else 0.0,
+            format_bytes(available),
+            format_bytes(rss),
+            self.collection_ceiling,
+            self.pressure_ceiling,
         )
 
-        if under_pressure:
-            new_limit = max(MIN_CONCURRENCY, self.limit // 2)
-            if new_limit != self.limit:
-                logger.debug(
-                    "Memory pressure (avail=%s rss=%s), lowering concurrency %d -> %d",
-                    format_bytes(available),
-                    format_bytes(rss),
-                    self.limit,
-                    new_limit,
-                )
-                # Tasks already running keep their slot; the lower limit takes effect as they
-                # finish and waiting tasks stay blocked until enough have drained.
-                self.limit = new_limit
+        rss_over_limit = bool(rss is not None and self.memory_limit and rss > self.memory_limit)
+        available_short = bool(
+            available is not None and self.reserve and available < self.reserve
+        )
+
+        if rss_over_limit or available_short:
+            self._respond_to_pressure(available, rss, owned=rss_over_limit)
             return
+
+        # Out of the episode. The next one measures its own response from scratch rather than
+        # against a reading from whenever the last one happened to end.
+        self._pressure_probe = None
+        self._pressure_held = False
+
+        # Only once the machine is comfortable: under pressure the response below owns the
+        # limit, and a budget of nearly nothing would otherwise drop the ceiling onto the
+        # limit before the halving had been judged.
+        self._refresh_ceiling()
 
         # Only grow when the gate itself is the bottleneck; if tasks aren't queueing up, a
         # bigger limit wouldn't be used anyway.
@@ -1308,9 +1404,19 @@ class ConcurrencyGate:
                 # genuinely stopped being the constraint - the run's searches replaced by an
                 # index, say - keeps reading idle, and half a minute of that is 15 slots.
                 self.collection_ceiling += 1
+            if self.pressure_ceiling is not None:
+                # The same shape, for the same reason. Geometric recovery from 1 against
+                # geometric collapse from the ceiling is a stable and useless cycle: one
+                # measured run climbed 1 -> 151 in forty seconds and fell back in twelve, so
+                # it got forty useful seconds per cycle and then waited minutes for some other
+                # process to free memory. Walking back one slot at a time means the ceiling
+                # that tripped the machine is approached rather than jumped to.
+                self.pressure_ceiling += 1
             ceiling = self.max_limit
             if self.collection_ceiling is not None:
                 ceiling = min(ceiling, self.collection_ceiling)
+            if self.pressure_ceiling is not None:
+                ceiling = min(ceiling, self.pressure_ceiling)
             if self.limit >= ceiling:
                 return
             previous = self.limit
@@ -1324,6 +1430,103 @@ class ConcurrencyGate:
                 ceiling,
             )
 
+    def _respond_to_pressure(
+        self, available: Optional[int], rss: Optional[int], owned: bool
+    ) -> None:
+        """Back off from a memory reading, but only as far as backing off demonstrably helps.
+
+        There are two pressure readings and the limit only owns one of them. `rss >
+        memory_limit` is the run's own memory against a cap the user set, and halving the
+        limit is exactly the right response: fewer tasks, less of the memory those tasks
+        allocated. `available < reserve` is the *machine's* free memory, and on a machine
+        where the run is not what is consuming it, halving is a control loop whose actuator
+        does not move its input. One measured tablet run halved 32 times, walked 261 -> 1 in
+        fourteen seconds, and then sat at a limit of 1 for 86.4% of its wall clock; the
+        estimator, asked what a task cost, had answered by clamping up from a fitted 480 KB,
+        which is the fit's way of saying it can find no per-task cost at all. Nineteen
+        straight minutes at limit 1 recovered 0.9 GB of a 7.0 GB RSS, and the ramp back out
+        took the limit 1 -> 151 with RSS flat. RSS was not a function of in_flight, so the one
+        quantity the controller can move was not the one it was reading.
+
+        So on that arm the first cut is made and then *measured*: the next cut waits until the
+        previous one has actually drained, and then until free memory has actually risen by
+        it. Neither test passing means the machine's memory is not the run's to give back, and
+        the run is left where it is rather than being walked down to a limit of 1 - which on
+        work that is mostly parked on a socket is not a memory saving, it is a stall.
+
+        The floor differs for the same reason. `MIN_AUTO_CONCURRENCY` is what
+        `max_concurrency_for` already treats as the least concurrency worth sizing an op for,
+        and the machine arm has no business driving the run four times below it. The arm that
+        the limit does own keeps `MIN_CONCURRENCY`: there, cutting to 1 is a real remedy.
+        """
+        held = None if owned else self._why_not_cut_again(available)
+        if held is not None:
+            if not self._pressure_held:
+                # Once per episode: the reason does not change from tick to tick, and this is
+                # the stretch that can last for tens of minutes.
+                self._pressure_held = True
+                logger.debug(
+                    "Memory pressure persists (avail=%s rss=%s) but %s; holding concurrency"
+                    " at %d rather than cutting again",
+                    format_bytes(available),
+                    format_bytes(rss),
+                    held,
+                    self.limit,
+                )
+            return
+
+        floor = MIN_CONCURRENCY if owned else MIN_AUTO_CONCURRENCY
+        # min() with the current limit because the floor is a floor and not a target: a gate
+        # already below it must not be raised by the pressure response of all things.
+        new_limit = min(self.limit, max(floor, self.limit // 2))
+        if new_limit != self.limit:
+            logger.debug(
+                "Memory pressure (avail=%s rss=%s, %s), lowering concurrency %d -> %d",
+                format_bytes(available),
+                format_bytes(rss),
+                "the run's own" if owned else "the machine's",
+                self.limit,
+                new_limit,
+            )
+            # Tasks already running keep their slot; the lower limit takes effect as they
+            # finish and waiting tasks stay blocked until enough have drained.
+            self.limit = new_limit
+        # Recovery starts from where the cut left the run, not from the limit that tripped the
+        # machine: latching at the latter lets geometric growth put the run straight back onto
+        # it in three ticks, which is the sawtooth with a smaller amplitude rather than no
+        # sawtooth. Walked up one slot per comfortable tick in _adapt_once, so the tripping
+        # limit is approached over half a minute and the next episode re-latches below it.
+        self.pressure_ceiling = (
+            new_limit if self.pressure_ceiling is None else min(self.pressure_ceiling, new_limit)
+        )
+        self._pressure_probe = (self.limit, available if available is not None else 0)
+        self._pressure_held = False
+
+    def _why_not_cut_again(self, available: Optional[int]) -> Optional[str]:
+        """Why this tick must not halve the limit again, or None if it may.
+
+        Two gates, in the order a control loop has to apply them: the actuator has to have
+        moved before its effect can be read, and then the effect has to be there.
+        """
+        if self._pressure_probe is None:
+            return None
+        _, available_at_cut = self._pressure_probe
+        if self.in_flight > self.limit:
+            # Lowering the limit does not evict anything; it stops new acquires. Until the
+            # tasks holding the extra slots have finished, the machine has not yet been asked
+            # the question, let alone answered it. This alone is most of the sawtooth: eight
+            # halvings in fourteen seconds is eight cuts made before the first one landed.
+            return f"{self.in_flight} tasks are still draining to a limit of {self.limit}"
+        if available is None:
+            return None
+        gained = available - available_at_cut
+        if gained >= PRESSURE_RESPONSE_MIN_GAIN:
+            return None
+        return (
+            f"the last cut freed nothing the run owns (avail"
+            f" {format_bytes(available_at_cut)} -> {format_bytes(available)})"
+        )
+
     def status_text(self) -> str:
         """Short description of the gate's state, for the progress dialog."""
         text = f"{self.in_flight}/{self.limit}"
@@ -1335,4 +1538,6 @@ class ConcurrencyGate:
             text += f" | Collection {self.collection_use:.0%}"
         if self.collection_ceiling is not None:
             text += f" (cap {self.collection_ceiling})"
+        if self.pressure_ceiling is not None:
+            text += f" | Memory cap {self.pressure_ceiling}"
         return text
