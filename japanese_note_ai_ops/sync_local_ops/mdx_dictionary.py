@@ -623,23 +623,23 @@ class AnkiMDXHelper:
             return None
 
         # A lookup is up to 28 full scans of the dictionaries' key tables and was measured to
-        # be the entire length of a bulk run, so the same word is never looked up twice. The
-        # memo is consulted before the CPU gate below, since a remembered answer needs no core;
-        # see mdx_memo for why the results can be kept.
-        key = (word, reading, pick_dictionary, max_length)
-        result = self.memo.get(
-            key, lambda: self._build_definition_text(word, reading, pick_dictionary, max_length)
+        # be the entire length of a bulk run, so the same word is never scanned for twice. The
+        # memo is consulted before the CPU gate in _scan, since a remembered answer needs no
+        # core; see mdx_memo for why the results can be kept and how one scan serves the two
+        # callers' differing `pick_dictionary`. Only the scan is memoised: `max_length` and the
+        # formatting are applied on the way out, so they cost nothing and stay out of the key.
+        result = self.memo.lookup(
+            word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
         )
         logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
-        return result.value
+        return self._format_definition_text(word, reading, result.value, max_length)
 
-    def _build_definition_text(
+    def _scan(
         self,
         word: str,
         reading: Optional[str],
         pick_dictionary: PickDictionaryResult,
-        max_length: Optional[int],
-    ) -> Union[str, None]:
+    ) -> list[dict[str, str]]:
         """Scan the dictionaries for real. Called at most once per distinct lookup."""
         assert self.multi_dict is not None
 
@@ -666,6 +666,16 @@ class AnkiMDXHelper:
                     pick_dictionary=pick_dictionary,
                 )
 
+        return results
+
+    @staticmethod
+    def _format_definition_text(
+        word: str,
+        reading: Optional[str],
+        results: Optional[list[dict[str, str]]],
+        max_length: Optional[int],
+    ) -> Union[str, None]:
+        """Lay a result list out as plain text. Cheap, so it runs on every ask, hit or not."""
         if not results:
             return None
 
