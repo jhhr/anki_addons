@@ -129,9 +129,24 @@ def _mismatch(manifest: dict, where: str) -> Optional[str]:
             f"but Anki is running Python {running}"
         )
     tag = platform_tag()
+    platforms = manifest.get("platforms")
+    if manifest.get("rebuilt_locally"):
+        # A locally rebuilt tree was built by this machine, for this machine, so "do we ship a
+        # build for this platform" is not a question to ask of it. Asking it anyway is wrong
+        # in exactly the case the rebuild exists for: on a platform _TAGS does not name,
+        # platform_tag() is None and so is the tag the rebuild recorded, so the tree that fits
+        # best was judged unfit - and since a successful rebuild clears the record that stops
+        # the offer coming back, the same rebuild was offered again at every startup, forever.
+        #
+        # Two known and differing tags still mean the tree came from somewhere else, which
+        # user_files can do: it is the one directory Anki carries across an addon update, and
+        # people copy their Anki folder between machines.
+        built_on = platforms[0] if isinstance(platforms, list) and platforms else None
+        if tag is not None and built_on is not None and built_on != tag:
+            return f"{where} was built on {built_on}, but this machine is {tag}"
+        return None
     if tag is None:
         return f"{where} ships no build for {sys.platform}/{platform.machine()}"
-    platforms = manifest.get("platforms")
     if not isinstance(platforms, list) or tag not in platforms:
         return f"{where} has no build for {tag}"
     return None

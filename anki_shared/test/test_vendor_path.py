@@ -103,6 +103,30 @@ class TestVendorHealth:
         write_manifest(user(addon), python_version=other_python_version())
         assert "rebuilt" in (vendor_path.vendor_health(str(addon)) or "")
 
+    def test_a_rebuilt_tree_fits_a_platform_no_build_is_shipped_for(self, addon, monkeypatch):
+        """It was built here, so there is no shipped platform tag to hold it to.
+
+        Holding it to one was wrong in exactly the case a rebuild exists for: with no tag for
+        this machine, the rebuild records None and the check then rejects the tree that fits
+        best. A successful rebuild also clears the record that stops the offer coming back, so
+        the same rebuild was offered again at every startup, forever.
+        """
+        monkeypatch.setattr(vendor_path, "platform_tag", lambda: None)
+        write_manifest(user(addon), platforms=[None], rebuilt_locally=True)
+        assert vendor_path.vendor_health(str(addon)) is None
+
+    def test_a_rebuilt_tree_from_another_machine_wants_a_rebuild(self, addon):
+        """user_files is what Anki carries across an update, and what people copy about."""
+        write_manifest(user(addon), platforms=["some_other_platform"], rebuilt_locally=True)
+        assert "some_other_platform" in (vendor_path.vendor_health(str(addon)) or "")
+
+    def test_a_rebuilt_tree_is_still_held_to_the_python_it_was_built_for(self, addon):
+        """The exemption is about platform tags only; the launcher can still move Python."""
+        write_manifest(
+            user(addon), python_version=other_python_version(), rebuilt_locally=True
+        )
+        assert "Python" in (vendor_path.vendor_health(str(addon)) or "")
+
     def test_rebuilt_tree_without_a_manifest_wants_a_rebuild(self, addon):
         """The manifest is written last, so a tree without one is an interrupted rebuild."""
         write_manifest(shipped(addon))
