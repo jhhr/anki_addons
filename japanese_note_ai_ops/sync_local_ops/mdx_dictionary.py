@@ -33,6 +33,32 @@ PREFIX_NEEDS_LIKE = re.compile(r"[A-Za-z%_*]")
 LOWER_KEY_INDEX = "key_lower_index"
 
 
+class MDXLookupError(Exception):
+    """A dictionary could not answer, as distinct from answering "not in here".
+
+    The two used to be the same value. Every SQL path in this module caught its exception,
+    logged it and returned `None` or `[]` - which is byte-identical to what a word genuinely
+    absent from the dictionary returns, and the memo caches absence deliberately, because a
+    miss is the most expensive lookup there is. So a failure became a cached fact.
+
+    It was measured. One run hit 36 `unable to open database file` inside a single 600ms
+    window - something briefly made the add-on directory unreachable - and the log holds the
+    proof rather than the inference: a word errored while being computed under `[all]`, and
+    eight lines later was served from the memo as a hit under `[first]`. Six pairs were
+    poisoned that run. A later run on another machine found a second failure mode with a
+    different errno, `[Errno 22] Invalid argument`, down the same path; two distinct transient
+    failures on two machines is the argument for fixing the class rather than the instance.
+
+    And the memo is process-scoped, not run-scoped - the dictionaries do not change, so its
+    entries stay valid for the life of the process - which means a poisoned entry outlives the
+    run that poisoned it and survives until Anki restarts.
+
+    Retrying is not the fix: a 600ms outage defeats a retry loop as easily as a single attempt.
+    The fix is that this must not be storable. `DefinitionMemo.get` already declines to store
+    anything for a compute that raised, so raising is all it takes.
+    """
+
+
 class MDXDictionary:
     """Efficient MDX dictionary querying using mdict-query's IndexBuilder"""
 
@@ -285,9 +311,13 @@ class MDXDictionary:
 
             logger.debug(f"Query result for '{query}': {result}")
             return result
+        except MDXLookupError:
+            raise
         except Exception as e:
             logger.error(f"Error querying '{query}': {e}")
-            return None
+            raise MDXLookupError(
+                f"querying {query!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
 
     def query_japanese(
         self,
@@ -339,6 +369,12 @@ class MDXDictionary:
 
                         if all_results:
                             return "\n\n".join(all_results)
+            except MDXLookupError:
+                # A dictionary that could not answer is not a strategy that found nothing.
+                # Falling through to strategies 3 and 4 here would let this lookup return
+                # None - "not in any dictionary" - off the back of a failure, and the memo
+                # would keep that answer for the life of the process.
+                raise
             except Exception as e:
                 logger.debug(f"Wildcard search failed for '{word}': {e}")
 
@@ -421,7 +457,9 @@ class MDXDictionary:
                     return keys
         except Exception as e:
             logger.error(f"Error searching for keys containing all words {words}: {e}")
-            return []
+            raise MDXLookupError(
+                f"searching for {words!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
 
     def get_keys_by_prefix(self, prefix: str, max_results: int = 10) -> list[str]:
         """
@@ -456,7 +494,9 @@ class MDXDictionary:
             return keys[:max_results] if keys else []
         except Exception as e:
             logger.error(f"Error getting keys by prefix '{prefix}': {e}")
-            return []
+            raise MDXLookupError(
+                f"getting keys by prefix {prefix!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
 
     def _keys_in_prefix_range(self, prefix: str, max_results: int) -> Optional[list[str]]:
         """The prefix search as a half-open range, or None if a range cannot answer it.
@@ -732,9 +772,24 @@ class AnkiMDXHelper:
         # core; see mdx_memo for why the results can be kept and how one scan serves the two
         # callers' differing `pick_dictionary`. Only the scan is memoised: `max_length` and the
         # formatting are applied on the way out, so they cost nothing and stay out of the key.
-        result = self.memo.lookup(
-            word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
-        )
+        try:
+            result = self.memo.lookup(
+                word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
+            )
+        except MDXLookupError as e:
+            # The run carries on with no definition for this word, exactly as it did before -
+            # the caller's next step either way is to have a model write one. What is different
+            # is that nothing was stored: the same word asked again, by this run or a later one
+            # in the same Anki session, scans again rather than being served this failure as a
+            # fact. See MDXLookupError.
+            logger.error(
+                "MDX lookup failed: '%s' (%s) [%s] - %s; not remembered",
+                word,
+                reading,
+                pick_dictionary,
+                e,
+            )
+            return None
         logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
         return self._format_definition_text(word, reading, result.value, max_length)
 
