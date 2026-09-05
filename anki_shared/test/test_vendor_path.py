@@ -14,6 +14,17 @@ import pytest
 from anki_shared.utils import vendor_path
 
 
+def other_python_version() -> str:
+    """A version that is never the one running, whichever interpreter runs the suite.
+
+    It used to be the literal "3.12", which stopped testing anything the day the interpreter
+    running the tests became 3.12: the manifest matched, the tree came out healthy, and the
+    two tests asserting a rebuild was wanted failed.
+    """
+    major, minor = vendor_path.runtime_python_version().split(".")
+    return f"{major}.{int(minor) + 1}"
+
+
 def write_manifest(lib, **overrides):
     manifest = {
         "python_version": vendor_path.runtime_python_version(),
@@ -56,9 +67,10 @@ class TestVendorHealth:
         assert "no manifest" in (vendor_path.vendor_health(str(addon)) or "")
 
     def test_wrong_python_version_wants_a_rebuild(self, addon):
-        write_manifest(shipped(addon), python_version="3.12")
+        built_for = other_python_version()
+        write_manifest(shipped(addon), python_version=built_for)
         reason = vendor_path.vendor_health(str(addon)) or ""
-        assert "3.12" in reason and "Python" in reason
+        assert built_for in reason and "Python" in reason
 
     def test_missing_python_version_wants_a_rebuild(self, addon):
         write_manifest(shipped(addon))
@@ -88,7 +100,7 @@ class TestVendorHealth:
     def test_a_stale_rebuilt_tree_is_not_rescued_by_a_healthy_shipped_one(self, addon):
         """It is first on sys.path, so it shadows the shipped tree rather than backing it up."""
         write_manifest(shipped(addon))
-        write_manifest(user(addon), python_version="3.12")
+        write_manifest(user(addon), python_version=other_python_version())
         assert "rebuilt" in (vendor_path.vendor_health(str(addon)) or "")
 
     def test_rebuilt_tree_without_a_manifest_wants_a_rebuild(self, addon):
