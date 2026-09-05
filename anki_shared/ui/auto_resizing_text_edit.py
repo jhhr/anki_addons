@@ -1,9 +1,13 @@
+from aqt.qt import QPlainTextEdit, Qt
+
 from .required_text_input import RequiredTextEdit
 
 
 class AutoResizingTextEdit(RequiredTextEdit):
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.textChanged.connect(self.autoResize)
 
     def autoResize(self):
