@@ -8,7 +8,6 @@ from aqt import mw
 from .core import join_quoted_names
 from .shared.interpolate.interpolate_fields import NOTE_ID, intr_format
 
-
 tag = mw.addonManager.addonFromModule(__name__)
 
 # What a new rule starts with: the reviewed note's own cards, i.e. plain
@@ -34,7 +33,9 @@ class RelatedRule(TypedDict):
 class ConfigData(TypedDict):
     version: str
     default_max_related_cards: int
-    show_unchanged_outcome: bool
+    hide_review_report: bool
+    hide_review_details: bool
+    hide_review_unchanged: bool
     dedupe_sync_groups: bool
     rules: list[RelatedRule]
 
@@ -80,7 +81,13 @@ def migrate_data(data: dict) -> ConfigData:
     if "show_unchanged_outcome" not in data and "show_no_overlap_outcome" in data:
         data["show_unchanged_outcome"] = data["show_no_overlap_outcome"]
     data.pop("show_no_overlap_outcome", None)
-    data.setdefault("show_unchanged_outcome", True)
+    # Migrated to hide_review_unchanged (inverted): True = show → False = don't hide.
+    if "show_unchanged_outcome" in data and "hide_review_unchanged" not in data:
+        data["hide_review_unchanged"] = not bool(data["show_unchanged_outcome"])
+    data.pop("show_unchanged_outcome", None)
+    data.setdefault("hide_review_report", False)
+    data.setdefault("hide_review_details", False)
+    data.setdefault("hide_review_unchanged", False)
     data.setdefault("dedupe_sync_groups", True)
     rules = data.get("rules", []) or []
 
@@ -119,7 +126,9 @@ def migrate_data(data: dict) -> ConfigData:
 
     data["rules"] = normalized_rules
     data["default_max_related_cards"] = max(1, int(data["default_max_related_cards"]))
-    data["show_unchanged_outcome"] = bool(data["show_unchanged_outcome"])
+    data["hide_review_report"] = bool(data["hide_review_report"])
+    data["hide_review_details"] = bool(data["hide_review_details"])
+    data["hide_review_unchanged"] = bool(data["hide_review_unchanged"])
     data["dedupe_sync_groups"] = bool(data["dedupe_sync_groups"])
     return data  # type: ignore[return-value]
 
@@ -129,7 +138,9 @@ class Config:
         self.data: ConfigData = {
             "version": "1.0.0",
             "default_max_related_cards": 20,
-            "show_unchanged_outcome": True,
+            "hide_review_report": False,
+            "hide_review_details": False,
+            "hide_review_unchanged": False,
             "dedupe_sync_groups": True,
             "rules": [],
         }
@@ -149,18 +160,34 @@ class Config:
         return self.data["default_max_related_cards"]
 
     @property
-    def show_unchanged_outcome(self) -> bool:
-        return self.data["show_unchanged_outcome"]
+    def hide_review_report(self) -> bool:
+        return self.data["hide_review_report"]
+
+    @property
+    def hide_review_details(self) -> bool:
+        return self.data["hide_review_details"]
+
+    @property
+    def hide_review_unchanged(self) -> bool:
+        return self.data["hide_review_unchanged"]
 
     @property
     def dedupe_sync_groups(self) -> bool:
         return self.data["dedupe_sync_groups"]
 
     def update_global(
-        self, *, default_cap: int, show_unchanged: bool, dedupe_sync: bool
+        self,
+        *,
+        default_cap: int,
+        hide_review_report: bool,
+        hide_review_details: bool,
+        hide_review_unchanged: bool,
+        dedupe_sync: bool,
     ) -> None:
         self.data["default_max_related_cards"] = max(1, int(default_cap))
-        self.data["show_unchanged_outcome"] = bool(show_unchanged)
+        self.data["hide_review_report"] = bool(hide_review_report)
+        self.data["hide_review_details"] = bool(hide_review_details)
+        self.data["hide_review_unchanged"] = bool(hide_review_unchanged)
         self.data["dedupe_sync_groups"] = bool(dedupe_sync)
         self.save()
 

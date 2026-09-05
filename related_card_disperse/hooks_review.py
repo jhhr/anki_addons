@@ -28,7 +28,7 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
     stats_cache = {}
     processed_rule_card_pairs: set[tuple[str, int]] = set()
 
-    messages: list[str] = []
+    outcomes = []
     for rule in rules:
         outcome = run_rule_for_reviewed_card(
             rule,
@@ -38,11 +38,25 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
             answer_undo_entry,
             processed_rule_card_pairs,
         )
-        if outcome.updated > 0 or config.show_unchanged_outcome:
-            messages.append(outcome.message)
+        outcomes.append(outcome)
 
-    if messages:
-        tooltip("<br><br>".join(messages), period=7000)
+    if config.hide_review_report:
+        return
+
+    reportable = [o for o in outcomes if o.updated > 0 or not config.hide_review_unchanged]
+    if not reportable:
+        return
+
+    if config.hide_review_details:
+        total = sum(o.updated for o in reportable)
+        runs = len(outcomes)
+        tooltip(
+            f"Dispersed {total} card{'' if total == 1 else 's'}"
+            f" ({runs} rule run{'' if runs == 1 else 's'})",
+            period=7000,
+        )
+    else:
+        tooltip("<br><br>".join(o.message for o in reportable), period=7000)
 
 
 def init_review_hook() -> None:

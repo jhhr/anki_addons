@@ -194,13 +194,11 @@ def _post_filter_review_cards(card_ids: list[int]) -> tuple[list[int], dict[int,
     """
     if not card_ids:
         return [], {}
-    rows = mw.col.db.all(
-        f"""
+    rows = mw.col.db.all(f"""
         SELECT id, type, queue, CASE WHEN odid == 0 THEN due ELSE odue END
         FROM cards
         WHERE id IN {ids2str(card_ids)}
-        """
-    )
+        """)
     due_by_id = {
         cid: due for cid, ctype, queue, due in rows if ctype == CARD_TYPE_REV and queue != -1
     }
@@ -547,31 +545,29 @@ def run_sync_grouped(
             break
         capped_ids, capped_count = cap_card_ids(group_ids, _rule_cap(rule, config), due_by_id)
         if len(capped_ids) <= 1:
-            if config.show_unchanged_outcome:
-                messages.append(
-                    summarize_outcome(
-                        _rule_name(rule),
-                        len(group_ids),
-                        0,
-                        capped_count,
-                        0,
-                        "skipped(empty or single card)",
-                    )
+            messages.append(
+                summarize_outcome(
+                    _rule_name(rule),
+                    len(group_ids),
+                    0,
+                    capped_count,
+                    0,
+                    "skipped(empty or single card)",
                 )
+            )
             continue
         plan = build_disperse_plan(capped_ids, stats_cache)
         if _is_noop_plan(plan):
-            if config.show_unchanged_outcome:
-                messages.append(
-                    summarize_outcome(
-                        _rule_name(rule),
-                        len(group_ids),
-                        0,
-                        capped_count,
-                        0,
-                        _noop_outcome_text(plan),
-                    )
+            messages.append(
+                summarize_outcome(
+                    _rule_name(rule),
+                    len(group_ids),
+                    0,
+                    capped_count,
+                    0,
+                    _noop_outcome_text(plan),
                 )
+            )
             continue
         details = apply_disperse_plan(plan, undo_entry)
         messages.append(
@@ -693,7 +689,7 @@ def _record_browser_outcome(
 ) -> None:
     result.rule_runs += 1
     result.updated += outcome.updated
-    if outcome.updated == 0 and not config.show_unchanged_outcome:
+    if outcome.updated == 0:
         return
     if len(result.messages) < BROWSER_MESSAGE_LIMIT:
         result.messages.append(outcome.message)

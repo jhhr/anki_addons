@@ -43,7 +43,6 @@ from .shared.ui.multi_combo_box import MultiComboBox
 from .shared.ui.scrollable_dialog import ScrollableQDialog
 from .shared.ui.toggle_switch import ToggleSwitch
 
-
 # The reviewed card is not something note-level {{Field}} interpolation can
 # reach, so it is offered as its own menu group of variables.
 REVIEWED_CARD_MENU_DICT = {
@@ -167,12 +166,15 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.default_cap.setMaximum(CAP_MAX)
         self.default_cap.setValue(self.config.default_max_related_cards)
 
-        self.show_unchanged = QCheckBox("Report runs that rescheduled nothing", self)
-        self.show_unchanged.setToolTip(
-            "Also show a tooltip when a rule found nothing to move -- because the cards'"
-            " due ranges are too tight to separate, or they are already spread out."
+        self.hide_review_report = QCheckBox("Don't show report during review", self)
+        self.hide_review_details = QCheckBox("Don't show details in report during review", self)
+        self.hide_review_unchanged = QCheckBox(
+            "Don't show report on runs that rescheduled nothing during review", self
         )
-        self.show_unchanged.setChecked(self.config.show_unchanged_outcome)
+        self.hide_review_report.setChecked(self.config.hide_review_report)
+        self.hide_review_details.setChecked(self.config.hide_review_details)
+        self.hide_review_unchanged.setChecked(self.config.hide_review_unchanged)
+        self._update_review_report_dependent_state()
 
         self.dedupe_sync_groups = QCheckBox(
             "Dedupe overlapping related-card groups during sync", self
@@ -180,7 +182,9 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.dedupe_sync_groups.setChecked(self.config.dedupe_sync_groups)
 
         global_form.addRow("Default max related cards per execution", self.default_cap)
-        global_form.addRow(self.show_unchanged)
+        global_form.addRow(self.hide_review_report)
+        global_form.addRow(self.hide_review_details)
+        global_form.addRow(self.hide_review_unchanged)
         global_form.addRow(self.dedupe_sync_groups)
 
         root.addWidget(global_box)
@@ -256,8 +260,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             options_dict={},
             label="Query code",
             description=(
-                "Return a query string or list of card ids. Required while dispersal is"
-                " enabled."
+                "Return a query string or list of card ids. Required while dispersal is enabled."
             ),
             notice=QUERY_CODE_NOTICE,
             is_required=False,
@@ -288,6 +291,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.use_code.toggled.connect(self._on_use_code_toggled)
         self.enabled.toggled.connect(self._on_enabled_toggled)
+        self.hide_review_report.toggled.connect(self._update_review_report_dependent_state)
         self.query_text.text_edit.textChanged.connect(self._update_validation_state)
         self.query_code.text_edit.textChanged.connect(self._update_validation_state)
 
@@ -298,6 +302,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self._apply_rule_list_width()
         self._refresh_rule_list()
         self._select_row(0 if self.rules else -1)
+
+    def _update_review_report_dependent_state(self) -> None:
+        report_hidden = self.hide_review_report.isChecked()
+        self.hide_review_details.setEnabled(not report_hidden)
+        self.hide_review_unchanged.setEnabled(not report_hidden)
 
     def _resize_to_screen(self) -> None:
         screen = QGuiApplication.primaryScreen()
@@ -412,9 +421,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
     def _relabel_current_row(self) -> None:
         item = self.rule_list.item(self._current_index)
         if item is not None:
-            item.setText(
-                self._rule_label(self.rule_name.text().strip(), self.enabled.isChecked())
-            )
+            item.setText(self._rule_label(self.rule_name.text().strip(), self.enabled.isChecked()))
 
     def _on_use_code_toggled(self, checked: bool) -> None:
         self.query_text_widget.setVisible(not checked)
@@ -571,7 +578,9 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         self._commit_form()
         self.config.update_global(
             default_cap=self.default_cap.value(),
-            show_unchanged=self.show_unchanged.isChecked(),
+            hide_review_report=self.hide_review_report.isChecked(),
+            hide_review_details=self.hide_review_details.isChecked(),
+            hide_review_unchanged=self.hide_review_unchanged.isChecked(),
             dedupe_sync=self.dedupe_sync_groups.isChecked(),
         )
         self.config.replace_rules(self.rules)

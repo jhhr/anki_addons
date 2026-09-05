@@ -1,7 +1,9 @@
 {
   "version": "1.0.0",
   "default_max_related_cards": 20,
-  "show_unchanged_outcome": true,
+  "hide_review_report": false,
+  "hide_review_details": false,
+  "hide_review_unchanged": false,
   "dedupe_sync_groups": true,
   "rules": []
 }
