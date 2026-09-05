@@ -1,7 +1,7 @@
 # Custom Schedule Helper
 
-Custom Schedule Helper is an Anki add-on duplicating all the functionalites of the F4SRSAnki Helper
-but instead a different custom scheduling setup. It has the same six main features + one extra
+Custom Schedule Helper is an Anki add-on duplicating most of the functionalities of the F4SRSAnki Helper
+but instead a different custom scheduling setup.
 
 ## Copied F4SRSAnki
 - **Reschedule** cards based on their previous review.
@@ -9,10 +9,14 @@ but instead a different custom scheduling setup. It has the same six main featur
 - **Advance** a selected number of undue cards.
 - **Balance** the load during rescheduling (based on fuzz).
 - **No Anki** on Free Days (such as weekends) during rescheduling (based on load balance).
-- **Disperse** Siblings (cards with the same note) to avoid interference & reminder.
 
 ## Added in this fork
 - **Auto Ease Factor** changes the ease factor based on reviews very gently. Uses entire review history.
+
+## Removed from this fork
+- **Disperse** Siblings. Spreading out cards that shouldn't be reviewed on the same day is handled by
+  the separate `related_card_disperse` add-on, which disperses by note *and* by configurable relations
+  between notes.
 
 
 
@@ -37,7 +41,6 @@ Or...
 | Postpone          | Increases the intervals of cards that are due today based on elapsed time since last review and interval length in a way that (maybe) minimizes damage to long-term learning. | When you are dealing with a large number of reviews after taking a break from Anki or after rescheduling. |
 | Load Balancing    | After the optimal interval is calculated, it is adjusted by a random amount to make the distribution of reviews over time more uniform. | Always. This feature makes your workload (reviews per day) more consistent. |
 | Free Days         | After the optimal interval is calculated, it is slightly adjusted to change the due date. | If you don't want to study on some days of the week, for example, Sundays. |
-| Disperse Siblings | Siblings are cards generated from the same note. Their intervals are adjusted to spread them further apart from each other. | Always. This feature alleviates the interference; disabling it will only decrease the efficiency of spaced repetition. |
 
 ## Reschedule
 
@@ -80,15 +83,8 @@ doesn't reschedule cards whose interval is less than 3 days to respect the desir
 
 ![image](https://github.com/open-spaced-repetition/fsrs4anki-helper/assets/32575846/7fe6b4d0-ae99-40f8-8bd9-0f7c3ff1c638)
 
-## Disperse Siblings
-
-In Anki, some templates will generate multiple cards related in content from the same note, such as reversed cards (Front->Back, Back->Front) and cloze cards (when you make multiple clozes on the same note). If the review dates of these cards are too close, they may interfere with or remind you of each other. Dispersing siblings can spread the review dates of these cards out as much as possible.
-
-![image](https://github.com/open-spaced-repetition/fsrs4anki-helper/assets/32575846/2e87b9c7-136d-4dc8-8677-c81bc28a0f6b)
-
 ## Other features
 - **Auto reschedule cards reviewed on other devices after sync:** This option is useful if you do some (or all) of your reviews on platforms that don't support FSRS such as AnkiDroid or AnkiWeb. If this option is enabled, the reviews synced from the other devices will be automatically rescheduled according to the FSRS algorithm. If you are relying on this feature, it is recommended to sync the reviews daily for the best results.
-- **Auto disperse siblings:** It automatically disperses siblings after each review and after sync (if auto-reschedule after sync is enabled).
 - **Reschedule all cards:** This option is used to reschedule all the cards in the decks in which Custom Schedule is enabled. It should only be used after you have installed Custom Schedule for the first time and/or updated your parameters.
 - **Reschedule cards reviewed in the last 7 days:** This option can be used to reschedule the cards that were reviewed in the last few days. The number of days can be adjusted in the add-on config.
 
