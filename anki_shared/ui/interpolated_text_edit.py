@@ -77,7 +77,7 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         self.addWidget(main_label)
 
         self.optional_description = QLabel("")
-        # Set description font size smaller
+        self.optional_description.setWordWrap(True)
         self.optional_description.setStyleSheet("font-size: 10px;")
         self.addWidget(self.optional_description)
         self.set_description(description)

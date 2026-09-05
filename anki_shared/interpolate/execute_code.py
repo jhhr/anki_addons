@@ -26,6 +26,11 @@ Public API
 ``execute_code_for_field(code, note)``
     Execute code expected to return a single string value.
 
+``ReadOnlyNote`` / ``ReadOnlyCard``
+    The proxies this module wraps ``note`` and ``cards`` in.  Callers passing
+    their own note or card through ``extra_globals`` should wrap them too, so
+    that every object user code can reach is equally immutable.
+
 Wrappers whose expected return value is specific to this addon's features
 live in ``execute_code_wrappers.py``.
 """
@@ -128,7 +133,7 @@ _SAFE_BUILTINS: dict = {
 }
 
 
-class _ReadOnlyNote:
+class ReadOnlyNote:
     """Thin read-only proxy around an Anki Note.
 
     Exposes only ``note[field_name]`` (``__getitem__``) and ``note.keys()`` so
@@ -156,7 +161,7 @@ class _ReadOnlyNote:
         raise TypeError("note fields are read-only inside code execution")
 
 
-class _ReadOnlyCard:
+class ReadOnlyCard:
     """Read-only view of an Anki card for use inside code execution.
 
     Exposes the same fields as a normal card but prevents mutation.
@@ -232,7 +237,7 @@ class _ReadOnlyCard:
 
     def __repr__(self) -> str:
         card_id = getattr(object.__getattribute__(self, "_card"), "id", "?")
-        return f"<_ReadOnlyCard id={card_id}>"
+        return f"<ReadOnlyCard id={card_id}>"
 
 
 def execute_code_core(
@@ -279,8 +284,8 @@ def execute_code_core(
         "print": print,
         "find_cards": mw.col.find_cards,
         "find_notes": mw.col.find_notes,
-        "note": _ReadOnlyNote(note),
-        "cards": [_ReadOnlyCard(c, note_type) for c in note_cards],
+        "note": ReadOnlyNote(note),
+        "cards": [ReadOnlyCard(c, note_type) for c in note_cards],
         "get_card_last_reps": get_card_last_reps,
     }
     if extra_globals:

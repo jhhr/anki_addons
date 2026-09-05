@@ -14,9 +14,7 @@ from .ease import init_ease_adjust_review_hook
 from .ease.auto_ease_factor import adjust_ease
 from .ease.fsrs_ops import adjust_fsrs_revlog
 from .ease.export import export_ease_factors, import_ease_factors
-from .schedule import init_schedule_review_hook
 from .schedule.advance import advance
-from .schedule.disperse_siblings import disperse_siblings
 from .schedule.free_days import free_days
 from .schedule.postpone import postpone
 from .schedule.reschedule import reschedule
@@ -88,25 +86,6 @@ menu_auto_reschedule_after_sync = checkable(
 )
 
 
-def set_auto_disperse_after_sync(checked):
-    config.auto_disperse_after_sync = checked
-
-
-menu_auto_disperse_after_sync = checkable(
-    title="Auto disperse siblings reviewed on other devices after sync",
-    on_click=set_auto_disperse_after_sync,
-)
-
-
-def set_auto_disperse_when_review(checked):
-    config.auto_disperse = checked
-
-
-menu_auto_disperse = checkable(
-    title="Auto disperse siblings when review", on_click=set_auto_disperse_when_review
-)
-
-
 def set_load_balance(checked):
     config.load_balance = checked
 
@@ -158,12 +137,8 @@ add_action_to_gear(
     lambda: f"Adjust ease factors for cards reviewed in the last {config.days_to_reschedule} days",
 )
 
-menu_disperse_siblings = build_action(disperse_siblings, "Disperse all siblings")
-
 menu_for_helper = mw.form.menuTools.addMenu("Custom Schedule Helper")
 menu_for_helper.addAction(menu_auto_reschedule_after_sync)
-menu_for_helper.addAction(menu_auto_disperse_after_sync)
-menu_for_helper.addAction(menu_auto_disperse)
 menu_for_helper.addAction(menu_load_balance)
 menu_for_free_days = menu_for_helper.addMenu("No Anki on Free Days (requires Load Balancing)")
 menu_for_helper.addSeparator()
@@ -171,7 +146,6 @@ menu_for_helper.addAction(menu_reschedule)
 menu_for_helper.addAction(menu_reschedule_recent)
 menu_for_helper.addAction(menu_postpone)
 menu_for_helper.addAction(menu_advance)
-menu_for_helper.addAction(menu_disperse_siblings)
 menu_for_helper.addSeparator()
 menu_for_helper.addAction(menu_adjust_ease)
 menu_for_helper.addAction(menu_adjust_ease_recent)
@@ -208,8 +182,6 @@ def adjust_menu():
             f"Reschedule cards reviewed in the last {config.days_to_reschedule} days"
         )
         menu_auto_reschedule_after_sync.setChecked(config.auto_reschedule_after_sync)
-        menu_auto_disperse_after_sync.setChecked(config.auto_disperse_after_sync)
-        menu_auto_disperse.setChecked(config.auto_disperse)
         menu_load_balance.setChecked(config.load_balance)
         menu_for_free_0.setChecked(0 in config.free_days)
         menu_for_free_1.setChecked(1 in config.free_days)
@@ -257,5 +229,4 @@ def configuration_changed():
 
 
 init_sync_hook()
-init_schedule_review_hook()
 # init_ease_adjust_review_hook()

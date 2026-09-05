@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "default_max_related_cards": 20,
+  "bury_min_gap": 0,
+  "hide_review_report": false,
+  "hide_review_details": false,
+  "hide_review_unchanged": false,
+  "dedupe_sync_groups": true,
+  "disperse_siblings_default": false,
+  "rules": []
+}
