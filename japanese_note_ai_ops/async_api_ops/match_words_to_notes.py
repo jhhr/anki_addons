@@ -60,8 +60,10 @@ from .base_ops import (
 from .concurrency import ConcurrencyGate
 from .collection_access import (
     find_notes as col_find_notes,
+    find_notes_async as col_find_notes_async,
     get_note as col_get_note,
     get_notes as col_get_notes,
+    get_notes_async as col_get_notes_async,
 )
 from .clean_meaning import clean_meaning_in_note
 from .extract_words import word_lists_str_format
@@ -1169,7 +1171,7 @@ def compare_readings(
 NoteSearchCache = dict[str, Sequence[NoteId]]
 
 
-def get_matching_notes_for_word_and_reading(
+async def get_matching_notes_for_word_and_reading(
     word: str,
     reading: str,
     word_kanjified_field: str,
@@ -1215,7 +1217,7 @@ def get_matching_notes_for_word_and_reading(
     )
     if note_ids is None:
         logger.debug(f"{log_prefix}Searching for notes with query: {query}")
-        note_ids = col_find_notes(query)
+        note_ids = await col_find_notes_async(query)
         if note_search_cache is not None:
             # No lock around the miss: two tasks racing on one query would each run a search
             # and store the same answer, which costs a duplicate search and nothing else. The
@@ -1235,7 +1237,7 @@ def get_matching_notes_for_word_and_reading(
     # releasing it per note and letting every other waiting thread in between
     fetched = {
         note.id: note
-        for note in col_get_notes(
+        for note in await col_get_notes_async(
             note_id for note_id in note_ids if note_id not in notes_to_update_dict
         )
     }
@@ -1346,11 +1348,11 @@ async def match_single_word_in_word_tuple(
                 reading,
                 all_generated_meanings_dict,
             )
-        # A whole-collection regex search plus a note fetch, both queueing for the collection
-        # behind the worker threads' searches. Run on the loop thread it would block the event
-        # loop for that whole wait: cancellation polling, adapting and progress all stop.
-        matching_notes = await asyncio.to_thread(
-            get_matching_notes_for_word_and_reading,
+        # A whole-collection regex search plus a note fetch, both queueing for the
+        # collection. Awaited rather than handed to a thread: the wait is for a turn with the
+        # collection and nothing else, so it costs a coroutine here instead of a pool thread
+        # parked in a semaphore, and the loop keeps polling for cancellation throughout.
+        matching_notes = await get_matching_notes_for_word_and_reading(
             word=word,
             reading=reading,
             word_kanjified_field=word_kanjified_field,
