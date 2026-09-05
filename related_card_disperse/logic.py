@@ -628,17 +628,8 @@ class NoteRuleRun:
     per_card: bool
 
 
-# A selection can be tens of thousands of notes, and keeping an outcome line
-# for every rule run over them would cost more memory than the dispersal
-# itself. Past this many, only the count is kept.
-BROWSER_MESSAGE_LIMIT = 50
-
-
 @dataclass
 class BrowserRunResult:
-    messages: list[str] = field(default_factory=list)
-    # Outcome lines dropped once BROWSER_MESSAGE_LIMIT was reached.
-    suppressed_messages: int = 0
     updated: int = 0
     rule_runs: int = 0
     notes: int = 0
@@ -684,17 +675,10 @@ def plan_note_rule_runs(
 
 def _record_browser_outcome(
     outcome: RuleOutcome,
-    config: Config,
     result: BrowserRunResult,
 ) -> None:
     result.rule_runs += 1
     result.updated += outcome.updated
-    if outcome.updated == 0:
-        return
-    if len(result.messages) < BROWSER_MESSAGE_LIMIT:
-        result.messages.append(outcome.message)
-    else:
-        result.suppressed_messages += 1
 
 
 def _disperse_browser_card(
@@ -717,7 +701,6 @@ def _disperse_browser_card(
             run_rule_for_reviewed_card(
                 rule, card, config, stats_cache, undo_entry, processed_rule_card_pairs
             ),
-            config,
             result,
         )
 
@@ -763,7 +746,6 @@ def _disperse_browser_note(
                         undo_entry,
                         processed_rule_card_pairs,
                     ),
-                    config,
                     result,
                 )
             continue
@@ -779,7 +761,7 @@ def _disperse_browser_note(
                 undo_entry,
                 processed_rule_card_pairs,
             )
-            _record_browser_outcome(outcome, config, result)
+            _record_browser_outcome(outcome, result)
             remaining = remaining_note_cards(remaining, anchor, outcome.covered_ids)
 
 
