@@ -125,10 +125,26 @@ def cancel_run() -> None:
     logger.info("Run cancelled, aborted %d in-flight request(s)", aborted)
 
 
+def current_run() -> Optional[Run]:
+    """The run the calling thread is taking part in, if any.
+
+    For work that is submitted on one thread and carried out on another that belongs to no run
+    of its own - collection_access hands every collection read to one shared worker - so that
+    it can still be judged against the run it came from. Such a caller captures this when it
+    submits and passes it to run_is_cancelled later; reading the thread-local where the work
+    actually runs would answer for the wrong thread, which is to say never cancelled.
+    """
+    return getattr(_thread_run, "run", None)
+
+
+def run_is_cancelled(run: Optional[Run]) -> bool:
+    """True if `run` is a run that has been cancelled. None is work belonging to no run."""
+    return run is not None and run.cancelled.is_set()
+
+
 def run_cancelled() -> bool:
     """True if the run this thread is taking part in has been cancelled."""
-    run = getattr(_thread_run, "run", None)
-    return run is not None and run.cancelled.is_set()
+    return run_is_cancelled(current_run())
 
 
 def is_cancelled(cancel_state: Optional[Any] = None) -> bool:

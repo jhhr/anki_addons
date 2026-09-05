@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence, T
 
 from aqt import mw
 
-from .api_client import run_cancelled
+from .api_client import Run, current_run, run_is_cancelled
 from .concurrency import collection_pressure
 
 if TYPE_CHECKING:
@@ -72,6 +72,13 @@ COLLECTION_CONCURRENCY = 1
 # that ends up running it is the shared worker, which is nobody's cleanup thread.
 _exempt = threading.local()
 
+# The run is carried on the job for the same reason, and it is the more important of the two.
+# Which run a thread belongs to is also thread-local, and the worker belongs to none: it is
+# started once and outlives every run, so it is never enrolled in one. Asking it whether "the
+# run" was cancelled therefore always answered no, and a cancelled run's queue was worked
+# through to the end instead of being dropped - the exact thing this module exists to prevent.
+# So the submitting thread's run rides along with the job and the worker judges the job by it.
+
 
 def begin_cleanup_phase() -> None:
     """Let this thread keep reading the collection even though the run was cancelled.
@@ -86,8 +93,8 @@ def end_cleanup_phase() -> None:
     _exempt.on = False
 
 
-def _giving_up(exempt: bool) -> bool:
-    return run_cancelled() and not exempt
+def _giving_up(run: "Optional[Run]", exempt: bool) -> bool:
+    return run_is_cancelled(run) and not exempt
 
 
 class RunCancelled(Exception):
@@ -102,10 +109,10 @@ class _Job:
     """One turn with the collection, waiting to be taken.
 
     Carries its own answer back rather than the caller polling for it, and carries the
-    submitting thread's cleanup exemption, which the worker thread cannot know.
+    submitting thread's run and cleanup exemption, neither of which the worker can know.
     """
 
-    __slots__ = ("what", "fn", "exempt", "loop", "future", "done", "value", "error")
+    __slots__ = ("what", "fn", "run", "exempt", "loop", "future", "done", "value", "error")
 
     def __init__(
         self,
@@ -116,6 +123,7 @@ class _Job:
     ):
         self.what = what
         self.fn = fn
+        self.run = current_run()
         self.exempt = bool(getattr(_exempt, "on", False))
         self.loop = loop
         self.future = future
@@ -156,7 +164,7 @@ _worker_lock = threading.Lock()
 def _run_jobs() -> None:
     while True:
         job = _jobs.get()
-        if _giving_up(job.exempt):
+        if _giving_up(job.run, job.exempt):
             # Drained rather than run. Nothing here has touched the backend yet, so a
             # cancelled run empties its whole queue in the time it takes to pop it, and only
             # the job already running has to be waited out.
@@ -208,7 +216,7 @@ def _run_on_collection(what: str, fn: "Callable[[], T]") -> T:
     """
     if _on_worker():
         return fn()
-    if _giving_up(bool(getattr(_exempt, "on", False))):
+    if _giving_up(current_run(), bool(getattr(_exempt, "on", False))):
         raise RunCancelled(what)
     job = _Job(what, fn)
     _worker_thread()
@@ -225,7 +233,7 @@ async def run_on_collection_async(what: str, fn: "Callable[[], T]") -> T:
     """
     if _on_worker():
         return fn()
-    if _giving_up(bool(getattr(_exempt, "on", False))):
+    if _giving_up(current_run(), bool(getattr(_exempt, "on", False))):
         raise RunCancelled(what)
     loop = asyncio.get_running_loop()
     future: "asyncio.Future" = loop.create_future()
@@ -251,14 +259,14 @@ def get_note(note_id: "NoteId") -> "Note":
     return _run_on_collection("get_note", lambda: mw.col.get_note(note_id))
 
 
-def _fetch_notes(ids: "list[NoteId]", exempt: bool) -> "list[Note]":
+def _fetch_notes(ids: "list[NoteId]", run: "Optional[Run]", exempt: bool) -> "list[Note]":
     notes: "list[Note]" = []
     for note_id in ids:
         # One turn with the collection, but a bounded one. A broad search hands this thousands
         # of ids, and a batch that runs to the end no matter what is exactly the stretch of
         # uninterruptible backend work this module exists to avoid: only the fetch already
         # inside the backend has to be waited out, not all the rest.
-        if _giving_up(exempt):
+        if _giving_up(run, exempt):
             raise RunCancelled(f"get_notes: gave up after {len(notes)} of {len(ids)} notes")
         notes.append(mw.col.get_note(note_id))
     return notes
@@ -273,8 +281,10 @@ def get_notes(note_ids: "Iterable[NoteId]") -> "list[Note]":
     ids = list(note_ids)
     if not ids:
         return []
-    exempt = bool(getattr(_exempt, "on", False))
-    return _run_on_collection(f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, exempt))
+    run, exempt = current_run(), bool(getattr(_exempt, "on", False))
+    return _run_on_collection(
+        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
+    )
 
 
 async def get_notes_async(note_ids: "Iterable[NoteId]") -> "list[Note]":
@@ -282,7 +292,7 @@ async def get_notes_async(note_ids: "Iterable[NoteId]") -> "list[Note]":
     ids = list(note_ids)
     if not ids:
         return []
-    exempt = bool(getattr(_exempt, "on", False))
+    run, exempt = current_run(), bool(getattr(_exempt, "on", False))
     return await run_on_collection_async(
-        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, exempt)
+        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
     )

@@ -5,6 +5,11 @@ pinning down are the ones that used to come from a semaphore every caller blocke
 one call inside the backend at a time, a queue that a cancelled run empties without running,
 and a nested call that does not queue behind itself. On top of those, the reason for the
 rewrite: a caller on the event loop waits without holding a pool thread.
+
+Cancellation is exercised through real Run objects rather than a stubbed-out cancelled flag,
+because everything that can go wrong with it here is about *which thread* is asked. The worker
+belongs to no run and never will, so a stub that answers the same on every thread passes
+whether or not the run actually reaches the worker - which is the one thing worth testing.
 """
 
 import asyncio
@@ -16,6 +21,9 @@ from anki_stubs import load_ops_module, mw
 
 ca = load_ops_module("collection_access")
 conc = load_ops_module("concurrency")
+# The same module object collection_access imported, so the runs begun here are the ones it
+# reads
+api = load_ops_module("api_client")
 
 
 class FakeCollection:
@@ -64,15 +72,32 @@ class CollectionAccessTestCase(unittest.TestCase):
     def setUp(self):
         self.col = FakeCollection()
         mw.col = self.col
-        self._real_cancelled = ca.run_cancelled
-        self.cancelled = False
-        ca.run_cancelled = lambda: self.cancelled
+        # This thread is the op's thread: it submits collection work and is the one enrolled
+        self.run = api.begin_run()
         ca.end_cleanup_phase()
         conc.collection_pressure.reset()
 
     def tearDown(self):
-        ca.run_cancelled = self._real_cancelled
+        api.end_run()
         ca.end_cleanup_phase()
+
+    def submit_in_run(self, target):
+        """A worker thread of this run, which is how ops reach the collection in a real op."""
+        def enrolled():
+            api.join_run(self.run)
+            target()
+
+        thread = threading.Thread(target=enrolled)
+        thread.start()
+        return thread
+
+    def wait_until(self, predicate, timeout: float = 5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.002)
+        return False
 
 
 class SerialisationTests(CollectionAccessTestCase):
@@ -118,14 +143,14 @@ class SerialisationTests(CollectionAccessTestCase):
 
 class CancellationTests(CollectionAccessTestCase):
     def test_queued_work_is_abandoned_without_being_run(self):
-        self.cancelled = True
+        self.run.cancelled.set()
         with self.assertRaises(ca.RunCancelled):
             ca.find_notes("never runs")
         self.assertEqual(self.col.finds, [])
 
     def test_the_cleanup_phase_still_reaches_the_collection_after_a_cancel(self):
         # The cleanup phase runs after a cancel precisely so what was done gets saved
-        self.cancelled = True
+        self.run.cancelled.set()
         ca.begin_cleanup_phase()
         try:
             self.assertEqual(list(ca.find_notes("cleanup")), [1, 2, 3])
@@ -135,7 +160,7 @@ class CancellationTests(CollectionAccessTestCase):
     def test_the_exemption_follows_the_job_and_not_the_worker_thread(self):
         # The thread that runs the job is the shared worker, which is nobody's cleanup thread,
         # so the exemption has to be read where the job was submitted
-        self.cancelled = True
+        self.run.cancelled.set()
         result: list = []
 
         def submit():
@@ -145,21 +170,60 @@ class CancellationTests(CollectionAccessTestCase):
             finally:
                 ca.end_cleanup_phase()
 
-        thread = threading.Thread(target=submit)
-        thread.start()
-        thread.join(10)
+        self.submit_in_run(submit).join(10)
         self.assertEqual(len(result), 1)
 
     def test_a_batch_gives_up_partway_rather_than_running_to_the_end(self):
         # A broad search hands get_notes thousands of ids; finishing them all is exactly the
-        # uninterruptible stretch this module exists to avoid
-        def cancel_after_two():
-            return len(self.col.fetched) >= 2
+        # uninterruptible stretch this module exists to avoid. The batch runs on the worker,
+        # so the per-note check has to see the submitting thread's run, not the worker's.
+        fetch = self.col.get_note
 
-        ca.run_cancelled = cancel_after_two
+        def cancel_after_two(note_id):
+            note = fetch(note_id)
+            if len(self.col.fetched) >= 2:
+                self.run.cancelled.set()
+            return note
+
+        self.col.get_note = cancel_after_two
         with self.assertRaises(ca.RunCancelled):
             ca.get_notes(list(range(50)))
         self.assertLess(len(self.col.fetched), 50)
+
+    def test_a_cancel_that_lands_after_a_job_was_queued_still_drops_it(self):
+        # The submitting side's own check cannot cover this: these were queued while the run
+        # was still live, and nothing looks at them again until the worker pops them. The
+        # worker is enrolled in no run of its own, so it can only judge them by the run each
+        # job carries - and when it could not, a cancelled whole-collection search ran every
+        # queued job to completion, which is what the module exists to stop.
+        self.col.gate = threading.Event()
+        outcomes: "list[str]" = []
+        lock = threading.Lock()
+
+        def search(query: str):
+            def attempt():
+                try:
+                    ca.find_notes(query)
+                    outcome = "ran"
+                except ca.RunCancelled:
+                    outcome = "dropped"
+                with lock:
+                    outcomes.append(outcome)
+
+            return attempt
+
+        holder = self.submit_in_run(search("held"))
+        self.assertTrue(self.wait_until(lambda: self.col.inside == 1))
+        queued = [self.submit_in_run(search(f"q{i}")) for i in range(10)]
+        self.assertTrue(self.wait_until(lambda: ca._jobs.qsize() >= 10))
+
+        self.run.cancelled.set()
+        self.col.gate.set()
+        for thread in [holder, *queued]:
+            thread.join(10)
+
+        self.assertEqual(outcomes.count("dropped"), 10)
+        self.assertEqual(self.col.finds, ["held"])
 
 
 class EventLoopTests(CollectionAccessTestCase, unittest.IsolatedAsyncioTestCase):
@@ -175,7 +239,7 @@ class EventLoopTests(CollectionAccessTestCase, unittest.IsolatedAsyncioTestCase)
             await ca.run_on_collection_async("boom", boom)
 
     async def test_a_cancelled_run_abandons_awaited_work_too(self):
-        self.cancelled = True
+        self.run.cancelled.set()
         with self.assertRaises(ca.RunCancelled):
             await ca.find_notes_async("never runs")
         self.assertEqual(self.col.finds, [])
