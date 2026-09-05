@@ -64,6 +64,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .note_cache import NoteCache
+from .sentence_cache import SentenceCache
 from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
 from .extract_words import word_lists_str_format
@@ -613,6 +614,7 @@ class MatchOpArgs(TypedDict):
     notes_to_update_dict: dict[NoteId, Note]
     word_note_index: WordIndex
     note_cache: NoteCache
+    sentence_cache: SentenceCache
     cancel_state: CancelState
     word_list_field: str
     word_kanjified_field: str
@@ -674,6 +676,8 @@ def create_new_note_without_matching(
     processed_word_tuples = match_op_args["processed_word_tuples"]
     word_index = match_op_args["word_index"]
     word_note_index = match_op_args["word_note_index"]
+    sentence_cache = match_op_args["sentence_cache"]
+    note_cache = match_op_args["note_cache"]
     word_list_key = match_op_args["word_list_key"]
 
     new_note = Note(col=mw.col, model=note_type)
@@ -944,6 +948,8 @@ def create_new_note_without_matching(
         allow_update_all_meanings=True,
         allow_reupdate_existing=True,
         word_note_index=word_note_index,
+        sentence_cache=sentence_cache,
+        note_cache=note_cache,
     )
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
@@ -1372,6 +1378,8 @@ async def match_single_word_in_word_tuple(
                     allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
                     word_note_index=match_op_args["word_note_index"],
+                    sentence_cache=match_op_args["sentence_cache"],
+                    note_cache=match_op_args["note_cache"],
                 )
             # Replace note in list each time, this will include the cases where an earlier op
             # modified notes coming later in the list
@@ -1489,6 +1497,8 @@ async def match_single_word_in_word_tuple(
                     allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
                     word_note_index=match_op_args["word_note_index"],
+                    sentence_cache=match_op_args["sentence_cache"],
+                    note_cache=match_op_args["note_cache"],
                 )
             # Replace note in list each time, this will include the cases where an earlier op
             # modified notes coming later in the list and we didn't call clean_meaning_in_note again
@@ -1906,6 +1916,7 @@ def match_words_to_notes(
     word_lock: asyncio.Lock,
     word_note_index_cache: WordIndexCache,
     note_cache: NoteCache,
+    sentence_cache: SentenceCache,
     replace_existing: bool = False,
 ) -> tuple[int, Optional[Callable[[list[asyncio.Task]], None]]]:
     """
@@ -2062,6 +2073,7 @@ def match_words_to_notes(
                 notes_to_update_dict=notes_to_update_dict,
                 word_note_index=word_note_index,
                 note_cache=note_cache,
+                sentence_cache=sentence_cache,
                 cancel_state=cancel_state,
                 word_list_field=word_list_field,
                 word_kanjified_field=word_kanjified_field,
@@ -2349,6 +2361,7 @@ def match_words_to_notes_for_note(
     word_lock: asyncio.Lock,
     word_note_index_cache: WordIndexCache,
     note_cache: NoteCache,
+    sentence_cache: SentenceCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: bool = False,
 ) -> Optional[NotePlan]:
@@ -2594,6 +2607,7 @@ def match_words_to_notes_for_note(
                 word_lock=word_lock,
                 word_note_index_cache=word_note_index_cache,
                 note_cache=note_cache,
+                sentence_cache=sentence_cache,
                 replace_existing=replace_existing,
             )
             planned_task_count += word_list_task_count
@@ -2688,6 +2702,9 @@ def bulk_match_words_to_notes(
     # Shared for the same reason and on the same argument: a run never writes to the
     # collection, so the second fetch of a note can only return what the first did
     note_cache = NoteCache()
+    # And again, on the same argument: which notes mention a note id cannot change while the
+    # run is going, and one measured run asked that question 257 times about 60 note ids
+    sentence_cache = SentenceCache()
 
     def inner_op(
         config: dict,
@@ -2717,6 +2734,7 @@ def bulk_match_words_to_notes(
             word_lock=word_lock,
             word_note_index_cache=word_note_index_cache,
             note_cache=note_cache,
+            sentence_cache=sentence_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
         )

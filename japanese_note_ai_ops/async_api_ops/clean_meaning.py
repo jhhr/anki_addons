@@ -12,9 +12,10 @@ from collections.abc import Sequence
 
 from .collection_access import (
     find_notes as col_find_notes,
-    get_note as col_get_note,
     get_notes as col_get_notes,
 )
+from .note_cache import NoteCache
+from .sentence_cache import SentenceCache
 from .word_index import WordIndex
 from .base_ops import (
     get_response,
@@ -49,7 +50,19 @@ def get_sentences_for_note(
     config: dict[str, str],
     note: Note,
     exclude_self: bool = False,
+    sentence_cache: Optional[SentenceCache] = None,
+    note_cache: Optional[NoteCache] = None,
 ) -> list[EnAndJPSentence]:
+    """The sentences this note's word appears in, its own first unless excluded.
+
+    :param sentence_cache: The run's sentence cache, if the caller has one. What is cached is
+        the *other* notes' sentences: `exclude_self` decides only whether this note's own goes
+        on the front, so caching the return value would let the two call shapes poison each
+        other. Ops that run outside a bulk run pass nothing and scan every time.
+    :param note_cache: The run's fetched notes, if the caller has one. The sibling notes are
+        fetched in one turn either way; through the cache, a note the run already holds costs
+        no turn at all.
+    """
     note_type = note.note_type()
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
@@ -70,15 +83,35 @@ def get_sentences_for_note(
         if exclude_self:
             return []
         return [cur_note_sentence]
-    query = f'"{word_list_field}:*{note.id}*" -nid:{note.id}'
-    logger.debug(f"Getting sentences for note {note.id} with query: {query}")
-    other_sentence_note_ids = col_find_notes(query)
-    other_sentences = [] if exclude_self else [cur_note_sentence]
-    for onid in other_sentence_note_ids:
-        onote = col_get_note(onid)
-        if sentence_field in onote and onote[sentence_field] not in other_sentences:
-            other_sentences.append(make_en_and_jp_sentence(onote))
-    return other_sentences
+
+    def scan_for_other_sentences() -> list[EnAndJPSentence]:
+        query = f'"{word_list_field}:*{note.id}*" -nid:{note.id}'
+        logger.debug(f"Getting sentences for note {note.id} with query: {query}")
+        other_sentence_note_ids = col_find_notes(query)
+        # One turn with the collection for all of them rather than one turn each: a note's
+        # word list names a handful of siblings, and taking and releasing the collection per
+        # note let every other waiting caller in between.
+        if note_cache is not None:
+            by_id = note_cache.get_notes_blocking(other_sentence_note_ids)
+        else:
+            by_id = {onote.id: onote for onote in col_get_notes(other_sentence_note_ids)}
+        # Back into the order the search gave them: these become prompt lines, and neither the
+        # cache's hit-then-miss order nor a fetch's is the order the run used to see.
+        sentences: list[EnAndJPSentence] = []
+        for onote in (by_id[onid] for onid in other_sentence_note_ids if onid in by_id):
+            if sentence_field in onote and onote[sentence_field] not in sentences:
+                sentences.append(make_en_and_jp_sentence(onote))
+        return sentences
+
+    if sentence_cache is not None:
+        other_sentences = sentence_cache.get(note.id, scan_for_other_sentences)
+    else:
+        other_sentences = scan_for_other_sentences()
+    if exclude_self:
+        # Copied, because the cached list belongs to the cache and every caller gets the same
+        # one; the callers below build on what they are handed.
+        return list(other_sentences)
+    return [cur_note_sentence] + list(other_sentences)
 
 
 def get_other_meaning_notes(
@@ -764,6 +797,8 @@ def clean_meaning_in_note(
     allow_reupdate_existing: Optional[bool] = False,
     other_meaning_notes: Optional[Sequence[Note]] = None,
     word_note_index: Optional[WordIndex] = None,
+    sentence_cache: Optional[SentenceCache] = None,
+    note_cache: Optional[NoteCache] = None,
 ) -> bool:
     """
     Clean or update the meaning field in a given note using an AI model.
@@ -781,6 +816,10 @@ def clean_meaning_in_note(
         update_all_meanings_for_word function.
     :param word_note_index: The run's word index, if the caller has one. Passed straight to
         get_other_meaning_notes, which uses it instead of a whole-collection search.
+    :param sentence_cache: The run's sentence cache, if the caller has one. Passed straight to
+        get_sentences_for_note, which scans the collection once per note id instead of once
+        per ask.
+    :param note_cache: The run's fetched notes, if the caller has one. Passed the same way.
     :return: True if the note was modified, False otherwise.
     """
     note_type = note.note_type()
@@ -853,7 +892,9 @@ def clean_meaning_in_note(
             (n.id if n.id != 0 else int(n[new_note_id_field])): WordAndSentences(
                 jp_meaning=n[meaning_field],
                 en_meaning=n[english_meaning_field],
-                sentences=get_sentences_for_note(config, n),
+                sentences=get_sentences_for_note(
+                    config, n, sentence_cache=sentence_cache, note_cache=note_cache
+                ),
             )
             for n in all_meaning_notes
         }
@@ -956,7 +997,9 @@ def clean_meaning_in_note(
         prev_en_meaning = note[english_meaning_field]
         word = note[word_field]
         reading = note[word_reading_field]
-        sentences = get_sentences_for_note(config, note)
+        sentences = get_sentences_for_note(
+            config, note, sentence_cache=sentence_cache, note_cache=note_cache
+        )
         # Check if the value is non-empty
         if jp_mdx_dict_entry:
             # Call API to get single meaning from the raw dictionary entry
@@ -1011,6 +1054,10 @@ def bulk_clean_notes_op(
     if all_meanings_dict_path.exists():
         with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
             all_generated_meanings_dict = json.load(f)
+    # This op scans for the same note's sentences once per note it cleans, exactly as the
+    # matching op does, so it gets the same run-scoped caches. Both die with the closure.
+    sentence_cache = SentenceCache()
+    note_cache = NoteCache()
 
     def op(
         config: dict[str, str],
@@ -1025,6 +1072,8 @@ def bulk_clean_notes_op(
             notes_to_add_dict,
             notes_to_update_dict,
             all_generated_meanings_dict,
+            sentence_cache=sentence_cache,
+            note_cache=note_cache,
         )
 
     def on_end():

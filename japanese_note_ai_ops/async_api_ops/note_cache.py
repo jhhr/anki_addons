@@ -36,7 +36,7 @@ few thousand Note objects and the cache dies with the run that made it.
 import logging
 from typing import TYPE_CHECKING, Iterable, Optional
 
-from .collection_access import get_notes_async
+from .collection_access import get_notes, get_notes_async
 
 if TYPE_CHECKING:
     from anki.notes import Note, NoteId
@@ -51,10 +51,12 @@ REPORT_EVERY = 500
 class NoteCache:
     """The notes this run has fetched, by id.
 
-    Not locked. Every method is called from the event loop and the only shared state is one
-    dict whose reads and writes are single bytecodes, so two coroutines racing for the same
-    missing note is at worst one duplicate fetch - and `_store` keeps the object the first of
-    them cached, so no reader ever sees its note swapped out underneath it.
+    Not locked. Its callers are the event loop and, through `get_notes_blocking`, the pool
+    threads the synchronous ops run on; the only shared state is one dict whose reads and
+    writes are single bytecodes, so two callers racing for the same missing note is at worst
+    one duplicate fetch - and `_store` keeps the object the first of them cached, so no reader
+    ever sees its note swapped out underneath it. The counters can lose a count to the same
+    race, which costs a hit rate a rounding error and nothing else.
     """
 
     __slots__ = ("_notes", "asked", "hits", "fetched", "_next_report")
@@ -106,6 +108,35 @@ class NoteCache:
             # One turn for all of them, as before: taking and releasing the collection per note
             # lets every other waiting caller in between.
             for note in await get_notes_async(missing):
+                found[note.id] = self._store(note)
+            self.fetched += len(missing)
+        self._report()
+        return found
+
+    def get_notes_blocking(self, note_ids: "Iterable[NoteId]") -> "dict[NoteId, Note]":
+        """`get_notes` for a caller that is not on the event loop.
+
+        The synchronous ops run in `asyncio.to_thread` workers and reach the collection
+        through the blocking wrappers, so they cannot await this. Same cache, same one turn
+        for whatever is missing.
+        """
+        ids = list(note_ids)
+        if not ids:
+            return {}
+        self.asked += len(ids)
+
+        found: "dict[NoteId, Note]" = {}
+        missing: "list[NoteId]" = []
+        for note_id in ids:
+            note = self._notes.get(note_id)
+            if note is None:
+                missing.append(note_id)
+            else:
+                found[note_id] = note
+        self.hits += len(found)
+
+        if missing:
+            for note in get_notes(missing):
                 found[note.id] = self._store(note)
             self.fetched += len(missing)
         self._report()
