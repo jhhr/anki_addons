@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import tracemalloc
 from collections import deque
@@ -97,6 +98,71 @@ GROWTH_RATE = 0.25
 # queued tasks are counted by both halves of the memory arithmetic, which have to agree with
 # each other: see memory_per_slot and MemoryEstimator.
 TASK_QUEUE_DEPTH = 4
+
+# Share of the time the collection's one permit must be busy before the gate treats it as the
+# run's bottleneck and stops growing. Not 1.0: the sample covers a couple of seconds and a few
+# turns, so it is noisy, and a limit held one tick too long costs far less than a limit that
+# keeps climbing past the point where climbing does anything.
+COLLECTION_SATURATED = 0.85
+
+
+class CollectionPressure:
+    """How much of the time the collection's single permit is occupied.
+
+    The gate's own test for being the bottleneck - every slot taken - cannot tell work from
+    waiting. A task blocked on the collection holds its slot and allocates nothing, so a run
+    queueing for the collection looks to the gate exactly like one that could use more
+    concurrency, and to the memory estimator like one whose tasks are free. Both then argue for
+    growth that cannot help: Anki runs one caller at a time inside the collection whatever the
+    limit says, so tasks added past that point queue rather than do anything.
+
+    Hence the resource reporting on itself. Only time actually spent holding the collection is
+    counted, because that is what caps the run's throughput - the queue behind it is the
+    symptom, and measuring the symptom would make the reading depend on the limit it is meant
+    to be choosing.
+
+    Lives here rather than in collection_access so that concurrency.py keeps to the stdlib and
+    stays loadable, and testable, outside a running Anki.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held = 0.0
+        self._turns = 0
+        self._since = time.monotonic()
+
+    def reset(self) -> None:
+        """Start a fresh window. Called when a run begins adapting."""
+        with self._lock:
+            self._held = 0.0
+            self._turns = 0
+            self._since = time.monotonic()
+
+    def record(self, held_seconds: float) -> None:
+        """One completed turn holding the collection."""
+        with self._lock:
+            self._held += held_seconds
+            self._turns += 1
+
+    def sample(self) -> Optional[tuple[float, float]]:
+        """(utilisation, mean seconds per turn) since the last sample, None if nothing ran.
+
+        Consuming: a sample covers only the window since the previous one, so the reading
+        follows the run instead of averaging over all of it.
+        """
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._since
+            held, turns = self._held, self._turns
+            self._held, self._turns, self._since = 0.0, 0, now
+        if turns == 0 or elapsed <= 0:
+            return None
+        # Capped at 1: a turn that started before this window lands its whole hold time in it
+        return min(1.0, held / elapsed), held / turns
+
+
+# One collection, so one of these. Reset by whichever gate starts adapting.
+collection_pressure = CollectionPressure()
 
 
 # --- Memory probes -----------------------------------------------------------------------
@@ -761,6 +827,7 @@ class ConcurrencyGate:
 
         self.in_flight = 0
         self.available_memory = available
+        self.collection_use = 0.0
         self._waiters: deque[asyncio.Future] = deque()
         self._adapt_task: Optional[asyncio.Task] = None
         self._aborted = False
@@ -834,6 +901,8 @@ class ConcurrencyGate:
 
     def start_adapting(self) -> None:
         """Begin watching memory and resizing the limit. No-op when not adaptive."""
+        # This run's collection cost, not the previous run's
+        collection_pressure.reset()
         if self.adaptive:
             # Only when the number can be used. Without a memory budget the limit is static
             # whatever a task turns out to cost, and tracing every allocation to learn a figure
@@ -920,6 +989,11 @@ class ConcurrencyGate:
         self.estimator.sample(rss, self.in_flight)
         self._apply_estimate()
 
+        # Sampled every tick whether or not it is read below, so the window it covers is one
+        # tick rather than however long it has been since the gate last considered growing
+        collection = collection_pressure.sample()
+        self.collection_use = collection[0] if collection else 0.0
+
         under_pressure = (available is not None and self.reserve and available < self.reserve) or (
             rss is not None and self.memory_limit and rss > self.memory_limit
         )
@@ -942,6 +1016,22 @@ class ConcurrencyGate:
         # Only grow when the gate itself is the bottleneck; if tasks aren't queueing up, a
         # bigger limit wouldn't be used anyway.
         if self.adaptive and self.limit < self.max_limit and self.in_flight >= self.limit:
+            if collection is not None and collection[0] >= COLLECTION_SATURATED:
+                # Every slot is taken, but by tasks queueing for a resource that serves one at
+                # a time. Raising the limit here adds waiters, not work: throughput is already
+                # pinned at one turn per `mean hold`, and the extra tasks only lengthen the
+                # queue each of them has to wait through. Left where it is, the limit settles
+                # at the point where the collection became the constraint, which is as far as
+                # concurrency is worth taking for this op.
+                logger.debug(
+                    "Collection busy %.0f%% of the last window (%.2fs per turn), holding"
+                    " concurrency at %d rather than growing towards %d",
+                    100 * collection[0],
+                    collection[1],
+                    self.limit,
+                    self.max_limit,
+                )
+                return
             previous = self.limit
             self.limit = min(self.max_limit, self.limit + max(1, int(self.limit * GROWTH_RATE)))
             self._wake_waiters(self.limit - self.in_flight)
@@ -960,4 +1050,6 @@ class ConcurrencyGate:
             text += f" | Free memory: {format_bytes(self.available_memory)}"
         if self.estimator.measured:
             text += f" | {format_bytes(int(self.estimator.measured))}/task"
+        if self.collection_use:
+            text += f" | Collection {self.collection_use:.0%}"
         return text

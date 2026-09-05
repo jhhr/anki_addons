@@ -129,6 +129,8 @@ class MemoryStubs:
         self._real_time = conc.time
         conc.tracemalloc = self.tracing
         conc.time = self.clock
+        # Its window opened on the real clock at import; reopen it on the stub one
+        conc.collection_pressure.reset()
 
     def remove_stubs(self) -> None:
         conc.tracemalloc = self._real_tracemalloc
@@ -840,6 +842,49 @@ class GateAcquireReleaseTests(GateTestCase):
         self.assertIn("1/4", gate.status_text())
 
 
+class CollectionPressureTests(MemoryStubTestCase):
+    """The reading the gate leans on: how busy the collection's one permit is."""
+
+    def setUp(self):
+        super().setUp()
+        self.pressure = conc.collection_pressure
+
+    def test_nothing_to_report_when_no_turn_was_taken(self):
+        self.clock.advance(2.0)
+        self.assertIsNone(self.pressure.sample())
+
+    def test_utilisation_is_the_share_of_the_window_spent_holding(self):
+        self.clock.advance(4.0)
+        self.pressure.record(1.0)
+        self.pressure.record(2.0)
+        use, mean_hold = self.pressure.sample()
+        self.assertAlmostEqual(use, 0.75)
+        self.assertAlmostEqual(mean_hold, 1.5)
+
+    def test_a_turn_spanning_the_window_start_cannot_read_above_one(self):
+        # A turn that began before this window lands its whole hold time inside it
+        self.clock.advance(1.0)
+        self.pressure.record(30.0)
+        use, _ = self.pressure.sample()
+        self.assertEqual(use, 1.0)
+
+    def test_a_sample_covers_only_the_window_since_the_last_one(self):
+        self.clock.advance(2.0)
+        self.pressure.record(2.0)
+        self.assertAlmostEqual(self.pressure.sample()[0], 1.0)
+        # The busy window is spent; an idle one that follows reads idle rather than averaging
+        self.clock.advance(2.0)
+        self.pressure.record(0.1)
+        self.assertAlmostEqual(self.pressure.sample()[0], 0.05)
+
+    def test_resetting_drops_what_was_collected(self):
+        self.clock.advance(2.0)
+        self.pressure.record(2.0)
+        self.pressure.reset()
+        self.clock.advance(2.0)
+        self.assertIsNone(self.pressure.sample())
+
+
 class GateAdaptationTests(GateTestCase):
     async def test_a_saturated_gate_grows_while_memory_is_comfortable(self):
         gate = self.make_gate(limit=16, max_limit=256)
@@ -853,6 +898,49 @@ class GateAdaptationTests(GateTestCase):
         gate.in_flight = 2
         await gate._adapt_once()
         self.assertEqual(gate.limit, 16)
+
+    async def test_a_busy_collection_stops_the_gate_growing(self):
+        # Every slot taken, but by tasks queueing for a resource that serves one at a time
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(1.9)
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 16)
+
+    async def test_a_collection_with_headroom_leaves_growth_alone(self):
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(0.2)
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertGreater(gate.limit, 16)
+
+    async def test_an_op_that_never_touches_the_collection_is_not_held_back(self):
+        # No turns at all: nothing to report, and nothing that should limit this op
+        self.clock.advance(2.0)
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertGreater(gate.limit, 16)
+
+    async def test_a_busy_collection_does_not_stop_the_gate_shrinking(self):
+        # Memory pressure still wins: the machine matters more than the throughput argument
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(2.0)
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        self.memory.available = 100 * MB
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 8)
+
+    async def test_the_collection_share_reaches_the_progress_dialog(self):
+        self.clock.advance(2.0)
+        conc.collection_pressure.record(1.0)
+        gate = self.make_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertIn("Collection 50%", gate.status_text())
 
     async def test_the_gate_never_grows_past_its_ceiling(self):
         gate = self.make_gate(limit=8, max_limit=9)

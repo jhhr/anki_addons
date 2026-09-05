@@ -25,12 +25,14 @@ without every op having to think about it.
 
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterable, Iterator, Sequence
 
 from aqt import mw
 
 from .api_client import run_cancelled
+from .concurrency import collection_pressure
 
 if TYPE_CHECKING:
     from anki.notes import Note, NoteId
@@ -103,6 +105,7 @@ def collection_access(what: str) -> Iterator[None]:
             raise RunCancelled(what)
 
     _held.depth = 1
+    took_at = time.monotonic()
     try:
         # Cancellation may have arrived while we were queueing. Checking again here is what
         # keeps a cancelled run from starting one more search it will have to wait out.
@@ -112,6 +115,12 @@ def collection_access(what: str) -> Iterator[None]:
     finally:
         _held.depth = 0
         _collection_semaphore.release()
+        # After the release, so the next caller in the queue is not kept waiting on the
+        # bookkeeping. Timed from here rather than from the acquire above because it is the
+        # holding that serialises the run; the wait to get in is what this measurement exists
+        # to let the gate avoid causing. Nested calls are not timed separately - they are
+        # already inside this turn - which the depth check above is what makes true.
+        collection_pressure.record(time.monotonic() - took_at)
 
 
 def find_notes(query: str) -> "Sequence[NoteId]":
