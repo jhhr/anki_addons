@@ -127,8 +127,11 @@ class _Job:
         self.exempt = bool(getattr(_exempt, "on", False))
         self.loop = loop
         self.future = future
-        # Only used by the blocking path; the awaiting one resolves through the future
-        self.done = threading.Event()
+        # Only the blocking path waits on this, and an Event is a Condition and an RLock, so
+        # the awaiting path - which resolves through its future and never touches it - does not
+        # allocate one. Decided here rather than lazily on first use: the worker settles a job
+        # the instant it is queued, so anything built on demand would be built in a race.
+        self.done = threading.Event() if future is None else None
         self.value: Any = None
         self.error: "Optional[BaseException]" = None
 
@@ -147,7 +150,8 @@ class _Job:
                 logger.debug("Dropped the answer to %s, its event loop is closed", self.what)
             return
         self.value, self.error = value, error
-        self.done.set()
+        if self.done is not None:
+            self.done.set()
 
     def _settle_future(self, value: Any, error: "Optional[BaseException]") -> None:
         # The awaiting task may have been cancelled while this was in flight
@@ -160,6 +164,8 @@ class _Job:
 
     def result(self) -> Any:
         """Block until the worker has run this. Only for callers not on the event loop."""
+        if self.done is None:
+            raise RuntimeError("result() on a job that was submitted to be awaited")
         self.done.wait()
         if self.error is not None:
             raise self.error
