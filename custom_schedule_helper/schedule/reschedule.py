@@ -328,7 +328,7 @@ def reschedule_background(did, recent=False, filter_flag=False, filtered_cids=[]
 
         not_already_rescheduled_query = None
         # When doing auto reschedule, we don't want to reschedule cards that were already rescheduled
-        # or dispersed by another Anki instance running this addon
+        # or dispersed ('d', written by the related_card_disperse addon)
         # But when running reschedule from the deck menu or main menu, we will reschedule again
         if filter_flag:
             not_already_rescheduled_query = (
