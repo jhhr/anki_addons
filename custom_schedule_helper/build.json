@@ -6,7 +6,8 @@
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [
     "anki",
-    "scheduling"
+    "scheduling",
+    "notify"
   ],
   "exclude": []
 }

@@ -16,9 +16,10 @@ from anki.consts import (
 from anki.decks import DeckManager
 from anki.utils import ids2str, int_version
 from aqt import mw
-from aqt.utils import tooltip, showWarning
+from aqt.utils import showWarning
 
 from ..configuration import Config
+from ..shared.notify import post
 from ..utils import (
     get_rev_conf,
     rotate_number_by_k,
@@ -229,13 +230,23 @@ class Scheduler:
         self.card = card
 
 
-def reschedule(did, recent=False, filter_flag=False, filtered_cids=[]):
+def reschedule(did, recent=False, filter_flag=False, filtered_cids=[], notify_group=""):
+    """`notify_group` batches the report with whatever else posted in the same
+    group -- the sync hook passes "sync"; menu callers leave it empty."""
     start_time = time.time()
 
     def on_done(future):
         mw.progress.finish()
         (result_msg, err_msgs) = future.result()
-        tooltip(f"{result_msg} in {time.time() - start_time:.2f} seconds")
+        post(
+            source="Custom Schedule Helper",
+            title=result_msg,
+            body=f"Finished in {time.time() - start_time:.2f} seconds",
+            level="success",
+            group=notify_group,
+            # A later run supersedes an earlier one rather than stacking.
+            key="reschedule",
+        )
         if len(err_msgs) > 0:
             showWarning("\n".join(err_msgs))
         mw.reset()

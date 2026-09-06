@@ -8,7 +8,8 @@
     "interpolate",
     "ui",
     "scheduling",
-    "anki"
+    "anki",
+    "notify"
   ],
   "exclude": []
 }

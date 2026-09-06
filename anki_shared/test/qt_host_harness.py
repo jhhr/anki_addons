@@ -204,8 +204,58 @@ def main() -> int:
     aqt.gui_hooks.theme_did_change()
     pump(250)
 
+    result = check_cross_addon_election()
+    print(f"cross-addon election: {result}")
+
     print("qt host harness: all assertions passed")
     return 0
+
+
+def check_cross_addon_election() -> str:
+    """Two addons' vendored copies must converge on one window.
+
+    This is the claim the whole package exists to make, and it can only be
+    checked against the real vendored layout, which build.py link materialises.
+    Skipped rather than failed when those links are absent, since a bare
+    checkout has none.
+    """
+    import importlib
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    addons = ("copy_anywhere", "related_card_disperse")
+    for addon in addons:
+        if not os.path.isdir(os.path.join(root, addon, "shared", "notify")):
+            return f"skipped: {addon}/shared/notify missing (run build.py link)"
+
+    modules = []
+    for addon in addons:
+        # Register the addon and its shared/ dir as stub packages, exactly as
+        # conftest does: their real __init__ touches mw.addonManager.
+        for name, path in [
+            (addon, os.path.join(root, addon)),
+            (f"{addon}.shared", os.path.join(root, addon, "shared")),
+        ]:
+            stub = types.ModuleType(name)
+            stub.__path__ = [path]
+            stub.__package__ = name
+            sys.modules[name] = stub
+        modules.append(importlib.import_module(f"{addon}.shared.notify"))
+
+    first, second = modules
+    assert first is not second, "vendoring should produce distinct module objects"
+
+    anchor = sys.modules["aqt"].mw
+    host_a = first.registry.host(anchor)
+    host_b = second.registry.host(anchor)
+    assert host_a is host_b, "each copy elected its own host"
+
+    before = len(host_a._stack.ordered())
+    first.post(source="Copy Anywhere", title="from copy A", timeout_ms=-1)
+    second.post(source="Related Card Disperse", title="from copy B", timeout_ms=-1)
+    after = len(host_a._stack.ordered())
+    assert after == before + 2, f"both posts should land in one stack ({before} -> {after})"
+    return "two distinct copies, one host, both posts in it"
 
 
 if __name__ == "__main__":

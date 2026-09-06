@@ -5,11 +5,11 @@ from typing import List
 from anki.utils import ids2str
 from aqt import mw
 from aqt.gui_hooks import sync_did_finish, sync_will_start
-from aqt.utils import tooltip
 
 from .configuration import Config
 from .logic import run_sync_disperse_in_background
 from .shared.anki.sync_hook_base import create_comparelog, review_cid_remote
+from .shared.notify import post
 
 
 def _existing_card_ids(card_ids: List[int]) -> List[int]:
@@ -42,16 +42,16 @@ def _on_sync_finish(local_rids: List[int]) -> None:
     def show_result(messages: List[str]) -> None:
         if not messages:
             return
-        # Showing the tooltip right as the op finishes gets it closed again by
-        # the progress dialog still tearing down, so let that settle first.
-        mw.progress.single_shot(
-            100,
-            lambda: tooltip(
-                "<br><br>".join(messages),
-                parent=mw,
-                period=10000,
-                y_offset=200,
-            ),
+        # The notify host waits out the progress dialog itself, so the
+        # single_shot dance this used to need is gone.
+        post(
+            source="Related Card Disperse",
+            title="Dispersed related cards",
+            body="<br><br>".join(messages),
+            level="success",
+            timeout_ms=10000,
+            group="sync",
+            key="sync",
         )
 
     run_sync_disperse_in_background(remote_reviewed_cids, config, show_result)

@@ -32,10 +32,11 @@ def auto_reschedule(remote_reviewed_cids: List[int]):
         recent=False,
         filter_flag=True,
         filtered_cids=set(remote_reviewed_cids),
+        notify_group="sync",
     )
 
     if fut:
-        # wait for reschedule to finish, it shows its own tooltip when done
+        # wait for reschedule to finish, it posts its own result when done
         fut.result()
 
 
