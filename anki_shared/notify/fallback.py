@@ -58,18 +58,30 @@ def period_ms(spec: Dict[str, Any]) -> int:
 
 
 def _show(spec: Dict[str, Any]) -> None:
-    """Imported here rather than at module scope so this package stays
-    importable without a running Anki -- the tests stub aqt, which has no
-    importable aqt.utils submodule."""
-    import aqt
-    from aqt.utils import tooltip
+    """Show the entry once no progress dialog is in the way.
 
-    tooltip(
-        render(spec),
-        parent=aqt.mw,
-        period=period_ms(spec),
-        y_offset=Y_OFFSET,
-    )
+    Posting the instant an operation finishes gets the tooltip closed again by
+    the progress dialog still tearing down -- the addons each carried their own
+    single_shot() workaround for this. mw.progress.single_shot refuses to fire
+    under a progress window and retries shortly after, so doing it here once
+    means no caller has to.
+
+    aqt is imported inside the function so the package stays importable without
+    a running Anki: the tests stub aqt, which has no importable aqt.utils.
+    """
+    import aqt
+
+    def render_now() -> None:
+        from aqt.utils import tooltip
+
+        tooltip(
+            render(spec),
+            parent=aqt.mw,
+            period=period_ms(spec),
+            y_offset=Y_OFFSET,
+        )
+
+    aqt.mw.progress.single_shot(10, render_now, requires_collection=False)
 
 
 def post(spec: Dict[str, Any]) -> str:

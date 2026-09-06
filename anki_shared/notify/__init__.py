@@ -26,7 +26,7 @@ the user as a broken sync.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 from . import fallback, registry
 from .spec import HOST_DEFAULT, LEVELS, STICKY, make_spec

@@ -1,4 +1,3 @@
-from aqt import mw
 from aqt.gui_hooks import sync_will_start, sync_did_finish
 
 from ..configuration import Config
@@ -66,13 +65,6 @@ def show_result(sync_result: SyncResult, clear: bool = True) -> None:
         sync_result.clear()
 
 
-def show_result_soon(sync_result: SyncResult, clear: bool = True) -> None:
-    # Posting the instant the op finishes gets the message closed again by the
-    # progress dialog still tearing down. Phase 2's host defers on
-    # mw.progress.busy() and this goes away; the tooltip fallback still needs it.
-    mw.progress.single_shot(100, lambda: show_result(sync_result, clear=clear))
-
-
 def _copy_on_sync_definitions():
     config = Config()
     config.load()
@@ -93,7 +85,7 @@ def local_changes_copy_definitions(sync_result: SyncResult) -> None:
             sync_result.local_changes_text = text
         sync_result.incr_count(count)
         # Report now; the remote pass replaces this entry under the same key.
-        show_result_soon(sync_result, clear=False)
+        show_result(sync_result, clear=False)
 
     copy_fields(
         copy_definitions=copy_on_sync_definitions,
@@ -116,7 +108,7 @@ def remote_changes_copy_definitions(sync_result: SyncResult) -> None:
     copy_fields(
         copy_definitions=copy_on_sync_definitions,
         update_sync_result=update_remote_sync_result,
-        on_done=lambda: show_result_soon(sync_result),
+        on_done=lambda: show_result(sync_result),
         progress_title="Copying fields for remote changes",
     )
 
