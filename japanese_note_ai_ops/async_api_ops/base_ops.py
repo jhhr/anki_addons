@@ -44,6 +44,7 @@ from .diagnostics import (
     start_cancel_watchdog,
 )
 
+from ..call_logging import bulk_op_logging, phase_log
 from ..utils import get_field_config, print_error_traceback
 
 from ..make_notes_tsv import make_tsv_from_notes, import_tsv_file
@@ -2121,41 +2122,50 @@ def selected_notes_op(
                 total_notes = len(notes_to_add)
                 failed_cnt = 0
                 added_cnt = 0
-                for index, note in enumerate(notes_to_add):
-                    note_type = note.note_type()
-                    if note_type is None:
-                        logger.debug(
-                            f"Error: Note type for note {note.id} is None, skipping note adding"
-                        )
-                        continue
-                    insert_deck = get_field_config(config, "insert_deck", note_type)
-                    insert_deck_id = None
-                    if insert_deck:
-                        insert_deck_id = mw.col.decks.id_for_name(insert_deck)
-                    else:
-                        insert_deck_id = mw.col.decks.id_for_name("Default")
-                        logger.debug("No insert deck set, setting deck_id to Default")
-                    if insert_deck_id is None:
-                        logger.debug("Default deck not found, skipping note adding")
-                        continue
-                    if mw.progress.want_cancel():
-                        logger.debug("Bulk notes op cancelled during note adding")
-                        break
-                    try:
-                        logger.debug(f"Adding note {index} to deck {insert_deck_id}")
-                        mw.col.add_note(note, insert_deck_id)
-                        added_cnt += 1
-                        op_changes = mw.col.merge_undo_entries(pos)
-                    except Exception as e:
-                        logger.error(f"Error adding note {index}: {e}")
-                        print_error_traceback(e, logger)
-                        failed_cnt += 1
+                # The adding phase is a phase, not `total_notes` independent events, so it gets
+                # one log file for the whole of itself. `note_will_be_added` fires inside this
+                # block once per note, and the hook behind it used to open a file and close the
+                # previous one every time: one measured run left 1,453 of them, and the run's
+                # own log - the phase table included - ended up in the last. The handler goes
+                # back the way it was at the end of the block, so everything either side of the
+                # loop stays in one file.
+                with phase_log("add_note_phase"):
+                    for index, note in enumerate(notes_to_add):
+                        note_type = note.note_type()
+                        if note_type is None:
+                            logger.debug(
+                                f"Error: Note type for note {note.id} is None, skipping note"
+                                " adding"
+                            )
+                            continue
+                        insert_deck = get_field_config(config, "insert_deck", note_type)
+                        insert_deck_id = None
+                        if insert_deck:
+                            insert_deck_id = mw.col.decks.id_for_name(insert_deck)
+                        else:
+                            insert_deck_id = mw.col.decks.id_for_name("Default")
+                            logger.debug("No insert deck set, setting deck_id to Default")
+                        if insert_deck_id is None:
+                            logger.debug("Default deck not found, skipping note adding")
+                            continue
+                        if mw.progress.want_cancel():
+                            logger.debug("Bulk notes op cancelled during note adding")
+                            break
+                        try:
+                            logger.debug(f"Adding note {index} to deck {insert_deck_id}")
+                            mw.col.add_note(note, insert_deck_id)
+                            added_cnt += 1
+                            op_changes = mw.col.merge_undo_entries(pos)
+                        except Exception as e:
+                            logger.error(f"Error adding note {index}: {e}")
+                            print_error_traceback(e, logger)
+                            failed_cnt += 1
 
-                    progress_updater.update_note_adding_progress(
-                        notes_added=added_cnt,
-                        total_notes=total_notes,
-                        failed=failed_cnt,
-                    )
+                        progress_updater.update_note_adding_progress(
+                            notes_added=added_cnt,
+                            total_notes=total_notes,
+                            failed=failed_cnt,
+                        )
                 cleanup_started = log_phase(
                     "cleanup: add_note loop", cleanup_started, added=added_cnt, failed=failed_cnt
                 )
@@ -2224,7 +2234,8 @@ def selected_notes_op(
         loop.set_default_executor(executor)
         set_run_executor(executor)
         try:
-            return loop.run_until_complete(async_wrapper())
+            with bulk_op_logging():
+                return loop.run_until_complete(async_wrapper())
         except RunCancelled as e:
             # A cancel that landed on a collection read this thread makes outside the cleanup
             # phase, so the op unwound before it could save anything. There is nothing left to

@@ -1,9 +1,5 @@
 import os
-import sys
 import logging
-import threading
-import time
-from datetime import datetime
 
 from anki import hooks
 from anki.notes import Note, NoteId
@@ -31,7 +27,7 @@ VENDOR_HEALTH = vendor_health(ADDON_DIR)
 # E402 - module level import not at top of file
 from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 from .utils import get_field_config  # noqa: E402
-from .async_api_ops.diagnostics import WORKER_THREAD_PREFIX  # noqa: E402
+from .call_logging import in_bulk_op, start_call_log  # noqa: E402
 
 
 from .async_api_ops.clean_meaning import (  # noqa: E402
@@ -99,133 +95,10 @@ def setup_addon_logging():
 setup_addon_logging()
 
 
-# Marks the handlers this addon attaches, so they can be found and closed again
-_ADDON_HANDLER_FLAG = "_simple_anki_ai_prompts_handler"
-
-
-# How long to keep waiting for a run's threads before closing its log file anyway. Long enough
-# for a cancelled run to finish unwinding, short enough that the file doesn't stay open for the
-# session if something never exits.
-_LOG_CLOSE_TIMEOUT_SECONDS = 300
-_LOG_CLOSE_POLL_SECONDS = 2.0
-
-
-def _addon_threads_alive() -> bool:
-    """Whether any of this addon's worker threads is still running.
-
-    A run's threads outlive the operation on purpose: a cancelled run cannot interrupt a
-    request already in flight, so its threads unwind on their own afterwards - and what they
-    log while doing it is the whole point of the cancellation diagnostics.
-    """
-    return any(
-        thread.name.startswith(WORKER_THREAD_PREFIX) and thread.is_alive()
-        for thread in threading.enumerate()
-    )
-
-
-def _close_handler_when_idle(handler: logging.Handler) -> None:
-    """Close a detached handler, once nothing is still writing through it.
-
-    Closing it straight away closed the file out from under a cancelled run's threads. They
-    keep logging as they unwind, and a handler whose stream has been closed re-opens the file
-    on the next record - so the descriptor this function exists to release was leaked after
-    all, and the run's last diagnostics ended up somewhere nothing was looking.
-    """
-
-    def close_quietly() -> None:
-        try:
-            handler.close()
-        except Exception:
-            pass
-
-    if not _addon_threads_alive():
-        close_quietly()
-        return
-
-    def wait_and_close() -> None:
-        deadline = time.monotonic() + _LOG_CLOSE_TIMEOUT_SECONDS
-        while time.monotonic() < deadline and _addon_threads_alive():
-            time.sleep(_LOG_CLOSE_POLL_SECONDS)
-        close_quietly()
-
-    threading.Thread(target=wait_and_close, name="sap_log_closer", daemon=True).start()
-
-
-def close_previous_log_handlers(logger_instance: logging.Logger) -> None:
-    """Detach any log handler this addon attached earlier, and close it once it is idle.
-
-    A handler was added every time the browser context menu was built or a field lost focus,
-    and none were ever removed. They accumulate for the lifetime of the session, so every log
-    record gets written once per handler - and with several worker threads logging at once
-    that turns into a great deal of redundant file I/O. It also keeps every previous log file
-    open, which is why they can't be deleted until Anki is closed.
-
-    Detaching is immediate; the close waits for the threads that may still be writing.
-
-    Nothing detached here can belong to an operation still running. Every caller is a UI hook -
-    building the browser context menu, unfocusing a field, adding a note - and Anki's progress
-    dialog owns the UI while an operation is in progress, so none of them can fire until it has
-    finished. Cancelling is the only thing the user can do meanwhile.
-    """
-    for handler in list(logger_instance.handlers):
-        if getattr(handler, _ADDON_HANDLER_FLAG, False):
-            logger_instance.removeHandler(handler)
-            _close_handler_when_idle(handler)
-
-
-def create_call_log_handler(function_name: str) -> logging.Handler:
-    """Create a new file handler for a specific function call"""
-    config = mw.addonManager.getConfig(__name__) or {}
-
-    # Get log level from config
-    log_level_str = config.get("log_level", "ERROR")
-    log_level = getattr(logging, log_level_str.upper(), logging.ERROR)
-
-    # Update the root addon logger's level to match config
-    addon_logger = logging.getLogger(__name__.split(".")[0])
-    addon_logger.setLevel(log_level)
-
-    # Check if console logging is enabled
-    log_to_console = config.get("log_to_console", False)
-
-    if log_to_console:
-        # Create console handler
-        handler: logging.Handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(log_level)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        setattr(handler, _ADDON_HANDLER_FLAG, True)
-        return handler
-
-    # Create logs directory
-    addon_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(addon_dir, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
-    # Create unique log file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"{function_name}_{timestamp}.log")
-
-    # Create handler. delay=True so the file isn't opened (or created) until something is
-    # actually logged - building the context menu shouldn't leave an empty log file behind.
-    handler = logging.FileHandler(log_file, encoding="utf-8", delay=True)
-    handler.setLevel(log_level)
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-    setattr(handler, _ADDON_HANDLER_FLAG, True)
-
-    return handler
-
-
 # Function to be executed when the browser menus are initialized
 def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
-    handler = create_call_log_handler("add_note")
     logger = logging.getLogger(__name__)
-
-    if handler:
-        # Replace the previous run's handler rather than stacking another one on top
-        close_previous_log_handlers(logger)
-        logger.addHandler(handler)
+    start_call_log("add_note")
 
     # Create a new action for the context menu
     meaning_action = QAction("Clean dictionary meaning", mw)
@@ -368,13 +241,11 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
-    handler = create_call_log_handler("add_note")
     logger = logging.getLogger(__name__)
-
-    if handler:
-        # Replace the previous run's handler rather than stacking another one on top
-        close_previous_log_handlers(logger)
-        logger.addHandler(handler)
+    # A hook the user drives one field at a time, so the call really is the unit of work and a
+    # log file per call is the right granularity - unlike note_will_be_added, which a bulk run
+    # fires a thousand times in a row.
+    start_call_log("add_note")
 
     note_type = note.note_type()
     if not note_type:
@@ -411,13 +282,12 @@ def run_op_on_add_note(note: Note):
         # Happening within match_words_to_notes, which causes some problems
         return
 
-    handler = create_call_log_handler("add_note")
     logger = logging.getLogger(__name__)
-
-    if handler:
-        # Replace the previous run's handler rather than stacking another one on top
-        close_previous_log_handlers(logger)
-        logger.addHandler(handler)
+    if not in_bulk_op():
+        # A note added by hand, which is the case a log file per call was made for. Inside a
+        # bulk op the run owns the handler and the phase it belongs to has already installed
+        # one; replacing it per note is what produced 1,453 log files for a single run.
+        start_call_log("add_note")
 
     note_type = note.note_type()
     if not note_type:

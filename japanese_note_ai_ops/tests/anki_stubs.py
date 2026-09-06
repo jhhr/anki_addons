@@ -147,7 +147,8 @@ def load_ops_module(name: str, subdir: str = "async_api_ops") -> ModuleType:
 
     `subdir` is here so `sync_local_ops` can be reached the same way: mdx_dictionary imports
     aqt and reaches sideways into the package for html_stripping, configuration and the
-    concurrency gate, so it needs exactly this treatment and nothing more.
+    concurrency gate, so it needs exactly this treatment and nothing more. Passing "" loads a
+    module that sits at the package root, such as call_logging.
     """
     install()
 
@@ -157,18 +158,21 @@ def load_ops_module(name: str, subdir: str = "async_api_ops") -> ModuleType:
         sys.modules[PACKAGE] = root
 
     root = sys.modules[PACKAGE]
-    package_name = f"{PACKAGE}.{subdir}"
-    if package_name not in sys.modules:
-        ops = ModuleType(package_name)
-        ops.__path__ = [str(ADDON_ROOT / subdir)]
-        sys.modules[package_name] = ops
-        setattr(root, subdir, ops)
+    if not subdir:
+        package_name = PACKAGE
+    else:
+        package_name = f"{PACKAGE}.{subdir}"
+        if package_name not in sys.modules:
+            ops = ModuleType(package_name)
+            ops.__path__ = [str(ADDON_ROOT / subdir)]
+            sys.modules[package_name] = ops
+            setattr(root, subdir, ops)
 
     dotted = f"{package_name}.{name}"
     if dotted in sys.modules:
         return sys.modules[dotted]
 
-    path = ADDON_ROOT / subdir / f"{name}.py"
+    path = (ADDON_ROOT / subdir if subdir else ADDON_ROOT) / f"{name}.py"
     spec = importlib.util.spec_from_file_location(dotted, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not build a spec for {path}")
