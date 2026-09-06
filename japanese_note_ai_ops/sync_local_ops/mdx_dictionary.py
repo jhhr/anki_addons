@@ -150,6 +150,58 @@ class MDXDictionary:
                 e,
             )
 
+    def _lookup_indexes(self, keyword: str, ignorecase: bool) -> list[dict]:
+        """`IndexBuilder.lookup_indexes`, with the keyword bound as a parameter.
+
+        The shipped one builds its SQL with `.format()` on the raw keyword and wraps it in
+        double quotes, so a key containing a `"` produces a query that is either a syntax error
+        or a different question - and MDX keys are arbitrary text from someone else's
+        dictionary file. Nothing here is a security boundary: the database is a local file this
+        add-on built itself. It is simply the wrong way to ask, and the right way costs nothing.
+
+        Here rather than in `lib/mdict_query/__init__.py` because that tree is vendored and a
+        `lib/` update would silently revert anything put in it - the same reason the
+        `lower(key_text)` index is created from this file. The SQL is otherwise the shipped
+        query verbatim, `SELECT *` included, so the column order below is the one
+        `get_data_by_index` expects.
+
+        The connection is closed rather than left to `with sqlite3.connect(...)`, which is what
+        the shipped function does: that context manager commits a transaction, it does not close
+        anything. A connection carries its own page cache, this runs once per lookup on a
+        283 MB index, and page cache is exactly the memory a tracemalloc-based fit cannot see -
+        so a connection left to the garbage collector is the wrong kind of thing to leave lying
+        around on the machine where memory is the constraint.
+        """
+        if ignorecase:
+            sql = "SELECT * FROM MDX_INDEX WHERE lower(key_text) = lower(?)"
+        else:
+            sql = "SELECT * FROM MDX_INDEX WHERE key_text = ?"
+        conn = sqlite3.connect(self.builder._mdx_db)
+        try:
+            rows = conn.execute(sql, (keyword,)).fetchall()
+        finally:
+            conn.close()
+        return [
+            {
+                "file_pos": row[1],
+                "compressed_size": row[2],
+                "decompressed_size": row[3],
+                "record_block_type": row[4],
+                "record_start": row[5],
+                "record_end": row[6],
+                "offset": row[7],
+            }
+            for row in rows
+        ]
+
+    def _mdx_lookup(self, keyword: str, ignorecase: bool = False) -> list[str]:
+        """`IndexBuilder.mdx_lookup` over `_lookup_indexes` above. Same results, bound keyword."""
+        indexes = self._lookup_indexes(keyword, ignorecase)
+        if not indexes:
+            return []
+        with open(self.builder._mdx_file, "rb") as mdx_file:
+            return [self.builder.get_mdx_by_index(mdx_file, index) for index in indexes]
+
     def _parse_link_entries(self, result: str) -> list[str]:
         """Parse @@@LINK= entries from a dictionary result.
 
@@ -220,7 +272,7 @@ class MDXDictionary:
         for entry in linked_entries:
             logger.debug(f"Following link to: {entry} (depth {depth + 1})")
             # Query the linked entry
-            linked_result = self.builder.mdx_lookup(entry, ignorecase=False)
+            linked_result = self._mdx_lookup(entry, ignorecase=False)
 
             if linked_result:
                 # Join all results for this entry
@@ -276,7 +328,7 @@ class MDXDictionary:
                 # Collect all matching entries
                 all_results = []
                 for key in matching_keys:
-                    entry_result = self.builder.mdx_lookup(key, ignorecase=False)
+                    entry_result = self._mdx_lookup(key, ignorecase=False)
                     if entry_result:
                         all_results.extend(entry_result)
 
@@ -288,7 +340,7 @@ class MDXDictionary:
                 # Single word lookup using mdict-query's built-in method
                 # mdx_lookup returns a list of matching results
                 # With ignorecase=True, it will find matches regardless of case
-                results = self.builder.mdx_lookup(query, ignorecase=ignorecase)
+                results = self._mdx_lookup(query, ignorecase=ignorecase)
 
                 if not results:
                     logger.debug(f"Word '{query}' not found in {os.path.basename(self.mdx_path)}")

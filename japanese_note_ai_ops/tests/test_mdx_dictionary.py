@@ -106,6 +106,85 @@ class MDXDictionaryTestCase(unittest.TestCase):
             conn.close()
 
 
+class LookupIndexesTests(MDXDictionaryTestCase):
+    """The keyword bound as a parameter instead of formatted into the SQL.
+
+    Compared against the shipped `IndexBuilder.lookup_indexes` itself rather than a copy of it,
+    so what these say holds for the function actually being replaced.
+    """
+
+    def shipped(self, keyword, ignorecase):
+        from mdict_query import IndexBuilder  # noqa: E402  (needs lib/ on sys.path first)
+
+        return IndexBuilder.lookup_indexes(self.db_path, keyword, ignorecase)
+
+    def test_the_same_rows_come_back_as_the_shipped_query(self):
+        for keyword, ignorecase in [
+            ("ご飯", False),
+            ("ご飯", True),
+            ("apple", True),
+            ("Apple", False),
+            ("食べる", False),
+        ]:
+            with self.subTest(keyword=keyword, ignorecase=ignorecase):
+                self.assertEqual(
+                    self.dictionary._lookup_indexes(keyword, ignorecase),
+                    self.shipped(keyword, ignorecase),
+                )
+
+    def test_a_word_that_is_not_in_the_dictionary_finds_nothing(self):
+        self.assertEqual(self.dictionary._lookup_indexes("ざぶとん", False), [])
+
+    def test_the_case_insensitive_form_still_folds_ascii(self):
+        """The whole point of the ignorecase branch, and of the index under it."""
+        self.assertEqual(len(self.dictionary._lookup_indexes("APPLE", True)), 2)
+        self.assertEqual(len(self.dictionary._lookup_indexes("APPLE", False)), 0)
+
+    def test_a_key_containing_a_double_quote_is_a_lookup_rather_than_a_syntax_error(self):
+        """The reason for the change. MDX keys are arbitrary text from a dictionary file."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO MDX_INDEX VALUES (?, 1, 2, 3, 4, 5, 6, 7)", ('say "yes"',))
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            self.shipped('say "yes"', False)
+        self.assertEqual(
+            self.dictionary._lookup_indexes('say "yes"', False),
+            [
+                {
+                    "file_pos": 1,
+                    "compressed_size": 2,
+                    "decompressed_size": 3,
+                    "record_block_type": 4,
+                    "record_start": 5,
+                    "record_end": 6,
+                    "offset": 7,
+                }
+            ],
+        )
+
+    def test_the_lookup_leaves_no_connection_open(self):
+        """A connection carries a page cache, and this runs once per lookup."""
+        opened = []
+        real_connect = sqlite3.connect
+
+        def tracking_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        sqlite3.connect = tracking_connect
+        try:
+            self.dictionary._lookup_indexes("ご飯", False)
+        finally:
+            sqlite3.connect = real_connect
+
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")
+
+
 class PrefixRangeTests(MDXDictionaryTestCase):
     """`LIKE 'p%'` will not use a BINARY index; the same question as a range will."""
 
