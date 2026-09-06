@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, Optional
 
 
@@ -166,17 +166,21 @@ def summarize_outcome(
     updated: int,
     outcome: str,
     backlogged: int = 0,
+    buried: int = 0,
 ) -> str:
-    """One line per rule run. ``backlogged`` is only spelled out when it bit.
+    """One line per rule run. ``backlogged`` and ``buried`` only when they bit.
 
     A backlogged card is one the run pinned rather than moved, so a run that
     reports a large candidate count and a small updated count is not losing
-    cards silently -- that field says where they went.
+    cards silently -- those two fields say where they went. ``buried`` is the
+    subset of the backlog the run took out of today's session, which is the
+    only thing that disperses a card whose due date is already in the past.
     """
     backlog_part = f"backlogged={backlogged}, " if backlogged else ""
+    buried_part = f"buried={buried}, " if buried else ""
     return (
         f"{rule_name}: candidates={candidates}, filtered={filtered_out}, "
-        f"capped={capped_out}, {backlog_part}updated={updated}, outcome={outcome}"
+        f"capped={capped_out}, {backlog_part}{buried_part}updated={updated}, outcome={outcome}"
     )
 
 
@@ -236,3 +240,116 @@ def select_cards_to_bury(
             kept_index[cid] = len(kept)
             kept.append(cid)
     return kept, buried
+
+
+def rule_display_name(rule: Mapping[str, Any]) -> str:
+    """The name to show for a rule, falling back to a short slice of its guid.
+
+    In core rather than logic because every layer that reports on a rule needs
+    it, and a rule error from a deck run should read the same as one from a
+    review.
+    """
+    return rule.get("name") or f"Rule {rule.get('guid', '')[:8]}"
+
+
+def describe_rule_errors(rule_errors: dict[str, tuple[str, int]]) -> str:
+    """One line naming every rule that failed, with its first message.
+
+    A rule that raises fails identically on every card, so what the user needs
+    is the rule's name, one copy of the message, and the scale -- not one line
+    per card.
+    """
+    parts = [
+        f"{name} ({message}) on {count} card{'' if count == 1 else 's'}"
+        for name, (message, count) in sorted(rule_errors.items())
+    ]
+    return "Rule errors: " + "; ".join(parts)
+
+
+def order_session_blocks(
+    blocks: list[tuple[str, list[int]]],
+    anchor_deck: str,
+) -> list[int]:
+    """One session order out of several decks' sessions.
+
+    There is no true global order across decks -- the user decides which deck to
+    open, and each deck deals its own pool in its own preset's order -- so the
+    union is a concatenation of per-deck blocks rather than one re-sort. The
+    block order carries the only preference there is: the deck the run was
+    started from leads, so a collision between it and another deck buries the
+    *other* deck's card. Running the command on a vocab deck should thin the
+    kanji deck, not the vocab deck the user is about to sit down with.
+
+    The rest follow in deck-name order, which is arbitrary but stable, so two
+    runs over an unchanged collection bury the same cards.
+
+    A card is kept once, in the first block that claims it. An ``anchor_deck``
+    that names no block is not an error: the deck the run started from may have
+    nothing due today, and the remaining blocks still order deterministically.
+    """
+    ordered = sorted((name, ids) for name, ids in blocks if ids)
+    lead = [(name, ids) for name, ids in ordered if name == anchor_deck]
+    rest = [(name, ids) for name, ids in ordered if name != anchor_deck]
+
+    session: list[int] = []
+    seen: set[int] = set()
+    for _, ids in lead + rest:
+        for cid in ids:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            session.append(cid)
+    return session
+
+
+def merge_rule_error(
+    errors: dict[str, tuple[str, int]],
+    rule_name: str,
+    message: str,
+) -> None:
+    """Record one rule's failure, keeping the first message and a count.
+
+    A rule whose code raises does so for every card it is asked about, so a
+    broken rule over a 300-card session would otherwise report 300 identical
+    lines. The first message is the informative one; the count is what says the
+    rule is broken rather than unlucky.
+    """
+    previous = errors.get(rule_name)
+    if previous is None:
+        errors[rule_name] = (message, 1)
+    else:
+        errors[rule_name] = (previous[0], previous[1] + 1)
+
+
+def select_backlog_cards_to_bury(
+    past_due: list[int],
+    anchor_id: Optional[int] = None,
+    slot_taken: bool = False,
+) -> list[int]:
+    """Which of one group's past-due cards to bury, keeping at most one.
+
+    ``past_due`` holds the group's cards that are already in today's pool --
+    due today or earlier -- and still live, most overdue first. A due date
+    cannot disperse these. Anki pools everything with ``due <= today`` and
+    orders that pool by the deck's review order, so moving a date around inside
+    the pool decides nothing, and moving it out of the pool postpones a card
+    that is due now. Burying is the only lever left, it leaves the schedule
+    untouched, and it is the one Anki itself pulls on the siblings of the card
+    you just answered.
+
+    A group gets one card a day. The anchor claims that slot when it is itself
+    past due, being the card the run was started from; otherwise the card that
+    has waited longest claims it. ``slot_taken`` says the group has already had
+    its card today -- something in it was answered, here or on another device
+    -- and then the whole live backlog goes.
+
+    Unlike a deck run, this has no session order to count a gap against, so it
+    always applies the one-a-day rule rather than ``bury_min_gap``: the ordering
+    that setting measures against only exists once a deck builds its queue.
+    """
+    if not past_due:
+        return []
+    if slot_taken:
+        return list(past_due)
+    keeper = anchor_id if anchor_id in past_due else past_due[0]
+    return [cid for cid in past_due if cid != keeper]

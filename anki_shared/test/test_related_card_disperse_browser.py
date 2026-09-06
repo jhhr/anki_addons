@@ -1,6 +1,10 @@
 from related_card_disperse.configuration import default_rule
 from related_card_disperse.core import remaining_note_cards
-from related_card_disperse.logic import plan_note_rule_runs
+from related_card_disperse.logic import (
+    describe_buried_decks,
+    merge_buried_by_deck,
+    plan_note_rule_runs,
+)
 
 
 def make_rule(**overrides):
@@ -197,3 +201,31 @@ def test_note_run_does_nothing_when_no_rule_matches(monkeypatch):
     anchors, result = run_note(monkeypatch, cards, [rule], {})
     assert anchors == []
     assert result.notes == 0
+
+
+def test_nothing_buried_says_nothing():
+    assert describe_buried_decks({}) == ""
+
+
+def test_a_bury_only_where_the_run_started_is_not_news():
+    assert describe_buried_decks({"Japanese": 3}, current_deck="Japanese") == ""
+
+
+def test_other_decks_are_named_with_their_counts():
+    text = describe_buried_decks({"Japanese": 3, "Kanji": 2}, current_deck="Japanese")
+    assert text == "Buried elsewhere: 2 cards in Kanji"
+
+
+def test_decks_are_listed_in_name_order():
+    text = describe_buried_decks({"Zoology": 1, "Anatomy": 2})
+    assert text == "Buried: 3 cards across Anatomy (2), Zoology (1)"
+
+
+def test_a_single_card_is_not_pluralised():
+    assert describe_buried_decks({"Kanji": 1}) == "Buried: 1 card in Kanji"
+
+
+def test_merging_adds_counts_deck_by_deck():
+    totals = {"Kanji": 1}
+    merge_buried_by_deck(totals, {"Kanji": 2, "Japanese": 1})
+    assert totals == {"Kanji": 3, "Japanese": 1}

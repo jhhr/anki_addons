@@ -7,7 +7,7 @@ from aqt.qt import QAction, QMenu, qconnect
 from aqt.utils import tooltip
 
 from .configuration import Config
-from .logic import BrowserRunResult, run_browser_disperse_in_background
+from .logic import BrowserRunResult, describe_buried_decks, run_browser_disperse_in_background
 
 MENU_LABEL = "Disperse related cards"
 
@@ -27,6 +27,12 @@ def _summary(result: BrowserRunResult, notes_mode: bool) -> str:
 
 def _show_result(result: BrowserRunResult, browser: Browser, notes_mode: bool) -> None:
     lines = [_summary(result, notes_mode)]
+    # A selection says which cards to disperse, never which decks may be
+    # touched: the rules decide that, and the buried ones drop out of a session
+    # the user did not ask about. Name those decks.
+    elsewhere = describe_buried_decks(result.buried_by_deck)
+    if elsewhere:
+        lines.append(elsewhere)
     # The table's due column is stale now that due dates have moved under it.
     browser.table.reset()
     # Showing the tooltip right as the op finishes gets it closed again by the

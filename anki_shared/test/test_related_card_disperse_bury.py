@@ -1,4 +1,10 @@
-from related_card_disperse.core import select_cards_to_bury
+from related_card_disperse.core import (
+    describe_rule_errors,
+    merge_rule_error,
+    order_session_blocks,
+    select_backlog_cards_to_bury,
+    select_cards_to_bury,
+)
 
 
 def relations(*pairs):
@@ -72,3 +78,103 @@ def test_zero_gap_means_the_whole_session():
     assert buried == [9]
     assert kept == list(range(9))
 
+
+
+def test_no_backlog_is_nothing_to_bury():
+    assert select_backlog_cards_to_bury([]) == []
+
+
+def test_the_anchor_keeps_the_day_when_it_is_itself_late():
+    assert select_backlog_cards_to_bury([3, 1, 2], anchor_id=1) == [3, 2]
+
+
+def test_the_longest_wait_keeps_the_day_when_the_anchor_is_not_late():
+    """The anchor may be due in the future, or not in the group at all.
+
+    ``past_due`` arrives most overdue first, so its head is the card that has
+    been waiting longest.
+    """
+    assert select_backlog_cards_to_bury([3, 1, 2], anchor_id=9) == [1, 2]
+    assert select_backlog_cards_to_bury([3, 1, 2]) == [1, 2]
+
+
+def test_a_lone_backlogged_card_keeps_the_day():
+    assert select_backlog_cards_to_bury([7], anchor_id=9) == []
+
+
+def test_a_group_that_already_had_its_card_today_loses_the_whole_backlog():
+    """The anchor was just answered, so it spent the day; nothing else may run.
+
+    This is the case that generalises Anki's sibling burying: the card you
+    answered takes the slot and every related card still due goes.
+    """
+    assert select_backlog_cards_to_bury([3, 1, 2], anchor_id=9, slot_taken=True) == [3, 1, 2]
+
+
+def test_a_spent_day_beats_even_a_late_anchor():
+    assert select_backlog_cards_to_bury([3, 1], anchor_id=1, slot_taken=True) == [3, 1]
+
+
+def test_the_anchor_block_leads_even_when_its_name_sorts_last():
+    blocks = [("Zoology", [1, 2]), ("Anatomy", [3, 4])]
+    assert order_session_blocks(blocks, "Zoology") == [1, 2, 3, 4]
+
+
+def test_the_other_blocks_follow_in_name_order():
+    blocks = [("Zoology", [3]), ("Anatomy", [2]), ("Botany", [1])]
+    assert order_session_blocks(blocks, "Botany") == [1, 2, 3]
+
+
+def test_a_missing_anchor_still_orders_the_rest():
+    """The deck the run started from may simply have nothing due today."""
+    blocks = [("Zoology", [2]), ("Anatomy", [1])]
+    assert order_session_blocks(blocks, "Geology") == [1, 2]
+
+
+def test_a_card_in_two_blocks_is_kept_once_in_the_first():
+    blocks = [("Anchor", [1, 2]), ("Other", [2, 3])]
+    assert order_session_blocks(blocks, "Anchor") == [1, 2, 3]
+
+
+def test_empty_blocks_are_dropped():
+    blocks = [("Empty", []), ("Anchor", [1])]
+    assert order_session_blocks(blocks, "Anchor") == [1]
+
+
+def test_the_non_anchor_deck_is_the_one_buried():
+    """The regression test for the whole cross-deck bug.
+
+    Two top-level decks, one relation running between them. Before the session
+    became the union of every deck's day, the relation was resolved and then
+    dropped for pointing outside the anchor deck, and nothing was buried. Now it
+    collides -- and because the anchor block leads, the card that goes is the
+    one in the deck the user was *not* about to sit down with.
+    """
+    session = order_session_blocks([("JP vocab", [10]), ("JP write", [20])], "JP vocab")
+    kept, buried = select_cards_to_bury(session, relations((10, 20)))
+    assert kept == [10]
+    assert buried == [20]
+
+
+def test_a_rule_error_is_recorded_once_with_a_count():
+    errors: dict[str, tuple[str, int]] = {}
+    merge_rule_error(errors, "Reversible", "__import__ not found")
+    merge_rule_error(errors, "Reversible", "__import__ not found")
+    merge_rule_error(errors, "Other", "boom")
+    assert errors == {"Reversible": ("__import__ not found", 2), "Other": ("boom", 1)}
+
+
+def test_the_first_message_is_the_one_kept():
+    errors: dict[str, tuple[str, int]] = {}
+    merge_rule_error(errors, "Reversible", "first")
+    merge_rule_error(errors, "Reversible", "second")
+    assert errors["Reversible"] == ("first", 2)
+
+
+def test_rule_errors_read_as_one_line_per_rule():
+    text = describe_rule_errors({"Reversible": ("__import__ not found", 36)})
+    assert text == "Rule errors: Reversible (__import__ not found) on 36 cards"
+
+
+def test_a_single_failed_card_is_not_pluralised():
+    assert describe_rule_errors({"R": ("boom", 1)}) == "Rule errors: R (boom) on 1 card"
