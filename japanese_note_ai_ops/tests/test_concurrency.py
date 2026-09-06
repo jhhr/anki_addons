@@ -309,12 +309,21 @@ class MaxConcurrencyTests(MemoryStubTestCase):
         self.memory.probe_failed = True
         self.assertEqual(conc.max_concurrency_for(8 * MB), conc.NO_PROBE_CONCURRENCY)
 
-    def test_the_thread_pool_is_sized_for_the_highest_reachable_limit(self):
-        # The pool is created before the gate, so it has to cover a ceiling that may be raised
-        # later once the op has been measured
-        self.assertEqual(conc.max_possible_concurrency({}), conc.MAX_AUTO_CONCURRENCY)
-        self.assertEqual(conc.max_possible_concurrency({"max_concurrent_requests": 400}), 400)
-        self.assertEqual(conc.max_possible_concurrency(None), conc.MAX_AUTO_CONCURRENCY)
+    def test_the_thread_pool_is_sized_off_the_ceiling_memory_allows(self):
+        """Not off the backstop, which is what let a run pinned at limit 4 keep 233 threads.
+
+        The pool has to cover the ceiling plus the two things that hold a worker without
+        holding a gate slot: a CPU-bound section, and a handful for the collection and cleanup.
+        """
+        overhead = conc.cpu_bound_concurrency() + conc.EXECUTOR_HEADROOM
+        self.assertEqual(conc.executor_size(87), 87 + overhead)
+        self.assertEqual(conc.executor_size(512), 512 + overhead)
+
+    def test_the_thread_pool_never_starts_below_the_adaptive_starting_limit(self):
+        # It is built before the gate exists, and an op that never builds one still needs
+        # workers for the work it does off the loop
+        overhead = conc.cpu_bound_concurrency() + conc.EXECUTOR_HEADROOM
+        self.assertEqual(conc.executor_size(0), conc.ADAPTIVE_START_CONCURRENCY + overhead)
 
 
 class CpuBoundGateTests(unittest.TestCase):

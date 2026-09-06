@@ -382,16 +382,33 @@ def memory_budget() -> Optional[float]:
     return min(spendable * MEMORY_TARGET_FRACTION, total * MEMORY_TOTAL_FRACTION)
 
 
-def max_possible_concurrency(config: Optional[dict] = None) -> int:
-    """The highest limit the gate could ever reach for this config.
+# Workers a run's shared pool needs over and above the gate's ceiling and the CPU-bound gate's
+# own slots: the collection turns, the sentence scans and the cleanup phase's `to_thread`
+# calls, none of which hold a gate slot while they run.
+EXECUTOR_HEADROOM = 4
 
-    Used to size the shared thread pool, which is created before the gate and must still be
-    big enough if a cheap op turns out to warrant a lot of concurrency. Threads are spawned
-    lazily, so an over-generous ceiling costs nothing.
+
+def executor_size(ceiling: int) -> int:
+    """How many workers the run's one shared thread pool should be allowed to spawn.
+
+    The pool used to be sized off `max_possible_concurrency`, which is the *backstop* - 256, or
+    whatever `max_concurrent_requests` says - rather than off what memory allows. On a machine
+    with headroom the two are the same number and it never mattered. On a 15.8 GB tablet whose
+    gate had computed a ceiling of 87 from its stored per-task cost, it meant a pool willing to
+    spawn 516 threads for a run that spent 82.4% of its wall clock at a limit of 4, and one
+    measured run finished with 233 of them alive. Threads are spawned lazily, but lazily is not
+    never: `ThreadPoolExecutor` starts one whenever no idle worker is free at submit time, so a
+    burst reaches the ceiling and the threads then stay for the life of the pool.
+
+    Sized off the gate's ceiling instead, so the pool tracks the same memory the gate does. The
+    two other things that hold a worker without holding a gate slot are added on top: the
+    CPU-bound sections, which have a gate of their own, and a few for the collection and the
+    cleanup phase. The floor is the adaptive starting limit, for the ops that never build a
+    gate at all.
+
+    Only ever raised, never lowered - see `resize_run_executor`.
     """
-    config = config or {}
-    configured = int(config.get("max_concurrent_requests", 0) or 0)
-    return max(configured, MAX_AUTO_CONCURRENCY)
+    return max(ADAPTIVE_START_CONCURRENCY, ceiling) + cpu_bound_concurrency() + EXECUTOR_HEADROOM
 
 
 def cpu_bound_concurrency() -> int:

@@ -34,7 +34,7 @@ from .api_client import (
     set_connection_pool_size,
 )
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
-from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, max_possible_concurrency
+from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size
 from .diagnostics import (
     clear_cancel_time,
     diagnostic_level,
@@ -76,6 +76,58 @@ ANTHROPIC_FIXED_TEMPERATURE_MODEL_PREFIXES = (
     "claude-opus-4-7",
     "claude-sonnet-5",
 )
+
+
+# The running operation's shared thread pool, so the gate can size it once it knows what
+# memory allows. One bulk op runs at a time - Anki's progress dialog owns the UI for the length
+# of one - so a module-level reference is the same lifetime as the run itself, and is cleared
+# in run_bulk_op's finally either way.
+_run_executor: Optional[ThreadPoolExecutor] = None
+
+
+def set_run_executor(executor: Optional[ThreadPoolExecutor]) -> None:
+    """Register (or forget) the pool `resize_run_executor` may grow."""
+    global _run_executor
+    _run_executor = executor
+
+
+def resize_run_executor(ceiling: int) -> None:
+    """Let the run's pool spawn as many workers as the gate's ceiling now warrants.
+
+    Upward only, and for the same reason the connection pool is only told about rises: threads
+    already spawned cannot be taken back, and a pool wider than the ceiling costs nothing once
+    the burst that widened it has passed. What it must not do is stay at the backstop - see
+    `executor_size` for the 516-thread pool that produced.
+
+    `_max_workers` is private, but it is what `ThreadPoolExecutor.submit` consults on every
+    call to decide whether to start another worker, so raising it is exactly the supported
+    behaviour with no supported spelling. Guarded, because a pool that will not be resized is
+    a pool that spawns as many threads as it did before rather than a broken run.
+    """
+    executor = _run_executor
+    if executor is None:
+        return
+    wanted = executor_size(ceiling)
+    try:
+        if wanted > executor._max_workers:
+            logger.debug(
+                "Growing the run's thread pool %d -> %d workers", executor._max_workers, wanted
+            )
+            executor._max_workers = wanted
+    except Exception as e:
+        logger.debug("Could not resize the run's thread pool: %s", e)
+
+
+def size_pools_to_ceiling(ceiling: int) -> None:
+    """Everything sized off the gate's ceiling, moved together when the ceiling moves.
+
+    The connection pool and the thread pool are both created before the gate has read the
+    machine, so both start at a guess and both have to be told. Passed to the gate as its
+    `on_ceiling_changed`, and called once by hand as soon as the gate exists, because the gate
+    only reports changes to a ceiling it has already computed.
+    """
+    set_connection_pool_size(ceiling)
+    resize_run_executor(ceiling)
 
 
 def log_phase(label: str, started: float, **extra) -> float:
@@ -1517,10 +1569,10 @@ async def bulk_nested_notes_op(
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
     # gate says when it raises it and the pool follows, rather than staying at the guess.
-    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=set_connection_pool_size)
+    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=size_pools_to_ceiling)
     progress_updater.gate = gate
     gate.start_adapting()
-    set_connection_pool_size(gate.max_limit)
+    size_pools_to_ceiling(gate.max_limit)
     rate_limit_tracker.reset()
 
     cancel_state = CancelState()
@@ -1739,13 +1791,13 @@ async def bulk_notes_op(
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
     # gate says when it raises it and the pool follows, rather than staying at the guess.
-    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=set_connection_pool_size)
+    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=size_pools_to_ceiling)
     progress_updater.gate = gate
     gate.start_adapting()
     # One task per note here, and no planning pass to wait for, so the run's size is already
     # known - but the decision is the same one the nested op makes after planning.
     gate.begin_measuring(len(notes))
-    set_connection_pool_size(gate.max_limit)
+    size_pools_to_ceiling(gate.max_limit)
     rate_limit_tracker.reset()
 
     def handle_op_success(
@@ -2155,11 +2207,14 @@ def selected_notes_op(
         asyncio.set_event_loop(loop)
         # One bounded thread pool for the whole operation, shared by make_inner_bulk_op and
         # every asyncio.to_thread call beneath it. Previously each task built its own pool and
-        # never shut it down, so threads accumulated for the life of the process. Sized to the
-        # highest limit the gate could reach, since it may raise its ceiling mid-run once it
-        # has measured what the op costs; unused threads are never spawned.
+        # never shut it down, so threads accumulated for the life of the process.
+        #
+        # It is built before the gate exists, so it starts at the adaptive floor and the gate
+        # sizes it properly the moment it knows its own ceiling - see set_run_executor and
+        # executor_size. Nothing is submitted in between: `async_wrapper` loads the notes on
+        # this thread, and both drivers build their gate before creating a single task.
         executor = ThreadPoolExecutor(
-            max_workers=max_possible_concurrency(config) + 4,
+            max_workers=executor_size(0),
             thread_name_prefix="simple_anki_ai_prompts",
             # Every worker takes part in this run, so cancelling it stops their requests and
             # collection reads too - including in the threads the run is abandoning, which
@@ -2167,6 +2222,7 @@ def selected_notes_op(
             initializer=partial(join_run, run),
         )
         loop.set_default_executor(executor)
+        set_run_executor(executor)
         try:
             return loop.run_until_complete(async_wrapper())
         except RunCancelled as e:
@@ -2184,6 +2240,7 @@ def selected_notes_op(
             # This thread goes back to Anki's pool and will run other operations, so its
             # exemption must not outlive this one
             end_cleanup_phase()
+            set_run_executor(None)
             # shutdown(wait=False) tells the pool's threads to exit once their current call
             # returns, without blocking on them. Never join them here: a blocking HTTP request
             # cannot be interrupted from outside, so joining would make cancelling take as
