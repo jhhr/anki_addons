@@ -9,7 +9,8 @@
     "ui",
     "utils",
     "anki",
-    "jp_text_processing"
+    "jp_text_processing",
+    "notify"
   ],
   "exclude": []
 }

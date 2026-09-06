@@ -1,9 +1,17 @@
 from aqt import mw
 from aqt.gui_hooks import sync_will_start, sync_did_finish
-from aqt.utils import tooltip
 
 from ..configuration import Config
 from ..logic.copy_fields import copy_fields
+from ..shared.notify import post
+
+SOURCE = "Copy Anywhere"
+
+# One entry per sync, replaced in place: the local pass reports as soon as it
+# lands and the remote pass overwrites that same entry rather than leaving two
+# behind. `group` puts it alongside whatever the other addons post this sync.
+KEY = "sync"
+GROUP = "sync"
 
 
 class SyncResult:
@@ -23,17 +31,60 @@ class SyncResult:
         self.remote_changes_text = ""
         self.definitions_count = 0
 
+    def title(self) -> str:
+        if self.local_changes_text and self.remote_changes_text:
+            which = "local and remote changes"
+        elif self.local_changes_text:
+            which = "local changes"
+        else:
+            which = "remote changes"
+        return f"Copied fields for {which}"
 
-def local_changes_copy_definitions(sync_result: SyncResult) -> None:
+    def body(self) -> str:
+        parts = []
+        if self.local_changes_text:
+            parts.append(f"<b>Local changes:</b><br>{self.local_changes_text}")
+        if self.remote_changes_text:
+            parts.append(f"<b>Remote changes:</b><br>{self.remote_changes_text}")
+        return "<br><br>".join(parts)
 
+
+def show_result(sync_result: SyncResult, clear: bool = True) -> None:
+    if sync_result.has_changes():
+        post(
+            source=SOURCE,
+            title=sync_result.title(),
+            body=sync_result.body(),
+            level="success",
+            # Longer when more was copied, since there is more to read.
+            timeout_ms=5000 + sync_result.definitions_count * 1000,
+            group=GROUP,
+            key=KEY,
+        )
+    if clear:
+        # Start the next sync from a clean slate.
+        sync_result.clear()
+
+
+def show_result_soon(sync_result: SyncResult, clear: bool = True) -> None:
+    # Posting the instant the op finishes gets the message closed again by the
+    # progress dialog still tearing down. Phase 2's host defers on
+    # mw.progress.busy() and this goes away; the tooltip fallback still needs it.
+    mw.progress.single_shot(100, lambda: show_result(sync_result, clear=clear))
+
+
+def _copy_on_sync_definitions():
     config = Config()
     config.load()
-
-    copy_on_sync_definitions = [
+    return [
         definition
         for definition in config.copy_definitions
         if definition.get("copy_on_sync", False)
     ]
+
+
+def local_changes_copy_definitions(sync_result: SyncResult) -> None:
+    copy_on_sync_definitions = _copy_on_sync_definitions()
     if not copy_on_sync_definitions:
         return
 
@@ -41,6 +92,8 @@ def local_changes_copy_definitions(sync_result: SyncResult) -> None:
         if text:
             sync_result.local_changes_text = text
         sync_result.incr_count(count)
+        # Report now; the remote pass replaces this entry under the same key.
+        show_result_soon(sync_result, clear=False)
 
     copy_fields(
         copy_definitions=copy_on_sync_definitions,
@@ -49,39 +102,10 @@ def local_changes_copy_definitions(sync_result: SyncResult) -> None:
     )
 
 
-def show_result_tooltip(sync_result: SyncResult) -> None:
-    if sync_result.has_changes():
-        result_text = ""
-        if sync_result.local_changes_text:
-            result_text += f"<b>Local changes:</b><br>{sync_result.local_changes_text}"
-        if sync_result.remote_changes_text:
-            if sync_result.local_changes_text:
-                result_text += "<br><br>"
-            result_text += f"<b>Remote changes:</b><br>{sync_result.remote_changes_text}"
-        tooltip(
-            result_text,
-            parent=mw,
-            period=5000 + sync_result.definitions_count * 1000,
-            # Position the tooltip higher so other tooltips don't get covered
-            # 100 is the default offset, see aqt.utils.tooltip
-            y_offset=200,
-        )
-    # Clear the result for the next sync
-    sync_result.clear()
-
-
 def remote_changes_copy_definitions(sync_result: SyncResult) -> None:
-
-    config = Config()
-    config.load()
-
-    copy_on_sync_definitions = [
-        definition
-        for definition in config.copy_definitions
-        if definition.get("copy_on_sync", False)
-    ]
+    copy_on_sync_definitions = _copy_on_sync_definitions()
     if not copy_on_sync_definitions:
-        show_result_tooltip(sync_result)
+        show_result(sync_result)
         return
 
     def update_remote_sync_result(text: str, count: int):
@@ -89,16 +113,10 @@ def remote_changes_copy_definitions(sync_result: SyncResult) -> None:
             sync_result.remote_changes_text = text
         sync_result.incr_count(count)
 
-    def show_tooltip_on_done():
-        # Showing the tooltip right after the op finishes results in it being closed right
-        # away, likely because the progress dialog is still open. So we use a single shot timer
-        # to delay the tooltip.
-        mw.progress.single_shot(100, lambda: show_result_tooltip(sync_result))
-
     copy_fields(
         copy_definitions=copy_on_sync_definitions,
         update_sync_result=update_remote_sync_result,
-        on_done=show_tooltip_on_done,
+        on_done=lambda: show_result_soon(sync_result),
         progress_title="Copying fields for remote changes",
     )
 
