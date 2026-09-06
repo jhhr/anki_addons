@@ -35,7 +35,7 @@ from ..configuration import (
     RawMultiMeaningWordType,
     RawOneMeaningWordType,
 )
-from ..kana_conv import to_hiragana
+from ..kana_conv import is_kana_str, to_hiragana
 from ..shared.jp_text_processing.kana.check_word_reading_type import (
     WordReadingType,
     check_word_reading_type,
@@ -209,6 +209,53 @@ FinalWordTuple = Union[
     OneMeaningMatchedWordType,
     MultiMeaningMatchedWordType,
 ]
+
+
+def normalize_word_tuple(entry: Any) -> Optional[tuple]:
+    """Make a word tuple out of one entry of a stored word list, or say it cannot be done.
+
+    Every shape in `FinalWordTuple` is a sequence whose first two values are the word and its
+    reading; everything after them is bookkeeping. What comes back out of the word list field
+    is not always one of those. The field holds JSON written by an LLM and read back through
+    `repair_json`, and four other shapes have turned up in real runs:
+
+    * `[]` - an empty list, with nothing to read a word out of.
+    * `1378555076170` - a bare int, and the value is a *note id*, so something wrote an id
+      where the tuple holding it should have gone.
+    * `["なんと"]` - a one-element list: a word with no reading.
+    * `"三"` - a bare string, the same thing without the list around it.
+
+    Reading these positionally is what the caller used to do, and two of the four raised - a
+    TypeError on `wt[0]` for the int, an IndexError on `wt[1]` for a one-character string -
+    which is how they came to be noticed at all. **The one that never raised is the one that
+    mattered:** a bare string of two or more characters indexes perfectly well, so `"なんと"`
+    was silently read as the word `"な"` with the reading `"ん"` and processed as if it were
+    real. That is why a string is wrapped here rather than indexed.
+
+    A word with no reading is recoverable exactly when the word is all kana, because then the
+    reading is the word - which covers `["なんと"]` and every other entry of this shape seen so
+    far, all of them particles and kana expressions. Anything else is refused rather than
+    guessed at: `"三"` reads さん, and nothing here knows that.
+
+    Returns the tuple to use in place of `entry`, or None when there is no word in it.
+    """
+    if isinstance(entry, str):
+        # A bare string where the list around it went missing. Treated as a one-element list
+        # rather than indexed, which is the whole point - see above.
+        values: list = [entry]
+    elif isinstance(entry, (tuple, list)):
+        values = list(entry)
+    else:
+        return None
+
+    if not values or not isinstance(values[0], str) or not values[0]:
+        return None
+    if len(values) == 1:
+        word = values[0]
+        return (word, word) if is_kana_str(word) else None
+    if not isinstance(values[1], str) or not values[1]:
+        return None
+    return tuple(values)
 
 
 def update_fake_note_ids(
@@ -2515,38 +2562,60 @@ def match_words_to_notes_for_note(
                 continue
             word_tuple_indexes = set()
 
-            # Check if any words have already been encountered and populate word_tuple_indexes
-            for wt_idx, wt in enumerate(word_tuples):
-                try:
-                    word = wt[0]
-                    reading = wt[1]
-                    word_key = f"{word}_{reading}"
-                    # if the word is a multi-meaning type, then duplicates are intended
-                    multi_meaning_index = wt[2] if len(wt) >= 3 else None
-                    if word_key in encountered_words and not isinstance(multi_meaning_index, int):
-                        # remove word from word_tuples
-                        word_tuples.remove(wt)
-                        logger.debug(
-                            f"{log_prefix}Removing duplicate word '{word}' with reading"
-                            f"'{reading}' from word list '{word_list_key}'"
-                        )
-                    else:
-                        encountered_words.add(word_key)
-                        if limit_words_and_readings:
-                            # Is this a word and reading that we're limited to process?
-                            for lwt in limit_words_and_readings:
-                                if word == lwt[0] and reading == lwt[1]:
-                                    word_tuple_indexes.add(wt_idx)
-                                    break
-                        else:
-                            word_tuple_indexes.add(wt_idx)
-                except Exception as e:
-                    logger.error(
-                        f"{log_prefix}Error processing word tuple {wt} in word list"
-                        f" '{word_list_key}': {e}"
-                    )
-                    print_error_traceback(e, logger)
+            # Drop the duplicates and work out which of what is left this run is to process.
+            #
+            # One pass building a new list, rather than `word_tuples.remove(wt)` inside an
+            # `enumerate` over the same list: removing during iteration skips the entry after
+            # each removal and shifts every index past it, and `word_tuple_indexes` holds
+            # positions in this very list - so a single duplicate meant the run processed a
+            # different word than the one it had decided on. Indexes are recorded against the
+            # final list instead, which is what `match_words_to_notes` below is handed.
+            kept: list = []
+            malformed: list = []
+            for wt in word_tuples:
+                normalized = normalize_word_tuple(wt)
+                if normalized is None:
+                    # Nothing a word can be read out of. Kept in the list rather than dropped -
+                    # rewriting the note's word list without an entry nobody understands is not
+                    # this loop's call to make - and simply never indexed, which is what the
+                    # exception this replaces achieved by accident. See normalize_word_tuple.
+                    malformed.append(wt)
+                    kept.append(wt)
                     continue
+                word = normalized[0]
+                reading = normalized[1]
+                word_key = f"{word}_{reading}"
+                # if the word is a multi-meaning type, then duplicates are intended
+                multi_meaning_index = normalized[2] if len(normalized) >= 3 else None
+                if word_key in encountered_words and not isinstance(multi_meaning_index, int):
+                    logger.debug(
+                        f"{log_prefix}Removing duplicate word '{word}' with reading"
+                        f" '{reading}' from word list '{word_list_key}'"
+                    )
+                    continue
+                encountered_words.add(word_key)
+                if limit_words_and_readings:
+                    # Is this a word and reading that we're limited to process?
+                    if any(
+                        word == lwt[0] and reading == lwt[1] for lwt in limit_words_and_readings
+                    ):
+                        word_tuple_indexes.add(len(kept))
+                else:
+                    word_tuple_indexes.add(len(kept))
+                kept.append(normalized)
+
+            if malformed:
+                # One line for the list rather than one traceback per entry. These arrive in
+                # small clusters - eight of one run's ten were on a single note - and a
+                # traceback each said nothing the value itself does not.
+                logger.error(
+                    f"{log_prefix}Skipping {len(malformed)} entr"
+                    f"{'y' if len(malformed) == 1 else 'ies'} in word list '{word_list_key}'"
+                    f" that are not word tuples: {malformed}"
+                )
+            # In place, because this list is `word_list_dict[word_list_key]` and is handed on
+            # to match_words_to_notes as the same object.
+            word_tuples[:] = kept
             logger.debug(
                 f"{log_prefix}Processing word list '{word_list_key}' with word tuples:"
                 f" {word_tuples}"
