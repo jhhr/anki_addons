@@ -839,7 +839,10 @@ class MemoryEstimator:
     live tasks in four are parked on `gate.acquire()` and have allocated nothing at all. That
     is the convention memory_per_slot multiplies back out - see it - and not a fault, but it
     does mean a cheap op measures near MIN_PER_TASK_MEMORY, where the clamp starts hiding what
-    was actually fitted. refit() logs both figures for that reason.
+    was actually fitted. refit() logs both figures for that reason, and declines a fit that
+    lands under the floor rather than clamping it into an answer: on an op whose memory
+    tracemalloc cannot see, that clamp is not a small measurement but the absence of one, and
+    acting on it raises the ceiling on a machine that cannot afford it. See refit.
 
     Within a run the largest fit wins, because what has to fit in RAM is the peak rather than
     the average. Across runs the value is blended into the stored one, so a single odd run
@@ -859,6 +862,10 @@ class MemoryEstimator:
         self._started_at: Optional[float] = None
         self._sampled_at: Optional[float] = None
         self._fitted_at_samples = -1
+        # Whether a fit under MIN_PER_TASK_MEMORY has already been declined. Only for the log:
+        # refit runs every couple of seconds for the first MEASURE_SECONDS, and a machine whose
+        # op tracemalloc cannot see declines every one of them.
+        self._held_clamped_fit = False
 
     def start(self) -> None:
         """Begin measuring, tracing Python allocations unless something else already is.
@@ -983,6 +990,36 @@ class MemoryEstimator:
         if fitted is None or fitted <= 0:
             return None
         per_task = min(MAX_PER_TASK_MEMORY, max(MIN_PER_TASK_MEMORY, fitted))
+        if fitted < MIN_PER_TASK_MEMORY and per_task < self.estimate:
+            # A fit below the floor is not a measurement of the floor. It is the fit saying
+            # "smaller than anything I can distinguish from noise", and clamping it up is what
+            # turns that into a confident-looking number - one that then *raises* the ceiling,
+            # because the ceiling is the budget divided by this.
+            #
+            # Measured, on a 15.8 GB tablet: a stored 7 MB/task was replaced by a fitted 11 KB
+            # clamped to 512 KB, the ceiling refit 87 -> 512, 112 tasks were admitted, and RSS
+            # went to 9.8 GB with 0.1 GB left on the machine - after which the gate spent 82.4%
+            # of the run pinned at MIN_AUTO_CONCURRENCY paying it off. The fit was not wrong
+            # about what it saw: tracemalloc sees traced *Python* allocations, and what this op
+            # actually spends is sqlite3 page cache and a connection per MDX query, none of
+            # which it can see at all. So the clamped value is evidence about the wrong
+            # allocator, and the estimate already in hand - measured, stored, or the starting
+            # guess - is the better answer.
+            #
+            # Only downward, and only from below the floor. A fit that lands above the floor is
+            # a real reading, and one clamped at MAX_PER_TASK_MEMORY lowers the ceiling, which
+            # is the safe direction to be wrong in.
+            if not self._held_clamped_fit:
+                self._held_clamped_fit = True
+                logger.debug(
+                    "Per-task fit for %r came out at %s, under the %s floor: holding %s rather"
+                    " than raising the ceiling on a clamp",
+                    self.op_key,
+                    format_bytes(int(fitted)),
+                    format_bytes(MIN_PER_TASK_MEMORY),
+                    format_bytes(int(self.estimate)),
+                )
+            return None
         if self.measured is not None and per_task <= self.measured:
             return None
         previous = self.estimate

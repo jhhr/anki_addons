@@ -553,10 +553,38 @@ class MemoryEstimatorTests(MemoryStubTestCase):
         _, per_task = self.measure(self.line(512 * MB))
         self.assertEqual(per_task, conc.MAX_PER_TASK_MEMORY)
 
-    def test_an_implausibly_small_measurement_is_clamped(self):
-        # Otherwise a near-zero cost would divide the budget into a limit of millions
-        _, per_task = self.measure(self.line(1024))
-        self.assertEqual(per_task, conc.MIN_PER_TASK_MEMORY)
+    def test_an_implausibly_small_measurement_is_declined_rather_than_clamped(self):
+        """A fit under the floor is the absence of a measurement, not a small one.
+
+        Clamping it up produced a number that looked measured and was not, and because the
+        ceiling is the budget divided by it, acting on it *raised* the ceiling. So it holds
+        whatever estimate it already had - here the starting guess.
+        """
+        estimator, per_task = self.measure(self.line(1024))
+        self.assertIsNone(per_task)
+        self.assertIsNone(estimator.measured)
+        self.assertEqual(estimator.estimate, conc.DEFAULT_PER_TASK_MEMORY)
+
+    def test_a_clamped_fit_does_not_replace_what_the_last_run_measured(self):
+        """The tablet's failure, in one test.
+
+        A stored 7 MB/task, a fit of 11 KB because tracemalloc cannot see sqlite3, and the
+        clamp turning that into 512 KB - which divided the budget into a ceiling six times
+        higher, admitted six times the tasks, and left 0.1 GB free on a 15.8 GB machine.
+        """
+        estimator = conc.MemoryEstimator("op", stored=7 * MB)
+        estimator.start()
+        self.feed(estimator, self.line(11 * 1024))
+        self.assertIsNone(estimator.refit())
+        self.assertEqual(estimator.estimate, 7 * MB)
+
+    def test_a_fit_above_the_floor_still_replaces_a_stored_estimate(self):
+        """Only the clamp is declined. A real reading is what the stored value is for."""
+        estimator = conc.MemoryEstimator("op", stored=7 * MB)
+        estimator.start()
+        self.feed(estimator, self.line(3 * MB))
+        self.assertAlmostEqual(estimator.refit(), 3 * MB, delta=1024)
+        self.assertAlmostEqual(estimator.estimate, 3 * MB, delta=1024)
 
     def test_within_a_run_the_largest_fit_wins(self):
         # What has to fit in RAM is the peak, not the average
