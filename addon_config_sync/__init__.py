@@ -11,6 +11,7 @@ from .sync_actions import (
     read_configs_on_sync,
 )
 from .utils import get_main_config
+from .shared.notify import post
 
 
 def build_action(fun: Callable[[], None], text: str, shortcut: Optional[str] = None) -> QAction:
@@ -38,6 +39,17 @@ sync_skipped_addons = []
 
 sync_loaded_addons = []
 sync_missing_addons = []
+
+
+def _addon_names(addon_ids) -> list:
+    """Human names where Anki knows them; the raw id is no use to a reader."""
+    names = []
+    for addon_id in addon_ids:
+        try:
+            names.append(mw.addonManager.addonName(addon_id))
+        except Exception:
+            names.append(str(addon_id))
+    return sorted(names, key=str.lower)
 
 
 def sync_on_save() -> None:
@@ -89,12 +101,26 @@ def read_on_sync(media_sync_status: bool) -> None:
         # call once it actually finishes reading configs.
         def on_finish_callback():
             if ask_on_sync and (sync_loaded_addons or sync_missing_addons):
+                # A request for input, not a notification: still a dialog.
                 open_addon_config_manager(
                     blocking=False,
                     prefilter_changes_or_missing=True,
                 )
             elif show_summary_on_sync and sync_loaded_addons:
-                open_addon_config_manager(blocking=False)
+                # Purely informational, so report it alongside the other
+                # addons' sync results rather than taking over the screen.
+                post(
+                    source="Addon Config Sync",
+                    title=f"Loaded config for {len(sync_loaded_addons)} add-on(s)",
+                    body="<br>".join(_addon_names(sync_loaded_addons)),
+                    level="success",
+                    group="sync",
+                    key="sync",
+                    actions=[
+                        ("Open config manager…",
+                         lambda: open_addon_config_manager(blocking=False)),
+                    ],
+                )
 
         read_configs_on_sync(
             sync_loaded_addons,

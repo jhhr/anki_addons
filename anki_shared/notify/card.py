@@ -51,7 +51,10 @@ def _tool_button(text: str, tooltip: str, on_click: Callable[[], None]) -> QTool
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     # Never let a control here become the keyboard focus.
     button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    qconnect(button.clicked, on_click)
+    # clicked emits a `checked` bool. Swallow it: every slot here takes no
+    # arguments, and letting it through binds False over the first parameter --
+    # which silently turned toggle_pin() into "set unpinned".
+    qconnect(button.clicked, lambda *_: on_click())
     return button
 
 
@@ -139,13 +142,19 @@ class ToastCard(QFrame):
             if widget is not None:
                 widget.deleteLater()
         for label, callback in actions:
-            # Acting on a notification implies you are done reading it.
-            def run(cb=callback):
-                cb()
-                self._on_dismiss(self.handle)
-
-            self.actions_row.addWidget(_tool_button(label, label, run))
+            self.actions_row.addWidget(_tool_button(label, label, self._runner(callback)))
         self.actions_row.addStretch(1)
+
+    def _runner(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Run an action, then take the card down: acting on a notification
+        implies you are done reading it. A closure factory rather than a
+        default argument, so nothing can be bound over the callback."""
+
+        def run() -> None:
+            callback()
+            self._on_dismiss(self.handle)
+
+        return run
 
     def apply_theme(self) -> None:
         from aqt.theme import theme_manager

@@ -204,6 +204,42 @@ def main() -> int:
     aqt.gui_hooks.theme_did_change()
     pump(250)
 
+    # -- an action runs, and acting on a notification dismisses it ---------
+    real_close(host, QCloseEvent())
+    fired = []
+    h = host.post(make_spec(source="Addon Config Sync", title="Loaded config",
+                            timeout_ms=STICKY,
+                            actions=[("Open config manager…", lambda: fired.append(1))]))
+    pump(250)
+    button = host._cards[h].actions_row.itemAt(0).widget()
+    assert button.text() == "Open config manager…"
+    assert button.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
+    button.click()
+    pump(250)
+    assert fired == [1], "the action callback should have run"
+    assert len(host._cards) == 0, "acting on a notification dismisses it"
+
+    # -- controls work when clicked, not just when called ------------------
+    # clicked emits a bool; letting it reach the slot turned pin into "unpin".
+    h = host.post(make_spec(source="A", title="clicked controls",
+                            body="detail", timeout_ms=250))
+    pump(150)
+    card = host._cards[h]
+    assert card.pinned is False
+    card.pin_button.click()
+    pump(100)
+    assert card.pinned is True, "clicking pin must toggle, not set False"
+    pump(600)
+    assert len(host._cards) == 1, "a card pinned by click must not expire"
+
+    card.disclosure.click()
+    pump(100)
+    assert card.expanded is True, "clicking the arrow must expand"
+
+    card.close_button.click()
+    pump(200)
+    assert len(host._cards) == 0, "clicking close must dismiss"
+
     result = check_cross_addon_election()
     print(f"cross-addon election: {result}")
 
