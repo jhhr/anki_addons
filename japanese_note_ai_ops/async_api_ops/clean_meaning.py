@@ -206,8 +206,16 @@ def get_other_meaning_notes(
     if include_pending_notes and notes_to_add_dict:
         m_pattern = re.compile(r"m\d+")
         x_pattern = re.compile(r"x\d+")
-        for pending_notes in notes_to_add_dict.values():
-            for pending_note in pending_notes:
+        # A snapshot, both levels of it. This runs in an `asyncio.to_thread` worker while other
+        # word tasks are still going, and creating a note is
+        # `notes_to_add_dict.setdefault(key, []).append(note)` - which can add a key to the dict
+        # and an entry to a list this loop is part-way through. Iterating either while that
+        # happens is a `RuntimeError: dictionary changed size during iteration`, and the notes
+        # arriving mid-loop are not ones this caller is entitled to see anyway: it is asking
+        # what the meaning group held when it asked. The same reason the cleanup phase copies
+        # these two dicts before working through them.
+        for pending_notes in list(notes_to_add_dict.values()):
+            for pending_note in list(pending_notes):
                 if id(pending_note) == id(note):
                     continue
                 if word_sort_field not in pending_note:
