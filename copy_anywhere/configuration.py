@@ -228,6 +228,20 @@ class CopyFieldToFile(TypedDict):
     process_chain: Sequence[AnyProcess]
 
 
+def split_tags(tags: Optional[str]) -> list[str]:
+    """Split a stored tag list into tag names, dropping the empty ones.
+
+    The stored form is the quoted-and-comma-joined shape the tag editor writes, and the
+    common value is "" -- most definitions add no tags at all. A bare `.split('", "')` turns
+    that into `[""]`, which then adds an empty tag to every destination note and marks it
+    modified whether or not anything was copied, inflating the processed counts, the
+    copied-into list and the undo entry.
+    """
+    if not tags:
+        return []
+    return [tag for tag in tags.strip('""').split('", "') if tag]
+
+
 def get_field_to_field_unfocus_trigger_fields(
     field_to_field: CopyFieldToField, modifies_other_notes: bool
 ) -> list[str]:

@@ -117,6 +117,31 @@ class StubAddonManager:
         pass
 
 
+class StubProfileManager:
+    """`mw.pm`, which addons reach through for the profile folder.
+
+    The media helpers and the fonts-check process build their paths as
+    `Path(mw.pm.profileFolder(), "collection.media")` rather than going through
+    `col.media`, so a test that writes a file needs this to point somewhere real.
+    """
+
+    def __init__(self, profile_folder: Optional[Union[str, Path]] = None) -> None:
+        self._profile_folder = Path(profile_folder) if profile_folder else None
+
+    def set_profile_folder(self, path: Union[str, Path]) -> Path:
+        """Point at `path`, creating it and its collection.media alongside."""
+        self._profile_folder = Path(path)
+        (self._profile_folder / "collection.media").mkdir(parents=True, exist_ok=True)
+        return self._profile_folder
+
+    def profileFolder(self) -> str:
+        assert self._profile_folder is not None, "no profile folder set on the stub mw.pm"
+        return str(self._profile_folder)
+
+    def media_folder(self) -> Path:
+        return Path(self.profileFolder()) / "collection.media"
+
+
 class StubMainWindow:
     """The `mw` an addon reaches for, with a real collection behind `col`.
 
@@ -135,6 +160,7 @@ class StubMainWindow:
         self.progress = StubProgress()
         self.taskman = StubTaskman()
         self.addonManager = StubAddonManager(configs)
+        self.pm = StubProfileManager()
 
     def reset(self) -> None:
         pass

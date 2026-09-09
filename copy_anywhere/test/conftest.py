@@ -91,6 +91,10 @@ def col(tmp_path, stub_mw):
 
     previous_col = stub_mw.col
     stub_mw.col = collection
+    # The media helpers and the fonts-check process build their paths from
+    # mw.pm.profileFolder() rather than from col.media, so the stub profile has to point at
+    # this test's own directory or a file written by one test is seen by the next.
+    stub_mw.pm.set_profile_folder(tmp_path / "profile")
     stub_mw.progress.cancel = False
     stub_mw.addonManager.configs["copy_anywhere"] = dict(DEFAULT_CONFIG)
     try:
@@ -101,14 +105,9 @@ def col(tmp_path, stub_mw):
 
 
 @pytest.fixture
-def media_dir(col, monkeypatch, tmp_path):
-    """Point the media helpers at a directory of this test's own.
-
-    `write_to_media_folder` and `file_exists_in_media_folder` both go through `mw.col.media`,
-    which a real collection already backs with a real directory next to the collection file,
-    so this only asserts where that is rather than redirecting it.
-    """
-    return col.media.dir()
+def media_dir(col, stub_mw):
+    """The directory the media helpers write into for this test."""
+    return stub_mw.pm.media_folder()
 
 
 class RecordingLogger:

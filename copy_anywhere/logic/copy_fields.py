@@ -47,6 +47,7 @@ from ..configuration import (
     is_kanjium_to_javdejong_process,
     is_regex_process,
     is_word_highlight_process,
+    split_tags,
 )
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..utils.duplicate_note import (
@@ -1079,13 +1080,13 @@ def copy_into_single_note(
         destination_note[copy_into_note_field] = result_val
         modified_dest_note = True
 
-    for tag in add_tags.strip('""').split('", "'):
+    for tag in split_tags(add_tags):
         if destination_note.has_tag(tag):
             continue
         destination_note.add_tag(tag)
         modified_dest_note = True
 
-    for tag in remove_tags.strip('""').split('", "'):
+    for tag in split_tags(remove_tags):
         if not destination_note.has_tag(tag):
             continue
         destination_note.remove_tag(tag)
@@ -1341,9 +1342,12 @@ def get_variable_values_for_note(
 
 
 def int_sort_by_field_value(note: Note, sort_by_field) -> int:
+    # KeyError as well as ValueError: sort_by_field names a field on the *source* note type,
+    # which need not be the one the definition copies into, so a query that returns a note of
+    # another type reaches here with a field the note does not have.
     try:
         return int(note[sort_by_field])
-    except ValueError:
+    except (ValueError, KeyError):
         return 0
 
 
@@ -1409,9 +1413,12 @@ def get_across_target_notes(
             if select_card_count_int < 0:
                 raise ValueError
         except ValueError:
+            # The value as given, not the parsed one: int() raises before the parsed one is
+            # bound, so reporting that would fail with UnboundLocalError inside the handler
+            # meant to report the problem.
             logger.error(
                 "Error in copy fields: Incorrect 'select_card_count' value"
-                f" '{select_card_count_int}'. Value must be a positive integer or 0"
+                f" '{select_card_count}'. Value must be a positive integer or 0"
             )
             return []
     else:

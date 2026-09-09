@@ -304,6 +304,10 @@ JSONSerializableValue = Union[
 ValueOrValueGetter = Union[JSONSerializableValue, Callable[[str], JSONSerializableValue]]
 
 
+def get_note_has_tag(note: Note, arg: str) -> str:
+    return arg if note.has_tag(arg) else "-"
+
+
 def get_note_data_value(
     note: Note,
     field_name: str,
@@ -311,9 +315,6 @@ def get_note_data_value(
     """
     Get the value for a single special field.
     """
-
-    def has_tag(arg: str):
-        return arg if note.has_tag(arg) else "-"
 
     if field_name == NOTE_TYPE_ID:
         note_type = note.note_type()
@@ -323,7 +324,10 @@ def get_note_data_value(
     if field_name == NOTE_TAGS:
         return " ".join(note.tags)
     if field_name == NOTE_HAS_TAG:
-        return has_tag
+        # A partial rather than a closure: get_from_note_fields only passes the argument on
+        # to a value it recognises as a partial, so a plain function would be rendered into
+        # the field as its repr instead of being called.
+        return partial(get_note_has_tag, note)
     if field_name == NOTE_CARD_COUNT:
         return len(note.card_ids())
     return None
