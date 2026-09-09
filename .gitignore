@@ -17,3 +17,6 @@ meta.json
 
 .pytest_cache/
 .mypy_cache/
+
+# `build.py vendor` scratch: one uv resolution per platform, copied into lib/ from there
+build/
