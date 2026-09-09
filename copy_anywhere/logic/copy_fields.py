@@ -1501,7 +1501,7 @@ def get_across_target_notes(
                     card_ids,
                     key=lambda c: db.scalar(f"SELECT COUNT() FROM revlog WHERE cid = {c}"),
                 )
-                extra_state = {card_select_key: selected_card_id}
+                extra_state[card_select_key] = selected_card_id
         if selected_card_id is None:
             logger.error("Error in copy fields: could not select card")
             break
