@@ -1431,10 +1431,12 @@ def get_across_target_notes(
         return []
     cards_query_id = base64.b64encode(f"cards{interpolated_cards_query}".encode()).decode()
     try:
-        card_ids = extra_state[cards_query_id]
+        # A copy of the cached list: the selection below pops from card_ids, and mutating the
+        # cached entry would hand the next call a query result with cards missing from it.
+        card_ids = list(extra_state[cards_query_id])
     except KeyError:
         card_ids = mw.col.find_cards(interpolated_cards_query)
-        extra_state[cards_query_id] = card_ids
+        extra_state[cards_query_id] = list(card_ids)
 
     if len(invalid_fields) > 0:
         logger.error(
@@ -1501,7 +1503,7 @@ def get_across_target_notes(
                     card_ids,
                     key=lambda c: db.scalar(f"SELECT COUNT() FROM revlog WHERE cid = {c}"),
                 )
-                extra_state = {card_select_key: selected_card_id}
+                extra_state[card_select_key] = selected_card_id
         if selected_card_id is None:
             logger.error("Error in copy fields: could not select card")
             break
