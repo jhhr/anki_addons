@@ -43,7 +43,7 @@ DIST_DIR = ROOT / "dist"
 
 EXCLUDE_DIRS = {
     "__pycache__", ".git", ".github", ".idea", ".vscode", ".pytest_cache",
-    "test", "tests", "dist", "node_modules",
+    "test", "tests", "test_anki", "dist", "node_modules",
 }
 EXCLUDE_FILES = {
     # meta.json is per-install state written by Anki; shipping it is meaningless
