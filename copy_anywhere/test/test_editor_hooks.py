@@ -1,0 +1,1115 @@
+"""Characterization tests for the two editor hooks: `on_editor_did_load_note` and
+`run_copy_fields_on_unfocus_field`.
+
+They are one file because they are one mechanism. `editor_did_unfocus_field` hands the
+handler `(changed, note, field_idx)` and no editor, so `run_copy_fields_on_unfocus_field`
+cannot know which editor the user is typing in; `on_editor_did_load_note` exists purely to
+fill a module-global `editor_for_note_id` that the unfocus handler then reads back to
+decide whose `loadNote()` to call. The source calls this "a hack" in as many words.
+
+**No running Anki.** Both handlers are plain functions. A real `aqt.editor.Editor` needs a
+webview and a main window, but the handlers only ever read `editor.editorMode`,
+`editor.note` (and `.note.id`) and call `editor.loadNote()`, so `FakeEditor` below supplies
+exactly those three. `EditorMode` is a real enum -- it is the dict's key type and the
+handler stores by it -- so it is imported for real.
+
+**The global is never cleared.** `editor_for_note_id` is module state that
+`on_editor_did_load_note` writes and nothing ever removes from, not on editor close and not
+on profile switch. That is one of the behaviours pinned here (`TestTheGlobalIsNeverCleared`),
+and it is also why `_restore_editor_registry` below snapshots and restores the dict around
+every test: without it these tests would leak editors into each other and into every later
+file in the suite.
+
+**Two seams, both borrowed from the sibling hook file.** Copy definitions go in through
+`mw.addonManager.configs["copy_anywhere"]["copy_definitions"]`, which the `col` fixture
+refreshes per test; and "the definition was filtered out" is only distinguishable from "the
+definition ran and did nothing" by spying on `copy_for_single_trigger_note`. Unlike
+`run_copy_fields_on_add`, this handler builds no `Logger` at all -- see
+`test_the_handler_never_builds_a_logger_so_the_configured_level_is_ignored` -- so there is
+no logger seam to patch here. The modifies-other-notes branch does go through
+`copy_fields()`, so its `CollectionOp` has to be driven inline, as in
+`test_copy_fields_op.py`.
+"""
+
+from typing import Optional
+
+import pytest
+from anki.notes import NoteId
+from aqt import mw
+from aqt.editor import EditorMode
+
+import definitions as d
+from anki_shared.testing import real_anki
+from conftest import KANJI, VOCAB
+from copy_anywhere.hooks import note_hooks
+from copy_anywhere.hooks.note_hooks import (
+    editor_for_note_id,
+    on_editor_did_load_note,
+    run_copy_fields_on_unfocus_field,
+)
+from copy_anywhere.logic import copy_fields as copy_fields_module
+
+ADDON_TAG = "copy_anywhere"
+
+# CA Vocab's field order, which is what `field_idx` indexes into.
+WORD, READING, MEANING, FREQ, NOTE = 0, 1, 2, 3, 4
+
+
+@pytest.fixture(autouse=True)
+def _restore_editor_registry():
+    """Snapshot and restore `note_hooks.editor_for_note_id` around every test.
+
+    The dict is module-global and the addon never clears it, so an editor stored by one
+    test would still be there for the next one -- and for every test in every file that
+    runs after this one, since `run_copy_fields_on_unfocus_field` looks editors up by note
+    id and note ids repeat across collections.
+    """
+    snapshot = dict(editor_for_note_id)
+    try:
+        yield
+    finally:
+        editor_for_note_id.clear()
+        editor_for_note_id.update(snapshot)
+
+
+class FakeEditor:
+    """The whole surface the two handlers touch: `editorMode`, `note`, `loadNote()`."""
+
+    def __init__(self, mode: EditorMode, note=None) -> None:
+        self.editorMode = mode
+        self.note = note
+        self.loads = 0
+        self.load_args: list[tuple] = []
+
+    def loadNote(self, *args, **kwargs) -> None:
+        self.loads += 1
+        self.load_args.append((args, kwargs))
+
+
+@pytest.fixture
+def set_definitions(col):
+    """Put copy definitions where `Config.load()` will find them."""
+
+    def apply(*definitions, log_level=None):
+        config = mw.addonManager.configs[ADDON_TAG]
+        config["copy_definitions"] = list(definitions)
+        if log_level is not None:
+            config["log_level"] = log_level
+
+    return apply
+
+
+@pytest.fixture
+def ran(monkeypatch):
+    """Record what reached `copy_for_single_trigger_note`, then let it through."""
+    calls: list[dict] = []
+    original = note_hooks.copy_for_single_trigger_note
+
+    def spy(**kwargs):
+        into = kwargs.get("copied_into_notes")
+        # Snapshotted, because the callee appends to the very list being recorded and the
+        # question is what the handler handed over, not what came back in it.
+        calls.append({**kwargs, "_into_at_call": None if into is None else list(into)})
+        return original(**kwargs)
+
+    monkeypatch.setattr(note_hooks, "copy_for_single_trigger_note", spy)
+
+    class Calls:
+        def names(self) -> list[str]:
+            return [call["copy_definition"]["definition_name"] for call in calls]
+
+        def field_onlys(self) -> list[Optional[str]]:
+            return [call.get("field_only") for call in calls]
+
+        def copied_into_notes_at_call(self) -> list:
+            return [call["_into_at_call"] for call in calls]
+
+        def collected_note_ids(self) -> list:
+            return [
+                None
+                if call.get("copied_into_notes") is None
+                else [note.id for note in call["copied_into_notes"]]
+                for call in calls
+            ]
+
+        def loggers(self) -> list:
+            return [call.get("logger") for call in calls]
+
+    return Calls()
+
+
+@pytest.fixture
+def copies(monkeypatch):
+    """Record `copy_fields()` calls and run the `CollectionOp` inline.
+
+    `copy_fields` ends in `CollectionOp(...).run_in_background()`, which needs a taskman and
+    `mw._increase_background_ops` that the stub `mw` does not have, so the op closure is
+    captured and called directly against the collection -- the same stand-in
+    `test_copy_fields_op.py` uses. The `success` / `failure` callbacks are recorded and
+    never called: both build Qt widgets.
+    """
+    calls: list[dict] = []
+    original = note_hooks.copy_fields
+    captured: dict = {}
+
+    class InlineCollectionOp:
+        def __init__(self, parent, op):
+            captured["parent"] = parent
+            captured["op"] = op
+
+        def success(self, callback):
+            return self
+
+        def failure(self, callback):
+            return self
+
+        def run_in_background(self, **kwargs):
+            return captured["op"](mw.col)
+
+    monkeypatch.setattr(copy_fields_module, "CollectionOp", InlineCollectionOp)
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(note_hooks, "copy_fields", spy)
+
+    class Calls:
+        def count(self) -> int:
+            return len(calls)
+
+        def names(self) -> list[list[str]]:
+            return [
+                [definition["definition_name"] for definition in call["copy_definitions"]]
+                for call in calls
+            ]
+
+        def kwargs(self) -> dict:
+            assert len(calls) == 1, f"expected exactly one copy_fields call, got {len(calls)}"
+            return calls[0]
+
+    return Calls()
+
+
+# Definition builders ----------------------------------------------------------------------
+#
+# Every one of these carries the unfocus keys, since a definition without them is invisible
+# to this handler however else it is configured.
+
+
+def within(
+    name="within",
+    field="Note",
+    value="{{Word}}",
+    trigger="Word",
+    on_edit=True,
+    on_add=True,
+    **extra,
+):
+    return d.within_note(
+        definition_name=name,
+        field_to_field_defs=[
+            d.field_to_field(
+                field,
+                value,
+                copy_on_unfocus_trigger_field=trigger,
+                copy_on_unfocus_when_edit=on_edit,
+                copy_on_unfocus_when_add=on_add,
+            )
+        ],
+        **extra,
+    )
+
+
+def to_destinations(
+    name="s2d",
+    field="Note",
+    value="copied",
+    query="Word:inu",
+    trigger="Word",
+    on_edit=True,
+    on_add=True,
+    **extra,
+):
+    """Across notes, trigger note as source: the query picks the notes written into."""
+    return d.source_to_destinations(
+        definition_name=name,
+        copy_from_cards_query=query,
+        # All matching cards rather than one picked out of the result: CA Vocab has two
+        # templates, so a count of 1 makes the destination a coin toss.
+        select_card_count="0",
+        field_to_field_defs=[
+            d.field_to_field(
+                field,
+                value,
+                copy_on_unfocus_trigger_field=trigger,
+                copy_on_unfocus_when_edit=on_edit,
+                copy_on_unfocus_when_add=on_add,
+            )
+        ],
+        **extra,
+    )
+
+
+def to_sources(
+    name="d2s",
+    field="Note",
+    value="{{Keyword}}",
+    query="Kanji:neko",
+    trigger="Word",
+    on_edit=True,
+    on_add=True,
+    **extra,
+):
+    """Across notes, trigger note as destination: the query picks the notes read from."""
+    return d.destination_to_sources(
+        definition_name=name,
+        copy_from_cards_query=query,
+        field_to_field_defs=[
+            d.field_to_field(
+                field,
+                value,
+                copy_on_unfocus_trigger_field=trigger,
+                copy_on_unfocus_when_edit=on_edit,
+                copy_on_unfocus_when_add=on_add,
+            )
+        ],
+        **extra,
+    )
+
+
+def new_note(col, note_type=VOCAB, **fields):
+    """A note that has not been added: `id` 0 -- what the Add-cards editor holds."""
+    model = col.models.by_name(note_type)
+    assert model is not None
+    note = col.new_note(model)
+    for field_name, value in fields.items():
+        note[field_name] = value
+    return note
+
+
+def existing_note(col, note_type=VOCAB, **fields):
+    return real_anki.add_note(col, note_type, fields, deck_name="Other")
+
+
+# 2.4 ---------------------------------------------------------------------------------------
+
+
+class TestOnEditorDidLoadNote:
+    def test_it_stores_the_editor_and_its_note_id_under_the_editor_mode(self, col):
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        assert editor_for_note_id[EditorMode.BROWSER] == (editor, note.id)
+
+    def test_an_editor_with_no_note_is_stored_under_note_id_zero(self, col):
+        editor = FakeEditor(EditorMode.BROWSER, None)
+        on_editor_did_load_note(editor)
+        assert editor_for_note_id[EditorMode.BROWSER] == (editor, NoteId(0))
+
+    def test_the_add_cards_editors_unsaved_note_is_also_note_id_zero(self, col):
+        # Not a special case in the handler: a note that has not been added simply has
+        # `id == 0`, which is the same value the no-note branch invents.
+        editor = FakeEditor(EditorMode.ADD_CARDS, new_note(col, Word="neko"))
+        on_editor_did_load_note(editor)
+        assert editor_for_note_id[EditorMode.ADD_CARDS] == (editor, 0)
+
+    def test_three_editors_at_once_are_three_distinct_entries(self, col):
+        browser_note = existing_note(col, Word="neko")
+        current_note = existing_note(col, Word="inu")
+        editors = {
+            EditorMode.ADD_CARDS: FakeEditor(EditorMode.ADD_CARDS, new_note(col, Word="tori")),
+            EditorMode.BROWSER: FakeEditor(EditorMode.BROWSER, browser_note),
+            EditorMode.EDIT_CURRENT: FakeEditor(EditorMode.EDIT_CURRENT, current_note),
+        }
+        for editor in editors.values():
+            on_editor_did_load_note(editor)
+        assert editor_for_note_id == {
+            EditorMode.ADD_CARDS: (editors[EditorMode.ADD_CARDS], 0),
+            EditorMode.BROWSER: (editors[EditorMode.BROWSER], browser_note.id),
+            EditorMode.EDIT_CURRENT: (editors[EditorMode.EDIT_CURRENT], current_note.id),
+        }
+
+    def test_a_second_load_in_the_same_mode_replaces_the_first(self, col):
+        first = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="neko"))
+        second = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="inu"))
+        on_editor_did_load_note(first)
+        on_editor_did_load_note(second)
+        assert editor_for_note_id[EditorMode.BROWSER][0] is second
+
+    def test_the_same_editor_moving_to_another_note_updates_the_stored_id(self, col):
+        # The usual case in the browser: one editor object, a different row selected. The
+        # id is snapshotted at load time, so the hook firing again is the only thing that
+        # keeps the registry honest.
+        editor = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="neko"))
+        on_editor_did_load_note(editor)
+        editor.note = existing_note(col, Word="inu")
+        on_editor_did_load_note(editor)
+        assert editor_for_note_id[EditorMode.BROWSER] == (editor, editor.note.id)
+
+    def test_an_unknown_editor_mode_adds_a_fourth_key(self, col):
+        # The dict is pre-seeded with the three real modes but the handler assigns rather
+        # than looking up, so nothing constrains the key to those three. Harmless today --
+        # a new `EditorMode` in a future Anki would simply appear here.
+        editor = FakeEditor("PREVIEWER", existing_note(col, Word="neko"))  # type: ignore[arg-type]
+        on_editor_did_load_note(editor)
+        assert editor_for_note_id["PREVIEWER"] == (editor, editor.note.id)
+
+    def test_it_returns_nothing(self, col):
+        assert on_editor_did_load_note(FakeEditor(EditorMode.BROWSER, None)) is None
+
+
+class TestTheGlobalIsNeverCleared:
+    """`editor_for_note_id` is module state with a writer and no eraser.
+
+    Nothing in the addon removes an entry: not editor close, not profile switch, not
+    collection close. These tests pin that, because the consequences show up in the unfocus
+    handler -- a `loadNote()` on a torn-down editor, or a stale note id matching a wholly
+    different note in a reopened collection.
+    """
+
+    def test_the_addon_exposes_no_way_to_remove_an_entry(self, col):
+        # `editor_did_load_note` is the only hook the addon registers for the editor; there
+        # is no `editor_will_cleanup`-style counterpart anywhere in the module.
+        with open(note_hooks.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        assert "editor_for_note_id" in source
+        assert "editor_will_cleanup" not in source
+        assert "editor_for_note_id.pop" not in source
+        assert "editor_for_note_id.clear" not in source
+
+    def test_a_closed_editor_is_still_held_and_still_reloaded(self, col, set_definitions):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:224-238. The registry keeps a strong
+        # reference to every editor ever loaded and drops it only when another editor of the
+        # same mode loads a note. A browser closed while its note stays open in the reviewer
+        # is still in the dict, so `run_copy_fields_on_unfocus_field` calls `loadNote()` on
+        # a dead editor -- in a real Anki, on one whose webview is gone. Expected: the entry
+        # is dropped when the editor goes away. Here the closed editor's counter still ticks.
+        note = existing_note(col, Word="neko")
+        closed = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(closed)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert closed.loads == 1
+
+    def test_the_entries_outlive_the_collection_they_refer_to(self, col):
+        # Note ids are timestamps, so the id held here is not reserved against a different
+        # collection -- which is exactly what a profile switch produces.
+        note = existing_note(col, Word="neko")
+        on_editor_did_load_note(FakeEditor(EditorMode.BROWSER, note))
+        assert editor_for_note_id[EditorMode.BROWSER][1] == note.id
+
+
+# 2.2 ---------------------------------------------------------------------------------------
+
+
+class TestTheNewVersusExistingNoteGate:
+    """`copy_on_unfocus_when_add` and `copy_on_unfocus_when_edit`, one test per cell.
+
+    The two flags live on the *field-to-field def*, not on the copy definition, and which
+    one is read is decided solely by `note.id == 0`.
+    """
+
+    def test_a_new_note_runs_when_copy_on_unfocus_when_add_is_set(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(on_add=True, on_edit=False))
+        run_copy_fields_on_unfocus_field(False, new_note(col, Word="neko"), WORD)
+        assert ran.names() == ["within"]
+
+    def test_a_new_note_does_not_run_without_copy_on_unfocus_when_add(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(on_add=False, on_edit=True))
+        run_copy_fields_on_unfocus_field(False, new_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+    def test_an_existing_note_runs_when_copy_on_unfocus_when_edit_is_set(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(on_edit=True, on_add=False))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == ["within"]
+
+    def test_an_existing_note_does_not_run_without_copy_on_unfocus_when_edit(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(on_edit=False, on_add=True))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+    def test_a_missing_flag_key_reads_as_off(self, col, set_definitions, ran):
+        definition = within()
+        del definition["field_to_field_defs"][0]["copy_on_unfocus_when_edit"]
+        set_definitions(definition)
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+    def test_the_note_id_is_the_only_thing_that_picks_which_flag_is_read(
+        self, col, set_definitions, ran
+    ):
+        # A note that exists in the database but is handed over with `id` 0 -- which is what
+        # a duplicated note in the Add dialog looks like -- takes the add branch.
+        set_definitions(within(on_add=True, on_edit=False))
+        note = existing_note(col, Word="neko")
+        note.id = NoteId(0)
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert ran.names() == ["within"]
+
+    def test_the_copy_on_add_review_and_sync_flags_are_not_consulted(
+        self, col, set_definitions, ran
+    ):
+        # The unfocus path has its own two flags and ignores the three that gate the other
+        # triggers, so a definition switched off everywhere else still fires while typing.
+        definition = within()
+        for key in ["copy_on_add", "copy_on_review", "copy_on_sync"]:
+            definition[key] = False
+        set_definitions(definition)
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == ["within"]
+
+    def test_a_definition_for_another_note_type_does_not_run(self, col, set_definitions, ran):
+        set_definitions(within(note_types=[KANJI]))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+    def test_a_definition_with_no_field_to_field_defs_does_not_run(
+        self, col, set_definitions, ran
+    ):
+        # The guard is on the list being non-empty, before any trigger-field matching, so a
+        # tags-only or files-only definition can never be triggered from the editor.
+        set_definitions(d.within_note(definition_name="tags-only", add_tags="tagged"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+
+class TestANewNoteNeverRunsDefinitionsThatTouchOtherNotes:
+    def test_source_to_destinations_is_skipped_on_a_new_note(
+        self, col, set_definitions, ran, copies
+    ):
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations(on_add=True, on_edit=True))
+        run_copy_fields_on_unfocus_field(False, new_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+        assert copies.count() == 0
+
+    def test_the_skip_happens_before_the_flags_are_even_read(self, col, set_definitions, copies):
+        # The `continue` sits above the `copy_on_unfocus_when_add` check, so no combination
+        # of flags brings this definition back. There is no note id to hand `copy_fields`
+        # yet, which is the reason.
+        existing_note(col, Word="inu")
+        for on_add in [True, False]:
+            set_definitions(to_destinations(on_add=on_add))
+            run_copy_fields_on_unfocus_field(False, new_note(col, Word="neko"), WORD)
+        assert copies.count() == 0
+        assert col.get_note(col.find_notes("Word:inu")[0])["Note"] == ""
+
+    def test_destination_to_sources_is_skipped_on_a_new_note_although_it_only_reads(
+        self, col, set_definitions, ran
+    ):
+        # DEFECT: `definition_modifies_other_notes`
+        # (copy_anywhere/configuration.py:437-440) returns True for any Across-notes
+        # definition, direction included, so Destination-to-sources -- whose only write is
+        # into the trigger note -- counts as modifying other notes and is refused on a new
+        # note. Expected: it runs, since it writes nothing but the note being added. This is
+        # the same misclassification pinned on the add path in test_add_note_hook.py; here
+        # the cost is that a lookup into a note being typed in the Add dialog silently does
+        # nothing.
+        existing_note(col, KANJI, Kanji="neko", Keyword="cat")
+        set_definitions(to_sources(on_add=True))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert ran.names() == []
+        assert note["Note"] == ""
+
+    def test_the_same_definition_runs_once_the_note_exists(self, col, set_definitions, copies):
+        # The contrast: nothing about the definition is wrong, only the id-0 note.
+        existing_note(col, KANJI, Kanji="neko", Keyword="cat")
+        set_definitions(to_sources(on_edit=True))
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert copies.count() == 1
+        assert col.get_note(note.id)["Note"] == "cat"
+
+    def test_a_within_note_definition_alongside_still_runs_on_a_new_note(
+        self, col, set_definitions, ran
+    ):
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations("skipped"), within("direct"))
+        run_copy_fields_on_unfocus_field(False, new_note(col, Word="neko"), WORD)
+        assert ran.names() == ["direct"]
+
+
+class TestWhichFieldFiresADefinition:
+    def test_a_field_that_is_no_definitions_trigger_runs_nothing(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(trigger="Word"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), MEANING)
+        assert ran.names() == []
+
+    def test_the_field_index_is_an_index_into_the_note_types_field_order(
+        self, col, set_definitions, ran
+    ):
+        # `note.keys()[field_idx]`, so the argument is positional: CA Vocab is
+        # Word/Reading/Meaning/Freq/Note and index 2 is Meaning, whatever the field holds.
+        set_definitions(within(trigger="Meaning", value="{{Meaning}}"))
+        note = existing_note(col, Word="neko", Meaning="cat")
+        run_copy_fields_on_unfocus_field(False, note, MEANING)
+        assert ran.names() == ["within"]
+        assert note["Note"] == "cat"
+
+    def test_an_out_of_range_field_index_raises(self, col, set_definitions):
+        # Nothing bounds-checks the index. Anki never sends one out of range, but the
+        # exception would propagate out of the hook and unregister the handler for the
+        # session (`_EditorDidUnfocusFieldFilter.__call__` removes a filter that raises).
+        set_definitions(within())
+        with pytest.raises(IndexError):
+            run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), 99)
+
+    def test_either_field_of_a_multi_field_trigger_fires_it(self, col, set_definitions, ran):
+        trigger = d.quoted_list(["Word", "Meaning"])
+        set_definitions(within(trigger=trigger))
+        note = existing_note(col, Word="neko", Meaning="cat")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        run_copy_fields_on_unfocus_field(False, note, MEANING)
+        assert ran.names() == ["within", "within"]
+
+    def test_a_third_field_of_the_same_note_type_still_fires_nothing(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(trigger=d.quoted_list(["Word", "Meaning"])))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), READING)
+        assert ran.names() == []
+
+    def test_a_plainly_comma_separated_trigger_list_matches_nothing(
+        self, col, set_definitions, ran
+    ):
+        # The split is on the exact three characters `", "`, as everywhere else in the
+        # config, so a hand-written list stays one long field name.
+        set_definitions(within(trigger="Word, Meaning"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+    def test_an_empty_trigger_field_never_fires_and_the_fallback_is_dead(
+        self, col, set_definitions, ran
+    ):
+        # DEFECT: copy_anywhere/configuration.py:255-257. The non-modifying branch reads
+        # `"".strip('""').split('", "') or [copy_into_note_field]`, and `[""]` is truthy, so
+        # the `or` never fires. The comment above it says the destination field doubles as
+        # the trigger in Within-note mode; it does not. A definition left with an empty
+        # trigger field is simply inert in the editor. Expected: unfocusing `Note`, the
+        # destination field, fires it.
+        set_definitions(within(field="Note", trigger=""))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), NOTE)
+        assert ran.names() == []
+
+    def test_the_trigger_field_need_not_be_a_field_of_the_note_type(
+        self, col, set_definitions, ran
+    ):
+        # Names are compared against `note.keys()`, never validated against the note type,
+        # so a trigger naming a field that was renamed away is silently inert.
+        set_definitions(within(trigger="Renamed"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+
+class TestTheDeckWhitelistOnThisPath:
+    """The handler passes no `deck_id`, unlike the add-note one."""
+
+    def test_a_deck_outside_the_whitelist_writes_nothing(self, col, set_definitions, ran):
+        # The handler dispatches regardless -- the whitelist is enforced one layer down,
+        # off the note's own cards -- so "did not copy" here is not "was filtered out".
+        set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert ran.names() == ["within"]
+        assert note["Note"] == ""
+
+    def test_a_whitelisted_deck_lets_the_copy_through(self, col, set_definitions):
+        set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="JP vocab")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+
+    def test_a_new_note_defeats_the_whitelist_entirely(self, col, set_definitions):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:320-325 passes no `deck_id`, and a note
+        # being added has no cards either, so the whitelist step has nothing to check and
+        # lets everything through. `run_copy_fields_on_add` passes the deck the note is
+        # going into (line 98) precisely because of this; the unfocus handler cannot -- the
+        # hook gives it no editor and therefore no deck chooser. Expected: the definition is
+        # skipped while the Add dialog is pointed at a deck outside the whitelist.
+        set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+
+
+class TestEveryDefWithThatTriggerRunsButOnlyTheFirstIsConsulted:
+    """`get_triggered_field_to_field_def_for_field` returns one def; `field_only` runs many.
+
+    The handler asks for "the field-to-field def triggered by this field", uses it for the
+    add/edit gate, and then hands the *whole* definition to `copy_for_single_trigger_note`
+    with `field_only=field_name`. That call re-filters every def by the same trigger fields,
+    so the one the gate looked at has no special standing afterwards.
+    """
+
+    def test_two_defs_sharing_a_trigger_field_both_write(self, col, set_definitions):
+        definition = d.within_note(
+            definition_name="two-defs",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}-note",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}-meaning",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert (note["Note"], note["Meaning"]) == ("neko-note", "neko-meaning")
+
+    def test_a_def_with_a_different_trigger_field_does_not_write(self, col, set_definitions):
+        definition = d.within_note(
+            definition_name="two-defs",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Reading",
+                    copy_on_unfocus_when_edit=True,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert (note["Note"], note["Meaning"]) == ("neko", "")
+
+    def test_the_second_defs_flags_are_never_read_so_it_runs_regardless(
+        self, col, set_definitions
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:302-312. The add/edit gate is applied to
+        # the first matching def only, and then the whole definition runs. A second def on
+        # the same trigger field with `copy_on_unfocus_when_edit` explicitly off runs
+        # anyway. Expected: each def is gated by its own flags.
+        definition = d.within_note(
+            definition_name="two-defs",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=False,
+                    copy_on_unfocus_when_add=False,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == "neko"
+
+    def test_a_first_def_with_the_flag_off_suppresses_a_second_def_that_has_it_on(
+        self, col, set_definitions, ran
+    ):
+        # DEFECT: the other half of the same bug, and the damaging half.
+        # `get_triggered_field_to_field_def_for_field`
+        # (copy_anywhere/configuration.py:268-272) returns the *first* def whose trigger
+        # fields match, the handler gates on that one, and `continue` skips the entire
+        # definition. So a def with the flag on never runs because an earlier def in the
+        # same definition, on the same trigger field, has it off. Expected: the second def
+        # runs. Config order is not something the user thinks of as significant here.
+        definition = d.within_note(
+            definition_name="two-defs",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=False,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert ran.names() == []
+        assert note["Meaning"] == ""
+
+    def test_the_field_name_is_what_is_passed_as_field_only(self, col, set_definitions, ran):
+        set_definitions(within(trigger="Meaning"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), MEANING)
+        assert ran.field_onlys() == ["Meaning"]
+
+    def test_several_definitions_on_one_trigger_field_all_run_in_config_order(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within("first"), within("second", field="Meaning"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == ["first", "second"]
+
+
+class TestTheReturnValue:
+    """`changed` is recomputed over the whole note, and the incoming value is thrown away."""
+
+    def test_writing_the_unfocused_field_itself_returns_true(self, col, set_definitions):
+        set_definitions(within(field="Word", value="{{Word}}!", trigger="Word"))
+        assert run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+
+    def test_writing_a_different_field_also_returns_true(self, col, set_definitions):
+        # The comparison is over `note.values()`, not over the unfocused field, which is
+        # what makes a Within-note definition writing elsewhere visible to the editor.
+        set_definitions(within(field="Note", value="{{Word}}", trigger="Word"))
+        assert run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+
+    def test_a_definition_that_writes_the_same_value_back_returns_false(
+        self, col, set_definitions, ran
+    ):
+        # It ran; the values simply did not move. "changed" means "differs", not "a copy
+        # definition fired".
+        set_definitions(within(field="Note", value="{{Word}}"))
+        note = existing_note(col, Word="neko", Note="neko")
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+        assert ran.names() == ["within"]
+
+    def test_no_definitions_at_all_returns_false(self, col, set_definitions):
+        set_definitions()
+        assert run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD) is False
+
+    def test_the_incoming_changed_argument_is_discarded(self, col, set_definitions):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:267 rebinds the `changed` parameter to
+        # False before recomputing it. `editor_did_unfocus_field` is a *filter* hook: aqt
+        # feeds each handler the previous one's answer and reloads the editor if the last
+        # answer is True. Anki itself always seeds the chain with a literal False
+        # (`aqt/editor.py`, `onBridgeCmd`), so what this discards is any *other* addon's
+        # True -- whichever of them is registered first loses. Expected:
+        # `changed or <did we change anything>`.
+        set_definitions()
+        assert run_copy_fields_on_unfocus_field(True, existing_note(col, Word="neko"), WORD) is False
+
+    def test_a_note_with_no_note_type_returns_false_before_anything_runs(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within())
+        note = existing_note(col, Word="neko")
+        note.note_type = lambda: None  # type: ignore[method-assign]
+        assert run_copy_fields_on_unfocus_field(True, note, WORD) is False
+        assert ran.names() == []
+
+
+class TestWhichEditorsAreReloaded:
+    def test_the_browser_and_the_reviewer_editor_on_one_note_both_reload(
+        self, col, set_definitions
+    ):
+        # The source cannot tell which of the two the user typed in -- the hook passes no
+        # editor -- so it reloads both. That is the entire reason the registry exists.
+        note = existing_note(col, Word="neko")
+        browser = FakeEditor(EditorMode.BROWSER, note)
+        current = FakeEditor(EditorMode.EDIT_CURRENT, note)
+        on_editor_did_load_note(browser)
+        on_editor_did_load_note(current)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert (browser.loads, current.loads) == (1, 1)
+
+    def test_an_editor_on_another_note_is_not_reloaded(self, col, set_definitions):
+        note = existing_note(col, Word="neko")
+        other = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="inu"))
+        on_editor_did_load_note(other)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert other.loads == 0
+
+    def test_nothing_reloads_when_no_field_value_moved(self, col, set_definitions):
+        note = existing_note(col, Word="neko", Note="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        set_definitions(within(field="Note", value="{{Word}}"))
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert editor.loads == 0
+
+    def test_a_new_note_matches_the_add_cards_editor(self, col, set_definitions):
+        note = new_note(col, Word="neko")
+        adder = FakeEditor(EditorMode.ADD_CARDS, note)
+        on_editor_did_load_note(adder)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert adder.loads == 1
+
+    def test_a_new_note_also_matches_any_editor_that_was_loaded_with_no_note(
+        self, col, set_definitions
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:238 stores `NoteId(0)` for an editor
+        # with no note, which is the same value a not-yet-added note has, and line 262 then
+        # matches on it. The source comment at line 251 asserts "if the current note.id == 0,
+        # the only editor in the list will be the ADD_CARDS editor" -- it is not: a browser
+        # sitting on an empty selection has id 0 too, and gets a `loadNote()` it never
+        # asked for while the user types in the Add dialog. Expected: no match, since 0 is a
+        # sentinel and not a note id.
+        note = new_note(col, Word="neko")
+        adder = FakeEditor(EditorMode.ADD_CARDS, note)
+        empty_browser = FakeEditor(EditorMode.BROWSER, None)
+        on_editor_did_load_note(adder)
+        on_editor_did_load_note(empty_browser)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert (adder.loads, empty_browser.loads) == (1, 1)
+
+    def test_an_unregistered_editor_mode_is_skipped(self, col, set_definitions):
+        # The three keys start at None and the loop skips falsy entries, so a mode that has
+        # never loaded a note costs nothing.
+        note = existing_note(col, Word="neko")
+        set_definitions(within())
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+    def test_the_registry_is_read_before_the_copy_runs(self, col, set_definitions):
+        # The matching editors are collected at the top of the handler, before any
+        # definition executes, so a definition that somehow re-registered an editor would
+        # not affect this run.
+        note = existing_note(col, Word="neko")
+        late = FakeEditor(EditorMode.BROWSER, note)
+        set_definitions(within())
+
+        original = note_hooks.copy_for_single_trigger_note
+
+        def register_then_copy(**kwargs):
+            on_editor_did_load_note(late)
+            return original(**kwargs)
+
+        note_hooks.copy_for_single_trigger_note = register_then_copy
+        try:
+            run_copy_fields_on_unfocus_field(False, note, WORD)
+        finally:
+            note_hooks.copy_for_single_trigger_note = original
+        assert late.loads == 0
+
+    def test_the_reload_is_a_bare_loadnote_which_drops_the_caret(
+        self, col, set_definitions
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:341-342 calls `editor.loadNote()` with
+        # no `focusTo`. aqt's own reaction to this handler returning True is
+        # `loadNoteKeepingFocus()` on a 100ms timer, which passes `self.currentField` --
+        # deliberately, so the user does not lose their place. The handler reloads the same
+        # editor first, without it. Expected: `loadNoteKeepingFocus`, or at least the
+        # current field index. Reality: no argument at all, and the editor that fired the
+        # event ends up reloaded twice.
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        set_definitions(within())
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+        assert editor.load_args == [((), {})]
+
+    def test_the_same_editor_registered_under_two_modes_reloads_twice(
+        self, col, set_definitions
+    ):
+        # Not reachable from a real Anki, but it pins that the dedupe is by mode key and not
+        # by editor identity.
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        editor.editorMode = EditorMode.EDIT_CURRENT
+        on_editor_did_load_note(editor)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert editor.loads == 2
+
+
+class TestTheModifiesOtherNotesBranchGoesThroughCopyFields:
+    def test_it_calls_copy_fields_with_this_note_and_this_field(
+        self, col, set_definitions, copies
+    ):
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations())
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        kwargs = copies.kwargs()
+        assert kwargs["note_ids"] == [note.id]
+        assert kwargs["field_only"] == "Word"
+        assert kwargs["undo_text_suffix"] == "triggered by unfocus field 'Word'"
+
+    def test_the_undo_entry_carries_that_suffix(self, col, set_definitions, copies):
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations())
+        note = existing_note(col, Word="neko")
+        before = col.undo_status().last_step
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        status = col.undo_status()
+        assert status.undo == "Copy fields (s2d) for 1 notes triggered by unfocus field 'Word'"
+        assert status.last_step == before + 1
+
+    def test_the_other_note_is_written_to_the_database(self, col, set_definitions, copies):
+        other = existing_note(col, Word="inu")
+        set_definitions(to_destinations())
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert col.get_note(other.id)["Note"] == "copied"
+
+    def test_all_such_definitions_share_one_copy_fields_call(
+        self, col, set_definitions, copies
+    ):
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations("a"), to_destinations("b", field="Meaning"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert copies.names() == [["a", "b"]]
+
+    def test_they_run_after_every_non_modifying_definition(
+        self, col, set_definitions, ran, copies
+    ):
+        # The modifying ones are collected during the loop and dispatched afterwards, so a
+        # Within-note definition's write is already in the in-memory note -- but not in the
+        # database -- when `copy_fields` re-fetches it. See the next test.
+        existing_note(col, Word="inu")
+        set_definitions(to_destinations("deferred"), within("direct"))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == ["direct"]
+
+    def test_copy_fields_reads_the_trigger_note_back_from_the_database(
+        self, col, set_definitions, copies
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:327-334 has the authoritative note in
+        # hand and passes only `note_ids=[note.id]`, so `copy_fields` fetches its own copy
+        # from the database and the keystroke that fired the hook is read from whatever is
+        # committed. Anki does start a save first, but `Editor._save_current_note` is an
+        # `update_note(...).run_in_background()` -- a background CollectionOp with no
+        # ordering against the hook body -- so the value copied into other notes is the
+        # last committed one, not the one on screen. Expected: the in-memory note is the
+        # source. Below, "typed" is what the editor holds and "neko" is what is committed.
+        other = existing_note(col, Word="inu")
+        set_definitions(to_destinations(value="{{Word}}"))
+        note = existing_note(col, Word="neko")
+        note["Word"] = "typed"
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert col.get_note(other.id)["Note"] == "neko"
+
+    def test_a_write_into_the_trigger_note_never_reaches_the_open_editor(
+        self, col, set_definitions, copies
+    ):
+        # DEFECT: same lines. Destination-to-sources is classified as modifying other notes
+        # (see `test_destination_to_sources_is_skipped_on_a_new_note...`), so it goes down
+        # this branch and writes the trigger note in the database through `copy_fields`.
+        # The handler's `changed` is computed over the *in-memory* note, which
+        # `copy_fields` never touched, so it stays False and no editor is reloaded -- the
+        # editor keeps showing the old value and saving it back over the copy. Expected:
+        # the editor reloads and shows "cat".
+        existing_note(col, KANJI, Kanji="neko", Keyword="cat")
+        set_definitions(to_sources())
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+        assert editor.loads == 0
+        assert note["Note"] == ""
+        assert col.get_note(note.id)["Note"] == "cat"
+
+    def test_no_copy_fields_call_and_no_undo_entry_when_nothing_matched(
+        self, col, set_definitions, copies
+    ):
+        # Unlike the add path, which creates its undo entry unconditionally, this branch is
+        # guarded by `if editing_other_notes_definitions`.
+        set_definitions(to_destinations(trigger="Meaning"))
+        note = existing_note(col, Word="neko")
+        before = col.undo_status().last_step
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert copies.count() == 0
+        assert col.undo_status().last_step == before
+
+
+class TestNonModifyingDefinitionsDiscardTheirNoteList:
+    def test_copied_into_notes_is_a_fresh_empty_list_that_nobody_keeps(
+        self, col, set_definitions, ran
+    ):
+        # The callee does fill the list -- with the trigger note -- and the handler holds no
+        # name for it, so `update_notes` is never called on anything it collected.
+        set_definitions(within())
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert ran.copied_into_notes_at_call() == [[]]
+        assert ran.collected_note_ids() == [[note.id]]
+
+    def test_the_in_memory_note_carries_the_change_and_the_database_does_not(
+        self, col, set_definitions
+    ):
+        # This is the design, not an oversight: the editor owns the note, and reloading it
+        # from an object the handler mutated is how the value reaches the screen. Anki
+        # writes it when the editor saves.
+        set_definitions(within())
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+        assert col.get_note(note.id)["Note"] == ""
+
+    def test_no_undo_entry_is_created(self, col, set_definitions):
+        set_definitions(within())
+        note = existing_note(col, Word="neko")
+        before = col.undo_status()
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        after = col.undo_status()
+        assert (after.last_step, after.undo) == (before.last_step, before.undo)
+
+    def test_tags_reach_the_in_memory_note_only(self, col, set_definitions):
+        # Same mechanism as the fields: the object is the editor's, and the editor's own
+        # save is what puts either of them in the database.
+        set_definitions(within(add_tags="tagged"))
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note.tags == ["tagged"]
+        assert col.get_note(note.id).tags == []
+
+    def test_a_definition_that_only_moves_tags_reloads_nothing_and_returns_false(
+        self, col, set_definitions, ran
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:338-339 computes `changed` from
+        # `note.values()` alone. Tags are not field values, so a definition that tagged the
+        # note but wrote no new field value reports "nothing changed": no editor is
+        # reloaded and -- since the return value is also what tells aqt to refresh -- the
+        # tag bar keeps showing the old tags until something else reloads the note.
+        # Expected: a tag change counts as a change.
+        set_definitions(within(field="Note", value="{{Word}}", add_tags="tagged"))
+        note = existing_note(col, Word="neko", Note="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+        assert ran.names() == ["within"]
+        assert note.tags == ["tagged"]
+        assert editor.loads == 0
+
+    def test_the_handler_never_builds_a_logger_so_the_configured_level_is_ignored(
+        self, col, set_definitions, ran, capsys
+    ):
+        # DEFECT: copy_anywhere/hooks/note_hooks.py:265-266 loads the config but, unlike
+        # `run_copy_fields_on_add` and `run_copy_fields_on_review`, never constructs
+        # `Logger(config.log_level)` and passes none to `copy_for_single_trigger_note`. The
+        # callee's default parameter is a module-level `Logger("error")` shared by every
+        # caller that omits one, so an unfocus copy always logs at "error" and always to
+        # stdout, whatever `log_level` says. Expected: the configured level, as elsewhere.
+        set_definitions(within(field="Nonexistent"), log_level="debug")
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.loggers() == [None]
+        assert "not found in note" in capsys.readouterr().out
