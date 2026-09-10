@@ -220,16 +220,33 @@ class TestQueryCache:
 class TestCacheAliasing:
     def test_popping_does_not_empty_the_cached_result(self, col, trigger, targets, logger):
         # Regression test for the fix that copies the cached list before popping from it.
-        # Without the copy, the second call sees a query result with cards missing from it.
+        # It takes *three* calls to show the bug, which is why this test asserts on the third
+        # and on the cache itself. The first call misses the cache and stores a copy of the
+        # find_cards result, so its popping cannot reach the stored list whether or not the
+        # read side copies. Only from the second call on is the popped list the cached one.
         extra_state = {}
-        first = call(col, trigger, extra_state=extra_state, logger=logger,
-                     copy_from_cards_query="tag:pool", select_card_by="None",
-                     select_card_count="2")
-        second = call(col, trigger, extra_state=extra_state, logger=logger,
-                      copy_from_cards_query="tag:pool", select_card_by="None",
-                      select_card_count="2")
-        assert len(first) == 2
-        assert [note.id for note in second] == [note.id for note in first]
+        calls = [
+            call(col, trigger, extra_state=extra_state, logger=logger,
+                 copy_from_cards_query="tag:pool", select_card_by="None",
+                 select_card_count="2")
+            for _ in range(3)
+        ]
+        assert all(len(result) == 2 for result in calls)
+        assert [note.id for note in calls[1]] == [note.id for note in calls[0]]
+        assert [note.id for note in calls[2]] == [note.id for note in calls[0]]
+
+    def test_the_cached_query_result_survives_being_read_repeatedly(
+        self, col, trigger, targets, logger
+    ):
+        # The invariant behind the test above, asserted where it lives rather than through
+        # its symptoms: reading the cache must not consume it, however many times it is read.
+        extra_state = {}
+        for _ in range(3):
+            call(col, trigger, extra_state=extra_state, logger=logger,
+                 copy_from_cards_query="tag:pool", select_card_by="None",
+                 select_card_count="2")
+        cached = next(value for value in extra_state.values() if isinstance(value, list))
+        assert sorted(cached) == sorted(col.find_cards("tag:pool"))
 
     def test_the_cached_card_id_list_is_unchanged_after_a_selection(
         self, col, trigger, targets, logger
