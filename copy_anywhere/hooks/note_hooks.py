@@ -29,7 +29,13 @@ from ..logic.copy_fields import (
 )
 
 
-def get_copy_definitions_for_add_note(note: Note, deck_id) -> list[CopyDefinition]:
+def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
+    """The definitions that run when `note` is added: `copy_on_add`, and this note's type.
+
+    Note-type membership only; the caller still has to split the result on
+    `definition_modifies_other_notes`, because those definitions have to wait until the
+    note exists and be run under their own undo entry.
+    """
     config = Config()
     config.load()
     note_type = note.note_type()
@@ -67,27 +73,10 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     config.load()
     logger = Logger(config.log_level)
 
-    note_type = note.note_type()
-    if not note_type:
-        # Error situation, note_type should exist when adding note
-        return
-    note_type_name = note_type["name"]
-
     # Copy definitions that affect other notes need an undo entry as we want to be able to undo
     editing_other_notes_definitions: list[CopyDefinition] = []
 
-    for copy_definition in config.copy_definitions:
-        copy_on_add = copy_definition.get("copy_on_add", False)
-        if not copy_on_add:
-            continue
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        if not copy_into_note_types:
-            continue
-        # Split note_types by comma
-        note_type_names = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in note_type_names:
-            continue
-
+    for copy_definition in get_copy_definitions_for_add_note(note):
         # If this definition modifies other notes, we need to defer it until the note is added
         if definition_modifies_other_notes(copy_definition):
             editing_other_notes_definitions.append(copy_definition)

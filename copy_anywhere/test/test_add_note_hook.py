@@ -275,13 +275,14 @@ FILTER_CASES = [
 ]
 
 
-class TestTheDeadHelperAgreesWithTheHandler:
-    """`get_copy_definitions_for_add_note` is called from nowhere.
+class TestTheHelperIsTheOnlyCopyOfTheRule:
+    """`get_copy_definitions_for_add_note` is what `run_copy_fields_on_add` now selects with.
 
-    It duplicates, statement for statement, the filtering inside `run_copy_fields_on_add`.
-    These tests exist so that wiring the handler up to it can be shown to change nothing:
-    every case is driven through both rules and the answers compared. The one thing that
-    would change is covered by `test_the_helper_returns_one_flat_list_in_config_order`.
+    It used to be dead code duplicating the handler's own filtering statement for statement.
+    These tests were written against both rules at once, and the answers matched on every
+    case below, which is what made the wiring safe to do. They are kept as they are so that
+    the two can never drift apart again -- the handler is driven end to end, the helper
+    directly, and each case asserts they still agree.
     """
 
     @pytest.mark.parametrize(
@@ -294,7 +295,7 @@ class TestTheDeadHelperAgreesWithTheHandler:
         set_definitions(definition)
         note = new_note(col, Word="neko")
         helper = [
-            selected["definition_name"] for selected in get_copy_definitions_for_add_note(note, 1)
+            selected["definition_name"] for selected in get_copy_definitions_for_add_note(note)
         ]
         run_copy_fields_on_add(note, deck(col))
         assert helper == ran.names()
@@ -308,7 +309,7 @@ class TestTheDeadHelperAgreesWithTheHandler:
         set_definitions(within(copy_into_note_types=[VOCAB]))
         note = new_note(col, Word="neko")
         with pytest.raises(AttributeError):
-            get_copy_definitions_for_add_note(note, 1)
+            get_copy_definitions_for_add_note(note)
         with pytest.raises(AttributeError):
             run_copy_fields_on_add(note, deck(col))
 
@@ -316,7 +317,7 @@ class TestTheDeadHelperAgreesWithTheHandler:
         set_definitions(within())
         note = new_note(col, Word="neko")
         note.note_type = lambda: None  # type: ignore[method-assign]
-        assert get_copy_definitions_for_add_note(note, 1) == []
+        assert get_copy_definitions_for_add_note(note) == []
         run_copy_fields_on_add(note, deck(col))
         assert ran.names() == []
 
@@ -329,18 +330,19 @@ class TestTheDeadHelperAgreesWithTheHandler:
         set_definitions(to_destinations("deferred"), within("direct"))
         note = new_note(col, Word="neko")
         helper = [
-            selected["definition_name"] for selected in get_copy_definitions_for_add_note(note, 1)
+            selected["definition_name"] for selected in get_copy_definitions_for_add_note(note)
         ]
         run_copy_fields_on_add(note, deck(col))
         assert helper == ["deferred", "direct"]
         assert ran.names() == ["direct", "deferred"]
 
-    def test_the_helpers_deck_id_argument_is_never_read(self, col, set_definitions):
-        # It is not merely unused for this input -- there is no reference to it in the body.
+    def test_the_helper_does_not_apply_the_deck_whitelist(self, col, set_definitions):
+        # It used to take a deck_id and never read it. The parameter is gone, but the
+        # behaviour it implied never existed: selection is note type only, and the deck
+        # whitelist is applied a layer down, inside copy_for_single_trigger_note.
         set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
         note = new_note(col, Word="neko")
-        assert len(get_copy_definitions_for_add_note(note, deck(col, "Other"))) == 1
-        assert len(get_copy_definitions_for_add_note(note, None)) == 1
+        assert len(get_copy_definitions_for_add_note(note)) == 1
 
 
 class TestAWithinNoteDefinitionOnAdd:
