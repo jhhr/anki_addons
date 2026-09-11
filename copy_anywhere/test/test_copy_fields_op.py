@@ -32,6 +32,7 @@ Four behaviours here are load-bearing and easy to break:
 import json
 
 import pytest
+from anki.collection import OpChanges
 from aqt import mw
 
 import definitions as d
@@ -202,17 +203,14 @@ class TestUndoText:
 
 
 class TestNoDefinitions:
-    def test_an_empty_definition_list_returns_an_empty_result_with_no_changes(
+    def test_an_empty_definition_list_returns_an_empty_result_with_empty_changes(
         self, col, run_copy_fields
     ):
         results = run_copy_fields(copy_definitions=[])
 
         assert results.get_result_text() == ""
         assert results.get_count() == 0
-        # `CollectionOp.on_op_finished` reads `.changes` off the result and hands it to
-        # `operation_did_execute` without a None check, so this None travels into aqt.
-        # Nothing has tripped over it yet; pin it before something starts relying on it.
-        assert results.changes is None
+        assert results.changes == OpChanges()
 
     def test_an_empty_definition_list_never_opens_an_undo_entry(self, col, run_copy_fields):
         add_calls = real_anki.counting_wrapper(col, "add_custom_undo_entry")
@@ -404,7 +402,7 @@ class TestNoteIdsPerDefinition:
         assert col.get_note(note.id)["Note"] == ""
         assert add_calls() == 0
         assert results.get_result_text() == ""
-        assert results.changes is None
+        assert results.changes == OpChanges()
         assert "Got 1 note id lists for 2 definitions" in capsys.readouterr().out
 
     def test_a_list_longer_than_the_definitions_is_rejected_too(
@@ -414,12 +412,13 @@ class TestNoteIdsPerDefinition:
         # definitions have drifted apart, so which list belongs to which is unknowable.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        run_copy_fields(
+        results = run_copy_fields(
             copy_definitions=[write_into_note("a")],
             note_ids_per_definition=[[note.id], [note.id]],
         )
 
         assert col.get_note(note.id)["Note"] == ""
+        assert results.changes == OpChanges()
         assert "Got 2 note id lists for 1 definitions" in capsys.readouterr().out
 
     @pytest.mark.parametrize("entry", [None, 5, "123"], ids=["none", "int", "str"])
@@ -429,12 +428,13 @@ class TestNoteIdsPerDefinition:
         # A str is a Sequence, but of characters rather than note ids.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        run_copy_fields(
+        results = run_copy_fields(
             copy_definitions=[write_into_note("a"), write_into_note("b", field="Freq")],
             note_ids_per_definition=[[note.id], entry],
         )
 
         assert col.get_note(note.id)["Note"] == ""
+        assert results.changes == OpChanges()
         assert "Note ids for definition 2 are not a list" in capsys.readouterr().out
 
     def test_find_notes_results_pass_the_check_as_the_dialog_hands_them_over(
