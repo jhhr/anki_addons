@@ -16,6 +16,7 @@ from aqt.qt import (
     QRadioButton,
     QDoubleSpinBox,
     QLineEdit,
+    QTimer,
     qtmajor,
 )
 
@@ -34,10 +35,13 @@ from ..configuration import (
     CopyDefinition,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .edit_state import EditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
+
+INITIAL_ROWS_PER_TICK = 1
 
 base_description = """<p>Configure actions to perform on any destination note's card types.
             Select a card type from the dropdown to configure its action.</p>"""
@@ -90,6 +94,11 @@ class CardActionsEditor(QWidget):
         self.state = state
         self.copy_definition = copy_definition
         self.initialized = False
+        self._loading_initial_actions = False
+        self._building_initial_actions = False
+        self._load_queue: list[tuple[str, CardAction]] = []
+        self._load_total = 0
+        self.loading_indicator: Optional[LoadingIndicator] = None
 
         # Store callback entries for controlling visibility
         self.selected_model_callback = state.add_selected_model_callback(
@@ -100,19 +109,19 @@ class CardActionsEditor(QWidget):
         self.setLayout(self.vbox)
 
         # Add description label
-        self.description_label = QLabel()
+        self.description_label = QLabel(self)
         self.vbox.addWidget(self.description_label)
 
         # Container for all action editors (displayed inline)
-        self.actions_container_widget = QWidget()
+        self.actions_container_widget = QWidget(self)
         self.actions_layout = QVBoxLayout(self.actions_container_widget)
         self.actions_layout.setContentsMargins(0, 0, 0, 0)
         self.vbox.addWidget(self.actions_container_widget)
 
         # Add new action button and selector
-        self.card_type_selector = GroupedComboBox(is_required=False)
+        self.card_type_selector = GroupedComboBox(self, is_required=False)
         self.card_type_selector.setPlaceholderText("Select a card type to add")
-        self.add_action_button = QPushButton("Add Card Action")
+        self.add_action_button = QPushButton("Add Card Action", self)
         self.add_action_button.clicked.connect(self.add_new_action)
 
         add_action_layout = QHBoxLayout()
@@ -164,15 +173,61 @@ class CardActionsEditor(QWidget):
         self.update_card_type_options()
         self.set_description()
 
-        # Display all existing actions
-        self.setUpdatesEnabled(False)
-        try:
-            for card_type_name, action in self.card_actions.items():
-                self.create_action_editor(card_type_name, action)
-        finally:
-            self.setUpdatesEnabled(True)
+        if self.card_actions:
+            self._load_queue = list(self.card_actions.items())
+            self._load_total = len(self._load_queue)
+            self.loading_indicator = LoadingIndicator(
+                f"Loading card actions... (0/{self._load_total})",
+                self.actions_container_widget,
+            )
+            self.actions_layout.addWidget(self.loading_indicator)
+            self.card_type_selector.setDisabled(True)
+            self.add_action_button.setDisabled(True)
+            self._start_loading_initial_actions()
 
         self.initialized = True
+
+    def _start_loading_initial_actions(self):
+        if self._loading_initial_actions:
+            return
+        self._loading_initial_actions = True
+        self._building_initial_actions = True
+        QTimer.singleShot(0, self._process_load_queue)
+
+    def _process_load_queue(self):
+        for _ in range(INITIAL_ROWS_PER_TICK):
+            if not self._load_queue:
+                break
+            card_type_name, action = self._load_queue.pop(0)
+            self.create_action_editor(card_type_name, action)
+
+        if self._load_queue:
+            if self.loading_indicator is not None:
+                loaded_count = self._load_total - len(self._load_queue)
+                self.loading_indicator.set_text(
+                    f"Loading card actions... ({loaded_count}/{self._load_total})"
+                )
+            QTimer.singleShot(0, self._process_load_queue)
+        else:
+            self._finish_loading_initial_actions()
+
+    def _finish_loading_initial_actions(self):
+        if self.loading_indicator is not None:
+            self.actions_layout.removeWidget(self.loading_indicator)
+            self.loading_indicator.deleteLater()
+            self.loading_indicator = None
+        self._building_initial_actions = False
+        self._loading_initial_actions = False
+        self.update_card_type_options()
+
+    def finish_loading_initial_actions(self):
+        if not self._load_queue:
+            return
+        self._building_initial_actions = True
+        while self._load_queue:
+            card_type_name, action = self._load_queue.pop(0)
+            self.create_action_editor(card_type_name, action)
+        self._finish_loading_initial_actions()
 
     def update_card_type_options(self):
         """
@@ -281,6 +336,7 @@ class CardActionsEditor(QWidget):
 
     def add_new_action(self):
         """Called when the Add Card Action button is clicked"""
+        self.finish_loading_initial_actions()
         card_type_name = self.card_type_selector.currentText()
 
         if not card_type_name:
@@ -591,6 +647,7 @@ class CardActionsEditor(QWidget):
 
     def get_card_actions(self) -> list[CardAction]:
         """Return the list of card actions"""
+        self.finish_loading_initial_actions()
         # Save all actions from their UI components
         for card_type_name in list(self.action_ui_components.keys()):
             self.save_action(card_type_name)

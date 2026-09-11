@@ -21,6 +21,7 @@ from aqt.qt import (
     QCheckBox,
     QIntValidator,
     QGuiApplication,
+    QTimer,
     Qt,
     qtmajor,
 )
@@ -40,6 +41,7 @@ from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..shared.ui.multi_combo_box import MultiComboBox
+from ..shared.ui.loading_indicator import LoadingIndicator
 from ..configuration import (
     Config,
     CopyDefinition,
@@ -611,7 +613,8 @@ class TabEditorComponents(QTabWidget):
         self.copy_mode = copy_mode
 
         # Track which tabs have been created
-        self.created_tabs = set()
+        self.created_tabs: set[str] = set()
+        self.loading_tabs: set[str] = set()
 
         # Create placeholder widgets for each tab
         self.basic_widget = QWidget(self)
@@ -665,11 +668,67 @@ class TabEditorComponents(QTabWidget):
             if isinstance(window, QWidget) and window_updates_enabled is not None:
                 window.setUpdatesEnabled(window_updates_enabled)
 
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def _prepare_tab_layout(self, tab_widget: QWidget):
+        layout = tab_widget.layout()
+        if layout is None:
+            layout = QVBoxLayout(tab_widget)
+        else:
+            self._clear_layout(layout)
+        layout.setAlignment(QAlignTop)
+        return layout
+
+    def _show_loading_placeholder(self, tab_key: str, tab_text: str) -> None:
+        tab_widget = self._tab_widget_for_key(tab_key)
+        if tab_widget is None:
+            return
+        layout = self._prepare_tab_layout(tab_widget)
+        layout.addStretch(1)
+        layout.addWidget(LoadingIndicator(f"Loading {tab_text}...", tab_widget))
+        layout.addStretch(2)
+        tab_widget.updateGeometry()
+
+    def _tab_widget_for_key(self, tab_key: str) -> Optional[QWidget]:
+        return {
+            "basic": self.basic_widget,
+            "variables": self.variables_widget,
+            "condition_query": self.condition_widget,
+            "across_query": self.card_query_widget,
+            "tags": self.tags_widget,
+            "card_actions": self.card_actions_widget,
+            "fields": self.fields_widget,
+            "files": self.files_widget,
+        }.get(tab_key)
+
+    def _deferred_tab_still_current(self, tab_key: str) -> bool:
+        current_widget = self.currentWidget()
+        return current_widget is not None and current_widget is self._tab_widget_for_key(tab_key)
+
+    def _finish_deferred_tab_build(self, tab_key: str, build_func: Callable[[], None]) -> None:
+        if tab_key in self.created_tabs:
+            self.loading_tabs.discard(tab_key)
+            return
+        if not self._deferred_tab_still_current(tab_key):
+            self.loading_tabs.discard(tab_key)
+            return
+        self._build_tab_without_repaints(build_func)
+        self.loading_tabs.discard(tab_key)
+        self.updateGeometry()
+
     def create_basic_tab(self):
         if "basic" in self.created_tabs:
             return
         # Create layout for the existing placeholder widget
-        basic_layout = QVBoxLayout(self.basic_widget)
+        basic_layout = self._prepare_tab_layout(self.basic_widget)
         basic_layout.setAlignment(QAlignTop)
         extra_widgets: list[Tuple[QLabel, QWidget]] = []
         if self.copy_mode == COPY_MODE_ACROSS_NOTES and hasattr(
@@ -696,7 +755,7 @@ class TabEditorComponents(QTabWidget):
     def create_variables_tab(self):
         if "variables" in self.created_tabs:
             return
-        variables_layout = QVBoxLayout(self.variables_widget)
+        variables_layout = self._prepare_tab_layout(self.variables_widget)
         variables_layout.setAlignment(QAlignTop)
 
         variables_layout.addWidget(QLabel("""<h2>Variables to use in Search Query
@@ -718,7 +777,7 @@ class TabEditorComponents(QTabWidget):
     def create_fields_tab(self):
         if "fields" in self.created_tabs:
             return
-        fields_layout = QVBoxLayout(self.fields_widget)
+        fields_layout = self._prepare_tab_layout(self.fields_widget)
         fields_layout.setAlignment(QAlignTop)
 
         fields_layout.addWidget(QLabel("<h2>Copy content to note fields</h2>"))
@@ -739,7 +798,7 @@ class TabEditorComponents(QTabWidget):
     def create_tags_tab(self):
         if "tags" in self.created_tabs:
             return
-        tags_layout = QVBoxLayout(self.tags_widget)
+        tags_layout = self._prepare_tab_layout(self.tags_widget)
         tags_layout.setAlignment(QAlignTop)
 
         tags_layout.addWidget(QLabel("<h2>Tags</h2>"))
@@ -763,7 +822,7 @@ class TabEditorComponents(QTabWidget):
     def create_card_actions_tab(self):
         if "card_actions" in self.created_tabs:
             return
-        card_actions_layout = QVBoxLayout(self.card_actions_widget)
+        card_actions_layout = self._prepare_tab_layout(self.card_actions_widget)
         card_actions_layout.setAlignment(QAlignTop)
 
         card_actions_layout.addWidget(QLabel("<h2>Card Actions</h2>"))
@@ -786,7 +845,7 @@ class TabEditorComponents(QTabWidget):
     def create_files_tab(self):
         if "files" in self.created_tabs:
             return
-        files_layout = QVBoxLayout(self.files_widget)
+        files_layout = self._prepare_tab_layout(self.files_widget)
         files_layout.setAlignment(QAlignTop)
 
         files_layout.addWidget(QLabel("<h2>Copy content to files</h2>"))
@@ -808,7 +867,7 @@ class TabEditorComponents(QTabWidget):
         """Create the condition query tab content lazily"""
         if "condition_query" in self.created_tabs:
             return
-        query_layout = QVBoxLayout(self.condition_widget)
+        query_layout = self._prepare_tab_layout(self.condition_widget)
         query_layout.setAlignment(QAlignTop)
 
         self.condition_query_tab_widget = ConditionQueryTabWidget(
@@ -824,7 +883,7 @@ class TabEditorComponents(QTabWidget):
         """Create the query tab content lazily"""
         if "across_query" in self.created_tabs:
             return
-        query_layout = QVBoxLayout(self.card_query_widget)
+        query_layout = self._prepare_tab_layout(self.card_query_widget)
         query_layout.setAlignment(QAlignTop)
 
         self.across_query_tab_widget = AcrossQueryTabWidget(
@@ -867,7 +926,20 @@ class TabEditorComponents(QTabWidget):
             tab_key = "across_query"
             create_func = self.create_across_query_tab
 
-        if create_func is not None and tab_key is not None and tab_key not in self.created_tabs:
+        deferred_tab_keys = {"variables", "card_actions", "fields", "files"}
+        should_defer_build = (
+            tab_key in deferred_tab_keys
+            and tab_key not in self.created_tabs
+            and tab_key not in self.loading_tabs
+        )
+        if create_func is not None and tab_key is not None and should_defer_build:
+            self.loading_tabs.add(tab_key)
+            self._show_loading_placeholder(tab_key, tab_text)
+            QTimer.singleShot(
+                1,
+                lambda key=tab_key, func=create_func: self._finish_deferred_tab_build(key, func),
+            )
+        elif create_func is not None and tab_key is not None and tab_key not in self.created_tabs:
             self._build_tab_without_repaints(create_func)
 
         self.updateGeometry()

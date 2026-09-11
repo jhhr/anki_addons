@@ -8,6 +8,7 @@ from aqt.qt import (
     QFrame,
     QFormLayout,
     QPushButton,
+    QTimer,
     qtmajor,
 )
 
@@ -24,6 +25,7 @@ else:
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.loading_indicator import LoadingIndicator
 from ..shared.ui.toggle_switch import ToggleSwitch
 from ..shared.interpolate.interpolate_fields import (
     NOTE_ID,
@@ -33,6 +35,8 @@ from ..shared.interpolate.interpolate_fields import (
 )
 from ..configuration import CopyFieldToVariable
 from .edit_state import EditState
+
+INITIAL_ROWS_PER_TICK = 1
 
 
 class VariableInputsDict(TypedDict):
@@ -72,13 +76,13 @@ class CopyFieldToVariableEditor(QWidget):
         self.variable_ui_components: dict[str, dict] = {}  # Maps variable GUID to its UI components
 
         # Create variables container with vertical layout instead of grid
-        self.variables_container_widget = QWidget()
+        self.variables_container_widget = QWidget(self)
         self.variables_layout = QVBoxLayout(self.variables_container_widget)
         self.variables_layout.setContentsMargins(0, 0, 0, 0)
 
         self.bottom_form = QFormLayout()
 
-        self.add_new_button = QPushButton("Use variables")
+        self.add_new_button = QPushButton("Use variables", self)
         self.add_new_button.clicked.connect(self.show_editor)
 
         self.copy_field_inputs: list[VariableInputsDict] = []
@@ -89,20 +93,25 @@ class CopyFieldToVariableEditor(QWidget):
         )
 
         self.initialized = False
+        self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self._load_queue: list[tuple[int, CopyFieldToVariable]] = []
+        self._load_total = 0
+        self.loading_indicator: Optional[LoadingIndicator] = None
 
         # There has to be at least one definition so initialize with one
         if len(self.fields_to_variable_defs) == 0:
             self.vbox.addWidget(self.add_new_button)
         else:
             self.add_editor_layouts()
-            self.setUpdatesEnabled(False)
-            try:
-                for index, copy_field_to_variable_definition in enumerate(
-                    self.fields_to_variable_defs
-                ):
-                    self.add_copy_field_row(index, copy_field_to_variable_definition)
-            finally:
-                self.setUpdatesEnabled(True)
+            self._load_queue = list(enumerate(self.fields_to_variable_defs))
+            self._load_total = len(self._load_queue)
+            self.loading_indicator = LoadingIndicator(
+                f"Loading variables... (0/{self._load_total})",
+                self.variables_container_widget,
+            )
+            self.variables_layout.addWidget(self.loading_indicator)
+            self.add_new_button.setDisabled(True)
 
     def enable_callbacks(self):
         self.selected_model_callback.is_visible = True
@@ -117,14 +126,60 @@ class CopyFieldToVariableEditor(QWidget):
 
         self.enable_callbacks()
 
-        self.update_variable_names_in_state()
+        if self._load_queue:
+            self._start_loading_initial_rows()
+        else:
+            self.update_variable_names_in_state()
 
         self.initialized = True
+
+    def _start_loading_initial_rows(self):
+        if self._loading_initial_rows:
+            return
+        self._loading_initial_rows = True
+        self._building_initial_rows = True
+        QTimer.singleShot(0, self._process_load_queue)
+
+    def _process_load_queue(self):
+        for _ in range(INITIAL_ROWS_PER_TICK):
+            if not self._load_queue:
+                break
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+
+        if self._load_queue:
+            if self.loading_indicator is not None:
+                loaded_count = self._load_total - len(self._load_queue)
+                self.loading_indicator.set_text(
+                    f"Loading variables... ({loaded_count}/{self._load_total})"
+                )
+            QTimer.singleShot(0, self._process_load_queue)
+        else:
+            self._finish_loading_initial_rows()
+
+    def _finish_loading_initial_rows(self):
+        if self.loading_indicator is not None:
+            self.variables_layout.removeWidget(self.loading_indicator)
+            self.loading_indicator.deleteLater()
+            self.loading_indicator = None
+        self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self.add_new_button.setDisabled(False)
+        self.update_variable_names_in_state()
+
+    def finish_loading_initial_rows(self):
+        if not self._load_queue:
+            return
+        self._building_initial_rows = True
+        while self._load_queue:
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+        self._finish_loading_initial_rows()
 
     def add_editor_layouts(self):
         self.vbox.addWidget(self.variables_container_widget)
         self.vbox.addLayout(self.bottom_form)
-        self.add_new_button = QPushButton("Add another fields-to-variable definition")
+        self.add_new_button = QPushButton("Add another fields-to-variable definition", self)
         self.bottom_form.addRow("", self.add_new_button)
         self.add_new_button.clicked.connect(self.add_new_definition)
 
@@ -135,6 +190,7 @@ class CopyFieldToVariableEditor(QWidget):
         self.add_new_definition()
 
     def add_new_definition(self):
+        self.finish_loading_initial_rows()
         new_definition: CopyFieldToVariable = {
             "guid": str(uuid.uuid4()),
             "copy_into_variable": "",
@@ -331,6 +387,7 @@ class CopyFieldToVariableEditor(QWidget):
         """
         Returns the list of fields-to-variable definitions from the current state of the editor.
         """
+        self.finish_loading_initial_rows()
         field_to_field_defs = []
         for copy_field_inputs in self.copy_field_inputs:
             copy_variable_definition = {

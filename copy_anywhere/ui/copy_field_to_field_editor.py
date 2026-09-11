@@ -11,6 +11,7 @@ from aqt.qt import (
     QFormLayout,
     QPushButton,
     QCheckBox,
+    QTimer,
     qtmajor,
 )
 
@@ -37,6 +38,7 @@ from ..shared.ui.grouped_combo_box import GroupedComboBox
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import FIELD_CODE_NOTICE
 from ..shared.ui.toggle_switch import ToggleSwitch
 from ..shared.interpolate.interpolate_fields import (
@@ -47,6 +49,8 @@ from ..shared.interpolate.interpolate_fields import (
     intr_format,
 )
 from .edit_state import EditState
+
+INITIAL_ROWS_PER_TICK = 1
 
 
 class FieldInputsDict(TypedDict):
@@ -103,6 +107,10 @@ class CopyFieldToFieldEditor(QWidget):
         self.copy_definition = copy_definition
         self.initialized = False
         self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self._load_queue: list[tuple[int, CopyFieldToField]] = []
+        self._load_total = 0
+        self.loading_indicator: Optional[LoadingIndicator] = None
         self._destination_field_options_cache: Optional[list[tuple[str, list[str]]]] = None
         self._unfocus_field_names_cache: Optional[list[str]] = None
 
@@ -113,7 +121,7 @@ class CopyFieldToFieldEditor(QWidget):
         self.field_ui_components: dict[str, dict] = {}  # Maps field GUID to its UI components
 
         # Create fields container with vertical layout instead of grid
-        self.fields_container_widget = QWidget()
+        self.fields_container_widget = QWidget(self)
         self.fields_layout = QVBoxLayout(self.fields_container_widget)
         self.fields_layout.setContentsMargins(0, 0, 0, 0)
         self.vbox.addWidget(self.fields_container_widget)
@@ -121,21 +129,21 @@ class CopyFieldToFieldEditor(QWidget):
         self.bottom_form = QFormLayout()
         self.vbox.addLayout(self.bottom_form)
 
-        self.add_new_button = QPushButton("Add another field-to-field definition")
+        self.add_new_button = QPushButton("Add another field-to-field definition", self)
         self.bottom_form.addRow("", self.add_new_button)
         self.add_new_button.clicked.connect(self.add_new_definition)
 
         self.copy_field_inputs: list[FieldInputsDict] = []
 
         if len(self.field_to_field_defs) > 0:
-            self.setUpdatesEnabled(False)
-            self._building_initial_rows = True
-            try:
-                for index, copy_field_to_field_definition in enumerate(self.field_to_field_defs):
-                    self.add_copy_field_row(index, copy_field_to_field_definition)
-            finally:
-                self._building_initial_rows = False
-                self.setUpdatesEnabled(True)
+            self._load_queue = list(enumerate(self.field_to_field_defs))
+            self._load_total = len(self._load_queue)
+            self.loading_indicator = LoadingIndicator(
+                f"Loading field definitions... (0/{self._load_total})",
+                self.fields_container_widget,
+            )
+            self.fields_layout.addWidget(self.loading_indicator)
+            self.add_new_button.setDisabled(True)
 
     def enable_callbacks(self):
         self.selected_model_callback.is_visible = True
@@ -154,11 +162,58 @@ class CopyFieldToFieldEditor(QWidget):
 
         self.enable_callbacks()
 
-        self.update_direction_labels()
+        if self._load_queue:
+            self._start_loading_initial_rows()
+        else:
+            self.update_direction_labels()
 
         self.initialized = True
 
+    def _start_loading_initial_rows(self):
+        if self._loading_initial_rows:
+            return
+        self._loading_initial_rows = True
+        self._building_initial_rows = True
+        QTimer.singleShot(0, self._process_load_queue)
+
+    def _process_load_queue(self):
+        for _ in range(INITIAL_ROWS_PER_TICK):
+            if not self._load_queue:
+                break
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+
+        if self._load_queue:
+            if self.loading_indicator is not None:
+                loaded_count = self._load_total - len(self._load_queue)
+                self.loading_indicator.set_text(
+                    f"Loading field definitions... ({loaded_count}/{self._load_total})"
+                )
+            QTimer.singleShot(0, self._process_load_queue)
+        else:
+            self._finish_loading_initial_rows()
+
+    def _finish_loading_initial_rows(self):
+        if self.loading_indicator is not None:
+            self.fields_layout.removeWidget(self.loading_indicator)
+            self.loading_indicator.deleteLater()
+            self.loading_indicator = None
+        self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self.add_new_button.setDisabled(False)
+        self.update_direction_labels()
+
+    def finish_loading_initial_rows(self):
+        if not self._load_queue:
+            return
+        self._building_initial_rows = True
+        while self._load_queue:
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+        self._finish_loading_initial_rows()
+
     def add_new_definition(self):
+        self.finish_loading_initial_rows()
         new_definition: CopyFieldToField = {
             "guid": str(uuid.uuid4()),
             "copy_into_note_field": "",
@@ -423,6 +478,7 @@ class CopyFieldToFieldEditor(QWidget):
         """
         Returns the list of field-to-field definitions from the current state of the editor.
         """
+        self.finish_loading_initial_rows()
         field_to_field_defs = []
         for copy_field_inputs in self.copy_field_inputs:
             copy_on_unfocus_when_add = cast(
