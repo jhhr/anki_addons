@@ -136,7 +136,7 @@ class KanjiumToJavdejongProcessDialog(QDialog):
 
 
 KANJIUM_TO_JAVDEJONG_DESCRIPTION = """
-        Convert a field containing pitch accents in the Kanjium format into to the JavdeJong format.
+        Convert a field containing pitch accents in the Kanjium format into the JavdeJong format.
         If the field doesn't contain Kanjium format pitch accents, nothing is done.
         """
 
@@ -521,7 +521,7 @@ class FontsCheckProcessDialog(QDialog):
 FONTS_CHECK_DESCRIPTION = """
         For the given text, go through all the characters and return the fonts for which every
         character has an entry in the JSON file for.
-        The JSON file is intended be something pre-generated from a script that checks which fonts
+        The JSON file is intended to be something pre-generated from a script that checks which fonts
         support which characters.
         """
 
