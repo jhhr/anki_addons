@@ -36,7 +36,7 @@ class LoadingIndicator(QWidget):
 
         self.label = QLabel(text, self)
         self.label.setAlignment(QAlignCenter)
-        self.label.setStyleSheet("color: #666; font-weight: bold;")
+        self.label.setStyleSheet("font-weight: bold;")
 
         self.progress = QProgressBar(self)
         self.progress.setRange(0, 0)
