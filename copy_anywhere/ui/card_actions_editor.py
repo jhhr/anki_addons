@@ -16,6 +16,7 @@ from aqt.qt import (
     QRadioButton,
     QDoubleSpinBox,
     QLineEdit,
+    QTimer,
     qtmajor,
 )
 
@@ -34,10 +35,13 @@ from ..configuration import (
     CopyDefinition,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .edit_state import EditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
+
+INITIAL_ROWS_PER_TICK = 1
 
 base_description = """<p>Configure actions to perform on any destination note's card types.
             Select a card type from the dropdown to configure its action.</p>"""
@@ -90,6 +94,11 @@ class CardActionsEditor(QWidget):
         self.state = state
         self.copy_definition = copy_definition
         self.initialized = False
+        self._loading_initial_actions = False
+        self._building_initial_actions = False
+        self._load_queue: list[tuple[str, CardAction]] = []
+        self._load_total = 0
+        self.loading_indicator: Optional[LoadingIndicator] = None
 
         # Store callback entries for controlling visibility
         self.selected_model_callback = state.add_selected_model_callback(
@@ -100,19 +109,19 @@ class CardActionsEditor(QWidget):
         self.setLayout(self.vbox)
 
         # Add description label
-        self.description_label = QLabel()
+        self.description_label = QLabel(self)
         self.vbox.addWidget(self.description_label)
 
         # Container for all action editors (displayed inline)
-        self.actions_container_widget = QWidget()
+        self.actions_container_widget = QWidget(self)
         self.actions_layout = QVBoxLayout(self.actions_container_widget)
         self.actions_layout.setContentsMargins(0, 0, 0, 0)
         self.vbox.addWidget(self.actions_container_widget)
 
         # Add new action button and selector
-        self.card_type_selector = GroupedComboBox(is_required=False)
+        self.card_type_selector = GroupedComboBox(self, is_required=False)
         self.card_type_selector.setPlaceholderText("Select a card type to add")
-        self.add_action_button = QPushButton("Add Card Action")
+        self.add_action_button = QPushButton("Add Card Action", self)
         self.add_action_button.clicked.connect(self.add_new_action)
 
         add_action_layout = QHBoxLayout()
@@ -164,11 +173,61 @@ class CardActionsEditor(QWidget):
         self.update_card_type_options()
         self.set_description()
 
-        # Display all existing actions
-        for card_type_name, action in self.card_actions.items():
-            self.create_action_editor(card_type_name, action)
+        if self.card_actions:
+            self._load_queue = list(self.card_actions.items())
+            self._load_total = len(self._load_queue)
+            self.loading_indicator = LoadingIndicator(
+                f"Loading card actions... (0/{self._load_total})",
+                self.actions_container_widget,
+            )
+            self.actions_layout.addWidget(self.loading_indicator)
+            self.card_type_selector.setDisabled(True)
+            self.add_action_button.setDisabled(True)
+            self._start_loading_initial_actions()
 
         self.initialized = True
+
+    def _start_loading_initial_actions(self):
+        if self._loading_initial_actions:
+            return
+        self._loading_initial_actions = True
+        self._building_initial_actions = True
+        QTimer.singleShot(0, self._process_load_queue)
+
+    def _process_load_queue(self):
+        for _ in range(INITIAL_ROWS_PER_TICK):
+            if not self._load_queue:
+                break
+            card_type_name, action = self._load_queue.pop(0)
+            self.create_action_editor(card_type_name, action)
+
+        if self._load_queue:
+            if self.loading_indicator is not None:
+                loaded_count = self._load_total - len(self._load_queue)
+                self.loading_indicator.set_text(
+                    f"Loading card actions... ({loaded_count}/{self._load_total})"
+                )
+            QTimer.singleShot(0, self._process_load_queue)
+        else:
+            self._finish_loading_initial_actions()
+
+    def _finish_loading_initial_actions(self):
+        if self.loading_indicator is not None:
+            self.actions_layout.removeWidget(self.loading_indicator)
+            self.loading_indicator.deleteLater()
+            self.loading_indicator = None
+        self._building_initial_actions = False
+        self._loading_initial_actions = False
+        self.update_card_type_options()
+
+    def finish_loading_initial_actions(self):
+        if not self._load_queue:
+            return
+        self._building_initial_actions = True
+        while self._load_queue:
+            card_type_name, action = self._load_queue.pop(0)
+            self.create_action_editor(card_type_name, action)
+        self._finish_loading_initial_actions()
 
     def update_card_type_options(self):
         """
@@ -277,6 +336,7 @@ class CardActionsEditor(QWidget):
 
     def add_new_action(self):
         """Called when the Add Card Action button is clicked"""
+        self.finish_loading_initial_actions()
         card_type_name = self.card_type_selector.currentText()
 
         if not card_type_name:
@@ -315,14 +375,17 @@ class CardActionsEditor(QWidget):
             return
 
         # Create a frame for the action editor
-        frame = QFrame()
+        frame = QFrame(self.actions_container_widget)
         frame.setFrameShape(QFrameStyledPanel)
         frame.setFrameShadow(QFrameShadowRaised)
         frame_layout = QVBoxLayout(frame)
         self.actions_layout.addWidget(frame)
 
         # Header
-        header = QLabel(f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>")
+        header = QLabel(
+            f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
+            frame,
+        )
         frame_layout.addWidget(header)
 
         # Code mode toggle
@@ -330,11 +393,11 @@ class CardActionsEditor(QWidget):
         frame_layout.addWidget(use_code_toggle)
 
         # --- Form mode container ---
-        form_mode_container = QWidget()
+        form_mode_container = QWidget(frame)
         form_layout = QFormLayout(form_mode_container)
 
         # 1. Change Deck dropdown
-        deck_combo = QComboBox()
+        deck_combo = QComboBox(form_mode_container)
         deck_combo.addItem("-")
         all_decks = mw.col.decks.all_names_and_ids()
         for deck_name_and_id in all_decks:
@@ -346,10 +409,10 @@ class CardActionsEditor(QWidget):
                 deck_combo.setCurrentIndex(index)
         else:
             deck_combo.setCurrentIndex(0)
-        form_layout.addRow(QLabel("<b>Move card to deck:</b>"), deck_combo)
+        form_layout.addRow(QLabel("<b>Move card to deck:</b>", form_mode_container), deck_combo)
 
         # 2. Set Flag button group
-        flag_group = QButtonGroup()
+        flag_group = QButtonGroup(form_mode_container)
         flag_layout = QHBoxLayout()
         flag_options = [
             (None, "N/A"),
@@ -364,49 +427,49 @@ class CardActionsEditor(QWidget):
         ]
         current_flag = action.get("set_flag")
         for value, text in flag_options:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("flag_value", value)
             flag_group.addButton(radio)
             flag_layout.addWidget(radio)
             if current_flag == value or (current_flag is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Set card flag:</b>"), flag_layout)
+        form_layout.addRow(QLabel("<b>Set card flag:</b>", form_mode_container), flag_layout)
 
         # 3. Suspend button group
-        suspend_group = QButtonGroup()
+        suspend_group = QButtonGroup(form_mode_container)
         suspend_layout = QHBoxLayout()
         current_suspend = action.get("suspend")
         for value, text in [(None, "N/A"), (True, "Suspend"), (False, "Unsuspend")]:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("suspend_value", value)
             suspend_group.addButton(radio)
             suspend_layout.addWidget(radio)
             if current_suspend == value or (current_suspend is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Suspend card:</b>"), suspend_layout)
+        form_layout.addRow(QLabel("<b>Suspend card:</b>", form_mode_container), suspend_layout)
 
         # 4. Bury button group
-        bury_group = QButtonGroup()
+        bury_group = QButtonGroup(form_mode_container)
         bury_layout = QHBoxLayout()
         current_bury = action.get("bury")
         for value, text in [(None, "N/A"), (True, "Bury"), (False, "Unbury")]:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("bury_value", value)
             bury_group.addButton(radio)
             bury_layout.addWidget(radio)
             if current_bury == value or (current_bury is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Bury card:</b>"), bury_layout)
+        form_layout.addRow(QLabel("<b>Bury card:</b>", form_mode_container), bury_layout)
 
         # 5. Set desired retention
         dr_layout = QHBoxLayout()
-        dr_number_input = QDoubleSpinBox()
+        dr_number_input = QDoubleSpinBox(form_mode_container)
         dr_number_input.setRange(0.0, 0.99)
         dr_number_input.setSingleStep(0.01)
         dr_number_input.setDecimals(2)
         dr_number_input.setSpecialValueText(" ")
         dr_number_input.setValue(0.0)
-        dr_string_input = QLineEdit()
+        dr_string_input = QLineEdit(form_mode_container)
         dr_string_input.setPlaceholderText("Custom data property name")
         current_dr = action.get("set_desired_retention")
         if isinstance(current_dr, (float, int)) and not isinstance(current_dr, bool):
@@ -428,12 +491,12 @@ class CardActionsEditor(QWidget):
 
         dr_number_input.valueChanged.connect(_dr_number_changed)
         dr_string_input.textChanged.connect(_dr_string_changed)
-        dr_layout.addWidget(QLabel("Float (0.01\u20130.99):"))
+        dr_layout.addWidget(QLabel("Float (0.01\u20130.99):", form_mode_container))
         dr_layout.addWidget(dr_number_input)
-        dr_layout.addWidget(QLabel("or custom data property:"))
+        dr_layout.addWidget(QLabel("or custom data property:", form_mode_container))
         dr_layout.addWidget(dr_string_input)
         dr_layout.addStretch()
-        form_layout.addRow(QLabel("<b>Set desired retention:</b>"), dr_layout)
+        form_layout.addRow(QLabel("<b>Set desired retention:</b>", form_mode_container), dr_layout)
 
         frame_layout.addWidget(form_mode_container)
 
@@ -495,7 +558,7 @@ class CardActionsEditor(QWidget):
         use_code_toggle.toggled.connect(on_use_code_toggled)
 
         # Delete button
-        delete_button = QPushButton("Delete this card action")
+        delete_button = QPushButton("Delete this card action", frame)
         delete_button.clicked.connect(lambda: self.delete_action(card_type_name))
         frame_layout.addWidget(delete_button)
 
@@ -584,6 +647,7 @@ class CardActionsEditor(QWidget):
 
     def get_card_actions(self) -> list[CardAction]:
         """Return the list of card actions"""
+        self.finish_loading_initial_actions()
         # Save all actions from their UI components
         for card_type_name in list(self.action_ui_components.keys()):
             self.save_action(card_type_name)
