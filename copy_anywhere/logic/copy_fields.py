@@ -65,7 +65,11 @@ from .execute_code_wrappers import (
 )
 from .FatalProcessError import FatalProcessError
 from .fonts_check_process import fonts_check_process
-from ..shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX, TARGET_NOTES_COUNT, interpolate_from_text
+from ..shared.interpolate.interpolate_fields import (
+    QUERY_NOTE_INDEX,
+    TARGET_NOTES_COUNT,
+    interpolate_from_text,
+)
 from .kana_highlight_process import WithTagsDef, kana_highlight_process
 from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
 from .regex_process import regex_process
