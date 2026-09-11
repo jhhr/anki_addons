@@ -20,13 +20,12 @@ goes on profile switch. That is pinned here (`TestWhenEntriesAreDropped`), and i
 `_restore_editor_registry` below snapshots and restores the dict around every test: without
 it these tests would leak editors into each other and into every later file in the suite.
 
-**Two seams, both borrowed from the sibling hook file.** Copy definitions go in through
+**Three seams, all borrowed from the sibling hook files.** Copy definitions go in through
 `mw.addonManager.configs["copy_anywhere"]["copy_definitions"]`, which the `col` fixture
-refreshes per test; and "the definition was filtered out" is only distinguishable from "the
-definition ran and did nothing" by spying on `copy_for_single_trigger_note`. Unlike
-`run_copy_fields_on_add`, this handler builds no `Logger` at all -- see
-`test_the_handler_never_builds_a_logger_so_the_configured_level_is_ignored` -- so there is
-no logger seam to patch here. The modifies-other-notes branch does go through
+refreshes per test; "the definition was filtered out" is only distinguishable from "the
+definition ran and did nothing" by spying on `copy_for_single_trigger_note`; and, as in
+`run_copy_fields_on_add`, the `Logger` the handler builds from `log_level` is caught by
+replacing the name in the module (`hook_logger`). The modifies-other-notes branch does go through
 `copy_fields()`, so its `CollectionOp` has to be driven inline, as in
 `test_copy_fields_op.py`.
 """
@@ -113,6 +112,25 @@ def set_definitions(col):
             config["log_level"] = log_level
 
     return apply
+
+
+@pytest.fixture
+def hook_logger(logger, monkeypatch):
+    """Capture the `Logger` the handler builds for itself.
+
+    The handler constructs `Logger(config.log_level)` internally rather than taking one, so
+    the only way to see what it reported is to replace the name in the module. `copy_fields`
+    builds its own from its own module's `Logger`, so this does not reach that branch.
+    """
+    levels: list[str] = []
+
+    def build(level):
+        levels.append(level)
+        return logger
+
+    monkeypatch.setattr(note_hooks, "Logger", build)
+    logger.levels = levels  # type: ignore[attr-defined]
+    return logger
 
 
 @pytest.fixture
@@ -1203,16 +1221,15 @@ class TestNonModifyingDefinitionsDiscardTheirNoteList:
         assert note.tags == ["tagged"]
         assert editor.loads == 1
 
-    def test_the_handler_never_builds_a_logger_so_the_configured_level_is_ignored(
-        self, col, set_definitions, ran, capsys
+    def test_the_handler_builds_its_logger_from_the_configured_level(
+        self, col, set_definitions, ran, hook_logger, capsys
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:265-266 loads the config but, unlike
-        # `run_copy_fields_on_add` and `run_copy_fields_on_review`, never constructs
-        # `Logger(config.log_level)` and passes none to `copy_for_single_trigger_note`. The
-        # callee's default parameter is a module-level `Logger("error")` shared by every
-        # caller that omits one, so an unfocus copy always logs at "error" and always to
-        # stdout, whatever `log_level` says. Expected: the configured level, as elsewhere.
+        # Passed explicitly because the callee's default is a module-level `Logger("error")`
+        # shared by every caller that omits one, which would ignore `log_level` and print a
+        # failing definition's error to stdout instead of through the configured logger.
         set_definitions(within(field="Nonexistent"), log_level="debug")
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
-        assert ran.loggers() == [None]
-        assert "not found in note" in capsys.readouterr().out
+        assert hook_logger.levels == ["debug"]
+        assert ran.loggers() == [hook_logger]
+        assert hook_logger.has_error("not found in note")
+        assert "not found in note" not in capsys.readouterr().out

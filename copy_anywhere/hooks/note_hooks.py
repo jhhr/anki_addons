@@ -292,6 +292,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
 
     config = Config()
     config.load()
+    logger = Logger(config.log_level)
     note_type = note.note_type()
     if not note_type:
         # Error situation, note_type should exist when unfocusing field
@@ -357,6 +358,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 copied_into_notes=[],
                 field_only=field_name,
                 deck_id=deck_id,
+                logger=logger,
             )
 
     if editing_other_notes_definitions:
