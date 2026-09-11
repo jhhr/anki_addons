@@ -211,6 +211,10 @@ class ProgressUpdater:
         self.total_notes_count = total_notes_count
         self.is_across = is_across
         self.note_cnt = 0
+        # Notes skipped by the deck whitelist or the condition query. Kept apart from note_cnt,
+        # which callers read as "notes actually processed", but the progress bar needs them to
+        # reach total_notes_count, the number of notes the SQL query returned.
+        self.skipped_note_cnt = 0
         self.total_processed_sources = 0
         self.total_processed_destinations = 0
         self.total_processed_cards = 0
@@ -227,9 +231,12 @@ class ProgressUpdater:
         processed_destinations_inc: Optional[int] = None,
         processed_files_inc: Optional[int] = None,
         processed_cards_inc: Optional[int] = None,
+        skipped_note_cnt_inc: Optional[int] = None,
     ):
         if note_cnt_inc is not None:
             self.note_cnt += note_cnt_inc
+        if skipped_note_cnt_inc is not None:
+            self.skipped_note_cnt += skipped_note_cnt_inc
         if processed_sources_inc is not None:
             self.total_processed_sources += processed_sources_inc
         if processed_destinations_inc is not None:
@@ -251,7 +258,8 @@ class ProgressUpdater:
     def maybe_render_update(self, force: bool = False):
         elapsed_s = time.time() - self.start_time
         elapsed_since_last_update = elapsed_s - self.last_render_update
-        is_last_note = self.note_cnt == self.total_notes_count
+        done_cnt = self.note_cnt + self.skipped_note_cnt
+        is_last_note = done_cnt == self.total_notes_count
         no_notes = not self.total_notes_count > 0
         if (elapsed_since_last_update < 0.5 and not (force or is_last_note)) or no_notes:
             return
@@ -259,7 +267,9 @@ class ProgressUpdater:
 
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         label = f"""<strong>{html.escape(self.definition_name)}</strong>:
-        <br>Copied {self.note_cnt}/{self.total_notes_count} notes
+        <br>Copied {self.note_cnt}/{self.total_notes_count} notes{
+            f", skipped {self.skipped_note_cnt}" if self.skipped_note_cnt > 0 else ""
+        }
         <br><small>Processed{
             f"-  destination notes: {self.total_processed_destinations}"
             if self.total_processed_destinations > 0
@@ -277,12 +287,12 @@ class ProgressUpdater:
             else ""
         }
         </small><br>Time: {elapsed_time}"""
-        if self.note_cnt / self.total_notes_count > 0.10 or elapsed_s > 1:
-            if self.note_cnt > 0:
-                eta_s = (elapsed_s / self.note_cnt) * (self.total_notes_count - self.note_cnt)
+        if done_cnt / self.total_notes_count > 0.10 or elapsed_s > 1:
+            if done_cnt > 0:
+                eta_s = (elapsed_s / done_cnt) * (self.total_notes_count - done_cnt)
                 eta = time.strftime("%H:%M:%S", time.gmtime(eta_s))
                 label += f" - ETA: {eta}"
-        value = self.note_cnt
+        value = done_cnt
         max_value = self.total_notes_count
 
         mw.taskman.run_on_main(
@@ -876,6 +886,8 @@ def copy_for_single_trigger_note(
                 f" {trigger_note.id}"
             )
             # Deck not in whitelist, so skip this note, things are ok, so return True
+            if progress_updater is not None:
+                progress_updater.update_counts(skipped_note_cnt_inc=1)
             return True
 
     # Step 3: Check the copy condition for this note
@@ -898,6 +910,8 @@ def copy_for_single_trigger_note(
                     f"id {trigger_note.id}"
                 )
                 # Condition did not match, so skip this note, things are ok, so return True
+                if progress_updater is not None:
+                    progress_updater.update_counts(skipped_note_cnt_inc=1)
                 return True
         else:
             logger.error(
@@ -907,8 +921,8 @@ def copy_for_single_trigger_note(
             )
             return False
 
-    # Update progress for processing this note after we've checked the condition, so we don't
-    # count notes that are skipped due to the condition not matching
+    # Update progress for processing this note after we've checked the condition, so notes
+    # skipped due to the condition not matching are counted as skipped, not as processed
     if progress_updater is not None:
         progress_updater.update_counts(note_cnt_inc=1)
 

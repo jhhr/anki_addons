@@ -8,9 +8,9 @@ Two things here are load-bearing and stated nowhere:
 
 * the loop asks `mw.progress.want_cancel()` *after* processing a note and *after* looking at
   whether that note succeeded, so a failure stops the run unreported even when cancelled;
-* `ProgressUpdater` decides "this is the last note" from its own `note_cnt`, which counts
-  only the notes that got past the condition query -- so a run whose last note is skipped
-  never renders a final update at all.
+* `ProgressUpdater` keeps the notes that got past the deck whitelist and condition query
+  (`note_cnt`, what sync reporting reads) apart from the ones skipped by them, and needs both
+  to recognise the last note -- so a run whose last note is skipped still renders it.
 
 Nothing below `copy_fields()` writes to the database, so every assertion here is on the
 returned `CacheResults`, on the `copied_into_notes` / `copied_into_cards_dict` the loop
@@ -531,6 +531,18 @@ class TestProgressUpdaterRendering:
 
         assert len(progress.updates) == 1
 
+    def test_skipped_notes_count_toward_the_last_note_and_the_bar(self, col, progress):
+        updater = make_updater(total=3)
+        updater.update_counts(note_cnt_inc=1, skipped_note_cnt_inc=2)
+
+        updater.maybe_render_update()
+
+        update = progress.updates[-1]
+        assert update["value"] == 3
+        assert "Copied 1/3 notes, skipped 2" in update["label"]
+        # ...but not toward `get_counts`, whose note count is "processed" to its callers.
+        assert updater.get_counts()[0] == 1
+
     def test_zero_total_notes_renders_nothing_even_when_forced(self, col, progress):
         # The `no_notes` guard sits after the throttle test and before the `note_cnt /
         # total_notes_count` division, so it is also what keeps a zero total from raising
@@ -791,22 +803,22 @@ class TestTheFinalRender:
         assert progress.updates[-1]["value"] == 2
         assert progress.updates[-1]["max"] == 2
 
-    def test_a_run_whose_last_note_is_condition_skipped_renders_nothing_at_all(
+    def test_a_run_whose_last_note_is_condition_skipped_still_renders_a_full_bar(
         self, col, logger, progress
     ):
-        # DEFECT: `maybe_render_update` decides "last note" with `note_cnt ==
-        # total_notes_count`, but `note_cnt` only counts notes that passed the condition query
-        # while `total_notes_count` is the number the SQL returned. When the two can never
-        # meet, the sub-0.5s throttle suppresses every update and the progress bar is never
-        # drawn -- here, not once across a whole run. Expected: the loop to force a final
-        # render, or the skipped notes to count.
+        # `total_notes_count` is the number the SQL returned, so the "last note" check has to
+        # count the condition-skipped notes as well as the copied ones, or it never matches
+        # and the sub-0.5s throttle suppresses every update of the run.
         real_anki.add_note(col, VOCAB, {"Word": "aaa", "Meaning": "a"})
         real_anki.add_note(col, VOCAB, {"Word": "bbb", "Meaning": "b"})
         definition = copy_word_into_note(copy_condition_query="Word:aaa")
 
         results = run_bulk(definition, logger)
 
-        assert progress.updates == []
+        assert progress.updates
+        assert progress.updates[-1]["value"] == 2
+        assert progress.updates[-1]["max"] == 2
+        assert "Copied 1/2 notes, skipped 1" in progress.updates[-1]["label"]
         assert "1 destinations" in summary(results)
 
     def test_zero_notes_means_the_loop_never_asks_for_a_render(self, col, logger, progress):
