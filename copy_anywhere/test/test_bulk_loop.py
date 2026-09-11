@@ -6,8 +6,8 @@ the definition applies to, walks them, and assembles the result text the tooltip
 
 Two things here are load-bearing and stated nowhere:
 
-* the loop asks `mw.progress.want_cancel()` *after* processing a note and *before* looking at
-  whether that note succeeded, so cancelling turns a failure into a reported partial run;
+* the loop asks `mw.progress.want_cancel()` *after* processing a note and *after* looking at
+  whether that note succeeded, so a failure stops the run unreported even when cancelled;
 * `ProgressUpdater` decides "this is the last note" from its own `note_cnt`, which counts
   only the notes that got past the condition query -- so a run whose last note is skipped
   never renders a final update at all.
@@ -409,11 +409,10 @@ class TestCancellation:
 
         assert call_count() == 3
 
-    def test_a_cancel_is_reported_as_success_over_a_failing_note(self, col, logger, cancel_after):
-        # DEFECT: `want_cancel()` is checked before `if not success`, so when both are true
-        # the loop breaks and falls through to the reporting block. A definition that failed
-        # on its very first note reports "processed" and increments the count. Expected: the
-        # failure to win, since it is the reason the run has to be debugged.
+    def test_a_failing_note_wins_over_a_cancel(self, col, logger, cancel_after):
+        # `if not success` is checked before `want_cancel()`, so a definition that failed on
+        # its very first note returns without reporting even when the user also cancelled --
+        # the failure is the reason the run has to be debugged.
         real_anki.add_note(col, VOCAB, {"Word": "", "Meaning": "cat"})
         real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
         cancel_after(1)
@@ -425,8 +424,8 @@ class TestCancellation:
         results = run_bulk(definition, logger)
 
         assert logger.has_error("could not be interpolated")
-        assert "processed" in summary(results)
-        assert results.get_count() == 1
+        assert summary(results) == ""
+        assert results.get_count() == 0
 
 
 class TestAFailingNote:

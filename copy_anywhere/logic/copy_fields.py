@@ -616,12 +616,13 @@ def copy_fields_in_background(
 
         progress_updater.maybe_render_update()
 
+        if not success:
+            # Something went wrong, stop operation so the issue can be debugged. Checked before
+            # the cancel, so a cancel can't turn the failure into a reported partial run.
+            return results
+
         if mw.progress.want_cancel():
             break
-
-        if not success:
-            # Something went wrong, stop operation so the issue can be debugged
-            return results
 
     # When syncing, don't show a pointless message that nothing was done
     # Otherwise, when copy fields is run manually, you want to know the result in any case
