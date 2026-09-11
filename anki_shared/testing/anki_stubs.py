@@ -4,10 +4,9 @@ This is the cheaper of the two modes offered by `anki_shared.testing` (see
 `real_anki.py` for the other). Nothing here needs the `anki` PyPI package, Qt, or a
 collection on disk, so it suits pure logic that only passes Anki objects around.
 
-It puts a minimal Anki in sys.modules and then, optionally, loads an addon's modules
-under a synthetic package name, which is what makes their relative imports resolve
-without running the addon's own `__init__` (which builds menus and registers hooks).
-Only the handful of names the code under test actually uses are given real behaviour --
+It puts a minimal Anki in sys.modules. The root conftest registers addon packages without
+running their `__init__` modules, which build menus and register hooks. Only the handful
+of names the code under test actually uses are given real behaviour --
 `mw.progress.want_cancel` above all, which is how a long-running op learns it has been
 cancelled. Everything else resolves to a throwaway class, since the code under test only
 passes those around.
@@ -22,14 +21,7 @@ which runs outside it.
 import importlib.util
 import sys
 import types
-from pathlib import Path
 from types import ModuleType
-from typing import Union
-
-# The addon package under a name of our own, so nothing resolves to the real package and
-# triggers its __init__
-PACKAGE = "addon_under_test_pkg"
-
 
 # --- The Anki that isn't there ------------------------------------------------------------
 
@@ -150,51 +142,3 @@ def install() -> None:
     _module("aqt", mw=mw, gui_hooks=types.SimpleNamespace())
 
     sys.meta_path.append(_StubFinder())
-
-
-def load_addon_module(
-    addon_root: Union[str, Path],
-    name: str,
-    subdir: str = "",
-) -> ModuleType:
-    """Load <addon_root>/<subdir>/<name>.py as part of a synthetic addon package.
-
-    For modules that cannot be loaded straight from their file because they reach sideways
-    into their own package for siblings: they need both a package to live in and an Anki to
-    import. `subdir` is here so a module nested one level down can be reached the same way;
-    passing "" loads a module that sits at the package root.
-    """
-    install()
-
-    addon_root = Path(addon_root).resolve()
-
-    if PACKAGE not in sys.modules:
-        root = ModuleType(PACKAGE)
-        root.__path__ = [str(addon_root)]
-        sys.modules[PACKAGE] = root
-
-    root = sys.modules[PACKAGE]
-    if not subdir:
-        package_name = PACKAGE
-    else:
-        package_name = f"{PACKAGE}.{subdir}"
-        if package_name not in sys.modules:
-            sub = ModuleType(package_name)
-            sub.__path__ = [str(addon_root / subdir)]
-            sys.modules[package_name] = sub
-            setattr(root, subdir, sub)
-
-    dotted = f"{package_name}.{name}"
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-
-    path = (addon_root / subdir if subdir else addon_root) / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(dotted, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not build a spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    # Registered before executing, so a relative import that comes back round to this module
-    # resolves to the same object
-    sys.modules[dotted] = module
-    spec.loader.exec_module(module)
-    return module
