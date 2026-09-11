@@ -1,4 +1,4 @@
-from typing import Union, Tuple
+from typing import Optional, Union, Tuple
 from anki.hooks import (
     wrap,
     note_will_be_added,
@@ -245,8 +245,27 @@ def on_editor_will_cleanup(editor: Editor):
             editor_for_note_id[editor_mode] = None
 
 
+def get_add_cards_deck_id() -> Optional[int]:
+    """
+    The deck the Add cards dialog is currently set to add into, or None if there's no Add
+    cards editor. A new note has no cards yet, so this is the only way to check it against
+    the deck whitelist, as run_copy_fields_on_add does with the deck_id it's given.
+    """
+    maybe_editor_tuple = editor_for_note_id[EditorMode.ADD_CARDS]
+    if not maybe_editor_tuple:
+        return None
+    editor, _ = maybe_editor_tuple
+    # The AddCards window is the editor's parentWindow and owns the deck chooser
+    deck_chooser = getattr(getattr(editor, "parentWindow", None), "deck_chooser", None)
+    if deck_chooser is None:
+        return None
+    return deck_chooser.selected_deck_id
+
+
 def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) -> bool:
     is_new_note = note.id == 0
+    # Existing notes are checked against the whitelist by their cards' decks instead
+    deck_id = get_add_cards_deck_id() if is_new_note else None
 
     editors_matching_note_id = [
         # There can be three editors open at the same time:
@@ -329,6 +348,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 trigger_note=note,
                 copied_into_notes=[],
                 field_only=field_name,
+                deck_id=deck_id,
             )
 
     if editing_other_notes_definitions:

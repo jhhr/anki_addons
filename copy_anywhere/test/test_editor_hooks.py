@@ -9,8 +9,8 @@ decide whose `loadNote()` to call. The source calls this "a hack" in as many wor
 
 **No running Anki.** Both handlers are plain functions. A real `aqt.editor.Editor` needs a
 webview and a main window, but the handlers only ever read `editor.editorMode`,
-`editor.note` (and `.note.id`) and call `editor.loadNote()`, so `FakeEditor` below supplies
-exactly those three. `EditorMode` is a real enum -- it is the dict's key type and the
+`editor.note` (and `.note.id`), the Add dialog's deck chooser, and call `editor.loadNote()`,
+so `FakeEditor` below supplies exactly those. `EditorMode` is a real enum -- it is the dict's key type and the
 handler stores by it -- so it is imported for real.
 
 **The global outlives everything but its editors.** `editor_for_note_id` is module state
@@ -31,6 +31,7 @@ no logger seam to patch here. The modifies-other-notes branch does go through
 `test_copy_fields_op.py`.
 """
 
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -74,11 +75,19 @@ def _restore_editor_registry():
 
 
 class FakeEditor:
-    """The whole surface the two handlers touch: `editorMode`, `note`, `loadNote()`."""
+    """The whole surface the two handlers touch: `editorMode`, `note`, `loadNote()`.
 
-    def __init__(self, mode: EditorMode, note=None) -> None:
+    Plus, when `deck_id` is given, the Add dialog's deck chooser, which the unfocus handler
+    reads through `parentWindow.deck_chooser.selected_deck_id` for a new note.
+    """
+
+    def __init__(self, mode: EditorMode, note=None, deck_id=None) -> None:
         self.editorMode = mode
         self.note = note
+        if deck_id is not None:
+            self.parentWindow = SimpleNamespace(
+                deck_chooser=SimpleNamespace(selected_deck_id=deck_id)
+            )
         self.loads = 0
         self.load_args: list[tuple] = []
 
@@ -639,7 +648,7 @@ class TestWhichFieldFiresADefinition:
 
 
 class TestTheDeckWhitelistOnThisPath:
-    """The handler passes no `deck_id`, unlike the add-note one."""
+    """An existing note is checked by its cards; a new one by the Add dialog's deck."""
 
     def test_a_deck_outside_the_whitelist_writes_nothing(self, col, set_definitions, ran):
         # The handler dispatches regardless -- the whitelist is enforced one layer down,
@@ -656,13 +665,34 @@ class TestTheDeckWhitelistOnThisPath:
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert note["Note"] == "neko"
 
-    def test_a_new_note_defeats_the_whitelist_entirely(self, col, set_definitions):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:320-325 passes no `deck_id`, and a note
-        # being added has no cards either, so the whitelist step has nothing to check and
-        # lets everything through. `run_copy_fields_on_add` passes the deck the note is
-        # going into (line 98) precisely because of this; the unfocus handler cannot -- the
-        # hook gives it no editor and therefore no deck chooser. Expected: the definition is
-        # skipped while the Add dialog is pointed at a deck outside the whitelist.
+    def test_a_new_note_is_skipped_when_the_add_dialog_is_on_another_deck(
+        self, col, set_definitions
+    ):
+        # A note being added has no cards, so the whitelist step would have nothing to
+        # check. The hook gives the handler no editor, but the registry holds the Add
+        # dialog's, and its deck chooser says where the note is going.
+        set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        note = new_note(col, Word="neko")
+        on_editor_did_load_note(FakeEditor(EditorMode.ADD_CARDS, note, col.decks.id("Other")))
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == ""
+
+    def test_a_new_note_copies_when_the_add_dialog_is_on_a_whitelisted_deck(
+        self, col, set_definitions
+    ):
+        set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        note = new_note(col, Word="neko")
+        on_editor_did_load_note(
+            FakeEditor(EditorMode.ADD_CARDS, note, col.decks.id("JP vocab"))
+        )
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+
+    def test_a_new_note_with_no_add_dialog_still_passes_the_whitelist(
+        self, col, set_definitions
+    ):
+        # With no Add editor registered there is no deck to check, and the whitelist step
+        # lets a card-less note through, as it would without a `deck_id` anywhere else.
         set_definitions(within(only_copy_into_decks=d.quoted_list(["JP vocab"])))
         note = new_note(col, Word="neko")
         run_copy_fields_on_unfocus_field(False, note, WORD)
