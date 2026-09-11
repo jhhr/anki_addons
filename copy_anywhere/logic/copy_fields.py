@@ -884,6 +884,10 @@ def copy_for_single_trigger_note(
         if include_subdecks:
             parent_dids = set()
             for did in unique_whitelist_dids:
+                # A name that matched no deck resolved to None, which children() would send
+                # to the backend as deck 0 and raise NotFoundError on. It has no subdecks.
+                if did is None:
+                    continue
                 child_dids = [d[1] for d in mw.col.decks.children(did)]
                 parent_dids.update(child_dids)
             unique_whitelist_dids.update(parent_dids)

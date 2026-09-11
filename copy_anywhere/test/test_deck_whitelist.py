@@ -10,8 +10,6 @@ not-yet-added note through, and where the gate sits relative to the other steps.
 
 import time
 
-import pytest
-
 import definitions as d
 from anki_shared.testing import real_anki
 from conftest import VOCAB
@@ -208,30 +206,25 @@ class TestANonExistentDeckName:
         copy_for_single_trigger_note(definition, note, logger=logger)
         assert note["Note"] == "neko"
 
-    def test_include_subdecks_turns_it_into_a_raised_not_found_error(self, col, logger):
-        # DEFECT, and worse than the issue's "does not accidentally match": with
-        # include_subdecks on, the None goes to decks.children(), which asks the backend for
-        # deck '0' and raises. Nothing catches it, so a typo'd deck name in a definition
-        # aborts the caller's whole bulk loop with a database-corruption-sounding error.
-        from anki.errors import NotFoundError
-
+    def test_include_subdecks_leaves_it_a_none_that_skips_the_note(self, col, logger):
+        # The None must not reach decks.children(): the backend would look up deck 0 and
+        # raise NotFoundError, aborting the caller's whole bulk loop over a typo'd name.
         note = note_in(col, "JP vocab")
         definition = copy_note_field(
             only_copy_into_decks=d.quoted_list(["No Such Deck"]), include_subdecks=True
         )
-        with pytest.raises(NotFoundError):
-            copy_for_single_trigger_note(definition, note, logger=logger)
+        assert copy_for_single_trigger_note(definition, note, logger=logger) is True
+        assert note["Note"] == ""
+        assert logger.has_debug("unique_whitelist_dids={None}")
 
-    def test_a_real_name_beside_it_does_not_save_it_from_raising(self, col, logger):
-        from anki.errors import NotFoundError
-
-        note = note_in(col, "JP vocab")
+    def test_with_include_subdecks_a_real_name_beside_it_still_matches(self, col, logger):
+        note = note_in(col, "JP vocab::10-80")
         definition = copy_note_field(
             only_copy_into_decks=d.quoted_list(["JP vocab", "No Such Deck"]),
             include_subdecks=True,
         )
-        with pytest.raises(NotFoundError):
-            copy_for_single_trigger_note(definition, note, logger=logger)
+        assert copy_for_single_trigger_note(definition, note, logger=logger) is True
+        assert note["Note"] == "neko"
 
 
 class TestFilteredDeckCards:
