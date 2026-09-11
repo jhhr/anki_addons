@@ -46,18 +46,34 @@ SHARED_ROOT = ROOT / "anki_shared"
 DIST_DIR = ROOT / "dist"
 
 EXCLUDE_DIRS = {
-    "__pycache__", ".git", ".github", ".idea", ".vscode", ".pytest_cache",
-    "test", "tests", "dist", "node_modules",
+    "__pycache__",
+    ".git",
+    ".github",
+    ".idea",
+    ".vscode",
+    ".pytest_cache",
+    "test",
+    "tests",
+    "test_anki",
+    "dist",
+    "node_modules",
     # Per-install state, not addon content. Anki preserves user_files across updates, so a
     # dev machine's copy has no business in the zip - and it is where the mdx dictionaries
     # this addon reads end up, which is hundreds of megabytes of somebody else's data.
-    "user_files", "logs", "output",
+    "user_files",
+    "logs",
+    "output",
 }
 EXCLUDE_FILES = {
     # meta.json is per-install state written by Anki; shipping it is meaningless
     # and Anki rewrites it on install anyway.
-    "meta.json", ".gitignore", ".gitmodules", ".gitattributes",
-    "pytest.ini", "build.json", "manifest.json",
+    "meta.json",
+    ".gitignore",
+    ".gitmodules",
+    ".gitattributes",
+    "pytest.ini",
+    "build.json",
+    "manifest.json",
     # The pinned requirements.txt compiled from this does ship - the runtime rebuild reads
     # it - but the source it was compiled from is a build-time input only.
     "requirements.in",
@@ -71,6 +87,7 @@ SHARED_IMPORT_RE = re.compile(r"from\s+\.{1,3}shared\.(\w+)")
 # --------------------------------------------------------------------------
 # addon discovery
 # --------------------------------------------------------------------------
+
 
 class Addon:
     def __init__(self, path: Path, meta: dict):
@@ -112,6 +129,7 @@ def discover(names: list[str] | None = None) -> list[Addon]:
 # links
 # --------------------------------------------------------------------------
 
+
 def is_link(p: Path) -> bool:
     """True for POSIX symlinks and for Windows junctions/symlinked dirs."""
     if p.is_symlink():
@@ -135,7 +153,8 @@ def link_dir(src: Path, dst: Path) -> None:
     if os.name == "nt":
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(dst), str(src)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
     else:
         os.symlink(src, dst, target_is_directory=True)
@@ -144,6 +163,7 @@ def link_dir(src: Path, dst: Path) -> None:
 # --------------------------------------------------------------------------
 # commands
 # --------------------------------------------------------------------------
+
 
 def cmd_link(addons: list[Addon]) -> None:
     """Materialise <addon>/shared/<pkg> as links into anki_shared/."""
@@ -155,9 +175,7 @@ def cmd_link(addons: list[Addon]) -> None:
         for pkg in addon.shared:
             src = SHARED_ROOT / pkg
             if not src.is_dir():
-                sys.exit(
-                    f"{addon.path.name}: declared shared package '{pkg}' not in {SHARED_ROOT}"
-                )
+                sys.exit(f"{addon.path.name}: declared shared package '{pkg}' not in {SHARED_ROOT}")
             link_dir(src, addon.shared_dir / pkg)
         print(f"linked {addon.path.name}/shared -> {', '.join(addon.shared) or '(none)'}")
 
@@ -278,7 +296,17 @@ EXTENSION_SUFFIXES = (".pyd", ".so", ".dylib", ".dll")
 # Compared with line endings normalised: Windows wheels ship their .py files with CRLF and the
 # others with LF, so raw bytes would call every pure-Python package platform-specific.
 TEXT_SUFFIXES = {
-    ".py", ".pyi", ".typed", ".txt", ".cfg", ".ini", ".json", ".md", ".rst", ".toml", ".pem",
+    ".py",
+    ".pyi",
+    ".typed",
+    ".txt",
+    ".cfg",
+    ".ini",
+    ".json",
+    ".md",
+    ".rst",
+    ".toml",
+    ".pem",
 }
 
 
@@ -328,14 +356,19 @@ def compile_requirements(addon: Addon, uv: str) -> Path:
         [
             # Named relative to the addon, and run from there: uv writes the input's path
             # into its `# via` comments, and an absolute one would differ per machine.
-            uv, "pip", "compile", REQUIREMENTS_IN,
+            uv,
+            "pip",
+            "compile",
+            REQUIREMENTS_IN,
             # Without this uv pins for the machine it runs on, and the result would be a
             # lock describing one of the five platforms and one Python version. It is also
             # what lets the resolution fork on python_full_version; see VENDOR_PYTHON_FLOOR.
             "--universal",
-            "--python-version", VENDOR_PYTHON_FLOOR,
+            "--python-version",
+            VENDOR_PYTHON_FLOOR,
             "--quiet",
-            "-o", str(scratch),
+            "-o",
+            str(scratch),
         ],
         cwd=addon.path,
         check=True,
@@ -343,13 +376,9 @@ def compile_requirements(addon: Addon, uv: str) -> Path:
     # uv's own header records the absolute path it was invoked with, which differs per
     # machine and would show up as a diff on every developer's re-vendor. The `# via` lines
     # are indented and stay: they are the record of which four requirements are direct.
-    body = [
-        line for line in scratch.read_text("utf-8").splitlines() if not line.startswith("#")
-    ]
+    body = [line for line in scratch.read_text("utf-8").splitlines() if not line.startswith("#")]
     compiled.write_text(
-        REQUIREMENTS_HEADER.format(
-            version=VENDOR_PYTHON_VERSION, floor=VENDOR_PYTHON_FLOOR
-        )
+        REQUIREMENTS_HEADER.format(version=VENDOR_PYTHON_VERSION, floor=VENDOR_PYTHON_FLOOR)
         + "\n".join(body).strip("\n")
         + "\n",
         "utf-8",
@@ -447,7 +476,8 @@ def copy_missing(src: Path, dst: Path, strip_extensions: bool = False) -> None:
 
 def copy_tree(src: Path, dst: Path) -> None:
     shutil.copytree(
-        src, dst,
+        src,
+        dst,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
         dirs_exist_ok=True,
     )
@@ -474,9 +504,7 @@ def check_per_platform_output(lib: Path, packages: set[str]) -> None:
                     f"vendor: {lib.name}/_platform/{tag}/{package} has no extension module.\n"
                     "That platform would import a package missing its compiled half."
                 )
-            fingerprint = hashlib.sha256(
-                json.dumps(files, sort_keys=True).encode()
-            ).hexdigest()
+            fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             builds.setdefault(fingerprint, []).append(tag)
         if len(builds) == 1:
             sys.exit(
@@ -530,7 +558,8 @@ def clear_previous_vendoring(
             print(
                 "  note: no vendor manifest yet, so these were left alone. Delete any that are\n"
                 '        stale, or list them under "vendor_keep" in build.json:\n'
-                "        " + ", ".join(leftover)
+                "        "
+                + ", ".join(leftover)
             )
 
     for name in doomed:
@@ -566,12 +595,19 @@ def vendor_addon(addon: Addon, uv: str) -> None:
         print(f"  resolving {addon.path.name} for {tag} ({target})")
         subprocess.run(
             [
-                uv, "pip", "install",
-                "--requirements", str(requirements),
-                "--target", str(dest),
-                "--python-version", VENDOR_PYTHON_VERSION,
-                "--python-platform", target,
-                "--link-mode", "copy",
+                uv,
+                "pip",
+                "install",
+                "--requirements",
+                str(requirements),
+                "--target",
+                str(dest),
+                "--python-version",
+                VENDOR_PYTHON_VERSION,
+                "--python-platform",
+                target,
+                "--link-mode",
+                "copy",
                 "--quiet",
             ],
             check=True,
@@ -584,9 +620,7 @@ def vendor_addon(addon: Addon, uv: str) -> None:
 
     lib = addon.path / "lib"
     lib.mkdir(exist_ok=True)
-    clear_previous_vendoring(
-        lib, set(flat) | {"_platform"}, keep, VENDOR_SKIP_ENTRIES | dead_libs
-    )
+    clear_previous_vendoring(lib, set(flat) | {"_platform"}, keep, VENDOR_SKIP_ENTRIES | dead_libs)
 
     ordered = [PRIMARY_PLATFORM] + [t for t in trees if t != PRIMARY_PLATFORM]
     for tag in ordered:
@@ -686,12 +720,16 @@ def cmd_check(addons: list[Addon]) -> int:
         undeclared = used - set(addon.shared)
         unused = set(addon.shared) - used
         if undeclared:
-            print(f"FAIL {addon.path.name}: imports undeclared shared pkg(s): "
-                  f"{', '.join(sorted(undeclared))}")
+            print(
+                f"FAIL {addon.path.name}: imports undeclared shared pkg(s): "
+                f"{', '.join(sorted(undeclared))}"
+            )
             failures += 1
         if unused:
-            print(f"warn {addon.path.name}: declares unused shared pkg(s): "
-                  f"{', '.join(sorted(unused))}")
+            print(
+                f"warn {addon.path.name}: declares unused shared pkg(s): "
+                f"{', '.join(sorted(unused))}"
+            )
         if not undeclared and not unused:
             print(f"ok   {addon.path.name}: {', '.join(sorted(used)) or 'no shared imports'}")
     return 1 if failures else 0

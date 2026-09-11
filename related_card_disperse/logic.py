@@ -312,24 +312,6 @@ def _last_review_date(card: Card, revlogs: list[CardStatsResponse.StatsRevlogEnt
     return due - card.ivl
 
 
-def _get_desired_retention(card: Card) -> float:
-    dr = getattr(card, "desired_retention", None)
-    if isinstance(dr, (int, float)) and 0 < float(dr) < 1:
-        return float(dr)
-    deck_id = card.odid if card.odid else card.did
-    deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-    preset_dr = deck_conf.get("desiredRetention", 0.9)
-    if isinstance(preset_dr, (int, float)) and 0 < float(preset_dr) < 1:
-        return float(preset_dr)
-    return 0.9
-
-
-def _max_interval(card: Card) -> int:
-    deck_id = card.odid if card.odid else card.did
-    deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-    return int(deck_conf.get("rev", {}).get("maxIvl", 36500))
-
-
 # Queues that are not part of any session: suspended, and the scheduler's and
 # the user's buried. Spelled out rather than imported so an older Anki cannot
 # change what this means underneath us.
@@ -414,8 +396,6 @@ def describe_buried_decks(buried_by_deck: dict[str, int], current_deck: str = ""
 
 def _get_due_range(
     card: Card,
-    desired_retention: float,
-    maximum_interval: int,
     stats_cache: StatsCache,
 ) -> tuple[tuple[int, int], int, bool]:
     """The days this card may be moved to, its last review day, and whether it
@@ -430,8 +410,21 @@ def _get_due_range(
     burying is what disperses the pinned ones -- it leaves the due date alone
     and Anki lifts it at the next rollover (see
     ``select_backlog_cards_to_bury``).
+
+    The range is a fuzz window around where the card already sits, so a
+    dispersal only nudges a card a few percent either way and never re-decides
+    its schedule. Choosing the interval belongs to whatever last answered the
+    card -- Anki's scheduler, with its own fuzz and load balancing, or Set Due
+    Date, or a custom scheduler -- and rederiving one here from FSRS memory
+    state would silently overrule all three, most visibly by undoing Anki's
+    load balancing. It would also narrow the addon to FSRS collections, an SM-2
+    card having no stability to rederive from.
+
+    The interval used is ``due - last_review`` rather than ``card.ivl``. The
+    two agree for a card Anki scheduled itself, but a custom scheduler may move
+    the due date while deliberately leaving ``ivl`` alone, and it is the due
+    date that says where the card actually is.
     """
-    ivl = card.ivl
     due = card.odue if card.odid else card.due
 
     stats = _get_stats(card.id, stats_cache)
@@ -441,15 +434,14 @@ def _get_due_range(
     if due <= mw.col.sched.today:
         return (due, due), last_review, True
 
-    new_ivl = int(round(9 * ivl * (1 / desired_retention - 1)))
-    new_ivl = min(new_ivl, maximum_interval)
+    current_ivl = due - last_review
 
-    if new_ivl <= 2:
+    if current_ivl <= 2:
         return (due, due), last_review, False
 
     last_elapsed_days = int((revlogs[0].time - revlogs[1].time) / 86400) if len(revlogs) >= 2 else 0
 
-    min_ivl, max_ivl = get_fuzz_range(new_ivl, last_elapsed_days)
+    min_ivl, max_ivl = get_fuzz_range(current_ivl, last_elapsed_days)
 
     # Everything still here is due after today; today's pool returned above.
     due_range = (
@@ -485,8 +477,6 @@ def build_disperse_plan(
         current_dues[cid] = card.odue if card.odid else card.due
         due_range, last_review, is_backlogged = _get_due_range(
             card,
-            desired_retention=_get_desired_retention(card),
-            maximum_interval=_max_interval(card),
             stats_cache=stats_cache,
         )
         due_ranges[cid] = due_range

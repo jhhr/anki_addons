@@ -21,6 +21,7 @@ from aqt.qt import (
     QCheckBox,
     QIntValidator,
     QGuiApplication,
+    QTimer,
     Qt,
     qtmajor,
 )
@@ -40,6 +41,7 @@ from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..shared.ui.multi_combo_box import MultiComboBox
+from ..shared.ui.loading_indicator import LoadingIndicator
 from ..configuration import (
     Config,
     CopyDefinition,
@@ -308,7 +310,9 @@ class ConditionQueryTabWidget(QWidget):
         query_layout.addLayout(query_form)
 
         self.condition_query_text_label = QLabel("<h2>Condition query for trigger notes</h2>")
+        self.condition_query_widget = QWidget(self)
         self.condition_query_text_layout = InterpolatedTextEditLayout(
+            parent=self.condition_query_widget,
             label=self.condition_query_text_label,
             # No special fields for search, just the destination note fields will be used
             options_dict={},
@@ -322,8 +326,6 @@ class ConditionQueryTabWidget(QWidget):
             height=100,
             placeholder_text='"tag:Some tag" prop:reps>0 -is:suspended',
         )
-        self.condition_query_widget = QWidget()
-        self.condition_query_widget.setLayout(self.condition_query_text_layout)
         # Make the condition_query_widget start at a maximum of 200px height, but expand vertically
         self.condition_query_widget.setMinimumHeight(100)
         self.condition_query_widget.setSizePolicy(QSizePolicyPreferred, QSizePolicyFixed)
@@ -410,7 +412,9 @@ class AcrossQueryTabWidget(QWidget):
         query_layout.addLayout(query_form)
 
         self.card_query_text_label = QLabel("<h2>Search query to get source notes</h2>")
+        self.card_query_widget = QWidget(self)
         self.card_query_text_layout = InterpolatedTextEditLayout(
+            parent=self.card_query_widget,
             label=self.card_query_text_label,
             is_required=True,
             # No special fields for search, just the destination note fields will be used
@@ -426,8 +430,6 @@ class AcrossQueryTabWidget(QWidget):
                 f'"deck:My deck" "A Different Field:*{intr_format("Field_Name")}*" -is:suspended'
             ),
         )
-        self.card_query_widget = QWidget()
-        self.card_query_widget.setLayout(self.card_query_text_layout)
         # Make the card_query_widget start at a maximum of 200px height, but expand vertically
         self.card_query_widget.setMinimumHeight(100)
         self.card_query_widget.setSizePolicy(QSizePolicyPreferred, QSizePolicyFixed)
@@ -606,22 +608,23 @@ class TabEditorComponents(QTabWidget):
     ):
         super().__init__(parent)
         self.state = state
-        self.parent = parent
+        self.host_editor = parent
         self.copy_definition = copy_definition
         self.copy_mode = copy_mode
 
         # Track which tabs have been created
-        self.created_tabs = set()
+        self.created_tabs: set[str] = set()
+        self.loading_tabs: set[str] = set()
 
         # Create placeholder widgets for each tab
-        self.basic_widget = QWidget()
-        self.variables_widget = QWidget()
-        self.condition_widget = QWidget()
-        self.card_query_widget = QWidget()
-        self.tags_widget = QWidget()
-        self.card_actions_widget = QWidget()
-        self.fields_widget = QWidget()
-        self.files_widget = QWidget()
+        self.basic_widget = QWidget(self)
+        self.variables_widget = QWidget(self)
+        self.condition_widget = QWidget(self)
+        self.card_query_widget = QWidget(self)
+        self.tags_widget = QWidget(self)
+        self.card_actions_widget = QWidget(self)
+        self.fields_widget = QWidget(self)
+        self.files_widget = QWidget(self)
 
         # Add placeholder tabs
         self.addTab(self.basic_widget, "Basic Settings")
@@ -650,45 +653,116 @@ class TabEditorComponents(QTabWidget):
         # Create the initially visible tab
         self.on_tab_changed(self.currentIndex())
 
+    def _build_tab_without_repaints(self, build_func: Callable[[], None]) -> None:
+        """Build heavy tab content while repainting is temporarily suspended."""
+        window = self.window()
+        self_updates_enabled = self.updatesEnabled()
+        window_updates_enabled = window.updatesEnabled() if isinstance(window, QWidget) else None
+        self.setUpdatesEnabled(False)
+        if isinstance(window, QWidget):
+            window.setUpdatesEnabled(False)
+        try:
+            build_func()
+        finally:
+            self.setUpdatesEnabled(self_updates_enabled)
+            if isinstance(window, QWidget) and window_updates_enabled is not None:
+                window.setUpdatesEnabled(window_updates_enabled)
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def _prepare_tab_layout(self, tab_widget: QWidget):
+        layout = tab_widget.layout()
+        if layout is None:
+            layout = QVBoxLayout(tab_widget)
+        else:
+            self._clear_layout(layout)
+        layout.setAlignment(QAlignTop)
+        return layout
+
+    def _show_loading_placeholder(self, tab_key: str, tab_text: str) -> None:
+        tab_widget = self._tab_widget_for_key(tab_key)
+        if tab_widget is None:
+            return
+        layout = self._prepare_tab_layout(tab_widget)
+        layout.addStretch(1)
+        layout.addWidget(LoadingIndicator(f"Loading {tab_text}...", tab_widget))
+        layout.addStretch(2)
+        tab_widget.updateGeometry()
+
+    def _tab_widget_for_key(self, tab_key: str) -> Optional[QWidget]:
+        return {
+            "basic": self.basic_widget,
+            "variables": self.variables_widget,
+            "condition_query": self.condition_widget,
+            "across_query": self.card_query_widget,
+            "tags": self.tags_widget,
+            "card_actions": self.card_actions_widget,
+            "fields": self.fields_widget,
+            "files": self.files_widget,
+        }.get(tab_key)
+
+    def _deferred_tab_still_current(self, tab_key: str) -> bool:
+        current_widget = self.currentWidget()
+        return current_widget is not None and current_widget is self._tab_widget_for_key(tab_key)
+
+    def _finish_deferred_tab_build(self, tab_key: str, build_func: Callable[[], None]) -> None:
+        if tab_key in self.created_tabs:
+            self.loading_tabs.discard(tab_key)
+            return
+        if not self._deferred_tab_still_current(tab_key):
+            self.loading_tabs.discard(tab_key)
+            return
+        self._build_tab_without_repaints(build_func)
+        self.loading_tabs.discard(tab_key)
+        self.updateGeometry()
+
     def create_basic_tab(self):
         if "basic" in self.created_tabs:
             return
         # Create layout for the existing placeholder widget
-        basic_layout = QVBoxLayout(self.basic_widget)
+        basic_layout = self._prepare_tab_layout(self.basic_widget)
         basic_layout.setAlignment(QAlignTop)
         extra_widgets: list[Tuple[QLabel, QWidget]] = []
         if self.copy_mode == COPY_MODE_ACROSS_NOTES and hasattr(
-            self.parent, "direction_radio_buttons"
+            self.host_editor, "direction_radio_buttons"
         ):
             extra_widgets.append((
                 QLabel("<h3>Copy direction</h3>"),
-                self.parent.wrap_in_widget(self.parent.direction_radio_buttons),
+                self.host_editor.wrap_in_widget(
+                    self.host_editor.direction_radio_buttons,
+                    self.basic_widget,
+                ),
             ))
 
         self.basic_editor_form_layout = BasicEditorFormLayout(
-            self.parent,
+            self.basic_widget,
             self.state,
             self.get_condition_query_editor,
             self.copy_definition,
             extra_top_widgets=extra_widgets,
         )
         basic_layout.addLayout(self.basic_editor_form_layout)
-
-        # Force the widget to update its size
-        self.basic_widget.adjustSize()
         self.created_tabs.add("basic")
 
     def create_variables_tab(self):
         if "variables" in self.created_tabs:
             return
-        variables_layout = QVBoxLayout(self.variables_widget)
+        variables_layout = self._prepare_tab_layout(self.variables_widget)
         variables_layout.setAlignment(QAlignTop)
 
         variables_layout.addWidget(QLabel("""<h2>Variables to use in Search Query
         <br><small>or in Field-to-Fields or Field-to-Files</small></h3>"""))
 
         self.field_to_variable_editor = CopyFieldToVariableEditor(
-            self.parent, self.state, self.copy_definition
+            self.variables_widget, self.state, self.copy_definition
         )
         variables_layout.addWidget(self.field_to_variable_editor)
 
@@ -698,21 +772,18 @@ class TabEditorComponents(QTabWidget):
 
         # Initialize the editor's UI state
         self.field_to_variable_editor.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.variables_widget.adjustSize()
         self.created_tabs.add("variables")
 
     def create_fields_tab(self):
         if "fields" in self.created_tabs:
             return
-        fields_layout = QVBoxLayout(self.fields_widget)
+        fields_layout = self._prepare_tab_layout(self.fields_widget)
         fields_layout.setAlignment(QAlignTop)
 
         fields_layout.addWidget(QLabel("<h2>Copy content to note fields</h2>"))
 
         self.field_to_field_editor = CopyFieldToFieldEditor(
-            self.parent, self.state, self.copy_definition, self.copy_mode
+            self.fields_widget, self.state, self.copy_definition, self.copy_mode
         )
         fields_layout.addWidget(self.field_to_field_editor)
 
@@ -722,20 +793,22 @@ class TabEditorComponents(QTabWidget):
 
         # Initialize the editor's UI state
         self.field_to_field_editor.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.fields_widget.adjustSize()
         self.created_tabs.add("fields")
 
     def create_tags_tab(self):
         if "tags" in self.created_tabs:
             return
-        tags_layout = QVBoxLayout(self.tags_widget)
+        tags_layout = self._prepare_tab_layout(self.tags_widget)
         tags_layout.setAlignment(QAlignTop)
 
         tags_layout.addWidget(QLabel("<h2>Tags</h2>"))
 
-        self.tag_editor = TagEditor(self.parent, self.state, self.copy_definition, self.copy_mode)
+        self.tag_editor = TagEditor(
+            self.tags_widget,
+            self.state,
+            self.copy_definition,
+            self.copy_mode,
+        )
         tags_layout.addWidget(self.tag_editor)
 
         spacer = QSpacerItem(100, 20, QSizePolicyExpanding, QSizePolicyMinimum)
@@ -744,20 +817,21 @@ class TabEditorComponents(QTabWidget):
 
         # Initialize the editor's UI state
         self.tag_editor.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.tags_widget.adjustSize()
         self.created_tabs.add("tags")
 
     def create_card_actions_tab(self):
         if "card_actions" in self.created_tabs:
             return
-        card_actions_layout = QVBoxLayout(self.card_actions_widget)
+        card_actions_layout = self._prepare_tab_layout(self.card_actions_widget)
         card_actions_layout.setAlignment(QAlignTop)
 
         card_actions_layout.addWidget(QLabel("<h2>Card Actions</h2>"))
 
-        self.card_actions_editor = CardActionsEditor(self.parent, self.state, self.copy_definition)
+        self.card_actions_editor = CardActionsEditor(
+            self.card_actions_widget,
+            self.state,
+            self.copy_definition,
+        )
         card_actions_layout.addWidget(self.card_actions_editor)
 
         spacer = QSpacerItem(100, 20, QSizePolicyExpanding, QSizePolicyMinimum)
@@ -766,21 +840,18 @@ class TabEditorComponents(QTabWidget):
 
         # Initialize the editor's UI state
         self.card_actions_editor.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.card_actions_widget.adjustSize()
         self.created_tabs.add("card_actions")
 
     def create_files_tab(self):
         if "files" in self.created_tabs:
             return
-        files_layout = QVBoxLayout(self.files_widget)
+        files_layout = self._prepare_tab_layout(self.files_widget)
         files_layout.setAlignment(QAlignTop)
 
         files_layout.addWidget(QLabel("<h2>Copy content to files</h2>"))
 
         self.field_to_file_editor = CopyFieldToFileEditor(
-            self.parent, self.state, self.copy_definition, self.copy_mode
+            self.files_widget, self.state, self.copy_definition, self.copy_mode
         )
         files_layout.addWidget(self.field_to_file_editor)
 
@@ -790,78 +861,87 @@ class TabEditorComponents(QTabWidget):
 
         # Initialize the editor's UI state
         self.field_to_file_editor.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.files_widget.adjustSize()
         self.created_tabs.add("files")
 
     def create_condition_query_tab(self):
         """Create the condition query tab content lazily"""
         if "condition_query" in self.created_tabs:
             return
-        query_layout = QVBoxLayout(self.condition_widget)
+        query_layout = self._prepare_tab_layout(self.condition_widget)
         query_layout.setAlignment(QAlignTop)
 
         self.condition_query_tab_widget = ConditionQueryTabWidget(
-            self.parent, self.copy_definition, self.state
+            self.condition_widget, self.copy_definition, self.state
         )
         query_layout.addWidget(self.condition_query_tab_widget)
 
         # Initialize the query widget's UI state
         self.condition_query_tab_widget.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.condition_widget.adjustSize()
         self.created_tabs.add("condition_query")
 
     def create_across_query_tab(self):
         """Create the query tab content lazily"""
         if "across_query" in self.created_tabs:
             return
-        query_layout = QVBoxLayout(self.card_query_widget)
+        query_layout = self._prepare_tab_layout(self.card_query_widget)
         query_layout.setAlignment(QAlignTop)
 
         self.across_query_tab_widget = AcrossQueryTabWidget(
-            self.parent, self.copy_definition, self.state
+            self.card_query_widget, self.copy_definition, self.state
         )
         query_layout.addWidget(self.across_query_tab_widget)
 
         # Initialize the query widget's UI state
         self.across_query_tab_widget.initialize_ui_state()
-
-        # Force the widget to update its size
-        self.card_query_widget.adjustSize()
         self.created_tabs.add("across_query")
 
     def on_tab_changed(self, index):
         """Create and initialize the UI state of the newly visible tab"""
         tab_text = self.tabText(index)
+        tab_key = None
+        create_func: Optional[Callable[[], None]] = None
 
         if tab_text == "Basic Settings":
-            self.create_basic_tab()
+            tab_key = "basic"
+            create_func = self.create_basic_tab
         elif tab_text == "Variables":
-            self.create_variables_tab()
+            tab_key = "variables"
+            create_func = self.create_variables_tab
         elif tab_text == "Condition":
-            self.create_condition_query_tab()
+            tab_key = "condition_query"
+            create_func = self.create_condition_query_tab
         elif tab_text == "Field to Field":
-            self.create_fields_tab()
+            tab_key = "fields"
+            create_func = self.create_fields_tab
         elif tab_text == "Tags":
-            self.create_tags_tab()
+            tab_key = "tags"
+            create_func = self.create_tags_tab
         elif tab_text == "Card Actions":
-            self.create_card_actions_tab()
+            tab_key = "card_actions"
+            create_func = self.create_card_actions_tab
         elif tab_text == "Field to File":
-            self.create_files_tab()
+            tab_key = "files"
+            create_func = self.create_files_tab
         elif tab_text == "Search Query":
-            self.create_across_query_tab()
+            tab_key = "across_query"
+            create_func = self.create_across_query_tab
 
-        # Only resize the current tab's content, not the entire dialog
-        current_widget = self.currentWidget()
-        if current_widget:
-            current_widget.adjustSize()
-            current_widget.updateGeometry()
+        deferred_tab_keys = {"variables", "card_actions", "fields", "files"}
+        should_defer_build = (
+            tab_key in deferred_tab_keys
+            and tab_key not in self.created_tabs
+            and tab_key not in self.loading_tabs
+        )
+        if create_func is not None and tab_key is not None and should_defer_build:
+            self.loading_tabs.add(tab_key)
+            self._show_loading_placeholder(tab_key, tab_text)
+            QTimer.singleShot(
+                1,
+                lambda key=tab_key, func=create_func: self._finish_deferred_tab_build(key, func),
+            )
+        elif create_func is not None and tab_key is not None and tab_key not in self.created_tabs:
+            self._build_tab_without_repaints(create_func)
 
-        # Force the tab widget itself to recalculate its size
-        self.adjustSize()
         self.updateGeometry()
 
     def get_field_to_field_editor(self) -> CopyFieldToFieldEditor:
@@ -944,8 +1024,8 @@ class AcrossNotesCopyEditor(QWidget):
         else:
             self.update_direction_labels(DIRECTION_DESTINATION_TO_SOURCES)
 
-    def wrap_in_widget(self, layout):
-        widget = QWidget()
+    def wrap_in_widget(self, layout, parent: Optional[QWidget] = None):
+        widget = QWidget(parent or self)
         widget.setLayout(layout)
         return widget
 

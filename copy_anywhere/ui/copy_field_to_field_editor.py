@@ -11,6 +11,7 @@ from aqt.qt import (
     QFormLayout,
     QPushButton,
     QCheckBox,
+    QTimer,
     qtmajor,
 )
 
@@ -37,6 +38,7 @@ from ..shared.ui.grouped_combo_box import GroupedComboBox
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.code_edit_layout import CodeEditLayout
+from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import FIELD_CODE_NOTICE
 from ..shared.ui.toggle_switch import ToggleSwitch
 from ..shared.interpolate.interpolate_fields import (
@@ -47,7 +49,8 @@ from ..shared.interpolate.interpolate_fields import (
     intr_format,
 )
 from .edit_state import EditState
-from .note_menu_dicts import get_new_base_dict
+
+INITIAL_ROWS_PER_TICK = 1
 
 
 class FieldInputsDict(TypedDict):
@@ -103,6 +106,13 @@ class CopyFieldToFieldEditor(QWidget):
 
         self.copy_definition = copy_definition
         self.initialized = False
+        self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self._load_queue: list[tuple[int, CopyFieldToField]] = []
+        self._load_total = 0
+        self.loading_indicator: Optional[LoadingIndicator] = None
+        self._destination_field_options_cache: Optional[list[tuple[str, list[str]]]] = None
+        self._unfocus_field_names_cache: Optional[list[str]] = None
 
         self.vbox = QVBoxLayout()
         self.setLayout(self.vbox)
@@ -111,7 +121,7 @@ class CopyFieldToFieldEditor(QWidget):
         self.field_ui_components: dict[str, dict] = {}  # Maps field GUID to its UI components
 
         # Create fields container with vertical layout instead of grid
-        self.fields_container_widget = QWidget()
+        self.fields_container_widget = QWidget(self)
         self.fields_layout = QVBoxLayout(self.fields_container_widget)
         self.fields_layout.setContentsMargins(0, 0, 0, 0)
         self.vbox.addWidget(self.fields_container_widget)
@@ -119,15 +129,21 @@ class CopyFieldToFieldEditor(QWidget):
         self.bottom_form = QFormLayout()
         self.vbox.addLayout(self.bottom_form)
 
-        self.add_new_button = QPushButton("Add another field-to-field definition")
+        self.add_new_button = QPushButton("Add another field-to-field definition", self)
         self.bottom_form.addRow("", self.add_new_button)
         self.add_new_button.clicked.connect(self.add_new_definition)
 
         self.copy_field_inputs: list[FieldInputsDict] = []
 
         if len(self.field_to_field_defs) > 0:
-            for index, copy_field_to_field_definition in enumerate(self.field_to_field_defs):
-                self.add_copy_field_row(index, copy_field_to_field_definition)
+            self._load_queue = list(enumerate(self.field_to_field_defs))
+            self._load_total = len(self._load_queue)
+            self.loading_indicator = LoadingIndicator(
+                f"Loading field definitions... (0/{self._load_total})",
+                self.fields_container_widget,
+            )
+            self.fields_layout.addWidget(self.loading_indicator)
+            self.add_new_button.setDisabled(True)
 
     def enable_callbacks(self):
         self.selected_model_callback.is_visible = True
@@ -146,13 +162,58 @@ class CopyFieldToFieldEditor(QWidget):
 
         self.enable_callbacks()
 
-        # Perform the expensive initialization
-        self.update_all_field_target_cboxes()
-        self.update_direction_labels()
+        if self._load_queue:
+            self._start_loading_initial_rows()
+        else:
+            self.update_direction_labels()
 
         self.initialized = True
 
+    def _start_loading_initial_rows(self):
+        if self._loading_initial_rows:
+            return
+        self._loading_initial_rows = True
+        self._building_initial_rows = True
+        QTimer.singleShot(0, self._process_load_queue)
+
+    def _process_load_queue(self):
+        for _ in range(INITIAL_ROWS_PER_TICK):
+            if not self._load_queue:
+                break
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+
+        if self._load_queue:
+            if self.loading_indicator is not None:
+                loaded_count = self._load_total - len(self._load_queue)
+                self.loading_indicator.set_text(
+                    f"Loading field definitions... ({loaded_count}/{self._load_total})"
+                )
+            QTimer.singleShot(0, self._process_load_queue)
+        else:
+            self._finish_loading_initial_rows()
+
+    def _finish_loading_initial_rows(self):
+        if self.loading_indicator is not None:
+            self.fields_layout.removeWidget(self.loading_indicator)
+            self.loading_indicator.deleteLater()
+            self.loading_indicator = None
+        self._building_initial_rows = False
+        self._loading_initial_rows = False
+        self.add_new_button.setDisabled(False)
+        self.update_direction_labels()
+
+    def finish_loading_initial_rows(self):
+        if not self._load_queue:
+            return
+        self._building_initial_rows = True
+        while self._load_queue:
+            index, definition = self._load_queue.pop(0)
+            self.add_copy_field_row(index, definition)
+        self._finish_loading_initial_rows()
+
     def add_new_definition(self):
+        self.finish_loading_initial_rows()
         new_definition: CopyFieldToField = {
             "guid": str(uuid.uuid4()),
             "copy_into_note_field": "",
@@ -210,10 +271,11 @@ class CopyFieldToFieldEditor(QWidget):
 
         # Copy into field
         field_target_cbox = GroupedComboBox(
+            frame,
             placeholder_text="First select a trigger note type",
             is_required=True,
         )
-        target_note_field_label = QLabel("<h3>Destination field (in the trigger note)</h3>")
+        target_note_field_label = QLabel("<h3>Destination field (in the trigger note)</h3>", frame)
         row_form.addRow(target_note_field_label, field_target_cbox)
         self.update_a_destination_field_target_cbox(field_target_cbox)
         with suppress(KeyError):
@@ -224,7 +286,8 @@ class CopyFieldToFieldEditor(QWidget):
         # the user switches to code mode without losing the entered text.
         copy_from_text_label = QLabel(
             # Default to within mode texts, these only need to be modifed in across mode
-            "<h3>Trigger note fields' content that will replace the field</h3>"
+            "<h3>Trigger note fields' content that will replace the field</h3>",
+            frame,
         )
         across = self.copy_mode == COPY_MODE_ACROSS_NOTES
         notes_word = "source notes'" if across else "note"
@@ -240,44 +303,34 @@ class CopyFieldToFieldEditor(QWidget):
         </ul>"""
 
         # Code mode toggle — placed first so it stays above whichever editor is shown
-        use_code_checkbox = ToggleSwitch("Execute content as Python code")
+        use_code_checkbox = ToggleSwitch("Execute content as Python code", frame)
         row_form.addRow(use_code_checkbox)
 
-        text_mode_container = QWidget()
-        text_mode_vbox = QVBoxLayout(text_mode_container)
-        text_mode_vbox.setContentsMargins(0, 0, 0, 0)
+        text_mode_container = QWidget(frame)
         copy_from_text_layout = InterpolatedTextEditLayout(
+            parent=text_mode_container,
             is_required=True,
             label=copy_from_text_label,
-            options_dict=get_new_base_dict(self.copy_mode),
+            options_dict=self.state.post_query_menu_options_dict,
             description=copy_from_text_description,
+            validate_dict=self.state.post_query_text_edit_validate_dict,
         )
-        text_mode_vbox.addLayout(copy_from_text_layout)
         row_form.addRow(text_mode_container)
-
-        copy_from_text_layout.update_options(
-            self.state.post_query_menu_options_dict,
-            self.state.post_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             copy_from_text_layout.set_text(copy_field_to_field_definition["copy_from_text"])
 
         # Code editor (hidden while text mode is active)
         copy_as_code_widget = CodeEditLayout(
-            parent=self,
-            options_dict=get_new_base_dict(self.copy_mode),
+            parent=frame,
+            options_dict=self.state.post_query_menu_options_dict,
             is_required=False,
             label=copy_from_text_label.text(),
             description=copy_from_text_description,
             notice=FIELD_CODE_NOTICE,
+            validate_dict=self.state.post_query_text_edit_validate_dict,
         )
         copy_as_code_widget.hide()
         row_form.addRow(copy_as_code_widget)
-
-        copy_as_code_widget.update_options(
-            self.state.post_query_menu_options_dict,
-            self.state.post_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             saved_code = copy_field_to_field_definition.get("copy_as_code", "")
             if saved_code:
@@ -299,13 +352,14 @@ class CopyFieldToFieldEditor(QWidget):
 
         use_code_checkbox.toggled.connect(on_use_code_toggled)
 
-        copy_if_empty = QCheckBox("Only copy into field, if it's empty")
+        copy_if_empty = QCheckBox("Only copy into field, if it's empty", frame)
         row_form.addRow("", copy_if_empty)
         with suppress(KeyError):
             copy_if_empty.setChecked(copy_field_to_field_definition["copy_if_empty"])
 
         copy_on_unfocus_when_edit = QCheckBox(
-            "Copy on unfocusing the field when editing an existing note"
+            "Copy on unfocusing the field when editing an existing note",
+            frame,
         )
         row_form.addRow("", copy_on_unfocus_when_edit)
         with suppress(KeyError):
@@ -313,7 +367,10 @@ class CopyFieldToFieldEditor(QWidget):
                 copy_field_to_field_definition.get("copy_on_unfocus_when_edit", False)
             )
 
-        copy_on_unfocus_when_add = QCheckBox("Copy on unfocusing the field when adding a new note")
+        copy_on_unfocus_when_add = QCheckBox(
+            "Copy on unfocusing the field when adding a new note",
+            frame,
+        )
         row_form.addRow("", copy_on_unfocus_when_add)
         with suppress(KeyError):
             copy_on_unfocus_when_add.setChecked(
@@ -323,14 +380,13 @@ class CopyFieldToFieldEditor(QWidget):
         # When copying from source to destination, the trigger field should be one of the
         # trigger note's fields, so we'll need to show an extra checkbox to set that
         copy_on_unfocus_trigger_field = MultiComboBox(
+            frame,
             placeholder_text="First select a trigger note type",
         )
-        copy_on_unfocus_trigger_label = QLabel("Copy on unfocus trigger field")
+        copy_on_unfocus_trigger_label = QLabel("Copy on unfocus trigger field", frame)
         row_form.addRow(copy_on_unfocus_trigger_label, copy_on_unfocus_trigger_field)
         # Options need to exist before we can set the initial text
         self.update_an_unfocus_trigger_field_cbox(copy_on_unfocus_trigger_field)
-        if self.copy_mode == COPY_MODE_ACROSS_NOTES:
-            self.update_direction_labels()
         with suppress(KeyError):
             copy_on_unfocus_trigger_field.setCurrentText(
                 copy_field_to_field_definition["copy_on_unfocus_trigger_field"]
@@ -343,7 +399,7 @@ class CopyFieldToFieldEditor(QWidget):
         copy_on_unfocus_when_add.toggled.connect(unfocus_handler)
 
         process_chain_widget = EditExtraProcessingWidget(
-            self,
+            frame,
             self.copy_definition,
             copy_field_to_field_definition,
             ALL_FIELD_TO_FIELD_PROCESS_NAMES,
@@ -375,9 +431,12 @@ class CopyFieldToFieldEditor(QWidget):
         row_form.addRow(process_chain_widget)
 
         # Remove
-        remove_button = QPushButton("Delete")
+        remove_button = QPushButton("Delete", frame)
 
         self.copy_field_inputs.append(copy_field_inputs_dict)
+
+        if self.copy_mode == COPY_MODE_ACROSS_NOTES and not self._building_initial_rows:
+            self.update_direction_labels()
 
         def remove_row():
             self.remove_definition_by_guid(field_guid)
@@ -419,6 +478,7 @@ class CopyFieldToFieldEditor(QWidget):
         """
         Returns the list of field-to-field definitions from the current state of the editor.
         """
+        self.finish_loading_initial_rows()
         field_to_field_defs = []
         for copy_field_inputs in self.copy_field_inputs:
             copy_on_unfocus_when_add = cast(
@@ -445,6 +505,7 @@ class CopyFieldToFieldEditor(QWidget):
         return field_to_field_defs
 
     def update_all_field_target_cboxes(self):
+        self._reset_field_option_caches()
         for copy_field_inputs in self.copy_field_inputs:
             self.update_a_destination_field_target_cbox(copy_field_inputs["copy_into_note_field"])
             self.update_an_unfocus_trigger_field_cbox(
@@ -494,6 +555,51 @@ class CopyFieldToFieldEditor(QWidget):
                 copy_on_unfocus_trigger_field.setDisabled(False)
             self.update_unfocus_trigger_field_placeholder(copy_on_unfocus_trigger_field)
 
+    def _reset_field_option_caches(self):
+        self._destination_field_options_cache = None
+        self._unfocus_field_names_cache = None
+
+    def _get_unfocus_field_names(self) -> list[str]:
+        if self._unfocus_field_names_cache is None:
+            if len(self.state.selected_models) == 1:
+                model = self.state.selected_models[0]
+                self._unfocus_field_names_cache = mw.col.models.field_names(model)
+            elif len(self.state.selected_models) > 1:
+                self._unfocus_field_names_cache = self.state.intersecting_fields
+            else:
+                self._unfocus_field_names_cache = []
+        return self._unfocus_field_names_cache
+
+    def _get_destination_field_options(self) -> list[tuple[str, list[str]]]:
+        if self._destination_field_options_cache is not None:
+            return self._destination_field_options_cache
+
+        is_destination_to_sources = (
+            self.copy_mode == COPY_MODE_WITHIN_NOTE
+            or self.state.copy_direction == DIRECTION_DESTINATION_TO_SOURCES
+        )
+        if is_destination_to_sources:
+            if len(self.state.selected_models) > 1:
+                group_name = (
+                    "Intersecting fields of"
+                    f" {', '.join([model['name'] for model in self.state.selected_models])}"
+                )
+                self._destination_field_options_cache = [
+                    (group_name, self.state.intersecting_fields)
+                ]
+            elif len(self.state.selected_models) == 1:
+                model = self.state.selected_models[0]
+                self._destination_field_options_cache = [
+                    (model["name"], mw.col.models.field_names(model))
+                ]
+            else:
+                self._destination_field_options_cache = []
+        else:
+            self._destination_field_options_cache = [
+                (model["name"], mw.col.models.field_names(model)) for model in mw.col.models.all()
+            ]
+        return self._destination_field_options_cache
+
     def update_unfocus_trigger_field_placeholder(
         self, unfocus_field_trigger_multibox: MultiComboBox
     ):
@@ -523,15 +629,9 @@ class CopyFieldToFieldEditor(QWidget):
         previous_text = unfocus_field_trigger_multibox.currentText()
         unfocus_field_trigger_multibox.clear()
         self.update_unfocus_trigger_field_placeholder(unfocus_field_trigger_multibox)
-        if len(self.state.selected_models) == 1:
-            model = self.state.selected_models[0]
-            unfocus_field_trigger_multibox.addItems(
-                [f'"{field_name}"' for field_name in mw.col.models.field_names(model)]
-            )
-        elif len(self.state.selected_models) > 1:
-            unfocus_field_trigger_multibox.addItems(
-                [f'"{field_name}"' for field_name in self.state.intersecting_fields]
-            )
+        unfocus_field_trigger_multibox.addItems(
+            [f'"{field_name}"' for field_name in self._get_unfocus_field_names()]
+        )
         unfocus_field_trigger_multibox.setCurrentText(previous_text)
         unfocus_field_trigger_multibox.set_popup_and_box_width()
 
@@ -543,40 +643,12 @@ class CopyFieldToFieldEditor(QWidget):
         previous_text_in_new_options = False
         # Clear will unset the current selected text
         field_target_cbox.clear()
-        # within note mode is by definition destination to source, because
-        # the trigger note is both the source and the destination
-        is_destination_to_sources = (
-            self.copy_mode == COPY_MODE_WITHIN_NOTE
-            or self.state.copy_direction == DIRECTION_DESTINATION_TO_SOURCES
-        )
-        if is_destination_to_sources:
-            # Options are based on the selected trigger note types
-            if len(self.state.selected_models) > 1:
-                group_name = (
-                    "Intersecting fields of"
-                    f" {', '.join([model['name'] for model in self.state.selected_models])}"
-                )
-                field_target_cbox.addGroup(group_name)
-                for field_name in self.state.intersecting_fields:
-                    field_target_cbox.addItemToGroup(group_name, field_name)
-                    if field_name == previous_text:
-                        previous_text_in_new_options = True
-            elif len(self.state.selected_models) == 1:
-                model = self.state.selected_models[0]
-                field_target_cbox.addGroup(model["name"])
-                for field_name in mw.col.models.field_names(model):
-                    if field_name == previous_text:
-                        previous_text_in_new_options = True
-                    field_target_cbox.addItemToGroup(model["name"], field_name)
-        else:
-            # Options are based on the possible note types defined by the card_query search in
-            # crossNotesCopyEditor, however we'll just make it all fields in all note types for now
-            for model in mw.col.models.all():
-                field_target_cbox.addGroup(model["name"])
-                for field_name in mw.col.models.field_names(model):
-                    if field_name == previous_text:
-                        previous_text_in_new_options = True
-                    field_target_cbox.addItemToGroup(model["name"], field_name)
+        for group_name, field_names in self._get_destination_field_options():
+            field_target_cbox.addGroup(group_name)
+            for field_name in field_names:
+                if field_name == previous_text:
+                    previous_text_in_new_options = True
+                field_target_cbox.addItemToGroup(group_name, field_name)
 
         # Reset the selected text, if the new options still include it
         if previous_text_in_new_options:
