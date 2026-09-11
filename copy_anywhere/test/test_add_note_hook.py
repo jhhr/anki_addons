@@ -562,20 +562,26 @@ class TestTheDeferredOtherNotesBranch:
         run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
         assert "for 1 notes" in col.undo_status().undo
 
-    def test_an_undo_entry_is_created_even_when_nothing_was_changed(
+    def test_no_undo_entry_is_created_when_the_query_matched_nothing(
         self, col, set_definitions
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:131 creates the undo entry
-        # unconditionally, before it knows whether `copied_into_notes` holds anything. A
-        # deferred definition whose query matched nothing -- or which the deck whitelist
-        # rejected -- still pushes an empty "Copy fields (...)" step onto the user's undo
-        # stack. Expected: no entry when there is nothing to undo.
+        # The entry is only opened once `copied_into_notes` is known to hold a real note, so
+        # a deferred definition that wrote nothing leaves no empty step on the undo stack.
         set_definitions(to_destinations(query="Word:nothing-matches-this"))
-        before = col.undo_status().last_step
+        before = col.undo_status()
         run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
-        status = col.undo_status()
-        assert status.last_step == before + 1
-        assert status.undo == "Copy fields (s2d) for 1 notes triggered by adding note"
+        after = col.undo_status()
+        assert (after.last_step, after.undo) == (before.last_step, before.undo)
+
+    def test_no_undo_entry_is_created_when_the_deck_whitelist_rejected_the_note(
+        self, col, set_definitions
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
+        set_definitions(to_destinations(only_copy_into_decks=d.quoted_list(["JP vocab"])))
+        before = col.undo_status()
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col, "Other"))
+        after = col.undo_status()
+        assert (after.last_step, after.undo) == (before.last_step, before.undo)
 
     def test_the_undo_entry_lands_before_add_note_so_undoing_once_removes_the_new_note(
         self, col, set_definitions
@@ -668,9 +674,10 @@ class TestTheIdZeroFilterOnCopiedIntoNotes:
         # `copy_mode == "Across notes" or across_mode_direction == "Source to destinations"`,
         # and the first clause already covers both directions -- so Destination-to-sources,
         # whose only destination is the trigger note, is classified as modifying other notes.
-        # On add that costs an undo entry that contains nothing at all (the one note in
-        # `copied_into_notes` is the id-0 trigger note, filtered out again at line 135).
-        # Expected: this runs on the direct path like a Within-note definition.
+        # On add it no longer costs an undo entry -- the one note in `copied_into_notes` is
+        # the id-0 trigger note, filtered out again before the entry would be opened -- but
+        # it still takes the deferred path for nothing. Expected: this runs on the direct
+        # path like a Within-note definition.
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
         set_definitions(to_sources())
         note = new_note(col, Word="neko")
@@ -678,7 +685,7 @@ class TestTheIdZeroFilterOnCopiedIntoNotes:
         run_copy_fields_on_add(note, deck(col))
         assert ran.collects_into_notes() == [True]
         assert note["Note"] == "cat"
-        assert col.undo_status().last_step == before + 1
+        assert col.undo_status().last_step == before
 
     def test_the_trigger_note_is_dropped_before_update_notes(self, col, set_definitions):
         # Without the filter this would be `update_notes` on a note whose id is 0, which the

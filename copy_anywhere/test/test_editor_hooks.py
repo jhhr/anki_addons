@@ -1031,8 +1031,8 @@ class TestTheModifiesOtherNotesBranchGoesThroughCopyFields:
     def test_no_copy_fields_call_and_no_undo_entry_when_nothing_matched(
         self, col, set_definitions, copies
     ):
-        # Unlike the add path, which creates its undo entry unconditionally, this branch is
-        # guarded by `if editing_other_notes_definitions`.
+        # The branch is guarded by `if editing_other_notes_definitions`, so a field no
+        # definition triggers on never reaches `copy_fields` or its undo entry.
         set_definitions(to_destinations(trigger="Meaning"))
         note = existing_note(col, Word="neko")
         before = col.undo_status().last_step

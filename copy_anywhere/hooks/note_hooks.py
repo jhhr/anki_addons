@@ -106,6 +106,16 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             deck_id=deck_id,
             logger=logger,
         )
+    # Copy definitions that perform queries may still modify the added note and add it to
+    # copied_into_notes, so we need to remove the new note from copied_into_notes so as to
+    # not cause an error with mw.col_update_notes
+    copied_into_notes = [note for note in copied_into_notes if note.id != 0]
+    if not copied_into_notes:
+        # Nothing was written into other notes (the query matched nothing, the deck whitelist
+        # rejected the note, or only the new note itself was edited), so there's nothing to
+        # undo and an empty entry would only clutter the undo stack.
+        return
+
     undo_text = make_copy_fields_undo_text(
         copy_definitions=editing_other_notes_definitions,
         note_count=1,
@@ -118,11 +128,6 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     # Other altenatives would be to add a flag to new notes and run the deferred copy definitions
     # on syncing but that seems less user-friendly.
     undo_entry = mw.col.add_custom_undo_entry(undo_text)
-    # Copy definitions that perform queries may still modify the added note and add it to
-    # copied_into_notes, so we need to remove the new note from copied_into_notes so as to
-    # not cause an error with mw.col_update_notes
-    copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-
     mw.col.update_notes(copied_into_notes)
     mw.col.merge_undo_entries(undo_entry)
 
