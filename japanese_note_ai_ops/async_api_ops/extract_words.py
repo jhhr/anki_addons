@@ -403,7 +403,7 @@ Example result 4:
   "pronouns": [["此れ","これ"]],
   "suffixes": [],
   "prefixes": [],
-  "expressions": [["天高く馬肥ゆる秋","てんたかくうまこゆるあき"]],
+  "expressions": [["天高く馬肥ゆる秋","てんたかくうまこゆるあき"],["と言う","という"]],
   "yojijukugo": [],
 }}
 
