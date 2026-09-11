@@ -1,6 +1,7 @@
 from typing import Optional, Union
 
 from aqt.qt import (
+    QWidget,
     QVBoxLayout,
     QLabel,
 )
@@ -51,32 +52,34 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         height: Optional[int] = None,
         placeholder_text: Optional[str] = None,
         is_required: bool = False,
+        validate_dict: Optional[dict[str, bool]] = None,
     ):
         super().__init__(parent)
+        widget_parent = parent if isinstance(parent, QWidget) else None
         # options dict is a 2-level dict
         # with menu group names as keys and a list of options as values
         if options_dict is None:
             options_dict = {}
         self.options_dict = options_dict
         # validation dict is 1-level dict with all possible fields as keys
-        self.validate_dict: dict[str, bool] = {}
+        self.validate_dict: dict[str, bool] = validate_dict or {}
 
         self.text_edit = PasteableTextEdit(
-            parent,
+            widget_parent,
             options_dict=options_dict,
             height=height,
             placeholder_text=placeholder_text,
             is_required=is_required,
         )
-        self.error_label = QLabel()
+        self.error_label = QLabel(widget_parent)
         # Connect text changed to validation
         self.text_edit.textChanged.connect(self.validate_text)
         # Allow providing a QLabel that the provider can then modify
-        main_label = QLabel(label) if isinstance(label, str) else label
+        main_label = QLabel(label, widget_parent) if isinstance(label, str) else label
 
         self.addWidget(main_label)
 
-        self.optional_description = QLabel("")
+        self.optional_description = QLabel("", widget_parent)
         self.optional_description.setWordWrap(True)
         self.optional_description.setStyleSheet("font-size: 10px;")
         self.addWidget(self.optional_description)

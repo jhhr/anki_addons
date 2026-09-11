@@ -165,8 +165,12 @@ class CardActionsEditor(QWidget):
         self.set_description()
 
         # Display all existing actions
-        for card_type_name, action in self.card_actions.items():
-            self.create_action_editor(card_type_name, action)
+        self.setUpdatesEnabled(False)
+        try:
+            for card_type_name, action in self.card_actions.items():
+                self.create_action_editor(card_type_name, action)
+        finally:
+            self.setUpdatesEnabled(True)
 
         self.initialized = True
 
@@ -315,14 +319,17 @@ class CardActionsEditor(QWidget):
             return
 
         # Create a frame for the action editor
-        frame = QFrame()
+        frame = QFrame(self.actions_container_widget)
         frame.setFrameShape(QFrameStyledPanel)
         frame.setFrameShadow(QFrameShadowRaised)
         frame_layout = QVBoxLayout(frame)
         self.actions_layout.addWidget(frame)
 
         # Header
-        header = QLabel(f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>")
+        header = QLabel(
+            f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
+            frame,
+        )
         frame_layout.addWidget(header)
 
         # Code mode toggle
@@ -330,11 +337,11 @@ class CardActionsEditor(QWidget):
         frame_layout.addWidget(use_code_toggle)
 
         # --- Form mode container ---
-        form_mode_container = QWidget()
+        form_mode_container = QWidget(frame)
         form_layout = QFormLayout(form_mode_container)
 
         # 1. Change Deck dropdown
-        deck_combo = QComboBox()
+        deck_combo = QComboBox(form_mode_container)
         deck_combo.addItem("-")
         all_decks = mw.col.decks.all_names_and_ids()
         for deck_name_and_id in all_decks:
@@ -346,10 +353,10 @@ class CardActionsEditor(QWidget):
                 deck_combo.setCurrentIndex(index)
         else:
             deck_combo.setCurrentIndex(0)
-        form_layout.addRow(QLabel("<b>Move card to deck:</b>"), deck_combo)
+        form_layout.addRow(QLabel("<b>Move card to deck:</b>", form_mode_container), deck_combo)
 
         # 2. Set Flag button group
-        flag_group = QButtonGroup()
+        flag_group = QButtonGroup(form_mode_container)
         flag_layout = QHBoxLayout()
         flag_options = [
             (None, "N/A"),
@@ -364,49 +371,49 @@ class CardActionsEditor(QWidget):
         ]
         current_flag = action.get("set_flag")
         for value, text in flag_options:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("flag_value", value)
             flag_group.addButton(radio)
             flag_layout.addWidget(radio)
             if current_flag == value or (current_flag is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Set card flag:</b>"), flag_layout)
+        form_layout.addRow(QLabel("<b>Set card flag:</b>", form_mode_container), flag_layout)
 
         # 3. Suspend button group
-        suspend_group = QButtonGroup()
+        suspend_group = QButtonGroup(form_mode_container)
         suspend_layout = QHBoxLayout()
         current_suspend = action.get("suspend")
         for value, text in [(None, "N/A"), (True, "Suspend"), (False, "Unsuspend")]:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("suspend_value", value)
             suspend_group.addButton(radio)
             suspend_layout.addWidget(radio)
             if current_suspend == value or (current_suspend is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Suspend card:</b>"), suspend_layout)
+        form_layout.addRow(QLabel("<b>Suspend card:</b>", form_mode_container), suspend_layout)
 
         # 4. Bury button group
-        bury_group = QButtonGroup()
+        bury_group = QButtonGroup(form_mode_container)
         bury_layout = QHBoxLayout()
         current_bury = action.get("bury")
         for value, text in [(None, "N/A"), (True, "Bury"), (False, "Unbury")]:
-            radio = QRadioButton(text)
+            radio = QRadioButton(text, form_mode_container)
             radio.setProperty("bury_value", value)
             bury_group.addButton(radio)
             bury_layout.addWidget(radio)
             if current_bury == value or (current_bury is None and value is None):
                 radio.setChecked(True)
-        form_layout.addRow(QLabel("<b>Bury card:</b>"), bury_layout)
+        form_layout.addRow(QLabel("<b>Bury card:</b>", form_mode_container), bury_layout)
 
         # 5. Set desired retention
         dr_layout = QHBoxLayout()
-        dr_number_input = QDoubleSpinBox()
+        dr_number_input = QDoubleSpinBox(form_mode_container)
         dr_number_input.setRange(0.0, 0.99)
         dr_number_input.setSingleStep(0.01)
         dr_number_input.setDecimals(2)
         dr_number_input.setSpecialValueText(" ")
         dr_number_input.setValue(0.0)
-        dr_string_input = QLineEdit()
+        dr_string_input = QLineEdit(form_mode_container)
         dr_string_input.setPlaceholderText("Custom data property name")
         current_dr = action.get("set_desired_retention")
         if isinstance(current_dr, (float, int)) and not isinstance(current_dr, bool):
@@ -428,12 +435,12 @@ class CardActionsEditor(QWidget):
 
         dr_number_input.valueChanged.connect(_dr_number_changed)
         dr_string_input.textChanged.connect(_dr_string_changed)
-        dr_layout.addWidget(QLabel("Float (0.01\u20130.99):"))
+        dr_layout.addWidget(QLabel("Float (0.01\u20130.99):", form_mode_container))
         dr_layout.addWidget(dr_number_input)
-        dr_layout.addWidget(QLabel("or custom data property:"))
+        dr_layout.addWidget(QLabel("or custom data property:", form_mode_container))
         dr_layout.addWidget(dr_string_input)
         dr_layout.addStretch()
-        form_layout.addRow(QLabel("<b>Set desired retention:</b>"), dr_layout)
+        form_layout.addRow(QLabel("<b>Set desired retention:</b>", form_mode_container), dr_layout)
 
         frame_layout.addWidget(form_mode_container)
 
@@ -495,7 +502,7 @@ class CardActionsEditor(QWidget):
         use_code_toggle.toggled.connect(on_use_code_toggled)
 
         # Delete button
-        delete_button = QPushButton("Delete this card action")
+        delete_button = QPushButton("Delete this card action", frame)
         delete_button.clicked.connect(lambda: self.delete_action(card_type_name))
         frame_layout.addWidget(delete_button)
 

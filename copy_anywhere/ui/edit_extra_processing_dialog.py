@@ -2,7 +2,7 @@ import re
 import uuid
 import copy
 from contextlib import suppress
-from typing import Union, Optional, cast, Sequence
+from typing import Union, Optional, cast, Sequence, Callable
 
 from aqt import mw
 
@@ -97,10 +97,7 @@ class KanjiumToJavdejongProcessDialog(QDialog):
         super().__init__(parent)
         self.process = process
 
-        self.description = """
-        Convert a field containing pitch accents in the Kanjium format into to the JavdeJong format.
-        If the field doesn't contain Kanjium format pitch accents, nothing is done.
-        """
+        self.description = KANJIUM_TO_JAVDEJONG_DESCRIPTION
         self.form = QFormLayout()
         self.setWindowModality(WindowModal)
         self.setLayout(self.form)
@@ -138,6 +135,12 @@ class KanjiumToJavdejongProcessDialog(QDialog):
         self.accept()
 
 
+KANJIUM_TO_JAVDEJONG_DESCRIPTION = """
+        Convert a field containing pitch accents in the Kanjium format into to the JavdeJong format.
+        If the field doesn't contain Kanjium format pitch accents, nothing is done.
+        """
+
+
 def validate_interpolatable_regex(dialog) -> bool:
     try:
         # Escape the interpolation syntax as a hack to let compiling the regex otherwise
@@ -172,6 +175,11 @@ MULTILINE - M: Make ^ and $ match the start/end of each line.<br/>
 DOTALL - S: Make . match any character, including newlines. Use to match across multiple lines.<br/>
 """
 
+REGEX_PROCESS_DESCRIPTION = """
+    Basic regex processing step that replaces the text that matches the regex with the
+    replacement.
+    """
+
 
 class RegexProcessDialog(QDialog):
 
@@ -185,10 +193,7 @@ class RegexProcessDialog(QDialog):
         super().__init__(parent)
         self.process = process
 
-        self.description = """
-        Basic regex processing step that replaces the text that matches the regex with the
-        replacement.
-        """
+        self.description = REGEX_PROCESS_DESCRIPTION
         self.state = state
         self.is_variable_extra_processing = is_variable_extra_processing
 
@@ -230,7 +235,9 @@ class RegexProcessDialog(QDialog):
         else:
             self.use_all_notes_checkbox.setVisible(False)
 
+        self.regex_field_widget = QWidget(self)
         self.regex_field_layout = InterpolatedTextEditLayout(
+            parent=self.regex_field_widget,
             label="Regex",
             is_required=True,
             description=f"""<ul>
@@ -240,8 +247,6 @@ class RegexProcessDialog(QDialog):
         )
         # Since this is code, set a mono font
         self.regex_field_layout.text_edit.setFont(QFixedFont)
-        self.regex_field_widget = QWidget()
-        self.regex_field_widget.setLayout(self.regex_field_layout)
         self.form.addRow(self.regex_field_widget)
         self.regex_field_layout.text_edit.textChanged.connect(
             lambda: validate_interpolatable_regex(self)
@@ -261,12 +266,12 @@ class RegexProcessDialog(QDialog):
         self.regex_error_display.setStyleSheet("color: red;")
         self.form.addRow("", self.regex_error_display)
 
+        self.replacement_field_widget = QWidget(self)
         self.replacement_field_layout = InterpolatedTextEditLayout(
+            parent=self.replacement_field_widget,
             label="Replacement",
             description="Field and variable names can be used in the replacement as well.",
         )
-        self.replacement_field_widget = QWidget()
-        self.replacement_field_widget.setLayout(self.replacement_field_layout)
         self.form.addRow(self.replacement_field_widget)
 
         self.replacement_separator_edit = RequiredLineEdit()
@@ -421,12 +426,7 @@ class FontsCheckProcessDialog(QDialog):
         super().__init__(parent)
         self.process = process
 
-        self.description = """
-        For the given text, go through all the characters and return the fonts for which every
-        character has an entry in the JSON file for.
-        The JSON file is intended be something pre-generated from a script that checks which fonts
-        support which characters.
-        """
+        self.description = FONTS_CHECK_DESCRIPTION
         self.form = QFormLayout()
         self.setWindowModality(WindowModal)
         self.setLayout(self.form)
@@ -516,6 +516,14 @@ class FontsCheckProcessDialog(QDialog):
             "character_limit_regex": self.regex_field.toPlainText(),
         }
         self.accept()
+
+
+FONTS_CHECK_DESCRIPTION = """
+        For the given text, go through all the characters and return the fonts for which every
+        character has an entry in the JSON file for.
+        The JSON file is intended be something pre-generated from a script that checks which fonts
+        support which characters.
+        """
 
 
 KANA_HIGHLIGHT_DESCRIPTION = """
@@ -705,7 +713,7 @@ class EditExtraProcessingWidget(QWidget):
             self.process_chain = []
 
         def make_processes_container():
-            processes_widget = QWidget()
+            processes_widget = QWidget(self)
             processes_layout = QVBoxLayout(processes_widget)
             processes_layout.setContentsMargins(0, 0, 0, 0)
             self.vbox.addWidget(processes_widget)
@@ -714,17 +722,22 @@ class EditExtraProcessingWidget(QWidget):
         self.processes_layout = make_processes_container()
 
         # Add header above the processes container
-        header_widget = QWidget()
+        header_widget = QWidget(self)
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.addWidget(QLabel("<h4>Extra processing</h4>"))
         header_layout.addStretch()
         self.vbox.insertWidget(0, header_widget)  # Insert at top, before processes container
 
-        for index, process in enumerate(self.process_chain):
-            self.add_process_row(index, process)
+        self.setUpdatesEnabled(False)
+        try:
+            for index, process in enumerate(self.process_chain):
+                self.add_process_row(index, process)
+        finally:
+            self.setUpdatesEnabled(True)
 
         self.add_process_chain_button = RequiredCombobox(
+            self,
             placeholder_text="Select process to add (optional)",
         )
         self.add_process_chain_button.setMaximumWidth(250)
@@ -757,49 +770,52 @@ class EditExtraProcessingWidget(QWidget):
             process["guid"] = str(uuid.uuid4())
 
         process_guid = process["guid"]
-        process_dialog, get_process_name = self.get_process_dialog_and_name(process)
+        process_dialog_factory, get_process_name, process_description = (
+            self.get_process_dialog_and_name(process)
+        )
 
-        if process_dialog is None:
+        if process_dialog_factory is None:
             return
 
-        self.process_dialogs.append(process_dialog)
+        dialog_holder: dict[str, Optional[QDialog]] = {"dialog": None}
+
+        def get_or_create_dialog() -> QDialog:
+            process_dialog = dialog_holder["dialog"]
+            if process_dialog is None:
+                process_dialog = process_dialog_factory()
+                dialog_holder["dialog"] = process_dialog
+                self.process_dialogs.append(process_dialog)
+            return process_dialog
 
         # Create a widget to contain this process row
-        process_widget = QWidget()
+        process_widget = QWidget(self)
         process_layout = QHBoxLayout(process_widget)
         process_layout.setContentsMargins(5, 5, 5, 5)
 
         # Add the process label
-        process_label = ClickableLabel(get_process_name(process), process_dialog.description, self)
+        process_label = ClickableLabel(get_process_name(process), process_description, self)
         process_layout.addStretch()  # Push buttons to the right
         process_layout.addWidget(process_label)
 
         def process_dialog_exec():
+            process_dialog = get_or_create_dialog()
             if process_dialog.exec():
                 for i, cur_process in enumerate(self.process_chain):
                     if cur_process["guid"] == process_guid:
                         self.process_chain[i] = process_dialog.process
-                        # Update the GUID tracking since process object may have changed
-                        if "guid" not in process_dialog.process:
-                            process_dialog.process["guid"] = process_guid
-                        else:
-                            # Update the tracking dict key if GUID changed
-                            if process_dialog.process["guid"] != process_guid:
-                                self.process_ui_components[process_dialog.process["guid"]] = (
-                                    self.process_ui_components.pop(process_guid)
-                                )
+                        self.process_chain[i]["guid"] = process_guid
                 # Instead of remaking the whole grid, just update the label
-                process_label.setText(get_process_name(process_dialog.process))
+                process_label.setLabelText(get_process_name(process_dialog.process))
                 return 0
             return -1
 
         # Edit button
-        edit_button = QPushButton("Edit")
+        edit_button = QPushButton("Edit", process_widget)
         edit_button.clicked.connect(lambda: process_dialog_exec())
         process_layout.addWidget(edit_button)
 
         # Remove button
-        remove_button = QPushButton("Delete")
+        remove_button = QPushButton("Delete", process_widget)
 
         def remove_row_ui():
             # Remove the entire process widget from the layout
@@ -813,7 +829,7 @@ class EditExtraProcessingWidget(QWidget):
             "edit_button": edit_button,
             "remove_button": remove_button,
             "remove_ui_func": remove_row_ui,
-            "dialog": process_dialog,
+            "dialog_holder": dialog_holder,
         }
 
         def remove_row():
@@ -845,9 +861,11 @@ class EditExtraProcessingWidget(QWidget):
             ui_components["remove_ui_func"]()
 
             # Remove dialog from dialogs list
-            if ui_components["dialog"] in self.process_dialogs:
-                self.process_dialogs.remove(ui_components["dialog"])
-                ui_components["dialog"].deleteLater()
+            process_dialog = ui_components["dialog_holder"]["dialog"]
+            if process_dialog is not None:
+                if process_dialog in self.process_dialogs:
+                    self.process_dialogs.remove(process_dialog)
+                process_dialog.deleteLater()
 
             # Remove from tracking
             del self.process_ui_components[process_guid]
@@ -885,15 +903,16 @@ class EditExtraProcessingWidget(QWidget):
             process_name = process["name"]
         except KeyError:
             tooltip(f"Error: Process name not found in process: {process}")
-            return None, ""
+            return None, lambda _: "", ""
         if process_name == KANA_HIGHLIGHT_PROCESS:
             note_types = None
             with suppress(KeyError):
                 if self.copy_definition:
                     note_types = self.copy_definition["copy_into_note_types"]
             return (
-                KanaHighlightProcessDialog(self, process, note_types),
+                lambda p=process, nt=note_types: KanaHighlightProcessDialog(self, p, nt),
                 lambda _: KANA_HIGHLIGHT_PROCESS,
+                KANA_HIGHLIGHT_DESCRIPTION,
             )
         if process_name == WORD_HIGHLIGHT_PROCESS:
             note_types = None
@@ -901,20 +920,32 @@ class EditExtraProcessingWidget(QWidget):
                 if self.copy_definition:
                     note_types = self.copy_definition["copy_into_note_types"]
             return (
-                WordHighlightProcessDialog(self, process, note_types),
+                lambda p=process, nt=note_types: WordHighlightProcessDialog(self, p, nt),
                 lambda _: WORD_HIGHLIGHT_PROCESS,
+                WORD_HIGHLIGHT_DESCRIPTION,
             )
         if process_name == REGEX_PROCESS:
             return (
-                RegexProcessDialog(self, process, self.state, self.is_variable_extra_processing),
+                lambda p=process: RegexProcessDialog(
+                    self,
+                    p,
+                    self.state,
+                    self.is_variable_extra_processing,
+                ),
                 get_regex_process_label,
+                REGEX_PROCESS_DESCRIPTION,
             )
         if process_name == FONTS_CHECK_PROCESS:
-            return FontsCheckProcessDialog(self, process), get_fonts_check_process_label
+            return (
+                lambda p=process: FontsCheckProcessDialog(self, p),
+                get_fonts_check_process_label,
+                FONTS_CHECK_DESCRIPTION,
+            )
         if process_name == KANJIUM_TO_JAVDEJONG_PROCESS:
             return (
-                KanjiumToJavdejongProcessDialog(self, process),
+                lambda p=process: KanjiumToJavdejongProcessDialog(self, p),
                 lambda _: KANJIUM_TO_JAVDEJONG_PROCESS,
+                KANJIUM_TO_JAVDEJONG_DESCRIPTION,
             )
 
-        return None, ""
+        return None, lambda _: "", ""

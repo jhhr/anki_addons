@@ -26,7 +26,6 @@ from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.toggle_switch import ToggleSwitch
 from ..shared.interpolate.interpolate_fields import (
-    BASE_NOTE_MENU_DICT,
     NOTE_ID,
     CARD_IVL,
     CARD_TYPE,
@@ -96,8 +95,14 @@ class CopyFieldToVariableEditor(QWidget):
             self.vbox.addWidget(self.add_new_button)
         else:
             self.add_editor_layouts()
-            for index, copy_field_to_variable_definition in enumerate(self.fields_to_variable_defs):
-                self.add_copy_field_row(index, copy_field_to_variable_definition)
+            self.setUpdatesEnabled(False)
+            try:
+                for index, copy_field_to_variable_definition in enumerate(
+                    self.fields_to_variable_defs
+                ):
+                    self.add_copy_field_row(index, copy_field_to_variable_definition)
+            finally:
+                self.setUpdatesEnabled(True)
 
     def enable_callbacks(self):
         self.selected_model_callback.is_visible = True
@@ -112,8 +117,6 @@ class CopyFieldToVariableEditor(QWidget):
 
         self.enable_callbacks()
 
-        # Perform the expensive initialization
-        self.update_variables_options_dicts()
         self.update_variable_names_in_state()
 
         self.initialized = True
@@ -169,7 +172,7 @@ class CopyFieldToVariableEditor(QWidget):
         frame_layout.addLayout(row_form)
 
         # Variable name
-        variable_name_field = RequiredLineEdit(is_required=True)
+        variable_name_field = RequiredLineEdit(frame, is_required=True)
         variable_name_field.setPlaceholderText(
             f"Example name = MyVariable --> Usage: {intr_format('MyVariable')}"
         )
@@ -188,45 +191,35 @@ class CopyFieldToVariableEditor(QWidget):
         </ul>"""
 
         # Code mode toggle — placed first so it stays above whichever editor is shown
-        use_code_checkbox = ToggleSwitch("Execute content as Python code")
+        use_code_checkbox = ToggleSwitch("Execute content as Python code", frame)
         row_form.addRow(use_code_checkbox)
 
         # Copy from field — wrap in a container widget so it can be hidden when
         # the user switches to code mode without losing the entered text.
-        text_mode_container = QWidget()
-        text_mode_vbox = QVBoxLayout(text_mode_container)
-        text_mode_vbox.setContentsMargins(0, 0, 0, 0)
+        text_mode_container = QWidget(frame)
         copy_from_text_layout = InterpolatedTextEditLayout(
+            parent=text_mode_container,
             is_required=True,
             label="<h4>Trigger note's fields' content to store in the variable</h4>",
-            options_dict=BASE_NOTE_MENU_DICT.copy(),
+            options_dict=self.state.pre_query_menu_options_dict,
             description=copy_from_text_description,
+            validate_dict=self.state.pre_query_text_edit_validate_dict,
         )
-        text_mode_vbox.addLayout(copy_from_text_layout)
         row_form.addRow(text_mode_container)
-
-        copy_from_text_layout.update_options(
-            self.state.pre_query_menu_options_dict,
-            self.state.pre_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             copy_from_text_layout.set_text(copy_field_to_variable_definition["copy_from_text"])
 
         # Code editor (hidden while text mode is active)
         copy_as_code_widget = CodeEditLayout(
-            parent=self,
-            options_dict=BASE_NOTE_MENU_DICT.copy(),
+            parent=frame,
+            options_dict=self.state.pre_query_menu_options_dict,
             is_required=False,
             label="<h4>Trigger note's fields' content to store in the variable</h4>",
             description=copy_from_text_description,
+            validate_dict=self.state.pre_query_text_edit_validate_dict,
         )
         copy_as_code_widget.hide()
         row_form.addRow(copy_as_code_widget)
-
-        copy_as_code_widget.update_options(
-            self.state.pre_query_menu_options_dict,
-            self.state.pre_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             saved_code = copy_field_to_variable_definition.get("copy_as_code", "")
             if saved_code:
@@ -243,15 +236,13 @@ class CopyFieldToVariableEditor(QWidget):
             text_mode_container.setVisible(not checked)
             copy_as_code_widget.setVisible(checked)
             if checked and not copy_as_code_widget.get_text().strip():
-                copy_as_code_widget.set_text(
-                    f"return {repr(copy_from_text_layout.get_text())}"
-                )
+                copy_as_code_widget.set_text(f"return {repr(copy_from_text_layout.get_text())}")
 
         use_code_checkbox.toggled.connect(on_use_code_toggled)
 
         # Extra processing
         process_chain_widget = EditExtraProcessingWidget(
-            self,
+            frame,
             self.copy_definition,
             copy_field_to_variable_definition,
             ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,
@@ -261,7 +252,7 @@ class CopyFieldToVariableEditor(QWidget):
         row_form.addRow(process_chain_widget)
 
         # Remove
-        remove_button = QPushButton("Delete")
+        remove_button = QPushButton("Delete", frame)
 
         copy_field_inputs_dict: VariableInputsDict = {
             "copy_into_variable": variable_name_field,

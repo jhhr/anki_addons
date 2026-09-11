@@ -46,7 +46,6 @@ from ..shared.interpolate.interpolate_fields import (
     intr_format,
 )
 from .edit_state import EditState
-from .note_menu_dicts import get_new_base_dict
 
 
 class FieldInputsDict(TypedDict):
@@ -119,12 +118,19 @@ class CopyFieldToFileEditor(QWidget):
         )
 
         self.initialized = False
+        self._building_initial_rows = False
 
         self.copy_field_inputs: list[FieldInputsDict] = []
 
         if len(self.field_to_file_defs) > 0:
-            for index, copy_field_to_file_def in enumerate(self.field_to_file_defs):
-                self.add_copy_field_row(index, copy_field_to_file_def)
+            self.setUpdatesEnabled(False)
+            self._building_initial_rows = True
+            try:
+                for index, copy_field_to_file_def in enumerate(self.field_to_file_defs):
+                    self.add_copy_field_row(index, copy_field_to_file_def)
+            finally:
+                self._building_initial_rows = False
+                self.setUpdatesEnabled(True)
 
     def enable_callbacks(self):
         self.selected_model_callback.is_visible = True
@@ -138,8 +144,6 @@ class CopyFieldToFileEditor(QWidget):
 
         self.enable_callbacks()
 
-        # Perform the expensive initialization
-        self.update_all_field_target_cboxes()
         self.update_direction_labels(self.state.copy_direction)
 
         self.initialized = True
@@ -184,27 +188,22 @@ class CopyFieldToFileEditor(QWidget):
         frame_layout.addLayout(row_form)
 
         # Copy into field
-        filename_label = QLabel("<h3>Filename to write to</h3>")
+        filename_label = QLabel("<h3>Filename to write to</h3>", frame)
         filename_description = """<ul>
         <li>Reference the destination notes' field with {intr_format('Field Name')}.</li>
         <li>Source notes' fields are not included in the filename.</li>
         <li>The filename will be prefixed with _ if it doesn't start with it.</li>
         """
-        filename_container = QWidget()
-        filename_vbox = QVBoxLayout(filename_container)
-        filename_vbox.setContentsMargins(0, 0, 0, 0)
+        filename_container = QWidget(frame)
         filename_text_layout = InterpolatedTextEditLayout(
+            parent=filename_container,
             is_required=True,
-            options_dict=get_new_base_dict(self.copy_mode),
+            options_dict=self.state.post_query_menu_options_dict,
             label=filename_label,
             description=filename_description,
+            validate_dict=self.state.post_query_text_edit_validate_dict,
         )
-        filename_vbox.addLayout(filename_text_layout)
         row_form.addRow(filename_container)
-        filename_text_layout.update_options(
-            self.state.post_query_menu_options_dict,
-            self.state.post_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             filename_text_layout.set_text(copy_field_to_field_definition["copy_into_filename"])
 
@@ -212,7 +211,8 @@ class CopyFieldToFileEditor(QWidget):
         # the user switches to code mode without losing the entered text.
         copy_from_text_label = QLabel(
             # Default to within mode texts, these only need to be modifed in across mode
-            "<h3>Trigger note fields' content to write to file</h3>"
+            "<h3>Trigger note fields' content to write to file</h3>",
+            frame,
         )
         across = self.copy_mode == COPY_MODE_ACROSS_NOTES
         notes_word = "source notes'" if across else "note"
@@ -228,44 +228,34 @@ class CopyFieldToFileEditor(QWidget):
         </ul>"""
 
         # Code mode toggle — placed first so it stays above whichever editor is shown
-        use_code_checkbox = ToggleSwitch("Execute content as Python code")
+        use_code_checkbox = ToggleSwitch("Execute content as Python code", frame)
         row_form.addRow(use_code_checkbox)
 
-        text_mode_container = QWidget()
-        text_mode_vbox = QVBoxLayout(text_mode_container)
-        text_mode_vbox.setContentsMargins(0, 0, 0, 0)
+        text_mode_container = QWidget(frame)
         copy_from_text_layout = InterpolatedTextEditLayout(
+            parent=text_mode_container,
             is_required=True,
             label=copy_from_text_label,
-            options_dict=get_new_base_dict(self.copy_mode),
+            options_dict=self.state.post_query_menu_options_dict,
             description=copy_from_text_description,
+            validate_dict=self.state.post_query_text_edit_validate_dict,
         )
-        text_mode_vbox.addLayout(copy_from_text_layout)
         row_form.addRow(text_mode_container)
-
-        copy_from_text_layout.update_options(
-            self.state.post_query_menu_options_dict,
-            self.state.post_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             copy_from_text_layout.set_text(copy_field_to_field_definition["copy_from_text"])
 
         # Code editor (hidden while text mode is active)
         copy_as_code_widget = CodeEditLayout(
-            parent=self,
-            options_dict=get_new_base_dict(self.copy_mode),
+            parent=frame,
+            options_dict=self.state.post_query_menu_options_dict,
             is_required=False,
             label=copy_from_text_label.text(),
             description=copy_from_text_description,
             notice=FILE_CODE_NOTICE,
+            validate_dict=self.state.post_query_text_edit_validate_dict,
         )
         copy_as_code_widget.hide()
         row_form.addRow(copy_as_code_widget)
-
-        copy_as_code_widget.update_options(
-            self.state.post_query_menu_options_dict,
-            self.state.post_query_text_edit_validate_dict,
-        )
         with suppress(KeyError):
             saved_code = copy_field_to_field_definition.get("copy_as_code", "")
             if saved_code:
@@ -295,13 +285,14 @@ class CopyFieldToFileEditor(QWidget):
 
         use_code_checkbox.toggled.connect(on_use_code_toggled)
 
-        copy_if_empty = QCheckBox("Only write to file, if it doesn't exist")
+        copy_if_empty = QCheckBox("Only write to file, if it doesn't exist", frame)
         row_form.addRow("", copy_if_empty)
         with suppress(KeyError):
             copy_if_empty.setChecked(copy_field_to_field_definition["copy_if_empty"])
 
         copy_on_unfocus_when_edit = QCheckBox(
-            "Copy on unfocusing the field when editing an existing note"
+            "Copy on unfocusing the field when editing an existing note",
+            frame,
         )
         row_form.addRow("", copy_on_unfocus_when_edit)
         with suppress(KeyError):
@@ -309,7 +300,10 @@ class CopyFieldToFileEditor(QWidget):
                 copy_field_to_field_definition.get("copy_on_unfocus_when_edit", False)
             )
 
-        copy_on_unfocus_when_add = QCheckBox("Copy on unfocusing the field when adding a new note")
+        copy_on_unfocus_when_add = QCheckBox(
+            "Copy on unfocusing the field when adding a new note",
+            frame,
+        )
         row_form.addRow("", copy_on_unfocus_when_add)
         with suppress(KeyError):
             copy_on_unfocus_when_add.setChecked(
@@ -319,14 +313,14 @@ class CopyFieldToFileEditor(QWidget):
         # When copying from source to destination, the trigger field should be one of the
         # trigger note's fields, so we'll need to show an extra checkbox to set that
         copy_on_unfocus_trigger_field = MultiComboBox(
+            frame,
             placeholder_text="First select a trigger note type",
         )
-        copy_on_unfocus_trigger_label = QLabel("Copy on unfocus trigger field")
+        copy_on_unfocus_trigger_label = QLabel("Copy on unfocus trigger field", frame)
         row_form.addRow(copy_on_unfocus_trigger_label, copy_on_unfocus_trigger_field)
         # Options need to exist before we can set the initial text
         if self.copy_mode == COPY_MODE_ACROSS_NOTES:
             self.update_an_unfocus_trigger_field_cbox(copy_on_unfocus_trigger_field)
-            self.update_direction_labels(self.state.copy_direction)
 
         with suppress(KeyError):
             copy_on_unfocus_trigger_field.setCurrentText(
@@ -334,7 +328,7 @@ class CopyFieldToFileEditor(QWidget):
             )
 
         process_chain_widget = EditExtraProcessingWidget(
-            self,
+            frame,
             self.copy_definition,
             copy_field_to_field_definition,
             ALL_FIELD_TO_FIELD_PROCESS_NAMES,
@@ -365,9 +359,12 @@ class CopyFieldToFileEditor(QWidget):
         row_form.addRow(process_chain_widget)
 
         # Remove
-        remove_button = QPushButton("Delete")
+        remove_button = QPushButton("Delete", frame)
 
         self.copy_field_inputs.append(copy_field_inputs_dict)
+
+        if self.copy_mode == COPY_MODE_ACROSS_NOTES and not self._building_initial_rows:
+            self.update_direction_labels(self.state.copy_direction)
 
         def remove_row():
             self.remove_definition_by_guid(field_guid)
