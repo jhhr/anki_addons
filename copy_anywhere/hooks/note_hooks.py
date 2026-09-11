@@ -1,5 +1,6 @@
 from typing import Union, Tuple
 from anki.hooks import (
+    wrap,
     note_will_be_added,
     # note_will_flush,
 )
@@ -232,6 +233,18 @@ def on_editor_did_load_note(editor: Editor):
     editor_for_note_id[editor.editorMode] = editor, editor.note.id if editor.note else NoteId(0)
 
 
+def on_editor_will_cleanup(editor: Editor):
+    """
+    Forget the editor when its window closes. Otherwise the dict would keep it alive and
+    run_copy_fields_on_unfocus_field would call loadNote() on it after its webview is gone,
+    whenever its last note is edited in another editor.
+    """
+    for editor_mode, maybe_editor_tuple in editor_for_note_id.items():
+        # By identity, as the slot may already hold a newer editor of the same mode
+        if maybe_editor_tuple and maybe_editor_tuple[0] is editor:
+            editor_for_note_id[editor_mode] = None
+
+
 def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) -> bool:
     is_new_note = note.id == 0
 
@@ -339,6 +352,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
 
 def init_note_hooks():
     editor_did_load_note.append(on_editor_did_load_note)
+    # There's no gui hook for an editor closing, but the browser, the add cards dialog and the
+    # reviewer's edit window all call Editor.cleanup() when they close. Wrap it only once, so
+    # that calling this again doesn't stack wrappers.
+    if not getattr(Editor.cleanup, "copy_anywhere_wrapped", False):
+        Editor.cleanup = wrap(Editor.cleanup, on_editor_will_cleanup, "before")
+        Editor.cleanup.copy_anywhere_wrapped = True
     note_will_be_added.append(lambda _col, note, deck_id: run_copy_fields_on_add(note, deck_id))
     reviewer_did_answer_card.append(lambda reviewer, card, ease: run_copy_fields_on_review(card))
     editor_did_unfocus_field.append(run_copy_fields_on_unfocus_field)

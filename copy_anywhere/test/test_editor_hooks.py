@@ -13,12 +13,12 @@ webview and a main window, but the handlers only ever read `editor.editorMode`,
 exactly those three. `EditorMode` is a real enum -- it is the dict's key type and the
 handler stores by it -- so it is imported for real.
 
-**The global is never cleared.** `editor_for_note_id` is module state that
-`on_editor_did_load_note` writes and nothing ever removes from, not on editor close and not
-on profile switch. That is one of the behaviours pinned here (`TestTheGlobalIsNeverCleared`),
-and it is also why `_restore_editor_registry` below snapshots and restores the dict around
-every test: without it these tests would leak editors into each other and into every later
-file in the suite.
+**The global outlives everything but its editors.** `editor_for_note_id` is module state
+that `on_editor_did_load_note` writes and only `on_editor_will_cleanup` -- run from a wrapped
+`Editor.cleanup` -- erases from: an editor's entry goes when its window closes, and nothing
+goes on profile switch. That is pinned here (`TestWhenEntriesAreDropped`), and it is also why
+`_restore_editor_registry` below snapshots and restores the dict around every test: without
+it these tests would leak editors into each other and into every later file in the suite.
 
 **Two seams, both borrowed from the sibling hook file.** Copy definitions go in through
 `mw.addonManager.configs["copy_anywhere"]["copy_definitions"]`, which the `col` fixture
@@ -45,6 +45,7 @@ from copy_anywhere.hooks import note_hooks
 from copy_anywhere.hooks.note_hooks import (
     editor_for_note_id,
     on_editor_did_load_note,
+    on_editor_will_cleanup,
     run_copy_fields_on_unfocus_field,
 )
 from copy_anywhere.logic import copy_fields as copy_fields_module
@@ -359,38 +360,57 @@ class TestOnEditorDidLoadNote:
         assert on_editor_did_load_note(FakeEditor(EditorMode.BROWSER, None)) is None
 
 
-class TestTheGlobalIsNeverCleared:
-    """`editor_for_note_id` is module state with a writer and no eraser.
+class TestWhenEntriesAreDropped:
+    """`editor_for_note_id` loses an entry when its editor closes, and at no other time.
 
-    Nothing in the addon removes an entry: not editor close, not profile switch, not
-    collection close. These tests pin that, because the consequences show up in the unfocus
-    handler -- a `loadNote()` on a torn-down editor, or a stale note id matching a wholly
-    different note in a reopened collection.
+    aqt has no hook for an editor going away, so `init_note_hooks` wraps `Editor.cleanup`
+    -- which the browser, the Add dialog and the reviewer's edit window all call on close --
+    to run `on_editor_will_cleanup`. That the wrap reaches a real closing dialog is shown in
+    the real-Anki suite; here the handler is called directly. Profile switch and collection
+    close still leave entries behind, so a stale note id can match a wholly different note
+    in a reopened collection.
     """
 
-    def test_the_addon_exposes_no_way_to_remove_an_entry(self, col):
-        # `editor_did_load_note` is the only hook the addon registers for the editor; there
-        # is no `editor_will_cleanup`-style counterpart anywhere in the module.
-        with open(note_hooks.__file__, encoding="utf-8") as handle:
-            source = handle.read()
-        assert "editor_for_note_id" in source
-        assert "editor_will_cleanup" not in source
-        assert "editor_for_note_id.pop" not in source
-        assert "editor_for_note_id.clear" not in source
-
-    def test_a_closed_editor_is_still_held_and_still_reloaded(self, col, set_definitions):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:224-238. The registry keeps a strong
-        # reference to every editor ever loaded and drops it only when another editor of the
-        # same mode loads a note. A browser closed while its note stays open in the reviewer
-        # is still in the dict, so `run_copy_fields_on_unfocus_field` calls `loadNote()` on
-        # a dead editor -- in a real Anki, on one whose webview is gone. Expected: the entry
-        # is dropped when the editor goes away. Here the closed editor's counter still ticks.
+    def test_a_closed_editor_is_dropped_and_not_reloaded(self, col, set_definitions):
+        # A browser closed while its note stays open in the reviewer: the unfocus handler
+        # must not call `loadNote()` on it, since in a real Anki its webview is gone.
         note = existing_note(col, Word="neko")
         closed = FakeEditor(EditorMode.BROWSER, note)
         on_editor_did_load_note(closed)
+        on_editor_will_cleanup(closed)
         set_definitions(within())
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert closed.loads == 1
+        assert editor_for_note_id[EditorMode.BROWSER] is None
+        assert closed.loads == 0
+
+    def test_closing_one_editor_leaves_the_other_modes_alone(self, col, set_definitions):
+        note = existing_note(col, Word="neko")
+        closed = FakeEditor(EditorMode.BROWSER, note)
+        current = FakeEditor(EditorMode.EDIT_CURRENT, note)
+        on_editor_did_load_note(closed)
+        on_editor_did_load_note(current)
+        on_editor_will_cleanup(closed)
+        set_definitions(within())
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert editor_for_note_id[EditorMode.EDIT_CURRENT] == (current, note.id)
+        assert (closed.loads, current.loads) == (0, 1)
+
+    def test_closing_an_editor_already_replaced_in_its_slot_keeps_the_newer_one(self, col):
+        # The slot is matched by editor identity, not by mode, so an old browser closing
+        # after a new one has loaded a note does not evict the new one.
+        old = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="neko"))
+        new = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="inu"))
+        on_editor_did_load_note(old)
+        on_editor_did_load_note(new)
+        on_editor_will_cleanup(old)
+        assert editor_for_note_id[EditorMode.BROWSER] == (new, new.note.id)
+
+    def test_closing_an_editor_that_never_loaded_a_note_changes_nothing(self, col):
+        registered = FakeEditor(EditorMode.BROWSER, existing_note(col, Word="neko"))
+        on_editor_did_load_note(registered)
+        snapshot = dict(editor_for_note_id)
+        on_editor_will_cleanup(FakeEditor(EditorMode.BROWSER, None))
+        assert editor_for_note_id == snapshot
 
     def test_the_entries_outlive_the_collection_they_refer_to(self, col):
         # Note ids are timestamps, so the id held here is not reserved against a different

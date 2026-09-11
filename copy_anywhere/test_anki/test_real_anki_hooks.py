@@ -197,6 +197,19 @@ class TestTheHooksAreActuallyRegistered:
         # handlers on editor_did_load_note by the time a profile is open.
         assert [now - then for now, then in zip(after, before)] == [1, 1, 1, 1]
 
+    def test_init_note_hooks_wraps_editor_cleanup_only_once(self, real_mw):
+        # `Editor.cleanup` is a class attribute, so a second call must not stack another
+        # wrapper on it; the handler would still be correct, just run once per wrapper.
+        from aqt.editor import Editor
+
+        from copy_anywhere.hooks import note_hooks
+
+        note_hooks.init_note_hooks()
+        wrapped = Editor.cleanup
+        note_hooks.init_note_hooks()
+        assert Editor.cleanup is wrapped
+        assert wrapped.copy_anywhere_wrapped is True
+
     def test_adding_a_note_through_the_collection_reaches_the_add_handler(
         self, real_mw, addon_config
     ):
@@ -582,3 +595,33 @@ class TestARealEditor:
         dialog.editor.note = None
         aqt.dialogs.markClosed("AddCards")
         dialog.close()
+
+    def test_closing_a_real_add_cards_dialog_drops_its_editor_from_the_registry(
+        self, anki_session, real_mw, monkeypatch
+    ):
+        # aqt has no hook for an editor closing; `init_note_hooks` wraps `Editor.cleanup`,
+        # which `AddCards._close` calls. Without it the dialog's editor would stay in the dict
+        # and be reloaded, webview gone, the next time a note with id 0 was unfocused.
+        import aqt
+
+        from copy_anywhere.hooks import note_hooks
+
+        note_hooks.init_note_hooks()
+        # An earlier test's dialog may have left its editor here, which would satisfy the
+        # wait below before this dialog's editor has registered.
+        monkeypatch.setitem(note_hooks.editor_for_note_id, EditorMode.ADD_CARDS, None)
+        dialog = aqt.dialogs.open("AddCards", real_mw)
+        anki_session.qtbot.waitUntil(
+            lambda: note_hooks.editor_for_note_id[EditorMode.ADD_CARDS] is not None,
+            timeout=WAIT,
+        )
+        assert note_hooks.editor_for_note_id[EditorMode.ADD_CARDS][0] is dialog.editor
+
+        dialog.editor.note = None
+        aqt.dialogs.markClosed("AddCards")
+        dialog.close()
+
+        anki_session.qtbot.waitUntil(
+            lambda: note_hooks.editor_for_note_id[EditorMode.ADD_CARDS] is None,
+            timeout=WAIT,
+        )
