@@ -154,8 +154,9 @@ class TestUndoText:
     """`make_copy_fields_undo_text`, which names the entry the whole run merges into."""
 
     def test_a_single_definition_is_named_in_the_undo_text(self):
-        assert make_copy_fields_undo_text([d.within_note(definition_name="alpha")]) == (
-            "Copy fields (alpha)"
+        assert (
+            make_copy_fields_undo_text([d.within_note(definition_name="alpha")])
+            == "Copy fields (alpha)"
         )
 
     def test_several_definitions_are_counted_rather_than_named(self):
@@ -171,8 +172,9 @@ class TestUndoText:
     def test_a_note_count_is_appended_when_one_is_given(self):
         definitions = [d.within_note(definition_name="alpha")]
 
-        assert make_copy_fields_undo_text(definitions, note_count=5) == (
-            "Copy fields (alpha) for 5 notes"
+        assert (
+            make_copy_fields_undo_text(definitions, note_count=5)
+            == "Copy fields (alpha) for 5 notes"
         )
 
     def test_a_note_count_of_zero_is_left_out_rather_than_shown(self):
@@ -186,15 +188,16 @@ class TestUndoText:
     def test_a_suffix_lands_after_the_note_count(self):
         definitions = [d.within_note(definition_name="alpha")]
 
-        assert make_copy_fields_undo_text(definitions, note_count=2, suffix="on add") == (
-            "Copy fields (alpha) for 2 notes on add"
+        assert (
+            make_copy_fields_undo_text(definitions, note_count=2, suffix="on add")
+            == "Copy fields (alpha) for 2 notes on add"
         )
 
     def test_a_suffix_alone_is_appended_directly(self):
         definitions = [d.within_note(definition_name="alpha")]
 
-        assert make_copy_fields_undo_text(definitions, suffix="on add") == (
-            "Copy fields (alpha) on add"
+        assert (
+            make_copy_fields_undo_text(definitions, suffix="on add") == "Copy fields (alpha) on add"
         )
 
 
@@ -220,9 +223,7 @@ class TestNoDefinitions:
         assert add_calls() == 0
         assert merge_calls() == 0
 
-    def test_an_empty_definition_list_is_reported_as_an_error(
-        self, col, run_copy_fields, capsys
-    ):
+    def test_an_empty_definition_list_is_reported_as_an_error(self, col, run_copy_fields, capsys):
         # `copy_fields` builds its own `Logger` from the addon config rather than taking
         # one, and that logger's sink both appends to `debug_texts` and prints, so stdout is
         # the only place a test can see the message from outside.
@@ -245,15 +246,11 @@ class TestUndoEntry:
         first = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         second = real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
 
-        run_copy_fields(
-            copy_definitions=[write_into_note()], note_ids=[first.id, second.id]
-        )
+        run_copy_fields(copy_definitions=[write_into_note()], note_ids=[first.id, second.id])
 
         assert col.undo_status().undo == "Copy fields (within) for 2 notes"
 
-    def test_the_note_count_is_summed_across_note_ids_per_definition(
-        self, col, run_copy_fields
-    ):
+    def test_the_note_count_is_summed_across_note_ids_per_definition(self, col, run_copy_fields):
         first = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         second = real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
 
@@ -283,18 +280,14 @@ class TestUndoEntry:
         assert col.undo_status().undo == "Copy fields (within) for 1 notes"
         assert col.get_note(second.id)["Note"] == "inu"
 
-    def test_no_note_ids_at_all_leaves_the_count_out_of_the_undo_text(
-        self, col, run_copy_fields
-    ):
+    def test_no_note_ids_at_all_leaves_the_count_out_of_the_undo_text(self, col, run_copy_fields):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
         run_copy_fields(copy_definitions=[write_into_note()])
 
         assert col.undo_status().undo == "Copy fields (within)"
 
-    def test_an_explicit_undo_entry_is_merged_into_rather_than_replaced(
-        self, col, run_copy_fields
-    ):
+    def test_an_explicit_undo_entry_is_merged_into_rather_than_replaced(self, col, run_copy_fields):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         entry = col.add_custom_undo_entry("Outer thing")
         add_calls = real_anki.counting_wrapper(col, "add_custom_undo_entry")
@@ -351,9 +344,7 @@ class TestUndoEntry:
             copy_on_review=True,
         )
 
-        run_copy_fields(
-            copy_definitions=[definition], update_sync_result=lambda text, count: None
-        )
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
 
         # One before the loop, one after the definition, then one after each of the tail's
         # two `update_cards` calls.
@@ -536,13 +527,25 @@ class TestOneDestinationFromSeveralTriggerNotes:
         assert updates.note_ids() == [[destination.id, destination.id]]
 
     def test_the_first_trigger_notes_write_is_lost(self, col, run_copy_fields):
-        # DEFECT: each trigger note fetches the destination note fresh from the database,
+        # KNOWN LIMITATION: each trigger note fetches the destination note fresh from the database,
         # but `update_notes` only runs once the whole definition has finished, so the second
         # trigger note starts from the unmodified row and its object -- the last in
-        # `copied_into_notes` -- is the one that lands. Expected: "<s1><s2>", one append per
-        # trigger note; actual: "<s2>", the first trigger note's contribution silently gone.
-        # Copying into the same destination from several sources within one definition is
-        # exactly what Source-to-destinations is for, so this is not a corner case.
+        # `copied_into_notes` -- is the one that lands.
+        #
+        # This is intentional because the alternative is calling update_notes + merge_undo_entries
+        # per each trigger note, which was done in the past and found to be massively worse in
+        # performance compared to one update_notes call at the end of each definition.
+        #
+        # Additionally, updating after each trigger note would make Source-to-destinations whose
+        # destination notes can be an upcoming trigger note in the loop, leading to the final
+        # state depends on the order of trigger notes, which is extremely difficult to predict.
+        #
+        # Thus, the current approach, while not perfect, is a deliberate trade-off for performance
+        # and predictability.
+        #
+        # Copying into the same destination from several sources within one definition is also
+        # not the primary purpose of Source-to-destinations, that's better served
+        # by a Destination-to-sources definition, so this limitation is not so bad.
         destination = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.add_note(col, SENTENCE, {"Sentence": "s1", "Vocab": "neko"})
         real_anki.add_note(col, SENTENCE, {"Sentence": "s2", "Vocab": "neko"})
@@ -563,9 +566,7 @@ class TestEditedCards:
         self, col, run_copy_fields, updates
     ):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
-        definition = write_into_note(
-            card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
-        )
+        definition = write_into_note(card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)])
 
         run_copy_fields(copy_definitions=[definition], note_ids=[note.id])
 
