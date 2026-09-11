@@ -106,14 +106,14 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             deck_id=deck_id,
             logger=logger,
         )
-    # Copy definitions that perform queries may still modify the added note and add it to
-    # copied_into_notes, so we need to remove the new note from copied_into_notes so as to
-    # not cause an error with mw.col_update_notes
+    # Only source to destinations definitions get here and their destinations come from a
+    # query, which can't find the unsaved note. Still, an id 0 note would make
+    # mw.col.update_notes fail, so keep it out regardless
     copied_into_notes = [note for note in copied_into_notes if note.id != 0]
     if not copied_into_notes:
-        # Nothing was written into other notes (the query matched nothing, the deck whitelist
-        # rejected the note, or only the new note itself was edited), so there's nothing to
-        # undo and an empty entry would only clutter the undo stack.
+        # Nothing was written into other notes (the query matched nothing or the deck
+        # whitelist rejected the note), so there's nothing to undo and an empty entry would
+        # only clutter the undo stack.
         return
 
     undo_text = make_copy_fields_undo_text(

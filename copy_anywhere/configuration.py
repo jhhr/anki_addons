@@ -434,9 +434,10 @@ def definition_modifies_trigger_note(
 def definition_modifies_other_notes(
     copy_definition: CopyDefinition,
 ) -> bool:
+    # Destination to sources is Across notes too, but its only destination is the trigger note
     targets_other_notes = (
         copy_definition.get("copy_mode", None) == COPY_MODE_ACROSS_NOTES
-        or copy_definition.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
+        and copy_definition.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
     )
     # definition might only save stuff to files
     has_field_to_field_defs = len(copy_definition.get("field_to_field_defs", [])) > 0

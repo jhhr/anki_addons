@@ -666,32 +666,22 @@ class TestTheDeferredOtherNotesBranch:
         assert col.undo_status().last_step == before
 
 
-class TestTheIdZeroFilterOnCopiedIntoNotes:
-    def test_destination_to_sources_is_deferred_although_it_writes_the_trigger_note(
+class TestDestinationToSourcesWritesOnlyTheTriggerNote:
+    def test_destination_to_sources_runs_on_the_direct_path_like_a_within_note_definition(
         self, col, set_definitions, ran
     ):
-        # DEFECT: copy_anywhere/configuration.py:436 reads
-        # `copy_mode == "Across notes" or across_mode_direction == "Source to destinations"`,
-        # and the first clause already covers both directions -- so Destination-to-sources,
-        # whose only destination is the trigger note, is classified as modifying other notes.
-        # On add it no longer costs an undo entry -- the one note in `copied_into_notes` is
-        # the id-0 trigger note, filtered out again before the entry would be opened -- but
-        # it still takes the deferred path for nothing. Expected: this runs on the direct
-        # path like a Within-note definition.
+        # Its only destination is the note being added, so there is nothing to wait for
+        # and nothing for an undo entry of its own to revert: the add writes the value.
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
         set_definitions(to_sources())
         note = new_note(col, Word="neko")
         before = col.undo_status().last_step
         run_copy_fields_on_add(note, deck(col))
-        assert ran.collects_into_notes() == [True]
+        assert ran.collects_into_notes() == [False]
         assert note["Note"] == "cat"
         assert col.undo_status().last_step == before
 
-    def test_the_trigger_note_is_dropped_before_update_notes(self, col, set_definitions):
-        # Without the filter this would be `update_notes` on a note whose id is 0, which the
-        # backend rejects. The filter is a list comprehension that rebinds the name `note`;
-        # comprehension scope keeps that off the handler's own `note` parameter, so the
-        # in-place value survives to the add.
+    def test_the_value_reaches_the_database_through_the_add_itself(self, col, set_definitions):
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
         set_definitions(to_sources())
         note = new_note(col, Word="neko")
@@ -699,11 +689,22 @@ class TestTheIdZeroFilterOnCopiedIntoNotes:
         col.add_note(note, deck(col))
         assert col.get_note(note.id)["Note"] == "cat"
 
-    def test_a_real_note_alongside_the_trigger_note_is_not_dropped(
+    def test_it_runs_before_a_source_to_destinations_definition_listed_ahead_of_it(
+        self, col, set_definitions, ran
+    ):
+        # Classification, not config order, decides when a definition runs on add.
+        real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
+        real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
+        set_definitions(to_destinations("writes-out"), to_sources("reads-back", field="Reading"))
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
+        assert ran.names() == ["reads-back", "writes-out"]
+        assert ran.collects_into_notes() == [False, True]
+
+    def test_a_source_to_destinations_definition_alongside_still_writes_its_note(
         self, col, set_definitions
     ):
-        # The two deferred kinds together: one appends the id-0 trigger note to
-        # `copied_into_notes`, the other appends a real one. Only the first is filtered.
+        # One of each kind: the trigger note's write goes through the add, the other note's
+        # through the deferred `update_notes`.
         other = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
         set_definitions(
@@ -717,10 +718,9 @@ class TestTheIdZeroFilterOnCopiedIntoNotes:
         assert col.get_note(note.id)["Reading"] == "cat"
 
     def test_the_first_undo_takes_the_trigger_note_with_it(self, col, set_definitions):
-        # The filter keeps the trigger note out of the copy undo entry, so its own write is
-        # not what that entry would revert -- but reaching the entry means undoing "Add Note"
-        # first, and that removes the note outright. The write the filter protected is gone
-        # before the entry it was protected from is ever reached.
+        # The trigger note's own write goes through the add, not the copy undo entry, so that
+        # entry cannot revert it -- but reaching the entry means undoing "Add Note" first, and
+        # that removes the note outright, write included.
         from anki.errors import NotFoundError
 
         other = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")

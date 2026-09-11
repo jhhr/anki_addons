@@ -504,32 +504,31 @@ class TestANewNoteNeverRunsDefinitionsThatTouchOtherNotes:
         assert copies.count() == 0
         assert col.get_note(col.find_notes("Word:inu")[0])["Note"] == ""
 
-    def test_destination_to_sources_is_skipped_on_a_new_note_although_it_only_reads(
+    def test_destination_to_sources_runs_on_a_new_note_since_it_writes_only_that_note(
         self, col, set_definitions, ran
     ):
-        # DEFECT: `definition_modifies_other_notes`
-        # (copy_anywhere/configuration.py:437-440) returns True for any Across-notes
-        # definition, direction included, so Destination-to-sources -- whose only write is
-        # into the trigger note -- counts as modifying other notes and is refused on a new
-        # note. Expected: it runs, since it writes nothing but the note being added. This is
-        # the same misclassification pinned on the add path in test_add_note_hook.py; here
-        # the cost is that a lookup into a note being typed in the Add dialog silently does
-        # nothing.
+        # The other notes are only read from, so a lookup into a note being typed in the Add
+        # dialog needs no note id and runs like a Within-note definition.
         existing_note(col, KANJI, Kanji="neko", Keyword="cat")
         set_definitions(to_sources(on_add=True))
         note = new_note(col, Word="neko")
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert ran.names() == []
-        assert note["Note"] == ""
+        assert ran.names() == ["d2s"]
+        assert note["Note"] == "cat"
 
-    def test_the_same_definition_runs_once_the_note_exists(self, col, set_definitions, copies):
-        # The contrast: nothing about the definition is wrong, only the id-0 note.
+    def test_on_an_existing_note_it_also_skips_copy_fields(
+        self, col, set_definitions, ran, copies
+    ):
+        # Same direct path as on a new note: the value lands in the editor's note object and
+        # the editor's own save is what writes it.
         existing_note(col, KANJI, Kanji="neko", Keyword="cat")
         set_definitions(to_sources(on_edit=True))
         note = existing_note(col, Word="neko")
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert copies.count() == 1
-        assert col.get_note(note.id)["Note"] == "cat"
+        assert ran.names() == ["d2s"]
+        assert copies.count() == 0
+        assert note["Note"] == "cat"
+        assert col.get_note(note.id)["Note"] == ""
 
     def test_a_within_note_definition_alongside_still_runs_on_a_new_note(
         self, col, set_definitions, ran
@@ -847,6 +846,18 @@ class TestWhichEditorsAreReloaded:
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert other.loads == 0
 
+    def test_a_destination_to_sources_write_reloads_the_editor(self, col, set_definitions):
+        # It writes the in-memory note rather than going through `copy_fields`, so `changed`
+        # sees the new value and the editor shows it instead of saving the old one back.
+        existing_note(col, KANJI, Kanji="neko", Keyword="cat")
+        set_definitions(to_sources())
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+        assert editor.loads == 1
+        assert note["Note"] == "cat"
+
     def test_nothing_reloads_when_no_field_value_moved(self, col, set_definitions):
         note = existing_note(col, Word="neko", Note="neko")
         editor = FakeEditor(EditorMode.BROWSER, note)
@@ -1007,26 +1018,6 @@ class TestTheModifiesOtherNotesBranchGoesThroughCopyFields:
         note["Word"] = "typed"
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert col.get_note(other.id)["Note"] == "neko"
-
-    def test_a_write_into_the_trigger_note_never_reaches_the_open_editor(
-        self, col, set_definitions, copies
-    ):
-        # DEFECT: same lines. Destination-to-sources is classified as modifying other notes
-        # (see `test_destination_to_sources_is_skipped_on_a_new_note...`), so it goes down
-        # this branch and writes the trigger note in the database through `copy_fields`.
-        # The handler's `changed` is computed over the *in-memory* note, which
-        # `copy_fields` never touched, so it stays False and no editor is reloaded -- the
-        # editor keeps showing the old value and saving it back over the copy. Expected:
-        # the editor reloads and shows "cat".
-        existing_note(col, KANJI, Kanji="neko", Keyword="cat")
-        set_definitions(to_sources())
-        note = existing_note(col, Word="neko")
-        editor = FakeEditor(EditorMode.BROWSER, note)
-        on_editor_did_load_note(editor)
-        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
-        assert editor.loads == 0
-        assert note["Note"] == ""
-        assert col.get_note(note.id)["Note"] == "cat"
 
     def test_no_copy_fields_call_and_no_undo_entry_when_nothing_matched(
         self, col, set_definitions, copies
