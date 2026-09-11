@@ -610,17 +610,22 @@ class TestWhichFieldFiresADefinition:
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
         assert ran.names() == []
 
-    def test_an_empty_trigger_field_never_fires_and_the_fallback_is_dead(
+    def test_an_empty_trigger_field_falls_back_to_the_destination_field(
         self, col, set_definitions, ran
     ):
-        # DEFECT: copy_anywhere/configuration.py:255-257. The non-modifying branch reads
-        # `"".strip('""').split('", "') or [copy_into_note_field]`, and `[""]` is truthy, so
-        # the `or` never fires. The comment above it says the destination field doubles as
-        # the trigger in Within-note mode; it does not. A definition left with an empty
-        # trigger field is simply inert in the editor. Expected: unfocusing `Note`, the
-        # destination field, fires it.
+        # In Within-note mode the destination field is in the edited note, so a definition
+        # left with no trigger field fires when its own destination field is unfocused.
         set_definitions(within(field="Note", trigger=""))
-        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), NOTE)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, NOTE)
+        assert ran.names() == ["within"]
+        assert note["Note"] == "neko"
+
+    def test_an_empty_trigger_field_does_not_fire_on_other_fields(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(within(field="Note", trigger=""))
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
         assert ran.names() == []
 
     def test_the_trigger_field_need_not_be_a_field_of_the_note_type(

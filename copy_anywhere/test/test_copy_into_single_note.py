@@ -51,15 +51,13 @@ class TestTriggerFieldSplitting:
         field_def = d.field_to_field("Note", copy_on_unfocus_trigger_field="a")
         assert get_field_to_field_unfocus_trigger_fields(field_def, False) == ["a"]
 
-    def test_an_empty_value_splits_to_one_empty_name(self):
-        # `"".strip('""').split('", "')` is `['']`, which is truthy, so the
-        # `or [copy_into_note_field]` fallback beside it is dead code: a Within-note def with
-        # no trigger field configured is never matched by field_only, even though the
-        # fallback reads as though it should be. Pinned as-is -- fixing it changes which
-        # definitions fire on unfocus, which belongs in its own commit.
+    def test_an_empty_value_falls_back_to_the_destination_field_in_the_same_note(self):
+        # Within note and Destination to sources write the note being edited, so the
+        # destination field doubles as the trigger. Source to destinations writes other
+        # notes, where no field of the edited note is the destination, so nothing triggers.
         field_def = d.field_to_field("Note", copy_on_unfocus_trigger_field="")
-        assert get_field_to_field_unfocus_trigger_fields(field_def, False) == [""]
-        assert get_field_to_field_unfocus_trigger_fields(field_def, True) == [""]
+        assert get_field_to_field_unfocus_trigger_fields(field_def, False) == ["Note"]
+        assert get_field_to_field_unfocus_trigger_fields(field_def, True) == []
 
     def test_field_only_runs_just_the_matching_def(self, note, logger):
         modified, _, _ = run(

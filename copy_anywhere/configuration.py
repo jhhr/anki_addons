@@ -245,16 +245,18 @@ def split_tags(tags: Optional[str]) -> list[str]:
 def get_field_to_field_unfocus_trigger_fields(
     field_to_field: CopyFieldToField, modifies_other_notes: bool
 ) -> list[str]:
+    # A bare split turns an unset trigger into `[""]`, which is truthy and would keep the
+    # destination-field fallback below from ever applying.
+    trigger_value = field_to_field.get("copy_on_unfocus_trigger_field", "")
+    trigger_fields = [name for name in trigger_value.strip('""').split('", "') if name]
     if modifies_other_notes:
         # source to destination mode is triggered by a field change in the trigger note
         # while the destination field is a different field in another note
-        return field_to_field.get("copy_on_unfocus_trigger_field", "").strip('""').split('", "')
+        return trigger_fields
     else:
         # destination to sources mode or within note mode the destination and trigger fields
         # are in the same note
-        return field_to_field.get("copy_on_unfocus_trigger_field", "").strip('""').split(
-            '", "'
-        ) or [field_to_field.get("copy_into_note_field", "")]
+        return trigger_fields or [field_to_field.get("copy_into_note_field", "")]
 
 
 def get_triggered_field_to_field_def_for_field(
