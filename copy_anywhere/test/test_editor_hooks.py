@@ -9,8 +9,8 @@ decide whose `loadNote()` to call. The source calls this "a hack" in as many wor
 
 **No running Anki.** Both handlers are plain functions. A real `aqt.editor.Editor` needs a
 webview and a main window, but the handlers only ever read `editor.editorMode`,
-`editor.note` (and `.note.id`), the Add dialog's deck chooser, and call `editor.loadNote()`,
-so `FakeEditor` below supplies exactly those. `EditorMode` is a real enum -- it is the dict's key type and the
+`editor.note` (and `.note.id`), the Add dialog's deck chooser, and call
+`editor.loadNoteKeepingFocus()`, so `FakeEditor` below supplies exactly those. `EditorMode` is a real enum -- it is the dict's key type and the
 handler stores by it -- so it is imported for real.
 
 **The global outlives everything but its editors.** `editor_for_note_id` is module state
@@ -75,15 +75,17 @@ def _restore_editor_registry():
 
 
 class FakeEditor:
-    """The whole surface the two handlers touch: `editorMode`, `note`, `loadNote()`.
+    """The whole surface the two handlers touch: `editorMode`, `note`,
+    `loadNoteKeepingFocus()`.
 
     Plus, when `deck_id` is given, the Add dialog's deck chooser, which the unfocus handler
     reads through `parentWindow.deck_chooser.selected_deck_id` for a new note.
     """
 
-    def __init__(self, mode: EditorMode, note=None, deck_id=None) -> None:
+    def __init__(self, mode: EditorMode, note=None, deck_id=None, current_field=None) -> None:
         self.editorMode = mode
         self.note = note
+        self.currentField = current_field
         if deck_id is not None:
             self.parentWindow = SimpleNamespace(
                 deck_chooser=SimpleNamespace(selected_deck_id=deck_id)
@@ -94,6 +96,10 @@ class FakeEditor:
     def loadNote(self, *args, **kwargs) -> None:
         self.loads += 1
         self.load_args.append((args, kwargs))
+
+    def loadNoteKeepingFocus(self) -> None:
+        # What aqt's does, so a test sees the field index reach `loadNote()`
+        self.loadNote(self.currentField)
 
 
 @pytest.fixture
@@ -1035,22 +1041,17 @@ class TestWhichEditorsAreReloaded:
             note_hooks.copy_for_single_trigger_note = original
         assert late.loads == 0
 
-    def test_the_reload_is_a_bare_loadnote_which_drops_the_caret(
-        self, col, set_definitions
-    ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:341-342 calls `editor.loadNote()` with
-        # no `focusTo`. aqt's own reaction to this handler returning True is
-        # `loadNoteKeepingFocus()` on a 100ms timer, which passes `self.currentField` --
-        # deliberately, so the user does not lose their place. The handler reloads the same
-        # editor first, without it. Expected: `loadNoteKeepingFocus`, or at least the
-        # current field index. Reality: no argument at all, and the editor that fired the
-        # event ends up reloaded twice.
+    def test_the_reload_keeps_the_caret_in_the_current_field(self, col, set_definitions):
+        # aqt's own reaction to this handler returning True is `loadNoteKeepingFocus()` on a
+        # 100ms timer, which passes `self.currentField` so the user does not lose their
+        # place. The handler reloads the same editor first, so it has to keep it too, or the
+        # caret is gone before aqt's reload runs.
         note = existing_note(col, Word="neko")
-        editor = FakeEditor(EditorMode.BROWSER, note)
+        editor = FakeEditor(EditorMode.BROWSER, note, current_field=2)
         on_editor_did_load_note(editor)
         set_definitions(within())
         assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
-        assert editor.load_args == [((), {})]
+        assert editor.load_args == [((2,), {})]
 
     def test_the_same_editor_registered_under_two_modes_reloads_twice(
         self, col, set_definitions

@@ -372,7 +372,8 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
     we_changed = initial_field_values != current_field_values
     if we_changed:
         for editor in editors_matching_note_id:
-            editor.loadNote()
+            # Keep the caret in the field the user is on, as aqt's own reload for a True does
+            editor.loadNoteKeepingFocus()
     # This is a filter hook: keep an earlier handler's True, or aqt won't reload for it
     return changed or we_changed
 

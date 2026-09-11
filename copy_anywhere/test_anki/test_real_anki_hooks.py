@@ -576,7 +576,9 @@ class TestARealEditor:
         assert note_id == 0
 
         loaded: list = []
-        monkeypatch.setattr(type(editor), "loadNote", lambda self, **kwargs: loaded.append(self))
+        monkeypatch.setattr(
+            type(editor), "loadNote", lambda self, *args, **kwargs: loaded.append(self)
+        )
         note = editor.note
         note["Word"] = "tori"
 
