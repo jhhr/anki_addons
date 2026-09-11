@@ -325,6 +325,7 @@ def copy_fields(
     copy_definitions: list[CopyDefinition],
     note_ids: Optional[Sequence[Union[int, NoteId]]] = None,
     note_ids_per_definition: Optional[list[Sequence[Union[int, NoteId]]]] = None,
+    trigger_notes: Optional[Sequence[Note]] = None,
     parent=None,
     field_only: Optional[str] = None,
     undo_entry: Optional[int] = None,
@@ -339,6 +340,9 @@ def copy_fields(
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
     :param note_ids_per_definition: An alternate of note_ids, a list of note ids to copy into for
         each definition used by PickCopyDefinitionsDialog
+    :param trigger_notes: Notes to use as they are instead of fetching them by their ids. Used
+        by the note editor, whose note can be ahead of the database while its save is still
+        running in the background
     :param parent: The parent widget
     :param undo_entry: The undo entry to merge the changes into, if None, a custom entry
         is created
@@ -434,6 +438,7 @@ def copy_fields(
                 note_ids=(
                     note_ids_per_definition[i] if note_ids_per_definition is not None else note_ids
                 ),
+                trigger_notes=trigger_notes,
                 logger=logger,
                 is_sync=is_sync,
                 copied_into_cards_dict=copied_into_cards_dict,
@@ -499,6 +504,7 @@ def copy_fields_in_background(
     results: CacheResults,
     is_sync: Optional[bool] = False,
     note_ids: Optional[Sequence[int]] = None,
+    trigger_notes: Optional[Sequence[Note]] = None,
     field_only: Optional[str] = None,
     logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
@@ -512,6 +518,8 @@ def copy_fields_in_background(
         notes that were copied into
     :param results: The results object to update with the final result text
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
+    :param trigger_notes: Notes to use as they are instead of fetching them by their ids. They
+        still have to pass the query, so they are only used where it selects their id
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
     :param logger: Logger to use for errors and debug messages
@@ -546,8 +554,9 @@ def copy_fields_in_background(
     assert mw.col.db is not None
 
     nids_query = f"AND n.id IN {ids2str(note_ids)}" if note_ids is not None else ""
+    given_notes = {note.id: note for note in trigger_notes or []}
     notes = [
-        mw.col.get_note(nid)
+        given_notes[nid] if nid in given_notes else mw.col.get_note(nid)
         for nid in mw.col.db.list(
             # When syncing, only copy into notes that have been been flagged for a field change
             # in the custom scheduler by setting the field changed flag to 0 or -1 in note_hooks.py

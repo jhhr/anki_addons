@@ -362,6 +362,9 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         copy_fields(
             copy_definitions=editing_other_notes_definitions,
             note_ids=[note.id],
+            # The editor's save runs in the background with no ordering against this, so the
+            # database may not have the value just typed yet. This note always does.
+            trigger_notes=[note],
             field_only=field_name,
             undo_text_suffix=f"triggered by unfocus field '{field_name}'",
         )

@@ -1109,30 +1109,29 @@ class TestTheModifiesOtherNotesBranchGoesThroughCopyFields:
         self, col, set_definitions, ran, copies
     ):
         # The modifying ones are collected during the loop and dispatched afterwards, so a
-        # Within-note definition's write is already in the in-memory note -- but not in the
-        # database -- when `copy_fields` re-fetches it. See the next test.
+        # Within-note definition's write is already in the in-memory note that `copy_fields`
+        # is handed. See the next test.
         existing_note(col, Word="inu")
         set_definitions(to_destinations("deferred"), within("direct"))
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
         assert ran.names() == ["direct"]
 
-    def test_copy_fields_reads_the_trigger_note_back_from_the_database(
+    def test_copy_fields_reads_the_trigger_note_from_the_editor_not_the_database(
         self, col, set_definitions, copies
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:327-334 has the authoritative note in
-        # hand and passes only `note_ids=[note.id]`, so `copy_fields` fetches its own copy
-        # from the database and the keystroke that fired the hook is read from whatever is
-        # committed. Anki does start a save first, but `Editor._save_current_note` is an
+        # Anki does start a save before the hook, but `Editor._save_current_note` is an
         # `update_note(...).run_in_background()` -- a background CollectionOp with no
-        # ordering against the hook body -- so the value copied into other notes is the
-        # last committed one, not the one on screen. Expected: the in-memory note is the
-        # source. Below, "typed" is what the editor holds and "neko" is what is committed.
+        # ordering against the hook body -- so the database can still hold the previous
+        # value. The in-memory note is handed to `copy_fields` so the value copied into
+        # other notes is the one on screen. Below, "typed" is what the editor holds and
+        # "neko" is what is committed.
         other = existing_note(col, Word="inu")
         set_definitions(to_destinations(value="{{Word}}"))
         note = existing_note(col, Word="neko")
         note["Word"] = "typed"
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert col.get_note(other.id)["Note"] == "neko"
+        assert copies.kwargs()["trigger_notes"] == [note]
+        assert col.get_note(other.id)["Note"] == "typed"
 
     def test_no_copy_fields_call_and_no_undo_entry_when_nothing_matched(
         self, col, set_definitions, copies
