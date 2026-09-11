@@ -885,7 +885,7 @@ class TestEveryDefWithThatTriggerIsGatedByItsOwnFlags:
 
 
 class TestTheReturnValue:
-    """`changed` is recomputed over the whole note, and the incoming value is thrown away."""
+    """`changed` is recomputed over the whole note and OR-ed with the incoming value."""
 
     def test_writing_the_unfocused_field_itself_returns_true(self, col, set_definitions):
         set_definitions(within(field="Word", value="{{Word}}!", trigger="Word"))
@@ -911,24 +911,22 @@ class TestTheReturnValue:
         set_definitions()
         assert run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD) is False
 
-    def test_the_incoming_changed_argument_is_discarded(self, col, set_definitions):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:267 rebinds the `changed` parameter to
-        # False before recomputing it. `editor_did_unfocus_field` is a *filter* hook: aqt
-        # feeds each handler the previous one's answer and reloads the editor if the last
-        # answer is True. Anki itself always seeds the chain with a literal False
-        # (`aqt/editor.py`, `onBridgeCmd`), so what this discards is any *other* addon's
-        # True -- whichever of them is registered first loses. Expected:
-        # `changed or <did we change anything>`.
+    def test_the_incoming_changed_argument_is_kept(self, col, set_definitions):
+        # `editor_did_unfocus_field` is a *filter* hook: aqt feeds each handler the previous
+        # one's answer and reloads the editor if the last answer is True. Anki itself always
+        # seeds the chain with a literal False (`aqt/editor.py`, `onBridgeCmd`), so a True
+        # coming in is another addon's, and dropping it would cost that addon its reload.
         set_definitions()
-        assert run_copy_fields_on_unfocus_field(True, existing_note(col, Word="neko"), WORD) is False
+        assert run_copy_fields_on_unfocus_field(True, existing_note(col, Word="neko"), WORD) is True
 
-    def test_a_note_with_no_note_type_returns_false_before_anything_runs(
+    def test_a_note_with_no_note_type_passes_changed_through_before_anything_runs(
         self, col, set_definitions, ran
     ):
         set_definitions(within())
         note = existing_note(col, Word="neko")
         note.note_type = lambda: None  # type: ignore[method-assign]
-        assert run_copy_fields_on_unfocus_field(True, note, WORD) is False
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+        assert run_copy_fields_on_unfocus_field(True, note, WORD) is True
         assert ran.names() == []
 
 
@@ -966,6 +964,16 @@ class TestWhichEditorsAreReloaded:
         assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
         assert editor.loads == 1
         assert note["Note"] == "cat"
+
+    def test_an_incoming_true_alone_reloads_nothing(self, col, set_definitions):
+        # The True is passed on, and aqt reloads the editor it belongs to; the extra reload
+        # here is only for the second editor on a note this addon wrote to.
+        note = existing_note(col, Word="neko")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+        set_definitions()
+        run_copy_fields_on_unfocus_field(True, note, WORD)
+        assert editor.loads == 0
 
     def test_nothing_reloads_when_no_field_value_moved(self, col, set_definitions):
         note = existing_note(col, Word="neko", Note="neko")

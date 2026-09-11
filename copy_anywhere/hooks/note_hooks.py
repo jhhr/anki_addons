@@ -290,7 +290,6 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
 
     config = Config()
     config.load()
-    changed = False
     note_type = note.note_type()
     if not note_type:
         # Error situation, note_type should exist when unfocusing field
@@ -368,11 +367,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
     # Copy definitions may not just edit this field but any field in the current note
     # Check if any field has changed and reload then
     current_field_values = note.values()
-    changed = initial_field_values != current_field_values
-    if changed:
+    we_changed = initial_field_values != current_field_values
+    if we_changed:
         for editor in editors_matching_note_id:
             editor.loadNote()
-    return changed
+    # This is a filter hook: keep an earlier handler's True, or aqt won't reload for it
+    return changed or we_changed
 
 
 def init_note_hooks():
