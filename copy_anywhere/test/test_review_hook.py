@@ -562,16 +562,13 @@ class TestTheSyncFlag:
         # the sweep's search prefix is `prop:cdn:` rather than a plain column comparison.
         assert json.loads(json.loads(data)["cd"]) == {"fc": 1}
 
-    def test_custom_data_too_large_for_the_flag_raises_out_of_the_hook(
-        self, col, set_definitions
+    def test_custom_data_too_large_for_the_flag_is_logged_not_raised_out_of_the_hook(
+        self, col, set_definitions, hook_logger
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:216-218 calls `write_custom_data`, which
-        # raises ValueError once the compressed JSON passes 100 bytes -- Anki's own limit --
-        # and nothing catches it. The exception escapes `reviewer_did_answer_card` into
-        # Anki's hook dispatch, and it escapes *after* the copies have been written and
-        # merged, so the copy stands while the flag that records it is never written and the
-        # note stays queued for the sync sweep. Expected: the flag write is guarded and the
-        # failure logged, not thrown at the reviewer.
+        # `write_custom_data` raises ValueError once the compressed JSON passes 100 bytes --
+        # Anki's own limit. By then the copies have been written and merged, so the handler
+        # logs the failure instead of throwing it into Anki's hook dispatch at the reviewer.
+        # The copy stands and, with no flag written, the note stays queued for the sync sweep.
         note = vocab_note(col)
         real_anki.set_custom_data(
             col, note.cards()[0].id, json.dumps({"x": "y" * 90}, separators=(",", ":"))
@@ -579,9 +576,9 @@ class TestTheSyncFlag:
         _, reviewed = review(col, note)
         set_definitions(within())
 
-        with pytest.raises(ValueError, match="exceeds 100 bytes"):
-            run_copy_fields_on_review(reviewed)
+        run_copy_fields_on_review(reviewed)
 
+        assert hook_logger.has_error("exceeds 100 bytes")
         assert col.get_note(note.id)["Note"] == "neko"
         assert "fc" not in custom_data(col, reviewed.id)
 

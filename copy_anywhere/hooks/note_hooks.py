@@ -206,11 +206,16 @@ def run_copy_fields_on_review(card: Card):
         mw.col.update_cards(edited_cards)
         # merge all undo entries into the original Answer card undo entry
         mw.col.merge_undo_entries(answer_card_undo_entry)
-    if has_definitions_to_process_on_sync:
-        # In order to not have on_sync definitions run twice, we'll set a different fc value
-        write_custom_data(card, key="fc", value=-1)
-    else:
-        write_custom_data(card, key="fc", value=1)
+    # In order to not have on_sync definitions run twice, we'll set a different fc value
+    fc_value = -1 if has_definitions_to_process_on_sync else 1
+    try:
+        write_custom_data(card, key="fc", value=fc_value)
+    except ValueError as e:
+        # The copies are already written and merged, so raising here would only throw the
+        # error at the reviewer from inside Anki's hook dispatch. Without the flag the note
+        # stays queued for the sync sweep, which is the safe side to fail on.
+        logger.error(f"Could not set the fc flag on card {card.id}: {e}")
+    # Still write the card, as merge_cards may have put copied changes on it
     mw.col.update_card(card)
     # All updates are now merged into the Answer card undo entry
     mw.col.merge_undo_entries(answer_card_undo_entry)
