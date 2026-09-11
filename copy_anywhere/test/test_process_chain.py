@@ -329,13 +329,18 @@ class TestKanaHighlight:
         result = run_chain(chain, self.SENTENCE, logger, dest_note=kanji_note)
         assert result == " <on>かいわ</on>をする"
 
-    def test_a_missing_return_type_aborts_the_whole_chain(self, kanji_note, logger):
-        # DEFECT, pinned as-is: the wrapper means to degrade to `kana_filter(text)`, but
-        # `kana_filter` in anki_shared has lost its `return` statement and answers None. A
-        # None out of `apply_process_chain` is the caller's signal to abort the definition,
-        # so an empty return_type does not degrade -- it kills the run.
+    def test_a_missing_return_type_logs_and_degrades_to_the_plain_kana_filter(
+        self, kanji_note, logger
+    ):
+        # Only a config with an explicitly empty return_type gets here: the editor always
+        # saves one of its three types, and a missing key defaults to kana_only. The step is
+        # meant to degrade, not abort -- until `kana_filter` got its `return` back it answered
+        # None, which the chain's caller reads as "stop the whole run". What it degrades to is
+        # Anki's {{kana:}}, not kana_only: no highlight, no tags, and the space before the
+        # word goes with its kanji where kana_only keeps it.
         chain = [kana_process(return_type="")]
-        assert run_chain(chain, self.SENTENCE, logger, dest_note=kanji_note) is None
+        result = run_chain(chain, self.SENTENCE, logger, dest_note=kanji_note)
+        assert result == "かいわをする"
         assert logger.has_error("Missing 'return_type'")
 
 
