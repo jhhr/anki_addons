@@ -10,6 +10,11 @@ either one takes the whole suite offline.
 Putting lib/ on sys.path is the one thing __init__.py does that these modules still need, so
 it happens here instead - through the same helper, so a test resolves psutil and requests the
 way Anki will rather than a way only the test knows about.
+
+The Anki stubs come from the monorepo's anki_shared/, which the repo-root conftest makes
+importable for the other suites. That conftest is out of reach here - test/pytest.ini makes
+this directory the rootdir, and unittest never reads conftests - so the repo root goes on
+sys.path here instead. anki_shared has no __init__.py and resolves as a namespace package.
 """
 
 import importlib.util
@@ -17,15 +22,19 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from anki_shared.testing import anki_stubs
-from anki_shared.testing.anki_stubs import mw
-
 ADDON_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = ADDON_ROOT.parent
 OPS_DIR = ADDON_ROOT / "async_api_ops"
 DEFAULT_SUBDIR = "async_api_ops"
 PACKAGE = "addon_under_test_pkg"
 
-sys.path.insert(0, str(ADDON_ROOT.parent / "anki_shared" / "utils"))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from anki_shared.testing import anki_stubs  # noqa: E402
+from anki_shared.testing.anki_stubs import mw  # noqa: E402
+
+sys.path.insert(0, str(REPO_ROOT / "anki_shared" / "utils"))
 from vendor_path import add_vendor_paths  # noqa: E402
 
 add_vendor_paths(str(ADDON_ROOT))
