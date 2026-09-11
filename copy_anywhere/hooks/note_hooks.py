@@ -20,7 +20,7 @@ from ..utils.merge_cards import merge_cards
 from ..configuration import (
     Config,
     CopyDefinition,
-    get_triggered_field_to_field_def_for_field,
+    get_triggered_field_to_field_defs_for_field,
     definition_modifies_other_notes,
 )
 from ..logic.copy_fields import (
@@ -324,27 +324,32 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             # be run when the new note is saved.
             continue
 
-        # get field-to-field matching this field
-        field_to_field_def = get_triggered_field_to_field_def_for_field(
-            field_to_field_defs, field_name, modifies_other_notes
-        )
-        if not field_to_field_def:
+        # Each def this field triggers is gated by its own add/edit flag, so that one def
+        # with the flag off neither runs nor stops the others on the same field from running
+        unfocus_flag = "copy_on_unfocus_when_add" if is_new_note else "copy_on_unfocus_when_edit"
+        gated_field_to_field_defs = [
+            field_def
+            for field_def in get_triggered_field_to_field_defs_for_field(
+                field_to_field_defs, field_name, modifies_other_notes
+            )
+            if field_def.get(unfocus_flag)
+        ]
+        if not gated_field_to_field_defs:
             continue
 
-        if is_new_note and not field_to_field_def.get("copy_on_unfocus_when_add"):
-            continue
-
-        if not is_new_note and not field_to_field_def.get("copy_on_unfocus_when_edit"):
-            continue
+        # field_only alone would pick every def this field triggers again, flags or not, so
+        # the definition is run with only the defs that passed the gate
+        gated_definition = copy_definition.copy()
+        gated_definition["field_to_field_defs"] = gated_field_to_field_defs
 
         if modifies_other_notes:
             # Run these separate with an undo entry
-            editing_other_notes_definitions.append(copy_definition)
+            editing_other_notes_definitions.append(gated_definition)
         else:
             # Either within note or destination to sources, we can run these right away
             # without an undo entry needed
             copy_for_single_trigger_note(
-                copy_definition=copy_definition,
+                copy_definition=gated_definition,
                 trigger_note=note,
                 copied_into_notes=[],
                 field_only=field_name,

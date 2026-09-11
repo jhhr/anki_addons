@@ -259,19 +259,19 @@ def get_field_to_field_unfocus_trigger_fields(
         return trigger_fields or [field_to_field.get("copy_into_note_field", "")]
 
 
-def get_triggered_field_to_field_def_for_field(
+def get_triggered_field_to_field_defs_for_field(
     field_to_field_defs: list[CopyFieldToField],
     field_name: str,
     modifies_other_notes: bool,
-) -> Union[CopyFieldToField, None]:
+) -> list[CopyFieldToField]:
     """
-    Get the field-to-field definition that matches the field_name and the mode.
+    Get every field-to-field definition that field_name triggers in this mode, in config order.
     """
-    for field_def in field_to_field_defs:
-        trigger_fields = get_field_to_field_unfocus_trigger_fields(field_def, modifies_other_notes)
-        if field_name in trigger_fields:
-            return field_def
-    return None
+    return [
+        field_def
+        for field_def in field_to_field_defs
+        if field_name in get_field_to_field_unfocus_trigger_fields(field_def, modifies_other_notes)
+    ]
 
 
 class CopyFieldToVariable(TypedDict):

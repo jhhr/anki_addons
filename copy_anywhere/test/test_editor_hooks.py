@@ -699,13 +699,12 @@ class TestTheDeckWhitelistOnThisPath:
         assert note["Note"] == "neko"
 
 
-class TestEveryDefWithThatTriggerRunsButOnlyTheFirstIsConsulted:
-    """`get_triggered_field_to_field_def_for_field` returns one def; `field_only` runs many.
+class TestEveryDefWithThatTriggerIsGatedByItsOwnFlags:
+    """Every def the field triggers passes or fails the add/edit gate on its own flags.
 
-    The handler asks for "the field-to-field def triggered by this field", uses it for the
-    add/edit gate, and then hands the *whole* definition to `copy_for_single_trigger_note`
-    with `field_only=field_name`. That call re-filters every def by the same trigger fields,
-    so the one the gate looked at has no special standing afterwards.
+    The handler hands `copy_for_single_trigger_note` a copy of the definition holding only
+    the defs that passed, still with `field_only=field_name`. `field_only` re-filters by
+    trigger field alone, so on the whole definition it would bring the gated-out defs back.
     """
 
     def test_two_defs_sharing_a_trigger_field_both_write(self, col, set_definitions):
@@ -754,13 +753,11 @@ class TestEveryDefWithThatTriggerRunsButOnlyTheFirstIsConsulted:
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert (note["Note"], note["Meaning"]) == ("neko", "")
 
-    def test_the_second_defs_flags_are_never_read_so_it_runs_regardless(
+    def test_a_second_def_with_the_flag_off_does_not_run_after_a_first_that_has_it_on(
         self, col, set_definitions
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:302-312. The add/edit gate is applied to
-        # the first matching def only, and then the whole definition runs. A second def on
-        # the same trigger field with `copy_on_unfocus_when_edit` explicitly off runs
-        # anyway. Expected: each def is gated by its own flags.
+        # The first def passing the gate must not carry the second through with it: the
+        # user switched unfocus copying off for that def.
         definition = d.within_note(
             definition_name="two-defs",
             field_to_field_defs=[
@@ -782,18 +779,14 @@ class TestEveryDefWithThatTriggerRunsButOnlyTheFirstIsConsulted:
         set_definitions(definition)
         note = existing_note(col, Word="neko")
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert note["Meaning"] == "neko"
+        assert (note["Note"], note["Meaning"]) == ("neko", "")
 
-    def test_a_first_def_with_the_flag_off_suppresses_a_second_def_that_has_it_on(
+    def test_a_first_def_with_the_flag_off_does_not_suppress_a_second_that_has_it_on(
         self, col, set_definitions, ran
     ):
-        # DEFECT: the other half of the same bug, and the damaging half.
-        # `get_triggered_field_to_field_def_for_field`
-        # (copy_anywhere/configuration.py:268-272) returns the *first* def whose trigger
-        # fields match, the handler gates on that one, and `continue` skips the entire
-        # definition. So a def with the flag on never runs because an earlier def in the
-        # same definition, on the same trigger field, has it off. Expected: the second def
-        # runs. Config order is not something the user thinks of as significant here.
+        # The same gate the other way round. Config order is not something the user thinks
+        # of as significant here, so an earlier def with the flag off must not stop a later
+        # one on the same trigger field.
         definition = d.within_note(
             definition_name="two-defs",
             field_to_field_defs=[
@@ -814,8 +807,69 @@ class TestEveryDefWithThatTriggerRunsButOnlyTheFirstIsConsulted:
         set_definitions(definition)
         note = existing_note(col, Word="neko")
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert ran.names() == []
-        assert note["Meaning"] == ""
+        assert ran.names() == ["two-defs"]
+        assert (note["Note"], note["Meaning"]) == ("", "neko")
+
+    def test_a_definition_touching_other_notes_reaches_copy_fields_with_only_the_gated_defs(
+        self, col, set_definitions, copies
+    ):
+        # `copy_fields` gets the same `field_only`, so it would bring a gated-out def back
+        # just as `copy_for_single_trigger_note` would.
+        other = existing_note(col, Word="inu")
+        definition = d.source_to_destinations(
+            definition_name="s2d",
+            copy_from_cards_query="Word:inu",
+            select_card_count="0",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "copied",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "copied",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=False,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        [passed] = copies.kwargs()["copy_definitions"]
+        assert [f["copy_into_note_field"] for f in passed["field_to_field_defs"]] == ["Note"]
+        assert (col.get_note(other.id)["Note"], col.get_note(other.id)["Meaning"]) == (
+            "copied",
+            "",
+        )
+
+    def test_the_configured_definition_is_left_with_all_its_defs(
+        self, col, set_definitions
+    ):
+        # The gated defs go into a copy, so the config dict itself is not trimmed for the
+        # next unfocus, where the other flag may be the one that is read.
+        definition = d.within_note(
+            definition_name="two-defs",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_add=True,
+                ),
+            ],
+        )
+        set_definitions(definition)
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        [configured] = mw.addonManager.configs[ADDON_TAG]["copy_definitions"]
+        assert len(configured["field_to_field_defs"]) == 2
 
     def test_the_field_name_is_what_is_passed_as_field_only(self, col, set_definitions, ran):
         set_definitions(within(trigger="Meaning"))
