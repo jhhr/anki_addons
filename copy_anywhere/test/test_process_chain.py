@@ -71,6 +71,65 @@ def kanjium_process(**overrides):
     return process
 
 
+# What Yomitan (and Yomichan before it) writes into a field for `{pitch-accents}` from a
+# Kanjium pitch dictionary, which only gives a reading and a downstep position. Ported
+# from pronunciation-generator.js `createPronunciationText` with pronunciation-style.json
+# inlined the way css-style-applier.js does it; nasal and devoice marks are left out
+# because Kanjium's data has neither. One inline-block span per mora holds a span per
+# character and ends in a "line" span whose style says low, high, or high-then-drop.
+_SMALL_KANA = set("ぁぃぅぇぉゃゅょゎァィゥェォャュョヮ")
+_MORA_STYLE = "display:inline-block;position:relative;"
+_DROP_MORA_STYLE = "padding-right:0.1em;margin-right:0.1em;"
+_LINE_STYLE = "border-color:currentColor;"
+_HIGH_LINE_STYLE = (
+    "display:block;user-select:none;pointer-events:none;position:absolute;top:0.1em;"
+    "left:0;right:0;height:0;border-top-width:0.1em;border-top-style:solid;"
+)
+_DROP_LINE_STYLE = (
+    "right:-0.1em;height:0.4em;border-right-width:0.1em;border-right-style:solid;"
+)
+
+
+def _is_mora_high(index, position):
+    # japanese.js `isMoraPitchHigh`: heiban rises after the first mora, atamadaka is high
+    # only on it, and every other position is high from the second mora up to the drop.
+    if position == 0:
+        return index > 0
+    if position == 1:
+        return index < 1
+    return 0 < index < position
+
+
+def yomitan_pitch(reading, position):
+    morae: list[str] = []
+    for char in reading:
+        if char in _SMALL_KANA and morae:
+            morae[-1] += char
+        else:
+            morae.append(char)
+    html = ""
+    for i, mora in enumerate(morae):
+        high = _is_mora_high(i, position)
+        drop = high and not _is_mora_high(i + 1, position)
+        chars = "".join(f'<span style="display:inline;">{char}</span>' for char in mora)
+        line = _LINE_STYLE + (_HIGH_LINE_STYLE if high else "")
+        line += _DROP_LINE_STYLE if drop else ""
+        mora_style = _MORA_STYLE + (_DROP_MORA_STYLE if drop else "")
+        html += f'<span style="{mora_style}">{chars}<span style="{line}"></span></span>'
+    return f'<span style="display:inline;">{html}</span>'
+
+
+def yomitan_pitch_list(*pitches):
+    # The default `pitch-accent-list` template: more than one pitch becomes an <ol>.
+    return "<ol>" + "".join(f"<li>{yomitan_pitch(*pitch)}</li>" for pitch in pitches) + "</ol>"
+
+
+# The two pieces of javdejong's markup, as his `inline_style` writes them with his default
+# config: an overline span, and the closing of it with a downstep notch (U+A71C).
+OVER = '<span style="text-decoration:overline;">'
+DROP = "</span>&#42780;"
+
+
 def fonts_of(result):
     """The font list a `Fonts check` result encodes, as a set -- its order is a set's order."""
     return set(json.loads(result))
@@ -374,44 +433,139 @@ class TestWordHighlight:
 
 
 class TestKanjiumToJavdejong:
-    # A genuine Kanjium pitch string: one overlined mora with a downstep notch, then a plain one.
-    KANJIUM = (
-        '<span style="display:inline-block;position:relative;padding-right:0.1em;'
-        'margin-right:0.1em;"><span style="display:inline;">な</span>'
-        '<span style="border-color:currentColor;display:block;user-select:none;'
-        "pointer-events:none;position:absolute;top:0.1em;left:0;right:0;height:0;"
-        "border-top-width:0.1em;border-top-style:solid;right:-0.1em;height:0.4em;"
-        'border-right-width:0.1em;border-right-style:solid;"></span></span>'
-        '<span style="display:inline;">つ</span>'
-    )
+    """The "Kanjium format" is the HTML Yomitan writes for a Kanjium pitch dictionary; the
+    target is what javdejong's Japanese Pitch Accent add-on writes for the same word.
+
+    The expected strings are his `format_entry` rules applied to Yomitan's reading, and each
+    row's comment gives his own output for that word from his NHK database, in the same
+    OVER/DROP shorthand, so the parity is visible: only his katakana differs.
+    """
+
+    # 箸 はし[1] from Kanjium's accents.txt.
+    KANJIUM = yomitan_pitch("はし", 1)
+
+    def test_the_helper_reproduces_yomitans_own_fixture_verbatim(self):
+        # Every other test here trusts `yomitan_pitch`, so pin it to real output: ぶちこむ[3]
+        # is the second <li> of "pitch-accents" in Yomitan's own test data, copied verbatim
+        # from https://github.com/yomidevs/yomitan/blob/master/test/data/anki-note-builder-test-results.json
+        high_line = (
+            '<span style="border-color:currentColor;display:block;user-select:none;'
+            "pointer-events:none;position:absolute;top:0.1em;left:0;right:0;height:0;"
+            "border-top-width:0.1em;border-top-style:solid;"
+        )
+        yomitan = (
+            '<span style="display:inline;">'
+            '<span style="display:inline-block;position:relative;">'
+            '<span style="display:inline;">ぶ</span>'
+            '<span style="border-color:currentColor;"></span></span>'
+            '<span style="display:inline-block;position:relative;">'
+            '<span style="display:inline;">ち</span>' + high_line + '"></span></span>'
+            '<span style="display:inline-block;position:relative;padding-right:0.1em;'
+            'margin-right:0.1em;"><span style="display:inline;">こ</span>'
+            + high_line
+            + "right:-0.1em;height:0.4em;border-right-width:0.1em;"
+            'border-right-style:solid;"></span></span>'
+            '<span style="display:inline-block;position:relative;">'
+            '<span style="display:inline;">む</span>'
+            '<span style="border-color:currentColor;"></span></span></span>'
+        )
+        assert yomitan_pitch("ぶちこむ", 3) == yomitan
 
     def test_text_without_currentcolor_is_returned_untouched(self, logger):
         assert run_chain([kanjium_process()], "<b>plain</b>", logger) == "<b>plain</b>"
 
-    def test_a_genuine_kanjium_string_loses_its_pitch_markup(self, logger):
-        # DEFECT, pinned as-is: the overline and downstep patterns in the source are triple
-        # quoted strings that kept their line breaks and a stray apostrophe, so neither can
-        # ever match real markup. The kana survive, every pitch mark is dropped, and the
-        # unconditional `if not ended_overline` tail appends a `</span>` that never opened.
-        assert run_chain([kanjium_process()], self.KANJIUM, logger) == "なつ</span>"
+    @pytest.mark.parametrize(
+        "reading, position, expected",
+        [
+            # 桜 サクラ: サ{OVER}クラ</span>
+            pytest.param("さくら", 0, f"さ{OVER}くら</span>", id="heiban"),
+            # 命 イノチ: {OVER}イ{DROP}ノチ
+            pytest.param("いのち", 1, f"{OVER}い{DROP}のち", id="atamadaka"),
+            # 貴方 アナタ: ア{OVER}ナ{DROP}タ
+            pytest.param("あなた", 2, f"あ{OVER}な{DROP}た", id="nakadaka"),
+            # 男 オトコ: オ{OVER}トコ{DROP}
+            pytest.param("おとこ", 3, f"お{OVER}とこ{DROP}", id="odaka"),
+            # 箸 ハシ: {OVER}ハ{DROP}シ
+            pytest.param("はし", 1, f"{OVER}は{DROP}し", id="two-mora-atamadaka"),
+            # 木 キ: {OVER}キ{DROP}
+            pytest.param("き", 1, f"{OVER}き{DROP}", id="one-mora-atamadaka"),
+            # 今日 キョー: {OVER}キョ{DROP}ー
+            pytest.param("きょう", 1, f"{OVER}きょ{DROP}う", id="contracted-drop-mora"),
+            # 日本 ニッポン: ニ{OVER}ッポ{DROP}ン
+            pytest.param("にっぽん", 3, f"に{OVER}っぽ{DROP}ん", id="sokuon"),
+        ],
+    )
+    def test_each_accent_type_becomes_the_javdejong_markup_for_the_same_word(
+        self, reading, position, expected, logger
+    ):
+        result = run_chain([kanjium_process()], yomitan_pitch(reading, position), logger)
+        assert result == expected
+
+    def test_heiban_and_odaka_differ_only_by_the_trailing_downstep(self, logger):
+        # 端 はし[0] and 橋 はし[2] rise the same way; only the drop onto a following
+        # particle tells them apart, so the notch is the whole difference.
+        # javdejong: 端 ハ{OVER}シ</span> and 橋 ハ{OVER}シ{DROP}
+        chain = [kanjium_process()]
+        assert run_chain(chain, yomitan_pitch("はし", 0), logger) == f"は{OVER}し</span>"
+        assert run_chain(chain, yomitan_pitch("はし", 2), logger) == f"は{OVER}し{DROP}"
+
+    def test_a_one_mora_heiban_word_gets_no_markup_at_all(self, logger):
+        # Its only mora is low, so nothing opens and nothing may close -- but the mora line
+        # still says currentColor, so the conversion does run. javdejong: 蚊 カ
+        assert run_chain([kanjium_process()], yomitan_pitch("か", 0), logger) == "か"
+
+    def test_a_contracted_sound_inside_the_overline_is_overlined_whole(self, logger):
+        # きょ is one mora but two character spans, and only the second sits next to the
+        # line span that says "high"; the first must not be left out of the overline.
+        # javdejong: 東京 ト{OVER}ーキョー</span>
+        result = run_chain([kanjium_process()], yomitan_pitch("とうきょう", 0), logger)
+        assert result == f"と{OVER}うきょう</span>"
+
+    def test_kana_outside_the_basic_hiragana_and_katakana_blocks_are_kept(self, logger):
+        # ヴ sorts after ン, so a [ァ-ン] character class loses it. Kanjium's accents.txt has
+        # the line "ラヴ\t\t1"; javdejong's NHK data has no ヴ at all to compare against.
+        result = run_chain([kanjium_process()], yomitan_pitch("ラヴ", 1), logger)
+        assert result == f"{OVER}ラ{DROP}ヴ"
+
+    def test_only_the_kana_of_the_morae_survive(self, logger):
+        # The output is rebuilt from the morae, so anything around the pitch HTML -- a
+        # label, a <br> -- is dropped rather than carried through.
+        text = "橋: " + yomitan_pitch("はし", 2) + "<br>"
+        assert run_chain([kanjium_process()], text, logger) == f"は{OVER}し{DROP}"
 
     def test_the_delimiter_joins_the_descriptions(self, logger):
+        # Each reading between the middle dots is converted on its own, so one reading's
+        # overline never runs into the next.
         chain = [kanjium_process(delimiter=" / ")]
-        text = self.KANJIUM + "・" + self.KANJIUM
-        assert run_chain(chain, text, logger) == "なつ</span> / なつ</span>"
+        text = yomitan_pitch("はし", 1) + "・" + yomitan_pitch("はし", 2)
+        assert run_chain(chain, text, logger) == f"{OVER}は{DROP}し / は{OVER}し{DROP}"
 
     def test_an_empty_delimiter_defaults_to_the_katakana_middle_dot(self, logger):
         chain = [kanjium_process(delimiter="")]
         text = self.KANJIUM + "・" + self.KANJIUM
-        assert run_chain(chain, text, logger) == "なつ</span>・なつ</span>"
+        assert run_chain(chain, text, logger) == f"{OVER}は{DROP}し・{OVER}は{DROP}し"
 
     def test_the_input_is_always_split_on_the_middle_dot_not_on_the_delimiter(self, logger):
         # The split is hard-coded to the katakana middle dot and only the join uses the
-        # configured delimiter,
-        # so a custom delimiter is an output format, never an input one.
+        # configured delimiter, so a custom delimiter is an output format, never an input
+        # one: the "/" is not part of any mora, so it vanishes and the readings run together.
         chain = [kanjium_process(delimiter="/")]
         text = self.KANJIUM + "/" + self.KANJIUM
-        assert run_chain(chain, text, logger) == "なつなつ</span>"
+        assert run_chain(chain, text, logger) == f"{OVER}は{DROP}し{OVER}は{DROP}し"
+
+    def test_a_yomitan_multi_pitch_list_no_longer_raises_out_of_the_chain(self, logger):
+        # Yomitan lists several pitches as <ol><li>, never with "・", so the whole list is one
+        # description. The old regex version, whenever its patterns matched at all, mapped
+        # the matches back onto one flat kana list and raised StopIteration here (a drop in
+        # the first reading, a later high in the second); the chain only catches
+        # FatalProcessError, so that escaped the whole copy.
+        # Characterized, not endorsed: each reading's marks are right but the readings run
+        # together with nothing between them. Whether <li> should count as a separator is an
+        # open question for the user.
+        text = yomitan_pitch_list(("きょう", 1), ("こんにち", 0))
+        assert run_chain([kanjium_process()], text, logger) == (
+            f"{OVER}きょ{DROP}うこ{OVER}んにち</span>"
+        )
 
 
 class TestFontsCheck:
