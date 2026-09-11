@@ -70,11 +70,11 @@ def _install_anki() -> bool:
     """Install real Anki with a stubbed `mw`, or the stand-in. True if real."""
     try:
         from anki_shared.testing import real_anki
+
+        real_anki.qt_offscreen()
+        real_anki.install()
     except ImportError:
         return False
-
-    real_anki.qt_offscreen()
-    real_anki.install()
     return True
 
 
