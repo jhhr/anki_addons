@@ -6,8 +6,23 @@ sub_words]`, with tags and punctuation as single-element arrays. Concatenating t
 `raw_text` values gives back the sentence (minus `<b>` tags), so any word can be wrapped in
 `<b>` without inflection matching.
 
-Status: phase 1 prototype. Not wired into any op yet, and SudachiPy is not vendored (it runs
-from the development Python).
+Status: phase 1 prototype, not wired into any op yet.
+
+## Dependencies
+
+- **SudachiPy** is vendored through `requirements.in` like the other packages: ~1.5 MB per
+  platform, in `lib/_platform/<tag>/`.
+- **Sudachi's dictionary** and **JMdict** are downloaded on first use into `user_files/`
+  (`resources.py`), since Anki keeps only that directory across add-on updates. The dictionary
+  (`sudachidict_core`, a 72 MB wheel unpacking to ~200 MB) is fetched from PyPI at a pinned
+  version and sha256 and only its `system.dic` kept; JMdict_e (11 MB) comes from EDRDG, and
+  its lookup index is built once (~15 s) and pickled. `resources.missing()` lists what is
+  needed and how big it is, so the op that first uses the generator can ask before calling
+  `resources.ensure()` in a background task. Until then `generate()` raises
+  `ResourcesMissing`.
+- Licences: JMdict is the property of the EDRDG, used under its licence (CC BY-SA 4.0), which
+  asks for acknowledgement; the Sudachi dictionary is Apache 2.0 (with UniDic's terms in its
+  LEGAL file).
 
 ## How it works
 
@@ -94,15 +109,18 @@ keep their written form (物ん); the note's spelling is kept where JMdict's dif
 
 ## Running
 
-JMdict_e is downloaded once into `user_files/jmdict/` (not committed):
+From the add-on root, with SudachiPy installed in the development Python:
 
 ```bash
-python word_array/research/setup_jmdict.py      # from the add-on root
+python word_array/research/setup_resources.py   # the first-use downloads, into user_files/
 python word_array/research/evaluate.py          # accuracy against the gold, -q for the summary
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
-PYTHONPATH=.. pytest test/test_word_array.py    # skipped without SudachiPy and JMdict
+pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
+
+An installed `sudachidict_*` package also counts as the dictionary; `SUDACHI_DICT` (a
+dictionary name or an absolute path to a `.dic`) overrides both.
 
 `research/generated_examples.md` is committed so that changes in the generator's output show
 up as diffs.

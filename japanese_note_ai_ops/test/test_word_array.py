@@ -4,20 +4,18 @@ Accuracy against the gold is measured by word_array/research/evaluate.py; these 
 must always hold whatever the word choices: the array partitions the sentence, sub-words make
 up their parent, <b> can wrap any word, and a few behaviors the design depends on.
 
-Skipped unless SudachiPy (with a dictionary) and JMdict (user_files/jmdict, see
-word_array/research/setup_jmdict.py) are available: neither is vendored yet.
+Skipped unless SudachiPy, a Sudachi dictionary and JMdict are all available. The add-on
+downloads the last two on first use; word_array/research/setup_resources.py does the same
+from a shell.
 """
 
 import importlib
-import importlib.util
 import re
 import unittest
 
-from addon_modules import ADDON_ROOT, PACKAGE, load_addon_module, load_ops_module
+from addon_modules import PACKAGE, load_addon_module, load_ops_module
 
-HAS_SUDACHI = importlib.util.find_spec("sudachipy") is not None
-JMDICT_DIR = ADDON_ROOT / "user_files" / "jmdict"
-HAS_JMDICT = (JMDICT_DIR / "jmdict_index.pkl").exists() or (JMDICT_DIR / "JMdict_e.xml").exists()
+resources = load_ops_module("resources", subdir="word_array")
 
 TAG_RE = re.compile(r"<(/?)([a-zA-Z]+)[^>]*>")
 
@@ -44,7 +42,7 @@ def find_word(arr: list, dict_form: str) -> list:
     return []
 
 
-@unittest.skipUnless(HAS_SUDACHI and HAS_JMDICT, "needs SudachiPy and JMdict")
+@unittest.skipUnless(resources.is_ready(), "needs SudachiPy, a Sudachi dictionary and JMdict")
 class WordArrayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

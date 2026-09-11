@@ -18,7 +18,6 @@ Stages
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -28,7 +27,7 @@ from sudachipy import Dictionary, SplitMode
 
 from ..kana_conv import to_hiragana
 from . import jmdict_index as jmdict
-from . import text_map
+from . import resources, text_map
 from .text_map import TextMap
 
 KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
@@ -36,17 +35,13 @@ KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
 
 @lru_cache(maxsize=1)
 def _tokenizer():
-    # core scores the same as full on the gold examples at ~60% of the size; use whichever of
-    # the Sudachi dictionaries is installed unless SUDACHI_DICT names one
-    names = (
-        [os.environ["SUDACHI_DICT"]] if "SUDACHI_DICT" in os.environ else ["core", "full", "small"]
-    )
-    for name in names:
-        try:
-            return Dictionary(dict=name).create()
-        except ModuleNotFoundError:
-            continue
-    raise ModuleNotFoundError(f"No Sudachi dictionary installed (tried sudachidict_{names})")
+    dictionary = resources.sudachi_dictionary()
+    if dictionary is None:
+        raise resources.ResourcesMissing(
+            "No Sudachi dictionary; resources.ensure() downloads one"
+            " (from a script: word_array/research/setup_resources.py)"
+        )
+    return Dictionary(dict=dictionary).create()
 
 
 @dataclass
