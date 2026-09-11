@@ -1,0 +1,13 @@
+# Install with --no-deps, after requirements-dev.txt:
+#
+#   python -m pip install --no-deps -r requirements-dev-nodeps.txt
+#
+# pytest-anki2 is the current distribution of Glutanimate's pytest-anki (still imported as
+# `pytest_anki`); it drives the running-Anki tests, such as copy_anywhere/test_anki. Its
+# metadata pins `pytest-qt~=4.4.0`, so a plain install
+# downgrades the pytest-qt 4.5.0 above, and its `anki-XXXX` extras pin anki/aqt to the
+# first release of a line (`anki-2509` means 25.9, not 25.9.4). Neither pin reflects a real
+# incompatibility -- the suite passes on pytest-qt 4.5.0 -- so it goes in on its own,
+# without them. `pip check` keeps reporting "pytest-anki2 2.2.0 has requirement
+# pytest-qt~=4.4.0"; that line is expected.
+pytest-anki2==2.2.0

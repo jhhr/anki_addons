@@ -344,5 +344,16 @@ def make_note_type(
 
 
 def qt_offscreen() -> None:
-    """Ask Qt for the offscreen platform, so importing aqt never opens a window."""
+    """Make Qt headless: no window from importing aqt, and no GPU for QtWebEngine.
+
+    Only the running-Anki tests ever start QtWebEngine, but Chromium reads its flags once per
+    process, when QtWebEngine first starts, so they belong with the rest of the process-wide
+    Qt setup rather than with the tests that need them. Offscreen, its GPU process keeps
+    losing its context ("RasterDecoderImpl: Context lost during MakeCurrent"), and about one
+    run in five died mid-test on a breakpoint exception in that code. Software rendering is
+    all a test needs.
+    """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if "--disable-gpu" not in flags.split():
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()

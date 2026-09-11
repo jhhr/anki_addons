@@ -40,6 +40,27 @@ python build.py install
 | `python build.py check` | fail if an addon imports a shared package it did not declare |
 | `python build.py dist [addon...]` | write `dist/<addon>-<version>.ankiaddon` |
 
+## Tests
+
+One command runs every suite, from the repo root:
+
+```
+python -m pytest
+```
+
+It needs the dev dependencies in the interpreter the tests run on (the system Python
+that `.vscode/settings.json` points at, not `.venv`). Two steps, because `pytest-anki2`
+has to go in without its declared dependencies:
+
+```
+python -m pip install -r requirements-dev.txt
+python -m pip install --no-deps -r requirements-dev-nodeps.txt
+```
+
+No `build.py link` is needed first; the root `conftest.py` stands in for a missing
+`<addon>/shared/`. How the suites work, and how an addon adds tests of its own, is in
+[`anki_shared/testing/README.md`](anki_shared/testing/README.md).
+
 ## Hazards
 
 - **Never use Anki's addon-manager "Delete" on a junctioned addon** - it sends the

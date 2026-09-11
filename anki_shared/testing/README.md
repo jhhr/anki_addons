@@ -8,15 +8,49 @@ three modes.
 
 Pick the cheapest mode that can answer the question.
 
-| mode | what is real | what is stubbed | cost per test | use it for |
-|---|---|---|---|---|
-| `anki_stubs` | nothing | all of `anki` and `aqt` | ~0 | pure functions that only pass notes around |
-| `real_anki` | `anki`, a real `Collection` | `aqt.mw` only | ~10ms | anything that stores a value, runs a search, or writes |
-| `pytest-anki` | a running `AnkiQt` | nothing | ~1s + teardown | hook registration, `CollectionOp`, the real `addonManager` |
+| mode | module | what is real | what is stubbed | cost per test | use it for |
+|---|---|---|---|---|---|
+| stand-in | `anki_stubs` | nothing | all of `anki` and `aqt` | ~0 | pure functions that only pass notes around |
+| real collection | `real_anki` | `anki`, a real `Collection` | `aqt.mw` only | ~10ms | anything that stores a value, runs a search, or writes |
+| running Anki | `running_anki` + pytest-anki | a running `AnkiQt` | audio, deck-browser redraws | ~0.5s | hook registration, `CollectionOp`, the real `addonManager` |
 
 The root `conftest.py` chooses between the first two automatically: it prefers `real_anki`
 and falls back to `anki_stubs` when `anki`/`aqt`/PyQt6 are not installed. Tests do not opt
-in. The third mode is a separate directory, described at the bottom.
+in. The third mode lives in its own directory per addon (`<addon>/test_anki/`), described
+further down. All three run in one process, in one command.
+
+## Installing what the tests need
+
+Into the interpreter the tests run on — the system Python that `.vscode/settings.json`,
+`mypy.ini` and `pyrightconfig.json` point at, not the repo's `.venv`:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pip install --no-deps -r requirements-dev-nodeps.txt
+```
+
+The second step is `pytest-anki2` on its own. Its metadata pins `pytest-qt~=4.4.0`, and
+its `anki-XXXX` extras pin anki/aqt to a line's first release, so installing it normally
+would downgrade what the first step put in. `pip check` goes on reporting the pytest-qt pin
+afterwards; that is expected. Without `pytest-anki2` every test that needs `anki_session`
+is reported as skipped, with the install command as its reason, and everything else runs.
+
+`pytest-xdist` is optional and works: `python -m pytest -n 4`.
+
+## Running the suites
+
+```bash
+python -m pytest -q                              # everything in testpaths
+python -m pytest -q copy_anywhere/test           # one suite
+python -m pytest -q copy_anywhere/test_anki      # the running-Anki suite alone
+python -m pytest -q path/to/test_file.py::TestClass::test_name
+```
+
+A fresh clone does not need `python build.py link` first. Addon code imports shared code
+through `<addon>/shared/`, which only exists once `build.py` has materialised it, so where
+it is missing the root conftest registers `<addon>.shared` over `anki_shared/` itself.
+That view lets every shared package resolve, not just the declared ones;
+`python build.py check` is what catches an undeclared import.
 
 ## `anki_stubs` — the stand-in
 
@@ -62,24 +96,7 @@ call counter), `qt_offscreen`, and `rebind_mw`.
    `PyQt6.QtCore` fails to load its DLLs under `pytest-qt` and every test errors at
    collection.
 
-## Running the suites
-
-```bash
-python -m pytest -q                                        # the default suite
-python -m pytest -q copy_anywhere/test_anki -p no:cacheprovider   # the real-Anki suite
-```
-
-The real-Anki suite is deliberately **not** in `testpaths`. Its tests pass, but QtWebEngine
-segfaults during interpreter shutdown — after pytest prints its summary — so including it
-would make a green run report a crash. It needs `pytest-anki2` installed
-(`pip install pytest-anki2 --no-deps`) and skips itself when that is missing.
-
-Its `conftest.py` is where the cross-mode hazards are handled: `mw` is rebound onto every
-addon module and back again, and the hook lists are snapshotted and restored, because
-`_hooks` is a *class* attribute and a leaked `note_will_be_added` handler would fire inside
-every other suite's `col.add_note()`. Read that file's docstring before adding to it.
-
-## Writing a test that uses a collection
+### Writing a test that uses a collection
 
 `copy_anywhere/test/conftest.py` is the worked example: a fresh collection per test with a
 handful of note types and decks, a `RecordingLogger`, and a `media_dir`. Copy its shape
@@ -91,3 +108,96 @@ Those layers mutate the note objects they are handed and expect the caller to ru
 a re-fetched `col.get_note()` — that will read the unmodified row and the test will fail
 for a reason that has nothing to do with the behaviour under test. `copy_fields` itself is
 the one layer where re-fetching is the right assertion.
+
+## `running_anki` — a real `AnkiQt`, in the same process
+
+pytest-anki's `anki_session` fixture starts a real Anki per test. It is written for a
+process that runs nothing else, and here it shares one with the stub-`mw` suites, so
+`running_anki` supplies what makes that safe. Its module docstring explains each piece;
+in short:
+
+- `stub_mw_restored(packages, hooks)` — puts `aqt.mw`, every addon module's `mw`, and the
+  given hook lists back afterwards. `_hooks` is a *class* attribute, so a handler an init
+  function attached would otherwise fire inside every other suite's `col.add_note()`.
+- `main_window(anki_session, packages)` — loads the profile, points the addon's modules at
+  the real `mw`, silences the deck browser's webview redraws, keeps the profile from
+  starting an mpv audio player, and on exit waits for background ops and stops `mw`'s
+  repeating timers.
+- `addon_config(anki_session, package, base_config)` — a `write(**overrides)` that puts a
+  real config.json/meta.json pair where the real `AddonManager` reads them.
+
+### Adding running-Anki tests to another addon
+
+1. Create `<addon>/test_anki/` with an empty `__init__.py`. The name matters: `build.py`
+   excludes `test_anki` from the released package.
+2. Add the path to `testpaths` in `pytest.ini`.
+3. Write its `conftest.py` over the shared helpers. `copy_anywhere/test_anki/conftest.py`
+   is the worked example; the shape is:
+
+```python
+import pytest
+from aqt.gui_hooks import reviewer_did_answer_card  # the hooks your init functions touch
+
+from anki_shared.testing import running_anki
+
+ADDON_PACKAGE = "my_addon"
+REBOUND_PACKAGES = [ADDON_PACKAGE, "anki_shared"]
+HOOKS = [reviewer_did_answer_card]
+BASE_CONFIG = {...}  # what the addon's config.json ships
+
+
+@pytest.fixture(autouse=True)  # autouse and no arguments: it must wrap anki_session
+def restore_stub_mw():
+    with running_anki.stub_mw_restored(REBOUND_PACKAGES, HOOKS) as stub:
+        yield stub
+
+
+@pytest.fixture
+def real_mw(anki_session, restore_stub_mw):
+    with running_anki.main_window(anki_session, REBOUND_PACKAGES) as mw:
+        # per-test setup inside the loaded profile goes here
+        yield mw
+
+
+@pytest.fixture
+def addon_config(anki_session):
+    with running_anki.addon_config(anki_session, ADDON_PACKAGE, BASE_CONFIG) as write:
+        yield write
+```
+
+`restore_stub_mw` has to be autouse. It must be set up before `anki_session` so that it is
+torn down after it, and a test that happens to list `anki_session` before `real_mw` would
+otherwise get the opposite order.
+
+Do not guard the conftest with `pytest.importorskip("pytest_anki")`. A conftest under
+`testpaths` is loaded while pytest is still parsing its arguments, where a skip aborts the
+whole run instead of skipping anything. The repo plugin already marks every test that
+needs `anki_session` as skipped when pytest-anki2 is missing.
+
+## The shutdown guard
+
+Once a real Anki has run in a process, that process crashes on the way out: PyQt's own
+`atexit` handler destroys the `QApplication`, which has had QtWebEngine inside it, and dies
+with an access violation. Every test has passed and the summary is already printed, but
+the exit status is 139. It is not any addon's doing: it is pytest-anki's application being
+torn down by PyQt, which a test process has no need for.
+
+`pytest_plugin.py`, registered from the root conftest, unregisters that one handler at the
+end of any run in which a `QApplication` exists. Nothing else about exiting changes: the
+exit status is still pytest's own (1 for a failure, 2 for an interrupt or collection error,
+5 for nothing collected), pytest's temporary directories are still cleaned up, and
+`pytest.main()` callers and xdist workers are unaffected. A stub-only run creates no
+`QApplication` and is left alone entirely.
+
+It does not use `os._exit`, the obvious alternative, because that would skip every other
+`atexit` handler too — including pytest's own, which remove this run's lock on its
+`pytest-of-<user>/pytest-N` directory and prune old ones, so every run would leave ~90 MB
+behind for three days. `os._exit` remains only as the fallback for a future PyQt whose
+handler it cannot find.
+
+`ANKI_TEST_SHUTDOWN_GUARD=0` switches the guard off, to see the crash or debug Qt's own
+shutdown; `ANKI_TEST_SHUTDOWN_GUARD=exit` forces the `os._exit` fallback.
+
+Separately, `real_anki.qt_offscreen()` adds `--disable-gpu` to
+`QTWEBENGINE_CHROMIUM_FLAGS`. Offscreen, QtWebEngine's GPU process kept losing its context,
+and about one run in five died mid-test on it.
