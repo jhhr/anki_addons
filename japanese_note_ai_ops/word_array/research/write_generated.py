@@ -33,18 +33,8 @@ def fmt(arr: list, indent: int = 2) -> str:
 
 
 def open_decisions(an) -> list[str]:
-    notes = []
-    dropped = [
-        c.form
-        for c in an.candidates
-        if not c.proposal and not generator.keep_candidate(c, an.words)
-    ]
-    proposals = [c.form for c in an.candidates if c.proposal]
-    if dropped:
-        notes.append(f"- JMdict candidates dropped by keep_candidate: {dropped}")
-    if proposals:
-        notes.append(f"- noun-run proposals (not in JMdict): {proposals}")
-    return notes
+    refused = [c.form for c in an.candidates if not generator.is_word_match(c, an.words)]
+    return [f"- JMdict matches refused by is_word_match: {refused}"] if refused else []
 
 
 def main() -> None:

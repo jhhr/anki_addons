@@ -95,17 +95,57 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(find_word(arr, "私")[3], "わたし")
 
     def test_a_furigana_group_is_never_split_between_words(self):
-        # Sudachi splits 八紘一宇 into 八紘 + 一宇
+        # Sudachi cuts 八紘一宇 into two words, 八紘 + 一宇; they can only be its sub-words
         arr = self.generator.generate(self.examples[5][0])
         word = find_word(arr, "八紘一宇")
-        self.assertEqual(
-            (word[0], word[3], word[5]), ("八紘一宇[はっこういちう]", "はっこういちう", [])
-        )
+        self.assertEqual((word[0], word[3]), ("八紘一宇[はっこういちう]", "はっこういちう"))
+        self.assertEqual([s[0] for s in word[5]], ["八紘[はっこう]", "一宇[いちう]"])
 
     def test_multi_word_expressions_come_from_jmdict(self):
         arr = self.generator.generate(self.examples[11][0])
         expression = find_word(arr, "そう言えば")
         self.assertEqual([s[2] for s in expression[5]], ["そう", "言う"])
+
+    def test_a_jmdict_match_inside_another_nests_in_it(self):
+        arr = self.generator.generate(self.examples[5][0])
+        outer = find_word(arr, "様に成る")
+        self.assertEqual([s[2] for s in outer[5] if len(s) > 1], ["様に", "成る"])
+        self.assertEqual([s[2] for s in find_word(arr, "様に")[5]], ["様", "に"])
+
+    def test_of_two_crossing_matches_the_kanji_spelled_one_wins(self):
+        # 一つ and つの (角) share the つ; only 一つ is a word here
+        arr = self.generator.generate(self.examples[8][0])
+        self.assertEqual([s[2] for s in find_word(arr, "一つ")[5]], ["一", "つ"])
+        self.assertEqual(find_word(arr, "つの"), [])
+
+    def test_kana_homophones_across_a_particle_are_refused(self):
+        # は + 幾つ is also JMdict's はいくつ (背屈), and を + 持って its をもって (を以って)
+        for num, form in [(21, "はいくつ"), (17, "をもって")]:
+            with self.subTest(form=form):
+                arr = self.generator.generate(self.examples[num][0])
+                self.assertEqual(find_word(arr, form), [])
+
+    def test_a_kanjified_expression_matches_through_its_kana(self):
+        # JMdict writes だけの事はある; the note kanjified ある to 有る
+        arr = self.generator.generate("だけの 事[こと]は<k> 有[あ]って</k>")
+        self.assertEqual(find_word(arr, "だけの事は有る")[3], "だけのことはある")
+
+    def test_long_units_are_parents_of_their_short_units(self):
+        arr = self.generator.generate(self.examples[3][0])
+        self.assertEqual([s[2] for s in find_word(arr, "飛行機")[5]], ["飛行", "機"])
+        arr = self.generator.generate(self.examples[14][0])
+        self.assertEqual([s[2] for s in find_word(arr, "私達")[5] if len(s) > 1], ["私", "達"])
+
+    def test_words_decompose_into_jmdict_words_read_as_the_furigana_says(self):
+        arr = self.generator.generate(self.examples[23][0])
+        self.assertEqual([s[0] for s in find_word(arr, "耳元")[5]], [" 耳[みみ]", "元[もと]"])
+        # 最 and 近 are JMdict words too, but lone on'yomi kanji don't make sub-words
+        arr = self.generator.generate(self.examples[10][0])
+        self.assertEqual(find_word(arr, "最近")[5], [])
+
+    def test_sub_word_readings_drop_the_compounds_rendaku(self):
+        arr = self.generator.generate(self.examples[20][0])
+        self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])
 
 
 if __name__ == "__main__":

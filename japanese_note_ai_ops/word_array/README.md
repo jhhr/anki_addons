@@ -32,46 +32,85 @@ Status: phase 1 prototype, not wired into any op yet.
    `<k>` are reverted to their furigana reading first: `<k>` marks words that were kana before
    kanjify_sentence ran, and reading `遣[や]っ` as kanji gives 遣う (つかう), `為[さ]れ` gives
    なる, `為[す]る` before 際 gives ため. Tokenizing the original kana fixes most wrong lemmas.
-2. **Sudachi** (`SplitMode.C`), keeping each compound's `SplitMode.A` split for sub-words.
+2. **Sudachi** (`SplitMode.C`), keeping each long unit's `SplitMode.A` split for sub-words.
    `normalized_form` turns kana lemmas back into kanjified ones (する -> 為る, これ -> 此れ,
    くださる -> 下さる).
 3. **Grouping** morphemes into words: a verb or adjective plus its inflection chain (助動詞,
    て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words.
 4. **Furigana groups are never split between top-level words**, which repairs tokenizer cuts
    like 八紘|一宇 and 業|者.
-5. **Multi-word candidates**: n-grams of words that are JMdict entries (the last word also
-   tried deinflected: と言った -> と言う), and runs of adjacent nouns missing from JMdict
-   (声高々, 配役ミス) as proposals only.
-6. **`keep_candidate`** decides which candidates become words. It is a heuristic stand-in
-   following the old extract_words rules; see open decisions.
+5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,
+   as tokenized (the `<k>` kana) and with the last word deinflected (様に成った -> 様に成る).
+6. **Structure** (below).
 7. **Dictionary form and reading.** Readings come from the note's own furigana wherever it has
    it; inflected words take the JMdict reading of their lemma that agrees with the furigana stem.
+   A multi-word unit matched with its last word deinflected takes its dictionary form and
+   reading from its parts, in the note's spelling (様に成る / ようになる, not ようになる).
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
 by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. Jukujikun can't be split
-that way, so there the bracket stays whole on the last piece.
+that way, so there the bracket stays whole on the last piece. A sub-word's reading drops the
+rendaku of the compound it came from when JMdict has the plain reading (閏日 -> 日[び] -> ひ).
+
+## Structure
+
+Which words exist follows concrete rules; whether a word is worth matching to a note is the
+`"dont_match"` flag's call, not the generator's. So the rules err towards more words: nesting
+loses nothing, and the flag is what filters.
+
+**Multi-word units.** Every JMdict match becomes a parent with its words as sub-words
+(連れて行く, 様に成る, 先ずは, 何時まで, 足が竦む, 此れは), except where it is not a word of the
+text at all:
+
+- function words only (には, のだ, か+の read as 彼の);
+- found only through its kana, starting on a particle, and not spelled that way in JMdict:
+  は+幾つ read as はいくつ (背屈) or を+持って as をもって (を以って). The text's kana must
+  match one of the entry's spellings, with the same kanji or kanjified kana between them, so
+  だけの事は有って still matches だけの事はある.
+
+A match inside another nests in it (様に成る -> 様に + 成る, 様に -> 様 + に). Of two that cross,
+the longer wins, then the one found by its kanji spelling, then the earlier (一つ over つの).
+Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separate words
+(声 高々, 配役 ミス, 出展 拒否).
+
+**Sub-words of one word**, from either
+
+- Sudachi's short units of a long unit, always: 飛行機 -> 飛行 + 機, 生徒会 -> 生徒 + 会,
+  私達 -> 私 + 達, 遂行能力 -> 遂行 + 能力, 幾つ -> 幾 + つ; or
+- a 2-way JMdict decomposition of a word Sudachi has as one unit: 耳元 -> 耳 + 元,
+  頭ごなし -> 頭 + ごなし, 正に -> 正 + に, 大空 -> 大 + 空. The split must fall where the
+  furigana splits per kanji, each piece must be a JMdict entry with the reading the note gives
+  it (the second may carry rendaku), and no piece may be a lone kanji read in on'yomi: those
+  are mostly bound morphemes, and allowing them would split every on'yomi compound (最|近,
+  言|語).
+
+A furigana group cut by the tokenizer is one word when JMdict has the whole read that way
+(八紘一宇, 業者; its sub-words then follow the rules above); otherwise its pieces are the words
+(天|高く, 軽音|部), unless they are all lone on'yomi kanji, i.e. a name cut into characters
+(里|樹).
 
 ## Results
 
-Against the 23 hand-converted extract_words examples (`research/gold_examples.md`):
+Against the 23 hand-converted extract_words examples (`research/gold_examples.md`), whose
+structure was revised to follow the rules above:
 
 | Measure | Result |
 | --- | --- |
-| top-level words exactly as in the gold | 93.1% (precision 95.6%) |
-| gold words among the generated candidates (a perfect keep/drop step) | 98.3% |
-| gold sub-words among the candidates | 97.9% |
-| dict_form / reading on matched words | 98.9% / 98.6% |
-| sub-word raw_text equal to the gold's | 34/35 (the other is a gold slip) |
+| top-level words exactly as in the gold | 100% (287/287) |
+| sub-words exactly as in the gold | 99.0% (precision 98.1%): 肥ゆる, a classical form |
+| dict_form / reading on matched words | 99.0% / 98.6% |
+| sub-word raw_text equal to the gold's | 102/102 |
 | speed | ~3 ms per sentence, after ~1.5 s loading Sudachi and the JMdict index |
 
+Top-level agreement says the gold and the rules agree, not that the rules are right: the gold
+was revised to them. The rules came from these same examples, so accuracy on the collection at
+large is not measured yet.
+
 On those 23 plus the 22 kanjify_sentence examples: every array reconstructs its sentence, and
-of 690 word positions 21 give unbalanced html when wrapped in `<b>`, all but one fixed by
+of 748 word positions 34 give unbalanced html when wrapped in `<b>`, all but one fixed by
 `use_tag_cleaning.apply_tag_fixes`. The one left is an expression ending inside a `<k>` span
 (`<k> 優劣[ゆうれつ]</k>を<k> 付[つ]け 難[がた]い</k>`), which needs the highlighter to
 close and reopen the `<k>` around `</b>`.
-
-The rules were tuned on these same examples, so accuracy on the collection at large is not
-measured yet.
 
 ## Tokenizers considered
 
@@ -90,17 +129,12 @@ From [awesome-japanese-nlp-resources](https://github.com/taishi-i/awesome-japane
 
 ## Open decisions
 
-- **Structure vs review.** The design is moving to words that exist by concrete linguistic
-  rules, with a separate AI-set flag for whether each is reviewed. `keep_candidate` still
-  makes semantic calls the old way and should become a structural rule once that is settled.
-  Since nesting loses nothing, one candidate rule is that every JMdict multi-word match becomes
-  a parent (様に成る, 先ずは, 何時まで, 足が竦む, 私達), with the review flag doing the
-  selecting. That changes the gold, which keeps those apart today.
-- **Which sub-words exist.** The gold splits 耳元, 世界中 and 頭ごなし but not 飛行機, 生徒会,
-  照れ屋 or 軽音部. That is study value, not structure. `decomposition_subs` proposes 2-way
-  JMdict splits but over-generates on on'yomi compounds (最|近), so it isn't emitted.
-- **Noun forms as verbs** (囁き -> 囁く) are right for the gold but wrong for lexicalized nouns
-  (積り).
+- **Surface vs deinflected match.** A JMdict entry for the text as written wins over one for
+  its dictionary form: 秋と言った物 gives と言った (conj, "such as") where the gold has と言う,
+  but そう言えば stays そう言えば rather than そう言う.
+- **Nesting depth.** Matches nest literally, so 無しには is 無しに + は with 無しに = 無し + に.
+- **Noun forms as verbs** (囁き -> 囁く, 違い -> 違う as a sub-word of 違い無い) are right for
+  the gold but wrong for lexicalized nouns (積り).
 
 Known limitations: classical forms (肥ゆる tokenizes as 肥 + ゆる); short kana after `<k>`
 reversion can confuse Sudachi (`<k> 四[し]の 五[ご]の` as しのごの); colloquial contractions

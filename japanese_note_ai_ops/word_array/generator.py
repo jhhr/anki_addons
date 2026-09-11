@@ -1,17 +1,20 @@
-"""Word array generator: Sudachi + rule-based grouping + JMdict multi-word candidates.
+"""Word array generator: Sudachi + rule-based grouping + JMdict multi-word units.
 
 Output elements are [raw_text, part_of_speech, dict_form, reading, match_data, sub_words];
 tags, punctuation and other non-word text are single-element arrays. Concatenating the top-level
 raw_text values gives back the sentence without <b> tags.
 
+Which words exist is decided by concrete rules only; whether a word is worth matching to a note
+is left to the "dont_match" flag, so the rules err towards more parents and more sub-words.
+
 Stages
   1. text_map: strip tags and furigana, revert <k> words to kana -> natural text
-  2. Sudachi, SplitMode.C, with the SplitMode.A split of each compound kept for sub-words
+  2. Sudachi, SplitMode.C, with the SplitMode.A split of each long unit kept for sub-words
   3. group morphemes into words (a verb/adjective plus its inflection chain)
   4. merge words whose boundary would cut a furigana group (八紘|一宇 -> 八紘一宇)
-  5. multi-word candidates: JMdict n-grams (last word also deinflected), and runs of adjacent
-     nouns missing from JMdict (proposals only)
-  6. choose candidates (keep_candidate: heuristic stand-in, see README)
+  5. multi-word candidates: JMdict n-grams (last word also deinflected)
+  6. structure: every JMdict match that is a word of the text becomes a parent, nested when
+     one contains another; words the tokenizer has as one unit get sub-words from JMdict
   7. dictionary form, reading and part of speech per word; readings come from the note's own
      furigana wherever it has them
 """
@@ -19,6 +22,7 @@ Stages
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
@@ -62,8 +66,10 @@ class Word:
     kind: str = "word"  # word | punct | merged | expression
     subs: list[Word] = field(default_factory=list)
     jm_pos: frozenset[str] = frozenset()
-    jm_form: str = ""
+    jm_form: str = ""  # dictionary form known up front: a JMdict match, or a furigana merge
     jm_readings: tuple[str, ...] = ()
+    # expression only: JMdict has it as written here, rather than with the last word deinflected
+    surface_match: bool = False
     followed_by_verb: bool = False
     followed_by_suru: bool = False
 
@@ -91,7 +97,9 @@ class Candidate:
     form: str
     readings: tuple[str, ...]
     pos: frozenset[str]
-    proposal: bool = False  # not a JMdict entry: only the decision step could accept it
+    surface: bool  # matched as written, not with the last word deinflected
+    written: str  # the text's own spelling of what was looked up
+    spellings: tuple[str, ...]  # the kanji spellings of the JMdict entries matched
 
 
 @dataclass
@@ -101,9 +109,6 @@ class Analysis:
     candidates: list[Candidate]
     final: list[Word]
     array: list[list]
-
-    def sub_word_proposals(self) -> list[tuple[int, int]]:
-        return [span for w in self.words for span in decomposition_subs(self.text_map, w)]
 
 
 # --- 2. tokenizing -------------------------------------------------------------------------
@@ -156,21 +161,7 @@ ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
 PARTICLE_COPULA = ("な", "に", "で")
-# Suffixes attaching productively are their own top-level words (様, 達: gold ex. 6)
-PRODUCTIVE_SUFFIXES = {
-    "様",
-    "さま",
-    "達",
-    "たち",
-    "さん",
-    "君",
-    "くん",
-    "ちゃん",
-    "殿",
-    "ども",
-    "共",
-    "ら",
-}
+FUNCTION_POS = ("助詞", "助動詞")
 
 
 def is_copula(m: Morph) -> bool:
@@ -211,28 +202,21 @@ def group(morphs: list[Morph]) -> list[list[Morph]]:
 
 
 def _compound_subs(g: list[Morph]) -> list[Word]:
-    """Sub-words of a Sudachi compound; the inflection after it goes on the last sub-word."""
+    """Sub-words of a Sudachi long unit; the inflection after it goes on the last sub-word."""
     parts = group(g[0].subs)
+    if len(parts) < 2:
+        return []
     parts[-1] = parts[-1] + g[1:]
     return [Word(p) for p in parts]
 
 
 def to_words(morphs: list[Morph]) -> list[Word]:
+    """A Sudachi long unit is one word, and its short units, when it has several, are its
+    sub-words: 飛行機 -> 飛行 + 機, 私達 -> 私 + 達, 遂行能力 -> 遂行 + 能力."""
     words: list[Word] = []
     for g in group(morphs):
         kind = "punct" if g[0].pos[0] in ("補助記号", "空白") else "word"
-        head = g[0]
-        if not head.subs:
-            words.append(Word(g, kind=kind))
-            continue
-        subs = _compound_subs(g)
-        last_sub = head.subs[-1]
-        if last_sub.pos[0] == "接尾辞" and last_sub.surface in PRODUCTIVE_SUFFIXES:
-            words.extend(subs)  # 私達 -> 私 + 達
-        elif head.pos[0] in ("名詞", "代名詞") and len(g) == 1 and not jmdict.lookup(head.surface):
-            words.extend(subs)  # compound unknown to JMdict (遂行能力): its parts are the words
-        else:
-            words.append(Word(g, kind=kind, subs=subs))
+        words.append(Word(g, kind=kind, subs=_compound_subs(g) if g[0].subs else []))
     return words
 
 
@@ -240,44 +224,62 @@ def to_words(morphs: list[Morph]) -> list[Word]:
 
 
 def merge_cut_groups(tm: TextMap, words: list[Word]) -> list[Word]:
-    """A furigana group is never split between top-level words. When the merged text is a JMdict
-    word read as the furigana says (業|者, 八紘|一宇) the tokenizer simply split it wrong and the
-    pieces aren't sub-words; otherwise (天|高く, 軽音|部, 馬|肥 which JMdict has as うまごやし)
-    they are."""
+    """A furigana group is never split between top-level words.
+
+    When the merged text is a JMdict word read as the furigana says (業|者, 八紘|一宇), the
+    tokenizer split a word: the merge is one word, whose sub-words are decided in step 6 like
+    any other's. Otherwise (天|高く, 軽音|部, 馬|肥 which JMdict has as うまごやし) the pieces are
+    the words and the merge only holds them together - unless every piece is a lone kanji
+    read in on'yomi, a name cut into its characters (里|樹), which has no pieces to keep.
+    """
     out: list[Word] = []
     for w in words:
-        if out and not tm.boundary_ok(w.start):
-            prev = out.pop()
-            pieces = (prev.subs if prev.kind == "merged" else [prev]) + [w]
-            merged = Word(prev.morphs + w.morphs, kind="merged", subs=pieces)
-            written = tm.written_form(merged.start, merged.end)
-            hits = jmdict.lookup(written)
-            merged.jm_form = written
-            merged.jm_readings = tuple(r for rs, _ in hits for r in rs)
-            merged.jm_pos = frozenset(p for _, ps in hits for p in ps)
-            reading = to_hiragana(tm.surface_reading(merged.start, merged.end))
-            if reading in (to_hiragana(r) for r in merged.jm_readings):
-                merged.subs = []
-            out.append(merged)
-        else:
+        if not out or tm.boundary_ok(w.start):
             out.append(w)
+            continue
+        prev = out.pop()
+        pieces = (prev.subs if prev.kind == "merged" else [prev]) + [w]
+        morphs = prev.morphs + w.morphs
+        start, end = morphs[0].start, morphs[-1].end
+        written = tm.written_form(start, end)
+        hits = jmdict.lookup(written)
+        reading = to_hiragana(tm.surface_reading(start, end))
+        if any(reading == to_hiragana(r) for _, rs, _ in hits for r in rs):
+            out.append(
+                Word(
+                    morphs,
+                    jm_form=written,
+                    jm_readings=tuple(r for _, rs, _ in hits for r in rs),
+                    jm_pos=frozenset(p for _, _, ps in hits for p in ps),
+                )
+            )
+        else:
+            keep = not all(tm.is_onyomi_kanji(p.start, p.end) for p in pieces)
+            out.append(Word(morphs, kind="merged", subs=pieces if keep else [], jm_form=written))
     return out
 
 
 # --- 5. candidates -------------------------------------------------------------------------
 
 
-def _forms(tm: TextMap, ws: list[Word]) -> list[str]:
+def _forms(tm: TextMap, ws: list[Word]) -> list[tuple[str, str, bool]]:
+    """(form, the text's own spelling of it, as written) to look up: the text as written and
+    as tokenized, then with the last word deinflected (と言った -> と言う)."""
     written = [tm.written_form(w.start, w.end) for w in ws]
     natural = [w.natural for w in ws]
-    forms = ["".join(written), "".join(natural)]
+    as_written = "".join(written)
+    forms = [(as_written, as_written, True), ("".join(natural), as_written, True)]
     last = ws[-1]
     if last.head.pos[0] in INFLECTING:
+        deinflected = "".join(written[:-1]) + dict_form(tm, last)
         forms += [
-            "".join(written[:-1]) + dict_form(tm, last),
-            "".join(natural[:-1]) + last.head.lemma,
+            (deinflected, deinflected, False),
+            ("".join(natural[:-1]) + last.head.lemma, deinflected, False),
         ]
-    return list(dict.fromkeys(forms))
+    unique: dict[str, tuple[str, str, bool]] = {}
+    for form in forms:
+        unique.setdefault(form[0], form)
+    return list(unique.values())
 
 
 def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[Candidate]:
@@ -288,116 +290,193 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
         for j in range(i + 2, min(len(words), i + max_len) + 1):
             if words[j - 1].kind == "punct":
                 break
-            for form in _forms(tm, words[i:j]):
+            for form, written, surface in _forms(tm, words[i:j]):
                 hits = jmdict.lookup(form)
                 if hits:
-                    readings = tuple(r for rs, _ in hits for r in rs)
-                    pos = frozenset(p for _, ps in hits for p in ps)
-                    cands.append(Candidate(i, j, form, readings, pos))
+                    cands.append(
+                        Candidate(
+                            i,
+                            j,
+                            form,
+                            readings=tuple(r for _, rs, _ in hits for r in rs),
+                            pos=frozenset(p for _, _, ps in hits for p in ps),
+                            surface=surface,
+                            written=written,
+                            spellings=tuple(k for ks, _, _ in hits for k in ks),
+                        )
+                    )
                     break
     return cands
 
 
-CONTENT_POS = ("名詞", "代名詞", "形状詞", "接尾辞")
+# --- 6. structure --------------------------------------------------------------------------
+
+SCRIPT_CHUNK_RE = re.compile(r"[一-龯㐀-䶿々]+|[^一-龯㐀-䶿々]+")
 
 
-def adjacent_content_candidates(tm: TextMap, words: list[Word]) -> list[Candidate]:
-    """Runs of adjacent nouns (声高々, 配役ミス, 遂行能力): proposals only, never auto-accepted."""
-    cands = []
-    i = 0
-    while i < len(words):
-        j = i
-        while (
-            j < len(words)
-            and words[j].kind != "punct"
-            and len(words[j].morphs) == 1
-            and words[j].head.pos[0] in CONTENT_POS
-        ):
-            j += 1
-        for a in range(i, j - 1):
-            for b in range(a + 2, j + 1):
-                form = tm.written_form(words[a].start, words[b - 1].end)
-                cands.append(Candidate(a, b, form, (), frozenset(), proposal=True))
-        i = max(j, i + 1)
-    return cands
+def spelled_alike(written: str, spelling: str) -> bool:
+    """Whether a JMdict spelling can be how the text writes a word: the text's kana in the
+    same order, and between them the same kanji or kana the text has kanjified. だけの事は有る
+    is だけの事はある; を持って is not を以って, and は幾つ is not 背屈."""
+
+    def agree(kanji: str, other: str) -> bool:
+        return other == kanji or bool(kanji and other and not KANJI_RE.search(other))
+
+    pos, kanji = 0, ""
+    for chunk in SCRIPT_CHUNK_RE.findall(written):
+        if KANJI_RE.match(chunk):
+            kanji = chunk
+            continue
+        found = spelling.find(chunk, pos)
+        if found < 0 or not agree(kanji, spelling[pos:found]):
+            return False
+        pos, kanji = found + len(chunk), ""
+    return agree(kanji, spelling[pos:])
 
 
-def decomposition_subs(tm: TextMap, w: Word) -> list[tuple[int, int]]:
-    """2-way splits of a single word into JMdict words (耳元 -> 耳|元, 正に -> 正|に): sub-word
-    proposals as natural spans. Not emitted; over-generates on on'yomi compounds (最|近)."""
-    if len(w.morphs) != 1 or w.subs:
-        return []
-    written = tm.written_form(w.start, w.end)
-    if len(written) != len(w.natural) or len(written) < 2:
-        return []
-    out = []
-    for k in range(1, len(written)):
-        left, right = written[:k], written[k:]
-        if jmdict.lookup(left) and (jmdict.lookup(right) or not KANJI_RE.search(right)):
-            out += [(w.start, w.start + k), (w.start + k, w.end)]
-    return out
-
-
-# --- 6. candidate choice -------------------------------------------------------------------
-
-
-def keep_candidate(c: Candidate, words: list[Word]) -> bool:
-    """Heuristic stand-in for the keep/drop decision, following the old extract_words rules."""
-    if c.proposal:
-        return False
+def is_word_match(c: Candidate, words: list[Word]) -> bool:
+    """Whether a JMdict match is a word of this text at all - not whether it is worth
+    studying, which the dont_match flag decides."""
     ws = words[c.i : c.j]
-    first, last = ws[0].head, ws[-1].head
-    if first.pos[0] == "助詞" and not KANJI_RE.search(c.form):
-        return False  # kana-only match starting on a particle (は+いくつ -> はいくつ)
-    if all(w.head.pos[0] in ("助詞", "助動詞") for w in ws):
-        return False
-    if last.pos[0] in ("助詞", "助動詞") and "adv" not in c.pos and "conj" not in c.pos:
-        return False  # 様に, には: words ending in particles
-    if (
-        first.pos[0] == "助詞"
-        and c.form.startswith(("に", "で"))
-        and "exp" in c.pos
-        and c.j - c.i == 2
-    ):
-        return False  # に於いて
-    if any(w.morphs[-1].surface in ("て", "で") and w.head.pos[0] == "動詞" for w in ws[:-1]):
-        return False  # て-form + verb (連れて行く) stays two words
+    if all(w.head.pos[0] in FUNCTION_POS for w in ws):
+        return False  # function words only: には, のだ, か+の read as 彼の
+    if ws[0].head.pos[0] == "助詞" and not KANJI_RE.search(c.form):
+        # Found only by its kana, reaching across a particle: a homophone (は+いくつ read as
+        # 背屈) unless JMdict spells the entry the way the text does. The text has often
+        # kanjified what JMdict keeps in kana (有る), so only its kana are compared.
+        return KANJI_RE.search(c.written) is not None and any(
+            spelled_alike(c.written, s) for s in c.spellings
+        )
     return True
 
 
-def apply_candidates(words: list[Word], cands: list[Candidate]) -> list[Word]:
-    """Greedy longest-first, non-overlapping merge of the kept candidates."""
-    taken = [False] * len(words)
-    by_start: dict[int, Candidate] = {}
-    for c in sorted(cands, key=lambda c: -(c.j - c.i)):
-        if any(taken[c.i : c.j]) or not keep_candidate(c, words):
+def _crosses(a: Candidate, b: Candidate) -> bool:
+    return a.i < b.i < a.j < b.j or b.i < a.i < b.j < a.j
+
+
+def choose_matches(cands: list[Candidate], words: list[Word]) -> list[Candidate]:
+    """Every JMdict match that is a word of the text becomes a parent. One inside another
+    nests in it (様に in 様に成る); of two that cross, the longer wins, then the one found by
+    its kanji spelling, then the earlier (一つ over つの)."""
+    chosen: list[Candidate] = []
+    for c in sorted(cands, key=lambda c: (c.i - c.j, not KANJI_RE.search(c.form), c.i)):
+        if not is_word_match(c, words):
             continue
-        by_start[c.i] = c
-        taken[c.i : c.j] = [True] * (c.j - c.i)
-    out = []
-    k = 0
-    while k < len(words):
-        chosen = by_start.get(k)
-        if chosen is None:
+        if any(_crosses(c, d) or (c.i, c.j) == (d.i, d.j) for d in chosen):
+            continue
+        chosen.append(c)
+    return chosen
+
+
+def nest(words: list[Word], chosen: list[Candidate], lo: int = 0, hi: int = -1) -> list[Word]:
+    """The words in [lo, hi) with the chosen matches among them as parents, recursively."""
+    hi = len(words) if hi < 0 else hi
+    inside = sorted((c for c in chosen if lo <= c.i and c.j <= hi), key=lambda c: (c.i, c.i - c.j))
+    out: list[Word] = []
+    k = lo
+    while k < hi:
+        top = next((c for c in inside if c.i == k), None)
+        if top is None:
             out.append(words[k])
             k += 1
             continue
-        c = chosen
-        parts = words[c.i : c.j]
-        # A furigana merge inside the expression is no word of its own: list its pieces
+        inner = [c for c in inside if c is not top and top.i <= c.i and c.j <= top.j]
+        parts = nest(words, inner, top.i, top.j)
+        # A furigana merge that is no word of its own (天|高く) lists its pieces
         subs = [s for p in parts for s in (p.subs if p.kind == "merged" and p.subs else [p])]
         out.append(
             Word(
                 [m for p in parts for m in p.morphs],
                 kind="expression",
                 subs=subs,
-                jm_pos=c.pos,
-                jm_form=c.form,
-                jm_readings=c.readings,
+                jm_pos=top.pos,
+                jm_form=top.form,
+                jm_readings=top.readings,
+                surface_match=top.surface,
             )
         )
-        k = c.j
+        k = top.j
     return out
+
+
+# JMdict POS -> the Sudachi POS a decomposed piece is labelled with, in order of preference for
+# the first piece and for the second (大 as a prefix, 屋 as a suffix)
+PIECE_POS = {
+    "pref": ("接頭辞",),
+    "suf": ("接尾辞",),
+    "n-suf": ("接尾辞",),
+    "ctr": ("接尾辞",),
+    "prt": ("助詞",),
+    "pn": ("代名詞",),
+    "adj-na": ("形状詞",),
+    "adv": ("副詞",),
+    "n": ("名詞", "普通名詞"),
+}
+FIRST_PIECE_POS = ("pref", "pn", "n", "adj-na", "adv", "prt")
+SECOND_PIECE_POS = ("prt", "suf", "n-suf", "ctr", "n", "pn", "adj-na", "adv")
+NOT_DECOMPOSED_POS = INFLECTING + FUNCTION_POS + ("補助記号", "空白")
+
+
+def unvoiced(kana: str) -> str:
+    """Undo rendaku on the first kana: ぞら -> そら, ごなし -> こなし."""
+    return unicodedata.normalize("NFD", kana[:1])[:1] + kana[1:] if kana else kana
+
+
+def _piece(tm: TextMap, start: int, end: int, second: bool) -> Optional[Word]:
+    """Natural span [start, end) as a sub-word, if JMdict has it with the reading the note
+    gives it (a second piece may be voiced by rendaku) and it isn't a lone on'yomi kanji."""
+    if tm.is_onyomi_kanji(start, end):
+        return None
+    written = tm.written_form(start, end)
+    reading = to_hiragana(tm.surface_reading(start, end))
+    if KANJI_RE.search(reading):
+        return None  # no reading of its own in the furigana to check against
+    readings = {reading, unvoiced(reading)} if second else {reading}
+    forms = [written, unvoiced(written)] if second and not KANJI_RE.search(written) else [written]
+    codes = {
+        p
+        for form in dict.fromkeys(forms)
+        for _, rs, ps in jmdict.lookup(form)
+        if readings & {to_hiragana(r) for r in rs}
+        for p in ps
+    }
+    code = next((c for c in (SECOND_PIECE_POS if second else FIRST_PIECE_POS) if c in codes), None)
+    if code is None:
+        return None
+    natural = tm.natural[start:end]
+    return Word([Morph(start, end, natural, PIECE_POS[code], natural, written, reading)])
+
+
+def decompose(tm: TextMap, w: Word) -> list[Word]:
+    """Two JMdict words making up a word the tokenizer has as one unit: 耳元 -> 耳 + 元,
+    頭ごなし -> 頭 + ごなし, 正に -> 正 + に. The split falls where the furigana's reading
+    splits per kanji, and each piece must pass _piece. Lone on'yomi kanji are refused because
+    they are mostly bound morphemes: allowing them splits every on'yomi compound (最|近, 言|語)."""
+    if w.kind != "word" or w.subs or (len(w.morphs) > 1 and not w.jm_form):
+        return []
+    if w.head.pos[0] in NOT_DECOMPOSED_POS or w.head.pos[:2] in (
+        ("名詞", "固有名詞"),
+        ("名詞", "数詞"),
+    ):
+        return []
+    if not KANJI_RE.search(tm.written_form(w.start, w.end)):
+        return []
+    for split in range(w.start + 1, w.end):
+        if not tm.can_split(split):
+            continue
+        first = _piece(tm, w.start, split, second=False)
+        second = first and _piece(tm, split, w.end, second=True)
+        if first and second:
+            return [first, second]
+    return []
+
+
+def add_decompositions(tm: TextMap, words: list[Word]) -> None:
+    for w in words:
+        if w.subs:
+            add_decompositions(tm, w.subs)
+        else:
+            w.subs = decompose(tm, w)
 
 
 # --- 7. dictionary form, reading, part of speech -------------------------------------------
@@ -445,6 +524,12 @@ def noun_form_verb(written: str, w: Word) -> Optional[str]:
 
 
 def dict_form(tm: TextMap, w: Word) -> str:
+    if w.kind == "expression":
+        # In the note's spelling, whichever spelling JMdict matched (様に成る, not ようになる)
+        if w.surface_match:
+            return tm.written_form(w.start, w.end)
+        last = w.subs[-1]
+        return tm.written_form(w.start, last.start) + dict_form(tm, last)
     if w.jm_form:
         return w.jm_form
     head = w.head
@@ -526,19 +611,35 @@ def number_reading(num: str) -> str:
     return out + DIGIT_R[n]
 
 
+def _furigana_reading(tm: TextMap, start: int, end: int, morphs: list[Morph]) -> str:
+    furi = to_hiragana(tm.surface_reading(start, end))
+    if KANJI_RE.search(furi):
+        # Kanji without furigana, or part of a group that can't be split: Sudachi's reading
+        furi = "".join(m.reading for m in morphs)
+    return furi
+
+
 def dict_reading(tm: TextMap, w: Word) -> str:
     head = w.head
     if re.fullmatch(r"\d+", w.natural):
         return number_reading(w.natural)
     if is_copula(head):
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
-    furi = to_hiragana(tm.surface_reading(w.start, w.end))
-    if KANJI_RE.search(furi):
-        # Kanji without furigana, or part of a group that can't be split: Sudachi's reading
-        furi = "".join(m.reading for m in w.morphs)
+    if w.kind == "expression" and not w.surface_match:
+        last = w.subs[-1]
+        before = [m for m in w.morphs if m.end <= last.start]
+        return _furigana_reading(tm, w.start, last.start, before) + dict_reading(tm, last)
+    furi = _furigana_reading(tm, w.start, w.end, w.morphs)
     lemma = dict_form(tm, w)
-    if lemma == tm.written_form(w.start, w.end):
-        return furi  # uninflected: the note's furigana is the reading
+    written = tm.written_form(w.start, w.end)
+    if lemma == written:
+        # Uninflected: the note's furigana is the reading, less any rendaku from the compound
+        # the word was split out of (閏日 -> 日[び] -> ひ)
+        if KANJI_RE.search(written) and unvoiced(furi) != furi:
+            known = {to_hiragana(r) for r in jmdict.readings(written)}
+            if furi not in known and unvoiced(furi) in known:
+                return unvoiced(furi)
+        return furi
     if head.lemma == "する" and lemma.endswith("れる"):
         return "される"
     if head.lemma in ("来る", "くる") and head.surface in ("来", "き", "こ", "く", "来る", "くる"):
@@ -580,7 +681,7 @@ JM_POS_MAP = [
 
 
 def pos_label(w: Word, prev: Optional[Word]) -> str:
-    if w.kind == "expression":
+    if w.kind == "expression" or w.jm_pos:  # a JMdict match, or a furigana merge JMdict has
         for code, label in JM_POS_MAP:
             if any(p == code or (code == "v" and p.startswith("v")) for p in w.jm_pos):
                 return label
@@ -651,8 +752,9 @@ def analyze(sentence: str) -> Analysis:
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun
-    cands = jmdict_candidates(tm, words) + adjacent_content_candidates(tm, words)
-    final = apply_candidates(words, cands)
+    cands = jmdict_candidates(tm, words)
+    final = nest(words, choose_matches(cands, words))
+    add_decompositions(tm, final)
     return Analysis(tm, words, cands, final, _emit(tm, final, 0, len(tm.raw)))
 
 

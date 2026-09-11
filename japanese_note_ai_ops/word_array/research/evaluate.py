@@ -2,8 +2,8 @@
 
 Spans are compared in plain written-text coordinates (tags, furigana and spaces removed), so raw
 differences like tag placement don't hide agreement. "Reachable" counts gold words that exist
-anywhere the tokenizer stage proposed them (words, compound splits, JMdict candidates, noun-run
-proposals, decomposition proposals): what a perfect keep/drop step could produce.
+anywhere the rule stages produced them (words, sub-words, every JMdict candidate including the
+ones the structural filters refused): what the rules could produce with different filters.
 
     python word_array/research/evaluate.py [-q]
 """
@@ -52,8 +52,6 @@ def reachable_spans(an) -> set[tuple[int, int]]:
         add_word(w)
     for c in an.candidates:
         out.add(written_span(tm, words[c.i].start, words[c.j - 1].end))
-    for s, e in an.sub_word_proposals():
-        out.add(written_span(tm, s, e))
     return out
 
 
@@ -68,6 +66,7 @@ def main(verbose: bool) -> None:
         g_top = {(s, e): el for d, s, e, el in g_all if d == 0}
         s_top = {(s, e): el for d, s, e, el in s_all if d == 0}
         g_sub = {(s, e) for d, s, e, _ in g_all if d > 0}
+        s_sub = {(s, e) for d, s, e, _ in s_all if d > 0}
         reach = reachable_spans(an) | {(s, e) for _, s, e, _ in s_all}
 
         hit = g_top.keys() & s_top.keys()
@@ -76,6 +75,8 @@ def main(verbose: bool) -> None:
         tot["top_hit"] += len(hit)
         tot["top_reach"] += len(g_top.keys() & reach)
         tot["gold_sub"] += len(g_sub)
+        tot["sys_sub"] += len(s_sub)
+        tot["sub_hit"] += len(g_sub & s_sub)
         tot["sub_reach"] += len(g_sub & reach)
         for k in hit:
             ge, se = g_top[k], s_top[k]
@@ -96,11 +97,10 @@ def main(verbose: bool) -> None:
                 unreach = sorted(g_top.keys() - reach)
                 if unreach:
                     print("  gold words not reachable:", [plain[s:e] for s, e in unreach])
-            sub_unreach = sorted(g_sub - reach)
-            if sub_unreach:
-                print(
-                    f"  #{num} gold sub-words not reachable:", [plain[s:e] for s, e in sub_unreach]
-                )
+            sub_miss, sub_extra = sorted(g_sub - s_sub), sorted(s_sub - g_sub)
+            if sub_miss or sub_extra:
+                print(f"  #{num} sub-words gold only:", [plain[s:e] for s, e in sub_miss])
+                print(f"  #{num} sub-words generated only:", [plain[s:e] for s, e in sub_extra])
 
     def pct(a: str, b: str) -> str:
         return f"{tot[a]}/{tot[b]} = {tot[a] / tot[b]:.1%}"
@@ -110,6 +110,9 @@ def main(verbose: bool) -> None:
         f"top-level exact span: recall {pct('top_hit', 'gold_top')}, precision {pct('top_hit', 'sys_top')}"
     )
     print(f"top-level reachable (perfect keep/drop): {pct('top_reach', 'gold_top')}")
+    print(
+        f"sub-words exact span: recall {pct('sub_hit', 'gold_sub')}, precision {pct('sub_hit', 'sys_sub')}"
+    )
     print(f"sub-words reachable: {pct('sub_reach', 'gold_sub')}")
     print(f"dict_form on matched spans: {pct('lemma_ok', 'top_hit')}")
     print(f"reading on matched spans:   {pct('reading_ok', 'top_hit')}")

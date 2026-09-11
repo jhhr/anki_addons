@@ -17,9 +17,11 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "user_files" / "jmdict"
 JMDICT_GZ = DATA_DIR / "JMdict_e.gz"
 INDEX_PICKLE = DATA_DIR / "jmdict_index.pkl"
 # Bumped whenever the index's shape changes, so an old pickle is rebuilt instead of misread
-INDEX_FORMAT = 1
+INDEX_FORMAT = 2
 
-Entry = tuple[tuple[str, ...], frozenset[str]]  # (readings, POS codes like "n", "exp", "v5r")
+# (kanji spellings, readings, POS codes like "n", "exp", "v5r"). Plain tuples: a NamedTuple
+# would pickle under this module's package name, which differs between Anki and the scripts.
+Entry = tuple[tuple[str, ...], tuple[str, ...], frozenset[str]]
 
 # JMdict writes POS as DTD entities (&n;, &v5r;). Replaced by their names before parsing, as
 # the codes are what the index keeps; the DTD itself is skipped.
@@ -52,13 +54,13 @@ def build(gz_path: Path = JMDICT_GZ) -> dict[str, list[Entry]]:
                 line, in_body = line[start:], True
             parser.feed(ENTITY_RE.sub(r"\1", line))
             for _, el in parser.read_events():
-                if el.tag != "entry":
+                if not isinstance(el, ET.Element) or el.tag != "entry":
                     continue
-                kebs = [k.text for k in el.iter("keb") if k.text]
+                kebs = tuple(k.text for k in el.iter("keb") if k.text)
                 rebs = tuple(r.text for r in el.iter("reb") if r.text)
                 pos = frozenset(p.text for p in el.iter("pos") if p.text)
-                for form in kebs + list(rebs):
-                    index.setdefault(form, []).append((rebs, pos))
+                for form in kebs + rebs:
+                    index.setdefault(form, []).append((kebs, rebs, pos))
                 el.clear()
     parser.close()
     return index
@@ -85,8 +87,8 @@ def lookup(form: str) -> list[Entry]:
 
 def has_pos(form: str, code: str) -> bool:
     """Whether any entry for form has a POS code equal to or starting with code ("v5" etc.)."""
-    return any(code in ps or any(p.startswith(code) for p in ps) for _, ps in lookup(form))
+    return any(code in ps or any(p.startswith(code) for p in ps) for _, _, ps in lookup(form))
 
 
 def readings(form: str) -> list[str]:
-    return [r for rs, _ in lookup(form) for r in rs]
+    return [r for _, rs, _ in lookup(form) for r in rs]

@@ -123,7 +123,7 @@ class JmdictBuildTests(TempDirTest):
         with gzip.open(gz, "wt", encoding="utf-8") as f:
             f.write(JMDICT_SAMPLE)
         index = jmdict_index.build(gz)
-        expected = [(("ようになる",), frozenset({"exp", "v5r"}))]
+        expected = [(("様に成る",), ("ようになる",), frozenset({"exp", "v5r"}))]
         self.assertEqual(index, {"様に成る": expected, "ようになる": expected})
 
 

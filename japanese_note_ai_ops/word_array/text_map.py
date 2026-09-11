@@ -51,20 +51,21 @@ class Seg:
 
 
 @lru_cache(maxsize=4096)
-def reading_units(base: str, reading: str) -> Optional[tuple[tuple[str, str], ...]]:
-    """Split a furigana group's reading per kanji: ("見下", "みお") -> (("見", "み"), ("下", "お")).
+def reading_units(base: str, reading: str) -> Optional[tuple[tuple[str, str, str], ...]]:
+    """Split a furigana group's reading per kanji, with each kanji's reading type:
+    ("見下", "みお") -> (("見", "み", "kun"), ("下", "お", "kun")).
 
     None when the group can't be split: jukujikun (今日[きょう]), or a base that isn't all kanji.
     """
     if not KANJI_TAIL_RE.fullmatch(base):
         return None
     tagged = kana_highlight(None, f" {base}[{reading}]", "furigana", SPLIT_READINGS)
-    units = [(m.group(2).strip(), m.group(3)) for m in READING_UNIT_RE.finditer(tagged)]
+    units = [(m.group(2).strip(), m.group(3), m.group(1)) for m in READING_UNIT_RE.finditer(tagged)]
     if (
         not units
         or "<juk>" in tagged
-        or "".join(k for k, _ in units) != base
-        or "".join(r for _, r in units) != reading
+        or "".join(u[0] for u in units) != base
+        or "".join(u[1] for u in units) != reading
     ):
         return None
     return tuple(units)
@@ -124,25 +125,43 @@ class TextMap:
         if a == 0 and b == len(seg.natural):
             return seg.reading
         units = self._unit_slice(seg, a, b)
-        return "".join(r for _, r in units) if units is not None else None
+        return "".join(u[1] for u in units) if units is not None else None
 
-    def _unit_slice(self, seg: Seg, a: int, b: int) -> Optional[tuple[tuple[str, str], ...]]:
+    def _unit_slice(self, seg: Seg, a: int, b: int) -> Optional[tuple[tuple[str, str, str], ...]]:
         units = reading_units(seg.base, seg.reading)
         if units is None:
             return None
         # Natural offsets run over the reading in <k> groups, over the base otherwise
         bounds = [0]
-        for kanji, reading in units:
+        for kanji, reading, _ in units:
             bounds.append(bounds[-1] + len(reading if seg.in_k else kanji))
         if a not in bounds or b not in bounds:
             return None
         return units[bounds.index(a) : bounds.index(b)]
 
+    def can_split(self, nat_idx: int) -> bool:
+        """True when a sub-word boundary can go before natural index nat_idx: between
+        segments, or inside a furigana group where its reading splits per kanji."""
+        si, off = self.nat_pos[nat_idx]
+        if off == 0:
+            return True
+        seg = self.segs[si]
+        return seg.kind == "furi" and self._unit_slice(seg, 0, off) is not None
+
+    def is_onyomi_kanji(self, start: int, end: int) -> bool:
+        """True when natural span [start, end) is a single kanji read in on'yomi."""
+        si, off = self.nat_pos[start]
+        seg = self.segs[si]
+        if seg.kind != "furi" or self.nat_pos[end - 1][0] != si:
+            return False
+        units = self._unit_slice(seg, off, end - start + off)
+        return units is not None and len(units) == 1 and units[0][2] == "on"
+
     def _furi_piece(self, seg: Seg, a: int, b: int) -> str:
         lead = seg.lead if a == 0 else ""
         units = self._unit_slice(seg, a, b)
         if units is not None:
-            return f"{lead}{''.join(k for k, _ in units)}[{''.join(r for _, r in units)}]"
+            return f"{lead}{''.join(u[0] for u in units)}[{''.join(u[1] for u in units)}]"
         # Unsplittable (jukujikun, or a split inside one kanji's reading): the bracket stays
         # whole on the group's last piece
         ka = self._base_chars_before(seg, a)
@@ -157,7 +176,7 @@ class TextMap:
         units = reading_units(seg.base, seg.reading)
         if units is not None:
             pos = 0
-            for i, (_, reading) in enumerate(units):
+            for i, (_, reading, _) in enumerate(units):
                 if pos >= nat_off:
                     return i
                 pos += len(reading)
