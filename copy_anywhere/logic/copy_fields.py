@@ -349,7 +349,8 @@ def copy_fields(
     :param copy_definitions: The definitions of what to copy
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
     :param note_ids_per_definition: An alternate of note_ids, a list of note ids to copy into for
-        each definition used by PickCopyDefinitionsDialog
+        each definition used by PickCopyDefinitionsDialog. Must hold one list per definition,
+        otherwise nothing is copied and an error is logged
     :param trigger_notes: Notes to use as they are instead of fetching them by their ids. Used
         by the note editor, whose note can be ahead of the database while its save is still
         running in the background
@@ -418,6 +419,24 @@ def copy_fields(
         if not copy_definitions:
             logger.error("Error in copy fields: No definitions given")
             return CacheResults(result_text="", changes=None)
+
+        # Checked up front: definition i runs over list i, so a mismatch found mid-loop would
+        # leave the earlier definitions written and merged into the undo entry. Any Sequence
+        # passes, as PickCopyDefinitionsDialog hands over find_notes' protobuf containers.
+        if note_ids_per_definition is not None:
+            if len(note_ids_per_definition) != len(copy_definitions):
+                logger.error(
+                    "Error in copy fields: Got"
+                    f" {len(note_ids_per_definition)} note id lists for"
+                    f" {len(copy_definitions)} definitions"
+                )
+                return CacheResults(result_text="", changes=None)
+            for i, ids in enumerate(note_ids_per_definition):
+                if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
+                    logger.error(
+                        f"Error in copy fields: Note ids for definition {i + 1} are not a list"
+                    )
+                    return CacheResults(result_text="", changes=None)
 
         copied_into_cards_dict: dict[int, Card] = {}
         copied_into_notes: list[Note] = []

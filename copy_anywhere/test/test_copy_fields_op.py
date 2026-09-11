@@ -388,24 +388,70 @@ class TestNoteIdsPerDefinition:
         # rather than being recognised as "this definition was given nothing to do".
         assert "Did not find any notes of note type(s)" in capsys.readouterr().out
 
-    def test_a_list_shorter_than_the_definitions_raises_index_error_mid_run(
-        self, col, run_copy_fields
+    def test_a_list_shorter_than_the_definitions_is_rejected_before_anything_is_written(
+        self, col, run_copy_fields, capsys
     ):
-        # DEFECT: `note_ids_per_definition[i]` is indexed with no length check, so a caller
-        # that passes fewer lists than definitions gets an IndexError out of the middle of
-        # the op -- after the earlier definitions have already been written and merged into
-        # the undo entry. Expected: a checked error before anything is written, or the
-        # remaining definitions falling back to `note_ids`. In production this reaches
-        # `on_failure`, which logs "Copying failed: list index out of range" and re-raises.
+        # Checked before the loop: indexing list i per definition would otherwise raise
+        # IndexError only after the earlier definitions had been written and merged.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        add_calls = real_anki.counting_wrapper(col, "add_custom_undo_entry")
+
+        results = run_copy_fields(
+            copy_definitions=[write_into_note("a"), write_into_note("b", field="Freq")],
+            note_ids_per_definition=[[note.id]],
+        )
+
+        assert col.get_note(note.id)["Note"] == ""
+        assert add_calls() == 0
+        assert results.get_result_text() == ""
+        assert results.changes is None
+        assert "Got 1 note id lists for 2 definitions" in capsys.readouterr().out
+
+    def test_a_list_longer_than_the_definitions_is_rejected_too(
+        self, col, run_copy_fields, capsys
+    ):
+        # A surplus list would never be indexed, but it means the caller's lists and
+        # definitions have drifted apart, so which list belongs to which is unknowable.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        with pytest.raises(IndexError):
-            run_copy_fields(
-                copy_definitions=[write_into_note("a"), write_into_note("b", field="Freq")],
-                note_ids_per_definition=[[note.id]],
-            )
+        run_copy_fields(
+            copy_definitions=[write_into_note("a")],
+            note_ids_per_definition=[[note.id], [note.id]],
+        )
 
-        assert col.get_note(note.id)["Note"] == "neko"
+        assert col.get_note(note.id)["Note"] == ""
+        assert "Got 2 note id lists for 1 definitions" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("entry", [None, 5, "123"], ids=["none", "int", "str"])
+    def test_an_entry_that_is_not_a_list_is_rejected_before_anything_is_written(
+        self, col, run_copy_fields, capsys, entry
+    ):
+        # A str is a Sequence, but of characters rather than note ids.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+
+        run_copy_fields(
+            copy_definitions=[write_into_note("a"), write_into_note("b", field="Freq")],
+            note_ids_per_definition=[[note.id], entry],
+        )
+
+        assert col.get_note(note.id)["Note"] == ""
+        assert "Note ids for definition 2 are not a list" in capsys.readouterr().out
+
+    def test_find_notes_results_pass_the_check_as_the_dialog_hands_them_over(
+        self, col, run_copy_fields
+    ):
+        # `show_copy_dialog` passes `find_notes`' return value as it is: a protobuf
+        # container, which is a Sequence but not a `list`.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        found = col.find_notes(f"nid:{note.id}")
+        assert not isinstance(found, list)
+
+        run_copy_fields(
+            copy_definitions=[write_into_note("a", value="from-a")],
+            note_ids_per_definition=[found],
+        )
+
+        assert col.get_note(note.id)["Note"] == "from-a"
 
 
 class TestDefinitionOrder:

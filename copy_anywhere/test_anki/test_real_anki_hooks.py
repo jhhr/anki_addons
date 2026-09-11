@@ -422,17 +422,16 @@ class TestTheCollectionOpPath:
         # test on Anki's behalf.
         monkeypatch.setattr(sys, "excepthook", lambda kind, value, tb: raised.append(value))
 
-        # An empty `note_ids_per_definition` makes the op raise IndexError on its first
-        # definition, which is the shortest route to a genuine failure inside the op.
-        copy_fields(
-            copy_definitions=[within_note()],
-            note_ids_per_definition=[],
-            on_done=lambda: done.append(1),
-        )
+        # `copy_fields_in_background` indexes `copy_mode` with no default, so a definition
+        # without one raises KeyError once a note is found: the shortest route to a genuine
+        # failure inside the op.
+        definition = within_note()
+        del definition["copy_mode"]
+        copy_fields(copy_definitions=[definition], on_done=lambda: done.append(1))
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
         anki_session.qtbot.waitUntil(lambda: bool(raised), timeout=WAIT)
 
-        assert isinstance(raised[0], IndexError)
+        assert isinstance(raised[0], KeyError)
         # `on_failure` finishes the progress before it re-raises, so the dialog does not
         # outlive the failed op -- though the window itself closes a turn of the event loop
         # later, which is why this waits rather than reading `busy()` straight away.
@@ -442,7 +441,7 @@ class TestTheCollectionOpPath:
         # differently from the identical window `on_success` opens.
         (messages, title, _) = dialogs["boxes"][0]
         assert title == "Copy Fields debug Messages"
-        assert "Copying failed: list index out of range" in messages[0]
+        assert "Copying failed: 'copy_mode'" in messages[0]
 
 
 class TestTheSyncHooks:
