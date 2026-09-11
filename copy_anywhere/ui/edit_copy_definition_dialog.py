@@ -424,6 +424,9 @@ class AcrossQueryTabWidget(QWidget):
             <li>Reference the destination notes' fields with {intr_format('Field Name')}.</li>
             <li>You can reference variables that you created in the Variables tab</li>
             <li>Right-click to select a {intr_format('Field Name')} or special values to paste</li>
+            <li>Term order can change performance without changing results. Prefer exact field
+            matches first, then {intr_format('re:')} terms, then negations, and leave OR groups
+            for last.</li>
             </ul>""",
             height=100,
             placeholder_text=(
