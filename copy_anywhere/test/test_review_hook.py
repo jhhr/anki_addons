@@ -349,18 +349,22 @@ class TestWhichDefinitionsRun:
         run_copy_fields_on_review(reviewed)
         assert ran.names() == []
 
-    def test_a_note_type_list_that_is_not_a_string_takes_the_review_down(
-        self, col, set_definitions
+    def test_a_note_type_list_that_is_not_a_string_is_logged_and_skipped(
+        self, col, set_definitions, ran, hook_logger
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:171 reaches for `.strip` unguarded, so a
-        # config holding a real list -- which is what the stored quoted-and-joined format is
-        # trying to be -- raises out of `reviewer_did_answer_card`, i.e. after the answer has
-        # already been committed. Expected: the definition is skipped, or the error logged.
+        # A config holding a real list -- which is what the stored quoted-and-joined format
+        # is trying to be -- can't be split, and the answer has already been committed by
+        # the time the hook fires. So that definition is logged and skipped rather than
+        # raised out of `reviewer_did_answer_card`, and the ones after it still run.
         # (`run_copy_fields_on_add` has the identical hole, pinned in test_add_note_hook.py.)
         _, reviewed = review(col)
-        set_definitions(within(copy_into_note_types=[VOCAB]))
-        with pytest.raises(AttributeError):
-            run_copy_fields_on_review(reviewed)
+        set_definitions(
+            within("listed", copy_into_note_types=[VOCAB]),
+            within("joined", field="Freq"),
+        )
+        run_copy_fields_on_review(reviewed)
+        assert ran.names() == ["joined"]
+        assert hook_logger.has_error("not a string")
 
     def test_definitions_run_in_config_order(self, col, set_definitions, ran):
         _, reviewed = review(col)

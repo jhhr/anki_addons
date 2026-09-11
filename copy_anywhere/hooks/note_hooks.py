@@ -207,6 +207,14 @@ def run_copy_fields_on_review(card: Card):
         # Split note_types by comma
         if not copy_into_note_types:
             continue
+        if not isinstance(copy_into_note_types, str):
+            # The answer is already committed, so raising would only throw the error at the
+            # reviewer from inside Anki's hook dispatch and stop every later definition too
+            logger.error(
+                f"Copy definition '{copy_definition.get('definition_name')}' has"
+                f" copy_into_note_types that is not a string: {copy_into_note_types!r}"
+            )
+            continue
         note_type_names = copy_into_note_types.strip('""').split('", "')
         if note_type_name not in note_type_names:
             continue
