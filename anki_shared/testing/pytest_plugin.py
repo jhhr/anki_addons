@@ -7,6 +7,12 @@ It holds what every running-Anki suite in the repo needs and no single suite own
   `pytest.importorskip` there does not skip anything but aborts the whole run. So a test
   that needs `anki_session` is marked skipped here instead, and the rest of the run goes on.
 
+* **One media server readiness per `AnkiQt`.** Each such test runs inside
+  `running_anki.media_servers_waited_for()`, whose docstring has the race it closes. It is
+  applied here rather than by fixture because it has to be in place before `anki_session`
+  builds the main window, and an addon's fixtures cannot promise to come first. It is
+  imported only for those tests, so a run without them never loads `aqt.mediasrv`.
+
 * **The shutdown guard**, which lets a run that started a real Anki exit with pytest's own
   status instead of a segfault. The rest of this docstring is about that.
 
@@ -66,8 +72,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         reason="needs pytest-anki2: python -m pip install --no-deps -r requirements-dev-nodeps.txt"
     )
     for item in items:
-        if "anki_session" in getattr(item, "fixturenames", ()):
+        if _uses_running_anki(item):
             item.add_marker(skip)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: Optional[pytest.Item]):
+    # Wrapping the whole protocol puts the patch in place before fixture setup, where
+    # `anki_session` builds the main window and its media server.
+    if not (_uses_running_anki(item) and item.config.pluginmanager.has_plugin(_PYTEST_ANKI_PLUGIN)):
+        return (yield)
+
+    from anki_shared.testing import running_anki
+
+    with running_anki.media_servers_waited_for():
+        return (yield)
+
+
+def _uses_running_anki(item: pytest.Item) -> bool:
+    fixturenames = getattr(item, "fixturenames", ())
+    return "anki_session" in fixturenames or "anki_session_module" in fixturenames
 
 
 @pytest.hookimpl(wrapper=True)

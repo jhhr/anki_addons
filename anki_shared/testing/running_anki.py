@@ -10,7 +10,7 @@ starts a real `AnkiQt` per test through its `anki_session` fixture.
 pytest-anki is written for a process that runs nothing else, and this repo runs these tests
 alongside several hundred stub-mode ones. The helpers here are what makes that safe; an
 addon's `test_anki/conftest.py` turns them into fixtures (`copy_anywhere/test_anki/conftest.py`
-is the worked example, and README.md has the template). Five things need handling:
+is the worked example, and README.md has the template). Six things need handling:
 
 1. **Rebinding `mw`.** Addon modules do `from aqt import mw` at import time, so each one holds
    whichever object was on `aqt` when the root conftest imported it -- the stub. A running
@@ -41,15 +41,24 @@ is the worked example, and README.md has the template). Five things need handlin
    `mw`, where they surface as errors in an unrelated test. `main_window()` waits for the
    background ops and stops the timers.
 
+6. **Giving each main window its own media server readiness.** Anki expects one
+   `MediaServer` per process, and aqt keeps the `Event` its `getPort()` waits on on the
+   class. Every test here builds a new `AnkiQt`, and so a new server, and once the first has
+   come up `getPort()` stops waiting for any later one. `media_servers_waited_for()` fixes
+   that; `pytest_plugin` wraps every test that uses `anki_session` in it, so an addon's
+   conftest does not have to.
+
 Two more pieces live elsewhere because they are process-wide rather than per-test:
 `real_anki.qt_offscreen()` keeps QtWebEngine off the GPU, and `pytest_plugin`'s shutdown
 guard stops the process crashing on the way out once a real Anki has run in it.
 """
 
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 import aqt
+import aqt.mediasrv
 from aqt.qt import QTimer
 
 from . import real_anki
@@ -60,6 +69,59 @@ if TYPE_CHECKING:
 
 # How long to let a background op finish before tearing the profile down.
 OP_DRAIN_TIMEOUT = 15000
+
+# How long `getPort()` may wait for a media server to start serving. It normally takes
+# milliseconds; this only bounds the case where the server thread never gets there.
+MEDIA_SERVER_START_TIMEOUT = 15.0
+
+
+@contextmanager
+def media_servers_waited_for(timeout: float = MEDIA_SERVER_START_TIMEOUT) -> Iterator[None]:
+    """Make `MediaServer.getPort()` wait for *its own* server, and for at most `timeout`.
+
+    aqt declares `_ready = threading.Event()` on `MediaServer` itself, so the one `Event` is
+    shared by every instance: `run()` sets it once its server exists, and `getPort()` waits
+    on it and then reads `self.server`. Real Anki builds one server per process and never
+    notices. pytest-anki builds a new `AnkiQt` per test, and from the second one on the
+    `Event` is already set, so a `getPort()` that runs before the new server's thread has
+    reached `create_server` returns straight through to "'MediaServer' object has no
+    attribute 'server'". The editor asks for the port as it opens, so this surfaced as an
+    occasional failure of the Add-cards test.
+
+    Servers built inside the block get an `Event` of their own, which `run()` then sets
+    through the same `self._ready`. `getPort()` waits on that with a bound, so a server
+    thread that died on start-up is reported as such instead of hanging the run.
+
+    Both methods are put back on exit. A server built inside the block keeps its own `Event`
+    afterwards, so aqt's `getPort()` is correct for it too.
+    """
+    server_class = aqt.mediasrv.MediaServer
+    original_init = server_class.__init__
+    original_get_port = server_class.getPort
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._ready = threading.Event()
+
+    def getPort(self) -> int:
+        if not self._ready.wait(timeout):
+            state = (
+                "its thread is still running"
+                if self.is_alive()
+                else "its thread has exited, so look for its traceback above"
+            )
+            raise RuntimeError(
+                f"Anki's media server did not start serving within {timeout:g}s ({state})"
+            )
+        return int(self.server.effective_port)
+
+    server_class.__init__ = __init__
+    server_class.getPort = getPort
+    try:
+        yield
+    finally:
+        server_class.__init__ = original_init
+        server_class.getPort = original_get_port
 
 
 @contextmanager

@@ -125,6 +125,15 @@ in short:
   repeating timers.
 - `addon_config(anki_session, package, base_config)` — a `write(**overrides)` that puts a
   real config.json/meta.json pair where the real `AddonManager` reads them.
+- `media_servers_waited_for()` — makes each main window's `mediaServer.getPort()` wait for
+  its own server, with a 15s bound. aqt keeps the readiness `Event` on the `MediaServer`
+  class, so once one test's server had come up, a later test could ask for its port before
+  its own server existed ("'MediaServer' object has no attribute 'server'"). You do not
+  call this one: the repo plugin wraps every test that uses `anki_session` in it, because
+  it has to be in place before `anki_session` builds the main window.
+
+`anki_shared/test_anki/` tests the harness itself, forcing each race it guards against to
+lose every time so that a fix that stops working fails there rather than as a flake.
 
 ### Adding running-Anki tests to another addon
 
