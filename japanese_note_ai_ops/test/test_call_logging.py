@@ -11,8 +11,7 @@ import logging
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
-import addon_modules  # noqa: F401
-from anki_stubs import load_ops_module
+from addon_modules import load_ops_module
 
 cl = load_ops_module("call_logging", "")
 

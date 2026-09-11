@@ -10,7 +10,7 @@ lines further down: fine to the compiler, since a function's annotations are not
 when the module runs, and fatal for a TypedDict, whose class body is. The unit tests missed it
 too, because none of them import the modules that reach for aqt.
 
-anki_stubs can load those, so this walks the list and imports each one. It asserts nothing
+The shared Anki stubs can load those, so this walks the list and imports each one. It asserts nothing
 about behaviour on purpose - it is here to fail at import, which is the whole of what it
 catches and exactly the failure that reaches the user as a crash.
 """
@@ -19,8 +19,7 @@ import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path, which the ops
 # need for json_repair, rapidfuzz and requests
-import addon_modules  # noqa: F401
-from anki_stubs import load_ops_module
+from addon_modules import load_ops_module
 
 # Every module __init__.py pulls in at startup, plus the two they rest on
 STARTUP_MODULES = [

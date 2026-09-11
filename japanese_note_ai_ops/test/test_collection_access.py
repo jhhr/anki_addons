@@ -17,7 +17,7 @@ import threading
 import time
 import unittest
 
-from anki_stubs import load_ops_module, mw
+from addon_modules import load_ops_module, mw
 
 ca = load_ops_module("collection_access")
 conc = load_ops_module("concurrency")

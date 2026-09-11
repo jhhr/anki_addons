@@ -17,7 +17,7 @@ import asyncio
 import logging
 import unittest
 
-from anki_stubs import load_ops_module, mw
+from addon_modules import load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 concurrency = load_ops_module("concurrency")

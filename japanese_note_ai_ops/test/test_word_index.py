@@ -15,8 +15,7 @@ import asyncio
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
-import addon_modules  # noqa: F401
-from anki_stubs import load_ops_module, mw
+from addon_modules import load_ops_module, mw
 
 wi = load_ops_module("word_index")
 # Kept because the cache tests replace it and have to put it back

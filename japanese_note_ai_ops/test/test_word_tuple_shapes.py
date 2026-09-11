@@ -9,8 +9,7 @@ third. The cases here are the ones taken off real run logs; see `normalize_word_
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
-import addon_modules  # noqa: F401
-from anki_stubs import load_ops_module
+from addon_modules import load_ops_module
 
 mwtn = load_ops_module("match_words_to_notes")
 normalize = mwtn.normalize_word_tuple

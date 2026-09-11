@@ -13,8 +13,7 @@ import asyncio
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
-import addon_modules  # noqa: F401
-from anki_stubs import load_ops_module
+from addon_modules import load_ops_module
 from test_word_index import FIELDS, VOCAB_MID, VOCAB_ORDS, vocab_row
 
 wi = load_ops_module("word_index")

@@ -1,7 +1,7 @@
 """The two dictionary lookups that were scanning a table their own index already covers.
 
 Nothing in the suite reached `mdx_dictionary.py` before this, because it imports aqt and
-lives outside `async_api_ops`. `anki_stubs.load_ops_module` takes a subdir for exactly that.
+`load_ops_module` takes a subdir for exactly that.
 
 Everything here runs against a temporary SQLite database shaped like a real `.mdx.db` - the
 `MDX_INDEX` table and the `key_index` that `IndexBuilder` puts on it - with a stub standing in
@@ -19,10 +19,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import addon_modules  # noqa: F401  (puts the vendored lib/ on sys.path)
-import anki_stubs
+import addon_modules
 
-mdx = anki_stubs.load_ops_module("mdx_dictionary", "sync_local_ops")
+mdx = addon_modules.load_ops_module("mdx_dictionary", "sync_local_ops")
 
 
 # Keys in the order a real .mdx.db holds them: MDX files carry their keys sorted, and the

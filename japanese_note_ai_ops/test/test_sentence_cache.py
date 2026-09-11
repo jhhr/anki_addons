@@ -12,7 +12,7 @@ import unittest
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
 import addon_modules  # noqa: F401
 from addon_modules import load_addon_module
-from anki_stubs import load_ops_module
+from addon_modules import load_ops_module
 
 sc = load_addon_module("sentence_cache")
 cm = load_ops_module("clean_meaning")

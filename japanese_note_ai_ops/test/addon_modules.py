@@ -17,9 +17,13 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from anki_shared.testing import anki_stubs
+from anki_shared.testing.anki_stubs import mw
+
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 OPS_DIR = ADDON_ROOT / "async_api_ops"
 DEFAULT_SUBDIR = "async_api_ops"
+PACKAGE = "addon_under_test_pkg"
 
 sys.path.insert(0, str(ADDON_ROOT.parent / "anki_shared" / "utils"))
 from vendor_path import add_vendor_paths  # noqa: E402
@@ -44,6 +48,40 @@ def load_addon_module(name: str, subdir: str = DEFAULT_SUBDIR) -> ModuleType:
     # Registered before executing so anything the module does at import time that looks itself
     # up by name resolves to the same object
     sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_ops_module(name: str, subdir: str = DEFAULT_SUBDIR) -> ModuleType:
+    """Load an Anki-dependent module as part of a synthetic add-on package."""
+    anki_stubs.install()
+
+    if PACKAGE not in sys.modules:
+        root = ModuleType(PACKAGE)
+        root.__path__ = [str(ADDON_ROOT)]
+        sys.modules[PACKAGE] = root
+
+    root = sys.modules[PACKAGE]
+    if not subdir:
+        package_name = PACKAGE
+    else:
+        package_name = f"{PACKAGE}.{subdir}"
+        if package_name not in sys.modules:
+            ops = ModuleType(package_name)
+            ops.__path__ = [str(ADDON_ROOT / subdir)]
+            sys.modules[package_name] = ops
+            setattr(root, subdir, ops)
+
+    dotted = f"{package_name}.{name}"
+    if dotted in sys.modules:
+        return sys.modules[dotted]
+
+    path = (ADDON_ROOT / subdir if subdir else ADDON_ROOT) / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(dotted, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not build a spec for {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[dotted] = module
     spec.loader.exec_module(module)
     return module
 
