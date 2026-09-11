@@ -228,34 +228,50 @@ class CopyFieldToFile(TypedDict):
     process_chain: Sequence[AnyProcess]
 
 
+def split_tags(tags: Optional[str]) -> list[str]:
+    """Split a stored tag list into tag names, dropping the empty ones.
+
+    The stored form is the quoted-and-comma-joined shape the tag editor writes, and the
+    common value is "" -- most definitions add no tags at all. A bare `.split('", "')` turns
+    that into `[""]`, which then adds an empty tag to every destination note and marks it
+    modified whether or not anything was copied, inflating the processed counts, the
+    copied-into list and the undo entry.
+    """
+    if not tags:
+        return []
+    return [tag for tag in tags.strip('""').split('", "') if tag]
+
+
 def get_field_to_field_unfocus_trigger_fields(
     field_to_field: CopyFieldToField, modifies_other_notes: bool
 ) -> list[str]:
+    # A bare split turns an unset trigger into `[""]`, which is truthy and would keep the
+    # destination-field fallback below from ever applying.
+    trigger_value = field_to_field.get("copy_on_unfocus_trigger_field", "")
+    trigger_fields = [name for name in trigger_value.strip('""').split('", "') if name]
     if modifies_other_notes:
         # source to destination mode is triggered by a field change in the trigger note
         # while the destination field is a different field in another note
-        return field_to_field.get("copy_on_unfocus_trigger_field", "").strip('""').split('", "')
+        return trigger_fields
     else:
         # destination to sources mode or within note mode the destination and trigger fields
         # are in the same note
-        return field_to_field.get("copy_on_unfocus_trigger_field", "").strip('""').split(
-            '", "'
-        ) or [field_to_field.get("copy_into_note_field", "")]
+        return trigger_fields or [field_to_field.get("copy_into_note_field", "")]
 
 
-def get_triggered_field_to_field_def_for_field(
+def get_triggered_field_to_field_defs_for_field(
     field_to_field_defs: list[CopyFieldToField],
     field_name: str,
     modifies_other_notes: bool,
-) -> Union[CopyFieldToField, None]:
+) -> list[CopyFieldToField]:
     """
-    Get the field-to-field definition that matches the field_name and the mode.
+    Get every field-to-field definition that field_name triggers in this mode, in config order.
     """
-    for field_def in field_to_field_defs:
-        trigger_fields = get_field_to_field_unfocus_trigger_fields(field_def, modifies_other_notes)
-        if field_name in trigger_fields:
-            return field_def
-    return None
+    return [
+        field_def
+        for field_def in field_to_field_defs
+        if field_name in get_field_to_field_unfocus_trigger_fields(field_def, modifies_other_notes)
+    ]
 
 
 class CopyFieldToVariable(TypedDict):
@@ -420,13 +436,20 @@ def definition_modifies_trigger_note(
 def definition_modifies_other_notes(
     copy_definition: CopyDefinition,
 ) -> bool:
+    # Destination to sources is Across notes too, but its only destination is the trigger note
     targets_other_notes = (
         copy_definition.get("copy_mode", None) == COPY_MODE_ACROSS_NOTES
-        or copy_definition.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
+        and copy_definition.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
     )
     # definition might only save stuff to files
     has_field_to_field_defs = len(copy_definition.get("field_to_field_defs", [])) > 0
-    return targets_other_notes and has_field_to_field_defs
+    # Tagging the found notes edits them as much as a field copy does, so a tags-only
+    # definition still has to wait for the note to exist and be written like one
+    has_tag_edits = bool(
+        (copy_definition.get("add_tags") or "").strip()
+        or (copy_definition.get("remove_tags") or "").strip()
+    )
+    return targets_other_notes and (has_field_to_field_defs or has_tag_edits)
 
 
 class Config:

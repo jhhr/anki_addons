@@ -47,6 +47,7 @@ from ..configuration import (
     is_kanjium_to_javdejong_process,
     is_regex_process,
     is_word_highlight_process,
+    split_tags,
 )
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..utils.duplicate_note import (
@@ -210,6 +211,10 @@ class ProgressUpdater:
         self.total_notes_count = total_notes_count
         self.is_across = is_across
         self.note_cnt = 0
+        # Notes skipped by the deck whitelist or the condition query. Kept apart from note_cnt,
+        # which callers read as "notes actually processed", but the progress bar needs them to
+        # reach total_notes_count, the number of notes the SQL query returned.
+        self.skipped_note_cnt = 0
         self.total_processed_sources = 0
         self.total_processed_destinations = 0
         self.total_processed_cards = 0
@@ -226,9 +231,12 @@ class ProgressUpdater:
         processed_destinations_inc: Optional[int] = None,
         processed_files_inc: Optional[int] = None,
         processed_cards_inc: Optional[int] = None,
+        skipped_note_cnt_inc: Optional[int] = None,
     ):
         if note_cnt_inc is not None:
             self.note_cnt += note_cnt_inc
+        if skipped_note_cnt_inc is not None:
+            self.skipped_note_cnt += skipped_note_cnt_inc
         if processed_sources_inc is not None:
             self.total_processed_sources += processed_sources_inc
         if processed_destinations_inc is not None:
@@ -250,7 +258,8 @@ class ProgressUpdater:
     def maybe_render_update(self, force: bool = False):
         elapsed_s = time.time() - self.start_time
         elapsed_since_last_update = elapsed_s - self.last_render_update
-        is_last_note = self.note_cnt == self.total_notes_count
+        done_cnt = self.note_cnt + self.skipped_note_cnt
+        is_last_note = done_cnt == self.total_notes_count
         no_notes = not self.total_notes_count > 0
         if (elapsed_since_last_update < 0.5 and not (force or is_last_note)) or no_notes:
             return
@@ -258,7 +267,9 @@ class ProgressUpdater:
 
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         label = f"""<strong>{html.escape(self.definition_name)}</strong>:
-        <br>Copied {self.note_cnt}/{self.total_notes_count} notes
+        <br>Copied {self.note_cnt}/{self.total_notes_count} notes{
+            f", skipped {self.skipped_note_cnt}" if self.skipped_note_cnt > 0 else ""
+        }
         <br><small>Processed{
             f"-  destination notes: {self.total_processed_destinations}"
             if self.total_processed_destinations > 0
@@ -276,12 +287,12 @@ class ProgressUpdater:
             else ""
         }
         </small><br>Time: {elapsed_time}"""
-        if self.note_cnt / self.total_notes_count > 0.10 or elapsed_s > 1:
-            if self.note_cnt > 0:
-                eta_s = (elapsed_s / self.note_cnt) * (self.total_notes_count - self.note_cnt)
+        if done_cnt / self.total_notes_count > 0.10 or elapsed_s > 1:
+            if done_cnt > 0:
+                eta_s = (elapsed_s / done_cnt) * (self.total_notes_count - done_cnt)
                 eta = time.strftime("%H:%M:%S", time.gmtime(eta_s))
                 label += f" - ETA: {eta}"
-        value = self.note_cnt
+        value = done_cnt
         max_value = self.total_notes_count
 
         mw.taskman.run_on_main(
@@ -324,6 +335,7 @@ def copy_fields(
     copy_definitions: list[CopyDefinition],
     note_ids: Optional[Sequence[Union[int, NoteId]]] = None,
     note_ids_per_definition: Optional[list[Sequence[Union[int, NoteId]]]] = None,
+    trigger_notes: Optional[Sequence[Note]] = None,
     parent=None,
     field_only: Optional[str] = None,
     undo_entry: Optional[int] = None,
@@ -337,7 +349,11 @@ def copy_fields(
     :param copy_definitions: The definitions of what to copy
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
     :param note_ids_per_definition: An alternate of note_ids, a list of note ids to copy into for
-        each definition used by PickCopyDefinitionsDialog
+        each definition used by PickCopyDefinitionsDialog. Must hold one list per definition,
+        otherwise nothing is copied and an error is logged
+    :param trigger_notes: Notes to use as they are instead of fetching them by their ids. Used
+        by the note editor, whose note can be ahead of the database while its save is still
+        running in the background
     :param parent: The parent widget
     :param undo_entry: The undo entry to merge the changes into, if None, a custom entry
         is created
@@ -402,7 +418,25 @@ def copy_fields(
     def op(_) -> CacheResults:
         if not copy_definitions:
             logger.error("Error in copy fields: No definitions given")
-            return CacheResults(result_text="", changes=None)
+            return CacheResults(result_text="", changes=OpChanges())
+
+        # Checked up front: definition i runs over list i, so a mismatch found mid-loop would
+        # leave the earlier definitions written and merged into the undo entry. Any Sequence
+        # passes, as PickCopyDefinitionsDialog hands over find_notes' protobuf containers.
+        if note_ids_per_definition is not None:
+            if len(note_ids_per_definition) != len(copy_definitions):
+                logger.error(
+                    "Error in copy fields: Got"
+                    f" {len(note_ids_per_definition)} note id lists for"
+                    f" {len(copy_definitions)} definitions"
+                )
+                return CacheResults(result_text="", changes=OpChanges())
+            for i, ids in enumerate(note_ids_per_definition):
+                if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
+                    logger.error(
+                        f"Error in copy fields: Note ids for definition {i + 1} are not a list"
+                    )
+                    return CacheResults(result_text="", changes=OpChanges())
 
         copied_into_cards_dict: dict[int, Card] = {}
         copied_into_notes: list[Note] = []
@@ -433,6 +467,7 @@ def copy_fields(
                 note_ids=(
                     note_ids_per_definition[i] if note_ids_per_definition is not None else note_ids
                 ),
+                trigger_notes=trigger_notes,
                 logger=logger,
                 is_sync=is_sync,
                 copied_into_cards_dict=copied_into_cards_dict,
@@ -498,6 +533,7 @@ def copy_fields_in_background(
     results: CacheResults,
     is_sync: Optional[bool] = False,
     note_ids: Optional[Sequence[int]] = None,
+    trigger_notes: Optional[Sequence[Note]] = None,
     field_only: Optional[str] = None,
     logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
@@ -511,6 +547,8 @@ def copy_fields_in_background(
         notes that were copied into
     :param results: The results object to update with the final result text
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
+    :param trigger_notes: Notes to use as they are instead of fetching them by their ids. They
+        still have to pass the query, so they are only used where it selects their id
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
     :param logger: Logger to use for errors and debug messages
@@ -545,14 +583,16 @@ def copy_fields_in_background(
     assert mw.col.db is not None
 
     nids_query = f"AND n.id IN {ids2str(note_ids)}" if note_ids is not None else ""
+    given_notes = {note.id: note for note in trigger_notes or []}
     notes = [
-        mw.col.get_note(nid)
+        given_notes[nid] if nid in given_notes else mw.col.get_note(nid)
         for nid in mw.col.db.list(
             # When syncing, only copy into notes that have been been flagged for a field change
             # in the custom scheduler by setting the field changed flag to 0 or -1 in note_hooks.py
-            # and filter by any given note_ids
+            # and filter by any given note_ids. DISTINCT, as the join yields a row per flagged
+            # card and each note must be copied into only once.
             f"""
-        SELECT n.id
+        SELECT DISTINCT n.id
         FROM notes n, cards c
         WHERE n.mid IN {ids2str(note_type_ids)}
         AND c.nid = n.id
@@ -614,12 +654,13 @@ def copy_fields_in_background(
 
         progress_updater.maybe_render_update()
 
+        if not success:
+            # Something went wrong, stop operation so the issue can be debugged. Checked before
+            # the cancel, so a cancel can't turn the failure into a reported partial run.
+            return results
+
         if mw.progress.want_cancel():
             break
-
-        if not success:
-            # Something went wrong, stop operation so the issue can be debugged
-            return results
 
     # When syncing, don't show a pointless message that nothing was done
     # Otherwise, when copy fields is run manually, you want to know the result in any case
@@ -843,6 +884,10 @@ def copy_for_single_trigger_note(
         if include_subdecks:
             parent_dids = set()
             for did in unique_whitelist_dids:
+                # A name that matched no deck resolved to None, which children() would send
+                # to the backend as deck 0 and raise NotFoundError on. It has no subdecks.
+                if did is None:
+                    continue
                 child_dids = [d[1] for d in mw.col.decks.children(did)]
                 parent_dids.update(child_dids)
             unique_whitelist_dids.update(parent_dids)
@@ -864,6 +909,8 @@ def copy_for_single_trigger_note(
                 f" {trigger_note.id}"
             )
             # Deck not in whitelist, so skip this note, things are ok, so return True
+            if progress_updater is not None:
+                progress_updater.update_counts(skipped_note_cnt_inc=1)
             return True
 
     # Step 3: Check the copy condition for this note
@@ -886,6 +933,8 @@ def copy_for_single_trigger_note(
                     f"id {trigger_note.id}"
                 )
                 # Condition did not match, so skip this note, things are ok, so return True
+                if progress_updater is not None:
+                    progress_updater.update_counts(skipped_note_cnt_inc=1)
                 return True
         else:
             logger.error(
@@ -895,8 +944,8 @@ def copy_for_single_trigger_note(
             )
             return False
 
-    # Update progress for processing this note after we've checked the condition, so we don't
-    # count notes that are skipped due to the condition not matching
+    # Update progress for processing this note after we've checked the condition, so notes
+    # skipped due to the condition not matching are counted as skipped, not as processed
     if progress_updater is not None:
         progress_updater.update_counts(note_cnt_inc=1)
 
@@ -942,8 +991,8 @@ def copy_for_single_trigger_note(
         return False
 
     if len(source_notes) == 0 and not run_also_if_no_sources_found:
-        if progress_updater is not None:
-            progress_updater.update_counts(processed_destinations_inc=len(destination_notes))
+        # No destination counter increment here: nothing was written, and destinations are
+        # only counted when copied into, like the increment in the loop below.
         # This case is ok, there's just nothing to do
         # But we need to end early here so that the target fields aren't wiped
         # So, return True
@@ -1079,13 +1128,13 @@ def copy_into_single_note(
         destination_note[copy_into_note_field] = result_val
         modified_dest_note = True
 
-    for tag in add_tags.strip('""').split('", "'):
+    for tag in split_tags(add_tags):
         if destination_note.has_tag(tag):
             continue
         destination_note.add_tag(tag)
         modified_dest_note = True
 
-    for tag in remove_tags.strip('""').split('", "'):
+    for tag in split_tags(remove_tags):
         if not destination_note.has_tag(tag):
             continue
         destination_note.remove_tag(tag)
@@ -1341,9 +1390,12 @@ def get_variable_values_for_note(
 
 
 def int_sort_by_field_value(note: Note, sort_by_field) -> int:
+    # KeyError as well as ValueError: sort_by_field names a field on the *source* note type,
+    # which need not be the one the definition copies into, so a query that returns a note of
+    # another type reaches here with a field the note does not have.
     try:
         return int(note[sort_by_field])
-    except ValueError:
+    except (ValueError, KeyError):
         return 0
 
 
@@ -1409,9 +1461,12 @@ def get_across_target_notes(
             if select_card_count_int < 0:
                 raise ValueError
         except ValueError:
+            # The value as given, not the parsed one: int() raises before the parsed one is
+            # bound, so reporting that would fail with UnboundLocalError inside the handler
+            # meant to report the problem.
             logger.error(
                 "Error in copy fields: Incorrect 'select_card_count' value"
-                f" '{select_card_count_int}'. Value must be a positive integer or 0"
+                f" '{select_card_count}'. Value must be a positive integer or 0"
             )
             return []
     else:
