@@ -312,14 +312,15 @@ class TestOnEditorDidLoadNote:
         on_editor_did_load_note(editor)
         assert editor_for_note_id[EditorMode.BROWSER] == (editor, note.id)
 
-    def test_an_editor_with_no_note_is_stored_under_note_id_zero(self, col):
+    def test_an_editor_with_no_note_is_stored_under_note_id_none(self, col):
+        # Not 0: that is a real note's id while it sits unsaved in the Add dialog.
         editor = FakeEditor(EditorMode.BROWSER, None)
         on_editor_did_load_note(editor)
-        assert editor_for_note_id[EditorMode.BROWSER] == (editor, NoteId(0))
+        assert editor_for_note_id[EditorMode.BROWSER] == (editor, None)
 
-    def test_the_add_cards_editors_unsaved_note_is_also_note_id_zero(self, col):
+    def test_the_add_cards_editors_unsaved_note_is_note_id_zero(self, col):
         # Not a special case in the handler: a note that has not been added simply has
-        # `id == 0`, which is the same value the no-note branch invents.
+        # `id == 0`.
         editor = FakeEditor(EditorMode.ADD_CARDS, new_note(col, Word="neko"))
         on_editor_did_load_note(editor)
         assert editor_for_note_id[EditorMode.ADD_CARDS] == (editor, 0)
@@ -991,16 +992,12 @@ class TestWhichEditorsAreReloaded:
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert adder.loads == 1
 
-    def test_a_new_note_also_matches_any_editor_that_was_loaded_with_no_note(
+    def test_a_new_note_does_not_match_an_editor_that_was_loaded_with_no_note(
         self, col, set_definitions
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:238 stores `NoteId(0)` for an editor
-        # with no note, which is the same value a not-yet-added note has, and line 262 then
-        # matches on it. The source comment at line 251 asserts "if the current note.id == 0,
-        # the only editor in the list will be the ADD_CARDS editor" -- it is not: a browser
-        # sitting on an empty selection has id 0 too, and gets a `loadNote()` it never
-        # asked for while the user types in the Add dialog. Expected: no match, since 0 is a
-        # sentinel and not a note id.
+        # A browser sitting on an empty selection shares nothing with the note being typed
+        # in the Add dialog, so it must not get a `loadNote()` it never asked for. The
+        # no-note editor is stored under None for exactly this, since a new note's id is 0.
         note = new_note(col, Word="neko")
         adder = FakeEditor(EditorMode.ADD_CARDS, note)
         empty_browser = FakeEditor(EditorMode.BROWSER, None)
@@ -1008,7 +1005,7 @@ class TestWhichEditorsAreReloaded:
         on_editor_did_load_note(empty_browser)
         set_definitions(within())
         run_copy_fields_on_unfocus_field(False, note, WORD)
-        assert (adder.loads, empty_browser.loads) == (1, 1)
+        assert (adder.loads, empty_browser.loads) == (1, 0)
 
     def test_an_unregistered_editor_mode_is_skipped(self, col, set_definitions):
         # The three keys start at None and the loop skips falsy entries, so a mode that has

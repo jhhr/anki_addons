@@ -216,7 +216,7 @@ def run_copy_fields_on_review(card: Card):
     mw.col.merge_undo_entries(answer_card_undo_entry)
 
 
-editor_for_note_id: dict[EditorMode, Union[Tuple[Editor, NoteId], None]] = {
+editor_for_note_id: dict[EditorMode, Union[Tuple[Editor, Optional[NoteId]], None]] = {
     EditorMode.ADD_CARDS: None,
     EditorMode.BROWSER: None,
     EditorMode.EDIT_CURRENT: None,
@@ -230,7 +230,9 @@ def on_editor_did_load_note(editor: Editor):
     unfocus_field hook.
     """
     global editor_for_note_id
-    editor_for_note_id[editor.editorMode] = editor, editor.note.id if editor.note else NoteId(0)
+    # None rather than NoteId(0) for no note, as 0 is what a new note's id is and the
+    # editor would then match whatever note is being typed in the Add cards dialog
+    editor_for_note_id[editor.editorMode] = editor, editor.note.id if editor.note else None
 
 
 def on_editor_will_cleanup(editor: Editor):
