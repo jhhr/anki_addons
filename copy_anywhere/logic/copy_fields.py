@@ -945,8 +945,8 @@ def copy_for_single_trigger_note(
         return False
 
     if len(source_notes) == 0 and not run_also_if_no_sources_found:
-        if progress_updater is not None:
-            progress_updater.update_counts(processed_destinations_inc=len(destination_notes))
+        # No destination counter increment here: nothing was written, and destinations are
+        # only counted when copied into, like the increment in the loop below.
         # This case is ok, there's just nothing to do
         # But we need to end early here so that the target fields aren't wiped
         # So, return True

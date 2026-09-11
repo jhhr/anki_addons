@@ -701,11 +701,9 @@ class TestCounterArithmeticThroughTheLoop:
         assert "1 cards" in summary(results)
         assert len(cards) == 2
 
-    def test_a_note_with_no_sources_still_counts_its_destination(self, col, logger):
-        # DEFECT: the "no sources found" early return increments the destination counter by
-        # `len(destination_notes)` before returning, so a definition that copied nothing at all
-        # still reports "1 destinations". Expected: a destination counted when it was written
-        # to, which is what the other increment (`if copied_into_dest_note`) does.
+    def test_a_note_with_no_sources_does_not_count_its_destination(self, col, logger):
+        # The "no sources found" early return copies nothing, so it must not count the
+        # destination either -- a destination is counted only when it was written to.
         real_anki.add_note(col, VOCAB, {"Word": "trig", "Meaning": "t"})
         definition = d.destination_to_sources(
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
@@ -717,7 +715,7 @@ class TestCounterArithmeticThroughTheLoop:
 
         results = run_bulk(definition, logger, notes=copied)
 
-        assert "1 destinations" in summary(results)
+        assert "destinations" not in summary(results)
         assert copied == []
 
 
