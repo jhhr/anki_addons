@@ -649,15 +649,12 @@ class TestTheDeferredOtherNotesBranch:
         reloaded = col.get_note(other.id)
         assert (reloaded["Meaning"], reloaded["Note"]) == ("cat", "")
 
-    def test_an_across_notes_definition_with_no_field_copies_is_not_deferred_and_is_lost(
+    def test_an_across_notes_definition_with_no_field_copies_is_still_deferred_and_written(
         self, col, set_definitions, ran
     ):
-        # DEFECT: `definition_modifies_other_notes` (copy_anywhere/configuration.py:434)
-        # requires a non-empty `field_to_field_defs`, so an Across-notes definition that only
-        # adds tags to the notes its query finds is classified as not touching other notes.
-        # The handler then runs it on the direct path, which passes no `copied_into_notes`
-        # (note_hooks.py:95) -- the tag is set on an in-memory Note and thrown away. Expected:
-        # the tag reaches the database, as it would on the sync or review path.
+        # A definition that only tags the notes its query finds edits them all the same, so
+        # it has to take the deferred path: the direct one passes no `copied_into_notes` and
+        # the tag would be set on an in-memory Note and thrown away.
         other = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
         definition = d.source_to_destinations(
             definition_name="tags-only",
@@ -669,9 +666,9 @@ class TestTheDeferredOtherNotesBranch:
         set_definitions(definition)
         before = col.undo_status().last_step
         run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
-        assert ran.collects_into_notes() == [False]
-        assert col.get_note(other.id).tags == []
-        assert col.undo_status().last_step == before
+        assert ran.collects_into_notes() == [True]
+        assert col.get_note(other.id).tags == ["tagged"]
+        assert col.undo_status().last_step == before + 1
 
 
 class TestDestinationToSourcesWritesOnlyTheTriggerNote:

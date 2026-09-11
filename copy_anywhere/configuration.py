@@ -443,7 +443,13 @@ def definition_modifies_other_notes(
     )
     # definition might only save stuff to files
     has_field_to_field_defs = len(copy_definition.get("field_to_field_defs", [])) > 0
-    return targets_other_notes and has_field_to_field_defs
+    # Tagging the found notes edits them as much as a field copy does, so a tags-only
+    # definition still has to wait for the note to exist and be written like one
+    has_tag_edits = bool(
+        (copy_definition.get("add_tags") or "").strip()
+        or (copy_definition.get("remove_tags") or "").strip()
+    )
+    return targets_other_notes and (has_field_to_field_defs or has_tag_edits)
 
 
 class Config:
