@@ -4,10 +4,8 @@ This is the layer above `copy_for_single_trigger_note`: it turns a definition's
 `copy_into_note_types` into a set of note-type ids, runs one SQL query to decide which notes
 the definition applies to, walks them, and assembles the result text the tooltip shows.
 
-Three things here are load-bearing and stated nowhere:
+Two things here are load-bearing and stated nowhere:
 
-* the sync query joins `notes` to `cards` without `DISTINCT`, so a note whose cards are all
-  flagged is fetched -- and processed -- once per flagged card;
 * the loop asks `mw.progress.want_cancel()` *after* processing a note and *before* looking at
   whether that note succeeded, so cancelling turns a failure into a reported partial run;
 * `ProgressUpdater` decides "this is the last note" from its own `note_cnt`, which counts
@@ -273,12 +271,9 @@ class TestZeroNotes:
 
 
 class TestSyncSelection:
-    def test_a_note_with_two_flagged_cards_is_processed_twice(self, col, logger):
-        # DEFECT: the sync query is `FROM notes n, cards c ... AND c.nid = n.id` with no
-        # DISTINCT, so it returns one row per flagged card. A two-card note is fetched twice,
-        # `copy_for_single_trigger_note` runs twice on two separate Note objects, and both are
-        # appended to `copied_into_notes` -- which `copy_fields` then hands to `update_notes`,
-        # writing the same note twice. Expected: one row, one run, one entry per note.
+    def test_a_note_with_two_flagged_cards_is_processed_once(self, col, logger):
+        # The sync query joins `notes` to `cards`, so without its DISTINCT a two-card note
+        # would come back once per flagged card and be handed to `update_notes` twice.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         assert len(note.cards()) == 2
         flag_cards(col, note, 0)
@@ -286,19 +281,8 @@ class TestSyncSelection:
 
         results = run_bulk(copy_word_into_note(), logger, notes=copied, is_sync=True)
 
-        assert [note_.id for note_ in copied] == [note.id, note.id]
-        assert "2 destinations" in summary(results)
-
-    def test_the_two_fetches_are_distinct_objects_not_the_same_note(self, col, logger):
-        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
-        flag_cards(col, note, 0)
-        copied: list = []
-
-        run_bulk(copy_word_into_note(), logger, notes=copied, is_sync=True)
-
-        # Each row goes through its own `mw.col.get_note`, so the second run reads the
-        # database again and cannot see what the first run put into the first object.
-        assert copied[0] is not copied[1]
+        assert [note_.id for note_ in copied] == [note.id]
+        assert "1 destinations" in summary(results)
 
     def test_one_flagged_card_out_of_two_means_one_run(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})

@@ -551,9 +551,10 @@ def copy_fields_in_background(
         for nid in mw.col.db.list(
             # When syncing, only copy into notes that have been been flagged for a field change
             # in the custom scheduler by setting the field changed flag to 0 or -1 in note_hooks.py
-            # and filter by any given note_ids
+            # and filter by any given note_ids. DISTINCT, as the join yields a row per flagged
+            # card and each note must be copied into only once.
             f"""
-        SELECT n.id
+        SELECT DISTINCT n.id
         FROM notes n, cards c
         WHERE n.mid IN {ids2str(note_type_ids)}
         AND c.nid = n.id
