@@ -621,16 +621,11 @@ class TestTheDeferredOtherNotesBranch:
         col.undo()
         assert col.get_note(other.id)["Note"] == ""
 
-    def test_the_second_of_two_definitions_writing_one_note_discards_the_first(
+    def test_two_definitions_writing_different_fields_of_one_other_note_both_survive(
         self, col, set_definitions
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:108-137. `copied_into_notes` accumulates
-        # across the deferred loop and nothing is written until the single `update_notes` at
-        # the end, so definition "b" re-fetches the destination from the database -- without
-        # definition "a"'s edit in it -- and the two stale-and-fresh copies of the same row
-        # are then written in order. "b" wins and "a"'s write to Meaning is lost. Expected:
-        # both fields set. (The same accumulate-and-overwrite shape is pinned for
-        # `copy_fields` in test_copy_fields_op.py; this is a second copy of it.)
+        # Definition "b" fetches the destination from the database, so "a"'s edit has to be
+        # written before "b" runs, or "b"'s copy of the note overwrites it.
         other = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         set_definitions(
             to_destinations("a", field="Meaning", value="AAA"),
@@ -638,8 +633,21 @@ class TestTheDeferredOtherNotesBranch:
         )
         run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
         reloaded = col.get_note(other.id)
-        assert reloaded["Note"] == "BBB"
-        assert reloaded["Meaning"] == "cat"
+        assert (reloaded["Meaning"], reloaded["Note"]) == ("AAA", "BBB")
+
+    def test_the_per_definition_writes_still_undo_as_one_entry(self, col, set_definitions):
+        other = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        set_definitions(
+            to_destinations("a", field="Meaning", value="AAA"),
+            to_destinations("b", field="Note", value="BBB"),
+        )
+        before = col.undo_status().last_step
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
+        assert col.undo_status().last_step == before + 1
+
+        col.undo()
+        reloaded = col.get_note(other.id)
+        assert (reloaded["Meaning"], reloaded["Note"]) == ("cat", "")
 
     def test_an_across_notes_definition_with_no_field_copies_is_not_deferred_and_is_lost(
         self, col, set_definitions, ran

@@ -97,8 +97,9 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     # Run the definitions that affect other notes with an undo entry created
     # Thus the changes on other notes can be undone while the changes on the new note
     # will remain, as that seems more user-friendly.
-    copied_into_notes: list[Note] = []
+    undo_entry: Optional[int] = None
     for copy_definition in editing_other_notes_definitions:
+        copied_into_notes: list[Note] = []
         # Can't use copy_fields here as it'd lead to a
         # "bug: run_in_background not called from main thread" exception
         # TODO: non CollectionOp version of copy_fields
@@ -109,30 +110,35 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             deck_id=deck_id,
             logger=logger,
         )
-    # Only source to destinations definitions get here and their destinations come from a
-    # query, which can't find the unsaved note. Still, an id 0 note would make
-    # mw.col.update_notes fail, so keep it out regardless
-    copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-    if not copied_into_notes:
-        # Nothing was written into other notes (the query matched nothing or the deck
-        # whitelist rejected the note), so there's nothing to undo and an empty entry would
-        # only clutter the undo stack.
-        return
+        # Only source to destinations definitions get here and their destinations come from a
+        # query, which can't find the unsaved note. Still, an id 0 note would make
+        # mw.col.update_notes fail, so keep it out regardless
+        copied_into_notes = [note for note in copied_into_notes if note.id != 0]
+        if not copied_into_notes:
+            # Nothing was written into other notes (the query matched nothing or the deck
+            # whitelist rejected the note), so there's nothing to undo and an empty entry would
+            # only clutter the undo stack.
+            continue
 
-    undo_text = make_copy_fields_undo_text(
-        copy_definitions=editing_other_notes_definitions,
-        note_count=1,
-        suffix="triggered by adding note",
-    )
-    # Unfortunately, note_will_be_added is called *before* the note is actually added so after
-    # this undo entry will come the "Add Note" undo entry. This is not ideal, but it's the most
-    # reliable thing do while a note_was_added hook doesn't exist.
-    #
-    # Other altenatives would be to add a flag to new notes and run the deferred copy definitions
-    # on syncing but that seems less user-friendly.
-    undo_entry = mw.col.add_custom_undo_entry(undo_text)
-    mw.col.update_notes(copied_into_notes)
-    mw.col.merge_undo_entries(undo_entry)
+        if undo_entry is None:
+            undo_text = make_copy_fields_undo_text(
+                copy_definitions=editing_other_notes_definitions,
+                note_count=1,
+                suffix="triggered by adding note",
+            )
+            # Unfortunately, note_will_be_added is called *before* the note is actually added so
+            # after this undo entry will come the "Add Note" undo entry. This is not ideal, but
+            # it's the most reliable thing do while a note_was_added hook doesn't exist.
+            #
+            # Other altenatives would be to add a flag to new notes and run the deferred copy
+            # definitions on syncing but that seems less user-friendly.
+            undo_entry = mw.col.add_custom_undo_entry(undo_text)
+        # Write after every definition, as the next one fetches its destinations from the
+        # database: writing once at the end would let a later definition's copy of a note,
+        # fetched without an earlier one's edit, overwrite that edit
+        mw.col.update_notes(copied_into_notes)
+        # Merge after every write, or the entry's step falls behind and can't be found
+        mw.col.merge_undo_entries(undo_entry)
 
 
 # The card id and undo step of the latest answer, recorded by the wrapped

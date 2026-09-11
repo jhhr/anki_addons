@@ -913,11 +913,8 @@ class TestEachDefinitionSeesTheLastOnesWrites:
     def test_two_definitions_writing_different_fields_of_one_other_note_both_survive(
         self, col, set_definitions
     ):
-        # The contrast with `run_copy_fields_on_add`, where the same two definitions lose the
-        # first one's write (test_add_note_hook.py's
-        # `test_the_second_of_two_definitions_writing_one_note_discards_the_first`). Here the
-        # per-definition flush means the second definition re-reads a note that already has
-        # the first definition's value in it.
+        # The per-definition flush means the second definition re-reads a note that already
+        # has the first definition's value in it.
         target = kanji_note(col, keyword="old")
         _, reviewed = review(col)
         set_definitions(
@@ -952,8 +949,8 @@ class TestEachDefinitionSeesTheLastOnesWrites:
     ):
         # `copied_into_notes` accumulates across the loop and the whole list is handed to
         # `update_notes` each time, so N definitions over one note produce N(N+1)/2 note
-        # writes. Only a cost here -- the values written are current, unlike on the add path
-        # -- but it is why the write count grows quadratically with the definition count.
+        # writes. Only a cost -- the values written are current -- but it is why the write
+        # count grows quadratically with the definition count.
         note, reviewed = review(col)
         set_definitions(within("a"), within("b", field="Freq"), within("c", field="Reading"))
         run_copy_fields_on_review(reviewed)
