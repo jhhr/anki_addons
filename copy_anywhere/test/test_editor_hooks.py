@@ -1187,23 +1187,21 @@ class TestNonModifyingDefinitionsDiscardTheirNoteList:
         assert note.tags == ["tagged"]
         assert col.get_note(note.id).tags == []
 
-    def test_a_definition_that_only_moves_tags_reloads_nothing_and_returns_false(
+    def test_a_definition_that_only_moves_tags_reloads_the_editor_and_returns_true(
         self, col, set_definitions, ran
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:338-339 computes `changed` from
-        # `note.values()` alone. Tags are not field values, so a definition that tagged the
-        # note but wrote no new field value reports "nothing changed": no editor is
-        # reloaded and -- since the return value is also what tells aqt to refresh -- the
-        # tag bar keeps showing the old tags until something else reloads the note.
-        # Expected: a tag change counts as a change.
+        # Tags are not field values, so they are compared on their own. Without that, a
+        # definition that tagged the note but wrote no new field value would reload no
+        # editor and -- since the return value is also what tells aqt to refresh -- the tag
+        # bar would keep showing the old tags until something else reloaded the note.
         set_definitions(within(field="Note", value="{{Word}}", add_tags="tagged"))
         note = existing_note(col, Word="neko", Note="neko")
         editor = FakeEditor(EditorMode.BROWSER, note)
         on_editor_did_load_note(editor)
-        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
         assert ran.names() == ["within"]
         assert note.tags == ["tagged"]
-        assert editor.loads == 0
+        assert editor.loads == 1
 
     def test_the_handler_never_builds_a_logger_so_the_configured_level_is_ignored(
         self, col, set_definitions, ran, capsys

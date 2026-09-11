@@ -300,6 +300,8 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
     field_name = note.keys()[field_idx]
     # Make a copy because values() returns a reference
     initial_field_values = note.values().copy()
+    # Definitions can tag the note too, and the tag bar needs the same reload to show it
+    initial_tags = note.tags.copy()
 
     # Copy definitions that affect other notes need an undo entry as we want to be able to undo
     editing_other_notes_definitions: list[CopyDefinition] = []
@@ -369,10 +371,10 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             undo_text_suffix=f"triggered by unfocus field '{field_name}'",
         )
 
-    # Copy definitions may not just edit this field but any field in the current note
-    # Check if any field has changed and reload then
+    # Copy definitions may not just edit this field but any field or the tags in the current
+    # note. Check if any of them changed and reload then
     current_field_values = note.values()
-    we_changed = initial_field_values != current_field_values
+    we_changed = initial_field_values != current_field_values or initial_tags != note.tags
     if we_changed:
         for editor in editors_matching_note_id:
             # Keep the caret in the field the user is on, as aqt's own reload for a True does
