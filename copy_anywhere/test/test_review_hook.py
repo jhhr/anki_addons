@@ -8,8 +8,8 @@ a running Anki -- every test here calls it directly.
 
 **The review is real.** The hook fires after Anki has rescheduled the card, so the "Answer
 Card" undo entry already exists and the card's queue, due and reps have already moved. That
-ordering is the whole point of this section: the handler captures `undo_status().last_step`
-and folds everything it does into that entry. Faking it with `add_custom_undo_entry` would
+ordering is the whole point of this section: the wrapped `Scheduler.answer_card` records the
+answer's `undo_status().last_step`, and the handler folds everything it does into that entry. Faking it with `add_custom_undo_entry` would
 pin the folding but not what is being folded into. So `answer_card` below answers the card
 through the v3 scheduler for real -- `get_queued_cards` for the scheduling states,
 `build_answer`, `sched.answer_card` -- which works headless, and then reloads the `Card`,
@@ -38,6 +38,7 @@ from types import SimpleNamespace
 import pytest
 from anki.errors import InvalidInput
 from anki.scheduler.v3 import CardAnswer
+from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt import mw
 
 import definitions as d
@@ -107,6 +108,19 @@ def custom_data(col, card_id) -> dict:
 
 
 # Fixtures --------------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def answers_are_tracked(monkeypatch):
+    """Wrap `Scheduler.answer_card` as `init_note_hooks` does, and unwrap it afterwards.
+
+    The handler merges into the step the wrapper recorded for the answer, so without it
+    every test here would silently run on the newest-step fallback instead. Registering the
+    original with `monkeypatch` first is what puts the class back when the test ends.
+    """
+    monkeypatch.setattr(V3Scheduler, "answer_card", V3Scheduler.answer_card)
+    monkeypatch.setattr(note_hooks, "last_answer_undo_step", None)
+    note_hooks.track_answer_undo_steps()
 
 
 @pytest.fixture
@@ -641,17 +655,32 @@ class TestEverythingMergesIntoTheAnswerCardEntry:
         run_copy_fields_on_review(reviewed)
         assert merges() == 4
 
-    def test_the_merge_target_is_whatever_the_newest_entry_happens_to_be(
+    def test_the_merge_target_is_the_answer_entry_even_when_it_is_not_the_newest(
         self, col, set_definitions
     ):
-        # DEFECT: copy_anywhere/hooks/note_hooks.py:181-182 takes `undo_status().last_step`
-        # and calls it `answer_card_undo_entry`, but that is simply the most recent entry.
-        # `reviewer_did_answer_card` listeners run in registration order, so any other addon
-        # whose listener performs an undoable op first becomes the merge target: the copies
-        # then attach to *its* entry, and the single undo the user expects to take back the
-        # review takes back only the copies. Expected: the handler identifies the answer
-        # entry rather than assuming it is the newest one.
+        # `reviewer_did_answer_card` listeners run in registration order, so another addon's
+        # listener may have added an undo entry before this one runs. The step recorded when
+        # the card was answered is still the target, so one undo takes back the review and
+        # the copies together. Anki merges every step newer than the target, so the other
+        # addon's entry is folded in as well.
         note, reviewed = review(col)
+        col.add_custom_undo_entry("Some other addon")
+        set_definitions(within())
+        run_copy_fields_on_review(reviewed)
+        assert col.undo_status().undo == ANSWER_CARD
+
+        col.undo()
+
+        assert col.get_note(note.id)["Note"] == ""
+        assert col.get_card(reviewed.id).reps == 0
+
+    def test_without_a_recorded_answer_the_newest_entry_is_the_target(
+        self, col, set_definitions, monkeypatch
+    ):
+        # The fallback, for a hook fired without the wrapped scheduler seeing the answer --
+        # as the real-Anki suite does when it fires `reviewer_did_answer_card` directly.
+        note, reviewed = review(col)
+        monkeypatch.setattr(note_hooks, "last_answer_undo_step", None)
         col.add_custom_undo_entry("Some other addon")
         set_definitions(within())
         run_copy_fields_on_review(reviewed)
@@ -661,16 +690,23 @@ class TestEverythingMergesIntoTheAnswerCardEntry:
 
         assert col.get_note(note.id)["Note"] == ""
         assert col.get_card(reviewed.id).reps == 1
-        assert col.undo_status().undo == ANSWER_CARD
+
+    def test_an_answer_recorded_for_another_card_is_not_used(self, col, set_definitions):
+        note, reviewed = review(col)
+        col.add_custom_undo_entry("Some other addon")
+        set_definitions(within())
+        run_copy_fields_on_review(col.get_card(note.cards()[1].id))
+        assert col.undo_status().undo == "Some other addon"
 
     def test_no_undo_entry_at_all_makes_the_merge_raise(
         self, col, set_definitions, monkeypatch
     ):
         # There is no guard on the captured step. Anki always leaves an entry behind the
         # answer, so this is not reachable through the reviewer; it is pinned because it is
-        # what "the newest entry" degrades into once the assumption above stops holding.
-        _, reviewed = review(col)
+        # what the handler does once the step it is handed does not exist. The patch goes in
+        # before the review because the step is recorded when the card is answered.
         monkeypatch.setattr(col, "undo_status", lambda: SimpleNamespace(last_step=0))
+        _, reviewed = review(col)
         set_definitions(within())
         with pytest.raises(InvalidInput, match="target undo op not found"):
             run_copy_fields_on_review(reviewed)

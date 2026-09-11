@@ -1,10 +1,12 @@
+import functools
 from typing import Optional, Union, Tuple
 from anki.hooks import (
     wrap,
     note_will_be_added,
     # note_will_flush,
 )
-from anki.cards import Card
+from anki.cards import Card, CardId
+from anki.scheduler.v3 import CardAnswer, Scheduler as V3Scheduler
 from anki.notes import Note, NoteId
 from aqt.editor import Editor, EditorMode
 from aqt import mw
@@ -133,12 +135,54 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     mw.col.merge_undo_entries(undo_entry)
 
 
+# The card id and undo step of the latest answer, recorded by the wrapped
+# Scheduler.answer_card for run_copy_fields_on_review to merge into
+last_answer_undo_step: Optional[Tuple[CardId, int]] = None
+
+
+def remember_answer_undo_step(answer_card):
+    """
+    Wrap Scheduler.answer_card to record the undo step the answer creates. By the time
+    reviewer_did_answer_card fires, a listener registered before ours may have added undo
+    entries of its own, so the newest step is no longer necessarily the Answer card one.
+    """
+
+    @functools.wraps(answer_card)
+    def wrapper(self, answer: CardAnswer):
+        changes = answer_card(self, answer)
+        global last_answer_undo_step
+        last_answer_undo_step = (CardId(answer.card_id), self.col.undo_status().last_step)
+        return changes
+
+    wrapper.copy_anywhere_wrapped = True
+    return wrapper
+
+
+def track_answer_undo_steps():
+    # Scheduler.answer_card is a class attribute, so wrap it only once
+    if not getattr(V3Scheduler.answer_card, "copy_anywhere_wrapped", False):
+        V3Scheduler.answer_card = remember_answer_undo_step(V3Scheduler.answer_card)
+
+
+def get_answer_card_undo_step(card: Card) -> int:
+    """
+    The undo step of the answer to `card`, consuming the recorded one so it can't go stale.
+    Falls back to the newest step when no answer to this card was recorded.
+    """
+    global last_answer_undo_step
+    recorded, last_answer_undo_step = last_answer_undo_step, None
+    if recorded and recorded[0] == card.id:
+        return recorded[1]
+    return mw.col.undo_status().last_step
+
+
 def run_copy_fields_on_review(card: Card):
     """
     Copy fields when a card is reviewed. Check whether the card's
     note type is in the list of copy_into_note_types for the copy_definition
     and run those.
     """
+    answer_card_undo_entry = get_answer_card_undo_step(card)
     config = Config()
     config.load()
     logger = Logger(config.log_level)
@@ -172,9 +216,6 @@ def run_copy_fields_on_review(card: Card):
     if not copy_definitions_to_run:
         return
 
-        # Get the current Answer card undo entry
-    undo_status = mw.col.undo_status()
-    answer_card_undo_entry = undo_status.last_step
     copied_into_notes: list[Note] = []
     copied_into_cards_dict: dict[int, Card] = {}
     for copy_definition in copy_definitions_to_run:
@@ -204,7 +245,9 @@ def run_copy_fields_on_review(card: Card):
             del c.edited
         # update_card adds a new undo entry Update cards
         mw.col.update_cards(edited_cards)
-        # merge all undo entries into the original Answer card undo entry
+        # merge all undo entries into the original Answer card undo entry. This also folds in
+        # any entry another reviewer_did_answer_card listener added after it, as Anki merges
+        # every step newer than the target
         mw.col.merge_undo_entries(answer_card_undo_entry)
     # In order to not have on_sync definitions run twice, we'll set a different fc value
     fc_value = -1 if has_definitions_to_process_on_sync else 1
@@ -398,6 +441,7 @@ def init_note_hooks():
     if not getattr(Editor.cleanup, "copy_anywhere_wrapped", False):
         Editor.cleanup = wrap(Editor.cleanup, on_editor_will_cleanup, "before")
         Editor.cleanup.copy_anywhere_wrapped = True
+    track_answer_undo_steps()
     note_will_be_added.append(lambda _col, note, deck_id: run_copy_fields_on_add(note, deck_id))
     reviewer_did_answer_card.append(lambda reviewer, card, ease: run_copy_fields_on_review(card))
     editor_did_unfocus_field.append(run_copy_fields_on_unfocus_field)
