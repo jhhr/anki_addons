@@ -211,6 +211,12 @@ class WordArrayTests(unittest.TestCase):
                 self.assertIsNotNone(word)
                 self.assertEqual(word[3], reading)
 
+    def test_an_inflected_compound_keeps_its_rendaku(self):
+        for sentence in ("義務[ぎむ]<k> 付[づ]けられる</k>", "義務[ぎむ] 付[づ]けられた"):
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), "義務付ける")
+                self.assertEqual(word[3], "ぎむづける")
+
     def test_only_a_number_makes_the_noun_after_it_a_counter(self):
         self.assertEqual(
             find_word(self.generator.generate("3 年[ねん] 経[た]つ"), "年")[1], "counter"

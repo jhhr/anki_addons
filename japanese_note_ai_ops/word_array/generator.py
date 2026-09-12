@@ -823,7 +823,13 @@ def dict_reading(tm: TextMap, w: Word) -> str:
                 return max(known, key=lambda r: _common_prefix(r, reading))
             return reading
         prefix = "".join(_surface_reading(tm, s) for s in w.subs[:-1])
-        return prefix + dict_reading(tm, w.subs[-1])
+        last = dict_reading(tm, w.subs[-1])
+        known = {to_hiragana(r) for r in w.jm_readings}
+        if prefix + last not in known and prefix + voiced(last) in known:
+            # The last word keeps the compound's rendaku, which its own dictionary reading
+            # doesn't have: 義務[ぎむ] 付[づ]けられる is ぎむづける, though 付ける is つける
+            return prefix + voiced(last)
+        return prefix + last
     if is_copula(head):  # after expressions, which can start on one: で有る
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
     furi = _furigana_reading(tm, w.start, w.end, w.morphs)
