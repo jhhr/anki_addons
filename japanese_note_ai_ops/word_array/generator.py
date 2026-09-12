@@ -5,7 +5,7 @@ tags, punctuation and other non-word text are single-element arrays. Concatenati
 raw_text values gives back the sentence without <b> tags.
 
 Which words exist is decided by concrete rules only; whether a word is worth matching to a note
-is left to the "dont_match" flag, so the rules err towards more parents and more sub-words.
+is left to the word matching judge, so the rules err towards more parents and more sub-words.
 
 Stages
   1. text_map: strip tags and furigana, revert <k> words to kana -> natural text
@@ -366,7 +366,7 @@ def spelled_alike(written: str, spelling: str) -> bool:
 
 def is_word_match(c: Candidate, words: list[Word]) -> bool:
     """Whether a JMdict match is a word of this text at all - not whether it is worth
-    studying, which the dont_match flag decides."""
+    studying, which the word matching judge decides."""
     ws = words[c.i : c.j]
     if all(w.head.pos[0] in FUNCTION_POS for w in ws):
         return False  # function words only: には, のだ, か+の read as 彼の

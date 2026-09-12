@@ -1,4 +1,4 @@
-"""Numbers and the "dont_match" flag, both of which are plain data handling.
+"""Numbers and the five `match_data` states, both of which are plain data handling.
 
 Neither needs SudachiPy, JMdict or a network, so these run wherever the suite does.
 """
@@ -9,6 +9,7 @@ from addon_modules import load_ops_module
 
 numbers = load_ops_module("numbers", subdir="word_array")
 match_flags = load_ops_module("match_flags", subdir="word_array")
+State = match_flags.MatchState
 
 
 def word(text="X", pos="noun", form="X", reading="x", match_data=None, subs=None):
@@ -56,23 +57,41 @@ class NumeralAndReadingTests(unittest.TestCase):
 
 
 class DefaultFlagTests(unittest.TestCase):
-    def test_a_numeral_that_is_a_word_of_its_own_is_matched(self):
+    def test_a_numeral_that_is_a_word_of_its_own_is_left_unjudged(self):
         for form in ["一", "九", "十", "二十", "百", "千", "万"]:
             self.assertEqual(match_flags.default_match_data("number", form, []), [], form)
 
-    def test_any_other_number_starts_out_flagged(self):
+    def test_any_other_number_starts_out_judged_dontmatch(self):
         for form in ["二十八", "千九百三十五", "0.5"]:
             self.assertEqual(
-                match_flags.default_match_data("number", form, []), ["dont_match"], form
+                match_flags.default_match_data("number", form, []), ["dontmatch"], form
             )
 
     def test_a_word_built_on_a_flagged_number_is_flagged_too(self):
-        subs = [word(form="二十八", pos="number", match_data=["dont_match"]), word(form="日")]
-        self.assertEqual(match_flags.default_match_data("noun", "二十八日", subs), ["dont_match"])
+        subs = [word(form="二十八", pos="number", match_data=["dontmatch"]), word(form="日")]
+        self.assertEqual(match_flags.default_match_data("noun", "二十八日", subs), ["dontmatch"])
 
     def test_a_word_built_on_a_matched_number_is_not(self):
         subs = [word(form="三", pos="number"), word(form="月")]
         self.assertEqual(match_flags.default_match_data("noun", "三月", subs), [])
+
+
+class MatchStateTests(unittest.TestCase):
+    def test_the_five_states(self):
+        cases = [
+            ([], State.UNJUDGED),
+            (["dontmatch"], State.DONT_MATCH),
+            (["match"], State.MATCH),
+            ([1674931277303], State.LINKED),
+            ([1674931277303, 4], State.RATED),
+        ]
+        for data, state in cases:
+            self.assertEqual(match_flags.match_state(word(match_data=data)), state, data)
+
+    def test_anything_else_is_refused(self):
+        for data in [["dont_match"], [True], [1, "4"], [1, 2, 3], ["match", 1]]:
+            with self.assertRaises(ValueError, msg=data):
+                match_flags.match_state(word(match_data=data))
 
 
 class FlagHelperTests(unittest.TestCase):
@@ -86,58 +105,82 @@ class FlagHelperTests(unittest.TestCase):
     def test_flagging_a_matched_word_reports_the_note_it_unlinks(self):
         elem = word(match_data=[1674931277303, 2])
         self.assertEqual(match_flags.set_dont_match(elem), 1674931277303)
-        self.assertEqual(elem[4], ["dont_match"])
+        self.assertEqual(elem[4], ["dontmatch"])
         self.assertTrue(match_flags.is_flagged(elem))
 
-    def test_only_words_neither_matched_nor_flagged_are_left_to_match(self):
-        todo, matched, flagged = (
-            word(form="todo"),
-            word(form="matched", match_data=[123]),
-            word(form="flagged", match_data=["dont_match"]),
-        )
-        arr = [["。"], todo, matched, flagged]
-        self.assertEqual(match_flags.elements_to_match(arr), [todo])
+    def test_judging_a_linked_word_worth_a_note_keeps_its_link(self):
+        linked, flagged = word(match_data=[123]), word(match_data=["dontmatch"])
+        match_flags.set_match(linked)
+        match_flags.set_match(flagged)
+        self.assertEqual((linked[4], flagged[4]), ([123], ["match"]))
+
+    def test_each_matching_prompt_gets_its_own_state(self):
+        words = {
+            data: word(form=data, match_data=value)
+            for data, value in [
+                ("unjudged", []),
+                ("dontmatch", ["dontmatch"]),
+                ("match", ["match"]),
+                ("linked", [123]),
+                ("rated", [123, 5]),
+            ]
+        }
+        arr = [["。"], *words.values()]
+        self.assertEqual(match_flags.elements_to_match(arr), [words["match"]])
+        self.assertEqual(match_flags.elements_to_rate(arr), [words["linked"]])
 
     def test_a_note_id_is_not_confused_with_a_flag(self):
-        self.assertIsNone(match_flags.matched_note_id(word(match_data=["dont_match"])))
+        self.assertIsNone(match_flags.matched_note_id(word(match_data=["dontmatch"])))
+        self.assertIsNone(match_flags.matched_note_id(word(match_data=["match"])))
         self.assertEqual(match_flags.matched_note_id(word(match_data=[123])), 123)
 
 
-class FlagPromptTests(unittest.TestCase):
+class JudgePromptTests(unittest.TestCase):
     def setUp(self):
         self.arr = [
             ["<k>"],
             word(" 一[ひと]つ", "noun", "一つ", "ひとつ", subs=[word("一"), word("つ")]),
             ["</k>"],
             word("は", "particle", "は", "は"),
-            word("28", "number", "二十八", "にじゅうはち", match_data=["dont_match"]),
+            word("28", "number", "二十八", "にじゅうはち", match_data=["dontmatch"]),
+            word("本", "noun", "本", "ほん", match_data=[123, 4]),
         ]
-        self.prompt, self.elements = match_flags.flag_prompt("sentence", self.arr)
+        self.prompt, self.elements = match_flags.judge_prompt("sentence", self.arr)
 
-    def test_every_word_is_numbered_and_sub_words_are_indented(self):
-        self.assertEqual([e[2] for e in self.elements], ["一つ", "X", "X", "は", "二十八"])
+    def test_only_unjudged_words_are_numbered_and_sub_words_are_indented(self):
+        self.assertEqual([e[2] for e in self.elements], ["一つ", "X", "X", "は"])
         self.assertIn("0. 一つ: 一つ [ひとつ], noun", self.prompt)
         self.assertIn("    1. 一: X [x], noun", self.prompt)
 
-    def test_an_already_flagged_word_says_so(self):
-        self.assertIn("4. 28: 二十八 [にじゅうはち], number (already not matched)", self.prompt)
+    def test_decided_words_are_shown_for_context(self):
+        self.assertIn("- 28: 二十八 [にじゅうはち], number (no note)", self.prompt)
+        self.assertIn("- 本: 本 [ほん], noun (has a note)", self.prompt)
 
-    def test_the_picked_words_are_flagged(self):
-        match_flags.apply_flag_response(self.elements, {"dont_match": [0, 3]})
-        self.assertEqual(
-            [match_flags.is_flagged(e) for e in self.elements], [True, False, False, True, True]
-        )
+    def test_a_rejudging_mode_numbers_the_states_it_is_given(self):
+        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_MATCHED)
+        self.assertEqual([e[2] for e in elements], ["本"])
+        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_ALL)
+        self.assertEqual([e[2] for e in elements], ["二十八", "本"])
+
+    def test_picked_words_are_dontmatch_and_the_rest_match(self):
+        self.assertEqual(match_flags.apply_judge_response(self.elements, {"dontmatch": [0]}), [])
+        self.assertEqual([e[4] for e in self.elements], [["dontmatch"]] + [["match"]] * 3)
+
+    def test_rejudging_reports_the_links_it_takes_away(self):
+        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_ALL)
+        self.assertEqual(match_flags.apply_judge_response(elements, {"dontmatch": [1]}), [123])
+        self.assertEqual([e[4] for e in elements], [["match"], ["dontmatch"]])
 
     def test_numbers_that_name_no_word_are_ignored(self):
-        self.assertEqual(
-            match_flags.apply_flag_response(self.elements, {"dont_match": [99, -1, "0"]}), []
-        )
-        self.assertFalse(any(match_flags.is_flagged(e) for e in self.elements[:4]))
+        response = {"dontmatch": [99, -1, "0", True]}
+        self.assertEqual(match_flags.apply_judge_response(self.elements, response), [])
+        self.assertFalse(any(match_flags.is_flagged(e) for e in self.elements))
 
-    def test_a_response_without_the_key_is_refused(self):
-        for response in [{}, {"dont_match": "0"}, [], None]:
+    def test_a_response_without_the_key_is_refused_and_changes_nothing(self):
+        for response in [{}, {"dontmatch": "0"}, [], None]:
             with self.assertRaises(ValueError):
-                match_flags.apply_flag_response(self.elements, response)
+                match_flags.apply_judge_response(self.elements, response)
+        self.assertEqual([e[4] for e in self.elements], [[]] * 4)
 
 
 if __name__ == "__main__":

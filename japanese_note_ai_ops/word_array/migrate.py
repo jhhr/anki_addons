@@ -71,7 +71,7 @@ NO_WORD = "no_word"  # nothing to match with: a bare note id, a word with no rea
 NO_ELEMENT = "no_element"  # no word of the array fits
 AMBIGUOUS = "ambiguous"  # several words fit, and nothing here says which
 CONTESTED = "contested"  # two entries fit the same word, with different note ids
-FLAGGED = "flagged"  # the word that fits is flagged "dont_match"
+FLAGGED = "flagged"  # the word that fits is judged "dontmatch"
 
 
 @dataclass(frozen=True)

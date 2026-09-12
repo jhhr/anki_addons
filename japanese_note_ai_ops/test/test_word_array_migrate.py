@@ -205,15 +205,15 @@ class LeftoverTests(unittest.TestCase):
         self.assertEqual(report.leftovers[0].reason, migrate.NO_ELEMENT)
 
     def test_a_flag_is_not_overwritten_by_an_old_link(self):
-        arr = [word("二十八日", "にじゅうはちにち", match_data=["dont_match"])]
+        arr = [word("二十八日", "にじゅうはちにち", match_data=["dontmatch"])]
         report = migrate.migrate({"nouns": [["二十八日", "にじゅうはちにち", "sort", 11]]}, arr)
-        self.assertEqual((matched(arr), report.lost_note_ids), ([["dont_match"]], [11]))
+        self.assertEqual((matched(arr), report.lost_note_ids), ([["dontmatch"]], [11]))
         self.assertEqual(report.leftovers[0].reason, migrate.FLAGGED)
 
     def test_a_flagged_word_does_not_make_an_unambiguous_link_look_ambiguous(self):
-        arr = [word("一", "いち", match_data=["dont_match"]), word("一", "いち")]
+        arr = [word("一", "いち", match_data=["dontmatch"]), word("一", "いち")]
         report = migrate.migrate({"numbers": [["一", "いち", "sort", 11]]}, arr)
-        self.assertEqual((matched(arr), report.leftovers), ([["dont_match"], [11]], []))
+        self.assertEqual((matched(arr), report.leftovers), ([["dontmatch"], [11]], []))
 
     def test_an_id_with_no_word_to_place_it_by_is_reported(self):
         arr = [word("口紅", "くちべに")]

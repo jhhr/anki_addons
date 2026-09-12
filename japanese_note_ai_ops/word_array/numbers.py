@@ -6,7 +6,7 @@ A number's dictionary form is the Japanese numeral whatever the text writes: 1, 
 when the note doesn't give one.
 
 Only the numerals that are words of their own get matched to notes: the digits, 十 and 二十,
-and the multipliers. Every other number starts out "dont_match" - numbers have been a steady
+and the multipliers. Every other number starts out "dontmatch" - numbers have been a steady
 source of junk notes.
 """
 

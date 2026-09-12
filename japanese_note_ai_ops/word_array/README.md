@@ -63,8 +63,8 @@ has the plain reading (閏日 -> 日[び] -> ひ).
 ## Structure
 
 Which words exist follows concrete rules; whether a word is worth matching to a note is the
-`"dont_match"` flag's call, not the generator's. So the rules err towards more words: nesting
-loses nothing, and the flag is what filters.
+word matching judge's call (`match_data`), not the generator's. So the rules err towards more
+words: nesting loses nothing, and the judge is what filters.
 
 **Multi-word units.** Every JMdict match becomes a parent with its words as sub-words
 (連れて行く, 様に成る, 先ずは, 何時まで, 足が竦む, 此れは), except where it is not a word of the
@@ -107,22 +107,28 @@ A number's dictionary form is the Japanese numeral whatever the text writes (`nu
 computed when the note gives none (三つ still reads みっつ, from JMdict). Lookups use the
 numeral, so 1日 and １日 both find 一日.
 
-## The "dont_match" flag
+## match_data states
 
-`match_data[0]` is the matched note's id once match_words_to_notes has run; the flag is the
-string `"dont_match"` in the same slot, so one check skips both (`match_flags.py`).
+`match_data` is in one of five states (`match_flags.MatchState`, `match_state()`):
 
-Numbers other than 一-九, 十, 二十 and the multipliers start out flagged, and so does a word
+1. `[]` - unjudged: new from the generator, or migrated without a note id.
+2. `["dontmatch"]` - judged not worth a note.
+3. `["match"]` - judged worth a note, not matched yet.
+4. `[note_id]` - migrated with a note id: judged already, lacks `match_quality`.
+5. `[note_id, match_quality]` - fully matched.
+
+Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
 built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
-else is an AI job's call - `flag_prompt()` numbers every word element and states the rules the
-old extract_words prompt used (a compound meaning no more than its parts, a word plus the
-particle it takes, the pieces of a yojijukugo), and `apply_flag_response()` applies its answer.
-The job is meant for migrated arrays as well as new ones, so it can flag a word that was
-matched; `apply_flag_response` returns the note ids that flag unlinked.
+else is the word matching judge's call - `judge_prompt()` numbers the words in the states it is
+given, lists the rest for context, and states the rules the old extract_words prompt used (a
+compound meaning no more than its parts, a word plus the particle it takes, the pieces of a
+yojijukugo); `apply_judge_response()` makes the picks `dontmatch` and every other numbered word
+`match`, keeping a link it has. The modes are `JUDGE_NEW` (state 1, the default),
+`REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away, and
+`apply_judge_response` returns the note ids it unlinked.
 
-`elements_to_match()` is what match_words_to_notes will use once it reads word arrays: the
-words that are neither matched nor flagged. Running the job on notes needs the field that will
-hold the arrays, which comes with the phase 2 migration, so nothing calls the job yet.
+match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
+`elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
 
 ## Migrating the old word lists
 
