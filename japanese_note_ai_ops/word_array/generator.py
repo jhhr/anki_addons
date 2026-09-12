@@ -641,19 +641,22 @@ def noun_form_verb(written: str, w: Word) -> Optional[str]:
 # and those only need listing here when their stem + い reads as an adjective (全く, 全い).
 LEXICAL_KU_ADVERBS = {"危うく", "全く"}
 # Tokens that are an i-adjective form without being tokenized as one: 良く as an adverb,
-# 大きな as an adnominal
-ADJECTIVE_FORM_ENDINGS = {"副詞": "く", "連体詞": "な"}
+# 大きな as an adnominal, 多く (多くの) and 近く (近くで) as nouns
+ADJECTIVE_FORM_ENDINGS = {"副詞": "く", "連体詞": "な", "名詞": "く"}
 
 
 def adjective_of(tm: TextMap, w: Word) -> Optional[str]:
     """The i-adjective a one-token word is a form of: <k>良く</k> (副詞) -> 良い, 大きな
-    (連体詞) -> 大きい. JMdict must read the adjective as the word's stem, so 正しく read
-    まさしく is not 正しい."""
+    (連体詞) -> 大きい, 近く (名詞) -> 近い. JMdict must read the adjective as the word's stem,
+    so 正しく read まさしく is not 正しい. A noun needs a kanji: kana ones are pieces of
+    something else (the しく of <k>正しく</k>, みるく)."""
     if w.kind != "word" or len(w.morphs) != 1 or w.jm_form:
         return None
     ending = ADJECTIVE_FORM_ENDINGS.get(w.head.pos[0])
     written = tm.written_form(w.start, w.end)
     if not ending or not written.endswith(ending) or written in LEXICAL_KU_ADVERBS:
+        return None
+    if w.head.pos[0] == "名詞" and not KANJI_RE.search(written):
         return None
     adjective = written[:-1] + "い"
     reading = w.head.reading[:-1] + "い"

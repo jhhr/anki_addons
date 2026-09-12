@@ -47,7 +47,7 @@ Status: phase 1 prototype, not wired into any op yet.
    A multi-word unit matched with its last word deinflected takes its dictionary form and
    reading from its parts, in the note's spelling (様に成る / ようになる, not ようになる).
    An adjective's く- and な-forms are the adjective (大きく, <k>良く</k> as a 副詞, 大きな as a
-   連体詞), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
+   連体詞, 多く and 近く as nouns with a kanji), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
    lists 大きく and 早く as adverbs too, so it can't tell them apart.
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
