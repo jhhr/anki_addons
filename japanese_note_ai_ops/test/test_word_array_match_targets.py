@@ -1,7 +1,9 @@
 """Which words of a word array match_words_to_notes gathers to match. Plain data handling."""
 
+import asyncio
 import json
 import unittest
+from unittest import mock
 
 from addon_modules import load_ops_module
 
@@ -72,6 +74,19 @@ class GatherTargetsTests(unittest.TestCase):
             match_targets.gather_targets([word("本", ["maybe"])])
 
 
+class SaveResultsTests(unittest.TestCase):
+    def test_note_ids_land_in_nested_elements(self):
+        sub = word("様", ["match"])
+        arr = [word("様に", ["match"], [sub, word("に", ["dontmatch"])]), word("本", ["match"])]
+        targets = match_targets.gather_targets(arr)
+        results = {1: ("様", "さま", "様 (m2)", "-1234567"), 2: None}
+        self.assertEqual(match_targets.save_results(targets, results), 1)
+        # a new note's placeholder id is saved as an int, like a real one
+        self.assertEqual(sub[4], [-1234567])
+        self.assertEqual(arr[0][4], ["match"])
+        self.assertEqual(arr[1][4], ["match"])
+
+
 class Progress:
     def __init__(self):
         self.notes_done = 0
@@ -79,11 +94,13 @@ class Progress:
     def increment_counts(self, notes_done=0):
         self.notes_done += notes_done
 
+    def update_new_note_processing_progress(self, **_):
+        pass
+
 
 class FakeNote:
-    id = 1
-
-    def __init__(self, fields):
+    def __init__(self, fields, note_id=1):
+        self.id = note_id
         self.fields = fields
         self.tags = []
 
@@ -96,8 +113,16 @@ class FakeNote:
     def __getitem__(self, field):
         return self.fields[field]
 
+    def __setitem__(self, field, value):
+        self.fields[field] = value
+
     def add_tag(self, tag):
         self.tags.append(tag)
+
+
+class WordIndexCache:
+    async def get(self, _):
+        return None
 
 
 class MatchWordsToNotesArrayTests(unittest.TestCase):
@@ -105,18 +130,42 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
 
     def setUp(self):
         self.mwtn = load_ops_module("match_words_to_notes")
-
-    def test_an_array_note_is_gathered_and_counted_done_without_tasks(self):
-        arr = [word("本", ["match"]), word("を", ["dontmatch"])]
-        note = FakeNote({"Sentence": "本を", "Words": json.dumps(arr, ensure_ascii=False)})
-        config = {
-            "Word": {"furigana_sentence_field": "Sentence", "word_list_field": "Words"},
+        self.config = {
+            "Word": {key: key for key in self.mwtn.MATCH_FIELD_KEYS},
+            "match_words_model": "model",
             "word_lists_to_process": {"nouns": True},
         }
+
+    def plan(self, note, arr, progress, updates, edited_nids, config=None):
+        return self.mwtn.plan_word_array_matching(
+            config=config or self.config,
+            note=note,
+            arr=arr,
+            sentence="本を",
+            edited_nids=edited_nids,
+            notes_to_add_dict={},
+            notes_to_update_dict=updates,
+            progress_updater=progress,
+            cancel_state=None,
+            gate=None,
+            all_generated_meanings_dict={},
+            word_locks_dict={},
+            word_lock=None,
+            word_note_index_cache=WordIndexCache(),
+            note_cache=None,
+            sentence_cache=None,
+            limit_words_and_readings=None,
+            log_prefix="",
+        )
+
+    def test_an_array_note_is_not_taken_for_a_broken_word_list(self):
+        arr = [word("本", ["dontmatch"]), word("を", ["dontmatch"])]
+        fields = {"furigana_sentence_field": "本を", "word_list_field": json.dumps(arr)}
+        note = FakeNote(fields)
         progress = Progress()
         updates = {}
         plan = self.mwtn.match_words_to_notes_for_note(
-            config=config,
+            config=self.config,
             note=note,
             edited_nids=[],
             notes_to_add_dict={},
@@ -136,14 +185,75 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(updates, {})
         self.assertEqual(progress.notes_done, 1)
 
-    def test_plan_gathers_the_words_to_match(self):
-        arr = [word("本", ["match"]), word("棚", ["maybe"])]
+    def test_nothing_to_match_or_no_model_counts_the_note_done(self):
         progress = Progress()
-        targets = self.mwtn.plan_word_array_matching(None, arr[:1], progress, None, "")
-        self.assertEqual([t.word for t in targets], ["本"])
+        note = FakeNote({})
         # match_data in no known state is logged, and the note still counted done
-        self.assertEqual(self.mwtn.plan_word_array_matching(None, arr, progress, None, ""), [])
+        self.assertIsNone(self.plan(note, [word("棚", ["maybe"])], progress, {}, []))
+        no_model = {**self.config, "match_words_model": ""}
+        self.assertIsNone(self.plan(note, [word("本", ["match"])], progress, {}, [], no_model))
         self.assertEqual(progress.notes_done, 2)
+
+    def test_matched_ids_are_saved_into_the_array_field(self):
+        sub = word("様", ["match"], pos="suffix")
+        arr = [word("様に", ["dontmatch"], [sub]), word("本", ["match"])]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        seen = []
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            seen.append((args["word"], args["part_of_speech"], args["word_list_field"]))
+            if args["word"] == "様":
+                results = args["processed_word_tuples"]
+                results[args["word_index"]] = ("様", "よみ", "様", -1234567)
+            return True
+
+        def inner_bulk_op(config, op, **_):
+            async def process(**op_args):
+                return await op(config, **op_args)
+
+            return process
+
+        progress = Progress()
+        updates = {}
+        edited_nids = []
+        plan = self.plan(note, arr, progress, updates, edited_nids)
+        self.assertEqual(plan.task_count, 2)
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        self.assertEqual(
+            seen, [("様", "Suffix", "word_list_field"), ("本", "Noun", "word_list_field")]
+        )
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual(saved[0][5][0][4], [-1234567])
+        self.assertEqual(saved[1][4], ["match"])
+        self.assertEqual(updates, {1: note})
+        self.assertEqual(edited_nids, [1])
+        self.assertEqual(progress.notes_done, 1)
+
+    def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):
+        arr = [word("様", [-1234567]), word("本", [1674931277303, 4])]
+        fields = {"word_list_field": json.dumps(arr), "new_note_id_field": ""}
+        referencing = FakeNote(fields, note_id=2)
+        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "-1234567"}, 99)
+        with (
+            mock.patch.object(self.mwtn, "col_find_notes", lambda _: [2]),
+            mock.patch.object(self.mwtn, "col_get_notes", lambda _: [referencing]),
+        ):
+            updated = self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
+        saved = json.loads(referencing["word_list_field"])
+        self.assertEqual([saved[0][4], saved[1][4]], [[99], [1674931277303, 4]])
+        self.assertEqual(set(updated), {2, 99})
 
 
 if __name__ == "__main__":

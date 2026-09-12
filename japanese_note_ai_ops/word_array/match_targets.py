@@ -12,7 +12,7 @@ word matching judge's call (match_flags.py).
 
 import re
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from . import match_flags
 from .match_flags import MatchState
@@ -74,3 +74,25 @@ def gather_targets(
             continue
         targets.append(MatchTarget(elem, word, reading, note_part_of_speech(elem[1])))
     return targets
+
+
+def save_results(targets: list[MatchTarget], results: dict[int, Any]) -> int:
+    """Write each matched target's note id into its element's `match_data`, returning how many
+    were written. `results` is keyed by target index, each value the word tuple the matching
+    left, its note id last. The id is a real note's or a new note's negative placeholder, which
+    update_fake_note_ids swaps in the field text once the note exists. A target without a
+    result stays `["match"]` to be matched on the next run.
+
+    The saved `[note_id]` has no match_quality until the main prompt gives one."""
+    saved = 0
+    for index, target in enumerate(targets):
+        result = results.get(index)
+        if not result:
+            continue
+        try:
+            note_id = int(result[-1])
+        except (TypeError, ValueError):
+            continue
+        target.elem[4] = [note_id]
+        saved += 1
+    return saved
