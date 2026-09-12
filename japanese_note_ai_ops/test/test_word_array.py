@@ -163,6 +163,24 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(sentence)
                 self.assertEqual(self.gold.concat_raw(arr), sentence)
 
+    def test_adjective_forms_take_the_adjectives_dictionary_form(self):
+        # JMdict lists 大きく as an adverb too; only adverbs of their own keep the く-form
+        cases = [
+            ("口[くち]を 大[おお]きく 開[あ]けて", " 大[おお]きく", "大きい", "おおきい"),
+            ("彼女[かのじょ]は<k> 良[よ]く</k> 喋[しゃべ]る", " 良[よ]く", "良い", "よい"),
+            ("大[おお]きな 音[おと]", "大[おお]きな", "大きい", "おおきい"),
+        ]
+        for sentence, raw, form, reading in cases:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word, [raw, "adjective", form, reading, [], []])
+        for sentence, form in [
+            ("危[あや]うく 死[し]ぬ", "危うく"),
+            ("全[まった]く 違[ちが]う", "全く"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "adverb")
+
     def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
         # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way
         arr = self.generator.generate("<div> 土産物[へんなよみ]を 買[か]う</div>")

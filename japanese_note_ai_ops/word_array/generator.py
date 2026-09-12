@@ -479,8 +479,8 @@ def decompose(tm: TextMap, w: Word) -> list[Word]:
         ("名詞", "数詞"),
     ):
         return []
-    if not KANJI_RE.search(tm.written_form(w.start, w.end)):
-        return []
+    if not KANJI_RE.search(tm.written_form(w.start, w.end)) or adjective_of(tm, w):
+        return []  # an adjective form is no compound: not 大き + な
     for split in range(w.start + 1, w.end):
         if not tm.can_split(split):
             continue
@@ -619,6 +619,34 @@ def noun_form_verb(written: str, w: Word) -> Optional[str]:
     return verb if jmdict.has_pos(verb, "v5") else None
 
 
+# く-forms kept as written instead of going back to their adjective: adverbs whose meaning is
+# their own (危うく "nearly", not 危うい "dangerous"). JMdict can't tell them apart, as it lists
+# 大きく and 早く as adverbs too; Sudachi has most such adverbs as 副詞 already (恐らく, 暫く),
+# and those only need listing here when their stem + い reads as an adjective (全く, 全い).
+LEXICAL_KU_ADVERBS = {"危うく", "全く"}
+# Tokens that are an i-adjective form without being tokenized as one: 良く as an adverb,
+# 大きな as an adnominal
+ADJECTIVE_FORM_ENDINGS = {"副詞": "く", "連体詞": "な"}
+
+
+def adjective_of(tm: TextMap, w: Word) -> Optional[str]:
+    """The i-adjective a one-token word is a form of: <k>良く</k> (副詞) -> 良い, 大きな
+    (連体詞) -> 大きい. JMdict must read the adjective as the word's stem, so 正しく read
+    まさしく is not 正しい."""
+    if w.kind != "word" or len(w.morphs) != 1 or w.jm_form:
+        return None
+    ending = ADJECTIVE_FORM_ENDINGS.get(w.head.pos[0])
+    written = tm.written_form(w.start, w.end)
+    if not ending or not written.endswith(ending) or written in LEXICAL_KU_ADVERBS:
+        return None
+    adjective = written[:-1] + "い"
+    reading = w.head.reading[:-1] + "い"
+    for _, readings, pos in jmdict.lookup(adjective):
+        if "adj-i" in pos and reading in {to_hiragana(r) for r in readings}:
+            return adjective
+    return None
+
+
 def _surface_form(tm: TextMap, w: Word) -> str:
     """The word as the note writes it, numbers as numerals (１日 -> 一日)."""
     value = number_value(tm, w)
@@ -670,13 +698,11 @@ def dict_form(tm: TextMap, w: Word) -> str:
         and not w.followed_by_verb
     ):
         return written  # 下さい, 於いて (not 連れて in 連れて行く)
-    if (
-        head.pos[0] == "形容詞"
-        and len(w.morphs) == 1
-        and written.endswith("く")
-        and jmdict.has_pos(written, "adv")
-    ):
+    if len(w.morphs) == 1 and written in LEXICAL_KU_ADVERBS:
         return written  # 危うく
+    adjective = adjective_of(tm, w)
+    if adjective:
+        return adjective
     verb = None if w.followed_by_suru else noun_form_verb(written, w)
     if verb:
         return verb
@@ -802,12 +828,16 @@ JM_POS_MAP = [
 ]
 
 
-def pos_label(w: Word, prev: Optional[Word]) -> str:
+def pos_label(tm: TextMap, w: Word, prev: Optional[Word]) -> str:
     if w.kind == "expression" or w.jm_pos:  # a JMdict match, or a furigana merge JMdict has
         for code, label in JM_POS_MAP:
             if any(p == code or (code == "v" and p.startswith("v")) for p in w.jm_pos):
                 return label
         return "expression"
+    if len(w.morphs) == 1 and tm.written_form(w.start, w.end) in LEXICAL_KU_ADVERBS:
+        return "adverb"
+    if adjective_of(tm, w):
+        return "adjective"
     h = w.head
     if is_copula(h):
         return "particle" if h.surface in PARTICLE_COPULA else "copula"
@@ -864,7 +894,7 @@ def _emit(tm: TextMap, words: list[Word], raw_lo: int, raw_hi: int) -> list[list
             out.append([raw_text])
         else:
             subs = _emit(tm, w.subs, rs, re_ext) if w.subs else []
-            pos, form = pos_label(w, prev), dict_form(tm, w)
+            pos, form = pos_label(tm, w, prev), dict_form(tm, w)
             match_data = match_flags.default_match_data(pos, form, subs)
             out.append([raw_text, pos, form, dict_reading(tm, w), match_data, subs])
         cursor = re_ext
