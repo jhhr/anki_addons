@@ -119,6 +119,39 @@ matched; `apply_flag_response` returns the note ids that flag unlinked.
 words that are neither matched nor flagged. Running the job on notes needs the field that will
 hold the arrays, which comes with the phase 2 migration, so nothing calls the job yet.
 
+## Migrating the old word lists
+
+`migrate.migrate(word_lists, arr)` fits a stored extract_words word list into a generated
+array, writing `match_data` in place. The array is taken as correct, so the only thing carried
+over is the one thing the generator cannot produce: the note id of a word already matched. The
+meaning index goes (a word's position in the array is what tells two occurrences apart now) and
+so does the sort field value, which the note itself has; an entry with no note id therefore
+carries nothing and is counted, not reported.
+
+An entry finds its element in steps, each needing exactly one element to fit, and the step also
+ranks the claim, so that of two entries wanting one word the better-founded one keeps it
+instead of both standing down:
+
+| Step | Fits when | Carries over |
+| --- | --- | --- |
+| `form` | the form and reading as they stand | 2845 |
+| `okurigana` | same reading, same kanji (向う -> 向こう) | 19 |
+| `written` | same form, the old reading colloquial or wrong (何[なん], ノイローゼ[はいろーぜ]) | 25 |
+| `reading` | same reading, part of speech fits the category (する -> 為る, について -> に就いて) | 121 |
+| `raw` | the element's raw text is the entry's word (です -> だ, 突き -> 突く) | 61 |
+
+What fits nothing, fits several elements, or is contested by a second link is reported rather
+than guessed at: match_words_to_notes can match the word again from the sentence with `<b>`
+marking which occurrence it is, which beats a coin toss here. `lost_note_ids` is the part worth
+a caller's attention - a lost link is what the migration op tags a note for.
+
+Measured by `research/migrate_fit.py` over the 292 sentences of the extract_words fine-tuning
+set, which is a hand-checked corpus of the old format: **81.5% of 3768 entries carried over**,
+the rest being 7.9% ambiguous (the same word twice in one sentence, almost all particles), 9.0%
+with no element at all and 0.7% contested. The no-element share is mostly by design - the old
+lists gave notes to compound function words the structural rules refuse (には, でも, として),
+and to て and ない, which now belong to the verb's inflection chain.
+
 ## Results
 
 Against the 23 hand-converted extract_words examples (`research/gold_examples.md`), whose
@@ -184,6 +217,7 @@ python word_array/research/setup_resources.py   # the first-use downloads, into 
 python word_array/research/evaluate.py          # accuracy against the gold, -q for the summary
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
+python word_array/research/migrate_fit.py       # what the migration carries over, and loses
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

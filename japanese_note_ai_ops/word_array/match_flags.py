@@ -67,7 +67,7 @@ def default_match_data(part_of_speech: str, dict_form: str, sub_words: list) -> 
 FLAG_RETURN_FIELD = "dont_match"
 
 
-def _plain(raw_text: str) -> str:
+def plain_text(raw_text: str) -> str:
     return FURIGANA_RE.sub(r"\1", TAG_RE.sub("", raw_text)).replace(" ", "")
 
 
@@ -78,7 +78,7 @@ def flag_prompt(sentence: str, arr: list) -> tuple[str, list[list]]:
     for depth, elem in iter_words(arr):
         note = " (already not matched)" if is_flagged(elem) else ""
         lines.append(
-            f"{'    ' * depth}{len(elements)}. {_plain(elem[0])}: {elem[2]} [{elem[3]}],"
+            f"{'    ' * depth}{len(elements)}. {plain_text(elem[0])}: {elem[2]} [{elem[3]}],"
             f" {elem[1]}{note}"
         )
         elements.append(elem)
@@ -95,7 +95,7 @@ Pick an entry when:
 
 Don't pick particles, the copula, auxiliary words, prefixes or suffixes (の, だ, 御, さん, 達): they get notes too. Don't pick ordinary single words for being common or easy. Entries marked "already not matched" need not be picked again.
 
-Sentence: {_plain(sentence)}
+Sentence: {plain_text(sentence)}
 
 Entries:
 {entries}
