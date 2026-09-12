@@ -196,6 +196,14 @@ class WordArrayTests(unittest.TestCase):
             with self.subTest(sentence=sentence):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "adverb")
 
+    def test_only_a_number_makes_the_noun_after_it_a_counter(self):
+        self.assertEqual(
+            find_word(self.generator.generate("3 年[ねん] 経[た]つ"), "年")[1], "counter"
+        )
+        # 一日中 starts on a number but is not one (Sudachi's 家 here is a suffix)
+        arr = self.generator.generate("一日中 家[うち]に 居[い]た")
+        self.assertNotEqual(find_word(arr, "家")[1], "counter")
+
     def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
         # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way
         arr = self.generator.generate("<div> 土産物[へんなよみ]を 買[か]う</div>")

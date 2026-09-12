@@ -879,7 +879,7 @@ def pos_label(tm: TextMap, w: Word, prev: Optional[Word]) -> str:
         h.pos[0] in ("接尾辞", "名詞")
         and len(w.morphs) == 1
         and prev is not None
-        and prev.head.pos[:2] == ("名詞", "数詞")
+        and all(m.pos[:2] == ("名詞", "数詞") for m in prev.morphs)  # not 一日中 家
     ):
         return "counter"  # 隻, and nouns counting after a number: 3 月, 1935 年
     for key, label in POS_MAP:
