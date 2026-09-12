@@ -298,6 +298,15 @@ def _forms(tm: TextMap, ws: list[Word]) -> list[tuple[str, str, bool]]:
     return list(unique.values())
 
 
+def reads_as(parts: list[str], readings: tuple[str, ...]) -> bool:
+    """Whether words the note reads as `parts` can be an entry read as one of `readings`, a
+    word after the first allowed rendaku the furigana has no group to show: 慈悲[じひ] 深[ふか]い
+    is じひぶかい."""
+    known = {to_hiragana(r) for r in readings}
+    options = [[parts[0]]] + [dict.fromkeys([p, voiced(p)]) for p in parts[1:]]
+    return any("".join(combo) in known for combo in itertools.product(*options))
+
+
 def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[Candidate]:
     cands = []
     for i in range(len(words)):
@@ -306,8 +315,13 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
         for j in range(i + 2, min(len(words), i + max_len) + 1):
             if words[j - 1].kind == "punct":
                 break
+            parts = [to_hiragana(tm.surface_reading(w.start, w.end)) for w in words[i:j]]
             for form, written, surface in _forms(tm, words[i:j]):
                 hits = jmdict.lookup(form)
+                if surface and not UNREAD_RE.search("".join(parts)):
+                    # A homograph the note's furigana reads otherwise is not this entry:
+                    # 彼[かれ]の is no 彼の (あの), 今日[きょう]は no 今日は (こんにちは)
+                    hits = [h for h in hits if reads_as(parts, h[1])]
                 if hits:
                     cands.append(
                         Candidate(
@@ -795,7 +809,7 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         return prefix + dict_reading(tm, w.subs[-1])
     if is_copula(head):  # after expressions, which can start on one: で有る
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
-    furi =_furigana_reading(tm, w.start, w.end, w.morphs)
+    furi = _furigana_reading(tm, w.start, w.end, w.morphs)
     lemma = dict_form(tm, w)
     written = tm.written_form(w.start, w.end)
     if lemma == written:

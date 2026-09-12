@@ -125,6 +125,15 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(self.examples[num][0])
                 self.assertEqual(find_word(arr, form), [])
 
+    def test_homographs_the_furigana_reads_otherwise_are_refused(self):
+        # JMdict's 彼の is あの and its 今日は こんにちは
+        arr = self.generator.generate("彼[かれ]の 車[くるま]は 今日[きょう]は 新[あたら]しい。")
+        self.assertEqual(find_word(arr, "彼の"), [])
+        self.assertEqual(find_word(arr, "今日は"), [])
+        # JMdict reads 慈悲深い じひぶかい; furigana split between words has no group to voice
+        arr = self.generator.generate("彼女[かのじょ]は 慈悲[じひ] 深[ふか]い 人[ひと]だ。")
+        self.assertEqual(find_word(arr, "慈悲深い")[3], "じひふかい")
+
     def test_an_expression_starting_on_the_copula_keeps_its_whole_reading(self):
         arr = self.generator.generate(
             "彼[かれ]は 作家[さっか]で<k> 有[あ]り</k> 学者[がくしゃ]です。"
