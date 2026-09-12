@@ -80,6 +80,7 @@ from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
 from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
     make_kanjify_sentence_fine_tuning_data,
     make_extract_words_fine_tuning_data,
+    make_extract_words_migration_data,
 )
 
 
@@ -125,6 +126,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
     export_kanjify_ft_action = QAction("Export kanjify fine-tuning data", mw)
     export_extract_words_ft_action = QAction("Export extract-words fine-tuning data", mw)
+    export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
     merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
     new_note_all_ops_action = QAction("Run all ops for new notes", mw)
@@ -217,6 +219,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         export_extract_words_ft_action.triggered,
         lambda: make_extract_words_fine_tuning_data(selected_nids, parent=browser),
     )
+    qconnect(
+        export_migration_data_action.triggered,
+        lambda: make_extract_words_migration_data(selected_nids, parent=browser),
+    )
 
     ai_menu = menu.addMenu("AI helper")
     if ai_menu is None:
@@ -247,6 +253,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
     ai_menu.addAction(export_extract_words_ft_action)
+    ai_menu.addAction(export_migration_data_action)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):

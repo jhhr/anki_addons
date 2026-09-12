@@ -95,6 +95,76 @@ def _write_split_fine_tuning_files(output_path: str, entries: list[str]) -> tupl
     return len(training_entries), len(validation_entries)
 
 
+def build_migration_rows(pairs: Sequence[tuple[str, str]]) -> tuple[list[str], int]:
+    """One jsonl row per distinct sentence, holding the sentence and its word list exactly as
+    the fields have them: unparsed, so that invalid production data reaches the migration test
+    as it is. Returns the rows and how many duplicate sentences were left out, the first
+    note's word list winning."""
+    rows: list[str] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for sentence, word_list in pairs:
+        if sentence in seen:
+            duplicates += 1
+            continue
+        seen.add(sentence)
+        rows.append(json.dumps({"sentence": sentence, "word_list": word_list}, ensure_ascii=False))
+    return rows, duplicates
+
+
+def make_extract_words_migration_data(
+    nids: Sequence[NoteId],
+    parent: Any = None,
+) -> None:
+    """Export the old extract_words word lists for testing the word array migration on the
+    whole collection. The sentence is the raw `word_extraction_sentence_field`, `<i>` context
+    included - the migration strips that itself. Notes whose list is already an array are
+    skipped: there is nothing left to migrate in them."""
+    config = mw.addonManager.getConfig(__name__)
+    if not config:
+        logger.error("Make extract-words migration data: missing addon configuration.")
+        return
+
+    pairs: list[tuple[str, str]] = []
+    skipped = 0
+    already_migrated = 0
+
+    os.makedirs(_OUTPUT_DIR, exist_ok=True)
+    output_path = os.path.join(_OUTPUT_DIR, "extract_words_migration_data.jsonl")
+
+    for nid in nids:
+        note = mw.col.get_note(nid)
+        note_type = note.note_type()
+        try:
+            sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)
+            word_list_field = get_field_config(config, "word_list_field", note_type)
+        except Exception:
+            skipped += 1
+            continue
+        if sentence_field not in note or word_list_field not in note:
+            skipped += 1
+            continue
+
+        sentence = note[sentence_field].strip()
+        word_list_raw = note[word_list_field].strip()
+        if not sentence or not word_list_raw:
+            skipped += 1
+            continue
+        if word_list_raw.startswith("["):
+            already_migrated += 1
+            continue
+        pairs.append((sentence, word_list_raw))
+
+    rows, duplicates = build_migration_rows(pairs)
+    _write_jsonl_entries(output_path, rows)
+    tooltip(
+        f"Wrote {len(rows)} sentences to {output_path}. Skipped {duplicates} duplicate"
+        f" sentences, {already_migrated} already migrated notes and {skipped} notes missing"
+        " a sentence or word list.",
+        period=10000,
+    )
+
+
 def make_kanjify_sentence_fine_tuning_data(
     nids: Sequence[NoteId],
     parent: Any = None,
