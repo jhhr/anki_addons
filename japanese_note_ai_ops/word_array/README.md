@@ -127,6 +127,11 @@ yojijukugo); `apply_judge_response()` makes the picks `dontmatch` and every othe
 `REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away, and
 `apply_judge_response` returns the note ids it unlinked.
 
+The op is `async_api_ops/word_matching_judge.py`, one browser menu entry per mode ("Judge words
+matchability", "Re-judge matched words", "Re-judge matched/judged words"), model
+`word_matching_judge_model`. A note with nothing in the mode's states makes no request, a field
+still holding an old word list is skipped, and unlinked note ids are logged.
+
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
 
