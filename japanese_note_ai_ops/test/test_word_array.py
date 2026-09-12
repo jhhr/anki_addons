@@ -155,6 +155,14 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual([s[0] for s in word[5]], [" 為替[かわせ]", "相場[そうば]"])
         self.assertEqual([s[3] for s in word[5]], ["かわせ", "そうば"])
 
+    def test_a_character_sudachi_normalizes_into_several_still_partitions(self):
+        # … normalizes to ... and comes back as the one morpheme covering it plus empty ones,
+        # the last of which starts past the end of the text
+        for sentence in ["<div> 嫌[いや]…だ…</div>", "<div> 嫌[いや]だ…</div>"]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(self.gold.concat_raw(arr), sentence)
+
     def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
         # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way
         arr = self.generator.generate("<div> 土産物[へんなよみ]を 買[か]う</div>")

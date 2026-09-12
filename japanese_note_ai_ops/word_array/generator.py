@@ -132,8 +132,14 @@ def _morph(m) -> Morph:
 def tokenize(natural: str) -> list[Morph]:
     out = []
     for m in _tokenizer().tokenize(natural, SplitMode.C):
+        if m.end() <= m.begin():
+            # Sudachi normalizes its input before tokenizing (… -> ...) and maps the result
+            # back to the text it was given, so a character that expanded comes back as one
+            # morpheme covering it plus empty ones with no text to point at - the last of which
+            # start past the end of `natural`.
+            continue
         mo = _morph(m)
-        subs = m.split(SplitMode.A)
+        subs = [s for s in m.split(SplitMode.A) if s.end() > s.begin()]
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
