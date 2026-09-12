@@ -26,8 +26,8 @@ that two entries wanting the same word don't both have to stand down:
 What fits nothing, fits several elements, or is wanted by two entries at once is reported
 instead of guessed at (the user's call): match_words_to_notes can match such a word again from
 the sentence, with `<b>` marking which occurrence it is, and that is more reliable than a coin
-toss here. The exception is a particle or the copula, where a link fitting several occurrences
-goes on all of them (`_spreads`), since two occurrences of の are all but never two notes.
+toss here. The exception is several occurrences of one word, where the link goes on all of them
+(`_spreads`): the old list naming it once gave it one note.
 Only a lost note id is worth the caller's attention - see `lost_note_ids`.
 """
 
@@ -58,15 +58,13 @@ CATEGORY_POS: dict[str, tuple[str, ...]] = {
     "adjectivals": ("adjectival", "na-adjective", "adjective"),
     "particles": ("particle", "copula", "auxiliary", "suffix"),
     "conjunctions": ("conjunction", "particle", "adverb"),
-    "pronouns": ("pronoun", "noun"),
+    # この was listed as a pronoun; the generator has 此の as an adjectival
+    "pronouns": ("pronoun", "noun", "adjectival"),
     "suffixes": ("suffix", "counter", "noun", "auxiliary"),
     "prefixes": ("prefix", "noun"),
 }
 
 STEPS = ("form", "okurigana", "written", "reading", "raw")
-
-# The parts of speech a single link may be spread over every occurrence of - see _spreads()
-SPREAD_POS = ("particle", "copula")
 
 # Why an entry holding a note id did not get carried over.
 NO_WORD = "no_word"  # nothing to match with: a bare note id, a word with no reading
@@ -224,17 +222,16 @@ def _detail(elements: list[list]) -> str:
 
 
 def _spreads(hits: list[list]) -> bool:
-    """True when one link can go on every element it fits instead of none of them.
+    """True when one link can go on every element it fits instead of none of them: when they
+    are all the same word.
 
-    The user's call, and only for function words: a sentence with two occurrences of の and an
-    old list naming の once never said which occurrence it meant, and for a particle or the
-    copula two occurrences are all but never different notes. A content word is left alone,
-    since there two occurrences may well be two meanings - which is the whole reason the old
-    format had a meaning index.
+    The user's call: an old list naming a word once for a sentence with two occurrences of it
+    (為る twice, 見て見ましょう) gave it one note and never said which occurrence it meant.
+    First made for particles and the copula only, it was widened to content words once the
+    whole collection showed hundreds of links lost that way; the rare two occurrences with two
+    meanings are the matching step's to tell apart.
     """
-    return all(elem[1] in SPREAD_POS for elem in hits) and (
-        len({(elem[2], elem[3]) for elem in hits}) == 1
-    )
+    return len({(elem[2], elem[3]) for elem in hits}) == 1
 
 
 def migrate(word_lists: dict, arr: list) -> MigrationReport:

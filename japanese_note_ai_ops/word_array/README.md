@@ -145,11 +145,12 @@ instead of both standing down:
 
 What fits nothing, fits several elements, or is contested by a second link is reported rather
 than guessed at: match_words_to_notes can match the word again from the sentence with `<b>`
-marking which occurrence it is, which beats a coin toss here. The exception is a **particle or
-the copula**, where a link fitting several occurrences of one word goes on all of them: the old
-list naming の once for a sentence with two of them never said which it meant, and two
-occurrences of a function word are all but never two notes. A content word is left alone, since
-there two occurrences may be two meanings - what the old meaning index was for.
+marking which occurrence it is, which beats a coin toss here. The exception is **several
+occurrences of one word**, where the link goes on all of them: the old list naming 為る once for
+a sentence with two of them gave it one note and never said which occurrence it meant. This was
+first done for particles and the copula only; over the whole collection that left some 450
+content-word links lost, so the rare two occurrences with two meanings are left to the matching
+step instead.
 `lost_note_ids` is the part worth a caller's attention: a lost link is what the op tags a note
 for.
 

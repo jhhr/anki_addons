@@ -127,13 +127,22 @@ class MatchStepTests(unittest.TestCase):
 
 
 class LeftoverTests(unittest.TestCase):
-    def test_a_content_word_twice_is_left_for_match_words_to_notes(self):
-        # Two occurrences may be two meanings, which is what the old meaning index was for
-        arr = [word("口紅", "くちべに"), word("口紅", "くちべに")]
-        report = migrate.migrate({"nouns": [["口紅", "くちべに", "sort", 11]]}, arr)
+    def test_a_content_word_twice_gets_the_one_link_on_both(self):
+        arr = [word("為る", "する", pos="verb"), word("為る", "する", pos="verb")]
+        report = migrate.migrate({"verbs": [["する", "する", "sort", 11]]}, arr)
+        self.assertEqual((matched(arr), report.spread, report.leftovers), ([[11], [11]], 1, []))
+
+    def test_two_different_words_fitting_one_entry_are_ambiguous(self):
+        arr = [word("為る", "する", pos="verb"), word("刷る", "する", pos="verb")]
+        report = migrate.migrate({"verbs": [["する", "する", "sort", 11]]}, arr)
         self.assertEqual(matched(arr), [[], []])
         self.assertEqual(report.leftovers[0].reason, migrate.AMBIGUOUS)
         self.assertEqual(report.lost_note_ids, [11])
+
+    def test_a_pronoun_list_entry_fits_an_adjectival(self):
+        arr = [word("此の", "この", pos="adjectival")]
+        report = migrate.migrate({"pronouns": [["この", "この", "sort", 11]]}, arr)
+        self.assertEqual((matched(arr), report.by_step["reading"]), ([[11]], 1))
 
     def test_a_particle_twice_gets_the_one_link_on_both(self):
         arr = [word("は", "は", pos="particle"), word("は", "は", pos="particle")]
