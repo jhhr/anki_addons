@@ -14,13 +14,16 @@ Stages
   4. merge words whose boundary would cut a furigana group (八紘|一宇 -> 八紘一宇)
   5. multi-word candidates: JMdict n-grams (last word also deinflected)
   6. structure: every JMdict match that is a word of the text becomes a parent, nested when
-     one contains another; words the tokenizer has as one unit get sub-words from JMdict
+     one contains another; words the tokenizer has as one unit get sub-words from JMdict.
+     Sub-words that end inside a furigana group get their share of its reading, and are
+     dropped where it can't be shared out (jukujikun can't be split inside a word)
   7. dictionary form, reading and part of speech per word; readings come from the note's own
      furigana wherever it has them
 """
 
 from __future__ import annotations
 
+import itertools
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -427,6 +430,12 @@ def unvoiced(kana: str) -> str:
     return unicodedata.normalize("NFD", kana[:1])[:1] + kana[1:] if kana else kana
 
 
+def voiced(kana: str) -> str:
+    """Apply rendaku to the first kana: かい -> がい. Unchanged where there is no voiced form."""
+    first = unicodedata.normalize("NFC", kana[:1] + "゙")
+    return (first if len(first) == 1 else kana[:1]) + kana[1:]
+
+
 def _piece(tm: TextMap, start: int, end: int, second: bool) -> Optional[Word]:
     """Natural span [start, end) as a sub-word, if JMdict has it with the reading the note
     gives it (a second piece may be voiced by rendaku) and it isn't a lone on'yomi kanji."""
@@ -482,6 +491,82 @@ def add_decompositions(tm: TextMap, words: list[Word]) -> None:
             add_decompositions(tm, w.subs)
         else:
             w.subs = decompose(tm, w)
+
+
+# --- 6b. furigana for sub-words inside one group -------------------------------------------
+
+
+def split_group_readings(tm: TextMap, words: list[Word]) -> None:
+    """Give every sub-word that ends inside a furigana group its own share of the reading, so
+    that no sub-word ever comes out as bare kanji.
+
+    Where the group's reading splits per kanji, text_map does it. A jukujikun group doesn't
+    split that way, but it can still be split between two words when their own readings add up
+    to it: 為替相場[かわせそうば] -> 為替[かわせ] + 相場[そうば]. When they don't add up, the
+    word keeps no sub-words - jukujikun can't be split inside a word.
+    """
+    for w in words:
+        if not w.subs:
+            continue
+        if _assign_cut_readings(tm, w.subs):
+            split_group_readings(tm, w.subs)
+        else:
+            w.subs = []
+
+
+def _assign_cut_readings(tm: TextMap, subs: list[Word]) -> bool:
+    """Work out the reading of each piece of every group these sub-words cut where it doesn't
+    split per kanji, and record it on the text map."""
+    cuts: dict[int, list[int]] = {}
+    for s in subs[1:]:
+        si, off = tm.nat_pos[s.start]
+        if off and not tm.can_split(s.start):
+            cuts.setdefault(si, []).append(off)
+    return all(_assign_group(tm, tm.segs[si], offs, subs) for si, offs in cuts.items())
+
+
+def _assign_group(tm: TextMap, seg: text_map.Seg, offs: list[int], subs: list[Word]) -> bool:
+    if seg.in_k:
+        return False  # natural runs over the reading here, so the kanji split is the unknown
+    bounds = [0] + sorted(offs) + [len(seg.natural)]
+    parts = list(zip(bounds, bounds[1:]))
+    options = []
+    for i, (a, b) in enumerate(parts):
+        s = next((s for s in subs if s.start <= seg.nat_start + a < s.end), None)
+        readings = _piece_readings(tm, s, seg, a, b, rendaku=i > 0) if s else []
+        if not readings:
+            return False
+        options.append(readings)
+    for combo in itertools.product(*options):
+        if "".join(combo) == to_hiragana(seg.reading):
+            for (a, b), reading in zip(parts, combo):
+                tm.set_piece_reading(seg, a, b, seg.base[a:b], reading)
+            return True
+    return False
+
+
+def _piece_readings(
+    tm: TextMap, w: Word, seg: text_map.Seg, a: int, b: int, rendaku: bool
+) -> list[str]:
+    """What the sub-word could be reading at natural offsets [a, b) of the group: its own
+    reading, Sudachi's and JMdict's, less the kana it has outside the group (入り -> いり -> い).
+    A piece after the first may be voiced by the compound (買[かい] -> 買[がい])."""
+    before = tm.natural[w.start : seg.nat_start + a]
+    after = tm.natural[seg.nat_start + b : w.end]
+    if KANJI_RE.search(before + after):
+        return []  # the word reaches into another group, whose share is unknown too
+    before, after = to_hiragana(before), to_hiragana(after)
+    written = tm.written_form(w.start, w.end)
+    candidates = ["".join(m.reading for m in w.morphs)] + list(jmdict.readings(written))
+    out = []
+    for cand in dict.fromkeys(to_hiragana(c) for c in candidates):
+        piece = cand[len(before) : len(cand) - len(after)]
+        if not cand.startswith(before) or not cand.endswith(after) or not piece:
+            continue
+        for form in [piece, voiced(piece)] if rendaku else [piece]:
+            if form not in out and not KANJI_RE.search(form):
+                out.append(form)
+    return out
 
 
 # --- 7. dictionary form, reading, part of speech -------------------------------------------
@@ -790,6 +875,7 @@ def analyze(sentence: str) -> Analysis:
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun
     cands = jmdict_candidates(tm, words)
     final = nest(words, choose_matches(cands, words))
+    split_group_readings(tm, final)
     add_decompositions(tm, final)
     return Analysis(tm, words, cands, final, _emit(tm, final, 0, len(tm.raw)))
 

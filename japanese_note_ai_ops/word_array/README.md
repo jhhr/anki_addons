@@ -48,9 +48,14 @@ Status: phase 1 prototype, not wired into any op yet.
    reading from its parts, in the note's spelling (様に成る / ようになる, not ようになる).
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
-by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. Jukujikun can't be split
-that way, so there the bracket stays whole on the last piece. A sub-word's reading drops the
-rendaku of the compound it came from when JMdict has the plain reading (閏日 -> 日[び] -> ひ).
+by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. A jukujikun group has no
+per-kanji split, but it can still be split between two words whose own readings add up to it:
+`為替相場[かわせそうば]` -> ` 為替[かわせ]` + `相場[そうば]`, each reading taken from the
+sub-word's Sudachi and JMdict readings, the second allowed to be voiced by rendaku
+(`土産物[みやげもの]`). A sub-word never comes out as bare kanji: when the readings don't add
+up, the word simply keeps no sub-words, which is what stops a jukujikun word being split inside
+(今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
+has the plain reading (閏日 -> 日[び] -> ひ).
 
 ## Structure
 
@@ -161,6 +166,10 @@ From [awesome-japanese-nlp-resources](https://github.com/taishi-i/awesome-japane
 - **Nesting depth.** Matches nest literally, so 無しには is 無しに + は with 無しに = 無し + に.
 - **Noun forms as verbs** (囁き -> 囁く, 違い -> 違う as a sub-word of 違い無い) are right for
   the gold but wrong for lexicalized nouns (積り).
+- **Jukujikun decomposition.** Sharing a jukujikun reading out between sub-words is only done
+  for splits the tokenizer already makes. The same derivation could let `decompose` split
+  田舎者[いなかもの] into 田舎[いなか] + 者[もの], and it is its own safety check - the pieces of
+  a real jukujikun word never add up to its reading (今日 is not 今[いま] + 日[ひ]).
 
 Known limitations: classical forms (肥ゆる tokenizes as 肥 + ゆる); short kana after `<k>`
 reversion can confuse Sudachi (`<k> 四[し]の 五[ご]の` as しのごの); colloquial contractions

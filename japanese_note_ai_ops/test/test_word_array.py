@@ -147,6 +147,20 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(self.examples[20][0])
         self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])
 
+    def test_a_jukujikun_group_splits_between_words_by_their_own_readings(self):
+        # かわせそうば has no per-kanji split, but 為替 and 相場 read it between them, so each
+        # sub-word keeps furigana of its own: never " 為替" + "相場[かわせそうば]"
+        arr = self.generator.generate("<div> 為替相場[かわせそうば]が 気[き]になる</div>")
+        word = find_word(arr, "為替相場")
+        self.assertEqual([s[0] for s in word[5]], [" 為替[かわせ]", "相場[そうば]"])
+        self.assertEqual([s[3] for s in word[5]], ["かわせ", "そうば"])
+
+    def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
+        # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way
+        arr = self.generator.generate("<div> 土産物[へんなよみ]を 買[か]う</div>")
+        word = find_word(arr, "土産物")
+        self.assertEqual((word[0], word[5]), (" 土産物[へんなよみ]", []))
+
 
 if __name__ == "__main__":
     unittest.main()

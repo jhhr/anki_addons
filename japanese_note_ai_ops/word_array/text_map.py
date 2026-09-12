@@ -13,7 +13,9 @@ or 為れ -> なる (for される). Other groups contribute their kanji base.
 Every natural char remembers (segment index, offset in that segment's natural text), so any
 token span can be turned back into raw text. Top-level words always cover whole furigana
 groups; a sub-word may end inside one (天高[てんたか]く -> 天 + 高く), in which case its raw
-text is rebuilt with that group's reading split per kanji (" 天[てん]" + "高[たか]く").
+text is rebuilt with that group's reading split per kanji (" 天[てん]" + "高[たか]く"). A
+jukujikun group has no per-kanji split; there the generator works the pieces out from the
+sub-words' own readings and records them with set_piece_reading.
 """
 
 import re
@@ -44,6 +46,8 @@ class Seg:
     reading: str = ""  # furi only
     in_k: bool = False
     natural: str = ""  # what this segment contributes to the tokenizer text
+    idx: int = 0  # position in TextMap.segs
+    nat_start: int = 0  # natural index this segment's text starts at
 
     @property
     def lead(self) -> str:
@@ -78,6 +82,9 @@ class TextMap:
     natural: str
     # natural index -> (seg index, offset within seg.natural)
     nat_pos: list[tuple[int, int]] = field(default_factory=list)
+    # (seg index, a, b) -> (written, reading) for a piece of a group that doesn't split per
+    # kanji, worked out from the sub-words by generator.split_group_readings
+    piece_readings: dict[tuple[int, int, int], tuple[str, str]] = field(default_factory=dict)
 
     def boundary_ok(self, nat_idx: int) -> bool:
         """True when a word boundary before natural index nat_idx doesn't cut a furigana group."""
@@ -125,7 +132,17 @@ class TextMap:
         if a == 0 and b == len(seg.natural):
             return seg.reading
         units = self._unit_slice(seg, a, b)
-        return "".join(u[1] for u in units) if units is not None else None
+        if units is not None:
+            return "".join(u[1] for u in units)
+        given = self.piece_readings.get((seg.idx, a, b))
+        return given[1] if given is not None else None
+
+    def set_piece_reading(self, seg: Seg, a: int, b: int, written: str, reading: str) -> None:
+        """Record how a group that doesn't split per kanji splits between two sub-words."""
+        self.piece_readings[(seg.idx, a, b)] = (written, reading)
+
+    def _is_split_point(self, seg: Seg, off: int) -> bool:
+        return any(k[0] == seg.idx and off in k[1:] for k in self.piece_readings)
 
     def _unit_slice(self, seg: Seg, a: int, b: int) -> Optional[tuple[tuple[str, str, str], ...]]:
         units = reading_units(seg.base, seg.reading)
@@ -141,12 +158,15 @@ class TextMap:
 
     def can_split(self, nat_idx: int) -> bool:
         """True when a sub-word boundary can go before natural index nat_idx: between
-        segments, or inside a furigana group where its reading splits per kanji."""
+        segments, inside a furigana group where its reading splits per kanji, or where
+        set_piece_reading has already worked the group's split out."""
         si, off = self.nat_pos[nat_idx]
         if off == 0:
             return True
         seg = self.segs[si]
-        return seg.kind == "furi" and self._unit_slice(seg, 0, off) is not None
+        if seg.kind != "furi":
+            return False
+        return self._unit_slice(seg, 0, off) is not None or self._is_split_point(seg, off)
 
     def is_onyomi_kanji(self, start: int, end: int) -> bool:
         """True when natural span [start, end) is a single kanji read in on'yomi."""
@@ -162,8 +182,12 @@ class TextMap:
         units = self._unit_slice(seg, a, b)
         if units is not None:
             return f"{lead}{''.join(u[0] for u in units)}[{''.join(u[1] for u in units)}]"
-        # Unsplittable (jukujikun, or a split inside one kanji's reading): the bracket stays
-        # whole on the group's last piece
+        given = self.piece_readings.get((seg.idx, a, b))
+        if given is not None:
+            return f"{lead}{given[0]}[{given[1]}]"
+        # No reading for this piece: the bracket stays whole on the group's last piece. Words
+        # are only split where a reading is known, so this is a fallback for callers that cut
+        # a group on their own (research/validate.py wrapping arbitrary spans).
         ka = self._base_chars_before(seg, a)
         kb = self._base_chars_before(seg, b) if b < len(seg.natural) else len(seg.base)
         bracket = f"[{seg.reading}]" if b == len(seg.natural) else ""
@@ -261,6 +285,8 @@ def build(raw_sentence: str) -> TextMap:
     natural = ""
     nat_pos: list[tuple[int, int]] = []
     for i, seg in enumerate(segs):
+        seg.idx = i
+        seg.nat_start = len(natural)
         for off, ch in enumerate(seg.natural):
             natural += ch
             nat_pos.append((i, off))
