@@ -141,8 +141,21 @@ def _run(nids: Sequence[NoteId], parent: Any):
 
 
 def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
-    """Replace the selected notes' word lists with generated word arrays, asking first for the
-    downloads the generator needs if this is the first time it is used."""
+    """Replace the selected notes' word lists with generated word arrays, asking first - the
+    old list is overwritten, and the ops that read that field have not been taught the new
+    format yet - and then for the downloads the generator needs on its first use."""
+    if not askUser(
+        f"Replace the word list of {len(nids)} note(s) with a generated word array?\n\n"
+        "The old list is overwritten in place. Only the note ids of words already matched are"
+        " carried over; a note that loses one is tagged"
+        f" {LEFTOVERS_TAG}, and every note migrated is tagged {MIGRATED_TAG}.\n\n"
+        "match_words_to_notes and clean_meaning still read the old format from this field, so"
+        " migrated notes will not work with them until they are updated.",
+        parent=parent,
+        title="Migrate word lists to word arrays",
+        defaultno=True,
+    ):
+        return
     if not resources.has_sudachipy():
         showWarning(
             "The word array generator needs SudachiPy, which is missing from this add-on's"
