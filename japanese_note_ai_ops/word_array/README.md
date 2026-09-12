@@ -49,6 +49,10 @@ Status: phase 1 prototype, not wired into any op yet.
    An adjective's く- and な-forms are the adjective (大きく, <k>良く</k> as a 副詞, 大きな as a
    連体詞, 多く and 近く as nouns with a kanji), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
    lists 大きく and 早く as adverbs too, so it can't tell them apart.
+   A word Sudachi calls a suffix that JMdict has with its reading only as a word of its own is
+   labelled as JMdict has it: 家[うち] after 一日中 a noun, 等[など] a particle, 沿い a verb. Inside
+   a compound only the verb stems are relabelled; 官 of 警察官 stays a suffix, though JMdict's 官
+   is a noun. Of 855 top-level suffixes in the collection export, 73 change.
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
 by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. A jukujikun group has no

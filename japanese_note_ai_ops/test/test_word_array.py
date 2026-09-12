@@ -221,9 +221,19 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(
             find_word(self.generator.generate("3 年[ねん] 経[た]つ"), "年")[1], "counter"
         )
-        # 一日中 starts on a number but is not one (Sudachi's 家 here is a suffix)
+        # 一日中 starts on a number but is not one
         arr = self.generator.generate("一日中 家[うち]に 居[い]た")
         self.assertNotEqual(find_word(arr, "家")[1], "counter")
+
+    def test_a_suffix_jmdict_has_only_as_a_word_takes_its_label(self):
+        # Sudachi has 家 after 一日中 as a suffix, but JMdict's 家[うち] is no suffix
+        arr = self.generator.generate("一日中 家[うち]に 居[い]た")
+        self.assertEqual(find_word(arr, "家")[1], "noun")
+        arr = self.generator.generate(" 少年[しょうねん]<k> 達[たち]</k>が 居[い]る")
+        self.assertEqual(find_word(arr, "達")[1], "suffix")
+        # inside a compound it stays a suffix, though JMdict's 官[かん] is a noun
+        arr = self.generator.generate(" 警察官[けいさつかん]が 来[き]た")
+        self.assertEqual(find_word(arr, "官")[1], "suffix")
 
     def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
         # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way

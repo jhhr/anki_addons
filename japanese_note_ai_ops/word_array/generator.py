@@ -883,7 +883,45 @@ JM_POS_MAP = [
 ]
 
 
-def pos_label(tm: TextMap, w: Word, prev: Optional[Word]) -> str:
+SUFFIX_JM_POS = ("suf", "n-suf", "ctr")
+# vs (a する-noun), vt and vi (transitivity) are no verb of their own: 供[とも] is n, vs, vt
+NON_VERB_V_POS = ("vs", "vt", "vi")
+# Label of a word Sudachi calls a suffix that JMdict, with its reading, has only as a word of its
+# own; noun before pronoun and adverb, which 家[うち] and 中[なか] also are
+NOT_SUFFIX_POS_MAP = [
+    ("prt", "particle"),
+    ("v", "verb"),
+    ("n", "noun"),
+    ("adj-i", "adjective"),
+    ("adj-na", "na-adjective"),
+    ("pn", "pronoun"),
+    ("adv", "adverb"),
+]
+
+
+def _not_suffix_label(form: str, reading: str) -> Optional[str]:
+    """JMdict's label for a Sudachi suffix JMdict doesn't list as one with this reading: 家[うち]
+    after 一日中, 的[まと]に, 等[など], a verb stem like 沿い. None keeps it a suffix."""
+    codes = {
+        p
+        for _, rs, ps in jmdict.lookup(form)
+        if reading in {to_hiragana(r) for r in rs}
+        for p in ps
+    }
+    if not codes or codes & set(SUFFIX_JM_POS):
+        return None
+    for code, label in NOT_SUFFIX_POS_MAP:
+        if any(
+            p == code or (code == "v" and p.startswith("v") and p not in NON_VERB_V_POS)
+            for p in codes
+        ):
+            return label
+    return None
+
+
+def pos_label(
+    tm: TextMap, w: Word, prev: Optional[Word], reading: str, nested: bool = False
+) -> str:
     if w.kind == "expression" or w.jm_pos:  # a JMdict match, or a furigana merge JMdict has
         for code, label in JM_POS_MAP:
             if any(p == code or (code == "v" and p.startswith("v")) for p in w.jm_pos):
@@ -905,6 +943,12 @@ def pos_label(tm: TextMap, w: Word, prev: Optional[Word]) -> str:
         and all(m.pos[:2] == ("名詞", "数詞") for m in prev.morphs)  # not 一日中 家
     ):
         return "counter"  # 隻, and nouns counting after a number: 3 月, 1935 年
+    if h.pos[0] == "接尾辞" and len(w.morphs) == 1:
+        label = _not_suffix_label(dict_form(tm, w), reading)
+        # Inside a compound Sudachi's suffix is a bound piece JMdict may tag only as a noun (官 of
+        # 警察官); only a verb stem there is relabelled, being a verb by its dict_form already
+        if label and (not nested or label == "verb"):
+            return label
     for key, label in POS_MAP:
         if h.pos[: len(key)] == key:
             return label
@@ -935,7 +979,9 @@ def _close_open_tags(raw: str, rs: int, re_: int, limit: int) -> int:
     return re_
 
 
-def _emit(tm: TextMap, words: list[Word], raw_lo: int, raw_hi: int) -> list[list]:
+def _emit(
+    tm: TextMap, words: list[Word], raw_lo: int, raw_hi: int, nested: bool = False
+) -> list[list]:
     """Elements for words within raw[raw_lo:raw_hi]; tags between words are their own elements."""
     out: list[list] = []
     cursor = raw_lo
@@ -948,10 +994,11 @@ def _emit(tm: TextMap, words: list[Word], raw_lo: int, raw_hi: int) -> list[list
         if w.kind == "punct":
             out.append([raw_text])
         else:
-            subs = _emit(tm, w.subs, rs, re_ext) if w.subs else []
-            pos, form = pos_label(tm, w, prev), dict_form(tm, w)
+            subs = _emit(tm, w.subs, rs, re_ext, nested=True) if w.subs else []
+            form, reading = dict_form(tm, w), dict_reading(tm, w)
+            pos = pos_label(tm, w, prev, reading, nested)
             match_data = match_flags.default_match_data(pos, form, subs)
-            out.append([raw_text, pos, form, dict_reading(tm, w), match_data, subs])
+            out.append([raw_text, pos, form, reading, match_data, subs])
         cursor = re_ext
         prev = w
     out += [[p] for p in TAG_OR_TEXT_RE.findall(tm.raw[cursor:raw_hi])]
