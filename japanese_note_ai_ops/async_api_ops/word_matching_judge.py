@@ -1,8 +1,8 @@
 """Phase 3: the word matching judge, which decides which words of a word array get a note.
 
 The generator's array errs towards more words, so study value is decided here, in `match_data`
-(see `word_array.match_flags`): the judge is shown the sentence and its words, picks the numbered
-ones not worth a note, and every other numbered word is judged `match`. Which words are numbered
+(see `word_array.match_flags`): the judge is shown the sentence once per word, the word marked in
+`<b>`, picks the numbered ones not worth a note, and every other numbered word is judged `match`. Which words are numbered
 is the mode, a set of `MatchState`s:
 
 - `JUDGE_NEW` - only unjudged words, `[]`. The default; nothing already decided is touched.
@@ -32,7 +32,6 @@ from .base_ops import (
     selected_notes_op,
     AsyncTaskProgressUpdater,
 )
-from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config
 from ..word_array import match_flags
 from ..word_array.match_flags import (
@@ -66,7 +65,6 @@ def judge_model(config: dict) -> str:
 
 
 def judge_word_array(
-    sentence: str,
     arr: list,
     states: Iterable[MatchState],
     ask: Callable[[str], Union[dict, None]],
@@ -75,7 +73,7 @@ def judge_word_array(
     """Judge the words of `arr` in `states` in place, asking the model through `ask`. Returns the
     note ids the judge unlinked, or None when nothing was judged: no word to judge, no response,
     or a response without the picks."""
-    prompt, elements = match_flags.judge_prompt(sentence, arr, states)
+    prompt, elements = match_flags.judge_prompt(arr, states)
     if not elements:
         logger.debug(f"{log_prefix}No words to judge")
         return None
@@ -102,26 +100,23 @@ def word_matching_judge_in_note(
         logger.error(f"Missing note type for note {note.id}")
         return False
     try:
-        sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)
         word_list_field = get_field_config(config, "word_list_field", note_type)
     except Exception as e:
         logger.error(str(e))
         return False
-    if sentence_field not in note or word_list_field not in note:
+    if word_list_field not in note:
         return False
 
     log_prefix = f"Word matching judge--nid:{note.id}--"
+    # The array's raw texts make up the sentence, so the prompt is built from the array alone
     arr = decode_word_array(note[word_list_field])
     if arr is None:
         logger.debug(f"{log_prefix}The word list field holds no word array")
         return False
-    # The sentence the array was generated from, context stripped as migrate_word_arrays did
-    sentence = strip_context_sentences(note[sentence_field])
 
     model = judge_model(config)
     try:
         unlinked = judge_word_array(
-            sentence,
             arr,
             states,
             lambda prompt: get_response(model, prompt, response_schema=RESPONSE_SCHEMA),

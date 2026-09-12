@@ -130,7 +130,7 @@ def run(args) -> int:
     if args.n:
         rows = rows[: args.n]
 
-    prompts = [match_flags.judge_prompt(row["sentence"], row["array"])[0] for row in rows]
+    prompts = [match_flags.judge_prompt(row["array"])[0] for row in rows]
     keys = [prompt_key(model, prompt) for prompt in prompts]
     cached = read_results()
     todo = sorted({k: p for k, p in zip(keys, prompts) if k not in cached}.items())
@@ -170,7 +170,7 @@ def score(rows: list, keys: list, cached: dict, match_flags, limit: int) -> int:
             counts["sentences without a response"] += 1
             continue
         arr = copy.deepcopy(row["array"])
-        _, elements = match_flags.judge_prompt(row["sentence"], arr)
+        _, elements = match_flags.judge_prompt(arr)
         try:
             match_flags.apply_judge_response(elements, cached[key]["response"])
         except ValueError:

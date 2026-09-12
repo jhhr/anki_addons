@@ -120,7 +120,9 @@ numeral, so 1日 and １日 both find 一日.
 Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
 built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
 else is the word matching judge's call - `judge_prompt()` numbers the words in the states it is
-given, lists the rest for context, and states the rules the old extract_words prompt used (a
+given, lists the rest for context, shows each word as the sentence with that occurrence in `<b>`
+(`iter_highlighted()`, built from the array's own raw texts, so the note's sentence isn't needed)
+and states the rules the old extract_words prompt used (a
 compound meaning no more than its parts, a word plus the particle it takes, the pieces of a
 yojijukugo); `apply_judge_response()` makes the picks `dontmatch` and every other numbered word
 `match`, keeping a link it has. The modes are `JUDGE_NEW` (state 1, the default),

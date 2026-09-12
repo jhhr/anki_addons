@@ -151,28 +151,42 @@ def plain_text(raw_text: str) -> str:
     return FURIGANA_RE.sub(r"\1", TAG_RE.sub("", raw_text)).replace(" ", "")
 
 
-def judge_prompt(
-    sentence: str, arr: list, states: Iterable[MatchState] = JUDGE_NEW
-) -> tuple[str, list[list]]:
+def iter_highlighted(
+    arr: list, before: str = "", after: str = "", depth: int = 0
+) -> Iterator[tuple[int, list, str]]:
+    """(depth, element, sentence) for every word element in `iter_words` order, the sentence in
+    plain text with that element's own text in `<b>`: the array's raw texts make up the sentence
+    and a parent's sub-words make up its raw text, so the mark is on the very occurrence."""
+    texts = [plain_text(elem[0]) for elem in arr]
+    for index, elem in enumerate(arr):
+        if len(elem) > 1:
+            left = before + "".join(texts[:index])
+            right = "".join(texts[index + 1 :]) + after
+            yield depth, elem, f"{left}<b>{texts[index]}</b>{right}"
+            yield from iter_highlighted(elem[5], left, right, depth + 1)
+
+
+def judge_prompt(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> tuple[str, list[list]]:
     """The judge's prompt, and the word elements it numbers: those in `states`. The other words
-    are listed unnumbered for context. With no element to judge the prompt is still built; the
-    caller should skip the request when the element list is empty."""
+    are listed unnumbered for context. Each entry repeats the sentence with its word in `<b>`, so
+    a word that occurs twice is never mistaken for the other occurrence. With no element to judge
+    the prompt is still built; the caller should skip the request when the element list is
+    empty."""
     wanted = set(states)
     elements = []
     lines = []
-    for depth, elem in iter_words(arr):
+    for depth, elem, sentence in iter_highlighted(arr):
         state = match_state(elem)
         if state in wanted:
             label, note = f"{len(elements)}.", ""
             elements.append(elem)
         else:
             label, note = "-", CONTEXT_NOTES[state]
-        lines.append(
-            f"{'    ' * depth}{label} {plain_text(elem[0])}: {elem[2]} [{elem[3]}],"
-            f" {elem[1]}{note}"
-        )
+        indent = "    " * depth
+        lines.append(f"{indent}{label} {sentence}")
+        lines.append(f"{indent}   {elem[2]} [{elem[3]}], {elem[1]}{note}")
     entries = "\n".join(lines)
-    prompt = f"""Below is a Japanese sentence and the words it is made of. Each entry shows the text, its dictionary form, [reading] and part of speech. An indented entry is a part of the entry above it: a component of a compound word, or a word of a multi-word expression.
+    prompt = f"""Below are the words a Japanese sentence is made of. Each entry repeats the sentence with its word marked in <b> tags, so you know exactly which part of the sentence is meant even when the same word occurs more than once; the next line gives the word's dictionary form, [reading] and part of speech. An indented entry is a part of the entry above it: a component of a compound word, or a word of a multi-word expression.
 
 The list is made by fixed rules, so it contains every unit that could be a word, including many that are not worth studying. Your task is to decide which of the numbered entries should NOT get a vocabulary note, a flashcard for learning what the word means in this sentence. Entries marked with "-" are already decided and are shown only for context.
 
@@ -183,8 +197,6 @@ Pick an entry when:
 - It is a component that is not a word in this sentence, like 合 in 場合.
 
 Don't pick particles, the copula, auxiliary words, prefixes or suffixes (の, だ, 御, さん, 達): they get notes too. Don't pick ordinary single words for being common or easy. Every numbered entry you don't pick gets a note.
-
-Sentence: {plain_text(sentence)}
 
 Entries:
 {entries}

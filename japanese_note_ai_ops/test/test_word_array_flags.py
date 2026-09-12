@@ -145,21 +145,30 @@ class JudgePromptTests(unittest.TestCase):
             word("28", "number", "二十八", "にじゅうはち", match_data=["dontmatch"]),
             word("本", "noun", "本", "ほん", match_data=[123, 4]),
         ]
-        self.prompt, self.elements = match_flags.judge_prompt("sentence", self.arr)
+        self.prompt, self.elements = match_flags.judge_prompt(self.arr)
 
     def test_only_unjudged_words_are_numbered_and_sub_words_are_indented(self):
         self.assertEqual([e[2] for e in self.elements], ["一つ", "X", "X", "は"])
-        self.assertIn("0. 一つ: 一つ [ひとつ], noun", self.prompt)
-        self.assertIn("    1. 一: X [x], noun", self.prompt)
+        self.assertIn("0. <b>一つ</b>は28本\n   一つ [ひとつ], noun\n", self.prompt)
+        self.assertIn("    1. <b>一</b>つは28本\n       X [x], noun\n", self.prompt)
+        self.assertIn("    2. 一<b>つ</b>は28本\n", self.prompt)
 
     def test_decided_words_are_shown_for_context(self):
-        self.assertIn("- 28: 二十八 [にじゅうはち], number (no note)", self.prompt)
-        self.assertIn("- 本: 本 [ほん], noun (has a note)", self.prompt)
+        self.assertIn(
+            "- 一つは<b>28</b>本\n   二十八 [にじゅうはち], number (no note)", self.prompt
+        )
+        self.assertIn("- 一つは28<b>本</b>\n   本 [ほん], noun (has a note)", self.prompt)
+
+    def test_each_occurrence_of_a_repeated_word_is_marked_where_it_is(self):
+        arr = [word("本", form="本"), word("と"), word(" 本[ほん]", form="本")]
+        prompt, _ = match_flags.judge_prompt(arr)
+        self.assertIn("0. <b>本</b>と本\n", prompt)
+        self.assertIn("2. 本と<b>本</b>\n", prompt)
 
     def test_a_rejudging_mode_numbers_the_states_it_is_given(self):
-        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_MATCHED)
+        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_MATCHED)
         self.assertEqual([e[2] for e in elements], ["本"])
-        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_ALL)
+        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_ALL)
         self.assertEqual([e[2] for e in elements], ["二十八", "本"])
 
     def test_picked_words_are_dontmatch_and_the_rest_match(self):
@@ -167,7 +176,7 @@ class JudgePromptTests(unittest.TestCase):
         self.assertEqual([e[4] for e in self.elements], [["dontmatch"]] + [["match"]] * 3)
 
     def test_rejudging_reports_the_links_it_takes_away(self):
-        _, elements = match_flags.judge_prompt("s", self.arr, match_flags.REJUDGE_ALL)
+        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_ALL)
         self.assertEqual(match_flags.apply_judge_response(elements, {"dontmatch": [1]}), [123])
         self.assertEqual([e[4] for e in elements], [["match"], ["dontmatch"]])
 
