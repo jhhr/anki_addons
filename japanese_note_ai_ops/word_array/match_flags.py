@@ -18,6 +18,7 @@ rules for a model, and apply_judge_response() applies its answer. By default the
 unjudged words; the re-judging modes let it take a link away, which apply_judge_response reports.
 """
 
+import json
 import re
 from enum import IntEnum
 from typing import Any, Iterable, Iterator, Optional
@@ -44,6 +45,16 @@ REJUDGE_ALL = frozenset(
 
 TAG_RE = re.compile(r"<[^>]+>")
 FURIGANA_RE = re.compile(r" ?([^ >\[\]]+?)\[[^\]]*\]")
+
+
+def decode_word_array(field_value: str) -> Optional[list]:
+    """The word array in a word list field, or None when it holds no array: empty, an old
+    extract_words word list, or not JSON."""
+    try:
+        decoded = json.loads(field_value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return decoded if isinstance(decoded, list) else None
 
 
 def iter_words(arr: list, depth: int = 0) -> Iterator[tuple[int, list]]:

@@ -139,6 +139,11 @@ scored words): 81.5% as expected, picks 50.9% precise with 44.9% recall - label 
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
+`match_targets.gather_targets()` gathers them: each occurrence is a target holding its element,
+so a result is written into that element's `match_data` at whatever depth it is nested, with the
+array's part of speech label mapped to the one the word notes use. The op reads a field holding
+an array instead of tagging it `invalid_word_list_json`, but counts such a note done without
+matching it until saving into arrays is in.
 
 ## Migrating the old word lists
 

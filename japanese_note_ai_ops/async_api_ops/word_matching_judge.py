@@ -35,7 +35,13 @@ from .base_ops import (
 from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config
 from ..word_array import match_flags
-from ..word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED, MatchState
+from ..word_array.match_flags import (
+    JUDGE_NEW,
+    REJUDGE_ALL,
+    REJUDGE_MATCHED,
+    MatchState,
+    decode_word_array,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,16 +63,6 @@ MODE_NAMES = {
 
 def judge_model(config: dict) -> str:
     return config.get("word_matching_judge_model") or config.get("extract_words_model", "")
-
-
-def decode_word_array(field_value: str) -> Optional[list]:
-    """The word array in a word list field, or None when it holds no array: empty, an old
-    extract_words word list, or not JSON."""
-    try:
-        decoded = json.loads(field_value)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return decoded if isinstance(decoded, list) else None
 
 
 def judge_word_array(

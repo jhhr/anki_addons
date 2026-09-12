@@ -48,6 +48,8 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
     make_furigana_from_reading,
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback
+from ..word_array import match_targets
+from ..word_array.match_flags import decode_word_array
 from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
@@ -2394,6 +2396,32 @@ def match_words_to_notes(
     return word_list_task_count, spawn_word_list_tasks
 
 
+def plan_word_array_matching(
+    note: Note,
+    arr: list,
+    progress_updater: AsyncTaskProgressUpdater,
+    limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
+    log_prefix: str,
+) -> list[match_targets.MatchTarget]:
+    """Gather the words of a note's word array to match: those the judge made `["match"]`.
+
+    Writing a match back into the array's `match_data` is not there yet, and a word matched
+    without it would get a note nothing links to, so the words are gathered and the note is
+    counted done without any task being made.
+    """
+    try:
+        targets = match_targets.gather_targets(arr, limit=limit_words_and_readings)
+    except ValueError as e:
+        logger.error(f"{log_prefix}{e}")
+        targets = []
+    logger.info(
+        f"{log_prefix}Word array has {len(targets)} words to match, not matched: saving into"
+        " word arrays is not implemented yet"
+    )
+    progress_updater.increment_counts(notes_done=1)
+    return targets
+
+
 def match_words_to_notes_for_note(
     config: dict,
     note: Note,
@@ -2491,6 +2519,11 @@ def match_words_to_notes_for_note(
     log_prefix = f"Match words, note.id={note.id}--"
     # Get the word tuples from the note
     word_list_field = get_field_config(config, "word_list_field", note_type)
+    # Checked before decode_word_list_field, which tags anything but a dict as invalid
+    arr = decode_word_array(note[word_list_field]) if word_list_field in note else None
+    if arr is not None:
+        plan_word_array_matching(note, arr, progress_updater, limit_words_and_readings, log_prefix)
+        return None
     if word_list_field in note:
         word_list_dict = decode_word_list_field(
             note,
@@ -2957,6 +2990,12 @@ def match_single_word_to_notes_from_selected(
                 continue
             target_word, target_reading, word_list_field = note_word_info
 
+            if (
+                word_list_field in cur_note
+                and decode_word_array(cur_note[word_list_field]) is not None
+            ):
+                logger.debug(f"{log_prefix}Word arrays aren't matched in single-word mode yet")
+                continue
             if word_list_field in cur_note:
                 word_list_dict = decode_word_list_field(
                     cur_note, word_list_field, notes_to_update_dict, log_prefix
