@@ -181,6 +181,11 @@ class LeftoverTests(unittest.TestCase):
         self.assertEqual((matched(arr), report.lost_note_ids), ([["dont_match"]], [11]))
         self.assertEqual(report.leftovers[0].reason, migrate.FLAGGED)
 
+    def test_a_flagged_word_does_not_make_an_unambiguous_link_look_ambiguous(self):
+        arr = [word("一", "いち", match_data=["dont_match"]), word("一", "いち")]
+        report = migrate.migrate({"numbers": [["一", "いち", "sort", 11]]}, arr)
+        self.assertEqual((matched(arr), report.leftovers), ([["dont_match"], [11]], []))
+
     def test_an_id_with_no_word_to_place_it_by_is_reported(self):
         arr = [word("口紅", "くちべに")]
         report = migrate.migrate({"nouns": [1378555076170]}, arr)

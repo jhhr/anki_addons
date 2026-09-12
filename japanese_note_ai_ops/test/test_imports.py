@@ -41,12 +41,26 @@ STARTUP_MODULES = [
     "new_note_all_ops",
 ]
 
+# The same, from sync_local_ops
+STARTUP_SYNC_MODULES = [
+    "find_missing_matched_note_ids",
+    "tag_notes_matched_status",
+    "deduplicate_existing_meaning_notes",
+    "make_fine_tuning_data",
+    "migrate_word_arrays",
+]
+
 
 class StartupImportTests(unittest.TestCase):
     def test_every_startup_module_imports(self):
         for name in STARTUP_MODULES:
             with self.subTest(module=name):
                 self.assertIsNotNone(load_ops_module(name))
+
+    def test_every_startup_sync_op_module_imports(self):
+        for name in STARTUP_SYNC_MODULES:
+            with self.subTest(module=name):
+                self.assertIsNotNone(load_ops_module(name, subdir="sync_local_ops"))
 
 
 if __name__ == "__main__":

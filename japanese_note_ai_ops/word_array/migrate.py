@@ -202,11 +202,13 @@ def _fits(entry: OldEntry, elem: list, step: str) -> bool:
 def _find(entry: OldEntry, elements: list[list]) -> tuple[list[list], str]:
     """The elements an entry fits, and the step that found them. The steps are tried in order
     and the first that fits anything decides, so a form match is never widened into a
-    reading-only one."""
+    reading-only one. A flagged element is not a place a link can go, so it only counts where
+    nothing else fits - otherwise a flagged word elsewhere in the text would make an
+    unambiguous link look ambiguous."""
     for step in STEPS:
         hits = [elem for elem in elements if _fits(entry, elem, step)]
         if hits:
-            return hits, step
+            return [e for e in hits if not match_flags.is_flagged(e)] or hits, step
     return [], ""
 
 
