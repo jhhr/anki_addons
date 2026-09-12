@@ -232,6 +232,10 @@ python word_array/research/migrate_fit.py       # what the migration carries ove
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 
+`migrate_fit.py --corpus export` (the default) dry-runs the migration over the whole collection's
+exported word lists, invalid data and crashes included; `checked` and `fine_tuning` are the
+smaller corpora. The whole export takes some minutes.
+
 An installed `sudachidict_*` package also counts as the dictionary; `SUDACHI_DICT` (a
 dictionary name or an absolute path to a `.dic`) overrides both.
 
