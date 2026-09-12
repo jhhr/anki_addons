@@ -132,6 +132,11 @@ matchability", "Re-judge matched words", "Re-judge matched/judged words"), model
 `word_matching_judge_model`. A note with nothing in the mode's states makes no request, a field
 still holding an old word list is skipped, and unlinked note ids are logged.
 
+`research/judge_eval.py` scores the judge against the hand-checked export, whose old lists count
+as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
+the copula no entry fits are left unscored. First run (gemini-3.5-flash-lite, 384 sentences, 6006
+scored words): 81.5% as expected, picks 50.9% precise with 44.9% recall - label noise included.
+
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
 
@@ -246,6 +251,8 @@ python word_array/research/evaluate.py          # accuracy against the gold, -q 
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
 python word_array/research/migrate_fit.py       # what the migration carries over, and loses
+python word_array/research/judge_eval.py build  # the judge's eval set, from the checked export
+python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 
