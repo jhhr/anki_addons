@@ -31,6 +31,11 @@ def load(name: str) -> ModuleType:
     return _import(f"word_array.{name}")
 
 
+def load_root(name: str) -> ModuleType:
+    """A module at the add-on root, e.g. load_root("html_stripping")."""
+    return _import(name)
+
+
 def load_shared(dotted: str) -> ModuleType:
     """A shared module, e.g. load_shared("jp_text_processing.word.use_tag_cleaning")."""
     return _import(f"shared.{dotted}")

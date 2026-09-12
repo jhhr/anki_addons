@@ -5,6 +5,11 @@ and the old list's note ids are fitted into it by `word_array.migrate`. The arra
 old list in `word_list_field`: the user's call, since keeping both would mean a second field on
 every note type and the old lists are reproducible by re-running extract_words.
 
+The sentence is taken the way extract_words takes it, with the surrounding context sentences
+stripped (`strip_context_sentences`): their words are not what the note is about, and giving
+them array elements would offer them to match_words_to_notes. The array therefore partitions
+the sentence without its `<i>` context rather than the whole field.
+
 A note whose old list held a link the array had no home for is tagged, so that what the
 migration dropped can be looked at in the browser afterwards. Entries carrying no note id are
 dropped silently - the array is the correct word list now, and that is all such an entry was.
@@ -29,6 +34,7 @@ from ..async_api_ops.base_ops import (
     selected_notes_op,
 )
 from ..async_api_ops.match_words_to_notes import decode_word_list_field
+from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import generator, migrate, resources
 
@@ -60,7 +66,10 @@ def migrate_word_array_in_note(
         return False
 
     log_prefix = f"Migrate word array--nid:{note.id}--"
-    sentence = note[sentence_field]
+    # The same sentence extract_words worked from, so that the array covers the words the old
+    # list was made of and no others. The array therefore reconstructs the sentence without its
+    # <i> context, not the whole field.
+    sentence = strip_context_sentences(note[sentence_field])
     if not sentence:
         logger.debug(f"{log_prefix}No sentence to generate an array from")
         return False

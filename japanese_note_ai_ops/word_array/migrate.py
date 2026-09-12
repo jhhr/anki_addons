@@ -25,8 +25,10 @@ that two entries wanting the same word don't both have to stand down:
 
 What fits nothing, fits several elements, or is wanted by two entries at once is reported
 instead of guessed at (the user's call): match_words_to_notes can match such a word again from
-the sentence, with `<b>` marking which occurrence it is, and that is more reliable than a
-coin toss here. Only a lost note id is worth the caller's attention - see `lost_note_ids`.
+the sentence, with `<b>` marking which occurrence it is, and that is more reliable than a coin
+toss here. The exception is a particle or the copula, where a link fitting several occurrences
+goes on all of them (`_spreads`), since two occurrences of の are all but never two notes.
+Only a lost note id is worth the caller's attention - see `lost_note_ids`.
 """
 
 import re
@@ -62,6 +64,9 @@ CATEGORY_POS: dict[str, tuple[str, ...]] = {
 }
 
 STEPS = ("form", "okurigana", "written", "reading", "raw")
+
+# The parts of speech a single link may be spread over every occurrence of - see _spreads()
+SPREAD_POS = ("particle", "copula")
 
 # Why an entry holding a note id did not get carried over.
 NO_WORD = "no_word"  # nothing to match with: a bare note id, a word with no reading
@@ -104,6 +109,8 @@ class MigrationReport:
     """Of those, the ones that held no word either (`normalize_word_tuple`'s shapes)."""
     by_step: dict[str, int] = field(default_factory=lambda: {s: 0 for s in STEPS})
     """Note ids carried over, by the step that found the element."""
+    spread: int = 0
+    """Of those, the ones put on every occurrence of a function word rather than one."""
     linked_by_step: dict[str, list[tuple[OldEntry, list]]] = field(default_factory=dict)
     """The entry and the element it was linked to, by step, for review."""
     leftovers: list[Leftover] = field(default_factory=list)
@@ -121,8 +128,8 @@ class MigrationReport:
         steps = ", ".join(f"{step} {n}" for step, n in self.by_step.items() if n)
         return (
             f"{self.entries} entries, {self.linked} note ids carried over"
-            f"{f' ({steps})' if steps else ''}, {len(self.leftovers)} lost,"
-            f" {self.without_note_id} without a note id"
+            f"{f' ({steps})' if steps else ''}, {self.spread} of them over several occurrences,"
+            f" {len(self.leftovers)} lost, {self.without_note_id} without a note id"
         )
 
 
@@ -216,6 +223,20 @@ def _detail(elements: list[list]) -> str:
     return ", ".join(f"{elem[2]}[{elem[3]}]" for elem in elements)
 
 
+def _spreads(hits: list[list]) -> bool:
+    """True when one link can go on every element it fits instead of none of them.
+
+    The user's call, and only for function words: a sentence with two occurrences of の and an
+    old list naming の once never said which occurrence it meant, and for a particle or the
+    copula two occurrences are all but never different notes. A content word is left alone,
+    since there two occurrences may well be two meanings - which is the whole reason the old
+    format had a meaning index.
+    """
+    return all(elem[1] in SPREAD_POS for elem in hits) and (
+        len({(elem[2], elem[3]) for elem in hits}) == 1
+    )
+
+
 def migrate(word_lists: dict, arr: list) -> MigrationReport:
     """Carry the note ids of an old word list into a generated array, writing `match_data` in
     place. The array is not otherwise touched: the words it holds are the migration's result.
@@ -224,7 +245,7 @@ def migrate(word_lists: dict, arr: list) -> MigrationReport:
     entries, report.entries = read_word_lists(word_lists)
 
     seen: set[tuple] = set()
-    wanted: list[tuple[OldEntry, list, str]] = []
+    wanted: list[tuple[OldEntry, list[list], str]] = []
     elements = [elem for _, elem in match_flags.iter_words(arr)]
     for entry in entries:
         if entry.note_id is None:
@@ -243,32 +264,40 @@ def migrate(word_lists: dict, arr: list) -> MigrationReport:
         hits, step = _find(entry, elements)
         if not hits:
             report.leftovers.append(Leftover(entry, NO_ELEMENT))
-        elif len(hits) > 1:
-            report.leftovers.append(Leftover(entry, AMBIGUOUS, _detail(hits)))
+        elif len(hits) == 1 or _spreads(hits):
+            wanted.append((entry, hits, step))
         else:
-            wanted.append((entry, hits[0], step))
+            report.leftovers.append(Leftover(entry, AMBIGUOUS, _detail(hits)))
 
     claims: dict[int, list[tuple[OldEntry, str]]] = {}
-    for entry, elem, step in wanted:
-        claims.setdefault(id(elem), []).append((entry, step))
+    for entry, elems, step in wanted:
+        for elem in elems:
+            claims.setdefault(id(elem), []).append((entry, step))
     done: set[int] = set()
-    for entry, elem, step in wanted:
+    for entry, elems, step in wanted:
         # Two entries wanting one element are only in each other's way when they are different
         # links - the same note id under two spellings (きっと and 屹度) is one link written
         # twice - and then the step that found each decides: だ found as written beats です
         # found through the raw text. Only a tie on the step leaves nothing to choose by.
-        rivals = [
-            e
-            for e, s in claims[id(elem)]
-            if e.note_id != entry.note_id and STEPS.index(s) <= STEPS.index(step)
-        ]
-        if rivals:
-            report.leftovers.append(Leftover(entry, CONTESTED, f"{elem[2]}[{elem[3]}] {rivals[0]}"))
-        elif match_flags.is_flagged(elem):
-            report.leftovers.append(Leftover(entry, FLAGGED, f"{elem[2]}[{elem[3]}]"))
-        elif id(elem) not in done:
-            done.add(id(elem))
-            elem[4] = [entry.note_id]
+        rival = next(
+            (
+                e
+                for elem in elems
+                for e, s in claims[id(elem)]
+                if e.note_id != entry.note_id and STEPS.index(s) <= STEPS.index(step)
+            ),
+            None,
+        )
+        if rival is not None:
+            report.leftovers.append(Leftover(entry, CONTESTED, f"{_detail(elems)} {rival}"))
+        elif all(match_flags.is_flagged(elem) for elem in elems):
+            report.leftovers.append(Leftover(entry, FLAGGED, _detail(elems)))
+        elif any(id(elem) not in done for elem in elems):
+            for elem in elems:
+                if id(elem) not in done:
+                    done.add(id(elem))
+                    elem[4] = [entry.note_id]
             report.by_step[step] += 1
-            report.linked_by_step.setdefault(step, []).append((entry, elem))
+            report.spread += len(elems) > 1
+            report.linked_by_step.setdefault(step, []).append((entry, elems[0]))
     return report

@@ -134,23 +134,34 @@ instead of both standing down:
 
 | Step | Fits when | Carries over |
 | --- | --- | --- |
-| `form` | the form and reading as they stand | 2845 |
+| `form` | the form and reading as they stand | 3071 |
 | `okurigana` | same reading, same kanji (向う -> 向こう) | 19 |
-| `written` | same form, the old reading colloquial or wrong (何[なん], ノイローゼ[はいろーぜ]) | 25 |
+| `written` | same form, the old reading colloquial or wrong (何[なん], ノイローゼ[はいろーぜ]) | 27 |
 | `reading` | same reading, part of speech fits the category (する -> 為る, について -> に就いて) | 121 |
-| `raw` | the element's raw text is the entry's word (です -> だ, 突き -> 突く) | 61 |
+| `raw` | the element's raw text is the entry's word (です -> だ, 突き -> 突く) | 62 |
 
 What fits nothing, fits several elements, or is contested by a second link is reported rather
 than guessed at: match_words_to_notes can match the word again from the sentence with `<b>`
-marking which occurrence it is, which beats a coin toss here. `lost_note_ids` is the part worth
-a caller's attention - a lost link is what the migration op tags a note for.
+marking which occurrence it is, which beats a coin toss here. The exception is a **particle or
+the copula**, where a link fitting several occurrences of one word goes on all of them: the old
+list naming の once for a sentence with two of them never said which it meant, and two
+occurrences of a function word are all but never two notes. A content word is left alone, since
+there two occurrences may be two meanings - what the old meaning index was for.
+`lost_note_ids` is the part worth a caller's attention: a lost link is what the op tags a note
+for.
 
 Measured by `research/migrate_fit.py` over the 292 sentences of the extract_words fine-tuning
-set, which is a hand-checked corpus of the old format: **81.5% of 3768 entries carried over**,
-the rest being 7.9% ambiguous (the same word twice in one sentence, almost all particles), 9.0%
-with no element at all and 0.7% contested. The no-element share is mostly by design - the old
-lists gave notes to compound function words the structural rules refuse (には, でも, として),
-and to て and ない, which now belong to the verb's inflection chain.
+set, which is a hand-checked corpus of the old format: **87.6% of 3768 entries carried over**
+(220 of them spread over several occurrences), the rest being 9.0% with no element at all, 1.7%
+ambiguous and 0.8% contested. The no-element share is mostly by design - the old lists gave
+notes to compound function words the structural rules refuse (には, でも, として), and to て and
+ない, which now belong to the verb's inflection chain.
+
+The sentence the array is generated from has its `<i>` context sentences stripped first
+(`html_stripping.strip_context_sentences`), the way extract_words strips them: the neighbouring
+sentences of the source passage are not what the note is about, so their words should not be
+offered to match_words_to_notes. An array therefore reconstructs the field without its context,
+not the whole field.
 
 ## Results
 

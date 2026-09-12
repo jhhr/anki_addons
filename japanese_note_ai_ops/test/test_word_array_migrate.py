@@ -127,12 +127,32 @@ class MatchStepTests(unittest.TestCase):
 
 
 class LeftoverTests(unittest.TestCase):
-    def test_the_same_word_twice_is_left_for_match_words_to_notes(self):
-        arr = [word("は", "は", pos="particle"), word("は", "は", pos="particle")]
-        report = migrate.migrate({"particles": [["は", "は", "sort", 11]]}, arr)
+    def test_a_content_word_twice_is_left_for_match_words_to_notes(self):
+        # Two occurrences may be two meanings, which is what the old meaning index was for
+        arr = [word("口紅", "くちべに"), word("口紅", "くちべに")]
+        report = migrate.migrate({"nouns": [["口紅", "くちべに", "sort", 11]]}, arr)
         self.assertEqual(matched(arr), [[], []])
         self.assertEqual(report.leftovers[0].reason, migrate.AMBIGUOUS)
         self.assertEqual(report.lost_note_ids, [11])
+
+    def test_a_particle_twice_gets_the_one_link_on_both(self):
+        arr = [word("は", "は", pos="particle"), word("は", "は", pos="particle")]
+        report = migrate.migrate({"particles": [["は", "は", "sort", 11]]}, arr)
+        self.assertEqual((matched(arr), report.spread, report.leftovers), ([[11], [11]], 1, []))
+
+    def test_a_spread_link_stops_at_words_that_are_not_the_same_word(self):
+        # Only the copula here reads だ; の is a different word that happens to be a particle
+        arr = [word("だ", "だ", pos="copula"), word("の", "の", pos="particle")]
+        report = migrate.migrate({"particles": [["だ", "だ", "sort", 11]]}, arr)
+        self.assertEqual((matched(arr), report.spread), ([[11], []], 0))
+
+    def test_two_links_on_one_repeated_particle_are_still_contested(self):
+        arr = [word("は", "は", pos="particle"), word("は", "は", pos="particle")]
+        report = migrate.migrate(
+            {"particles": [["は", "は", "sort", 11], ["は", "は", "sort", 22]]}, arr
+        )
+        self.assertEqual(matched(arr), [[], []])
+        self.assertEqual({lo.reason for lo in report.leftovers}, {migrate.CONTESTED})
 
     def test_two_links_wanting_one_word_both_stand_down(self):
         arr = [word("きっと", "きっと", pos="adverb")]

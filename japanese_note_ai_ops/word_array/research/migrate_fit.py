@@ -20,10 +20,11 @@ import traceback
 from collections import Counter
 from pathlib import Path
 
-from _bootstrap import ADDON_ROOT, load
+from _bootstrap import ADDON_ROOT, load, load_root
 
 generator = load("generator")
 migrate = load("migrate")
+html_stripping = load_root("html_stripping")
 
 CORPUS = ADDON_ROOT / "output" / "extract_words_fine_tuning.jsonl"
 MARKER = "The sentence to process: "
@@ -40,7 +41,8 @@ def read_corpus(path: Path) -> list[tuple[str, dict]]:
         assistant = next((m["content"] for m in messages if m["role"] == "assistant"), "")
         if MARKER not in user:
             continue
-        sentence = user.split(MARKER)[-1].strip()
+        # The op strips the <i> context sentences before generating, so this has to as well
+        sentence = html_stripping.strip_context_sentences(user.split(MARKER)[-1].strip())
         try:
             word_lists = json.loads(assistant)
         except json.JSONDecodeError:
@@ -123,6 +125,7 @@ def main() -> int:
             dump(index, sentence, arr, report, args.dump)
         totals["entries"] += report.entries
         totals["linked"] += report.linked
+        totals["spread over several occurrences"] += report.spread
         for step, count in report.by_step.items():
             totals[f"step {step}"] += count
         for leftover in report.leftovers:
@@ -144,6 +147,7 @@ def main() -> int:
         f"{totals['entries']} entries, {totals['linked']} carried over"
         f" ({100 * totals['linked'] / entries:.1f}%)"
     )
+    print(f"  spread over several occurrences: {totals['spread over several occurrences']}")
     for key in sorted(k for k in totals if k.startswith("step ")):
         print(f"  {key}: {totals[key]}")
     for key in sorted(k for k in totals if k.startswith("lost ")):

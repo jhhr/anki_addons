@@ -1,5 +1,4 @@
 import json
-import re
 import logging
 from collections import Counter
 from typing import Union
@@ -16,6 +15,7 @@ from .base_ops import (
     selected_notes_op,
     AsyncTaskProgressUpdater,
 )
+from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config
 from ..configuration import (
     RawOneMeaningWordType,
@@ -929,7 +929,7 @@ def extract_words_in_note(
         # Check if the value is non-empty
         if sentence:
             # Remove text within <i> tags, as it is not relevant for word extraction
-            sentence = re.sub(r"<i>.*?</i>", "", sentence, flags=re.DOTALL)
+            sentence = strip_context_sentences(sentence)
             current_word_lists_raw = note[word_list_field]
             logger.debug(
                 f"current_word_lists_raw: '{current_word_lists_raw}', ignore_current_word_lists:"
@@ -1025,7 +1025,7 @@ def extract_words_test_compare_in_note(
     sentence = note[word_extraction_sentence_field]
     if not sentence:
         return False
-    sentence = re.sub(r"<i>.*?</i>", "", sentence, flags=re.DOTALL)
+    sentence = strip_context_sentences(sentence)
 
     current_word_lists_raw = note[word_list_field]
     current_word_lists_for_prompt = None
