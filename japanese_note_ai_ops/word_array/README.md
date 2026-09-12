@@ -138,10 +138,9 @@ was revised to them. The rules came from these same examples, so accuracy on the
 large is not measured yet.
 
 On those 23 plus the 22 kanjify_sentence examples: every array reconstructs its sentence, and
-of 756 word positions 34 give unbalanced html when wrapped in `<b>`, all but one fixed by
-`use_tag_cleaning.apply_tag_fixes`. The one left is an expression ending inside a `<k>` span
-(`<k> 優劣[ゆうれつ]</k>を<k> 付[つ]け 難[がた]い</k>`), which needs the highlighter to
-close and reopen the `<k>` around `</b>`.
+of 756 word positions 34 give unbalanced html when wrapped in `<b>`, all of them fixed by
+`use_tag_cleaning.apply_tag_fixes`, which now closes and reopens whatever tags a `<b>` span
+crosses instead of encloses (`<b><k>A</k>を<k>B</b>C</k>` -> `<b><k>A</k>を<k>B</k></b><k>C</k>`).
 
 ## Tokenizers considered
 
