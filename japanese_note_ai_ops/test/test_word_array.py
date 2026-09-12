@@ -198,6 +198,19 @@ class WordArrayTests(unittest.TestCase):
             with self.subTest(sentence=sentence):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "adverb")
 
+    def test_a_word_partly_in_k_is_spelled_as_jmdict_spells_it(self):
+        # The 為 and the second 当 were kana before kanjify_sentence; JMdict has 私達 as it is
+        cases = [
+            ("彼[かれ]に 対[たい]<k> 為[し]て</k> 怒[おこ]る", "に対して", "にたいして"),
+            ("日当[ひあ]<k> 当[た]り</k>が 良[い]い", "日当たり", "ひあたり"),
+            ("私[わたし]<k> 達[たち]</k>が 行[い]く", "私達", "わたしたち"),
+        ]
+        for sentence, form, reading in cases:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertIsNotNone(word)
+                self.assertEqual(word[3], reading)
+
     def test_only_a_number_makes_the_noun_after_it_a_counter(self):
         self.assertEqual(
             find_word(self.generator.generate("3 年[ねん] 経[た]つ"), "年")[1], "counter"

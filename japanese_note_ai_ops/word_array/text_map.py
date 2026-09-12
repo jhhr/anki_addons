@@ -85,6 +85,8 @@ class TextMap:
     # (seg index, a, b) -> (written, reading) for a piece of a group that doesn't split per
     # kanji, worked out from the sub-words by generator.split_group_readings
     piece_readings: dict[tuple[int, int, int], tuple[str, str]] = field(default_factory=dict)
+    # written_form() gives <k> groups as the kana they were before kanjify_sentence ran
+    k_as_kana: bool = False
 
     def boundary_ok(self, nat_idx: int) -> bool:
         """True when a word boundary before natural index nat_idx doesn't cut a furigana group."""
@@ -229,6 +231,8 @@ class TextMap:
 
     def written_form(self, start: int, end: int) -> str:
         """The written (kanjified) surface of a natural span, tags and furigana stripped."""
+        if self.k_as_kana:
+            return self.natural[start:end]  # <k> groups contribute their reading there
         rs, re_ = self.raw_span(start, end)
         text = FURI_BRACKET_RE.sub("", TAG_RE.sub("", self.raw[rs:re_]))
         return text.replace(" ", "")

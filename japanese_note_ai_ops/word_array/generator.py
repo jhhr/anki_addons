@@ -26,7 +26,7 @@ from __future__ import annotations
 import itertools
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Optional
 
@@ -694,6 +694,20 @@ def _surface_reading(tm: TextMap, w: Word) -> str:
 
 
 def dict_form(tm: TextMap, w: Word) -> str:
+    form = _dict_form(tm, w)
+    if tm.k_as_kana or jmdict.lookup(form):
+        return form
+    # A word partly inside <k> mixes the note's kanji with kanji kanjify_sentence put on kana,
+    # which JMdict may not spell together: 対[たい]<k>為[す]る</k> -> に対為る, 日当[ひあ]<k>当[た]り
+    # -> 日当当り. Those take the <k> part as kana when JMdict has that spelling (に対する)
+    furi = [s for s in tm.segs_of(w.start, w.end) if s.kind == "furi"]
+    if not any(s.in_k for s in furi) or all(s.in_k for s in furi):
+        return form
+    kana = _dict_form(replace(tm, k_as_kana=True), w)
+    return kana if jmdict.lookup(kana) else form
+
+
+def _dict_form(tm: TextMap, w: Word) -> str:
     if w.kind == "expression":
         # In the note's spelling, whichever spelling JMdict matched (様に成る, not ようになる)
         if w.surface_match:
