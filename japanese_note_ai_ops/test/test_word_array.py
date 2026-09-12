@@ -125,6 +125,12 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(self.examples[num][0])
                 self.assertEqual(find_word(arr, form), [])
 
+    def test_an_expression_starting_on_the_copula_keeps_its_whole_reading(self):
+        arr = self.generator.generate(
+            "彼[かれ]は 作家[さっか]で<k> 有[あ]り</k> 学者[がくしゃ]です。"
+        )
+        self.assertEqual(find_word(arr, "で有る")[3], "である")
+
     def test_a_kanjified_expression_matches_through_its_kana(self):
         # JMdict writes だけの事はある; the note kanjified ある to 有る
         arr = self.generator.generate("だけの 事[こと]は<k> 有[あ]って</k>")

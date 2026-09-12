@@ -782,8 +782,6 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
             return furi
         return numbers.number_reading(value)
-    if is_copula(head):
-        return head.surface if head.surface in PARTICLE_COPULA else "だ"
     if w.kind == "expression":
         if w.surface_match:
             reading = _surface_reading(tm, w)
@@ -795,7 +793,9 @@ def dict_reading(tm: TextMap, w: Word) -> str:
             return reading
         prefix = "".join(_surface_reading(tm, s) for s in w.subs[:-1])
         return prefix + dict_reading(tm, w.subs[-1])
-    furi = _furigana_reading(tm, w.start, w.end, w.morphs)
+    if is_copula(head):  # after expressions, which can start on one: で有る
+        return head.surface if head.surface in PARTICLE_COPULA else "だ"
+    furi =_furigana_reading(tm, w.start, w.end, w.morphs)
     lemma = dict_form(tm, w)
     written = tm.written_form(w.start, w.end)
     if lemma == written:
