@@ -38,6 +38,8 @@ from . import match_flags, numbers, resources, text_map
 from .text_map import TextMap
 
 KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
+# What a reading can't hold: kanji or digits the furigana left unread
+UNREAD_RE = re.compile(r"[一-龯㐀-䶿々0-9０-９]")
 
 
 @lru_cache(maxsize=1)
@@ -696,6 +698,8 @@ def dict_form(tm: TextMap, w: Word) -> str:
         and not KANJI_RE.match(written[-1:])
         and jmdict.has_pos(written, "exp")
         and not w.followed_by_verb
+        # An inflection that happens to be an expression too stays the verb: 出来た, 行けません
+        and not any(m.pos[0] == "助動詞" for m in w.morphs[1:])
     ):
         return written  # 下さい, 於いて (not 連れて in 連れて行く)
     if len(w.morphs) == 1 and written in LEXICAL_KU_ADVERBS:
@@ -729,7 +733,18 @@ def dict_form(tm: TextMap, w: Word) -> str:
         if _respell(w_stem, n_stem, head.norm)[:1] == _respell(w_stem, n_stem, lemma)[:1]:
             lemma = head.norm
     if not n_stem or lemma.startswith(n_stem):
-        return _respell(w_stem, n_stem, lemma)
+        respelled = _respell(w_stem, n_stem, lemma)
+        # The note's kanji can belong to another word: <k>呉[くだ]さい</k> is 下さる, as 呉さる
+        # reads くれさる. Kanji read the way the text reads them stay, JMdict entry or not
+        # (拓ける, ひらける)
+        if (
+            respelled != head.norm
+            and not _sudachi_reading(respelled).startswith(to_hiragana(n_stem))
+            and not jmdict.lookup(respelled)
+            and jmdict.lookup(head.norm)
+        ):
+            return head.norm
+        return respelled
     return head.norm
 
 
@@ -762,8 +777,11 @@ def dict_reading(tm: TextMap, w: Word) -> str:
     value = number_value(tm, w)
     if value is not None:
         furi = to_hiragana(tm.surface_reading(w.start, w.end))
-        # The note's furigana (一[ひと]つ) where it has any; numbers mostly have none
-        return furi if tm.written_form(w.start, w.end) != furi else numbers.number_reading(value)
+        # The note's furigana (一[ひと]つ) where it reads the whole number; numbers mostly have
+        # none, or only on their units (１万[まん]２千[せん])
+        if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
+            return furi
+        return numbers.number_reading(value)
     if is_copula(head):
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
     if w.kind == "expression":
