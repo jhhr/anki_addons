@@ -82,6 +82,7 @@ def main(verbose: bool) -> None:
             ge, se = g_top[k], s_top[k]
             tot["lemma_ok"] += ge[2] == se[2]
             tot["reading_ok"] += ge[3] == se[3]
+            tot["flags_ok"] += ge[4] == se[4]
             if ge[2] != se[2]:
                 lemma_miss.append((num, ge[2], se[2]))
             if ge[3] != se[3]:
@@ -116,6 +117,7 @@ def main(verbose: bool) -> None:
     print(f"sub-words reachable: {pct('sub_reach', 'gold_sub')}")
     print(f"dict_form on matched spans: {pct('lemma_ok', 'top_hit')}")
     print(f"reading on matched spans:   {pct('reading_ok', 'top_hit')}")
+    print(f"match_data (default flags) on matched spans: {pct('flags_ok', 'top_hit')}")
     if verbose:
         print("\ndict_form mismatches (ex, gold, generated):")
         for m in lemma_miss:

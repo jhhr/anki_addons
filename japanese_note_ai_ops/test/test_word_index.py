@@ -166,9 +166,7 @@ class SeveralNotetypesTests(unittest.TestCase):
         self.assertIsNone(index.reading(2))
 
     def test_a_row_of_an_unindexed_notetype_is_skipped(self):
-        index = wi.WordIndex.from_rows(
-            FIELDS, {VOCAB_MID: VOCAB_ORDS}, [self.other_row(2, "私")]
-        )
+        index = wi.WordIndex.from_rows(FIELDS, {VOCAB_MID: VOCAB_ORDS}, [self.other_row(2, "私")])
         self.assertEqual(index.matching_note_ids(["私"], ["私"]), [])
 
 
@@ -314,9 +312,7 @@ class MeaningGroupTests(unittest.TestCase):
             )
         )
         self.assertFalse(
-            index.covers(
-                kanjified="word", normal="vocab", reading="vocab-kana", sort="vocab-key"
-            )
+            index.covers(kanjified="word", normal="vocab", reading="vocab-kana", sort="vocab-key")
         )
 
 
@@ -368,9 +364,7 @@ class ReadNotesTests(unittest.TestCase):
 
     def test_a_notetype_with_only_the_sort_field_is_kept(self):
         # It cannot be hit by a word query, but the marker query searches the sort field alone
-        (ords_by_mid, _), _ = self.read(
-            [self.notetype(600, "vocab-key", "Back")]
-        )
+        (ords_by_mid, _), _ = self.read([self.notetype(600, "vocab-key", "Back")])
         self.assertEqual(
             ords_by_mid[600], wi.FieldOrds(kanjified=None, normal=None, reading=None, sort=0)
         )

@@ -31,7 +31,7 @@ from sudachipy import Dictionary, SplitMode
 
 from ..kana_conv import to_hiragana
 from . import jmdict_index as jmdict
-from . import resources, text_map
+from . import match_flags, numbers, resources, text_map
 from .text_map import TextMap
 
 KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
@@ -138,11 +138,12 @@ def tokenize(natural: str) -> list[Morph]:
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
-    """'1日' comes out as one token read ついたち; the furigana marks 日 as its own word."""
+    """'1日' comes out as one token read ついたち ('１日' as an adverb); the furigana marks 日
+    as its own word."""
     out = []
     for m in morphs:
         mm = re.fullmatch(r"(\d+)(\D+)", m.surface)
-        if mm and m.pos[0] == "名詞":
+        if mm:
             n = len(mm.group(1))
             num, rest = mm.group(1), mm.group(2)
             out.append(Morph(m.start, m.start + n, num, ("名詞", "数詞"), num, num, num))
@@ -269,6 +270,10 @@ def _forms(tm: TextMap, ws: list[Word]) -> list[tuple[str, str, bool]]:
     natural = [w.natural for w in ws]
     as_written = "".join(written)
     forms = [(as_written, as_written, True), ("".join(natural), as_written, True)]
+    # Numbers as numerals, however the text writes them: 1日 and １日 are both 一日
+    numeral = "".join(_surface_form(tm, w) for w in ws)
+    if numeral != as_written:
+        forms.append((numeral, numeral, True))
     last = ws[-1]
     if last.head.pos[0] in INFLECTING:
         deinflected = "".join(written[:-1]) + dict_form(tm, last)
@@ -523,15 +528,44 @@ def noun_form_verb(written: str, w: Word) -> Optional[str]:
     return verb if jmdict.has_pos(verb, "v5") else None
 
 
+def _surface_form(tm: TextMap, w: Word) -> str:
+    """The word as the note writes it, numbers as numerals (１日 -> 一日)."""
+    value = number_value(tm, w)
+    if value is not None:
+        return numbers.numeral(value)
+    if w.kind == "expression":
+        return "".join(_surface_form(tm, s) for s in w.subs)
+    return tm.written_form(w.start, w.end)
+
+
+def _has_unread_number(tm: TextMap, w: Word) -> bool:
+    """Whether the word is or contains a number without furigana."""
+    if w.kind == "expression":
+        return any(_has_unread_number(tm, s) for s in w.subs)
+    return number_value(tm, w) is not None and (
+        tm.written_form(w.start, w.end) == tm.surface_reading(w.start, w.end)
+    )
+
+
+def _surface_reading(tm: TextMap, w: Word) -> str:
+    if number_value(tm, w) is not None:
+        return dict_reading(tm, w)
+    if w.kind == "expression":
+        return "".join(_surface_reading(tm, s) for s in w.subs)
+    return _furigana_reading(tm, w.start, w.end, w.morphs)
+
+
 def dict_form(tm: TextMap, w: Word) -> str:
     if w.kind == "expression":
         # In the note's spelling, whichever spelling JMdict matched (様に成る, not ようになる)
         if w.surface_match:
-            return tm.written_form(w.start, w.end)
-        last = w.subs[-1]
-        return tm.written_form(w.start, last.start) + dict_form(tm, last)
+            return _surface_form(tm, w)
+        return "".join(_surface_form(tm, s) for s in w.subs[:-1]) + dict_form(tm, w.subs[-1])
     if w.jm_form:
         return w.jm_form
+    value = number_value(tm, w)
+    if value is not None:
+        return numbers.numeral(value)
     head = w.head
     written = tm.written_form(w.start, w.end)
     if is_copula(head):
@@ -591,24 +625,11 @@ def _sudachi_reading(text: str) -> str:
     return to_hiragana("".join(m.reading_form() for m in _tokenizer().tokenize(text)))
 
 
-DIGIT_R = ["", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう"]
-PLACES = (
-    (1000, "せん", {1: "せん", 3: "さんぜん", 8: "はっせん"}),
-    (100, "ひゃく", {1: "ひゃく", 3: "さんびゃく", 6: "ろっぴゃく", 8: "はっぴゃく"}),
-    (10, "じゅう", {1: "じゅう"}),
-)
-
-
-def number_reading(num: str) -> str:
-    n = int(num)
-    if n == 0:
-        return "ぜろ"
-    out = ""
-    for unit, name, special in PLACES:
-        d, n = divmod(n, unit)
-        if d:
-            out += special.get(d, DIGIT_R[d] + name)
-    return out + DIGIT_R[n]
+def number_value(tm: TextMap, w: Word) -> Optional[int]:
+    """The value of a number word (1, １, 二十八, 千九百三十五), None for any other word."""
+    if len(w.morphs) != 1 or w.head.pos[:2] != ("名詞", "数詞"):
+        return None
+    return numbers.parse_number(tm.written_form(w.start, w.end))
 
 
 def _furigana_reading(tm: TextMap, start: int, end: int, morphs: list[Morph]) -> str:
@@ -621,14 +642,24 @@ def _furigana_reading(tm: TextMap, start: int, end: int, morphs: list[Morph]) ->
 
 def dict_reading(tm: TextMap, w: Word) -> str:
     head = w.head
-    if re.fullmatch(r"\d+", w.natural):
-        return number_reading(w.natural)
+    value = number_value(tm, w)
+    if value is not None:
+        furi = to_hiragana(tm.surface_reading(w.start, w.end))
+        # The note's furigana (一[ひと]つ) where it has any; numbers mostly have none
+        return furi if tm.written_form(w.start, w.end) != furi else numbers.number_reading(value)
     if is_copula(head):
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
-    if w.kind == "expression" and not w.surface_match:
-        last = w.subs[-1]
-        before = [m for m in w.morphs if m.end <= last.start]
-        return _furigana_reading(tm, w.start, last.start, before) + dict_reading(tm, last)
+    if w.kind == "expression":
+        if w.surface_match:
+            reading = _surface_reading(tm, w)
+            known = [to_hiragana(r) for r in w.jm_readings]
+            if known and reading not in known and _has_unread_number(tm, w):
+                # A number the note gives no reading for, before a counter: 三つ is みっつ,
+                # not さん + つ
+                return max(known, key=lambda r: _common_prefix(r, reading))
+            return reading
+        prefix = "".join(_surface_reading(tm, s) for s in w.subs[:-1])
+        return prefix + dict_reading(tm, w.subs[-1])
     furi = _furigana_reading(tm, w.start, w.end, w.morphs)
     lemma = dict_form(tm, w)
     written = tm.written_form(w.start, w.end)
@@ -691,8 +722,13 @@ def pos_label(w: Word, prev: Optional[Word]) -> str:
         return "particle" if h.surface in PARTICLE_COPULA else "copula"
     if h.pos[0] == "助動詞":
         return "auxiliary"
-    if h.pos[0] == "接尾辞" and prev is not None and prev.head.pos[:2] == ("名詞", "数詞"):
-        return "counter"
+    if (
+        h.pos[0] in ("接尾辞", "名詞")
+        and len(w.morphs) == 1
+        and prev is not None
+        and prev.head.pos[:2] == ("名詞", "数詞")
+    ):
+        return "counter"  # 隻, and nouns counting after a number: 3 月, 1935 年
     for key, label in POS_MAP:
         if h.pos[: len(key)] == key:
             return label
@@ -737,9 +773,9 @@ def _emit(tm: TextMap, words: list[Word], raw_lo: int, raw_hi: int) -> list[list
             out.append([raw_text])
         else:
             subs = _emit(tm, w.subs, rs, re_ext) if w.subs else []
-            out.append(
-                [raw_text, pos_label(w, prev), dict_form(tm, w), dict_reading(tm, w), [], subs]
-            )
+            pos, form = pos_label(w, prev), dict_form(tm, w)
+            match_data = match_flags.default_match_data(pos, form, subs)
+            out.append([raw_text, pos, form, dict_reading(tm, w), match_data, subs])
         cursor = re_ext
         prev = w
     out += [[p] for p in TAG_OR_TEXT_RE.findall(tm.raw[cursor:raw_hi])]

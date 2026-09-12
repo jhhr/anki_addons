@@ -264,7 +264,9 @@ class MemoryLimitConfigTests(MemoryStubTestCase):
 
     def test_invalid_limits_are_logged(self):
         with mock.patch.object(conc.logger, "warning") as warning:
-            self.assertEqual(conc.configured_memory_limit_bytes({"memory_limit": "oops"}, 32 * GB), 0)
+            self.assertEqual(
+                conc.configured_memory_limit_bytes({"memory_limit": "oops"}, 32 * GB), 0
+            )
         self.assertTrue(warning.called)
 
 
@@ -501,8 +503,7 @@ class MemoryEstimatorTests(MemoryStubTestCase):
         """
         counts = [4, 20, 36, 8, 28, 12, 32, 16, 24, 40, 6, 30]
         points = [
-            (live, 100 * MB + 4 * MB * live + 3 * MB * index)
-            for index, live in enumerate(counts)
+            (live, 100 * MB + 4 * MB * live + 3 * MB * index) for index, live in enumerate(counts)
         ]
         _, per_task = self.measure(points)
         self.assertAlmostEqual(per_task, 4 * MB, delta=MB // 2)
@@ -521,8 +522,7 @@ class MemoryEstimatorTests(MemoryStubTestCase):
             # tasks finishing and being replaced, on top of the trend
             counts.append(live + (4 if step % 2 else -4))
         points = [
-            (live, 100 * MB + 4 * MB * live + 2 * MB * index)
-            for index, live in enumerate(counts)
+            (live, 100 * MB + 4 * MB * live + 2 * MB * index) for index, live in enumerate(counts)
         ]
         _, per_task = self.measure(points)
         self.assertAlmostEqual(per_task, 4 * MB, delta=MB // 2)
@@ -718,7 +718,6 @@ class MemoryEstimatorTests(MemoryStubTestCase):
         self.assertLess(len(estimator._rss), len(estimator._traced))
 
 
-
 class EstimatesFileTests(MemoryStubTestCase):
     def setUp(self):
         super().setUp()
@@ -905,9 +904,7 @@ class TracingWouldPayTests(MemoryStubTestCase):
 
     def test_a_run_of_one_more_task_than_the_spread_is_long_enough(self):
         # The spread is a floor on the count the fit needs to see, not on the run
-        worth_it, _ = conc.tracing_would_pay(
-            self.WORTH_MEASURING, conc.MIN_SLOPE_SPREAD + 1
-        )
+        worth_it, _ = conc.tracing_would_pay(self.WORTH_MEASURING, conc.MIN_SLOPE_SPREAD + 1)
         self.assertTrue(worth_it)
 
     def test_a_static_limit_is_not_traced(self):

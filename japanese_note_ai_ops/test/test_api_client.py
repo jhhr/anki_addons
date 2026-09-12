@@ -240,10 +240,12 @@ class ClassifyResponseTests(unittest.TestCase):
         body = {
             "error": {
                 "message": "quota",
-                "details": [{
-                    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
-                    "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}],
-                }],
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel"}],
+                    }
+                ],
             }
         }
         self.assertEqual(

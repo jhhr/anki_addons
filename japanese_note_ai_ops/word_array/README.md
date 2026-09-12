@@ -89,6 +89,31 @@ A furigana group cut by the tokenizer is one word when JMdict has the whole read
 (天|高く, 軽音|部), unless they are all lone on'yomi kanji, i.e. a name cut into characters
 (里|樹).
 
+## Numbers
+
+A number's dictionary form is the Japanese numeral whatever the text writes (`numbers.py`):
+1, １, `1[いち]` and 一 are all 一, and 1935 is 千九百三十五. The raw text keeps its own form, as
+きったら does for 切る. Numbers are the text most often left without furigana, so the reading is
+computed when the note gives none (三つ still reads みっつ, from JMdict). Lookups use the
+numeral, so 1日 and １日 both find 一日.
+
+## The "dont_match" flag
+
+`match_data[0]` is the matched note's id once match_words_to_notes has run; the flag is the
+string `"dont_match"` in the same slot, so one check skips both (`match_flags.py`).
+
+Numbers other than 一-九, 十, 二十 and the multipliers start out flagged, and so does a word
+built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
+else is an AI job's call - `flag_prompt()` numbers every word element and states the rules the
+old extract_words prompt used (a compound meaning no more than its parts, a word plus the
+particle it takes, the pieces of a yojijukugo), and `apply_flag_response()` applies its answer.
+The job is meant for migrated arrays as well as new ones, so it can flag a word that was
+matched; `apply_flag_response` returns the note ids that flag unlinked.
+
+`elements_to_match()` is what match_words_to_notes will use once it reads word arrays: the
+words that are neither matched nor flagged. Running the job on notes needs the field that will
+hold the arrays, which comes with the phase 2 migration, so nothing calls the job yet.
+
 ## Results
 
 Against the 23 hand-converted extract_words examples (`research/gold_examples.md`), whose
@@ -96,10 +121,11 @@ structure was revised to follow the rules above:
 
 | Measure | Result |
 | --- | --- |
-| top-level words exactly as in the gold | 100% (287/287) |
-| sub-words exactly as in the gold | 99.0% (precision 98.1%): 肥ゆる, a classical form |
-| dict_form / reading on matched words | 99.0% / 98.6% |
-| sub-word raw_text equal to the gold's | 102/102 |
+| top-level words exactly as in the gold | 100% (280/280) |
+| sub-words exactly as in the gold | 99.1% (precision 98.3%): 肥ゆる, a classical form |
+| dict_form / reading on matched words | 98.9% / 98.6% |
+| match_data (the default flags) | 100% |
+| sub-word raw_text equal to the gold's | 116/116 |
 | speed | ~3 ms per sentence, after ~1.5 s loading Sudachi and the JMdict index |
 
 Top-level agreement says the gold and the rules agree, not that the rules are right: the gold
@@ -107,7 +133,7 @@ was revised to them. The rules came from these same examples, so accuracy on the
 large is not measured yet.
 
 On those 23 plus the 22 kanjify_sentence examples: every array reconstructs its sentence, and
-of 748 word positions 34 give unbalanced html when wrapped in `<b>`, all but one fixed by
+of 756 word positions 34 give unbalanced html when wrapped in `<b>`, all but one fixed by
 `use_tag_cleaning.apply_tag_fixes`. The one left is an expression ending inside a `<k>` span
 (`<k> 優劣[ゆうれつ]</k>を<k> 付[つ]け 難[がた]い</k>`), which needs the highlighter to
 close and reopen the `<k>` around `</b>`.
