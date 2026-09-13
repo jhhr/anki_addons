@@ -355,11 +355,39 @@ class QueryStageEditor(StageEditor):
             {"ascending": "ascending", "descending": "descending"},
             selection.get("sort_order", "descending"),
         )
+        # Format 1 could sort a field as numbers, and the migrator carries that over as
+        # `sort_numeric`. It is a checkbox here rather than a hidden key, because an editor
+        # that cannot show a setting ends up destroying it on the next save.
+        self.sort_numeric = QCheckBox("as numbers", self)
+        self.sort_numeric.setToolTip(
+            "Sort on the field read as a number, with anything unparsable counting as 0."
+            " Without this, 9 sorts above 10."
+        )
+        self.sort_numeric.setChecked(bool(selection.get("sort_numeric", False)))
+        self.sort_numeric.stateChanged.connect(self.notify)
         sort_row = QHBoxLayout()
         sort_row.addWidget(self.sort_field)
         sort_row.addWidget(self.sort_order)
+        sort_row.addWidget(self.sort_numeric)
         sort_row.addStretch()
         self.add_row("Then sort by", self._wrap(sort_row))
+
+        # A definition format 1 refused to select for keeps refusing until someone says
+        # otherwise here. Saving the stage must not be what says otherwise: the stage would
+        # go from selecting nothing to selecting everything the query matched, silently.
+        self.selection_error = selection.get("selection_error") or ""
+        self.keep_refusing = QCheckBox("Use the settings above instead", self)
+        if self.selection_error:
+            self.add_row(
+                "",
+                QLabel(
+                    "<span style='color: #c0392b'>This stage selects nothing:</span> "
+                    f"{self.selection_error}",
+                    self,
+                ),
+            )
+            self.keep_refusing.stateChanged.connect(self.notify)
+            self.add_row("", self.keep_refusing)
 
         self.if_empty = labelled_combo(
             self, IF_EMPTY_POLICIES, IF_EMPTY_LABELS, stage.get("if_empty", "continue")
@@ -383,12 +411,18 @@ class QueryStageEditor(StageEditor):
         super().apply()
         self.stage["result"] = self.result.text().strip()
         strategy = combo_value(self.strategy)
-        self.stage["selection"] = {
+        # Updated rather than replaced: a selection carries keys this editor does not own,
+        # and a save that rebuilt the dict from the four controls would drop them.
+        selection = self.stage.setdefault("selection", {})
+        selection.update({
             "strategy": strategy,
             "count": None if strategy == "all" else self.count.value(),
             "sort_field": self.sort_field.currentText() or None,
             "sort_order": combo_value(self.sort_order),
-        }
+            "sort_numeric": self.sort_numeric.isChecked(),
+        })
+        if self.selection_error and self.keep_refusing.isChecked():
+            selection.pop("selection_error", None)
         self.stage["if_empty"] = combo_value(self.if_empty)
 
 

@@ -505,3 +505,74 @@ def test_the_trigger_accessors_read_both_formats(col):
 def test_a_dash_note_type_list_means_no_note_types(col):
     assert definition_note_type_names({"copy_into_note_types": "-"}) == []
     assert definition_deck_names({"only_copy_into_decks": "-"}) == []
+
+
+# -- the query stage's selection -------------------------------------------------------
+
+
+def query_stage_editor(widget_parent, **selection):
+    """A note-query editor over a stage whose selection holds exactly these keys."""
+    stage = default_stage(STAGE_NOTE_QUERY, "s")
+    stage["result"] = "found"
+    stage["query"] = value_expression(text="deck:Default")
+    stage["selection"] = dict(selection)
+    definition = new_definition("d", "A definition", stages=[stage])
+    definition["triggers"]["note_types"] = [VOCAB]
+    document = StageDocument(definition)
+    environment = StageEditorEnvironment(make_note_types_for(document.definition), [definition], "d")
+    editor = make_stage_editor(
+        widget_parent, document.stage("s"), build_contexts(document)["s"], environment
+    )
+    return editor, document.stage("s")
+
+
+class TestTheSelectionSurvivesASave:
+    """Keys the migrator writes and this editor does not own (§11).
+
+    A save used to rebuild `selection` from the four controls, which silently dropped both
+    of them: the sort stopped being numeric, and a definition that had deliberately been
+    selecting nothing started selecting everything its query matched.
+    """
+
+    def test_a_numeric_sort_is_shown_and_kept(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="first", count=1, sort_field="Word", sort_numeric=True
+        )
+        assert editor.sort_numeric.isChecked() is True
+        editor.apply()
+        assert stage["selection"]["sort_numeric"] is True
+
+    def test_the_checkbox_turns_a_numeric_sort_off(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="first", count=1, sort_field="Word", sort_numeric=True
+        )
+        editor.sort_numeric.setChecked(False)
+        editor.apply()
+        assert stage["selection"]["sort_numeric"] is False
+
+    def test_a_lexical_sort_stays_lexical(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(widget_parent, strategy="all", sort_field="Word")
+        assert editor.sort_numeric.isChecked() is False
+        editor.apply()
+        assert stage["selection"]["sort_numeric"] is False
+
+    def test_a_refusal_survives_a_save_that_changes_nothing(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="all", selection_error="Error in copy fields: no such thing"
+        )
+        editor.apply()
+        assert stage["selection"]["selection_error"] == "Error in copy fields: no such thing"
+
+    def test_the_user_can_say_to_select_after_all(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="all", selection_error="Error in copy fields: no such thing"
+        )
+        editor.keep_refusing.setChecked(True)
+        editor.apply()
+        assert "selection_error" not in stage["selection"]
+
+    def test_a_stage_that_never_refused_grows_no_error(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(widget_parent, strategy="first", count=2)
+        editor.apply()
+        assert "selection_error" not in stage["selection"]
+        assert stage["selection"]["count"] == 2
