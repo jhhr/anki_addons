@@ -17,7 +17,9 @@ class PlanTests(unittest.TestCase):
         arr = [word("A"), word("は", "particle"), word("B", "verb"), word("だ", "copula")]
         plan = judge_v2.plan_judgements(arr)
         self.assertEqual([e[2] for e in plan.auto], ["は", "だ"])
-        self.assertEqual([(a.elem[2], a.group) for a in plan.asks], [("A", "noun"), ("B", "verb")])
+        self.assertEqual(
+            [(a.elem[2], a.group) for a in plan.asks], [("A", "noun-main"), ("B", "verb")]
+        )
         self.assertEqual(judge_v2.set_auto(plan), [])
         self.assertEqual([e[4] for e in arr], [[], ["dontmatch"], [], ["dontmatch"]])
 
@@ -44,8 +46,39 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn("\nPart of:", asks["D"].prompt)
         self.assertEqual(asks["D"].group, judge_v2.OTHER_GROUP)
 
+    def test_nouns_split_by_nesting_and_two_verb_compounds_by_place(self):
+        kau, kiru = word("買う", "verb"), word("切る", "verb")
+        de, aru = word("で", "particle"), word("有る", "verb")
+        arr = [
+            word("A", subs=[word("B"), word("C", "pronoun")]),
+            word("買い切る", "verb", subs=[kau, kiru]),
+            word("で有る", "verb", subs=[de, aru]),
+            word("X", "verb", subs=[word("Y", "verb"), word("Z", "verb"), word("W", "verb")]),
+        ]
+        groups = {a.elem[2]: a.group for a in judge_v2.plan_judgements(arr).asks}
+        self.assertEqual(
+            groups,
+            {
+                "A": "noun-main",
+                "B": "noun-sub",
+                "C": "noun-sub",
+                "買い切る": "verb",
+                "買う": "prefix-verb",
+                "切る": "suffix-verb",
+                "で有る": "verb",
+                "有る": "verb",
+                "X": "verb",
+                "Y": "verb",
+                "Z": "verb",
+                "W": "verb",
+            },
+        )
+
     def test_every_group_has_rules(self):
-        for group in set(judge_v2.POS_GROUPS.values()) | {judge_v2.OTHER_GROUP}:
+        groups = set(judge_v2.POS_GROUPS.values()) | {judge_v2.OTHER_GROUP}
+        for group, split in judge_v2.SPLIT_GROUPS.items():
+            groups = (groups - {group}) | set(split)
+        for group in groups:
             with self.subTest(group=group):
                 self.assertIn(group, judge_v2.POS_RULES)
 

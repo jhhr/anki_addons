@@ -124,13 +124,14 @@ def read_results() -> dict[str, dict]:
 
 class Judged(NamedTuple):
     """One eval row after the judge: its array with the decisions written in, the words decided
-    by a request, and each such word's reason where the judge gives one. `arr` is None when the
-    row has no usable response."""
+    by a request, each such word's reason where the judge gives one, and the rule group of every
+    word asked about. `arr` is None when the row has no usable response."""
 
     row: dict
     arr: Optional[list]
     asked: set[int]
     reasons: dict[int, str]
+    groups: dict[int, str]
 
 
 def row_requests(rows: list, model: str, judge_v2) -> list[list[tuple[str, str]]]:
@@ -148,6 +149,7 @@ def apply_row(row: dict, keys: list[str], cached: dict, judge_v2) -> Judged:
     plan = judge_v2.plan_judgements(arr)
     judge_v2.set_auto(plan)
     asked, reasons = set(), {}
+    groups = {id(ask.elem): ask.group for ask in plan.asks}
     for ask, key in zip(plan.asks, keys):
         response = cached.get(key, {}).get("response")
         try:
@@ -156,7 +158,7 @@ def apply_row(row: dict, keys: list[str], cached: dict, judge_v2) -> Judged:
             continue
         asked.add(id(ask.elem))
         reasons[id(ask.elem)] = str(response.get(judge_v2.REASON_FIELD, ""))
-    return Judged(row, arr, asked, reasons)
+    return Judged(row, arr, asked, reasons, groups)
 
 
 def run(args) -> int:
@@ -246,7 +248,7 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
                 counts["words without a response"] += 1
                 continue
             outcome = f"{expected} {'right' if got == expected else 'wrong'}"
-            for key, table in ((judge_v2.pos_group(elem[1]), by_group), (elem[1], by_pos)):
+            for key, table in ((item.groups[id(elem)], by_group), (elem[1], by_pos)):
                 table.setdefault(key, Counter())[outcome] += 1
             by_group.setdefault("ALL", Counter())[outcome] += 1
             if got != expected:

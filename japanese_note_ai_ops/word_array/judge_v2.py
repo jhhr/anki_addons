@@ -54,6 +54,8 @@ POS_GROUPS = {
     "auxiliary": "auxiliary",
 }
 OTHER_GROUP = "other"
+# rule_group() splits these further by the word's place in the array
+SPLIT_GROUPS = {"noun": ("noun-main", "noun-sub"), "verb": ("verb", "prefix-verb", "suffix-verb")}
 
 INTRO = """You decide whether one word of a Japanese sentence gets a vocabulary note: a flashcard for learning what this word means in this sentence.
 
@@ -62,28 +64,44 @@ The sentence was split into words by fixed rules that err towards too many words
 The basic test: imagine the flashcard for this word, in the meaning it has here, showing this sentence as its example. Does the sentence make sense as an example of that word? A card for 手 (hand) showing a sentence with 手紙 (letter) is no example of "hand", so 手 in 手紙 is dontmatch. A card for 母 (mother) or 親 (parent) showing a sentence with 母親 is a fine example of both, so they match."""
 
 POS_RULES = {
-    "noun": """Rules for nouns, pronouns, proper nouns and numbers:
-- match an ordinary noun or pronoun, however common or easy: 人, 事, 時間, 私, 此れ, 誰.
-- match a compound noun whose meaning is more than its components, or that is an established word of its own: 見た目, 場合, 大学生.
+    "noun-main": """Rules for nouns, pronouns, proper nouns and numbers that stand as words of their own, not as a component of a larger word:
+- match an ordinary noun or pronoun, however common or easy: 人, 事, 時間, 私, 彼, 此れ, 誰.
+- match a compound noun whose meaning is more than its components, or that is an established word of its own: 見た目, 場合, 大学生, 手紙, 母親.
 - dontmatch a compound noun that means no more than its components put together: 遂行能力 is simply 遂行 + 能力, 日本社会 is 日本 + 社会. Its components keep their notes.
-- dontmatch a component of a compound whose meaning can't be built from its components' meanings: 手 and 紙 in 手紙, and the components of 名前, 花火, 電話, 学校, 物語, 電車, 会社, 世界, 時間, 大学, 文化. The compound keeps the note. Most two-kanji Sino-Japanese words are like this.
-- match a component whose own meaning still shows in the compound: 母 and 親 in 母親, 足 and 音 in 足音, 山 and 道 in 山道.
-- match a word made of a word plus a suffix, however transparent, and the word inside it: 芸術家 and 芸術, 科学者, 王様, 父さん, 詩人, 週 in 先週, 戦 in 戦後. But dontmatch a piece that is no word by itself, like 硬 in 硬化.
+- match a word made of a word plus a suffix, however transparent: 芸術家, 科学者, 王様, 父さん, 詩人, 先週, 硬化.
 - dontmatch a word that is only 御 plus a word: 御寺, 御姉さん, 御話. The word and 御 keep their notes. But 御前 (you) is a word of its own: match it.
 - dontmatch a pronoun that is only a pronoun plus a plural suffix (彼等, 私達, 奴等, 此奴等): the pronoun keeps the note.
-- dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it.
-- match a noun that is a component of an idiom or expression: 羽目 in 羽目を外す, 根 in 根に持つ, 物 in 物か.
-- match a proper noun as a whole; dontmatch the components of a proper noun.
-- dontmatch a component of a four-kanji idiom (yojijukugo): the idiom keeps the note.
+- match a proper noun as a whole, and a four-kanji idiom (yojijukugo).
+- match a number standing alone (百, 二十) and a number plus a counter (三つ, 一人, 二人); dontmatch a date or length of time (七月, 一週間, 一年間, 一ヶ月).""",
+    "noun-sub": """Rules for nouns, pronouns, proper nouns and numbers that are a component of a larger word ("Part of" names it; that word is judged separately):
+- dontmatch a component of a compound whose meaning can't be built from its components' meanings: 手 and 紙 in 手紙, and the components of 名前, 花火, 電話, 学校, 物語, 電車, 会社, 世界, 時間, 大学, 文化. The compound keeps the note. Most two-kanji Sino-Japanese words are like this.
+- match a component whose own meaning still shows in the compound: 母 and 親 in 母親, 足 and 音 in 足音, 山 and 道 in 山道.
+- match the word inside a word plus a suffix, however transparent: 芸術 in 芸術家, 科学 in 科学者, 週 in 先週, 戦 in 戦後. But dontmatch a piece that is no word by itself, like 硬 in 硬化.
+- match the word inside 御 plus a word (寺 in 御寺, 話 in 御話), and the pronoun inside a pronoun plus a plural suffix (私 in 私達, 彼 in 彼等).
+- dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 此等, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it also inside a larger word.
+- match a noun that is a component of an idiom or expression: 羽目 in 羽目を外す, 根 in 根に持つ, 物 in 物か, 為 in 為に.
+- dontmatch the components of a proper noun and of a four-kanji idiom (yojijukugo): the whole keeps the note.
 - dontmatch a component that is not a word of its own in this sentence, like 合 in 場合 or 供 in 子供.
-- match a number standing alone (百, 二十) and a number plus a counter (三つ, 一人, 二人); dontmatch a number inside a number plus a counter (三 in 三つ, 七 in 七月), and a date or length of time (七月, 一週間, 一年間, 一ヶ月).""",
+- dontmatch a number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月); match a date or length of time only as a component of an expression, like 一日 in 一日中.""",
     "verb": """Rules for verbs (given in their dictionary form, whatever form the sentence has):
 - match an ordinary verb, however common or easy, 為る (する) included, also where it only makes the noun before it a verb (勉強為る).
 - match a verb used as an auxiliary after a て-form: 見る in て見る, 呉れる, 貰う, 置く, 行く, 来る, 下さい.
-- match a verb that is a component of a compound verb or of an expression: 合う in 話し合う, 言う in と言う or 然う言う, 有る in で有る, 関する in に関して, 成る in 事に成る.
+- match a verb that is a component of an expression or of a noun: 言う in と言う or 然う言う, 有る in で有る, 関する in に関して, 成る in 事に成る.
 - match a compound verb whose meaning is more than its components: 登り切る, 見付ける, 取り消す.
 - dontmatch a compound verb that means no more than its components put together: 連れて行く is simply 連れる + 行く. Its components keep their notes.
 - dontmatch 為る in として and 就く in に就いて (について): they are only part of the particle.""",
+    "prefix-verb": """Rules for a verb that is the first of the two verbs a compound verb is made of ("Part of" names the compound verb, which is judged separately): 話す in 話し合う, 飲む in 飲み込む, 立つ in 立ち上がる.
+- The test: does this verb, with its own meaning alone, consistently give a specific kind of meaning to the compound verbs it forms as their first part? If it does, the sentence is an example of that meaning: match. If it only goes into the compound as part of a whole with a meaning of its own, or only adds emphasis, dontmatch.
+- match a first verb whose own action is still done in the compound: 話す in 話し合う (talk with each other), 飲む in 飲み込む (swallow), 追う in 追い付く (catch up by chasing).
+- dontmatch a first verb that is only an emphasising prefix or whose meaning is lost in the compound: 打つ in 打ち明ける, 差す in 差し上げる, 取る in 取り止める.
+- match a verb in its て-form before an auxiliary verb (付く in 付いて行く, 為る in 為て遣る) as an ordinary verb.
+- Decide case by case: of the two verbs of a compound, both, one or neither can match.""",
+    "suffix-verb": """Rules for a verb that is the second of the two verbs a compound verb is made of ("Part of" names the compound verb, which is judged separately): 合う in 話し合う, 込む in 飲み込む, 上がる in 立ち上がる.
+- The test: does this verb, with its own meaning alone, consistently give a specific kind of meaning to the compound verbs it forms as their second part? If it does, the sentence is an example of that meaning: match. If it only goes into the compound as part of a whole with a meaning of its own, dontmatch.
+- match a second verb that adds a meaning of its own to many compounds: 合う (with each other), 込む (into, thoroughly), 切る (completely), 出す (out, suddenly start), 始める (start), 続ける (keep on), 直す (again), 過ぎる (too much), 上がる (up, finish), 付く in 追い付く (reach).
+- dontmatch a second verb whose meaning is lost in the compound, where the compound is a word of its own: 付ける in 見付ける.
+- match a verb used as an auxiliary after a て-form (行く in 付いて行く, 遣る in 為て遣る) as an ordinary verb.
+- Decide case by case: of the two verbs of a compound, both, one or neither can match.""",
     "adjective": """Rules for adjectives: い-adjectives, な-adjectives and adjectivals (given in their dictionary form, whatever form the sentence has):
 - match an ordinary adjective, however common or easy: 多い (also as 多く), 大きい (also as 大きな), 静か.
 - match the adjectivals 此の, 其の, 彼の, 何の.
@@ -131,20 +149,35 @@ def pos_group(part_of_speech: str) -> str:
     return POS_GROUPS.get(part_of_speech, OTHER_GROUP)
 
 
+def rule_group(elem: list, parents: list[list]) -> str:
+    """The `POS_RULES` key for `elem`: its part of speech's group, split further where the array
+    tells the cases apart. Nouns are `noun-main` at the top level and `noun-sub` inside another
+    word; a verb that is one of exactly two verb sub-words of a verb is `prefix-verb` or
+    `suffix-verb` by its place (買い切る: 買う, 切る)."""
+    group = pos_group(elem[1])
+    if group == "noun":
+        return "noun-sub" if parents else "noun-main"
+    if group == "verb" and parents and parents[-1][1] == "verb":
+        subs = [s for s in parents[-1][5] if len(s) > 1]
+        if len(subs) == 2 and all(s[1] == "verb" for s in subs):
+            return "prefix-verb" if subs[0] is elem else "suffix-verb"
+    return group
+
+
 def _describe(elem: list) -> str:
     return f"{elem[2]} [{elem[3]}], {elem[1]}"
 
 
-def word_prompt(elem: list, sentence: str, parents: list[list]) -> str:
-    """The prompt for one word: `sentence` has it in `<b>`, `parents` are the words it is a
-    component of, outermost first."""
+def word_prompt(elem: list, sentence: str, parents: list[list], group: str) -> str:
+    """The prompt for one word under `group`'s rules: `sentence` has it in `<b>`, `parents` are
+    the words it is a component of, outermost first."""
     lines = [f"Sentence: {sentence}", f"Word: {_describe(elem)}"]
     lines += [f"Part of: {_describe(parent)}" for parent in reversed(parents)]
     subs = [s for s in elem[5] if len(s) > 1]
     if subs:
         lines.append("Made of: " + " + ".join(f"{s[2]} [{s[3]}]" for s in subs))
     entry = "\n".join(lines)
-    return f"{INTRO}\n\n{POS_RULES[pos_group(elem[1])]}\n\n{entry}\n\n{OUTRO}"
+    return f"{INTRO}\n\n{POS_RULES[group]}\n\n{entry}\n\n{OUTRO}"
 
 
 def plan_judgements(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> JudgePlan:
@@ -163,7 +196,8 @@ def plan_judgements(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> Judg
         if elem[1] in AUTO_DONT_MATCH_POS:
             auto.append(elem)
         else:
-            asks.append(WordAsk(elem, pos_group(elem[1]), word_prompt(elem, sentence, parents)))
+            group = rule_group(elem, parents)
+            asks.append(WordAsk(elem, group, word_prompt(elem, sentence, parents, group)))
     return JudgePlan(auto, asks)
 
 
