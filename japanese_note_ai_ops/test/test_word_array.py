@@ -235,6 +235,14 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(" 警察官[けいさつかん]が 来[き]た")
         self.assertEqual(find_word(arr, "官")[1], "suffix")
 
+    def test_sudachis_readings_of_unread_sub_words_must_add_up(self):
+        # Sudachi splits 無人島 as 無人[むじん] + 島[むじんとう]: 島 takes JMdict's とう instead
+        word = find_word(self.generator.generate("無人島に 行[い]く"), "無人島")
+        self.assertEqual([(s[2], s[3]) for s in word[5]], [("無人", "むじん"), ("島", "とう")])
+        # 一 + 日中[にっちゅう] can't read いちにちじゅう, so 一日中 keeps no sub-words
+        word = find_word(self.generator.generate("一日中 家[うち]に 居[い]た"), "一日中")
+        self.assertEqual((word[3], word[5]), ("いちにちじゅう", []))
+
     def test_a_group_whose_reading_cannot_be_shared_out_is_not_split(self):
         # Sudachi has 土産物 as 土産 + 物, but nothing reads へんなよみ that way
         arr = self.generator.generate("<div> 土産物[へんなよみ]を 買[か]う</div>")

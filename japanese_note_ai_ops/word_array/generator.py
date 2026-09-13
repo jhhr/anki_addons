@@ -530,10 +530,58 @@ def split_group_readings(tm: TextMap, words: list[Word]) -> None:
     for w in words:
         if not w.subs:
             continue
-        if _assign_cut_readings(tm, w.subs):
+        if _assign_cut_readings(tm, w.subs) and _unread_subs_add_up(tm, w):
             split_group_readings(tm, w.subs)
         else:
             w.subs = []
+
+
+def _unread_subs_add_up(tm: TextMap, w: Word) -> bool:
+    """Where the note gives a word no reading, Sudachi's reading of it has to be shared out
+    between its sub-words too. Sudachi's short units don't always add up to the long unit's:
+    無人島 splits as 無人[むじん] + 島[むじんとう], and 一日中[いちにちじゅう] as 一 + 日中[にっちゅう].
+    A sub-word read nowhere in the furigana may take its own Sudachi or JMdict reading instead
+    (島 -> とう); when nothing adds up, the word keeps no sub-words."""
+    if not KANJI_RE.search(to_hiragana(tm.surface_reading(w.start, w.end))):
+        return True  # the furigana reads it all, and its groups were shared out above
+    if w.kind == "expression" and not w.surface_match:
+        return True  # its dictionary form and reading are built from its words
+    options = []
+    unread = []  # sub-words whose reading is Sudachi's alone, and so may be replaced
+    for i, s in enumerate(w.subs):
+        readings = [_furigana_reading(tm, s.start, s.end, s.morphs)]
+        own = len(s.morphs) == 1 and KANJI_RE.search(tm.surface_reading(s.start, s.end))
+        if number_value(tm, s) is not None:
+            readings.append(dict_reading(tm, s))  # Sudachi reads ３ as ３
+        if own:
+            written = tm.written_form(s.start, s.end)
+            readings += [_sudachi_reading(written)] + list(jmdict.readings(written))
+        readings = [to_hiragana(r) for r in readings]
+        if i:
+            readings += [voiced(r) for r in readings]
+        options.append(list(dict.fromkeys(readings)))
+        unread.append(bool(own))
+    targets = ["".join(m.reading for m in w.morphs)]
+    known = [to_hiragana(r) for r in w.jm_readings]
+    counted = any(
+        number_value(tm, a) is not None
+        and (b.head.pos[0] == "接尾辞" or "助数詞可能" in b.head.pos)
+        for a, b in zip(w.subs, w.subs[1:])
+    )
+    if known and targets[0] not in known and not (counted and _has_unread_number(tm, w)):
+        # A JMdict match is read as JMdict reads it, which Sudachi's pieces needn't add up to.
+        # Not a number before a counter, whose sound changes dict_reading takes from JMdict
+        # anyway: 一[いち] + 本[ほん] is いっぽん, while 一 + 日中 is no 一日中
+        targets = known
+    for combo in itertools.product(*options):
+        if "".join(combo) in targets:
+            for s, reading, replace in zip(w.subs, combo, unread):
+                if replace:
+                    s.morphs[0].reading = reading
+            return True
+    # Furigana on part of the word is mostly the whole reading put on one kanji of it
+    # (<b> 無人</b>島[むじんとう]): its sub-words stay, as they may already be linked to notes
+    return tm.surface_reading(w.start, w.end) != tm.written_form(w.start, w.end)
 
 
 def _assign_cut_readings(tm: TextMap, subs: list[Word]) -> bool:
@@ -671,7 +719,7 @@ def _surface_form(tm: TextMap, w: Word) -> str:
     value = number_value(tm, w)
     if value is not None:
         return numbers.numeral(value)
-    if w.kind == "expression":
+    if w.kind == "expression" and w.subs:
         return "".join(_surface_form(tm, s) for s in w.subs)
     return tm.written_form(w.start, w.end)
 
@@ -688,7 +736,7 @@ def _has_unread_number(tm: TextMap, w: Word) -> bool:
 def _surface_reading(tm: TextMap, w: Word) -> str:
     if number_value(tm, w) is not None:
         return dict_reading(tm, w)
-    if w.kind == "expression":
+    if w.kind == "expression" and w.subs:
         return "".join(_surface_reading(tm, s) for s in w.subs)
     return _furigana_reading(tm, w.start, w.end, w.morphs)
 
@@ -817,9 +865,10 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         if w.surface_match:
             reading = _surface_reading(tm, w)
             known = [to_hiragana(r) for r in w.jm_readings]
-            if known and reading not in known and _has_unread_number(tm, w):
+            if known and reading not in known and (_has_unread_number(tm, w) or not w.subs):
                 # A number the note gives no reading for, before a counter: 三つ is みっつ,
-                # not さん + つ
+                # not さん + つ; or words whose Sudachi readings didn't add up to JMdict's, and
+                # so were dropped: 一日中 is いちにちじゅう, not いち + にっちゅう
                 return max(known, key=lambda r: _common_prefix(r, reading))
             return reading
         prefix = "".join(_surface_reading(tm, s) for s in w.subs[:-1])

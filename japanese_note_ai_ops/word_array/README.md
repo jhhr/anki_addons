@@ -64,6 +64,16 @@ up, the word simply keeps no sub-words, which is what stops a jukujikun word bei
 (今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
 has the plain reading (閏日 -> 日[び] -> ひ).
 
+Where the note gives no furigana, Sudachi's reading is shared out the same way, since its short
+units don't always add up to the long unit: 無人島 comes as 無人[むじん] + 島[むじんとう], so 島
+takes its own Sudachi or JMdict reading (とう), and 一日中[いちにちじゅう] as 一 + 日中[にっちゅう],
+which nothing reads, so it keeps no sub-words. A JMdict match must add up to JMdict's reading,
+except a number before a counter (一本 is いっぽん). Only a word with no furigana at all loses
+its sub-words this way: furigana on part of a word is mostly its whole reading put on one kanji
+(`<b> 無人</b>島[むじんとう]`), and those sub-words stay, often already linked to notes. Over the
+export this re-reads 9 sub-words (古代人 -> 人[じん]) and drops none, carrying the same links;
+`research/sub_readings.py` counts what still doesn't add up.
+
 ## Structure
 
 Which words exist follows concrete rules; whether a word is worth matching to a note is the
@@ -262,6 +272,7 @@ python word_array/research/evaluate.py          # accuracy against the gold, -q 
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
 python word_array/research/migrate_fit.py       # what the migration carries over, and loses
+python word_array/research/sub_readings.py      # parents whose sub-words' readings don't add up
 python word_array/research/judge_eval.py build  # the judge's eval set, from the checked export
 python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it
 pytest test/test_word_array.py                  # skipped until the downloads are there
