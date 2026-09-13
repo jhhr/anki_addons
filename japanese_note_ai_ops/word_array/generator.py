@@ -786,7 +786,7 @@ def _dict_form(tm: TextMap, w: Word) -> str:
     adjective = adjective_of(tm, w)
     if adjective:
         return adjective
-    verb = None if w.followed_by_suru or _jmdict_suffix(tm, w) else noun_form_verb(written, w)
+    verb = _noun_form_verb(tm, w)
     if verb:
         return verb
     if len(w.morphs) == 1 and head.pos[0] not in INFLECTING and head.lemma == head.surface:
@@ -861,6 +861,14 @@ def _jmdict_suffix(tm: TextMap, w: Word) -> bool:
         reading in {to_hiragana(r) for r in rs} and "suf" in ps  # not n-suf: 付き, 合い, 持ち
         for _, rs, ps in jmdict.lookup(tm.written_form(w.start, w.end))
     )
+
+
+def _noun_form_verb(tm: TextMap, w: Word) -> Optional[str]:
+    """The verb a noun or suffix is the stem of, unless it is a する-noun here (寝返り為る) or a
+    JMdict suffix of its own (振り[ぶり])."""
+    if w.followed_by_suru or _jmdict_suffix(tm, w):
+        return None
+    return noun_form_verb(tm.written_form(w.start, w.end), w)
 
 
 def _own_share(tm: TextMap, w: Word, furi: str) -> str:
@@ -1027,6 +1035,9 @@ def pos_label(
         and all(m.pos[:2] == ("名詞", "数詞") for m in prev.morphs)  # not 一日中 家
     ):
         return "counter"  # 隻, and nouns counting after a number: 3 月, 1935 年
+    verb = _noun_form_verb(tm, w)
+    if verb and dict_form(tm, w) == verb:
+        return "verb"  # a stem listed as its verb: 買い of 買い物, 手抜き's 抜き
     if h.pos[0] == "接尾辞" and len(w.morphs) == 1:
         label = _not_suffix_label(dict_form(tm, w), reading)
         # Inside a compound Sudachi's suffix is a bound piece JMdict may tag only as a noun (官 of

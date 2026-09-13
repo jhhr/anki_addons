@@ -55,6 +55,8 @@ Status: phase 1 prototype, not wired into any op yet.
    is a noun. Of 855 top-level suffixes in the collection export, 73 change.
    A verb stem Sudachi calls a suffix is its verb (付き -> 付く) unless JMdict has the stem, read
    as the note reads it, as a `suf` of its own: 振り[ぶり], 通し[どおし], 合い, 込み stay as written.
+   A noun listed as its verb is labelled a verb too (動き -> 動く, 買い of 買い物 -> 買う), so the
+   judge reads it by the verb rules: 1430 words of the export.
    Furigana the note put on a word's last kanji for the text before it too (空</b>域[くういき],
    ネット上[ねっとじょう]) gives the word only its own part (いき, じょう), when the rest reads the
    text before it.
