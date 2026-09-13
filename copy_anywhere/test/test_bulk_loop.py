@@ -169,15 +169,19 @@ class TestNoteTypeSelection:
         # editor wrote leaks into the user-facing text.
         assert logger.has_error('Did not find any notes of note type(s) Nope", "Nada')
 
-    def test_a_missing_copy_mode_raises_rather_than_erroring(self, col, logger):
-        # `copy_into_note_types` is read with `.get`, but `copy_mode` is read with `[]`, so a
-        # definition dict missing that key takes the whole op down instead of logging.
+    def test_a_missing_copy_mode_is_reported_rather_than_raising(self, col, logger):
+        # Intentional format-2 change: a definition with no copy mode cannot be migrated to
+        # stages, so it is reported and the loop stops. Format 1 read `copy_mode` with `[]`
+        # and took the whole op down with a KeyError instead of logging anything.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = copy_word_into_note()
         del definition["copy_mode"]
+        copied: list = []
 
-        with pytest.raises(KeyError, match="copy_mode"):
-            run_bulk(definition, logger)
+        run_bulk(definition, logger, notes=copied)
+
+        assert logger.has_error("missing copy mode value")
+        assert copied == []
 
 
 class TestNoteIdFilter:

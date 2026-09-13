@@ -227,10 +227,12 @@ class TestNoSourcesFound:
 
 
 class TestDuplicateQueryResults:
-    def test_two_cards_of_one_note_duplicate_the_value(self, col, note, logger):
-        # select_card_by "None" pops card ids without de-duplicating their notes, so a note
-        # whose two cards both match is joined in twice. Only the select_card_count 0 path
-        # goes through SELECT DISTINCT.
+    def test_two_cards_of_one_note_no_longer_duplicate_the_value(self, col, note, logger):
+        # Intentional format-2 change: the migrated query searches notes, not cards, so a
+        # note whose two cards both match is one result rather than two and a finite
+        # selection can no longer join the same note in twice. Format 1 wrote "dup+dup"
+        # here, because `select_card_by: None` popped card ids without de-duplicating the
+        # notes behind them.
         real_anki.add_note(col, VOCAB, {"Word": "dup", "Meaning": "twice"})
         definition = d.destination_to_sources(
             copy_from_cards_query="Word:dup",
@@ -240,7 +242,7 @@ class TestDuplicateQueryResults:
             select_card_separator="+",
         )
         copy_for_single_trigger_note(definition, note, logger=logger)
-        assert note["Note"] == "dup+dup"
+        assert note["Note"] == "dup"
 
     def test_select_card_count_zero_de_duplicates_them(self, col, note, logger):
         real_anki.add_note(col, VOCAB, {"Word": "dup", "Meaning": "twice"})
