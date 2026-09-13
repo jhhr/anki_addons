@@ -37,7 +37,7 @@ from ..configuration import (
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
-from .edit_state import EditState
+from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
 
@@ -87,7 +87,7 @@ class CardActionsEditor(QWidget):
     def __init__(
         self,
         parent,
-        state: EditState,
+        state: StageEditState,
         copy_definition: Optional[CopyDefinition],
         single_card_mode: bool = False,
     ):

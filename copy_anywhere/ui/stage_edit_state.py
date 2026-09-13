@@ -11,6 +11,7 @@ in the collection, which is the work a per-stage context has already done, and i
 two dozen fields about a definition-wide mode that a stage does not have.
 """
 
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from anki.models import NotetypeDict
@@ -20,8 +21,24 @@ from ..configuration import (
     COPY_MODE_WITHIN_NOTE,
     DIRECTION_SOURCE_TO_DESTINATIONS,
 )
-from .edit_state import CallbackEntry
 from .stage_editor_context import StageEditorContext
+
+
+@dataclass
+class CallbackEntry:
+    """A callback and whether the widget that registered it is on screen.
+
+    The reused editors register these to hear about a changed note type or variable list.
+    Nothing in format 2 fires them -- a stage's scope is fixed while its editor is open, and
+    a change that moves it rebuilds the tree -- but the widgets register them regardless, so
+    the registries have to exist and hold something callable.
+    """
+
+    callback: Callable
+    is_visible: bool = False
+
+    def __call__(self, *args, **kwargs):
+        return self.callback(*args, **kwargs)
 
 
 class StageEditState:

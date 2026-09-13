@@ -21,7 +21,6 @@ from aqt.qt import (
     QSizePolicy,
 )
 
-from .edit_copy_definition_dialog import EditCopyDefinitionDialog
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
     Config,
@@ -533,35 +532,24 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
     def run_definition_editor(
         self, definition: Optional[CopyDefinition], config: Config
     ) -> Optional[CopyDefinition]:
-        """Open whichever editor this definition's format needs, and return the result.
+        """Open the stage editor on this definition, converting it first if it is format 1.
 
-        A new definition is a staged one: format 2 is what the executor runs, and the only
-        reason a stored format-1 definition still opens in the old editor is that nobody
-        should have their existing definitions converted out from under them. Converting is
-        offered there, and lands right back here in the staged editor.
+        There is one editor. A definition only reaches here in format 1 if the startup
+        migration could not convert the config it is in, so it goes through the same pure
+        migrator on the way to the editor -- and one that still cannot be converted is said
+        so, rather than opened in an editor that has no shape for it.
         """
         staged_definitions = [
             other for other in config.copy_definitions if is_format_2(other)
         ]
-        if definition is None or is_format_2(definition):
-            dialog = EditStagedDefinitionDialog(self, definition, staged_definitions)
-            return dialog.get_copy_definition() if dialog.exec() else None
-
-        legacy_dialog = EditCopyDefinitionDialog(self, definition)
-        if not legacy_dialog.exec():
-            return None
-        edited = legacy_dialog.get_copy_definition()
-        if not getattr(legacy_dialog, "convert_to_stages_requested", False):
-            return edited
-        try:
-            migrated = migrate_definition_v1_to_v2(edited)
-        except MigrationError as error:
-            showInfo(f"This definition could not be converted to stages: {error}")
-            return edited
-        staged_dialog = EditStagedDefinitionDialog(self, migrated, staged_definitions)
-        # Cancelling the staged editor cancels the conversion, not the edits made before
-        # it: those were already made in a dialog the user pressed Save in.
-        return staged_dialog.get_copy_definition() if staged_dialog.exec() else edited
+        if definition is not None and not is_format_2(definition):
+            try:
+                definition = migrate_definition_v1_to_v2(definition)
+            except MigrationError as error:
+                showInfo(f"This definition could not be converted to stages: {error}")
+                return None
+        dialog = EditStagedDefinitionDialog(self, definition, staged_definitions)
+        return dialog.get_copy_definition() if dialog.exec() else None
 
     def edit_definition(
         self, index: Optional[int] = None, copy_definition: Optional[CopyDefinition] = None

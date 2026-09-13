@@ -19,7 +19,7 @@ from ..configuration import (
 from ..shared.ui.multi_combo_box import MultiComboBox
 
 
-from .edit_state import EditState
+from .stage_edit_state import StageEditState
 
 
 class TagEditor(QWidget):
@@ -30,7 +30,7 @@ class TagEditor(QWidget):
     def __init__(
         self,
         parent,
-        state: EditState,
+        state: StageEditState,
         copy_definition: Optional[CopyDefinition],
         copy_mode: CopyModeType,
     ):

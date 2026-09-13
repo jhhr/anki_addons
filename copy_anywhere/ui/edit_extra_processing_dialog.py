@@ -27,7 +27,7 @@ from aqt.qt import (
 
 from aqt.utils import tooltip
 
-from .edit_state import EditState
+from .stage_edit_state import StageEditState
 
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
@@ -187,7 +187,7 @@ class RegexProcessDialog(QDialog):
         self,
         parent,
         process: RegexProcess,
-        state: EditState,
+        state: StageEditState,
         is_variable_extra_processing: bool = False,
     ):
         super().__init__(parent)
@@ -693,7 +693,7 @@ class EditExtraProcessingWidget(QWidget):
         copy_definition: Optional[CopyDefinition],
         field_to_x_def: Union[CopyFieldToField, CopyFieldToVariable, CopyFieldToFile],
         allowed_process_names: list[str],
-        state: EditState,
+        state: StageEditState,
         is_variable_extra_processing: bool = False,
     ):
         super().__init__(parent)
