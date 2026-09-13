@@ -433,7 +433,7 @@ INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
 # Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
-SEPARATE_AUX = {"らしい", "べし", "まい"}
+SEPARATE_AUX = {"らしい", "べし", "まい", "如し"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
 PARTICLE_COPULA = ("な", "に", "で")
 FUNCTION_POS = ("助詞", "助動詞")
@@ -441,6 +441,16 @@ FUNCTION_POS = ("助詞", "助動詞")
 
 def is_copula(m: Morph) -> bool:
     return m.pos[0] == "助動詞" and m.norm in ("だ", "です")
+
+
+def is_classical_attributive(m: Morph) -> bool:
+    """The classical copula たり or なり in its attributive form たる/なる, a word as written."""
+    return (
+        m.pos[0] == "助動詞"
+        and len(m.pos) > 5
+        and m.pos[4].startswith(("文語助動詞-タリ", "文語助動詞-ナリ"))
+        and m.pos[5].startswith("連体形")
+    )
 
 
 def inflects(m: Morph) -> bool:
@@ -467,6 +477,13 @@ def _attaches(prev: Morph, nxt: Morph, head: Morph) -> bool:
         return True
     if inflects(head) and is_negation(prev, nxt):
         return True
+    if (
+        nxt.pos[:2] == ("助詞", "副助詞")
+        and nxt.norm == "たり"  # だり's lemma is だり
+        and len(prev.pos) > 5
+        and prev.pos[5].startswith("連用形")
+    ):
+        return True  # 焼いたり, 挟んだり, 高かったり, 学生だったり: たり only follows a 連用形
     return is_copula(head) and nxt.pos[0] == "形容詞" and nxt.lemma == "ない"  # じゃない
 
 
@@ -691,11 +708,17 @@ def opens_clause(c: Candidate, words: list[Word]) -> bool:
     return prev.kind == "punct" and any(prev.head.pos[: len(b)] == b for b in CLAUSE_BREAKS)
 
 
+# JMdict entries made only of particles and auxiliaries that are still words to learn: 一本たりとも
+FUNCTION_WORD_ENTRIES = {"足りとも", "たりとも"}
+
+
 def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool:
     """Whether a JMdict match is a word of this text at all - not whether it is worth
     studying, which the word matching judge decides. `openers`: let `opens_clause` in."""
     ws = words[c.i : c.j]
     opens = openers and opens_clause(c, words)
+    if c.form in FUNCTION_WORD_ENTRIES:
+        return True
     if not opens and all(w.head.pos[0] in FUNCTION_POS for w in ws):
         return False  # function words only: には, のだ, か+の read as 彼の
     if not KANJI_RE.search(c.form):
@@ -1132,6 +1155,8 @@ def _dict_form(tm: TextMap, w: Word) -> str:
     written = tm.written_form(w.start, w.end)
     if is_copula(head):
         return head.surface if head.surface in PARTICLE_COPULA else "だ"
+    if len(w.morphs) == 1 and is_classical_attributive(head):
+        return written  # 確固たる, 優渥なる, 無惨成る: not たり, なり, 成り
     if head.lemma == "する" and len(w.morphs) > 1 and w.morphs[1].lemma == "れる":
         return ("為" if written.startswith("為") else "さ") + "れる"
     if (

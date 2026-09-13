@@ -328,6 +328,28 @@ class WordArrayTests(unittest.TestCase):
                     find_word(self.generator.generate(sentence), "無い")[1], "adjective"
                 )
 
+    def test_classical_taru_naru_and_tari(self):
+        # The classical copula's attributive is the word as written, not たり or なり
+        arr = self.generator.generate("確固[かっこ]たる<k> 物[もの]</k>")
+        self.assertEqual(find_word(arr, "たる")[1:4], ["auxiliary", "たる", "たる"])
+        self.assertEqual(find_word(arr, "たり"), [])
+        # 如く after it is a word of its own, not part of 成る
+        arr = self.generator.generate(
+            "必要物[ひつようぶつ]<k> 成[な]る</k> 如[ごと]く 親子[おやこ]や"
+        )
+        self.assertEqual(find_word(arr, "成る")[0], " 成[な]る")
+        self.assertTrue(find_word(arr, "如し"))
+        self.assertEqual(find_word(arr, "成り"), [])
+        # たり after a 連用形 is part of the word; たりとも is one word
+        arr = self.generator.generate("肉[にく]を 焼[や]いたり 口[くち]を 挟[はさ]んだり")
+        self.assertEqual(find_word(arr, "焼く")[0], " 焼[や]いたり")
+        self.assertEqual(find_word(arr, "挟む")[0], " 挟[はさ]んだり")
+        self.assertEqual(find_word(arr, "たり") + find_word(arr, "だり"), [])
+        arr = self.generator.generate("一本[いっぽん]たりとも 渡[わた]さない")
+        top = [e[2] for e in arr if len(e) > 1]
+        self.assertNotIn("たり", top)
+        self.assertTrue({"足りとも", "たりとも"} & set(top), top)
+
     def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
         for sentence, raw, form in [
             # a suffix that inflects as a verb or adjective takes its inflection
