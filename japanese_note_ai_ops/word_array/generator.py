@@ -453,6 +453,29 @@ def is_classical_attributive(m: Morph) -> bool:
     )
 
 
+# Colloquial pronunciations of function words, by the word's text: base word, reading, label.
+# Only words made of auxiliaries and forms of ない take these, so the verb やろう stays やる
+COLLOQUIAL_WORDS = {
+    **dict.fromkeys(("じゃろう", "じゃろ", "やろう", "やろ"), ("だろう", "だろう", "expression")),
+    **dict.fromkeys(("じゃ", "じゃった", "や", "やった"), ("だ", "だ", "copula")),
+    **dict.fromkeys(("じゃねえ", "じゃねぇ", "じゃねー"), ("じゃ無い", "じゃない", "expression")),
+    **dict.fromkeys(("ねえ", "ねぇ", "ねー"), ("無い", "ない", "adjective")),
+    "って": ("って", "って", "particle"),  # quotative, Sudachi's つう
+}
+
+
+def colloquial_word(tm: TextMap, w: Word) -> Optional[tuple[str, str, str]]:
+    """Base word, reading and label of a colloquially pronounced function word: じゃろう is
+    だろう, のじゃ and 好きや are だ, じゃねえ is じゃない, and っちゅう, っつー, つー are という."""
+    if w.kind == "punct" or not all(
+        m.pos[0] == "助動詞" or (m.pos[0] == "形容詞" and m.norm == "無い") for m in w.morphs
+    ):
+        return None
+    if w.head.norm == "つう" and w.head.surface != "って":
+        return ("という", "という", "expression")
+    return COLLOQUIAL_WORDS.get(tm.written_form(w.start, w.end))
+
+
 def inflects(m: Morph) -> bool:
     """A verb or adjective, or a suffix that inflects as one (がる, かねる, じみる, やすい)."""
     return m.pos[0] in INFLECTING or m.pos[:2] in (("接尾辞", "動詞的"), ("接尾辞", "形容詞的"))
@@ -462,7 +485,7 @@ def _attaches(prev: Morph, nxt: Morph, head: Morph) -> bool:
     if not inflects(head) and head.pos[0] != "助動詞":
         return False
     if nxt.pos[0] == "助動詞":
-        if nxt.lemma in SEPARATE_AUX:
+        if nxt.lemma in SEPARATE_AUX or nxt.norm == "つう":  # 為たっちゅう, 見ようって: という
             return False
         # だ as past tense after onbin (沈んだ) attaches; a copula after a noun starts a word
         return not (is_copula(nxt) and not inflects(head) and prev is head and not is_copula(head))
@@ -1559,8 +1582,12 @@ def _emit(
         else:
             w.nested = nested
             subs = _emit(tm, w.subs, rs, re_ext, nested=True) if w.subs else []
-            form, reading = dict_form(tm, w), dict_reading(tm, w)
-            pos = pos_label(tm, w, prev, reading, nested)
+            colloquial = colloquial_word(tm, w)
+            if colloquial:
+                form, reading, pos = colloquial
+            else:
+                form, reading = dict_form(tm, w), dict_reading(tm, w)
+                pos = pos_label(tm, w, prev, reading, nested)
             match_data = match_flags.default_match_data(pos, form, subs)
             out.append([raw_text, pos, form, reading, match_data, subs])
         cursor = re_ext

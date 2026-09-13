@@ -350,6 +350,39 @@ class WordArrayTests(unittest.TestCase):
         self.assertNotIn("たり", top)
         self.assertTrue({"足りとも", "たりとも"} & set(top), top)
 
+    def test_colloquial_function_words_take_the_standard_base_word(self):
+        for sentence, raw, word in [
+            (
+                "<k> 此処等[ここいら]</k>が<b> 潮時[しおどき]</b>じゃろう。",
+                "じゃろう",
+                ["expression", "だろう", "だろう"],
+            ),
+            ("恥[はじ]を 知[し]るのじゃ。", "じゃ", ["copula", "だ", "だ"]),
+            ("大事[だいじ]やで。", "や", ["copula", "だ", "だ"]),
+            ("調査[ちょうさ]はどうじゃった｡", "じゃった", ["copula", "だ", "だ"]),
+            (
+                "言[い]い 方[かた]<k> 為[し]</k>てんじゃねえ。",
+                "じゃねえ",
+                ["expression", "じゃ無い", "じゃない"],
+            ),
+            (
+                "ユニットっちゅうもんが 必要[ひつよう]",
+                "っちゅう",
+                ["expression", "という", "という"],
+            ),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                found = find_word(arr, word[1])
+                self.assertEqual(found[:4], [raw] + word, arr)
+        # という after a verb is a word of its own
+        arr = self.generator.generate("なに<k> 為[し]た</k>っちゅうんや？")
+        self.assertEqual(find_word(arr, "為る")[0], " 為[し]た")
+        self.assertTrue(find_word(arr, "という"), arr)
+        # the verb やろう is not だろう
+        arr = self.generator.generate("一緒[いっしょ]にやろう。")
+        self.assertEqual(find_word(arr, "だろう"), [])
+
     def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
         for sentence, raw, form in [
             # a suffix that inflects as a verb or adjective takes its inflection
