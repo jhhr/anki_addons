@@ -504,6 +504,43 @@ class TestCalls:
         assert ok is True, logger.errors
         assert note["Note"] == "from neko"
 
+    def test_a_call_resolves_through_the_config_when_the_caller_passes_nothing(
+        self, col, note, logger, stub_mw
+    ):
+        # A call names a definition by guid, and that definition need not be one the run was
+        # asked for -- a bulk run over one definition can still call another. So the lookup
+        # falls back to the stored config, which is where the hooks and the bulk loop get
+        # theirs from without having to thread it through every call site.
+        child = self.child()
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition(
+                    "child-guid", outputs=[{"export": "H1", "result": "H1_here"}]
+                ),
+                d.edit_note("trigger", [d.write("Note", d.text("{{H1_here}}"))]),
+            ],
+        )
+        stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [child, parent]
+        ok, _copied = run(parent, note, logger)
+        assert ok is True, logger.errors
+        assert note["Note"] == "from neko"
+
+    def test_a_definition_that_calls_nothing_does_not_read_the_config(
+        self, col, note, logger, stub_mw
+    ):
+        # An unreadable definition sitting in the config is no reason for one that does not
+        # call it to fail.
+        stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [
+            {"guid": "broken", "copy_mode": "Within note", "copy_into_note_types": ["a list"]}
+        ]
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("fine"))]),
+        ])
+        assert run(definition, note, logger)[0] is True
+        assert note["Note"] == "fine"
+
     def test_the_callee_sees_note_edits_but_not_the_callers_variables(self, col, note, logger):
         child = d.staged(
             "child",

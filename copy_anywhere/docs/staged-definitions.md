@@ -11,10 +11,16 @@ reads and the note it writes. A stage that produces a value names it, and later 
 scope can use it.
 
 **Status.** The executor runs format 2 and nothing else: a stored format-1 definition is
-migrated on the way in, every run. The editor still writes format 1, and the config still
-stores it, so nothing about an existing setup changes. Hand-written format-2 definitions in
-`config.json` run today; a format-2 editor, the execution preview and the persisted config
-migration are still to come.
+migrated on the way in, every run. A new definition is created as a staged one, and the
+stage editor writes format 2 into the config. An existing format-1 definition still opens
+in its own editor and stays format 1 until you press **Save and convert to stages** there,
+which rewrites it and reopens it as stages. A config holding both formats is normal and
+works: the hooks, the picker and the bulk operation read a definition's trigger settings
+through one set of accessors that understands either shape.
+
+Still to come: the execution preview (a read-only run with a per-stage trace), and the
+startup migration that converts every stored definition at once and retires the format-1
+editor.
 
 ## Shape
 
@@ -132,6 +138,30 @@ outer list plus `store` is how a loop reports anything back.
 * Trigger filtering runs before any stage, so a note the deck whitelist rejects no longer
   pays for the definition's variables first.
 
+## The editor
+
+The stage editor is one column: the trigger settings, then the stages in the order they
+run, then the exports.
+
+* A stage row shows what it does in one line and expands into its own editor. The controls
+  inside are the ones format 1 used -- the same interpolated text edit, code editor,
+  process chains, tag and card-action editors.
+* **Add stage** offers the fourteen types. *Edit Card* appears only where a card binding is
+  in scope, because it names one card and there would be nothing to name.
+* The `⋮` menu on a row duplicates it, deletes it, or moves it into another block; `↑`/`↓`
+  reorder it among its siblings. There is no drag-and-drop; the move menu does the same
+  work, including moving a stage into or out of a loop or a branch.
+* Every text edit's right-click menu is built from the analyser's record of what is in
+  scope *at that stage*. A loop body offers the loop's note; the stage above the loop does
+  not. Lists never appear, because no interpolation could turn one into text.
+* A reference that stopped resolving -- to a result whose stage you deleted, say -- stays
+  selected and is marked in red on both rows. Nothing is silently rewritten.
+* **Save** is disabled while the analyser has a complaint, and the complaints are listed
+  under the stage list with the path of the stage each one belongs to. Warnings (several
+  trigger note types, file writes outside undo) do not block a save.
+* The same panel says whether the definition can run while a note is being added, which is
+  the flag stored in `effects` and the one the add hook checks.
+
 ## Where the code is
 
 | file | what it holds |
@@ -148,3 +178,12 @@ outer list plus `store` is how a loop reports anything back.
 | `logic/execution/runner.py` | one definition against one trigger note |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress |
 | `logic/legacy_executor.py` | format-1 behaviour, kept as the migration's oracle |
+| `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
+| `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
+| `ui/stage_edit_state.py` | the `EditState`-shaped shim that lets the format-1 widgets be reused |
+| `ui/value_expression_editor.py` | the one editor every value expression uses |
+| `ui/stage_editors.py` | one editor per stage type |
+| `ui/stage_list.py` | the ordered, indented stage list |
+| `ui/stage_triggers_editor.py` | the trigger settings at the top |
+| `ui/stage_exports_editor.py` | the definition-level exports panel |
+| `ui/edit_staged_definition_dialog.py` | the dialog, and what blocks a save |

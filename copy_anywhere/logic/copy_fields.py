@@ -44,7 +44,7 @@ from .copy_primitives import (
     sort_by_field_value,
 )
 from .definition_migration import MigrationError
-from .definition_schema import is_format_2
+from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 from .legacy_executor import copy_into_single_note, get_across_target_notes
@@ -387,6 +387,28 @@ def copy_fields(
     )
 
 
+def definitions_a_call_may_reach(
+    staged_definition: dict, given: Optional[Sequence[dict]] = None
+) -> Optional[Sequence[dict]]:
+    """The definitions a `call_definition` stage can name, loading the config if needed.
+
+    A call names any definition in the config by guid, not just the ones this run was asked
+    for, so the lookup cannot be built from the caller's list. The config is only read when
+    the definition actually calls something, which keeps it off the path of the definitions
+    that do not.
+    """
+    if given is not None:
+        return given
+    if not any(
+        stage.get("type") == STAGE_CALL_DEFINITION
+        for stage in walk_stages(staged_definition.get("stages", []) or [])
+    ):
+        return None
+    config = Config()
+    config.load()
+    return config.copy_definitions
+
+
 def copy_fields_in_background(
     copy_definition: CopyDefinition,
     copied_into_cards_dict: dict[int, Card],
@@ -398,6 +420,7 @@ def copy_fields_in_background(
     field_only: Optional[str] = None,
     logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
+    definitions_for_calls: Optional[Sequence[dict]] = None,
 ) -> CacheResults:
     """
     Function run to copy stuff into many notes at once.
@@ -510,6 +533,7 @@ def copy_fields_in_background(
             logger=logger,
             file_cache=file_cache,
             progress_updater=progress_updater,
+            definitions_for_calls=definitions_for_calls,
         )
 
         progress_updater.maybe_render_update()
@@ -659,9 +683,8 @@ def copy_for_single_trigger_note(
             progress_updater.update_counts(skipped_note_cnt_inc=1)
         return True
 
-    lookup = None
-    if definitions_for_calls:
-        lookup = make_definition_lookup(definitions_for_calls)
+    reachable = definitions_a_call_may_reach(staged_definition, definitions_for_calls)
+    lookup = make_definition_lookup(reachable) if reachable else None
 
     session = ExecutionSession(
         logger=logger,
@@ -684,15 +707,27 @@ def copy_for_single_trigger_note(
 
 
 def make_definition_lookup(definitions: Sequence[dict]):
-    """Map guid -> format-2 definition, for `call_definition` stages to resolve against."""
-    by_guid: dict = {}
-    for definition in definitions:
-        try:
-            staged = as_format_2(definition)
-        except MigrationError:
-            continue
-        by_guid[staged.get("guid", "")] = staged
-    return by_guid.get
+    """Map guid -> format-2 definition, for `call_definition` stages to resolve against.
+
+    Migration happens when a guid is actually looked up, not up front. The config holds
+    every definition the user has, and one of them being unreadable is no reason for a
+    definition that does not call it to fail -- while a definition that *does* call it
+    still fails, with the migrator's own message.
+    """
+    raw_by_guid = {
+        definition.get("guid", ""): definition
+        for definition in definitions
+        if isinstance(definition, dict)
+    }
+    staged_by_guid: dict = {}
+
+    def lookup(guid: str):
+        if guid not in staged_by_guid:
+            definition = raw_by_guid.get(guid)
+            staged_by_guid[guid] = as_format_2(definition) if definition is not None else None
+        return staged_by_guid[guid]
+
+    return lookup
 
 
 
