@@ -324,12 +324,36 @@ def _reads_as(entry: Optional[NameEntry], name: str, reading: str) -> bool:
     return name in entry.readings or reading in entry.readings
 
 
+def _common_mention(
+    entry: Optional[NameEntry],
+    morphs: Sequence,
+    start: int,
+    end: int,
+    reading: str,
+    word: Optional[DictionaryWord],
+) -> bool:
+    """The mention morphs[start:end] is of a name Sudachi knows as a proper noun, here untagged,
+    not before an honorific, and a dictionary word read so: 深い谷 of the surname 谷, 玄関のベル."""
+    if not (word and entry and SUDACHI in entry.sources):
+        return False
+    if all(_is_proper(m) for m in morphs[start:end]):
+        return False
+    after = morphs[end] if end < len(morphs) else None
+    if after and _is_honorific(after) and after.start == morphs[end - 1].end:
+        return False
+    return word("".join(m.surface for m in morphs[start:end]), reading)
+
+
 def find_names(
-    morphs: Sequence, lexicon: dict, read: Optional[Reader] = None
+    morphs: Sequence,
+    lexicon: dict,
+    read: Optional[Reader] = None,
+    word: Optional[DictionaryWord] = None,
 ) -> list[tuple[int, int, str]]:
     """(start, end, name) of the lexicon's names in a sentence, longest first, each starting
     and ending on a morph boundary: 里樹 is found in 里|樹|は, not in 里|樹木. Given the note's
-    `read`ings, a mention read otherwise than at the anchors is none."""
+    `read`ings, a mention read otherwise than at the anchors is none; given `word`, so is a
+    common word's mention (`_common_mention`)."""
     out = []
     i = 0
     longest = MAX_NAME_MORPHS + 1  # a nickname is a name plus its suffix
@@ -338,7 +362,12 @@ def find_names(
             if any(a.end != b.start for a, b in zip(morphs[i : j - 1], morphs[i + 1 : j])):
                 continue
             name = "".join(m.surface for m in morphs[i:j])
-            if name in lexicon and _reads_as(lexicon[name], name, _read(read, morphs[i:j])):
+            reading = _read(read, morphs[i:j])
+            if (
+                name in lexicon
+                and _reads_as(lexicon[name], name, reading)
+                and not _common_mention(lexicon[name], morphs, i, j, reading, word)
+            ):
                 out.append((morphs[i].start, morphs[j - 1].end, name))
                 i = j
                 break

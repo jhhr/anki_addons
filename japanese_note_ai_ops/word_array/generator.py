@@ -225,8 +225,10 @@ def merge_dotted_names(morphs: list[Morph]) -> list[Morph]:
 def merge_names(tm: TextMap, morphs: list[Morph], lexicon: dict) -> list[Morph]:
     """The morphs of each name the lexicon (`names.build_lexicon`) finds as one proper noun with
     no sub-words: 里|樹 -> 里樹, ひま|りん -> ひまりん, and 山田, a 普通名詞 to Sudachi, relabelled.
-    A name has no parts worth a note; the honorific after it stays a word of its own."""
-    ends = {start: end for start, end, _ in find_names(morphs, lexicon, tm.surface_reading)}
+    A name has no parts worth a note; the honorific after it stays a word of its own. A name that
+    is a common word too (the surname 谷) is one only where Sudachi or an honorific says so."""
+    found = find_names(morphs, lexicon, tm.surface_reading, word=jmdict_word)
+    ends = {start: end for start, end, _ in found}
     out: list[Morph] = []
     i = 0
     while i < len(morphs):

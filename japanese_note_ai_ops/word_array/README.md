@@ -152,7 +152,10 @@ Sudachi doesn't know fictional names and nicknames, so it cuts them into words i
 corpus by what grammar puts around a name: an honorific after it (里樹さま), a nickname suffix
 fused to it (ひまりん), or its opening quoted speech (「ひまりん、). One anchored use names every
 mention read the same way. A dictionary word needs at least two anchors and most of its uses
-anchored (娘さん doesn't make 娘 a name), and お-words and hiragana words never are names.
+anchored (娘さん doesn't make 娘 a name), and お-words and hiragana words never are names. A name
+Sudachi tags 固有名詞 somewhere that is also a dictionary word (the surname 谷) is a name only where
+Sudachi tags it so or an honorific follows: 深い谷, 玄関のベル stay nouns. Over the export that drops
+13 mentions, 8 of them wrong names; the 5 lost real ones (凛！, 黒木の) are the proper noun op's.
 
 `generator.build_name_lexicon(sentences)` builds the lexicon; `generate(sentence, names=lexicon)`
 merges each name it finds into one `proper noun` with no sub-words, leaving the honorific a word

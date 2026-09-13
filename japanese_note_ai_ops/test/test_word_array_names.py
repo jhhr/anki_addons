@@ -157,6 +157,22 @@ class FindNamesTests(unittest.TestCase):
         inside = morphs(("里", NOUN), ("樹木", NOUN))
         self.assertEqual(names.find_names(inside, {"里樹": None}), [])
 
+    def test_common_word_mention_of_a_sudachi_name(self):
+        lexicon = {"梨花": names.NameEntry(3, {names.HONORIFIC, names.SUDACHI}, {"りか"})}
+        r = {"梨花": "りか"}
+        common = morphs(("梨花", NOUN), ("が", PARTICLE))
+        self.assertEqual(names.find_names(common, lexicon, reads(common, r), word=word), [])
+        self.assertEqual(names.find_names(common, lexicon, reads(common, r)), [(0, 2, "梨花")])
+        tagged = morphs(("梨花", PROPER), ("が", PARTICLE))
+        found = names.find_names(tagged, lexicon, reads(tagged, r), word=word)
+        self.assertEqual(found, [(0, 2, "梨花")])
+        anchored = morphs(("梨花", NOUN), ("さま", SUFFIX))
+        found = names.find_names(anchored, lexicon, reads(anchored, r), word=word)
+        self.assertEqual(found, [(0, 2, "梨花")])
+        unknown = {"梨花": names.NameEntry(3, {names.HONORIFIC}, {"りか"})}
+        found = names.find_names(common, unknown, reads(common, r), word=word)
+        self.assertEqual(found, [(0, 2, "梨花")])
+
     def test_longest_name_wins(self):
         lexicon = {"ひま": None, "ひまりん": None}
         self.assertEqual(names.find_names(HIMARIN, lexicon), [(0, 4, "ひまりん")])
