@@ -746,6 +746,40 @@ class TestAMigratedDefinitionsPerWriteUnfocusSettings:
         assert note["Note"] == ""
 
 
+class TestAFormatOneDefinitionStillInTheConfig:
+    """One the startup migration could not convert, so the handler's format-1 branch runs it.
+
+    That branch picks the field writes whose own add/edit flag is on and runs the definition
+    with just those. The executor then checks the migrated copy of the same flag, so both
+    have to be looking at the same one -- the migrated write is dropped otherwise, and a
+    definition set to run only while adding writes nothing in the Add dialog.
+    """
+
+    def add_only(self):
+        return within(trigger="Word", on_edit=False, on_add=True)
+
+    def test_an_add_only_definition_writes_while_adding(self, col, set_definitions):
+        set_definitions(self.add_only())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+
+    def test_it_writes_nothing_while_editing(self, col, set_definitions):
+        set_definitions(self.add_only())
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == ""
+
+    def test_an_edit_only_definition_is_the_other_way_round(self, col, set_definitions):
+        set_definitions(within(trigger="Word", on_edit=True, on_add=False))
+        existing = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, existing, WORD)
+        added = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, added, WORD)
+        assert existing["Note"] == "neko"
+        assert added["Note"] == ""
+
+
 class TestTheDeckWhitelistOnThisPath:
     """An existing note is checked by its cards; a new one by the Add dialog's deck."""
 

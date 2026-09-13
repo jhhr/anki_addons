@@ -408,6 +408,25 @@ def definitions_a_call_may_reach(
     return config.copy_definitions
 
 
+def make_call_lookup(
+    copy_definition: Union[CopyDefinition, dict],
+    definitions_for_calls: Optional[Sequence[dict]] = None,
+):
+    """The `call_definition` lookup for this definition, or None when it calls nothing.
+
+    Worth building once and reusing: resolving it reads and parses the addon config, and the
+    lookup it returns is what remembers a callee's migration. A definition that fails to
+    migrate has no callees to resolve either, and says so through the run itself rather than
+    from here.
+    """
+    try:
+        staged = as_format_2(copy_definition)
+    except MigrationError:
+        return None
+    reachable = definitions_a_call_may_reach(staged, definitions_for_calls)
+    return make_definition_lookup(reachable) if reachable else None
+
+
 def copy_fields_in_background(
     copy_definition: CopyDefinition,
     copied_into_cards_dict: dict[int, Card],
@@ -519,6 +538,12 @@ def copy_fields_in_background(
     # Key: file name, Value: whatever a process would need from the file
     file_cache: dict[str, Any] = {}
 
+    # Built once for the whole run. It is the same definition every time round the loop, so
+    # the answer is the same too -- and working it out reads the addon config from disk and
+    # throws away the cache that remembers each callee's migration, which over a few
+    # thousand selected notes is most of what the run spends its time on.
+    call_lookup = make_call_lookup(copy_definition, definitions_for_calls)
+
     total_processed_sources = 0
     total_processed_dests = 0
     for note in notes:
@@ -536,6 +561,7 @@ def copy_fields_in_background(
             file_cache=file_cache,
             progress_updater=progress_updater,
             definitions_for_calls=definitions_for_calls,
+            definition_lookup=call_lookup,
         )
 
         progress_updater.maybe_render_update()
@@ -639,6 +665,7 @@ def copy_for_single_trigger_note(
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
     definitions_for_calls: Optional[Sequence[dict]] = None,
+    definition_lookup=None,
     add_note_compatible_only: bool = False,
 ) -> bool:
     """Run one copy definition for one trigger note.
@@ -661,6 +688,8 @@ def copy_for_single_trigger_note(
     :param file_cache: a dictionary caching opened files' content for process chains
     :param progress_updater: optional object to update the progress bar
     :param definitions_for_calls: the definitions a `call_definition` stage may reach
+    :param definition_lookup: a ready-made lookup over those, for a caller running the same
+        definition over many notes. Built here when it is not given
     :param add_note_compatible_only: refuse to commit anything but changes to the trigger
         note, as the add-note hook needs when the note does not exist yet
     :return: True when the note is done -- written into or benignly skipped -- and False
@@ -687,8 +716,10 @@ def copy_for_single_trigger_note(
             progress_updater.update_counts(skipped_note_cnt_inc=1)
         return True
 
-    reachable = definitions_a_call_may_reach(staged_definition, definitions_for_calls)
-    lookup = make_definition_lookup(reachable) if reachable else None
+    lookup = definition_lookup
+    if lookup is None:
+        reachable = definitions_a_call_may_reach(staged_definition, definitions_for_calls)
+        lookup = make_definition_lookup(reachable) if reachable else None
 
     session = ExecutionSession(
         logger=logger,

@@ -438,6 +438,10 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 trigger_note=note,
                 copied_into_notes=[],
                 field_only=field_name,
+                # The defs above are already gated by this flag, and the executor checks the
+                # migrated copy of it as well; telling it which flag to look at is what
+                # keeps the two answers the same.
+                unfocus_is_add=is_new_note,
                 deck_id=deck_id,
                 logger=logger,
             )

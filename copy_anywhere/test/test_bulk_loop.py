@@ -840,3 +840,79 @@ class TestTheFinalRender:
         run_bulk(copy_word_into_note(), logger, progress_title="Syncing fields")
 
         assert progress.titles == ["Syncing fields"]
+
+
+class TestTheCallLookupIsBuiltOnce:
+    """A `call_definition` stage sends the loop to the config to resolve the guid.
+
+    That resolution reads and parses the addon config and builds the cache that remembers
+    each callee's migration. It used to happen once per trigger note, so a bulk run over a
+    few thousand notes parsed the config a few thousand times and re-migrated the callee for
+    every one of them -- the same answer every time, since it is the same definition all the
+    way round the loop.
+    """
+
+    @pytest.fixture
+    def counted(self, stub_mw, monkeypatch):
+        """Count reads of the stored config, whoever asks for it."""
+        reads: list[str] = []
+        original = stub_mw.addonManager.getConfig
+
+        def getConfig(tag):
+            reads.append(tag)
+            return original(tag)
+
+        monkeypatch.setattr(stub_mw.addonManager, "getConfig", getConfig)
+        return reads
+
+    def callee(self):
+        producer = d.variable("H1", d.text("called"))
+        return d.staged(
+            "callee",
+            guid="callee-guid",
+            stages=[producer],
+            exports=[d.export("H1", producer)],
+        )
+
+    def caller(self):
+        return d.staged(
+            "caller",
+            stages=[
+                d.call_definition("callee-guid", outputs=[{"export": "H1", "result": "got"}]),
+                d.edit_note("trigger", [d.write("Note", d.text("{{got}}"))]),
+            ],
+        )
+
+    def test_three_notes_do_not_mean_three_config_reads(
+        self, col, logger, stub_mw, counted
+    ):
+        stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [self.callee()]
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        notes: list = []
+        run_bulk(self.caller(), logger, notes=notes)
+
+        assert [note["Note"] for note in notes] == ["called"] * 3
+        assert len(counted) == 1
+
+    def test_a_definition_that_calls_nothing_reads_it_none(
+        self, col, logger, stub_mw, counted
+    ):
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        run_bulk(copy_word_into_note(), logger)
+
+        assert counted == []
+
+    def test_definitions_handed_in_are_still_preferred_to_the_config(
+        self, col, logger, stub_mw, counted
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "a"})
+
+        notes: list = []
+        run_bulk(self.caller(), logger, notes=notes, definitions_for_calls=[self.callee()])
+
+        assert [note["Note"] for note in notes] == ["called"]
+        assert counted == []
