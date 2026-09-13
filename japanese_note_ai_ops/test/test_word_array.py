@@ -328,6 +328,29 @@ class WordArrayTests(unittest.TestCase):
                     find_word(self.generator.generate(sentence), "無い")[1], "adjective"
                 )
 
+    def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
+        for sentence, raw, form in [
+            # a suffix that inflects as a verb or adjective takes its inflection
+            ("寝[ね]<k> 難[にく]かった</k>。", " 難[にく]かった", "難い"),
+            ("変人[へんじん]<k> 振[ぶ]ってる</k> 感[かん]", " 振[ぶ]ってる", "振る"),
+            # a verb stem Sudachi calls a noun, before an auxiliary only a verb takes
+            (
+                "伝言[でんごん]を<b> 言[こと]<k> 付[づ]けた</k></b>の。",
+                " 言[こと]<k> 付[づ]けた</k>",
+                "言付ける",
+            ),
+            # a verb Sudachi doesn't know, cut before a classical る
+            ("酒[さけ]を<b>侑める</b>。", "侑める", "侑める"),
+            ("生[う]まれで<k> 御[お]座[じゃ]る</k>。", " 御[お]座[じゃ]る", "御座る"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(find_word(arr, form)[0], raw)
+                self.assertFalse(any(e[1] == "auxiliary" for e in arr if len(e) > 1), arr)
+        # A noun before the copula stays a noun
+        arr = self.generator.generate("明日[あした]は 晴[は]れです。")
+        self.assertEqual(find_word(arr, "晴れ")[1], "noun")
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")

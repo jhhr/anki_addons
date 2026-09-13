@@ -326,6 +326,91 @@ def merge_noun_verbs(morphs: list[Morph]) -> list[Morph]:
             )
         )
         i += 2
+    return _merge_unknown_verbs(_ichidan_stem_nouns(out))
+
+
+def _verb_codes(form: str, reading: Optional[str] = None) -> set[str]:
+    return {
+        p
+        for forms, readings, ps in jmdict.lookup(form)
+        if (form in forms or form in readings)
+        and (reading is None or reading in {to_hiragana(r) for r in readings})
+        for p in ps
+        if p.startswith("v") and p not in ("vs", "vt", "vi")
+    }
+
+
+# Auxiliaries only a verb takes; a noun before a copula (晴れ|です, わけ|じゃ) stays a noun
+VERB_AUX = {"た", "ます", "ない", "ぬ", "ず", "たい", "られる", "させる", "よう"}
+
+
+def _ichidan_stem_nouns(morphs: list[Morph]) -> list[Morph]:
+    """A noun before an auxiliary only a verb takes is the stem of the ichidan verb JMdict has
+    as noun + る read so: 言づけ|た, はちあわせ|た, 勤め|たろう."""
+    out = list(morphs)
+    for k, (m, nxt) in enumerate(zip(morphs, morphs[1:])):
+        if (
+            m.pos[0] == "名詞"
+            and not m.name
+            and nxt.pos[0] == "助動詞"
+            and nxt.lemma in VERB_AUX
+            and nxt.start == m.end
+            and _verb_codes(m.surface + "る", m.reading + "る") & {"v1", "v1-s"}
+        ):
+            pos = ("動詞", "一般", "*", "*", "下一段", "連用形-一般")
+            out[k] = replace(m, pos=pos, lemma=m.surface + "る", norm=m.norm + "る")
+    return out
+
+
+# The one kana Sudachi cuts off a verb it doesn't know, before a classical る: 侑|め|る
+STEM_KANA = set("いきしちにひみりぎじびぴえけせてねへめれげぜでべぺ")
+
+
+def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
+    """Morphs before a classical auxiliary る that spell a verb Sudachi doesn't know, as that
+    verb: お|じゃ|る (おじゃる) and 危|め|る (危める) by JMdict, and a kanji + one stem kana
+    suffix + る even when JMdict lacks it (侑|め|る). 眠れ|る, a verb already, is left alone."""
+    out: list[Morph] = []
+    for m in morphs:
+        n = 3
+        while (
+            m.pos[0] == "助動詞"
+            and m.surface == "る"
+            and len(m.pos) > 4
+            and m.pos[4].startswith("文語")
+            and n > 1
+        ):
+            window = out[len(out) - (n - 1) :] if len(out) >= n - 1 else []
+            form = "".join(x.surface for x in window) + m.surface
+            if (
+                window
+                and window[0].pos[0] != "動詞"
+                and all(a.end == b.start for a, b in zip(window + [m], (window + [m])[1:]))
+                and (
+                    _verb_codes(form)
+                    or (
+                        n == 3
+                        and KANJI_RE.search(window[0].surface[-1:])
+                        and window[1].pos[0] == "接尾辞"
+                        and window[1].surface in STEM_KANA
+                    )
+                )
+            ):
+                codes = _verb_codes(form)
+                kind = "下一段" if not codes or codes & {"v1", "v1-s"} else "五段-ラ行"
+                del out[len(out) - (n - 1) :]
+                m = Morph(
+                    window[0].start,
+                    m.end,
+                    form,
+                    ("動詞", "一般", "*", "*", kind, "終止形-一般"),
+                    form,
+                    form,
+                    "".join(x.reading for x in window) + m.reading,
+                )
+                break
+            n -= 1
+        out.append(m)
     return out
 
 
@@ -358,29 +443,29 @@ def is_copula(m: Morph) -> bool:
     return m.pos[0] == "助動詞" and m.norm in ("だ", "です")
 
 
+def inflects(m: Morph) -> bool:
+    """A verb or adjective, or a suffix that inflects as one (がる, かねる, じみる, やすい)."""
+    return m.pos[0] in INFLECTING or m.pos[:2] in (("接尾辞", "動詞的"), ("接尾辞", "形容詞的"))
+
+
 def _attaches(prev: Morph, nxt: Morph, head: Morph) -> bool:
-    if head.pos[0] not in INFLECTING and head.pos[0] != "助動詞":
+    if not inflects(head) and head.pos[0] != "助動詞":
         return False
     if nxt.pos[0] == "助動詞":
         if nxt.lemma in SEPARATE_AUX:
             return False
         # だ as past tense after onbin (沈んだ) attaches; a copula after a noun starts a word
-        return not (
-            is_copula(nxt)
-            and head.pos[0] not in INFLECTING
-            and prev is head
-            and not is_copula(head)
-        )
+        return not (is_copula(nxt) and not inflects(head) and prev is head and not is_copula(head))
     if nxt.pos[:2] == ("助詞", "接続助詞") and nxt.surface in ATTACH_CONJ_PARTICLES:
-        return head.pos[0] in INFLECTING
+        return inflects(head)
     if (
         nxt.pos[0] == "動詞"
         and nxt.lemma in ATTACH_AUX_VERBS
         and prev.surface in ("て", "で")
-        and head.pos[0] in INFLECTING
+        and inflects(head)
     ):
         return True
-    if head.pos[0] in INFLECTING and is_negation(prev, nxt):
+    if inflects(head) and is_negation(prev, nxt):
         return True
     return is_copula(head) and nxt.pos[0] == "形容詞" and nxt.lemma == "ない"  # じゃない
 
@@ -395,7 +480,7 @@ def is_negation(prev: Morph, nxt: Morph) -> bool:
     With anything between (欲しくもない, 其れは無い) it stays a word of its own."""
     if nxt.pos[0] != "形容詞" or nxt.lemma not in ("ない", "無い") or len(prev.pos) < 6:
         return False
-    if prev.pos[0] in ("形容詞", "助動詞") and prev.surface.endswith("く"):
+    if (prev.pos[0] in ("形容詞", "助動詞") or inflects(prev)) and prev.surface.endswith("く"):
         return prev.pos[5].startswith("連用形")
     if prev.pos[:2] == ("助詞", "接続助詞"):
         return prev.surface in ("て", "で")
@@ -489,7 +574,7 @@ def _forms(tm: TextMap, ws: list[Word]) -> list[tuple[str, str, bool]]:
     if numeral != as_written:
         forms.append((numeral, numeral, True))
     last = ws[-1]
-    if last.head.pos[0] in INFLECTING:
+    if inflects(last.head):
         # As a sub-word, so a verb stem ending the match deinflects: 気に入り -> 気に入る
         deinflected = "".join(written[:-1]) + dict_form(tm, replace(last, nested=True))
         forms += [
