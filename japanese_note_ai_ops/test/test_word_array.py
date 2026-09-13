@@ -125,6 +125,18 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(self.examples[num][0])
                 self.assertEqual(find_word(arr, form), [])
 
+    def test_kana_homophones_spelled_otherwise_are_refused(self):
+        # <k> kana 成ると is JMdict's なると (鳴門), 事に its ことに (殊に); 如何して is spelled
+        # alike though the text kanjifies its し
+        arr = self.generator.generate("夜[よる]に<k> 成[な]ると</k> 事[こと]に 困[こま]る。")
+        self.assertEqual(find_word(arr, "成ると"), [])
+        self.assertEqual(find_word(arr, "事に"), [])
+        self.assertEqual(find_word(arr, "成る")[1], "verb")
+        self.assertTrue(self.generator.spelled_alike("如何為て", "如何して"))
+        self.assertTrue(self.generator.spelled_alike("為易い", "し易い"))
+        self.assertFalse(self.generator.spelled_alike("成ると", "鳴門"))
+        self.assertFalse(self.generator.spelled_alike("事に", "殊に"))
+
     def test_homographs_the_furigana_reads_otherwise_are_refused(self):
         # JMdict's 彼の is あの and its 今日は こんにちは
         arr = self.generator.generate("彼[かれ]の 車[くるま]は 今日[きょう]は 新[あたら]しい。")

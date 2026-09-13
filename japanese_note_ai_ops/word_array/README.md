@@ -99,7 +99,12 @@ text at all:
 - found only through its kana, starting on a particle, and not spelled that way in JMdict:
   は+幾つ read as はいくつ (背屈) or を+持って as をもって (を以って). The text's kana must
   match one of the entry's spellings, with the same kanji or kanjified kana between them, so
-  だけの事は有って still matches だけの事はある.
+  だけの事は有って still matches だけの事はある;
+- found only through its kana where the text writes kanji, and JMdict spells the entry otherwise:
+  `<k>成[な]ると</k>` read as 鳴門 (なると), 事に as 殊に. A kanji run of the text agrees with a
+  spelling whose kanji it has (如何為て is 如何して). Of 1995 such matches in the export 519 are
+  refused (`research/kana_matches.py`); links carried 76061 -> 76044, the losses being old lists
+  that linked a homophone or a variant spelling (余りに, 其れら).
 
 A match inside another nests in it (様に成る -> 様に + 成る, 様に -> 様 + に). Of two that cross,
 the longer wins, then the one found by its kanji spelling, then the earlier (一つ over つの).

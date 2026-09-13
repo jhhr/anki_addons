@@ -369,10 +369,13 @@ SCRIPT_CHUNK_RE = re.compile(r"[一-龯㐀-䶿々]+|[^一-龯㐀-䶿々]+")
 def spelled_alike(written: str, spelling: str) -> bool:
     """Whether a JMdict spelling can be how the text writes a word: the text's kana in the
     same order, and between them the same kanji or kana the text has kanjified. だけの事は有る
-    is だけの事はある; を持って is not を以って, and は幾つ is not 背屈."""
+    is だけの事はある; を持って is not を以って, and は幾つ is not 背屈. A kanji run of the text
+    also agrees with kana around kanji it has: 如何為て is 如何して, 為易い is し易い."""
 
     def agree(kanji: str, other: str) -> bool:
-        return other == kanji or bool(kanji and other and not KANJI_RE.search(other))
+        return other == kanji or bool(
+            kanji and other and set(KANJI_RE.findall(other)) <= set(KANJI_RE.findall(kanji))
+        )
 
     pos, kanji = 0, ""
     for chunk in SCRIPT_CHUNK_RE.findall(written):
@@ -392,13 +395,16 @@ def is_word_match(c: Candidate, words: list[Word]) -> bool:
     ws = words[c.i : c.j]
     if all(w.head.pos[0] in FUNCTION_POS for w in ws):
         return False  # function words only: には, のだ, か+の read as 彼の
-    if ws[0].head.pos[0] == "助詞" and not KANJI_RE.search(c.form):
-        # Found only by its kana, reaching across a particle: a homophone (は+いくつ read as
-        # 背屈) unless JMdict spells the entry the way the text does. The text has often
-        # kanjified what JMdict keeps in kana (有る), so only its kana are compared.
-        return KANJI_RE.search(c.written) is not None and any(
-            spelled_alike(c.written, s) for s in c.spellings
-        )
+    if not KANJI_RE.search(c.form):
+        # Found only by its kana: a homophone unless JMdict spells the entry the way the text
+        # does. The text has often kanjified what JMdict keeps in kana (有る), so only its kana
+        # are compared.
+        alike = any(spelled_alike(c.written, s) for s in c.spellings)
+        if ws[0].head.pos[0] == "助詞":
+            # Reaching across a particle, even an entry JMdict has only in kana: は+いくつ
+            return KANJI_RE.search(c.written) is not None and alike
+        if KANJI_RE.search(c.written) and c.spellings and not alike:
+            return False  # 成[な]ると read as 鳴門, 事[こと]に as 殊に
     return True
 
 
