@@ -18,9 +18,8 @@ which rewrites it and reopens it as stages. A config holding both formats is nor
 works: the hooks, the picker and the bulk operation read a definition's trigger settings
 through one set of accessors that understands either shape.
 
-Still to come: the execution preview (a read-only run with a per-stage trace), and the
-startup migration that converts every stored definition at once and retires the format-1
-editor.
+Still to come: the startup migration that converts every stored definition at once and
+retires the format-1 editor.
 
 ## Shape
 
@@ -162,6 +161,30 @@ run, then the exports.
 * The same panel says whether the definition can run while a note is being added, which is
   the flag stored in `effects` and the one the add hook checks.
 
+## The preview
+
+The right half of the editor runs the definition against one note and reports what it would
+do, without doing any of it. Pick a note from the list -- it offers notes the definition's
+triggers would consider, narrowed by whatever you add to the search box -- and press **Run
+preview**.
+
+It is the same evaluator, not a simulation of it: the searches are real, code and process
+chains run under the same restrictions, called definitions run, and the depth and cycle
+checks still apply. The only differences are that the mutations are recorded rather than
+committed, and that nothing reaches the media folder. A file read after a previewed write
+sees the previewed content, so a read-modify-write chain previews as it would run.
+
+The trace lists every stage in the order it ran, with a mark for what happened to it.
+Selecting one shows what that stage could see when it started, what it produced, how long
+it took and what it would have changed. A stage inside a loop ran once per pass, so its
+events appear under an **Iteration** heading each; opening that stage in the list selects
+its last pass. Values longer than about 500 characters are cut in the trace, and the full
+value is not kept: a previewed run holds one summary per value, not a second copy of the
+collection.
+
+Nothing is rerun as you type -- a query or a nested call is not cheap enough for that -- so
+an edit, or choosing a different note, marks the trace as stale until you run it again.
+
 ## Where the code is
 
 | file | what it holds |
@@ -177,6 +200,7 @@ run, then the exports.
 | `logic/execution/commit.py` | the collection and preview committers |
 | `logic/execution/runner.py` | one definition against one trigger note |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress |
+| `logic/preview.py` | a read-only run, its trace, and the trigger-note search |
 | `logic/legacy_executor.py` | format-1 behaviour, kept as the migration's oracle |
 | `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
 | `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
@@ -186,4 +210,5 @@ run, then the exports.
 | `ui/stage_list.py` | the ordered, indented stage list |
 | `ui/stage_triggers_editor.py` | the trigger settings at the top |
 | `ui/stage_exports_editor.py` | the definition-level exports panel |
+| `ui/stage_preview.py` | the preview pane: note picker, run control, trace |
 | `ui/edit_staged_definition_dialog.py` | the dialog, and what blocks a save |

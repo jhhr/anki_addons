@@ -147,7 +147,7 @@ class StageRow(QFrame):
             self.child_blocks.append(child)
 
         self.body.setVisible(self.guid in tree.expanded)
-        self.expand_button.setText("▾" if self.body.isVisible() else "▸")
+        self.expand_button.setText("▾" if self.guid in tree.expanded else "▸")
         self.refresh_problems()
 
     # -- interaction ---------------------------------------------------------------------
@@ -156,15 +156,28 @@ class StageRow(QFrame):
         # `isHidden` rather than `isVisible`: a widget inside a window that has not been
         # shown yet reports `isVisible() == False` whatever it was asked to do, which would
         # make the first click on every row expand it again.
-        visible = self.body.isHidden()
-        self.body.setVisible(visible)
-        self.expand_button.setText("▾" if visible else "▸")
-        if visible:
-            self.tree.expanded.add(self.guid)
-        else:
-            self.tree.expanded.discard(self.guid)
+        self.set_expanded(self.body.isHidden())
+        if self.guid not in self.tree.expanded:
             # Collapsing is the natural moment to fold a finished edit back in.
             self.tree.contents_changed()
+
+    def set_expanded(self, expanded: bool, announce: bool = True) -> None:
+        """Open or close this row's body.
+
+        `announce` is off when something other than the user did the opening: the preview
+        opens a stage when its trace row is chosen, and a row that answered by announcing
+        itself would send the preview straight back to the row it just came from.
+        """
+        self.body.setVisible(expanded)
+        self.expand_button.setText("▾" if expanded else "▸")
+        if expanded:
+            self.tree.expanded.add(self.guid)
+            if announce:
+                # Opening a stage is how the user says which one they are looking at, which
+                # is also the question the preview's trace answers (§9).
+                self.tree.stage_expanded.emit(self.guid)
+        else:
+            self.tree.expanded.discard(self.guid)
 
     def _on_enabled(self, checked: bool) -> None:
         self.tree.set_enabled(self.guid, checked)
@@ -263,6 +276,8 @@ class StageTreeWidget(QWidget):
 
     #: The definition changed in a way that affects whether it can be saved.
     definition_changed = pyqtSignal()
+    #: A stage was opened. The preview pane uses this to show that stage's trace.
+    stage_expanded = pyqtSignal(str)
 
     def __init__(
         self,
@@ -300,6 +315,12 @@ class StageTreeWidget(QWidget):
         self.root_block = StageBlockWidget(self, self, None, None)
         self.layout_box.addWidget(self.root_block)
         self.definition_changed.emit()
+
+    def expand(self, guid: str) -> None:
+        """Open one stage because something other than the user asked for it."""
+        row = self.rows.get(guid)
+        if row is not None:
+            row.set_expanded(True, announce=False)
 
     def apply_editors(self) -> None:
         """Fold every open editor's widgets back into the stage dicts."""

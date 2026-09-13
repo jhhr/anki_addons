@@ -8,6 +8,11 @@ so the editor is the order.
 Save is blocked while the analyser has anything to complain about (§10). The blockers are
 listed rather than hidden behind the button: a definition that cannot be saved should say
 which stage is why.
+
+The right half is the preview (§9): the same definition run against a note the user picks,
+committing nothing. It is not rerun as the definition is edited -- a query or a nested call
+is far too expensive to run on a keystroke -- so an edit marks it stale and the user reruns
+it when they want the answer.
 """
 
 from typing import Optional, Sequence
@@ -17,6 +22,7 @@ from aqt.qt import (
     QGuiApplication,
     QLabel,
     QPushButton,
+    QSplitter,
     QTimer,
     QVBoxLayout,
     Qt,
@@ -32,12 +38,15 @@ from .stage_editor_context import make_note_types_for
 from .stage_editors import StageEditorEnvironment
 from .stage_exports_editor import ExportsEditor
 from .stage_list import StageTreeWidget
+from .stage_preview import PreviewPane
 from .stage_triggers_editor import TriggersEditor
 
 if qtmajor > 5:
     WindowModal = Qt.WindowModality.WindowModal
+    Horizontal = Qt.Orientation.Horizontal
 else:  # pragma: no cover -- Anki 2.1.49 and older
     WindowModal = Qt.WindowModal  # type: ignore[attr-defined]
+    Horizontal = Qt.Horizontal  # type: ignore[attr-defined]
 
 #: How long after the last keystroke the definition is re-analysed. Analysis is pure and
 #: cheap, but rebuilding an interpolation menu walks every note type, so it is not free
@@ -111,6 +120,21 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         self._refresh_timer.setInterval(REANALYSE_DELAY_MS)
         self._refresh_timer.timeout.connect(self.refresh_status)
 
+        # The stage list keeps the scroll area it was written for; the preview sits beside
+        # it in a splitter so a long definition and a long trace do not fight for height.
+        self.preview = PreviewPane(
+            self, self.document.definition, self.all_definitions
+        )
+        self.preview.stage_selected.connect(self.focus_stage)
+        self.stage_tree.stage_expanded.connect(self.preview.show_stage)
+        self.splitter = QSplitter(Horizontal, self)
+        self.main_layout.removeWidget(self.scroll_area)
+        self.splitter.addWidget(self.scroll_area)
+        self.splitter.addWidget(self.preview)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.main_layout.insertWidget(0, self.splitter)
+
         self.refresh_status()
 
         screen = QGuiApplication.primaryScreen()
@@ -141,6 +165,18 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         blockers.extend(self._cycle_blockers())
         self.ok_button.setEnabled(not blockers)
         self.status_label.setText(self._status_html(blockers))
+        # Anything that reached here changed the definition, so whatever the preview last
+        # ran is no longer what this definition does (§9).
+        self.preview.set_definition(self.document.definition)
+        self.preview.mark_stale()
+
+    def focus_stage(self, stage_guid: str) -> None:
+        """Open the stage a trace row stands for and scroll the list to it."""
+        row = self.stage_tree.rows.get(stage_guid)
+        if row is None:
+            return
+        self.stage_tree.expand(stage_guid)
+        self.scroll_area.ensureWidgetVisible(row)
 
     def _cycle_blockers(self) -> list[str]:
         """Call cycles, checked across the whole config rather than one definition.
