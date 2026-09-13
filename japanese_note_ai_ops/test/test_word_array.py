@@ -299,6 +299,15 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(sentence)
                 self.assertFalse([e for e in arr if e[0] in ("ですが", "でも")])
 
+    def test_sou_naru_is_the_verb_naru(self):
+        # After すりゃ Sudachi has そう as the stem of そうだ and なる as the classical copula なり
+        sentence = "言[い]い 方[かた]<k> 為[す]りゃ 然[そ]う 成[な]る</k>よ"
+        arr = self.generator.generate(sentence)
+        self.assertEqual(find_word(arr, "成る")[1:4], ["verb", "成る", "なる"])
+        self.assertEqual(find_word(arr, "然う")[1], "adverb")
+        # The classical copula after a na-adjective stays
+        self.assertEqual(find_word(self.generator.generate("切[せつ]なる 願[ねが]い"), "成る"), [])
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")

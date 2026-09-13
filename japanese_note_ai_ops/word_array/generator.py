@@ -150,7 +150,35 @@ def tokenize(natural: str) -> list[Morph]:
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
-    return _split_number_counters(out)
+    return _sou_naru(_split_number_counters(out))
+
+
+# The classical copula なり's forms read as the verb なる
+NARU_FORMS = {
+    "なら": "未然形-一般",
+    "なり": "連用形-一般",
+    "なる": "終止形-一般",
+    "なれ": "仮定形-一般",
+}
+
+
+def _sou_naru(morphs: list[Morph]) -> list[Morph]:
+    """After すりゃ, そうなる comes out as the stem of the auxiliary そうだ and the classical
+    copula なり; read as it is everywhere else: the adverb そう and the verb 成る. なり after a
+    na-adjective or noun (切なる, 国家なり) stays."""
+    out = list(morphs)
+    for k, (a, b) in enumerate(zip(morphs, morphs[1:])):
+        if (
+            a.surface == "そう"
+            and a.pos[:2] == ("形状詞", "助動詞語幹")
+            and len(b.pos) == 6
+            and b.pos[4].startswith("文語助動詞-ナリ")
+            and b.surface in NARU_FORMS
+        ):
+            out[k] = replace(a, pos=("副詞", "*", "*", "*", "*", "*"))
+            verb = ("動詞", "非自立可能", "*", "*", "五段-ラ行", NARU_FORMS[b.surface])
+            out[k + 1] = replace(b, pos=verb, lemma="なる", norm="成る")
+    return out
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
