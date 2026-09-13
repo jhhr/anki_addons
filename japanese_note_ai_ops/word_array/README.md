@@ -165,7 +165,11 @@ as its ground truth: a word an old entry fits is `match`, one none fits `dontmat
 the copula no entry fits are left unscored, and the judge is not scored on particles and the
 copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 78.1% precise with 49.1% recall
 (v1 had 74.1%, 50.5%, 45.0%). The labels are unsure for components of compounds, so more
-hand-judged words are to come.
+hand-judged words are to come: `research/hand_judge.py` serves a page that offers words of the
+migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and
+writes `output/word_matching_judge_hand_labels.jsonl`. `judge_eval.py build` lays those over the
+checked labels (a hand-judged sentence outside the checked export is asked about only its judged
+words), and `run` scores them on a line of their own too.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.

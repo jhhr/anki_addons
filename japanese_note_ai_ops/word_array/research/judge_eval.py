@@ -17,6 +17,11 @@ own `word_matching_judge_model`, else `extract_words_model`, from the add-on's c
 the op's request code, caches the responses by model and prompt in
 `output/word_matching_judge_eval_results.jsonl` so that a rerun only pays for prompts that
 changed, and prints the scores and the words the judge got wrong most often.
+
+Words judged by hand in `hand_judge.py` (`output/word_matching_judge_hand_labels.jsonl`) replace
+the checked export's label for their word, and a sentence judged by hand outside the checked export
+becomes a row expecting only those words, so `run` asks about nothing else in it. Such words are
+also scored on a line of their own, HAND.
 """
 
 import argparse
@@ -29,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import NamedTuple, Optional
 
+import hand_labels
 from _bootstrap import ADDON_ROOT
 
 EVAL_SET = ADDON_ROOT / "output" / "word_matching_judge_eval.jsonl"
@@ -65,18 +71,45 @@ def build(args) -> int:
     migrate, match_flags = migrate_fit.migrate, migrate_fit.migrate.match_flags
     invalid: Counter[str] = Counter()
     corpus = migrate_fit.read_export(migrate_fit.CORPORA["checked"], invalid)
+    hand_by_sentence: dict[str, list[dict]] = {}
+    for label in hand_labels.read_labels():
+        hand_by_sentence.setdefault(label["sentence"], []).append(label)
+    hand: Counter[str] = Counter()
     labels: Counter[tuple[str, str]] = Counter()
     rows = []
+
+    def add_row(sentence: str, arr: list, expected: list) -> None:
+        indices, changed, stale = hand_labels.apply_labels(
+            arr, expected, hand_by_sentence.pop(sentence, [])
+        )
+        hand["applied"] += len(indices)
+        hand["changed a checked label"] += changed
+        hand["stale, no such word now"] += stale
+        for (_, elem), label in zip(match_flags.iter_words(arr), expected):
+            labels[(str(label), elem[1])] += 1
+        row = {"sentence": sentence, "array": arr, "expected": expected}
+        if indices:
+            row["hand"] = indices
+        rows.append(row)
+
     for raw_sentence, word_lists in corpus:
         sentence = migrate_fit.html_stripping.strip_context_sentences(raw_sentence)
         if not sentence.strip():
             invalid["no sentence once the context is stripped"] += 1
             continue
         arr = migrate_fit.generator.generate(sentence)
-        expected = label_array(word_lists, arr, migrate, match_flags)
-        for (_, elem), label in zip(match_flags.iter_words(arr), expected):
-            labels[(str(label), elem[1])] += 1
-        rows.append({"sentence": sentence, "array": arr, "expected": expected})
+        add_row(sentence, arr, label_array(word_lists, arr, migrate, match_flags))
+    checked_rows = len(rows)
+    # Sentences judged by hand outside the checked export expect only what was judged
+    for sentence in list(hand_by_sentence):
+        arr = migrate_fit.generator.generate(sentence)
+        add_row(sentence, arr, [None] * len(list(match_flags.iter_words(arr))))
+    if hand:
+        print(
+            f"hand labels: {hand['applied']} applied, {len(rows) - checked_rows} sentences"
+            f" beyond the checked export, {hand['changed a checked label']} changed a checked"
+            f" label, {hand['stale, no such word now']} stale"
+        )
 
     with EVAL_SET.open("w", encoding="utf-8") as f:
         for row in rows:
@@ -134,23 +167,33 @@ class Judged(NamedTuple):
     groups: dict[int, str]
 
 
-def row_requests(rows: list, model: str, judge_v2) -> list[list[tuple[str, str]]]:
-    """(key, prompt) of every request each row needs: one per word not auto-judged."""
+def scored_asks(row: dict, arr: list, plan, match_flags) -> list:
+    """The plan's asks about words with an expectation: a sentence judged only in part by hand
+    asks about nothing else."""
+    expected = {
+        id(elem): label for (_, elem), label in zip(match_flags.iter_words(arr), row["expected"])
+    }
+    return [ask for ask in plan.asks if expected[id(ask.elem)] is not None]
+
+
+def row_requests(rows: list, model: str, judge_v2, match_flags) -> list[list[tuple[str, str]]]:
+    """(key, prompt) of every request each row needs: one per scored word not auto-judged."""
     out = []
     for row in rows:
-        plan = judge_v2.plan_judgements(copy.deepcopy(row["array"]))
-        out.append([(prompt_key(model, ask.prompt), ask.prompt) for ask in plan.asks])
+        arr = copy.deepcopy(row["array"])
+        asks = scored_asks(row, arr, judge_v2.plan_judgements(arr), match_flags)
+        out.append([(prompt_key(model, ask.prompt), ask.prompt) for ask in asks])
     return out
 
 
-def apply_row(row: dict, keys: list[str], cached: dict, judge_v2) -> Judged:
+def apply_row(row: dict, keys: list[str], cached: dict, judge_v2, match_flags) -> Judged:
     """The row judged; a word whose request has no usable response stays unjudged."""
     arr = copy.deepcopy(row["array"])
     plan = judge_v2.plan_judgements(arr)
     judge_v2.set_auto(plan)
     asked, reasons = set(), {}
     groups = {id(ask.elem): ask.group for ask in plan.asks}
-    for ask, key in zip(plan.asks, keys):
+    for ask, key in zip(scored_asks(row, arr, plan, match_flags), keys):
         response = cached.get(key, {}).get("response")
         try:
             judge_v2.apply_word_response(ask.elem, response)
@@ -171,7 +214,7 @@ def run(args) -> int:
     if args.n:
         rows = rows[: args.n]
 
-    requests = row_requests(rows, model, judge_v2)
+    requests = row_requests(rows, model, judge_v2, match_flags)
     cached = read_results()
     todo = sorted({k: p for reqs in requests for k, p in reqs if k not in cached}.items())
     if args.score_only:
@@ -200,7 +243,8 @@ def run(args) -> int:
             if done % 250 == 0:
                 print(f"  ...{done}", file=sys.stderr)
     judged = [
-        apply_row(row, [k for k, _ in reqs], cached, judge_v2) for row, reqs in zip(rows, requests)
+        apply_row(row, [k for k, _ in reqs], cached, judge_v2, match_flags)
+        for row, reqs in zip(rows, requests)
     ]
     return score(judged, match_flags, judge_v2, args)
 
@@ -232,7 +276,9 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
             counts["sentences without a usable response"] += 1
             continue
         counts["sentences scored"] += 1
-        for (_, elem), expected in zip(match_flags.iter_words(item.arr), item.row["expected"]):
+        hand = set(item.row.get("hand", []))
+        words = match_flags.iter_words(item.arr)
+        for index, ((_, elem), expected) in enumerate(zip(words, item.row["expected"])):
             got = elem[4][0] if elem[4] else None
             word = (elem[2], elem[3], elem[1])
             if expected is None:
@@ -251,6 +297,8 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
             for key, table in ((item.groups[id(elem)], by_group), (elem[1], by_pos)):
                 table.setdefault(key, Counter())[outcome] += 1
             by_group.setdefault("ALL", Counter())[outcome] += 1
+            if index in hand:
+                by_group.setdefault("HAND", Counter())[outcome] += 1
             if got != expected:
                 (wrong_picks if got == match_flags.DONT_MATCH else missed)[word] += 1
                 if id(elem) in item.reasons:
@@ -268,6 +316,8 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
     print()
     print("  words acc | match right/wrong, dontmatch right/wrong | dontmatch picks")
     print(f"  {'ALL':<14} {_rates(by_group.pop('ALL', Counter()))}")
+    if "HAND" in by_group:
+        print(f"  {'HAND':<14} {_rates(by_group.pop('HAND'))}")
     if unexpected_picks:
         top = ", ".join(f"{pos} {n}" for pos, n in unexpected_picks.most_common())
         print(f"  picks without an expectation: {top}")
