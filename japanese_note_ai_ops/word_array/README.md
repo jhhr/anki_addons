@@ -124,7 +124,9 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
   見たい; 68 in the export) or an adverb other than a particle (悉く, 幾ら, 何しろ), though JMdict
   has らか, か and く as words. A noun's lone kana other than も is okurigana too (窪み, 夕べ,
   逆さ, 幾ら; 何時+も stays), and so is a longer tail of a noun that is a verb's ます-stem (味わい,
-  温もり, 見かけ), while 赤+ちゃん, 口+コミ, 目+つき still split. `research/okurigana_decomp.py`.
+  温もり, 見かけ), while 赤+ちゃん, 口+コミ, 目+つき still split. A conjunction or interjection
+  never splits off its kana (但し, 並びに; 済みません, 初めまして, 今日は), and a pronoun only に, も,
+  か or a longer tail (其こ one word; 私+たち). `research/okurigana_decomp.py`.
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.

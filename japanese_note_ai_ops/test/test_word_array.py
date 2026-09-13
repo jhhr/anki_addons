@@ -206,6 +206,8 @@ class WordArrayTests(unittest.TestCase):
             ("但[ただ]し、 注意[ちゅうい]", "但し"),
             ("県[けん] 並[なら]びに 市[し]", "並びに"),
             ("<k> 其[そ]こ</k>に 含[ふく]まれる 冗談[じょうだん]", "其こ"),
+            # Sudachi's 感動詞 here, which JMdict would split as 済み + ません
+            ("<k> 済[す]みません</k> 実[じつ]は", "済みません"),
         ]:
             with self.subTest(sentence=sentence):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
