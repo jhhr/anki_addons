@@ -1,14 +1,10 @@
-import base64
 import html
-import json
-import random
 import re
 import time
-from typing import Any, Callable, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 from anki.cards import Card
 from anki.collection import OpChanges
-from anki.decks import DeckId
 from anki.notes import Note, NoteId
 from anki.utils import ids2str
 from aqt import mw
@@ -23,53 +19,55 @@ from aqt.qt import (
 from aqt.utils import tooltip
 
 from ..configuration import (
-    CARD_TYPE_SEPARATOR,
-    COPY_MODE_ACROSS_NOTES,
-    COPY_MODE_WITHIN_NOTE,
-    DIRECTION_DESTINATION_TO_SOURCES,
-    DIRECTION_SOURCE_TO_DESTINATIONS,
-    SELECT_CARD_BY_VALUES,
-    CardAction,
     Config,
     CopyDefinition,
-    CopyFieldToField,
-    CopyFieldToFile,
-    CopyFieldToVariable,
-    FontsCheckProcess,
-    KanaHighlightProcess,
-    KanjiumToJavdejongProcess,
-    RegexProcess,
-    SelectCardByType,
-    definition_modifies_other_notes,
-    get_field_to_field_unfocus_trigger_fields,
-    is_fonts_check_process,
-    is_kana_highlight_process,
-    is_kanjium_to_javdejong_process,
-    is_regex_process,
-    is_word_highlight_process,
-    split_tags,
 )
-from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
-from ..utils.duplicate_note import (
-    duplicate_note,
-)
-from ..utils.file_exists_in_media_folder import file_exists_in_media_folder
-from ..shared.utils.logger import Logger
-from ..utils.move_card_to_deck import move_card_to_deck
 from ..shared.anki.write_custom_data import write_custom_data
-from ..utils.write_to_media_folder import write_to_media_folder
-from ..shared.interpolate.execute_code import execute_code_for_field
-from .execute_code_wrappers import (
-    execute_code_for_card_action,
-    execute_code_for_files,
+from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
+from ..shared.utils.logger import Logger
+from .copy_primitives import (
+    CopyFailedException,
+    ProgressUpdateDef,
+    ProgressUpdater,
+    apply_card_action_to_card,
+    apply_card_actions_by_template,
+    apply_process_chain,
+    card_actions_by_template_name,
+    get_field_values_from_notes,
+    get_variable_values_for_note,
+    int_sort_by_field_value,
+    sort_by_field_value,
 )
-from .FatalProcessError import FatalProcessError
-from .fonts_check_process import fonts_check_process
-from ..shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX, TARGET_NOTES_COUNT, interpolate_from_text
-from .kana_highlight_process import WithTagsDef, kana_highlight_process
-from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
-from .regex_process import regex_process
-from .word_highlight_process import word_highlight_process
+from .definition_migration import MigrationError
+from .definition_schema import is_format_2
+from .execution.context import ExecutionSession
+from .execution.runner import as_format_2, run_definition_for_trigger_note
+from .legacy_executor import copy_into_single_note, get_across_target_notes
+
+# Re-exported so the characterization suite and any caller that has always imported these
+# from here keeps working while `legacy_executor` is on its way out.
+__all__ = [
+    "CacheResults",
+    "CopyFailedException",
+    "ProgressUpdateDef",
+    "ProgressUpdater",
+    "ScrollMessageBox",
+    "apply_card_action_to_card",
+    "apply_card_actions_by_template",
+    "apply_process_chain",
+    "card_actions_by_template_name",
+    "copy_fields",
+    "copy_fields_in_background",
+    "copy_for_single_trigger_note",
+    "copy_into_single_note",
+    "get_across_target_notes",
+    "get_field_values_from_notes",
+    "get_variable_values_for_note",
+    "int_sort_by_field_value",
+    "make_copy_fields_undo_text",
+    "note_passes_deck_whitelist",
+    "sort_by_field_value",
+]
 
 CONSOLE_COLOR_RE = r"\x1b\[[0-9;]*m"
 
@@ -153,158 +151,41 @@ class CacheResults:
         return self.count
 
 
-class ProgressUpdateDef:
-    """
-    Helper class used with CollectionOp.with_backend_progress(progress_update) to
-    update the progress bar and its label. In qt/aqt/progress.py the progress-update
-    function is used like this:
-        '''
-        update = ProgressUpdate(user_wants_abort=user_wants_abort)
-        progress = self.mw.backend.latest_progress()
-        progress_update(progress, update)
-        '''
-    The update.label, update.value and update.max are used to update the progress bar.
-    The progress_update function then needs a way to get information from the within the
-    op while it runs. This class is used to store the label, value and max_value in
-    a mutable object that the progress_update function can access.
-    """
-
-    def __init__(
-        self,
-        label: Optional[str] = None,
-        value: Optional[int] = None,
-        max_value: Optional[int] = None,
-    ):
-        self.label = label
-        self.value = value
-        self.max_value = max_value
-
-    def has_update(self):
-        return self.label is not None or self.value is not None or self.max_value is not None
-
-    def clear(self):
-        self.label = None
-        self.value = None
-        self.max_value = None
 
 
-class ProgressUpdater:
-    """
-    Helper class to update the progress bar and its label. This class is used to store
-    the start time, definition name, total cards count, progress update definition and
-    whether the copy is across notes. It also stores the current card count and the
-    total processed sources and destinations. The update_counts method is used to
-    increment the counts and the render_update method is used to update the progress
-    bar and its label.
-    """
 
-    def __init__(
-        self,
-        start_time: float,
-        definition_name: str,
-        total_notes_count: int,
-        is_across: bool,
-        title: Optional[str],
-    ):
-        self.start_time = start_time
-        self.definition_name = definition_name
-        self.total_notes_count = total_notes_count
-        self.is_across = is_across
-        self.note_cnt = 0
-        # Notes skipped by the deck whitelist or the condition query. Kept apart from note_cnt,
-        # which callers read as "notes actually processed", but the progress bar needs them to
-        # reach total_notes_count, the number of notes the SQL query returned.
-        self.skipped_note_cnt = 0
-        self.total_processed_sources = 0
-        self.total_processed_destinations = 0
-        self.total_processed_cards = 0
-        self.total_processed_files = 0
-        self.last_render_update = 0.0
-        if title is None:
-            title = "Copying fields"
-        self.set_title(title)
 
-    def update_counts(
-        self,
-        note_cnt_inc: Optional[int] = None,
-        processed_sources_inc: Optional[int] = None,
-        processed_destinations_inc: Optional[int] = None,
-        processed_files_inc: Optional[int] = None,
-        processed_cards_inc: Optional[int] = None,
-        skipped_note_cnt_inc: Optional[int] = None,
-    ):
-        if note_cnt_inc is not None:
-            self.note_cnt += note_cnt_inc
-        if skipped_note_cnt_inc is not None:
-            self.skipped_note_cnt += skipped_note_cnt_inc
-        if processed_sources_inc is not None:
-            self.total_processed_sources += processed_sources_inc
-        if processed_destinations_inc is not None:
-            self.total_processed_destinations += processed_destinations_inc
-        if processed_files_inc is not None:
-            self.total_processed_files += processed_files_inc
-        if processed_cards_inc is not None:
-            self.total_processed_cards += processed_cards_inc
+def definition_note_type_names(copy_definition: Union[CopyDefinition, dict]) -> list:
+    """The note type names a definition triggers on, in either stored format."""
+    if is_format_2(copy_definition):
+        return list(copy_definition.get("triggers", {}).get("note_types") or [])
+    stored = copy_definition.get("copy_into_note_types") or ""
+    # Split by comma and remove the first wrapping " but keeping the last one
+    return stored.strip('""').split('", "')
 
-    def get_counts(self) -> Tuple[int, int, int, int, int]:
-        return (
-            self.note_cnt,
-            self.total_processed_sources,
-            self.total_processed_destinations,
-            self.total_processed_files,
-            self.total_processed_cards,
-        )
 
-    def maybe_render_update(self, force: bool = False):
-        elapsed_s = time.time() - self.start_time
-        elapsed_since_last_update = elapsed_s - self.last_render_update
-        done_cnt = self.note_cnt + self.skipped_note_cnt
-        is_last_note = done_cnt == self.total_notes_count
-        no_notes = not self.total_notes_count > 0
-        if (elapsed_since_last_update < 0.5 and not (force or is_last_note)) or no_notes:
-            return
-        self.last_render_update = elapsed_s
+def definition_note_types_label(copy_definition: Union[CopyDefinition, dict]):
+    """The note type names as the error messages have always spelled them, or None."""
+    if is_format_2(copy_definition):
+        names = copy_definition.get("triggers", {}).get("note_types")
+        return '", "'.join(names) if names else None
+    return copy_definition.get("copy_into_note_types", None)
 
-        elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
-        label = f"""<strong>{html.escape(self.definition_name)}</strong>:
-        <br>Copied {self.note_cnt}/{self.total_notes_count} notes{
-            f", skipped {self.skipped_note_cnt}" if self.skipped_note_cnt > 0 else ""
-        }
-        <br><small>Processed{
-            f"-  destination notes: {self.total_processed_destinations}"
-            if self.total_processed_destinations > 0
-            else ""
-        }
-            {
-            f"- files: {self.total_processed_files}"
-            if self.total_processed_files > 0
-            else ""
-        }
-            {f", sources: {self.total_processed_sources}" if self.is_across else ""}
-            {
-            f", cards: {self.total_processed_cards}"
-            if self.total_processed_cards > 0
-            else ""
-        }
-        </small><br>Time: {elapsed_time}"""
-        if done_cnt / self.total_notes_count > 0.10 or elapsed_s > 1:
-            if done_cnt > 0:
-                eta_s = (elapsed_s / done_cnt) * (self.total_notes_count - done_cnt)
-                eta = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-                label += f" - ETA: {eta}"
-        value = done_cnt
-        max_value = self.total_notes_count
 
-        mw.taskman.run_on_main(
-            lambda: mw.progress.update(
-                label=label,
-                value=value,
-                max=max_value,
-            )
-        )
+def definition_trigger_flag(
+    copy_definition: Union[CopyDefinition, dict], format_2_key: str, format_1_key: str
+) -> bool:
+    if is_format_2(copy_definition):
+        return bool(copy_definition.get("triggers", {}).get(format_2_key, False))
+    return bool(copy_definition.get(format_1_key, False))
 
-    def set_title(self, title: str):
-        mw.taskman.run_on_main(lambda: mw.progress.set_title(title))
+
+def definition_queries_collection(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    """Whether the definition searches the collection, which the progress label reports."""
+    if is_format_2(copy_definition):
+        effects = copy_definition.get("effects") or {}
+        return bool(effects.get("queries_collection", True))
+    return copy_definition.get("copy_mode") == "Across notes"
 
 
 def make_copy_fields_undo_text(
@@ -556,7 +437,7 @@ def copy_fields_in_background(
     :param progress_title: Optional title for the progress dialog
     :return: the CacheResults object passed as results
     """
-    copy_into_note_types = copy_definition.get("copy_into_note_types", None)
+    copy_into_note_types = definition_note_types_label(copy_definition)
     definition_name = copy_definition.get("definition_name", "")
 
     start_time = time.time()
@@ -570,14 +451,13 @@ def copy_fields_in_background(
         )
         return results
 
-    # Split by comma and remove the first wrapping " but keeping the last one
-    note_type_names = copy_into_note_types.strip('""').split('", "')
+    note_type_names = definition_note_type_names(copy_definition)
     note_type_ids = list(
         filter(None, [mw.col.models.id_for_name(name) for name in note_type_names])
     )
 
-    copy_on_review = copy_definition.get("copy_on_review", False)
-    copy_on_sync = copy_definition.get("copy_on_sync", False)
+    copy_on_review = definition_trigger_flag(copy_definition, "on_review", "copy_on_review")
+    copy_on_sync = definition_trigger_flag(copy_definition, "on_sync", "copy_on_sync")
     copy_on_sync_after_review = not copy_on_review and copy_on_sync
 
     assert mw.col.db is not None
@@ -620,7 +500,7 @@ def copy_fields_in_background(
         return results
 
     total_notes_count = len(notes)
-    is_across = copy_definition["copy_mode"] == COPY_MODE_ACROSS_NOTES
+    is_across = definition_queries_collection(copy_definition)
 
     progress_updater = ProgressUpdater(
         start_time=start_time,
@@ -686,122 +566,62 @@ def copy_fields_in_background(
     return results
 
 
-def apply_process_chain(
-    process_chain: Sequence[
-        Union[
-            KanjiumToJavdejongProcess,
-            RegexProcess,
-            FontsCheckProcess,
-            KanaHighlightProcess,
-        ]
-    ],
-    text: str,
-    notes: list[Note],
-    dest_note: Note = None,
-    variable_values_dict: Optional[dict] = None,
-    multiple_note_types: bool = False,
-    progress_updater: Optional[ProgressUpdater] = None,
+
+
+
+
+def note_passes_deck_whitelist(
+    deck_names: list,
+    include_subdecks: bool,
+    trigger_note: Note,
+    deck_id: Optional[int] = None,
     logger: Logger = Logger("error"),
-    file_cache: Optional[dict] = None,
-) -> Union[str, None]:
+) -> bool:
+    """Whether the definition's deck whitelist lets this trigger note through.
+
+    Trigger filtering stays outside the stage interpreter (§8): which notes a definition
+    considers is decided by its triggers, and only then does the program run.
     """
-    Apply a list of processes to a text
-    :param process_chain: The list of processes to apply
-    :param text: The text to apply the processes to
-    :param dest_note: The note to use for the processes that is the destination of the result value
-    :param notes: Other source notes to use for the processes, used for interpolation
-    :param variable_values_dict: A dictionary of variable values to use for interpolation
-    :param multiple_note_types: Whether the copy is across multiple note types
-    :param progress_updater: Optional object to update the progress bar
-    :param logger: Logger to use for errors and debug messages
-    :param file_cache: A dictionary to cache opened files' content
-    :return: The text after the processes have been applied or None if there was an error
-    """
+    if not deck_names:
+        return True
 
-    for process in process_chain:
-        try:
-            if is_kana_highlight_process(process):
-                text = kana_highlight_process(
-                    text=text,
-                    kanji_field=process.get("kanji_field", ""),
-                    return_type=process.get("return_type", "kana_only"),
-                    with_tags_def=WithTagsDef(
-                        process.get("wrap_readings_in_tags", True),
-                        process.get("merge_consecutive_tags", True),
-                        process.get("onyomi_to_katakana", False),
-                        False,  # include_suru_okuri always false
-                    ),
-                    note=dest_note,
-                    logger=logger,
-                )
-            elif is_word_highlight_process(process):
-                text = word_highlight_process(
-                    text=text,
-                    word_field=process.get("word_field", ""),
-                    note=dest_note,
-                    logger=logger,
-                )
-            elif is_regex_process(process):
-                use_all_notes = process.get("use_all_notes", False)
-                interpolated_regex = get_field_values_from_notes(
-                    copy_from_text=process.get("regex", ""),
-                    notes=notes if use_all_notes and len(notes) > 1 else [dest_note],
-                    dest_note=dest_note if use_all_notes and len(notes) > 1 else None,
-                    variable_values_dict=variable_values_dict,
-                    select_card_separator=process.get("regex_separator", ""),
-                    multiple_note_types=multiple_note_types,
-                    logger=logger,
-                    progress_updater=progress_updater,
-                )
+    unique_whitelist_dids: set = {
+        mw.col.decks.id_for_name(target_deck_name) for target_deck_name in deck_names
+    }
+    if include_subdecks:
+        parent_dids = set()
+        for did in unique_whitelist_dids:
+            # A name that matched no deck resolved to None, which children() would send
+            # to the backend as deck 0 and raise NotFoundError on. It has no subdecks.
+            if did is None:
+                continue
+            child_dids = [d[1] for d in mw.col.decks.children(did)]
+            parent_dids.update(child_dids)
+        unique_whitelist_dids.update(parent_dids)
 
-                interpolated_replacement = get_field_values_from_notes(
-                    copy_from_text=process.get("replacement", ""),
-                    notes=notes if use_all_notes and len(notes) > 1 else [dest_note],
-                    dest_note=dest_note if use_all_notes and len(notes) > 1 else None,
-                    variable_values_dict=variable_values_dict,
-                    select_card_separator=process.get("replacement_separator", ""),
-                    multiple_note_types=multiple_note_types,
-                    logger=logger,
-                    progress_updater=progress_updater,
-                )
-                text = regex_process(
-                    text=text,
-                    regex=interpolated_regex,
-                    replacement=interpolated_replacement,
-                    flags=process.get("flags", None),
-                    logger=logger,
-                )
-
-            elif is_fonts_check_process(process):
-                text = fonts_check_process(
-                    text=text,
-                    fonts_dict_file=process.get("fonts_dict_file", ""),
-                    limit_to_fonts=process.get("limit_to_fonts", None),
-                    character_limit_regex=process.get("character_limit_regex", None),
-                    logger=logger,
-                    file_cache=file_cache,
-                )
-
-            elif is_kanjium_to_javdejong_process(process):
-                text = kanjium_to_javdejong_process(
-                    text=text,
-                    delimiter=process.get("delimiter", ""),
-                    logger=logger,
-                )
-        except FatalProcessError as e:
-            # If some process fails in a way that will always fail, we stop the whole op
-            # so the user can fix the issue without needing to wait for the whole op to finish
-            logger.error(f"Error in {process['name']} process: {e}")
-            return None
-    return text
-
-
-class CopyFailedException(Exception):
-    pass
+    deck_ids_of_cards = []
+    if deck_id is not None:
+        deck_ids_of_cards.append(deck_id)
+    else:
+        for card in trigger_note.cards():
+            deck_ids_of_cards.append(card.odid or card.did)
+    logger.debug(
+        f"copy_for_single_trigger_note: deck_ids={deck_ids_of_cards},"
+        f" unique_whitelist_dids={unique_whitelist_dids}"
+    )
+    if deck_ids_of_cards and not any(
+        card_deck_id in unique_whitelist_dids for card_deck_id in deck_ids_of_cards
+    ):
+        logger.debug(
+            "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note"
+            f" {trigger_note.id}"
+        )
+        return False
+    return True
 
 
 def copy_for_single_trigger_note(
-    copy_definition: CopyDefinition,
+    copy_definition: Union[CopyDefinition, dict],
     trigger_note: Note,
     is_sync: Optional[bool] = False,
     copied_into_notes: Optional[list[Note]] = None,
@@ -811,847 +631,93 @@ def copy_for_single_trigger_note(
     logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
+    definitions_for_calls: Optional[Sequence[dict]] = None,
 ) -> bool:
-    """
-    Copy fields into a single note
-    :param copy_definition: The definition of what to copy, includes process chains
-    :param trigger_note: Note that triggered this copy or was targeted otherwise
-    :param is_sync: Whether this is a sync operation or not
-    :param copied_into_notes: A list of notes that were copied into, to be appended to
-        with the destination notes. Can be omitted, if it's not necessary to run
-        mw.col.update_notes(copied_into_notes) after the operation
-    :param copied_into_cards_dict: A dictionary of cards that were copied into, keyed by card ID,
-        to be appended to with the cards of the destination notes. Can be omitted, if it's not necessary to run
-        mw.col.update_cards(copied_into_cards) after the operation
-    :param field_only: Optional field to limit copying to. Used when copying is applied
-      in the note editor
-    :param deck_id: Deck ID where the cards are going into, only needed when adding
-      a note since cards don't exist yet. Otherwise, the deck_ids are checked from the cards
-      of the note
-    :param is_note_editor: Whether copy fields is being triggered in the note editor
-    :param logger: Logger to use for errors and debug messages
-    :param file_cache: A dictionary to cache opened files' content
-    :param progress_updater: Optional object to update the progress bar
-    :return: bool indicating success
+    """Run one copy definition for one trigger note.
+
+    The definition may be stored in either format: a format-1 one is migrated on the way in,
+    so there is one executor over one format no matter what the config holds. Everything
+    below this call is stages.
+
+    :param copy_definition: the definition, in format 1 or format 2
+    :param trigger_note: the note that triggered this copy or was targeted otherwise
+    :param is_sync: whether this is a sync operation, which some conditions only apply to
+    :param copied_into_notes: appended with the notes that were written into, for the
+        caller's batched `update_notes()`. Omit when nothing needs saving.
+    :param copied_into_cards_dict: filled with the cards of every note the definition
+        touched, keyed by card id, for the caller's batched `update_cards()`
+    :param field_only: limits field writes to those the named editor field triggers
+    :param deck_id: the deck a not-yet-added note's cards will go into, since it has none
+    :param logger: logger for errors and debug messages
+    :param file_cache: a dictionary caching opened files' content for process chains
+    :param progress_updater: optional object to update the progress bar
+    :param definitions_for_calls: the definitions a `call_definition` stage may reach
+    :return: True when the note is done -- written into or benignly skipped -- and False
+        when the definition failed and the caller's bulk loop should stop
     """
     logger.nid = trigger_note.id
 
-    field_to_field_defs = copy_definition.get("field_to_field_defs", [])
-    field_to_file_defs = copy_definition.get("field_to_file_defs", [])
-    field_to_variable_defs = copy_definition.get("field_to_variable_defs", [])
-    card_actions = copy_definition.get("card_actions", [])
-    only_copy_into_decks = copy_definition.get("only_copy_into_decks", None)
-    include_subdecks = copy_definition.get("include_subdecks", False)
-    copy_from_cards_query = copy_definition.get("copy_from_cards_query", None)
-    copy_condition_query = copy_definition.get("copy_condition_query", None)
-    condition_only_on_sync = copy_definition.get("condition_only_on_sync", False)
-    run_also_if_no_sources_found = copy_definition.get("run_also_if_no_sources_found", False)
-    add_tags = copy_definition.get("add_tags", "")
-    remove_tags = copy_definition.get("remove_tags", "")
-    sort_by_field = copy_definition.get("sort_by_field", None)
-    select_card_by = copy_definition.get("select_card_by", None)
-    select_card_count = copy_definition.get("select_card_count", None)
-    select_card_separator = copy_definition.get("select_card_separator", None)
-    copy_mode = copy_definition.get("copy_mode", None)
-    across_mode_direction = copy_definition.get("across_mode_direction", None)
-
-    copy_into_note_types = copy_definition.get("copy_into_note_types", "")
-    note_type_names = copy_into_note_types.strip('""').split('", "')
-    multiple_note_types = len(note_type_names) > 1
-
-    extra_state: dict[str, Any] = {}
-
-    # Step 1: Get variable values for the note
-    variable_values_dict = None
-    if field_to_variable_defs is not None:
-        variable_values_dict = get_variable_values_for_note(
-            field_to_variable_defs=field_to_variable_defs,
-            note=trigger_note,
-            logger=logger,
-            file_cache=file_cache,
-        )
-
-    # Step 2: Check if the note is in a deck that is allowed for copying
-    if only_copy_into_decks and only_copy_into_decks != "-":
-        # Check if the current deck is in the white list, otherwise we don't copy into this note
-        # whitelist deck is a list of deck or sub deck names
-        # parent names can't be included since adding :: would break the filter text
-        target_deck_names = only_copy_into_decks.strip('""').split('", "')
-
-        unique_whitelist_dids: set[DeckId] = {
-            mw.col.decks.id_for_name(target_deck_name) for target_deck_name in target_deck_names
-        }
-        if include_subdecks:
-            parent_dids = set()
-            for did in unique_whitelist_dids:
-                # A name that matched no deck resolved to None, which children() would send
-                # to the backend as deck 0 and raise NotFoundError on. It has no subdecks.
-                if did is None:
-                    continue
-                child_dids = [d[1] for d in mw.col.decks.children(did)]
-                parent_dids.update(child_dids)
-            unique_whitelist_dids.update(parent_dids)
-        deck_ids_of_cards = []
-        if deck_id is not None:
-            deck_ids_of_cards.append(deck_id)
-        else:
-            for card in trigger_note.cards():
-                deck_ids_of_cards.append(card.odid or card.did)
-        logger.debug(
-            f"copy_for_single_trigger_note: deck_ids={deck_ids_of_cards},"
-            f" unique_whitelist_dids={unique_whitelist_dids}"
-        )
-        if deck_ids_of_cards and not any(
-            deck_id in unique_whitelist_dids for deck_id in deck_ids_of_cards
-        ):
-            logger.debug(
-                "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note"
-                f" {trigger_note.id}"
-            )
-            # Deck not in whitelist, so skip this note, things are ok, so return True
-            if progress_updater is not None:
-                progress_updater.update_counts(skipped_note_cnt_inc=1)
-            return True
-
-    # Step 3: Check the copy condition for this note
-    condition_check = bool(copy_condition_query)
-    if condition_only_on_sync and not is_sync:
-        condition_check = False
-    if condition_check:
-        interpolated_condition_query, invalid_fields = interpolate_from_text(
-            copy_condition_query,
-            source_note=trigger_note,
-            variable_values_dict=variable_values_dict,
-        )
-        if interpolated_condition_query:
-            # Search for notes, this works for card properties just as well
-            note_ids = mw.col.find_notes(f"{interpolated_condition_query} nid:{trigger_note.id}")
-            if (note_ids is None) or (len(note_ids) == 0):
-                logger.debug(
-                    "copy_for_single_trigger_note: "
-                    f"Condition query '{interpolated_condition_query}' did not match for note "
-                    f"id {trigger_note.id}"
-                )
-                # Condition did not match, so skip this note, things are ok, so return True
-                if progress_updater is not None:
-                    progress_updater.update_counts(skipped_note_cnt_inc=1)
-                return True
-        else:
-            logger.error(
-                f"Error in copy fields: Condition query '{copy_condition_query}' "
-                f"could not be interpolated for note id {trigger_note.id} "
-                f"due to missing fields: {', '.join(invalid_fields)}"
-            )
-            return False
-
-    # Update progress for processing this note after we've checked the condition, so notes
-    # skipped due to the condition not matching are counted as skipped, not as processed
-    if progress_updater is not None:
-        progress_updater.update_counts(note_cnt_inc=1)
-
-    # Step 4: Get source/destination notes for this card
-    destination_notes = []
-    source_notes = []
-    if copy_mode == COPY_MODE_WITHIN_NOTE:
-        destination_notes = [trigger_note]
-        # Duplicate the trigger note so that the source and destination note are not the same object
-        # otherwise, as field-to-field defs are processed, the source note will be modified
-        # resulting in the final result depending on the order of the defs. In particular swapping
-        # two fields would not work as expected
-        source_notes = [duplicate_note(trigger_note)]
-    elif copy_mode == COPY_MODE_ACROSS_NOTES:
-        if across_mode_direction not in [
-            DIRECTION_DESTINATION_TO_SOURCES,
-            DIRECTION_SOURCE_TO_DESTINATIONS,
-        ]:
-            logger.error("Error in copy fields: missing across mode direction value")
-            return False
-        target_notes = get_across_target_notes(
-            copy_definition=copy_definition,
-            copy_from_cards_query=copy_from_cards_query or "",
-            trigger_note=trigger_note,
-            deck_id=deck_id,
-            extra_state=extra_state,
-            sort_by_field=sort_by_field,
-            include_subdecks=include_subdecks,
-            select_card_by=select_card_by,
-            select_card_count=select_card_count,
-            logger=logger,
-            variable_values_dict=variable_values_dict,
-        )
-        variable_values_dict[TARGET_NOTES_COUNT] = len(target_notes)
-        if across_mode_direction == DIRECTION_DESTINATION_TO_SOURCES:
-            destination_notes = [trigger_note]
-            source_notes = target_notes
-        elif across_mode_direction == DIRECTION_SOURCE_TO_DESTINATIONS:
-            destination_notes = target_notes
-            source_notes = [trigger_note]
-    else:
-        logger.error("Error in copy fields: missing copy mode value")
+    try:
+        staged_definition = as_format_2(copy_definition)
+    except MigrationError as error:
+        logger.error(str(error))
         return False
 
-    if len(source_notes) == 0 and not run_also_if_no_sources_found:
-        # No destination counter increment here: nothing was written, and destinations are
-        # only counted when copied into, like the increment in the loop below.
-        # This case is ok, there's just nothing to do
-        # But we need to end early here so that the target fields aren't wiped
-        # So, return True
+    triggers = staged_definition.get("triggers", {})
+    if not note_passes_deck_whitelist(
+        deck_names=triggers.get("deck_names") or [],
+        include_subdecks=bool(triggers.get("include_subdecks", False)),
+        trigger_note=trigger_note,
+        deck_id=deck_id,
+        logger=logger,
+    ):
+        # Deck not in whitelist, so skip this note; things are ok, so return True
+        if progress_updater is not None:
+            progress_updater.update_counts(skipped_note_cnt_inc=1)
         return True
 
-    if progress_updater is not None:
-        progress_updater.update_counts(processed_sources_inc=len(source_notes))
-    # Step 3: Get value for each field we are copying into
-    for query_note_index, destination_note in enumerate(destination_notes, 1):
-        # Handles SOURCE_TO_DESTINATIONS (many destinations). For DESTINATION_TO_SOURCES,
-        # destination_notes has one entry so this is always 1; overridden in get_field_values_from_notes.
-        variable_values_dict[QUERY_NOTE_INDEX] = query_note_index
-        try:
-            copied_into_dest_note, copied_into_file, dest_note_cards = copy_into_single_note(
-                field_to_field_defs=field_to_field_defs,
-                field_to_file_defs=field_to_file_defs,
-                card_actions=card_actions,
-                destination_note=destination_note,
-                source_notes=source_notes,
-                add_tags=add_tags,
-                remove_tags=remove_tags,
-                variable_values_dict=variable_values_dict,
-                field_only=field_only,
-                modifies_other_notes=definition_modifies_other_notes(copy_definition),
-                multiple_note_types=multiple_note_types,
-                select_card_separator=select_card_separator,
-                file_cache=file_cache,
-                logger=logger,
-                progress_updater=progress_updater,
-            )
-            if progress_updater is not None:
-                progress_updater.update_counts(
-                    processed_destinations_inc=1 if copied_into_dest_note else None,
-                    processed_files_inc=1 if copied_into_file else None,
-                )
-            if copied_into_notes is not None and copied_into_dest_note:
-                copied_into_notes.append(destination_note)
-            if copied_into_cards_dict is not None and dest_note_cards:
-                # Add cards to the dict so they can be updated later
-                for new_card in dest_note_cards:
-                    copied_into_cards_dict[new_card.id] = new_card
-        except CopyFailedException as e:
-            if str(e):
-                logger.error(str(e))
-            return False
+    lookup = None
+    if definitions_for_calls:
+        lookup = make_definition_lookup(definitions_for_calls)
 
-    return True
-
-
-def copy_into_single_note(
-    field_to_field_defs: list[CopyFieldToField],
-    field_to_file_defs: list[CopyFieldToFile],
-    card_actions: list[CardAction],
-    destination_note: Note,
-    source_notes: list[Note],
-    add_tags: Optional[str] = "",
-    remove_tags: Optional[str] = "",
-    variable_values_dict: Optional[dict] = None,
-    field_only: Optional[str] = None,
-    modifies_other_notes: bool = False,
-    multiple_note_types: bool = False,
-    select_card_separator: Optional[str] = None,
-    file_cache: Optional[dict] = None,
-    logger: Logger = Logger("error"),
-    progress_updater: Optional[ProgressUpdater] = None,
-) -> Tuple[bool, bool, list[Card]]:
-
-    modified_dest_note = False
-    wrote_to_file = False
-
-    # Duplicate the destination note so field-to-field defs that use the destination note's fields
-    # as source values all use the same initial values, instead of the source values being modified
-    # as the field-to-field defs are processed
-    destination_note_copy = duplicate_note(destination_note)
-
-    for field_to_field_def in field_to_field_defs:
-        copy_into_note_field = field_to_field_def.get("copy_into_note_field", "")
-        trigger_fields = get_field_to_field_unfocus_trigger_fields(
-            field_to_field_def, modifies_other_notes
-        )
-        if field_only is not None and field_only not in trigger_fields:
-            # If we're only meant to copy a specific def, defined by the field_only parameter
-            # Note, depending on the mode, may be that field_only == copy_into_note_field
-            continue
-        copy_from_text = field_to_field_def.get("copy_from_text", "")
-        copy_as_code = field_to_field_def.get("copy_as_code", "")
-        use_code = field_to_field_def.get("use_code", False)
-        copy_if_empty = field_to_field_def.get("copy_if_empty", False)
-        process_chain = field_to_field_def.get("process_chain", None)
-
-        try:
-            cur_field_value = destination_note[copy_into_note_field]
-        except KeyError:
-            logger.error(f"Error in copy fields: Field '{copy_into_note_field}' not found in note")
-            # Rest of defs are not processed
-            raise CopyFailedException
-
-        if copy_if_empty and cur_field_value != "":
-            continue
-
-        result_val = get_field_values_from_notes(
-            copy_from_text=copy_as_code if use_code else copy_from_text,
-            notes=source_notes,
-            dest_note=destination_note_copy,
-            multiple_note_types=multiple_note_types,
-            select_card_separator=select_card_separator,
-            use_code=use_code,
-            logger=logger,
-            variable_values_dict=variable_values_dict,
-            progress_updater=progress_updater,
-        )
-        if process_chain is not None:
-            processed_val = apply_process_chain(
-                process_chain=process_chain,
-                text=result_val,
-                notes=source_notes,
-                dest_note=destination_note_copy,
-                multiple_note_types=multiple_note_types,
-                variable_values_dict=variable_values_dict,
-                progress_updater=progress_updater,
-                logger=logger,
-                file_cache=file_cache,
-            )
-            # result_val should always be at least "", None indicates an error
-            if processed_val is None:
-                logger.error(
-                    f"Error in copy fields: Process chain failed for field {copy_into_note_field}"
-                )
-                raise CopyFailedException
-            result_val = processed_val
-
-        # Finally, copy the value into the note
-        destination_note[copy_into_note_field] = result_val
-        modified_dest_note = True
-
-    for tag in split_tags(add_tags):
-        if destination_note.has_tag(tag):
-            continue
-        destination_note.add_tag(tag)
-        modified_dest_note = True
-
-    for tag in split_tags(remove_tags):
-        if not destination_note.has_tag(tag):
-            continue
-        destination_note.remove_tag(tag)
-        modified_dest_note = True
-
-    for field_to_file_def in field_to_file_defs:
-        copy_into_filename = field_to_file_def.get("copy_into_filename", "")
-        copy_from_text = field_to_file_def.get("copy_from_text", "")
-        copy_as_code = field_to_file_def.get("copy_as_code", "")
-        use_code = field_to_file_def.get("use_code", False)
-        process_chain = field_to_file_def.get("process_chain", None)
-        dont_overwrite = field_to_file_def.get("copy_if_empty", False)
-
-        if use_code:
-            # Code path: execute code per source note, each execution returns a list of
-            # (filename, content) tuples that are all written as separate files.
-            all_file_tuples: list[tuple[str, str]] = []
-            multiple_source_notes = len(source_notes) > 1
-            for i, note in enumerate(source_notes):
-                if multiple_source_notes and variable_values_dict is not None:
-                    variable_values_dict[QUERY_NOTE_INDEX] = i + 1
-                interpolated_code, invalid_fields = interpolate_from_text(
-                    copy_as_code,
-                    source_note=note,
-                    destination_note=destination_note_copy,
-                    variable_values_dict=variable_values_dict,
-                    multiple_note_types=multiple_note_types,
-                )
-                if invalid_fields:
-                    logger.error(
-                        "Error in copy fields: Invalid fields in copy_as_code:"
-                        f" {', '.join(invalid_fields)}"
-                    )
-                file_tuples, code_error = execute_code_for_files(interpolated_code, note)
-                if code_error:
-                    raise CopyFailedException(
-                        f"Code execution error in file definition:\n{code_error}"
-                    )
-                if file_tuples:
-                    all_file_tuples.extend(file_tuples)
-                if progress_updater is not None:
-                    progress_updater.maybe_render_update()
-
-            for fname, fcontent in all_file_tuples:
-                if dont_overwrite and file_exists_in_media_folder(fname):
-                    continue
-                try:
-                    write_to_media_folder(fname, fcontent)
-                    wrote_to_file = True
-                except Exception as e:
-                    logger.error(f"Error in writing to file: {e}")
-                    raise CopyFailedException
-        else:
-            # Non-code path: single file written to a pre-determined filename.
-            if not copy_into_filename:
-                logger.error("Error in copy fields: No file name provided")
-                raise CopyFailedException
-
-            # Interpolate filename with values from the note (never executed as code)
-            copy_into_filename = get_field_values_from_notes(
-                copy_from_text=copy_into_filename,
-                notes=[destination_note],
-                dest_note=destination_note_copy,
-                multiple_note_types=multiple_note_types,
-                select_card_separator=select_card_separator,
-                logger=logger,
-                variable_values_dict=variable_values_dict,
-                progress_updater=progress_updater,
-            )
-
-            if dont_overwrite and file_exists_in_media_folder(copy_into_filename):
-                continue
-
-            result_val = get_field_values_from_notes(
-                copy_from_text=copy_from_text,
-                notes=source_notes,
-                dest_note=destination_note_copy,
-                multiple_note_types=multiple_note_types,
-                select_card_separator=select_card_separator,
-                logger=logger,
-                variable_values_dict=variable_values_dict,
-                progress_updater=progress_updater,
-            )
-            if process_chain is not None:
-                processed_val = apply_process_chain(
-                    process_chain=process_chain,
-                    text=result_val,
-                    notes=source_notes,
-                    dest_note=destination_note_copy,
-                    multiple_note_types=multiple_note_types,
-                    variable_values_dict=variable_values_dict,
-                    progress_updater=progress_updater,
-                    logger=logger,
-                    file_cache=file_cache,
-                )
-                # result_val should always be at least "", None indicates an error
-                if processed_val is None:
-                    logger.error(
-                        f"Error in copy fields: Process chain failed for file {copy_into_filename}"
-                    )
-                    raise CopyFailedException
-                result_val = processed_val
-
-            # Finally, copy the value into the file
-            try:
-                write_to_media_folder(copy_into_filename, result_val)
-                wrote_to_file = True
-            except Exception as e:
-                logger.error(f"Error in writing to file: {e}")
-                raise CopyFailedException
-
-    card_actions_by_template_name = {}
-    dest_note_type = destination_note.note_type()
-    for card_action in card_actions:
-        # The card_type_name contains the note type and card type separated by CARD_TYPE_SEPARATOR
-        note_type_and_card_type = card_action.get("card_type_name", "")
-        if CARD_TYPE_SEPARATOR not in note_type_and_card_type:
-            logger.error(
-                f"Error in copy fields: Invalid card type name '{note_type_and_card_type}'"
-            )
-            # Skip this card action
-            continue
-        note_type_name, card_type_name = note_type_and_card_type.split(CARD_TYPE_SEPARATOR, 1)
-        if note_type_name != dest_note_type["name"]:
-            # This card action is not for this note type
-            continue
-        card_actions_by_template_name[card_type_name] = card_action
-
-    dest_note_cards = destination_note.cards()
-    for card in dest_note_cards:
-        card_template_name = card.template()["name"]
-        card_action = card_actions_by_template_name.get(card_template_name, None)
-        if card_action is None:
-            continue
-        action_code = card_action.get("action_code", None)
-        if card_action.get("use_code", False) and action_code and action_code.strip():
-            executed_action, code_error = execute_code_for_card_action(
-                action_code, destination_note
-            )
-            if code_error:
-                raise CopyFailedException(f"Code execution error in card action:\n{code_error}")
-            if executed_action is None:
-                continue
-            card_action = executed_action
-        change_deck = card_action.get("change_deck", None)
-        suspend_card = card_action.get("suspend", None)
-        bury_card = card_action.get("bury", None)
-        set_flag = card_action.get("set_flag", None)
-        set_dr = card_action.get("set_desired_retention", None)
-        if change_deck not in [None, "-", 0]:
-            move_card_to_deck(card, change_deck, logger=logger)
-            card.edited = True
-        if suspend_card in [True, False]:
-            # see pylib/anki/cards.py for queue values
-            if suspend_card:
-                card.queue = -1
-            else:
-                card.queue = card.type
-            card.edited = True
-        if bury_card in [True, False] and card.queue != -1:
-            # Card cannot be buried, if it is suspended
-            # To bury a suspended card, it must first be unsuspended with a suspend action
-            if bury_card:
-                card.queue = -2
-            else:
-                card.queue = card.type
-            card.edited = True
-        if isinstance(set_flag, int) and 0 <= set_flag <= 7:
-            card.set_user_flag(set_flag)
-            card.edited = True
-        if set_dr is not None:
-            if isinstance(set_dr, str):
-                # Get value from custom data property
-                if card.custom_data:
-                    try:
-                        custom_data = json.loads(card.custom_data)
-                    except json.JSONDecodeError:
-                        custom_data = {}
-                    set_dr = custom_data.get(set_dr, None)
-                else:
-                    set_dr = None
-            if isinstance(set_dr, int) and not isinstance(set_dr, bool):
-                set_dr = float(set_dr) / 100
-            if isinstance(set_dr, float) and 0 < set_dr < 1:
-                card.desired_retention = set_dr
-                card.edited = True
-
-        if progress_updater is not None and hasattr(card, "edited") and card.edited:
-            progress_updater.update_counts(processed_cards_inc=1)
-    return (modified_dest_note, wrote_to_file, dest_note_cards)
-
-
-def get_variable_values_for_note(
-    field_to_variable_defs: list[CopyFieldToVariable],
-    note: Note,
-    file_cache: Optional[dict] = None,
-    logger: Logger = Logger("error"),
-) -> dict:
-    """
-    Get the values for the variables from the note
-    :param field_to_variable_defs: The definitions of the variables to get
-    :param note: The note to get the values from
-    :param file_cache: A dictionary to cache opened files' content for process chains
-    :param logger: Logger to use for errors and debug messages
-    :return: A dictionary of the values for the variables or None if there was an error
-    """
-
-    variable_values_dict = {}
-    for field_to_variable_def in field_to_variable_defs:
-        copy_into_variable = field_to_variable_def["copy_into_variable"]
-        copy_from_text = field_to_variable_def["copy_from_text"]
-        copy_as_code = field_to_variable_def.get("copy_as_code", "")
-        use_code = field_to_variable_def.get("use_code", False)
-        active_text = copy_as_code if use_code else copy_from_text
-        process_chain = field_to_variable_def.get("process_chain", None)
-
-        # Step 1: Interpolate the text with values from the note
-        interpolated_value, invalid_fields = interpolate_from_text(
-            active_text,
-            source_note=note,
-        )
-        if len(invalid_fields) > 0:
-            logger.error(
-                "Error getting variable values: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
-            )
-
-        # Step 1b: Execute as code if requested
-        if use_code and interpolated_value is not None:
-            interpolated_value, code_error = execute_code_for_field(interpolated_value, note)
-            if code_error:
-                raise CopyFailedException(
-                    f"Code execution error in variable '{copy_into_variable}':\n{code_error}"
-                )
-
-        # Step 2: If we have further processing steps, run them
-        if process_chain is not None and interpolated_value is not None:
-            interpolated_value = apply_process_chain(
-                process_chain=process_chain,
-                text=interpolated_value,
-                dest_note=note,
-                notes=[note],
-                multiple_note_types=False,
-                logger=logger,
-                file_cache=file_cache,
-            )
-            if interpolated_value is None:
-                return {}
-
-        variable_values_dict[copy_into_variable] = interpolated_value
-
-    return variable_values_dict
-
-
-def int_sort_by_field_value(note: Note, sort_by_field) -> int:
-    # KeyError as well as ValueError: sort_by_field names a field on the *source* note type,
-    # which need not be the one the definition copies into, so a query that returns a note of
-    # another type reaches here with a field the note does not have.
-    try:
-        return int(note[sort_by_field])
-    except (ValueError, KeyError):
-        return 0
-
-
-def sort_by_field_value(note: Note, sort_by_field) -> Any:
-    try:
-        return note[sort_by_field]
-    except KeyError:
-        return ""
-
-
-def get_across_target_notes(
-    copy_definition: CopyDefinition,
-    copy_from_cards_query: str,
-    trigger_note: Note,
-    extra_state: dict,
-    select_card_by: Optional[SelectCardByType] = "Random",
-    sort_by_field: Optional[str] = None,
-    deck_id: Optional[int] = None,
-    variable_values_dict: Optional[dict] = None,
-    include_subdecks: bool = False,
-    select_card_count: Optional[str] = "1",
-    logger: Logger = Logger("error"),
-) -> list[Note]:
-    """
-    Get the target notes based on the search value and the query. These will either be
-    the source notes or the destination notes depending on the across mode direction
-
-    :param copy_from_cards_query: The query to find the cards to copy from.
-            Uses {{}} syntax for note fields and special values
-    :param trigger_note: The note to copy into, used to interpolate the query
-    :param select_card_by: How to select the card to copy from, if we get multiple results using the
-            the query
-    :param deck_id: Optional deck id of the note to copy into
-    :param extra_state: A dictionary to store cached values to re-use in subsequent calls
-    :param variable_values_dict: A dictionary of custom variable values to use in interpolating text
-    :param only_copy_into_decks: A comma separated whitelist of deck names. Limits the cards to copy
-        from to only those in the decks in the whitelist
-    :param include_subdecks: Whether to include subdecks of the whitelisted decks
-    :param select_card_count: How many cards to select from the query. Default is 1
-    :param logger: Logger to use for errors and debug messages.
-    :return: A list of notes to copy from
-    """
-    logger.debug(
-        f"get_across_target_notes: copy_from_cards_query='{copy_from_cards_query}',"
-        f" select_card_by='{select_card_by}', deck_id={deck_id},"
-        f" select_card_count='{select_card_count}', include_subdecks={include_subdecks}"
+    session = ExecutionSession(
+        logger=logger,
+        is_sync=bool(is_sync),
+        field_only=field_only,
+        deck_id=deck_id,
+        progress_updater=progress_updater,
+        file_cache=file_cache,
+        definition_lookup=lookup,
+        want_cancel=mw.progress.want_cancel,
+    )
+    return run_definition_for_trigger_note(
+        definition=staged_definition,
+        trigger_note=trigger_note,
+        session=session,
+        copied_into_notes=copied_into_notes,
+        copied_into_cards_dict=copied_into_cards_dict,
     )
 
-    if not select_card_by:
-        logger.error("Error in copy fields: Required value 'select_card_by' was missing.")
-        return []
 
-    if select_card_by not in SELECT_CARD_BY_VALUES:
-        logger.error(
-            f"""Error in copy fields: incorrect 'select_card_by' value '{select_card_by}'.
-            It must be one of {SELECT_CARD_BY_VALUES}""",
-        )
-        return []
-
-    if select_card_count:
+def make_definition_lookup(definitions: Sequence[dict]):
+    """Map guid -> format-2 definition, for `call_definition` stages to resolve against."""
+    by_guid: dict = {}
+    for definition in definitions:
         try:
-            select_card_count_int = int(select_card_count)
-            if select_card_count_int < 0:
-                raise ValueError
-        except ValueError:
-            # The value as given, not the parsed one: int() raises before the parsed one is
-            # bound, so reporting that would fail with UnboundLocalError inside the handler
-            # meant to report the problem.
-            logger.error(
-                "Error in copy fields: Incorrect 'select_card_count' value"
-                f" '{select_card_count}'. Value must be a positive integer or 0"
-            )
-            return []
-    else:
-        select_card_count_int = 1
-
-    interpolated_cards_query, invalid_fields = interpolate_from_text(
-        copy_from_cards_query,
-        source_note=trigger_note,
-        variable_values_dict=variable_values_dict,
-    )
-    logger.debug(
-        f"get_across_target_notes: interpolated_cards_query='{interpolated_cards_query}',"
-        f" invalid_fields={invalid_fields}"
-    )
-    if not interpolated_cards_query:
-        logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
-        return []
-    cards_query_id = base64.b64encode(f"cards{interpolated_cards_query}".encode()).decode()
-    try:
-        # A copy of the cached list: the selection below pops from card_ids, and mutating the
-        # cached entry would hand the next call a query result with cards missing from it.
-        card_ids = list(extra_state[cards_query_id])
-    except KeyError:
-        card_ids = mw.col.find_cards(interpolated_cards_query)
-        extra_state[cards_query_id] = list(card_ids)
-
-    if len(invalid_fields) > 0:
-        logger.error(
-            "Error in copy fields: Invalid fields in copy_from_cards_query:"
-            f" {', '.join(invalid_fields)}"
-        )
-
-    if len(card_ids) == 0:
-        if copy_definition.get("show_error_if_none_found", False):
-            logger.error(
-                "Error in copy fields: Did not find any cards with"
-                f" copy_from_cards_query='{interpolated_cards_query}'"
-            )
-        else:
-            logger.debug(f'No cards found with copy_from_cards_query="{interpolated_cards_query}",')
-        return []
-
-    has_sort_by_field = sort_by_field and sort_by_field != "-"
-
-    def sort_notes(notes: list[Note]):
-        if has_sort_by_field:
-            notes.sort(key=lambda n: int_sort_by_field_value(n, sort_by_field), reverse=True)
-        return notes
-
-    assert mw.col.db is not None
-    db = mw.col.db
-    # zero is a special value that means all cards
-    if select_card_count_int == 0:
-        distinct_note_ids = db.list(
-            f"SELECT DISTINCT nid FROM cards c WHERE c.id IN {ids2str(card_ids)}"
-        )
-        return sort_notes([mw.col.get_note(note_id) for note_id in distinct_note_ids])
-
-    # select a card or cards based on the select_card_by value
-    selected_notes = []
-    for i in range(select_card_count_int):
-        selected_card_id = None
-        # just iterate the list
-        if select_card_by == "None" and len(card_ids) > 0:
-            selected_card_id = card_ids.pop()
-            if selected_card_id:
-                selected_notes.append(mw.col.get_note(mw.col.get_card(selected_card_id).nid))
+            staged = as_format_2(definition)
+        except MigrationError:
             continue
-        elif len(card_ids) == 0:
-            break
-        # We don't make this key entirely unique as we want to cache the selected card for the same
-        # deck_id and from_note_type_id combination, so that getting a different field from the same
-        # card type will still return the same card
-
-        card_select_key = base64.b64encode(
-            f"selected_card{interpolated_cards_query}{select_card_by}{i}".encode()
-        ).decode()
-
-        if select_card_by == "Random":
-            # We don't want to cache this as it should in fact be different each time
-            selected_card_id = random.choice(card_ids)
-        elif select_card_by == "Least_reps":
-            # Loop through cards and find the one with the least reviews
-            # Check cache first
-            try:
-                selected_card_id = extra_state[card_select_key]
-            except KeyError:
-                selected_card_id = min(
-                    card_ids,
-                    key=lambda c: db.scalar(f"SELECT COUNT() FROM revlog WHERE cid = {c}"),
-                )
-                extra_state[card_select_key] = selected_card_id
-        if selected_card_id is None:
-            logger.error("Error in copy fields: could not select card")
-            break
-
-        # Remove selected card so it can't be picked again
-        card_ids = [c for c in card_ids if c != selected_card_id]
-        selected_note_id = mw.col.get_card(selected_card_id).nid
-
-        selected_note = mw.col.get_note(selected_note_id)
-        selected_notes.append(selected_note)
-
-        # If we've run out of cards, stop and return what we got
-        if len(card_ids) == 0:
-            break
-
-    return sort_notes(selected_notes)
+        by_guid[staged.get("guid", "")] = staged
+    return by_guid.get
 
 
-def get_field_values_from_notes(
-    copy_from_text: str,
-    notes: list[Note],
-    dest_note: Optional[Note],
-    multiple_note_types: bool = False,
-    variable_values_dict: Optional[dict] = None,
-    select_card_separator: Optional[str] = ", ",
-    use_code: bool = False,
-    logger: Logger = Logger("error"),
-    progress_updater: Optional[ProgressUpdater] = None,
-) -> str:
-    """
-    Get the value from the field in the selected notes gotten with interpolation.
-    :param copy_from_text: Text defining the content to copy. Contains text and field names and
-            special values enclosed in double curly braces that need to be replaced with the actual
-            values from the notes.
-    :param notes: The selected notes to get the value from. In the case of COPY_MODE_WITHIN_NOTE,
-            this will be a list with only one note
-    :param dest_note: The note to copy into, omitted in COPY_MODE_WITHIN_NOTE
-    :param multiple_note_types: Whether the copy is into multiple note types
-    :param variable_values_dict: A dictionary of custom variable values to use in interpolating text
-    :param select_card_separator: The separator to use when joining the values from the notes.
-        Irrelevant if there is only one note
-    :param use_code: When True, the interpolated text is executed as Python code and the return
-        value of that code is used as the result instead of the interpolated text itself.
-    :param logger: Logger to use for errors and debug messages, used for storing all messages
-        until the end of the whole operation to show them in a GUI element at the end
-    :param progress_updater: An object to update the progress bar with
-    :return: String with the values from the field in the notes
-    """
 
-    if copy_from_text is None:
-        logger.error(
-            "Error in copy fields: Required value 'copy_from_text' was missing.",
-        )
-        return ""
 
-    if select_card_separator is None:
-        select_card_separator = ", "
 
-    result_val = ""
 
-    multiple_source_notes = len(notes) > 1
-    for i, note in enumerate(notes):
-        if multiple_source_notes and variable_values_dict is not None:
-            # Handles DESTINATION_TO_SOURCES (many sources). Skipped for SOURCE_TO_DESTINATIONS
-            # (one source note) to preserve the outer loop's index.
-            variable_values_dict[QUERY_NOTE_INDEX] = i + 1
-        try:
-            # Return the interpolated value using the note
-            interpolated_value, invalid_fields = interpolate_from_text(
-                copy_from_text,
-                source_note=note,
-                destination_note=dest_note,
-                variable_values_dict=variable_values_dict,
-                multiple_note_types=multiple_note_types,
-            )
-        except ValueError as e:
-            logger.error(f"Error in text interpolation: {e}")
-            break
 
-        if len(invalid_fields) > 0:
-            logger.error(
-                "Error in copy fields: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
-            )
 
-        if use_code:
-            interpolated_value, code_error = execute_code_for_field(interpolated_value, note)
-            if code_error:
-                raise CopyFailedException(f"Code execution error:\n{code_error}")
 
-        if progress_updater is not None:
-            progress_updater.maybe_render_update()
-        if interpolated_value is not None:
-            result_val += f"{select_card_separator if i > 0 else ''}{interpolated_value}"
 
-    return result_val
+
+

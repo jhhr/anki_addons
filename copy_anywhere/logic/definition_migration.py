@@ -1,0 +1,634 @@
+"""Pure migration of format-1 copy definitions into the format-2 staged program.
+
+The one entry point is `migrate_definition_v1_to_v2()`. It is a pure function: it does not
+load or save config, never touches `mw`, does not mutate its input, and returns the same
+output every time it is handed the same definition. Every guid it has to invent is derived
+from the definition's own guid plus the role the new stage plays, so a definition migrated
+twice -- on two devices, or in a test and then in production -- gets the same stage guids.
+
+Running it on something that is already format 2 returns a copy unchanged, so callers may
+apply it to a whole config without tracking which definitions have been through it.
+
+The shape of the output is dictated by what the format-1 executor did, which is not always
+what a hand-written format-2 definition would look like:
+
+* Format 1 evaluated every variable against the trigger note alone, with no access to the
+  variables declared before it. Migrated variable stages carry `legacy_isolated_variables`
+  so the evaluator keeps doing that.
+* Format 1 expressions name note fields unqualified (`{{Word}}`) and the destination note's
+  fields with a `__Dest__` prefix. Migrated expressions carry `syntax_version: 1` and are
+  evaluated by the same interpolation the old executor used.
+* Destination-to-sources joined one value out of many source notes with
+  `select_card_separator`. Format 2 has no implicit list-to-text conversion, so the join is
+  synthesized here: a list, a loop that stores one value per source note, and a reduce.
+
+Intentional behaviour changes are listed in §11 of the design note: across-note selection is
+by note rather than by card (so a note with two matching cards is no longer selected twice),
+`Least_reps` becomes `random`, and file writes no longer translate newlines.
+"""
+
+from __future__ import annotations
+
+import uuid
+from copy import deepcopy
+from typing import Any, Callable, Optional
+
+from .definition_schema import (
+    CARD_TYPE_SEPARATOR,
+    FORMAT_VERSION,
+    MODE_CODE,
+    MODE_TEXT,
+    STAGE_CONDITION,
+    STAGE_EDIT_NOTE,
+    STAGE_FOR_EACH_NOTE,
+    STAGE_LIST_VARIABLE,
+    STAGE_NOTE_QUERY,
+    STAGE_REDUCE,
+    STAGE_STORE,
+    STAGE_VARIABLE,
+    STAGE_WRITE_FILE,
+    SYNTAX_VERSION_LEGACY,
+    TEXT,
+    CopyDefinitionV2,
+    Stage,
+    is_format_2,
+    value_expression,
+)
+
+COPY_MODE_WITHIN_NOTE = "Within note"
+COPY_MODE_ACROSS_NOTES = "Across notes"
+DIRECTION_DESTINATION_TO_SOURCES = "Destination to sources"
+DIRECTION_SOURCE_TO_DESTINATIONS = "Source to destinations"
+
+#: The binding a migrated definition uses for the notes its query found.
+LEGACY_QUERY_RESULT = "legacy_query_notes"
+#: The loop binding standing in for format 1's "the note currently being read or written".
+LEGACY_ITEM_BINDING = "note"
+
+DEFAULT_SELECT_CARD_SEPARATOR = ", "
+
+
+def _split_quoted_list(value: Optional[str]) -> list[str]:
+    """Format 1 stored name lists quoted and comma-joined; format 2 stores JSON arrays."""
+    if not value:
+        return []
+    return [name for name in value.strip('""').split('", "') if name]
+
+
+def _child_guid(definition_guid: str, role: str) -> str:
+    """A stage guid derived from the definition and the role the stage plays.
+
+    Deterministic on purpose: migrating the same definition twice has to produce the same
+    guids or the editor's focus, the trace correlation and every stored reference would move
+    underneath the user on the second run.
+    """
+    return f"{definition_guid}::{role}"
+
+
+def _legacy_expression(
+    text: str = "",
+    code: str = "",
+    use_code: bool = False,
+    process_chain: Any = None,
+    **extra: Any,
+) -> dict:
+    return value_expression(
+        text=text or "",
+        code=code or "",
+        mode=MODE_CODE if use_code else MODE_TEXT,
+        process_chain=list(process_chain or []),
+        syntax_version=SYNTAX_VERSION_LEGACY,
+        **extra,
+    )
+
+
+def _unfocus_trigger_fields(field_def: dict, modifies_other_notes: bool) -> list[str]:
+    """The editor fields that trigger this field write, resolved at migration time.
+
+    Format 1 worked this out on every unfocus from `copy_on_unfocus_trigger_field` plus the
+    mode; format 2 keeps the resolved list on the write so the executor does not have to know
+    about modes any more.
+    """
+    trigger_value = field_def.get("copy_on_unfocus_trigger_field", "") or ""
+    trigger_fields = _split_quoted_list(trigger_value)
+    if modifies_other_notes:
+        return trigger_fields
+    return trigger_fields or [field_def.get("copy_into_note_field", "")]
+
+
+def _modifies_other_notes(definition: dict) -> bool:
+    """Format 1's `definition_modifies_other_notes`, inlined so this module stays pure."""
+    targets_other_notes = (
+        definition.get("copy_mode") == COPY_MODE_ACROSS_NOTES
+        and definition.get("across_mode_direction") == DIRECTION_SOURCE_TO_DESTINATIONS
+    )
+    has_field_defs = len(definition.get("field_to_field_defs") or []) > 0
+    has_tag_edits = bool(
+        (definition.get("add_tags") or "").strip() or (definition.get("remove_tags") or "").strip()
+    )
+    return targets_other_notes and (has_field_defs or has_tag_edits)
+
+
+def _field_writes(definition: dict, modifies_other_notes: bool) -> list[dict]:
+    writes = []
+    for field_def in definition.get("field_to_field_defs") or []:
+        writes.append({
+            "guid": field_def.get("guid", ""),
+            "field": field_def.get("copy_into_note_field", ""),
+            "value": _legacy_expression(
+                text=field_def.get("copy_from_text", ""),
+                code=field_def.get("copy_as_code", ""),
+                use_code=field_def.get("use_code", False),
+                process_chain=field_def.get("process_chain"),
+            ),
+            "write_if": "empty" if field_def.get("copy_if_empty", False) else "always",
+            "unfocus_trigger_fields": _unfocus_trigger_fields(field_def, modifies_other_notes),
+            "unfocus_when_edit": bool(field_def.get("copy_on_unfocus_when_edit", False)),
+            "unfocus_when_add": bool(field_def.get("copy_on_unfocus_when_add", False)),
+        })
+    return writes
+
+
+def _tag_writes(definition: dict) -> dict:
+    return {
+        "add": _split_quoted_list(definition.get("add_tags")),
+        "remove": _split_quoted_list(definition.get("remove_tags")),
+    }
+
+
+def _card_actions(definition: dict) -> list[dict]:
+    # Card actions keep their card type selector: a note-level action still says which
+    # template it applies to (§11 step 6). `edit_card` is the stage without one.
+    return [deepcopy(action) for action in definition.get("card_actions") or []]
+
+
+def _selection(definition: dict, warnings: list[str]) -> dict:
+    """Map `select_card_by`/`select_card_count`/`sort_by_field` onto a format-2 selection."""
+    select_card_by = definition.get("select_card_by") or "None"
+    strategy = "first"
+    if select_card_by == "Random":
+        strategy = "random"
+    elif select_card_by == "Least_reps":
+        # Never used in practice and dropped from format 2; random is the closest surviving
+        # strategy, and naming the definition gives the user something to go on.
+        strategy = "random"
+        warnings.append(
+            f"Definition '{definition.get('definition_name', '')}': select_card_by"
+            " 'Least_reps' is not supported in format 2 and was migrated to 'random'"
+        )
+
+    selection: dict = {
+        "strategy": strategy,
+        "count": None,
+        "sort_field": None,
+        "sort_order": "descending",
+    }
+
+    raw_count = definition.get("select_card_count")
+    if raw_count is None or raw_count == "":
+        selection["count"] = 1
+    else:
+        try:
+            count = int(raw_count)
+            if count < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            # Format 1 logged and selected nothing at all; the stage carries the complaint so
+            # the executor can log the same thing with the stage attached.
+            selection["selection_error"] = (
+                f"Error in copy fields: Incorrect 'select_card_count' value '{raw_count}'."
+                " Value must be a positive integer or 0"
+            )
+            selection["strategy"] = "all"
+            count = 0
+        if count == 0:
+            # Zero meant "every match" in format 1.
+            selection["strategy"] = "all"
+            selection["count"] = None
+        else:
+            selection["count"] = count
+
+    if selection["strategy"] == "all":
+        selection["count"] = None
+
+    sort_by_field = definition.get("sort_by_field")
+    if sort_by_field and sort_by_field != "-":
+        selection["sort_field"] = sort_by_field
+        # Format 1 sorted on int(value), falling back to 0, descending.
+        selection["sort_numeric"] = True
+
+    return selection
+
+
+def _note_query_stage(definition: dict, definition_guid: str, warnings: list[str]) -> Stage:
+    run_also_if_no_sources_found = bool(definition.get("run_also_if_no_sources_found", False))
+    is_destination_to_sources = (
+        definition.get("across_mode_direction") == DIRECTION_DESTINATION_TO_SOURCES
+    )
+    stage: Stage = {
+        "guid": _child_guid(definition_guid, "query"),
+        "type": STAGE_NOTE_QUERY,
+        "name": "Query notes",
+        "enabled": True,
+        "result": LEGACY_QUERY_RESULT,
+        "query": _legacy_expression(text=definition.get("copy_from_cards_query") or ""),
+        "selection": _selection(definition, warnings),
+        # Only Destination-to-sources had a source list that could be empty; there, format 1
+        # stopped before writing unless `run_also_if_no_sources_found` said otherwise.
+        "if_empty": (
+            "continue"
+            if (run_also_if_no_sources_found or not is_destination_to_sources)
+            else "skip_block"
+        ),
+        "error_if_empty": bool(definition.get("show_error_if_none_found", False)),
+        # Format 1's progress label counted the query result as "sources" only when the
+        # trigger note was the destination.
+        "counts_as_sources": is_destination_to_sources,
+    }
+    return stage
+
+
+def _write_file_stages(definition: dict, source_binding: Optional[str]) -> list[Stage]:
+    stages: list[Stage] = []
+    for file_def in definition.get("field_to_file_defs") or []:
+        use_code = bool(file_def.get("use_code", False))
+        stage: Stage = {
+            "guid": file_def.get("guid", ""),
+            "type": STAGE_WRITE_FILE,
+            "name": file_def.get("copy_into_filename", "") or "Write file",
+            "enabled": True,
+            "filename": _legacy_expression(text=file_def.get("copy_into_filename", "")),
+            "content": _legacy_expression(
+                text=file_def.get("copy_from_text", ""),
+                code=file_def.get("copy_as_code", ""),
+                use_code=use_code,
+                process_chain=file_def.get("process_chain"),
+            ),
+            # §11 step 6: migrated file writes overwrite. Format 1's `copy_if_empty` skipped
+            # an existing file rather than failing on it, which `overwrite: false` does not
+            # mean, so it is carried as its own flag.
+            "overwrite": True,
+            "skip_if_exists": bool(file_def.get("copy_if_empty", False)),
+        }
+        if source_binding:
+            stage["legacy_source"] = {"binding": source_binding}
+        stages.append(stage)
+    return stages
+
+
+def _edit_note_stage(
+    definition: dict,
+    guid: str,
+    target_binding: str,
+    source_binding: Optional[str],
+    field_writes: list[dict],
+) -> Stage:
+    stage: Stage = {
+        "guid": guid,
+        "type": STAGE_EDIT_NOTE,
+        "name": "Edit note",
+        "enabled": True,
+        "target": {"binding": target_binding},
+        "fields": field_writes,
+        "tags": _tag_writes(definition),
+        "card_actions": _card_actions(definition),
+        "read_semantics": "stage_snapshot",
+    }
+    if source_binding:
+        # Format 1 read the right-hand sides from a different note than the one it wrote.
+        stage["legacy_source"] = {"binding": source_binding}
+    return stage
+
+
+def _join_stages(
+    definition_guid: str,
+    index: int,
+    expression: dict,
+    separator: str,
+) -> tuple[list[Stage], str]:
+    """The list/loop/store/reduce that stands in for format 1's implicit many-notes join.
+
+    Returns the stages and the name of the result holding the joined text.
+    """
+    list_name = f"legacy_join_{index}"
+    joined_name = f"legacy_joined_{index}"
+    stages: list[Stage] = [
+        {
+            "guid": _child_guid(definition_guid, f"join-list-{index}"),
+            "type": STAGE_LIST_VARIABLE,
+            "name": f"Values for join {index}",
+            "enabled": True,
+            "result": list_name,
+            "item_type": TEXT,
+        },
+        {
+            "guid": _child_guid(definition_guid, f"join-loop-{index}"),
+            "type": STAGE_FOR_EACH_NOTE,
+            "name": "For each found note",
+            "enabled": True,
+            "input": {"binding": LEGACY_QUERY_RESULT},
+            "item_binding": LEGACY_ITEM_BINDING,
+            "body": [
+                {
+                    "guid": _child_guid(definition_guid, f"join-store-{index}"),
+                    "type": STAGE_STORE,
+                    "name": "Collect value",
+                    "enabled": True,
+                    "target": {"kind": "list", "binding": list_name},
+                    "value": expression,
+                    # The value is read from the loop note and the trigger note stands in as
+                    # the destination, exactly as format 1's `__Dest__` prefix did.
+                    "legacy_source": {"binding": LEGACY_ITEM_BINDING},
+                    "legacy_destination": {"binding": "trigger"},
+                }
+            ],
+        },
+        {
+            "guid": _child_guid(definition_guid, f"join-reduce-{index}"),
+            "type": STAGE_REDUCE,
+            "name": "Join values",
+            "enabled": True,
+            "input": {"binding": list_name},
+            "result": joined_name,
+            "operation": "join",
+            "separator": separator,
+            "initial": value_expression(text=""),
+            "item_binding": "item",
+            "accumulator_binding": "accumulator",
+            "value": value_expression(text=""),
+        },
+    ]
+    return stages, joined_name
+
+
+def _within_note_stages(definition: dict, definition_guid: str) -> list[Stage]:
+    stages: list[Stage] = []
+    field_writes = _field_writes(definition, modifies_other_notes=False)
+    stages.append(
+        _edit_note_stage(
+            definition,
+            guid=_child_guid(definition_guid, "edit-trigger"),
+            target_binding="trigger",
+            # Within note reads and writes the same note, so the stage's own entry snapshot
+            # is the source: that is what made swapping two fields work in format 1.
+            source_binding=None,
+            field_writes=field_writes,
+        )
+    )
+    stages.extend(_write_file_stages(definition, source_binding=None))
+    return stages
+
+
+def _source_to_destinations_stages(
+    definition: dict, definition_guid: str, warnings: list[str]
+) -> list[Stage]:
+    body: list[Stage] = [
+        _edit_note_stage(
+            definition,
+            guid=_child_guid(definition_guid, "edit-each"),
+            target_binding=LEGACY_ITEM_BINDING,
+            source_binding="trigger",
+            field_writes=_field_writes(definition, modifies_other_notes=True),
+        )
+    ]
+    body.extend(_write_file_stages(definition, source_binding="trigger"))
+    return [
+        _note_query_stage(definition, definition_guid, warnings),
+        {
+            "guid": _child_guid(definition_guid, "loop"),
+            "type": STAGE_FOR_EACH_NOTE,
+            "name": "For each found note",
+            "enabled": True,
+            "input": {"binding": LEGACY_QUERY_RESULT},
+            "item_binding": LEGACY_ITEM_BINDING,
+            "body": body,
+        },
+    ]
+
+
+def _destination_to_sources_stages(
+    definition: dict, definition_guid: str, warnings: list[str]
+) -> list[Stage]:
+    separator = definition.get("select_card_separator")
+    if separator is None:
+        separator = DEFAULT_SELECT_CARD_SEPARATOR
+    stages: list[Stage] = [_note_query_stage(definition, definition_guid, warnings)]
+
+    join_index = 0
+    field_writes = _field_writes(definition, modifies_other_notes=False)
+    for write in field_writes:
+        join_index += 1
+        # The process chain ran once, on the joined text, so it stays on the write rather
+        # than moving into the loop body that produces one value per source note.
+        process_chain = list(write["value"].get("process_chain") or [])
+        per_note_value = dict(write["value"], process_chain=[])
+        join_stages, joined_name = _join_stages(
+            definition_guid, join_index, per_note_value, separator
+        )
+        stages.extend(join_stages)
+        write["value"] = value_expression(
+            text="{{" + joined_name + "}}", process_chain=process_chain
+        )
+
+    stages.append(
+        _edit_note_stage(
+            definition,
+            guid=_child_guid(definition_guid, "edit-trigger"),
+            target_binding="trigger",
+            source_binding=None,
+            field_writes=field_writes,
+        )
+    )
+
+    for file_stage in _write_file_stages(definition, source_binding=None):
+        content = file_stage["content"]
+        if content.get("mode") == MODE_CODE:
+            # The code path ran once per source note and wrote every (filename, content)
+            # pair it returned, so it becomes a write inside a loop over those notes.
+            stages.append({
+                "guid": _child_guid(definition_guid, f"file-loop-{file_stage['guid']}"),
+                "type": STAGE_FOR_EACH_NOTE,
+                "name": "For each found note",
+                "enabled": True,
+                "input": {"binding": LEGACY_QUERY_RESULT},
+                "item_binding": LEGACY_ITEM_BINDING,
+                "body": [dict(file_stage, legacy_source={"binding": LEGACY_ITEM_BINDING})],
+            })
+            continue
+        join_index += 1
+        process_chain = list(content.get("process_chain") or [])
+        join_stages, joined_name = _join_stages(
+            definition_guid, join_index, dict(content, process_chain=[]), separator
+        )
+        stages.extend(join_stages)
+        file_stage["content"] = value_expression(
+            text="{{" + joined_name + "}}", process_chain=process_chain
+        )
+        stages.append(file_stage)
+
+    return stages
+
+
+def _triggers(definition: dict) -> dict:
+    edit_fields: list[str] = []
+    add_fields: list[str] = []
+    modifies_other_notes = _modifies_other_notes(definition)
+    for field_def in definition.get("field_to_field_defs") or []:
+        fields = _unfocus_trigger_fields(field_def, modifies_other_notes)
+        if field_def.get("copy_on_unfocus_when_edit", False):
+            edit_fields.extend(name for name in fields if name and name not in edit_fields)
+        if field_def.get("copy_on_unfocus_when_add", False):
+            add_fields.extend(name for name in fields if name and name not in add_fields)
+    return {
+        "note_types": _split_quoted_list(definition.get("copy_into_note_types")),
+        "deck_names": (
+            []
+            if definition.get("only_copy_into_decks") in (None, "", "-")
+            else _split_quoted_list(definition.get("only_copy_into_decks"))
+        ),
+        "include_subdecks": bool(definition.get("include_subdecks", False)),
+        "on_sync": bool(definition.get("copy_on_sync", False)),
+        "on_add": bool(definition.get("copy_on_add", False)),
+        "on_review": bool(definition.get("copy_on_review", False)),
+        "on_unfocus": {"edit_fields": edit_fields, "add_fields": add_fields},
+    }
+
+
+class MigrationError(ValueError):
+    """A format-1 definition that cannot be expressed as stages at all.
+
+    The two cases are a missing copy mode and a missing or unrecognised across-note
+    direction: format 1 refused to run those too, with these same messages.
+    """
+
+
+def migrate_definition_v1_to_v2(
+    definition: dict,
+    new_guid: Callable[[], str] = lambda: str(uuid.uuid4()),
+) -> CopyDefinitionV2:
+    """Convert one format-1 definition into its format-2 equivalent.
+
+    :param definition: the stored format-1 definition. It is not mutated.
+    :param new_guid: injected so tests get deterministic guids. Only used when the input
+        definition has no guid of its own; every synthesized stage guid is derived from the
+        definition guid instead.
+    :raises MigrationError: when the definition names no copy mode, or names an across-note
+        direction that format 1 would also have refused.
+    """
+    if is_format_2(definition):
+        return deepcopy(definition)  # type: ignore[return-value]
+
+    definition = deepcopy(definition)
+    definition_guid = definition.get("guid") or new_guid()
+    copy_mode = definition.get("copy_mode")
+    across_mode_direction = definition.get("across_mode_direction")
+    warnings: list[str] = []
+
+    if copy_mode == COPY_MODE_WITHIN_NOTE:
+        body = _within_note_stages(definition, definition_guid)
+    elif copy_mode == COPY_MODE_ACROSS_NOTES:
+        if across_mode_direction == DIRECTION_SOURCE_TO_DESTINATIONS:
+            body = _source_to_destinations_stages(definition, definition_guid, warnings)
+        elif across_mode_direction == DIRECTION_DESTINATION_TO_SOURCES:
+            body = _destination_to_sources_stages(definition, definition_guid, warnings)
+        else:
+            raise MigrationError("Error in copy fields: missing across mode direction value")
+    else:
+        raise MigrationError("Error in copy fields: missing copy mode value")
+
+    # Variables come first and stay in their stored order: format 1 computed them all before
+    # anything else, including before the condition.
+    stages: list[Stage] = []
+    for variable_def in definition.get("field_to_variable_defs") or []:
+        stages.append({
+            "guid": variable_def.get("guid", ""),
+            "type": STAGE_VARIABLE,
+            "name": variable_def.get("copy_into_variable", ""),
+            "enabled": True,
+            "result": variable_def.get("copy_into_variable", ""),
+            "value": _legacy_expression(
+                text=variable_def.get("copy_from_text", ""),
+                code=variable_def.get("copy_as_code", ""),
+                use_code=variable_def.get("use_code", False),
+                process_chain=variable_def.get("process_chain"),
+                # Format 1 evaluated every variable against the trigger note alone; none of
+                # them could see the ones declared before it.
+                legacy_isolated_variables=True,
+            ),
+        })
+
+    condition_query = definition.get("copy_condition_query")
+    if condition_query:
+        stages.append({
+            "guid": _child_guid(definition_guid, "condition"),
+            "type": STAGE_CONDITION,
+            "name": "Copy condition",
+            "enabled": True,
+            "predicate": _legacy_expression(text=condition_query),
+            # The predicate is an Anki search scoped to the trigger note, which is how
+            # format 1 ran it: `f"{query} nid:{trigger.id}"`.
+            "predicate_kind": "note_query",
+            "predicate_target": {"binding": "trigger"},
+            "only_on_sync": bool(definition.get("condition_only_on_sync", False)),
+            "then": body,
+            "else": [],
+        })
+    else:
+        stages.extend(body)
+
+    migrated: CopyDefinitionV2 = {
+        "guid": definition_guid,
+        "format_version": FORMAT_VERSION,
+        "migrated_from_format": 1,
+        "definition_name": definition.get("definition_name", ""),
+        "triggers": _triggers(definition),
+        "stages": stages,
+        "exports": [],
+        # Derived, never authored. `copy_fields` fills this in from the flow analyser; the
+        # migrator leaves it out rather than writing a guess that would be trusted.
+        "legacy": {
+            # Format 1 counted the trigger note itself as the one source in every mode but
+            # Destination-to-sources, where the query result was the source list.
+            "trigger_is_source": across_mode_direction != DIRECTION_DESTINATION_TO_SOURCES,
+            "select_card_separator": definition.get("select_card_separator"),
+            "query_note_index_default": (
+                1 if copy_mode == COPY_MODE_WITHIN_NOTE else None
+            ),
+        },
+    }  # type: ignore[typeddict-unknown-key]
+    if warnings:
+        migrated["migration_warnings"] = warnings  # type: ignore[typeddict-unknown-key]
+    return migrated
+
+
+def migrate_definitions(
+    definitions: list[dict],
+    new_guid: Callable[[], str] = lambda: str(uuid.uuid4()),
+) -> tuple[list[CopyDefinitionV2], list[str]]:
+    """Migrate a whole config's worth of definitions, collecting every complaint.
+
+    A definition that cannot be migrated is reported and left out, so one broken definition
+    does not stop the rest of the config from being usable.
+    """
+    migrated: list[CopyDefinitionV2] = []
+    problems: list[str] = []
+    for definition in definitions or []:
+        try:
+            result = migrate_definition_v1_to_v2(definition, new_guid=new_guid)
+        except MigrationError as error:
+            problems.append(f"'{definition.get('definition_name', '')}': {error}")
+            continue
+        problems.extend(result.get("migration_warnings", []))  # type: ignore[arg-type]
+        migrated.append(result)
+    return migrated, problems
+
+
+__all__ = [
+    "CARD_TYPE_SEPARATOR",
+    "DEFAULT_SELECT_CARD_SEPARATOR",
+    "LEGACY_ITEM_BINDING",
+    "LEGACY_QUERY_RESULT",
+    "MigrationError",
+    "migrate_definition_v1_to_v2",
+    "migrate_definitions",
+]
