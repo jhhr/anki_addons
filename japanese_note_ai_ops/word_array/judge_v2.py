@@ -55,7 +55,12 @@ POS_GROUPS = {
 }
 OTHER_GROUP = "other"
 # rule_group() splits these further by the word's place in the array
-SPLIT_GROUPS = {"noun": ("noun-main", "noun-sub"), "verb": ("verb", "prefix-verb", "suffix-verb")}
+SPLIT_GROUPS = {
+    "noun": ("noun-main", "noun-sub", "noun-phrase"),
+    "verb": ("verb", "prefix-verb", "suffix-verb"),
+    "expression": ("expression", "verb-expression", "collocation"),
+}
+FUNCTION_POS = AUTO_DONT_MATCH_POS | {"auxiliary"}
 
 INTRO = """You decide whether one word of a Japanese sentence gets a vocabulary note: a flashcard for learning what this word means in this sentence.
 
@@ -73,13 +78,18 @@ POS_RULES = {
 - dontmatch a pronoun that is only a pronoun plus a plural suffix (彼等, 私達, 奴等, 此奴等): the pronoun keeps the note.
 - match a proper noun as a whole, and a four-kanji idiom (yojijukugo).
 - match a number standing alone (百, 二十) and a number plus a counter (三つ, 一人, 二人); dontmatch a date or length of time (七月, 一週間, 一年間, 一ヶ月).""",
+    "noun-phrase": """Rules for nouns, pronouns, proper nouns and numbers that are a component of a phrase or word made with a particle ("Part of" names it; that phrase is judged separately):
+- match a noun of an idiom or set phrase: 羽目 in 羽目を外す, 根 in 根に持つ, 迷惑 in 迷惑を掛ける, 気 in 気に為る, 意表 in 意表を突く, 希望 and 光 in 希望の光. The phrase and its nouns can all have notes.
+- match a noun where the phrase is only this noun plus the particle it happens to take here, its meaning unchanged: 其れ in 其れは or 其れ迄, 此れ in 此れで or 此れ程, 其処 in 其処迄, 誰 in 誰も, 自分 in 自分で, 物 in 物を, 一度 in 一度も, 何 in 何を.
+- match the formal noun 事 in a grammar pattern: 事 in 事が出来る, 事に成る, 事が有る.
+- dontmatch a noun inside a word of its own made of a noun plus a particle, most often an adverb, pronoun or conjunction: 本当 in 本当に, 絶対 in 絶対に, 主 in 主に, 何時 in 何時も, 誰 in 誰か or 誰でも, 何 in 何か, 癖 in 癖に, 今 in 今迄, 丸 in 丸で, 序で in 序でに, 其れ in 其れから. That word keeps the note. Tell this from the case above by meaning: 本当に (really) and 何時も (always) are words of their own, 其れは is only それ + は.
+- dontmatch the single kanji 此, 其 or 彼 as the first piece of a demonstrative like 其の, 此の: the whole word keeps the note.""",
     "noun-sub": """Rules for nouns, pronouns, proper nouns and numbers that are a component of a larger word ("Part of" names it; that word is judged separately):
 - dontmatch a component of a compound whose meaning can't be built from its components' meanings: 手 and 紙 in 手紙, and the components of 名前, 花火, 電話, 学校, 物語, 電車, 会社, 世界, 時間, 大学, 文化. The compound keeps the note. Most two-kanji Sino-Japanese words are like this.
 - match a component whose own meaning still shows in the compound: 母 and 親 in 母親, 足 and 音 in 足音, 山 and 道 in 山道.
 - match the word inside a word plus a suffix, however transparent: 芸術 in 芸術家, 科学 in 科学者, 週 in 先週, 戦 in 戦後. But dontmatch a piece that is no word by itself, like 硬 in 硬化.
 - match the word inside 御 plus a word (寺 in 御寺, 話 in 御話), and the pronoun inside a pronoun plus a plural suffix (私 in 私達, 彼 in 彼等).
 - dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 此等, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it also inside a larger word.
-- match a noun that is a component of an idiom or expression: 羽目 in 羽目を外す, 根 in 根に持つ, 物 in 物か, 為 in 為に.
 - dontmatch the components of a proper noun and of a four-kanji idiom (yojijukugo): the whole keeps the note.
 - dontmatch a component that is not a word of its own in this sentence, like 合 in 場合 or 供 in 子供.
 - dontmatch a number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月); match a date or length of time only as a component of an expression, like 一日 in 一日中.""",
@@ -116,8 +126,16 @@ POS_RULES = {
     "expression": """Rules for expressions (multi-word dictionary entries):
 - match a fixed expression whose meaning is more than its words, or that is learned as a unit: 鳥肌が立つ, 間も無く, に就いて, かも知れない.
 - dontmatch a grammar pattern built from a word the sentence also lists plus particles, the copula or an auxiliary verb: ように, のように, ような, ようになる, ことになる, ことができる, ほうがいい, と言う, じゃない, そうだ, みたいだ, ために, に関して, を通して, において. Its words keep their notes.
-- dontmatch an expression that means no more than its words put together: 連れて行く is simply 連れる + 行く, 如何遣って is 如何 + 遣る, 其れから is 其れ + から. Its words keep their notes.
+- dontmatch an expression that means no more than its words put together: 如何遣って is 如何 + 遣る. Its words keep their notes.
 - dontmatch a word plus the particle or copula it happens to take here: 此れは, 上の, 無しに, 今日は, 誰も, 一度も. Its words keep their notes.""",
+    "verb-expression": """Rules for expressions made of verbs, most often a verb in its て-form and a verb after it ("Made of" lists them; each is judged separately):
+- match one with a meaning of its own, more than its verbs put together, that is learned as a unit: 遣って来る (turn up), 出て来る (appear), 遣って見る (give it a try), 為れば為る程 (the more ... the more).
+- dontmatch a verb plus an auxiliary verb that means no more than the two put together: 連れて行く is simply 連れる + 行く, and so are 見に行く, 見て貰う, 出て行く. Its verbs keep their notes.""",
+    "collocation": """Rules for phrases made of a noun, a particle and a verb ("Made of" lists them; each is judged separately):
+- match an idiom whose meaning can't be read off its words: 意表を突く, 心を打つ, 羽目を外す, 虫唾が走る, 根に持つ, 気に為る, 気が為る.
+- match a set phrase, the usual way to say it, learned as a unit even though its meaning is easy to guess: 迷惑を掛ける, 汗を掻く, 時間を稼ぐ, 頭を下げる, 腰を掛ける.
+- dontmatch a free combination of a noun and a verb that means no more than its words: 命を奪う, 空を飛ぶ, 皮を剥ぐ, 髪を梳かす. Its words keep their notes.
+- dontmatch a grammar pattern of a formal noun, a particle and a verb: 事が出来る, 事が有る, 事に成る. Its words keep their notes.""",
     "affix": """Rules for prefixes, suffixes and counters:
 - match a prefix, suffix or counter that adds a meaning of its own: 御 (お, ご), さん, 達, 等, 性, 本, 回, 年.
 - dontmatch the counter つ (三つ) and a prefix like 第 or 大 that only marks an order or size.
@@ -151,17 +169,38 @@ def pos_group(part_of_speech: str) -> str:
 
 def rule_group(elem: list, parents: list[list]) -> str:
     """The `POS_RULES` key for `elem`: its part of speech's group, split further where the array
-    tells the cases apart. Nouns are `noun-main` at the top level and `noun-sub` inside another
+    tells the cases apart. Nouns are `noun-main` at the top level, `noun-phrase` inside a word
+    made with a particle, copula or auxiliary (本当に, 羽目を外す) and `noun-sub` inside any other
     word; a verb that is one of exactly two verb sub-words of a verb is `prefix-verb` or
-    `suffix-verb` by its place (買い切る: 買う, 切る)."""
+    `suffix-verb` by its place (買い切る: 買う, 切る); an expression whose content words are all
+    verbs is `verb-expression` (遣って来る), one of a noun, a particle and a verb `collocation`."""
     group = pos_group(elem[1])
     if group == "noun":
-        return "noun-sub" if parents else "noun-main"
+        if not parents:
+            return "noun-main"
+        parent_subs = _subs(parents[-1])
+        return "noun-phrase" if any(s[1] in FUNCTION_POS for s in parent_subs) else "noun-sub"
     if group == "verb" and parents and parents[-1][1] == "verb":
-        subs = [s for s in parents[-1][5] if len(s) > 1]
+        subs = _subs(parents[-1])
         if len(subs) == 2 and all(s[1] == "verb" for s in subs):
             return "prefix-verb" if subs[0] is elem else "suffix-verb"
+    if group == "expression":
+        subs = _subs(elem)
+        content = [s for s in subs if s[1] not in FUNCTION_POS]
+        if len(content) >= 2 and all(s[1] == "verb" for s in content):
+            return "verb-expression"
+        if (
+            len(content) >= 2
+            and len(content) < len(subs)
+            and pos_group(content[0][1]) == "noun"
+            and content[-1][1] == "verb"
+        ):
+            return "collocation"
     return group
+
+
+def _subs(elem: list) -> list[list]:
+    return [s for s in elem[5] if len(s) > 1]
 
 
 def _describe(elem: list) -> str:

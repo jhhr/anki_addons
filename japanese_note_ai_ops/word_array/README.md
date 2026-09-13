@@ -145,8 +145,10 @@ The judge (`judge_v2.py`, op `async_api_ops/word_matching_judgev2.py`, one brows
 mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
 `word_matching_judge_model`) asks about each word alone: its prompt has the rules for its group
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
-cases apart - nouns into `noun-main` at the top level and `noun-sub` inside another word, and
-either verb of a two-verb compound verb into `prefix-verb` / `suffix-verb`), the sentence with it in `<b>` (`match_flags.iter_highlighted()`, built
+cases apart - nouns into `noun-main` at the top level, `noun-phrase` inside a word made with a
+particle (本当に, 羽目を外す) and `noun-sub` inside any other word, either verb of a two-verb
+compound verb into `prefix-verb` / `suffix-verb`, and expressions of verbs only into
+`verb-expression`, of noun + particle + verb into `collocation`), the sentence with it in `<b>` (`match_flags.iter_highlighted()`, built
 from the array's own raw texts, so the note's sentence isn't needed), and the words it is part of
 or made of, and returns `{"reason", "decision"}`. Particles and the copula are judged `dontmatch`
 without a request. A note's requests run in parallel through `bulk_nested_notes_op`; the array is

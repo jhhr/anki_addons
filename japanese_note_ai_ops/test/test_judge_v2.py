@@ -74,6 +74,27 @@ class PlanTests(unittest.TestCase):
             },
         )
 
+    def test_nouns_in_particle_words_and_expressions_split_by_their_words(self):
+        arr = [
+            word("本当に", "adverb", subs=[word("本当"), word("に", "particle")]),
+            word("遣って来る", "expression", subs=[word("遣る", "verb"), word("来る", "verb")]),
+            word(
+                "気に為る",
+                "expression",
+                subs=[word("気"), word("に", "particle"), word("為る", "verb")],
+            ),
+            word("様に", "expression", subs=[word("様", "na-adjective"), word("に", "particle")]),
+            word("大きな顔", "expression", subs=[word("大きい", "adjective"), word("顔")]),
+        ]
+        groups = {a.elem[2]: a.group for a in judge_v2.plan_judgements(arr).asks}
+        self.assertEqual(groups["本当"], "noun-phrase")
+        self.assertEqual(groups["顔"], "noun-sub")
+        self.assertEqual(groups["遣って来る"], "verb-expression")
+        self.assertEqual(groups["気に為る"], "collocation")
+        self.assertEqual(groups["気"], "noun-phrase")
+        self.assertEqual(groups["様に"], "expression")
+        self.assertEqual(groups["大きな顔"], "expression")
+
     def test_every_group_has_rules(self):
         groups = set(judge_v2.POS_GROUPS.values()) | {judge_v2.OTHER_GROUP}
         for group, split in judge_v2.SPLIT_GROUPS.items():
