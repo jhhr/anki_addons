@@ -3018,12 +3018,19 @@ def match_single_word_to_notes_from_selected(
                 continue
             target_word, target_reading, word_list_field = note_word_info
 
+            # Bound before the `if`, not inside it. `word_list_field` can resolve to "" or to
+            # a field this notetype does not have - a misconfigured `word_list_field` does
+            # both - and it is read unconditionally below: on the first such note that raised
+            # NameError out of bulk_op, and on a later one it silently re-read and
+            # deduplicated the *previous* note's word lists.
+            word_list_dict: dict[str, Any] = {}
             if word_list_field in cur_note:
-                word_list_dict = decode_word_list_field(
-                    cur_note, word_list_field, notes_to_update_dict, log_prefix
+                word_list_dict = (
+                    decode_word_list_field(
+                        cur_note, word_list_field, notes_to_update_dict, log_prefix
+                    )
+                    or {}
                 )
-                if not word_list_dict:
-                    word_list_dict = {}
 
             single_word_and_reading: Optional[RawOneMeaningWordType] = (
                 target_word,
