@@ -19,9 +19,9 @@ sub-words' own readings and records them with set_piece_reading.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from ..kana_conv import to_hiragana
 from ..shared.jp_text_processing.all_types.main_types import WithTagsDef
@@ -51,6 +51,11 @@ class Seg:
     natural: str = ""  # what this segment contributes to the tokenizer text
     idx: int = 0  # position in TextMap.segs
     nat_start: int = 0  # natural index this segment's text starts at
+    reads_kanji: bool = False  # a <k> group given to the tokenizer as its kanji (read_as_kanji)
+
+    @property
+    def natural_is_reading(self) -> bool:
+        return self.in_k and not self.reads_kanji
 
     @property
     def lead(self) -> str:
@@ -156,7 +161,7 @@ class TextMap:
         # Natural offsets run over the reading in <k> groups, over the base otherwise
         bounds = [0]
         for kanji, reading, _ in units:
-            bounds.append(bounds[-1] + len(reading if seg.in_k else kanji))
+            bounds.append(bounds[-1] + len(reading if seg.natural_is_reading else kanji))
         if a not in bounds or b not in bounds:
             return None
         return units[bounds.index(a) : bounds.index(b)]
@@ -200,7 +205,7 @@ class TextMap:
 
     def _base_chars_before(self, seg: Seg, nat_off: int) -> int:
         """How many base chars correspond to the first nat_off natural chars of a furi seg."""
-        if not seg.in_k:
+        if not seg.natural_is_reading:
             return nat_off  # natural == base
         units = reading_units(seg.base, seg.reading)
         if units is not None:
@@ -222,7 +227,7 @@ class TextMap:
         while i < end:
             si, off = self.nat_pos[i]
             seg = self.segs[si]
-            if seg.kind == "furi" and not seg.in_k:
+            if seg.kind == "furi" and not seg.natural_is_reading:
                 stop = min(end - i + off, len(seg.natural))
                 part = self.piece_reading(seg, off, stop)
                 out += part if part is not None else seg.natural[off:stop]
@@ -235,7 +240,21 @@ class TextMap:
     def written_form(self, start: int, end: int) -> str:
         """The written (kanjified) surface of a natural span, tags and furigana stripped."""
         if self.k_as_kana:
-            return self.natural[start:end]  # <k> groups contribute their reading there
+            # <k> groups contribute their reading there, but for those read as kanji
+            out = ""
+            i = start
+            while i < end:
+                si, off = self.nat_pos[i]
+                seg = self.segs[si]
+                if not seg.reads_kanji:
+                    out += self.natural[i]
+                    i += 1
+                    continue
+                stop = min(end - i + off, len(seg.natural))
+                part = self.piece_reading(seg, off, stop)
+                out += part if part is not None else seg.natural[off:stop]
+                i += stop - off
+            return out
         rs, re_ = self.raw_span(start, end)
         text = FURI_BRACKET_RE.sub("", TAG_RE.sub("", self.raw[rs:re_]))
         return text.replace(" ", "")
@@ -314,7 +333,18 @@ def build(
                 rest += nxt.natural
             if hiragana_reading(seg.natural, rest):
                 seg.natural = to_hiragana(seg.natural)
+    return _assemble(raw, segs)
 
+
+def read_as_kanji(tm: TextMap, seg_indices: Iterable[int]) -> TextMap:
+    """A new text map with these <k> groups given to the tokenizer as their kanji."""
+    segs = [replace(seg) for seg in tm.segs]
+    for i in seg_indices:
+        segs[i].natural, segs[i].reads_kanji = segs[i].base, True
+    return _assemble(tm.raw, segs)
+
+
+def _assemble(raw: str, segs: list[Seg]) -> TextMap:
     natural = ""
     nat_pos: list[tuple[int, int]] = []
     for i, seg in enumerate(segs):

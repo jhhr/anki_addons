@@ -14,7 +14,6 @@ from migrate_fit import CORPORA, read_export
 generator = load("generator")
 names = load("names")
 migrate = load("migrate")
-text_map = load("text_map")
 jmdict = load("jmdict_index")
 html_stripping = load_root("html_stripping")
 
@@ -37,8 +36,7 @@ def main() -> int:
         sentence = html_stripping.strip_context_sentences(raw)
         if not sentence.strip():
             continue
-        tm = text_map.build(sentence, generator.reads_better_in_hiragana)
-        corpus.append((tm.natural, generator.tokenize(tm.natural), tm.surface_reading))
+        corpus.append(generator.name_corpus_row(sentence))
         for entry in migrate.read_word_lists(word_lists)[0]:
             if entry.word:
                 categories[entry.word].add(entry.category)

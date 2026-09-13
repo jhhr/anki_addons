@@ -400,6 +400,24 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("<k> 本当[ホント]</k>に")
         self.assertEqual(find_word(arr, "本当")[:4], [" 本当[ホント]", "noun", "本当", "ほんと"])
 
+    def test_k_reading_the_tokenizer_cuts_before_its_okurigana_goes_in_as_kanji(self):
+        for sentence, raw, form in [
+            # あれる is あ + れる, ほどけば after a counter ほど + けば, できがねます でき + が + ね
+            ("だが、<k> 良[よ]く</k><k> 荒[あ]れる</k>。", " 荒[あ]れる", "荒れる"),
+            ("１ 本[ほん]<k> 解[ほど]けば</k> 早[はや]そうだな。", " 解[ほど]けば", "解く"),
+            (
+                "御[お] 任[まか]せ<k> 出来[でき]兼[が]ねます</k>",
+                " 出来[でき]兼[が]ねます",
+                "出来兼ねる",
+            ),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                word = find_word(arr, form)
+                self.assertEqual(word[:2], [raw, "verb"], arr)
+                self.assertNotIn("auxiliary", [s[1] for s in word[5] if len(s) > 1], arr)
+                self.assertNotIn("particle", [s[1] for s in word[5] if len(s) > 1], arr)
+
     def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
         for sentence, raw, form in [
             # a suffix that inflects as a verb or adjective takes its inflection

@@ -432,10 +432,48 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
+def read_cut_okurigana_as_kanji(tm: TextMap) -> tuple[TextMap, list[Morph]]:
+    """<k> groups go to the tokenizer as their reading, which it can take as a word of its own
+    with the okurigana cut off (よくあれる -> あ + れる, １本ほどけば -> 本 + ほど + けば). Such a
+    group goes in as its kanji when a word that inflects then runs from the kanji into the
+    okurigana, read as JMdict reads it (荒れる, 解けば; not 座る for 御座[おじゃ]る). The
+    tokenized text map comes back with its morphs."""
+
+    def read_as_furigana(kanji_tm: TextMap, m: Morph) -> bool:
+        surface = kanji_tm.natural[m.start : m.end]
+        furi = to_hiragana(kanji_tm.surface_reading(m.start, m.end))
+        c = _common_prefix(surface, m.lemma)
+        reading = furi[: len(furi) - (len(surface) - c)] + m.lemma[c:]
+        known = {to_hiragana(r) for r in jmdict.readings(m.lemma)}
+        return reading in known or reading in {voiced(r) for r in known}
+
+    morphs = tokenize(tm.natural)
+    for i in range(len(tm.segs) - 1):
+        seg, nxt = tm.segs[i], tm.segs[i + 1]
+        end = seg.nat_start + len(seg.natural)
+        if not (
+            seg.kind == "furi"
+            and seg.natural_is_reading
+            and nxt.kind == "char"
+            and text_map.HIRAGANA_RE.match(nxt.natural)
+            and any(m.end == end and m.pos[0] not in INFLECTING for m in morphs)
+        ):
+            continue
+        kanji_tm = text_map.read_as_kanji(tm, [i])
+        kanji_morphs = tokenize(kanji_tm.natural)
+        kanji_end = seg.nat_start + len(seg.base)
+        if any(
+            m.start < kanji_end < m.end and m.pos[0] in INFLECTING and read_as_furigana(kanji_tm, m)
+            for m in kanji_morphs
+        ):
+            tm, morphs = kanji_tm, kanji_morphs
+    return tm, morphs
+
+
 def name_corpus_row(sentence: str) -> tuple:
     """(natural text, morphs, reader) of a sentence, as `names.build_lexicon` takes them."""
-    tm = text_map.build(sentence, reads_better_in_hiragana)
-    return tm.natural, tokenize(tm.natural), tm.surface_reading
+    tm, morphs = read_cut_okurigana_as_kanji(text_map.build(sentence, reads_better_in_hiragana))
+    return tm.natural, morphs, tm.surface_reading
 
 
 def build_name_lexicon(sentences: Iterable[str]) -> dict:
@@ -1022,7 +1060,7 @@ def _assign_cut_readings(tm: TextMap, subs: list[Word]) -> bool:
 
 
 def _assign_group(tm: TextMap, seg: text_map.Seg, offs: list[int], subs: list[Word]) -> bool:
-    if seg.in_k:
+    if seg.natural_is_reading:
         return False  # natural runs over the reading here, so the kanji split is the unknown
     bounds = [0] + sorted(offs) + [len(seg.natural)]
     parts = list(zip(bounds, bounds[1:]))
@@ -1616,8 +1654,8 @@ def _emit(
 
 def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
-    tm = text_map.build(sentence, reads_better_in_hiragana)
-    morphs = merge_dotted_names(tokenize(tm.natural))
+    tm, morphs = read_cut_okurigana_as_kanji(text_map.build(sentence, reads_better_in_hiragana))
+    morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)
     words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
