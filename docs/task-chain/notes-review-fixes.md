@@ -46,7 +46,7 @@ closed.
       *Done whole in `ff47058`, no split needed: `get_definition_text` re-raises,
       `MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED` carries it, both tagging paths write no tag.
       New `test/test_dictionary_outage.py` — 10 tests, 6 of them red before the fix.*
-- [ ] **Findings 3 and 5 — vendoring robustness.** Two small packaging fixes, reviewed
+- [x] **Findings 3 and 5 — vendoring robustness.** Two small packaging fixes, reviewed
       together. (3) `anki_shared/utils/vendor_path.py:103`: `add_vendor_paths()` must not put
       `user_files/lib` ahead of a healthy shipped tree when `vendor_health()` judges the user
       tree unfit — consult the health verdict before ordering the candidates. (5)
@@ -55,6 +55,10 @@ closed.
       `clear_previous_vendoring()` and the manifest write leaves `lib/` describing itself with
       the previous manifest. Done when `anki_shared/test/test_vendor_path.py` covers the stale
       user-tree case and the build guard is exercised.
+      *Done in `557e0cc`: new `_shipped_lib_leads()` decides the sys.path order and
+      `vendor_health` reads it too, so both agree on which tree is live; the per-platform loop
+      became `copy_per_platform()` and `clear_previous_vendoring()` drops the old manifest.
+      5 new tests in `test_vendor_path.py`, new `test_build_vendor.py` (12 tests, 8 red before).*
 - [ ] **Finding 4 — `concurrency.py:1287` `ESTIMATE_BLEND` applied several times per run.**
       A run must apply the 40% blend once, not once per rising refit plus again in `finish()`.
       Keep the persist-on-rising-refit behaviour the comment at 1280-1285 argues for (a killed
@@ -71,9 +75,10 @@ closed.
 
 ## State
 
-Findings 1 and 2 fixed; findings 3-7 remain, grouped into three tasks. All seven were
-re-verified against the working tree at `2bf37d7` before the chain was set up; every line number
-in the spec is still accurate for the files not yet touched.
+Findings 1, 2, 3 and 5 fixed; findings 4, 6 and 7 remain, grouped into two tasks. All seven
+were re-verified against the working tree at `2bf37d7` before the chain was set up; every line
+number in the spec is still accurate for the files not yet touched (`concurrency.py` and
+`match_words_to_notes.py` are both untouched).
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -90,6 +95,13 @@ unreachable and deliberately left alone.
   `*_meanings_for_word` functions return it, and `make_meanings_in_note` and
   `clean_meaning_in_note` write no `NO_DICTIONARY_ENTRY_TAG` for it. New
   `test/test_dictionary_outage.py`. Suite 448 passed, same 6 `mdict_query`.
+- `task-3` `557e0cc` — findings 3+5. `vendor_path`: `_user_lib_mismatch`/`_shipped_lib_mismatch`
+  split out of `vendor_health`, and `_shipped_lib_leads()` gates both the sys.path order and
+  which tree health judges. `build.py`: the per-platform loop became `copy_per_platform()`
+  (skips a name a tree does not have, copies a bare `.so` as a file),
+  `check_per_platform_output` tolerates an absent tag and a lone tag's build, and
+  `clear_previous_vendoring` unlinks the old manifest last. New `test_build_vendor.py` imports
+  `build` by putting the repo root on `sys.path`.
 
 ## Decisions made
 
@@ -99,6 +111,18 @@ unreachable and deliberately left alone.
 - **Group by review seam, not by file count.** Findings 3+5 (vendoring) and 6+7 (one function)
   are single tasks because a reviewer would want them in one commit each.
 - **Every fix ships with a regression test** reproducing the review's stated scenario.
+- **task-3: `vendor_health` changed along with the ordering.** The review only asks
+  `add_vendor_paths` to act on the verdict, but leaving `vendor_health` judging a tree that no
+  longer leads `sys.path` would offer a rebuild forever over a tree that is not in use, so the
+  two now share one verdict. `test_a_stale_rebuilt_tree_is_not_rescued_by_a_healthy_shipped_one`
+  and `test_rebuilt_tree_without_a_manifest_wants_a_rebuild` asserted the old behaviour; both
+  were rewritten to hold the shipped tree stale, so they still test what they were written for.
+- **task-3: the stale rebuilt tree is demoted, not dropped.** It is still a layer that may
+  resolve something the shipped tree lacks, and demotion already ends the shadowing.
+- **task-3: `check_per_platform_output` widened with the guard.** Guarding the copy alone would
+  have turned a traceback into a misleading `sys.exit` two lines later (`uvloop has no extension
+  module` for the platform that legitimately has no `uvloop`), so the check now tolerates a tag
+  with no copy. Nothing beyond that — marker-gated dependencies are not otherwise supported.
 - **`get_definition_text` raises rather than returning a sentinel** (task-2). The review allowed
   either. Raising keeps "not in any dictionary" as the plain `None` the three call sites already
   branch on, and the module raises `MDXLookupError` internally anyway; the cost is that a new
@@ -123,13 +147,13 @@ python build.py link
   `python -m pytest anki_shared/test -q`.
 - **Known-good baseline after that setup** — match it before and after your change, and treat
   only *new* failures as yours:
-  - `japanese_note_ai_ops/test`: **438 passed, 6 failed**. All 6 are
+  - `japanese_note_ai_ops/test`: **448 passed, 6 failed** (438 before tasks 1-2). All 6 are
     `ModuleNotFoundError: No module named 'mdict_query'` in `test_mdx_dictionary.py`.
     `mdict_query` is hand-vendored, has no PyPI release, and cannot be installed in a cloud
     container — it is not obtainable, so do not spend a link trying.
-  - `anki_shared/test`: **82 passed, 7 failed**, all `test_execute_code.py` with
-    `'MainWindow' object has no attribute 'col'` (wants a real Anki collection).
-    `test_vendor_path.py` + `test_vendor_rebuild.py` alone: **37 passed, 0 failed**.
+  - `anki_shared/test`: **99 passed, 7 failed** (82 before task-3 added 17), all 7 in
+    `test_execute_code.py` with `'MainWindow' object has no attribute 'col'` (wants a real Anki
+    collection). `test_vendor_path.py` + `test_vendor_rebuild.py` alone: **42 passed**.
 - Formatting is Black at line length 100 (`python -m black --line-length 100 <files>`); match
   the surrounding style if Black is not installed.
 - Tests are plain `unittest.TestCase` classes on purpose, so they run under `python -m unittest`
