@@ -664,18 +664,37 @@ class Config:
                 return definition
         return None
 
+    def _save_definitions(self):
+        """Persist the definition list, with every definition's `effects` brought up to date.
+
+        `effects` is derived and transitive through `call_definition`, so a definition's
+        copy of it goes stale when a definition it calls is edited, added or removed -- and
+        the hooks branch on the stored copy. A caller saved while its callee still only
+        wrote to the trigger note would keep claiming add-note compatibility, and the runner
+        would discard the whole session when the callee turned out to write elsewhere; the
+        other way round, the unfocus hook would take the within-note branch and drop the
+        callee's writes to other notes on the floor. Neither says anything to the user.
+
+        Recomputing here rather than in the editor means an import, a delete, or anything
+        else that reaches these mutators is covered too.
+        """
+        from .logic.flow_analysis import refresh_effects
+
+        refresh_effects(self.data["copy_definitions"] or [])
+        self.save()
+
     def add_definition(self, definition: CopyDefinition):
         if "guid" not in definition:
             definition["guid"] = str(uuid.uuid4())
         self.data["copy_definitions"].append(definition)
-        self.save()
+        self._save_definitions()
 
     def insert_definition_at_index(self, index: int, definition: CopyDefinition):
         """Insert a definition at a specific index in the list"""
         if "guid" not in definition:
             definition["guid"] = str(uuid.uuid4())
         self.data["copy_definitions"].insert(index, definition)
-        self.save()
+        self._save_definitions()
 
     def remove_definition_by_name(self, name: str):
         definition = self.get_definition_by_name(name)
@@ -683,11 +702,11 @@ class Config:
             return
         if definition:
             self.data["copy_definitions"].remove(definition)
-            self.save()
+            self._save_definitions()
 
     def remove_definition_by_index(self, index: int):
         self.data["copy_definitions"].pop(index)
-        self.save()
+        self._save_definitions()
 
     def remove_definition_by_guid(self, guid: str):
         for index, definition in enumerate(self.data["copy_definitions"]):
@@ -706,7 +725,7 @@ class Config:
 
     def update_definition_by_index(self, index: int, definition: CopyDefinition):
         self.data["copy_definitions"][index] = definition
-        self.save()
+        self._save_definitions()
 
     def update_definition_by_guid(
         self, guid: str, new_definition: CopyDefinition

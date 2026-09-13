@@ -56,6 +56,7 @@ from .definition_schema import (
     expression_is_code,
     expression_is_legacy_syntax,
     expression_source,
+    is_format_2,
     list_of,
     result_name_problem,
     stage_result_name,
@@ -707,6 +708,33 @@ def callers_of(
                 callers.append(definition)
                 break
     return callers
+
+
+def refresh_effects(definitions: Sequence[dict]) -> list[str]:
+    """Recompute `effects` on every staged definition in `definitions`, in place.
+
+    A definition's effects are transitive through `call_definition` (§4, §6), so they are
+    only as current as the bodies of everything it can reach. Saving one definition can
+    therefore change another's -- and a chain A -> B -> C means editing C changes both of
+    the others, which `callers_of` sees only one link of. So the whole list is recomputed
+    rather than walked backwards: a config holds a handful of definitions, and this runs on
+    a save rather than per note.
+
+    Returns the guids whose effects actually changed, for a caller that wants to say so.
+    """
+    staged = [
+        definition
+        for definition in definitions
+        if isinstance(definition, dict) and is_format_2(definition)
+    ]
+    lookup = make_lookup(staged)
+    changed = []
+    for definition in staged:
+        effects = analyze_definition(definition, lookup=lookup).effects
+        if definition.get("effects") != effects:
+            definition["effects"] = effects
+            changed.append(definition.get("guid", ""))
+    return changed
 
 
 def stage_definitions(

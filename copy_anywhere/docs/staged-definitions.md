@@ -40,6 +40,10 @@ stage runs. `exports` is authored. `effects` is derived -- the flow analyser com
 transitively through called definitions -- and is never edited by hand; a definition with no
 readable `effects` is treated as not add-note compatible, which is the safe direction.
 
+Because it is transitive, a definition's `effects` can go stale when a definition it calls
+changes. So saving, adding or removing any definition recomputes `effects` for all of them,
+not just the one that changed.
+
 Every stage carries `guid`, `type`, an optional `name` for the editor, and `enabled`. An
 unknown `type` makes the definition invalid rather than being skipped.
 
