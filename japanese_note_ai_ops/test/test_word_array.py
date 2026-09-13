@@ -189,6 +189,17 @@ class WordArrayTests(unittest.TestCase):
                 word = find_word(self.generator.generate(sentence), form)
                 self.assertEqual([s[2] for s in word[5]], subs)
 
+    def test_conjunction_and_pronoun_okurigana_is_no_sub_word(self):
+        for sentence, form in [
+            ("但[ただ]し、 注意[ちゅうい]", "但し"),
+            ("県[けん] 並[なら]びに 市[し]", "並びに"),
+            ("<k> 其[そ]こ</k>に 含[ふく]まれる 冗談[じょうだん]", "其こ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
+        arr = self.generator.generate("私[わたし]たちは 話[はな]した")
+        self.assertEqual([s[2] for s in find_word(arr, "私たち")[5]], ["私", "達"])
+
     def test_an_adjective_stem_and_ge_are_one_na_adjective(self):
         # JMdict has 寂しげ but not 儚げ; both come out alike, and 忌々しげに isn't 忌々し + げに
         for sentence, form in [

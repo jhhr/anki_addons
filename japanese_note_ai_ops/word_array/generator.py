@@ -534,12 +534,16 @@ def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
     and た as words, but 柔らか, 静か and 新た (形状詞) are no 柔 + らか; nor are the adverbs 悉く,
     幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て). A noun's lone kana
     other than も is okurigana (窪み, 夕べ, 逆さ; 何時|も), and so is a longer tail of a noun
-    that is a verb's ます-stem (味わい, 計らい, 見かけ); 赤|ちゃん, 口|コミ, 目|つき are words."""
+    that is a verb's ます-stem (味わい, 計らい, 見かけ); 赤|ちゃん, 口|コミ, 目|つき are words.
+    A conjunction's tail is always okurigana (但し, 更に, 並びに), a pronoun's lone kana but に,
+    も and か too (其こ, 其んで; 何|に, 私|たち)."""
     tail = tm.written_form(split, w.end)
     if KANJI_RE.search(tail):
         return False
-    if w.head.pos[0] == "形状詞":
+    if w.head.pos[0] in ("形状詞", "接続詞"):
         return True
+    if w.head.pos[0] == "代名詞":
+        return len(tail) == 1 and tail not in "にもか"
     if w.head.pos[0] == "名詞":
         written = tm.written_form(w.start, w.end)
         stem = VERB_STEM_TO_DICT.get(written[-1])
