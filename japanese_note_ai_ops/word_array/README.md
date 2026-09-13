@@ -171,6 +171,23 @@ entry with にっぽん). A compound JMdict labels a noun (江戸時代, 日本�
 export, old proper nouns labelled one 997→1084 of ~2170, links carried unchanged.
 `research/proper_noun_rules.py` counts what each rule would touch.
 
+What rules and lexicon still miss, a language model catches: `proper_noun_llm.py` asks only which
+proper nouns the sentence has (a JSON list), and `fix_array` makes every name that starts and ends on
+top-level word boundaries one proper noun without sub-words (a name inside a word, 日本 of 日本語,
+changes nothing). Op `async_api_ops/find_proper_nouns.py`, one request per note, browser entry "Find
+proper nouns in word arrays", model `proper_nouns_model`; run it before the judge.
+`research/proper_noun_eval.py` scores models on 300 export sentences with old proper nouns and 300
+without: names precision/recall against the old lists (noisy: 彼女 is listed 16 times), and old proper
+nouns labelled a top-level proper noun before and after the fix, 198 of 376 without it:
+
+| Model | Names P / R | Top proper noun after | Names changed |
+| --- | --- | --- | --- |
+| gemini-3.1-flash-lite | 81.8% / 70.7% | 257 | 120 |
+| gpt-5.6-luna | 87.6% / 65.9% | 247 | 90 |
+| claude-haiku-4-5 | 80.9% / 69.9% | 256 | 115 (日本語, 猫足 wrongly) |
+
+Most names given that the old lists lack are real (高松塚古墳, 奈良県, 正親町天皇).
+
 ## match_data states
 
 `match_data` is in one of five states (`match_flags.MatchState`, `match_state()`):
