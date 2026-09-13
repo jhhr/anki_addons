@@ -64,6 +64,8 @@ class Morph:
     norm: str  # normalized_form, Sudachi's kanji spelling (する -> 為る, これ -> 此れ)
     reading: str  # hiragana reading of the surface
     subs: list[Morph] = field(default_factory=list)  # SplitMode.A split, compounds only
+    oov: bool = False  # not in Sudachi's dictionary
+    name: bool = False  # merged into one name by `merge_dotted_names` or `merge_names`
 
 
 @dataclass
@@ -130,6 +132,7 @@ def _morph(m) -> Morph:
         lemma=m.dictionary_form(),
         norm=m.normalized_form(),
         reading=to_hiragana(m.reading_form()),
+        oov=m.is_oov(),
     )
 
 
@@ -171,6 +174,52 @@ def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
 # --- 2b. names -----------------------------------------------------------------------------
 
 NAME_POS = ("名詞", "固有名詞", "人名", "一般", "*", "*")
+KATAKANA_RE = re.compile(r"[ァ-ヶー]+")
+NAME_DOTS = ("・", "･")
+
+
+def _name_part(m: Morph) -> bool:
+    """A part of a ・-joined katakana name no dictionary would know as a word: a Sudachi proper
+    noun, or katakana JMdict doesn't have (スバル of ナツキ・スバル is a 普通名詞 to Sudachi)."""
+    return m.pos[:2] == ("名詞", "固有名詞") or not jmdict.lookup(m.surface)
+
+
+def merge_dotted_names(morphs: list[Morph]) -> list[Morph]:
+    """Katakana nouns joined by ・ as one proper noun with no sub-words, when a part looks like a
+    name: ナツキ・スバル, ジョン・カーター. Word pairs (テレビ・カメラ) and lists of places
+    (アメリカ・イギリス) stay apart."""
+    out: list[Morph] = []
+    i = 0
+    while i < len(morphs):
+        j = i + 1
+        while (
+            j + 1 < len(morphs)
+            and morphs[j].surface in NAME_DOTS
+            and morphs[j - 1].pos[0] == "名詞"
+            and morphs[j + 1].pos[0] == "名詞"
+            and KATAKANA_RE.fullmatch(morphs[j - 1].surface)
+            and KATAKANA_RE.fullmatch(morphs[j + 1].surface)
+        ):
+            j += 2
+        parts = morphs[i:j:2]
+        if (
+            len(parts) < 2
+            or not any(_name_part(p) for p in parts)
+            or all(p.pos[:3] == ("名詞", "固有名詞", "地名") for p in parts)
+        ):
+            out.append(morphs[i])
+            i += 1
+            continue
+        run = morphs[i:j]
+        surface = "".join(m.surface for m in run)
+        reading = "".join(m.reading for m in run)
+        out.append(
+            Morph(
+                run[0].start, run[-1].end, surface, NAME_POS, surface, surface, reading, name=True
+            )
+        )
+        i = j
+    return out
 
 
 def merge_names(tm: TextMap, morphs: list[Morph], lexicon: dict) -> list[Morph]:
@@ -192,7 +241,9 @@ def merge_names(tm: TextMap, morphs: list[Morph], lexicon: dict) -> list[Morph]:
         run = morphs[i:j]
         surface = "".join(m.surface for m in run)
         reading = "".join(m.reading for m in run)
-        out.append(Morph(run[0].start, end, surface, NAME_POS, surface, surface, reading))
+        out.append(
+            Morph(run[0].start, end, surface, NAME_POS, surface, surface, reading, name=True)
+        )
         i = j
     return out
 
@@ -1109,17 +1160,25 @@ NOT_SUFFIX_POS_MAP = [
 ]
 
 
-def _not_suffix_label(form: str, reading: str) -> Optional[str]:
-    """JMdict's label for a Sudachi suffix JMdict doesn't list as one with this reading: 家[うち]
-    after 一日中, 的[まと]に, 等[など], a verb stem like 沿い. None keeps it a suffix."""
-    codes = {
+def _jmdict_codes(form: str, reading: str) -> set[str]:
+    return {
         p
         for _, rs, ps in jmdict.lookup(form)
         if reading in {to_hiragana(r) for r in rs}
         for p in ps
     }
-    if not codes or codes & set(SUFFIX_JM_POS):
+
+
+def _not_suffix_label(form: str, reading: str) -> Optional[str]:
+    """JMdict's label for a Sudachi suffix JMdict doesn't list as one with this reading: 家[うち]
+    after 一日中, 的[まと]に, 等[など], a verb stem like 沿い. None keeps it a suffix."""
+    codes = _jmdict_codes(form, reading)
+    if codes & set(SUFFIX_JM_POS):
         return None
+    return _jmdict_label(codes)
+
+
+def _jmdict_label(codes: set[str]) -> Optional[str]:
     for code, label in NOT_SUFFIX_POS_MAP:
         if any(
             p == code or (code == "v" and p.startswith("v") and p not in NON_VERB_V_POS)
@@ -1127,6 +1186,29 @@ def _not_suffix_label(form: str, reading: str) -> Optional[str]:
         ):
             return label
     return None
+
+
+def _proper_noun_label(tm: TextMap, w: Word, reading: str) -> Optional[str]:
+    """A one-morph word's label where Sudachi's proper noun judgement is off: katakana Sudachi
+    and JMdict both don't know is a name (フリーレン, not ポ or ヤベー), and a proper noun the
+    note's furigana reads as a JMdict word of another entry is that word (亜人[あじん], Sudachi's
+    name つぐと; 日本[にほん], one entry with にっぽん, stays)."""
+    h = w.head
+    if (
+        h.oov
+        and h.pos[:2] == ("名詞", "普通名詞")
+        and len(h.surface) >= 3
+        and KATAKANA_RE.fullmatch(h.surface)
+        and not jmdict.lookup(h.surface)
+    ):
+        return "proper noun"
+    if h.pos[:2] != ("名詞", "固有名詞") or h.name or reading == h.reading:
+        return None
+    form = dict_form(tm, w)
+    entries = [{to_hiragana(r) for r in rs} for _, rs, _ in jmdict.lookup(form)]
+    if any(reading in rs and h.reading in rs for rs in entries):
+        return None
+    return _jmdict_label(_jmdict_codes(form, reading))
 
 
 def pos_label(
@@ -1161,6 +1243,10 @@ def pos_label(
         # Inside a compound Sudachi's suffix is a bound piece JMdict may tag only as a noun (官 of
         # 警察官); only a verb stem there is relabelled, being a verb by its dict_form already
         if label and (not nested or label == "verb"):
+            return label
+    if len(w.morphs) == 1:
+        label = _proper_noun_label(tm, w, reading)
+        if label:
             return label
     for key, label in POS_MAP:
         if h.pos[: len(key)] == key:
@@ -1222,7 +1308,7 @@ def _emit(
 def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
     tm = text_map.build(sentence)
-    morphs = tokenize(tm.natural)
+    morphs = merge_dotted_names(tokenize(tm.natural))
     if names:
         morphs = merge_names(tm, morphs, names)
     words = merge_cut_groups(tm, to_words(morphs))

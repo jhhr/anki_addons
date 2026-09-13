@@ -162,6 +162,15 @@ migration op; without one, names stay cut up. Over the export: 115 names, links 
 (76087), 22 fewer array words. `research/name_lexicon.py` reports what the lexicon holds and misses;
 `migrate_fit.py` builds one from its corpus unless given `--no-names`.
 
+Without a lexicon, three rules within the sentence fix Sudachi's proper noun calls: katakana nouns
+joined by ・ are one name when a part is a Sudachi proper noun or not in JMdict (ナツキ・スバル, not
+テレビ・カメラ or a list of places); an out-of-vocabulary katakana noun of 3+ characters JMdict
+doesn't have is a proper noun (フェザーン); and a Sudachi proper noun the furigana reads as another
+JMdict entry takes that entry's label (亜人[あじん], not Sudachi's name つぐと; 日本[にほん] stays, one
+entry with にっぽん). A compound JMdict labels a noun (江戸時代, 日本文学) stays a noun. Over the
+export, old proper nouns labelled one 997→1084 of ~2170, links carried unchanged.
+`research/proper_noun_rules.py` counts what each rule would touch.
+
 ## match_data states
 
 `match_data` is in one of five states (`match_flags.MatchState`, `match_state()`):

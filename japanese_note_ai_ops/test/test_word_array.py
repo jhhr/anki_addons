@@ -95,6 +95,22 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(find_word(arr, "里樹")[1], "proper noun")
         self.assertTrue(find_word(arr, "様"))
 
+    def test_per_sentence_proper_noun_rules(self):
+        # Katakana nouns joined by ・ with a name-like part are one name; word pairs stay apart
+        arr = self.generator.generate("ナツキ・スバルはテレビ・カメラを見[み]た。")
+        self.assertEqual(find_word(arr, "ナツキ・スバル")[1], "proper noun")
+        self.assertEqual(find_word(arr, "ナツキ・スバル")[5], [])
+        self.assertTrue(find_word(arr, "テレビ"))
+        self.assertFalse(find_word(arr, "テレビ・カメラ"))
+        # Katakana Sudachi and JMdict don't know is a name
+        arr = self.generator.generate("フェザーンに向[む]かう。")
+        self.assertEqual(find_word(arr, "フェザーン")[1], "proper noun")
+        # A proper noun read otherwise by the furigana takes JMdict's label for that reading
+        arr = self.generator.generate("亜人[あじん]が現[あらわ]れた。")
+        self.assertEqual(find_word(arr, "亜人")[1], "noun")
+        arr = self.generator.generate("日本[にほん]に行[い]く。")
+        self.assertEqual(find_word(arr, "日本")[1], "proper noun")
+
     def test_sub_words_get_their_own_share_of_the_furigana(self):
         arr = self.generator.generate(self.examples[2][0])
         compound = find_word(arr, "見下ろす")
