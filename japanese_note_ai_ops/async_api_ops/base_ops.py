@@ -385,7 +385,9 @@ def get_response_from_gemini(
         data["generationConfig"]["temperature"] = temperature
         logger.debug("Using temperature %s", temperature)
     if response_schema:
-        response_schema = clean_response_schema_for_gemini(response_schema)
+        # On a copy: the caller's schema is shared with requests to other providers, which
+        # need the additionalProperties this removes
+        response_schema = clean_response_schema_for_gemini(json.loads(json.dumps(response_schema)))
         data["generationConfig"]["responseSchema"] = response_schema
         logger.debug(
             "Using response schema %s", json.dumps(response_schema, ensure_ascii=False, indent=2)
