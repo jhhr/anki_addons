@@ -258,6 +258,75 @@ def normalize_word_tuple(entry: Any) -> Optional[tuple]:
     return tuple(values)
 
 
+def drop_duplicate_word_tuples(
+    word_list_dict: dict[str, Any],
+    word_list_keys: Sequence[str],
+    log_prefix: str = "",
+) -> None:
+    """Drop repeated words from each of a note's word lists, editing the lists in place.
+
+    One `encountered_words` for the whole note, not one per list: a word already seen in an
+    earlier list is a duplicate when it turns up in a later one, which is what the loop this
+    replaces did and what the note's lists are meant to mean.
+
+    One pass building a new list, rather than `word_tuples.remove(wt)` while iterating that
+    same list. `remove` deletes the *first* equal element - not necessarily `wt` itself - and
+    shifts everything after it left, so the iterator then steps over the entry that moved into
+    the vacated position. Three identical entries came out of that loop as two: the run
+    reported the list deduplicated with a duplicate still in it. This is the same defect, and
+    the same fix, as in `match_words_to_notes_for_note` above.
+
+    Entries are read through `normalize_word_tuple` but stored back as they were found. The
+    reading is what needs normalizing - a bare string indexes character by character and used
+    to make a word of its first two characters, so two spellings of one word could both be
+    kept - while rewriting the shapes is not this function's business: unlike the list in
+    `match_words_to_notes_for_note`, this dict is decoded here and read no further.
+    """
+    encountered_words: set[str] = set()
+    for word_list_key in word_list_keys:
+        word_tuples = word_list_dict.get(word_list_key, [])
+        if not isinstance(word_tuples, list):
+            logger.error(
+                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in"
+                " the note"
+            )
+            continue
+        kept: list = []
+        malformed: list = []
+        for wt in word_tuples:
+            normalized = normalize_word_tuple(wt)
+            if normalized is None:
+                # Nothing a word can be read out of. Kept rather than dropped - an entry
+                # nobody understands is not this loop's to throw away - and never counted as
+                # a duplicate. See normalize_word_tuple.
+                malformed.append(wt)
+                kept.append(wt)
+                continue
+            word = normalized[0]
+            reading = normalized[1]
+            word_key = f"{word}_{reading}"
+            # if the word is a multi-meaning type, then duplicates are intended
+            multi_meaning_index = normalized[2] if len(normalized) >= 3 else None
+            if word_key in encountered_words and not isinstance(multi_meaning_index, int):
+                logger.debug(
+                    f"{log_prefix}Removing duplicate word '{word}' with reading"
+                    f" '{reading}' from word list '{word_list_key}'"
+                )
+                continue
+            encountered_words.add(word_key)
+            kept.append(wt)
+
+        if malformed:
+            # One line for the list rather than one traceback per entry, as above.
+            logger.error(
+                f"{log_prefix}Skipping {len(malformed)} entr"
+                f"{'y' if len(malformed) == 1 else 'ies'} in word list '{word_list_key}'"
+                f" that are not word tuples: {malformed}"
+            )
+        # In place: the caller holds this same list through word_list_dict.
+        word_tuples[:] = kept
+
+
 def update_fake_note_ids(
     new_notes: Sequence[Note],
     config: dict,
@@ -2957,52 +3026,24 @@ def match_single_word_to_notes_from_selected(
                 continue
             target_word, target_reading, word_list_field = note_word_info
 
+            # Bound before the check, not inside it: a notetype that lacks the configured
+            # word list field - or a word_list_field that resolves to "" - used to leave this
+            # name unbound and the read below raised NameError out of the whole bulk
+            # operation. Worse when it did not raise: a note earlier in this same loop having
+            # bound it meant this note silently deduplicated *that* note's word lists.
+            word_list_dict: dict[str, Any] = {}
             if word_list_field in cur_note:
-                word_list_dict = decode_word_list_field(
+                decoded = decode_word_list_field(
                     cur_note, word_list_field, notes_to_update_dict, log_prefix
                 )
-                if not word_list_dict:
-                    word_list_dict = {}
+                if decoded:
+                    word_list_dict = decoded
 
-            encountered_words = set()
             single_word_and_reading: Optional[RawOneMeaningWordType] = (
                 target_word,
                 target_reading,
             )
-            for word_list_key in word_list_keys:
-                # Go through each list and replace the key in the dict with the result
-                word_tuples = word_list_dict.get(word_list_key, [])
-                if not isinstance(word_tuples, list):
-                    logger.error(
-                        f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in"
-                        " the note"
-                    )
-                    continue
-                for wt in word_tuples:
-                    try:
-                        word = wt[0]
-                        reading = wt[1]
-                        word_key = f"{word}_{reading}"
-                        # if the word is a multi-meaning type, then duplicates are intended
-                        multi_meaning_index = wt[2] if len(wt) >= 3 else None
-                        if word_key in encountered_words and not isinstance(
-                            multi_meaning_index, int
-                        ):
-                            # remove word from word_tuples
-                            word_tuples.remove(wt)
-                            logger.debug(
-                                f"{log_prefix}Removing duplicate word '{word}' with reading"
-                                f"'{reading}' from word list '{word_list_key}'"
-                            )
-                        else:
-                            encountered_words.add(word_key)
-                    except Exception as e:
-                        logger.error(
-                            f"{log_prefix}Error processing word tuple {wt} in word list"
-                            f" '{word_list_key}': {e}"
-                        )
-                        print_error_traceback(e, logger)
-                        continue
+            drop_duplicate_word_tuples(word_list_dict, word_list_keys, log_prefix)
             target_word_regex = get_word_list_query_regex_for_word_and_reading(
                 word=target_word,
                 reading=target_reading,
