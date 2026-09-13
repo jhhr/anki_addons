@@ -36,7 +36,10 @@ start after this release, and there is one executor and one editor from there on
 ```
 
 `triggers` decides which notes the definition considers; that filtering happens before any
-stage runs. `exports` is authored. `effects` is derived -- the flow analyser computes it,
+stage runs. `exports` is authored: each one is `{ "name", "stage_guid", "result" }`, naming
+a root stage and which of its results to take. Only a `call_definition` binds more than one
+result -- one per declared output -- and an export that leaves `result` out takes the stage's
+single result, which is what every export written before call outputs could be exported does. `effects` is derived -- the flow analyser computes it,
 transitively through called definitions -- and is never edited by hand; a definition with no
 readable `effects` is treated as not add-note compatible, which is the safe direction.
 

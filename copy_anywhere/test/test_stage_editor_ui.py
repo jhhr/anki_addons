@@ -405,7 +405,7 @@ def test_the_exports_panel_lists_only_root_results(dialog):
     inner_guid = dialog.document.root_block()[1]["body"][0]["guid"]
     dialog.stage_tree.rows[inner_guid].editor.result.setText("Inner")
     dialog.refresh_status()
-    assert [keep.text() for _guid, keep, _name in dialog.exports_editor.rows] == ["M"]
+    assert [keep.text() for _guid, _result, keep, _name in dialog.exports_editor.rows] == ["M"]
 
 
 def test_an_export_defaults_to_the_results_own_name(dialog):
@@ -413,9 +413,9 @@ def test_an_export_defaults_to_the_results_own_name(dialog):
     guid = dialog.document.root_block()[0]["guid"]
     dialog.stage_tree.rows[guid].editor.result.setText("M")
     dialog.refresh_status()
-    dialog.exports_editor.rows[0][1].setChecked(True)
+    dialog.exports_editor.rows[0][2].setChecked(True)
     saved = dialog.get_copy_definition()
-    assert saved["exports"] == [{"name": "M", "stage_guid": guid}]
+    assert saved["exports"] == [{"name": "M", "stage_guid": guid, "result": "M"}]
 
 
 def test_a_call_stage_offers_the_callees_exports(col, qapp):
@@ -430,6 +430,33 @@ def test_a_call_stage_offers_the_callees_exports(col, qapp):
     editor.output_rows[0][2].setText("H1_here")
     tree.apply_editors()
     assert tree.document.stage("c")["outputs"] == [{"export": "H1", "result": "H1_here"}]
+
+
+def test_a_call_stages_outputs_can_be_exported(col, qapp):
+    # The panel offered these all along; ticking one used to block the save with "names a
+    # stage that produces no result", which pointed at the stage rather than at the gap.
+    callee = new_definition("callee", "The callee", stages=[variable("x", "H1")])
+    callee["exports"] = [{"name": "H1", "stage_guid": "x"}]
+    definition = new_definition("d", "A definition")
+    definition["triggers"]["note_types"] = [VOCAB]
+    call = default_stage("call_definition", "c")
+    call["definition_guid"] = "callee"
+    call["outputs"] = [{"export": "H1", "result": "M2"}]
+    definition["stages"] = [call]
+    definition["exports"] = [{"name": "M2", "stage_guid": "c", "result": "M2"}]
+    document = StageDocument(definition, lookup={"callee": callee}.get)
+    assert document.exportable_stages() == [("c", "M2")]
+    assert [problem.message for problem in document.analysis.problems] == []
+
+
+def test_an_export_stored_without_a_result_still_names_its_stage(col, qapp):
+    # Every export written before a call stage could be exported from names only its stage,
+    # which could bind one result and no more.
+    definition = new_definition("d", "A definition", stages=[variable("v", "M")])
+    definition["triggers"]["note_types"] = [VOCAB]
+    definition["exports"] = [{"name": "M", "stage_guid": "v"}]
+    document = StageDocument(definition)
+    assert [problem.message for problem in document.analysis.problems] == []
 
 
 # -- tags -----------------------------------------------------------------------------

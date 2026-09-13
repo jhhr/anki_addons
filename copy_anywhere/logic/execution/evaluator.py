@@ -32,6 +32,7 @@ from ..definition_schema import (
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
     is_format_2,
+    export_result_name,
     stage_result_name,
 )
 from . import actions
@@ -350,7 +351,7 @@ def execute_definition(
         stage_guid = export.get("stage_guid")
         for stage in frame.definition.get("stages") or []:
             if isinstance(stage, dict) and stage.get("guid") == stage_guid:
-                result_name = stage_result_name(stage)
+                result_name = export_result_name(export, stage)
                 if frame.root_env is not None and result_name in frame.root_env:
                     exported[name] = frame.root_env[result_name]
                 break

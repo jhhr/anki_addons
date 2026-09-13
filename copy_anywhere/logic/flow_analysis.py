@@ -55,6 +55,7 @@ from .definition_schema import (
     ValueType,
     expression_is_code,
     expression_is_legacy_syntax,
+    export_result_name,
     expression_source,
     is_format_2,
     list_of,
@@ -564,7 +565,7 @@ class _Analyzer:
             if not producer.get("enabled", True):
                 self.problem(f"export '{name}' names a disabled stage")
                 continue
-            result_name = stage_result_name(producer)
+            result_name = export_result_name(export, producer)
             if not result_name:
                 self.problem(f"export '{name}' names a stage that produces no result")
                 continue
@@ -576,8 +577,11 @@ class _Analyzer:
                     " the rest of the block"
                 )
                 continue
-            self.result.export_types[name] = self.result.result_types.get(
-                stage_guid, T_UNKNOWN
+            # Read off the binding rather than `result_types`, which is keyed by stage: a
+            # call stage binds one result per output and the last would win.
+            binding = root_scope.get(result_name)
+            self.result.export_types[name] = (
+                binding.type if binding is not None else T_UNKNOWN
             )
 
     # -- entry ------------------------------------------------------------------------

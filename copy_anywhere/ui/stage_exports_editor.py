@@ -43,7 +43,7 @@ class ExportsEditor(QWidget):
         self.rows_layout = QVBoxLayout(self.rows_container)
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
         self.box.addWidget(self.rows_container)
-        self.rows: list[tuple[str, QCheckBox, RequiredLineEdit]] = []
+        self.rows: list[tuple[str, str, QCheckBox, RequiredLineEdit]] = []
         self.rebuild()
 
     def rebuild(self) -> None:
@@ -54,8 +54,10 @@ class ExportsEditor(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self.rows = []
+        # Keyed by stage and result, not by stage alone: a call stage binds one result per
+        # output, so each is its own row and its own export.
         exported = {
-            export.get("stage_guid"): export.get("name", "")
+            (export.get("stage_guid"), export.get("result") or ""): export.get("name", "")
             for export in self.document.exports()
             if isinstance(export, dict)
         }
@@ -73,9 +75,14 @@ class ExportsEditor(QWidget):
             layout = QHBoxLayout(row)
             layout.setContentsMargins(0, 0, 0, 0)
             keep = QCheckBox(result_name, row)
-            keep.setChecked(guid in exported)
+            # An export stored before `result` existed named only its stage, and its stage
+            # could only bind the one result, so it belongs to this row.
+            stored = exported.get((guid, result_name))
+            if stored is None:
+                stored = exported.get((guid, ""))
+            keep.setChecked(stored is not None)
             name = RequiredLineEdit(row, placeholder_text=f"export it as {result_name}")
-            name.setText(exported.get(guid, "") or "")
+            name.setText(stored or "")
             name.setEnabled(keep.isChecked())
             keep.toggled.connect(name.setEnabled)
             keep.toggled.connect(self._on_changed)
@@ -85,7 +92,7 @@ class ExportsEditor(QWidget):
             layout.addWidget(name)
             layout.addStretch()
             self.rows_layout.addWidget(row)
-            self.rows.append((guid, keep, name))
+            self.rows.append((guid, result_name, keep, name))
 
     def _on_changed(self, *_args) -> None:
         self.changed.emit()
@@ -97,8 +104,12 @@ class ExportsEditor(QWidget):
         ceremony; the analyser still rejects a name that is not an identifier.
         """
         exports = []
-        for guid, keep, name in self.rows:
+        for guid, result_name, keep, name in self.rows:
             if not keep.isChecked():
                 continue
-            exports.append({"name": name.text().strip() or keep.text(), "stage_guid": guid})
+            exports.append({
+                "name": name.text().strip() or keep.text(),
+                "stage_guid": guid,
+                "result": result_name,
+            })
         self.document.set_exports(exports)

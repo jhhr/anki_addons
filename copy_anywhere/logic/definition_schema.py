@@ -312,6 +312,9 @@ class TagWrites(TypedDict, total=False):
 class Export(TypedDict, total=False):
     name: str
     stage_guid: str
+    # Which of the producing stage's results to export. Only a `call_definition` can bind
+    # more than one, so everything else leaves this out and there is nothing to choose.
+    result: str
 
 
 class Effects(TypedDict, total=False):
@@ -436,6 +439,34 @@ def stage_result_name(stage: Stage) -> Optional[str]:
         return None
     name = stage.get(key)  # type: ignore[misc]
     return name if isinstance(name, str) else None
+
+
+def stage_result_names(stage: Stage) -> list[str]:
+    """Every result name this stage binds, in the order it binds them.
+
+    One for most stages; one per declared output for a `call_definition`, which is the only
+    stage that can bind several and the reason this exists alongside `stage_result_name`.
+    """
+    if stage.get("type") == STAGE_CALL_DEFINITION:
+        names = []
+        for output in stage.get("outputs", []) or []:  # type: ignore[attr-defined]
+            result = output.get("result") if isinstance(output, dict) else None
+            if isinstance(result, str) and result:
+                names.append(result)
+        return names
+    name = stage_result_name(stage)
+    return [name] if name else []
+
+
+def export_result_name(export: Export, producer: Stage) -> Optional[str]:
+    """The result of `producer` this export takes its value from, if it names a real one."""
+    names = stage_result_names(producer)
+    wanted = export.get("result")
+    if isinstance(wanted, str) and wanted:
+        return wanted if wanted in names else None
+    # An export written before a stage could bind more than one names no result of its own:
+    # there was only ever the one to take.
+    return names[0] if len(names) == 1 else None
 
 
 # --------------------------------------------------------------------------------------

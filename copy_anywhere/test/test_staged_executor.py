@@ -546,6 +546,71 @@ class TestCalls:
         assert ok is True, logger.errors
         assert note["Note"] == "from neko"
 
+    def test_a_middle_definition_can_re_export_what_it_called(self, col, note, logger):
+        # The editor's Exports panel has always offered a call stage's outputs, and the
+        # analyser rejected them: `stage_result_name` has no case for a call stage, which
+        # binds one result per output rather than one of its own. The panel offered it, the
+        # validator called it a stage that produces no result, and there was no way through.
+        child = self.child()
+        call = d.call_definition("child-guid", outputs=[{"export": "H1", "result": "passed"}])
+        middle = d.staged(
+            "middle", guid="middle-guid", stages=[call],
+            exports=[{"name": "passed", "stage_guid": call["guid"], "result": "passed"}],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition(
+                    "middle-guid", outputs=[{"export": "passed", "result": "from_middle"}]
+                ),
+                d.edit_note("trigger", [d.write("Note", d.text("{{from_middle}}"))]),
+            ],
+        )
+        ok, _copied = run(
+            parent, note, logger, definitions_for_calls=[child, middle, parent]
+        )
+        assert ok is True, logger.errors
+        assert note["Note"] == "from neko"
+
+    def test_one_call_stages_two_outputs_export_separately(self, col, note, logger):
+        producer = d.variable("H1", d.text("one"))
+        second = d.variable("H2", d.text("two"))
+        child = d.staged(
+            "child", guid="child-guid", stages=[producer, second],
+            exports=[d.export("H1", producer), d.export("H2", second)],
+        )
+        call = d.call_definition(
+            "child-guid",
+            outputs=[{"export": "H1", "result": "a"}, {"export": "H2", "result": "b"}],
+        )
+        middle = d.staged(
+            "middle", guid="middle-guid", stages=[call],
+            exports=[
+                {"name": "a", "stage_guid": call["guid"], "result": "a"},
+                {"name": "b", "stage_guid": call["guid"], "result": "b"},
+            ],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition(
+                    "middle-guid",
+                    outputs=[
+                        {"export": "a", "result": "first"},
+                        {"export": "b", "result": "second"},
+                    ],
+                ),
+                d.edit_note("trigger", [d.write("Note", d.text("{{first}}/{{second}}"))]),
+            ],
+        )
+        ok, _copied = run(
+            parent, note, logger, definitions_for_calls=[child, middle, parent]
+        )
+        assert ok is True, logger.errors
+        assert note["Note"] == "one/two"
+
     def test_a_call_resolves_through_the_config_when_the_caller_passes_nothing(
         self, col, note, logger, stub_mw
     ):
