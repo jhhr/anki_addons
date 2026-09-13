@@ -10,6 +10,8 @@ part of and made of, and the judge's rules for its group. Match / Don't match go
 lays over the checked export's labels. Only the groups ticked on the page are offered, and a word
 already judged `--per-word` times in the same group and parent is not offered again, so a few
 hundred judgements cover many different words. Skip is not saved; Undo takes back the last one.
+Under the buttons each group shows labelled/total, the total growing (marked +) while a thread
+generates the rest of the corpus.
 """
 
 import argparse
@@ -18,6 +20,7 @@ import json
 import random
 import re
 import sys
+import threading
 import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -94,6 +97,17 @@ class Session:
         self.history: list[tuple[Candidate, str]] = []
         self.offered: dict[int, Candidate] = {}
         self.judged_now = 0
+        # Words of every sentence generated so far, for each group's total
+        self.placements: Counter[tuple] = Counter()
+        self.lock = threading.Lock()
+
+    def generate_all(self) -> None:
+        """Generates the sentences no request has reached yet, so the group totals cover the
+        whole corpus; run in a thread, as it takes about a minute for the export."""
+        while True:
+            with self.lock:
+                if not self._generate_more():
+                    return
 
     def _generate_more(self) -> bool:
         if self.next_sentence >= len(self.sentences):
@@ -113,7 +127,15 @@ class Session:
                 continue
             group = judge_v2.rule_group(elem, placed.parents)
             self.pool.append(Candidate(sentence, arr, placed, group))
+            self.placements[word_key(group, placed.path, elem[3])] += 1
         return True
+
+    def group_totals(self) -> Counter[str]:
+        """How many words of each group can be labelled, at most --per-word of each word."""
+        totals: Counter[str] = Counter()
+        for key, n in self.placements.items():
+            totals[key[0]] += min(n, self.per_word)
+        return totals
 
     def _offerable(self, cand: Candidate, groups: set[str]) -> bool:
         p = cand.placed
@@ -124,26 +146,35 @@ class Session:
         )
 
     def next_candidate(self, groups: set[str]) -> Optional[Candidate]:
-        scanned = 0
-        while True:
-            for cand in self.pool[scanned:]:
-                if self._offerable(cand, groups):
-                    return cand
-            scanned = len(self.pool)
-            for _ in range(MORE_SENTENCES):
-                if not self._generate_more():
+        with self.lock:
+            scanned = 0
+            while True:
+                for cand in self.pool[scanned:]:
+                    if self._offerable(cand, groups):
+                        return cand
+                scanned = len(self.pool)
+                for _ in range(MORE_SENTENCES):
+                    if not self._generate_more():
+                        return None
+                    if len(self.pool) > scanned:
+                        break
+                else:
                     return None
-                if len(self.pool) > scanned:
-                    break
-            else:
-                return None
 
     def item(self, cand: Optional[Candidate]) -> dict:
+        with self.lock:
+            totals = self.group_totals()
+            generated = self.next_sentence
+        labelled = Counter(row["group"] for row in self.labels)
         stats = {
             "labels": len(self.labels),
             "now": self.judged_now,
-            "by_group": dict(Counter(row["group"] for row in self.labels).most_common()),
-            "sentences": f"{self.next_sentence}/{len(self.sentences)}",
+            "by_group": [
+                [group, labelled[group], totals[group]]
+                for group, _ in (labelled + totals).most_common()
+            ],
+            "sentences": f"{generated}/{len(self.sentences)}",
+            "counting": generated < len(self.sentences),
         }
         if cand is None:
             return {"item": None, "stats": stats}
@@ -260,7 +291,7 @@ function show(data) {
   const s = data.stats;
   document.getElementById("stats").textContent =
     `${s.now} judged now, ${s.labels} saved, sentences read ${s.sentences} | ` +
-    Object.entries(s.by_group).map(([g, n]) => `${g} ${n}`).join(", ");
+    s.by_group.map(([g, n, total]) => `${g} ${n}/${total}${s.counting ? "+" : ""}`).join(", ");
   const card = document.getElementById("card");
   if (!current) { card.textContent = "Nothing left to offer in the ticked groups."; return; }
   card.innerHTML = `<div class="sentence">${current.html}</div>
@@ -351,6 +382,7 @@ def main() -> int:
     lexicon = migrate_fit.export_name_lexicon()
     session = Session(sentences, lexicon, hand_labels.Path(args.labels), args.per_word)
     print(f"{len(sentences)} sentences, {len(session.labels)} labels in {args.labels}")
+    threading.Thread(target=session.generate_all, daemon=True).start()
 
     # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server (Anki
     # Connect) holds without error, and the browser then reaches that server instead.
