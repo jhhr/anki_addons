@@ -65,6 +65,63 @@ class FixTests(unittest.TestCase):
         self.assertEqual(arr[0][1], "noun")
         self.assertEqual((fix.changed, fix.unaligned), ([], ["日本", "東京"]))
 
+    def test_a_word_cut_across_a_name_splits_where_the_rest_is_a_word(self):
+        def rest_word(_word, raw):
+            return word(raw, "particle") if raw == "と" else None
+
+        arr = [word(" 凛[りん]と", "adverb", "凛と", "りんと", [4]), word("の", "particle")]
+        fix = llm.fix_array(arr, ["凛"], rest_word)
+        self.assertEqual(
+            arr,
+            [
+                [" 凛[りん]", "proper noun", "凛", "りん", [], []],
+                word("と", "particle"),
+                word("の", "particle"),
+            ],
+        )
+        self.assertEqual((fix.changed, fix.unaligned, fix.unlinked), (["凛"], [], [4]))
+
+    def test_a_cut_at_a_sub_word_boundary_keeps_the_sub_words_links(self):
+        subs = [
+            word(" 少年[しょうねん]", form="少年", reading="しょうねん", match_data=[6]),
+            word("京太郎[きょうたろう]", "proper noun", "京太郎", "きょうたろう", [7]),
+        ]
+        arr = [
+            word(
+                " 少年京太郎[しょうねんきょうたろう]",
+                "noun",
+                "少年京太郎",
+                "しょうねんきょうたろう",
+                [5],
+                subs,
+            ),
+            word("と", "particle"),
+        ]
+        rest = word(" 少年[しょうねん]", form="少年", reading="しょうねん")
+        fix = llm.fix_array(arr, ["京太郎"], lambda _w, raw: list(rest) if raw == rest[0] else None)
+        self.assertEqual(
+            arr[:2],
+            [
+                word(" 少年[しょうねん]", form="少年", reading="しょうねん", match_data=[6]),
+                ["京太郎[きょうたろう]", "proper noun", "京太郎", "きょうたろう", [7], []],
+            ],
+        )
+        self.assertEqual((fix.changed, fix.unaligned, fix.unlinked), (["京太郎"], [], [5]))
+
+    def test_a_word_stays_whole_when_the_rest_is_no_word_or_the_cut_is_in_furigana(self):
+        asked = []
+
+        def rest_word(_word, raw):
+            asked.append(raw)
+            return None
+
+        arr = [word(" 江戸時代[えどじだい]", form="江戸時代", reading="えどじだい"), word("に")]
+        fix = llm.fix_array(arr, ["江戸"], rest_word)
+        self.assertEqual((arr[0][1], fix.unaligned, asked), ("noun", ["江戸"], []))
+        arr = [word(" 凛[りん]と", "adverb", "凛と", "りんと")]
+        fix = llm.fix_array(arr, ["凛"], rest_word)
+        self.assertEqual((arr[0][1], fix.unaligned, asked), ("adverb", ["凛"], ["と"]))
+
     def test_a_name_already_a_proper_noun_is_not_changed(self):
         arr = [word("東京", "proper noun"), word("と"), word("東京", "noun")]
         fix = llm.fix_array(arr, ["東京"])

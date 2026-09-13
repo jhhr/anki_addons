@@ -1178,6 +1178,36 @@ def _not_suffix_label(form: str, reading: str) -> Optional[str]:
     return _jmdict_label(codes)
 
 
+# What is left beside a name is no word of its own when it is one of these (スペイン語, 日本一)
+NAME_REST_BOUND_POS = {"suffix", "prefix", "counter", "number"}
+
+
+def name_rest_word(word: list, rest_raw: str) -> Optional[list]:
+    """The word element of what is left of `word` beside a proper noun cut out of it, for
+    `proper_noun_llm.fix_array`: a particle (凛と -> 凛 + と), or a JMdict word when `word` is
+    neither a JMdict entry nor a proper noun (少年京太郎 -> 少年 + 京太郎, but 江戸時代, ドイツ語 and
+    新宿駅 stay whole). None leaves the word whole."""
+    rest = [e for e in generate(rest_raw) if len(e) > 1]
+    if len(rest) != 1:
+        return None
+    elem = rest[0]
+    if elem[1] == "particle":
+        return elem
+    if word[1] == "proper noun" or elem[1] in NAME_REST_BOUND_POS:
+        return None
+    if _jmdict_codes(word[2], to_hiragana(word[3])):
+        return None
+    if not _jmdict_codes(elem[2], to_hiragana(elem[3])):
+        return None
+    rest_plain = match_flags.plain_text(rest_raw)
+    if any(
+        len(s) > 1 and s[1] in NAME_REST_BOUND_POS and match_flags.plain_text(s[0]) == rest_plain
+        for s in word[5]
+    ):
+        return None
+    return elem
+
+
 def _jmdict_label(codes: set[str]) -> Optional[str]:
     for code, label in NOT_SUFFIX_POS_MAP:
         if any(

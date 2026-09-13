@@ -189,8 +189,12 @@ nouns labelled a top-level proper noun before and after the fix, 198 of 376 with
 | claude-haiku-4-5 | 80.9% / 69.9% | 256 | 115 (日本語, 猫足 wrongly) |
 
 Most names given that the old lists lack are real (高松塚古墳, 奈良県, 正親町天皇). A name off word
-boundaries is nearly always part of a word on purpose (スペイン語, 新宿駅, 奈良県明日香村); the
-generator cutting across a name (凛と as one adverb, 少年京太郎 as one noun) is rare. A JMdict
+boundaries is nearly always part of a word on purpose (スペイン語, 新宿駅, 奈良県明日香村). Where
+the generator cut across a name, `generator.name_rest_word` lets `fix_array` split the word first:
+when what is left is a particle (凛と -> 凛 + と), or a JMdict word and the cut word is neither a
+JMdict entry nor a proper noun (少年京太郎 -> 少年 + 京太郎; 江戸時代, ドイツ語, 新宿駅 stay whole).
+Sub-words the cut runs between keep their links; `research/name_boundaries.py` lists every cut
+over the export with the old lists' proper nouns as the names. A JMdict
 common noun isn't refused for now: JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n`
 too, so such a guard would drop about 40% of the fixes.
 

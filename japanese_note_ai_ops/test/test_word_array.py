@@ -111,6 +111,28 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("日本[にほん]に行[い]く。")
         self.assertEqual(find_word(arr, "日本")[1], "proper noun")
 
+    def test_a_word_cut_across_a_name_splits_only_off_a_word_of_its_own(self):
+        llm = load_ops_module("proper_noun_llm", subdir="word_array")
+        cases = [
+            # the rest is a particle, or a JMdict word of a word JMdict doesn't have
+            ("凛[りん]との 事[こと]", "凛", ["凛", "と"]),
+            ("陰[かげ]キャ 少年京太郎[しょうねんきょうたろう]と", "京太郎", ["少年", "京太郎"]),
+            # a JMdict compound, a suffix-like rest, a bigger name: whole
+            ("江戸時代[えどじだい]に", "江戸", ["江戸時代"]),
+            ("ドイツ 語[ご]を 話[はな]す", "ドイツ", ["ドイツ語"]),
+        ]
+        for sentence, name, forms in cases:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                llm.fix_array(arr, [name], self.generator.name_rest_word)
+                self.assertTrue(all(find_word(arr, f) for f in forms), arr)
+                # a cut between sub-words takes their furigana, so only the plain text is kept
+                self.assertEqual(
+                    llm.plain_text(self.gold.concat_raw(arr)), llm.plain_text(sentence)
+                )
+                if len(forms) > 1:
+                    self.assertEqual(find_word(arr, name)[1], "proper noun")
+
     def test_sub_words_get_their_own_share_of_the_furigana(self):
         arr = self.generator.generate(self.examples[2][0])
         compound = find_word(arr, "見下ろす")

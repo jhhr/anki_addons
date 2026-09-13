@@ -9,7 +9,9 @@ before the word matching judge: a merged name is left with the match_data of its
 
 import json
 import logging
+import threading
 from collections.abc import Sequence
+from typing import Optional
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -17,12 +19,23 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
+from ..sync_local_ops.migrate_word_arrays import with_generator_resources
 from ..utils import get_field_config
-from ..word_array import proper_noun_llm
+from ..word_array import generator, proper_noun_llm
 from ..word_array.match_flags import decode_word_array
 from .base_ops import AsyncTaskProgressUpdater, bulk_notes_op, get_response, selected_notes_op
 
 logger = logging.getLogger(__name__)
+
+# Notes are handled on several threads at once; one Sudachi tokenizer serves them all
+_generator_lock = threading.Lock()
+
+
+def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:
+    """`generator.name_rest_word`, one call at a time: splits a word the generator cut across a
+    name (凛と -> 凛 + と) where the rest is a word of its own."""
+    with _generator_lock:
+        return generator.name_rest_word(word, rest_raw)
 
 
 def proper_nouns_model(config: dict) -> str:
@@ -63,7 +76,7 @@ def find_proper_nouns_in_note(
     except ValueError as e:
         logger.error(f"{log_prefix}{e}")
         return False
-    fix = proper_noun_llm.fix_array(arr, names)
+    fix = proper_noun_llm.fix_array(arr, names, _name_rest_word)
     logger.debug(f"{log_prefix}names {names}, changed {fix.changed}")
     if fix.unaligned:
         logger.info(f"{log_prefix}names not on word boundaries: {fix.unaligned}")
@@ -103,6 +116,11 @@ def bulk_find_proper_nouns_op(
 
 
 def find_proper_nouns_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
-    progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Finding proper nouns")
-    done_text = "Found proper nouns"
-    return selected_notes_op(done_text, bulk_find_proper_nouns_op, nids, parent, progress_updater)
+    """Needs the generator's resources: a name the generator cut across is split with it."""
+
+    def run():
+        progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Finding proper nouns")
+        done_text = "Found proper nouns"
+        selected_notes_op(done_text, bulk_find_proper_nouns_op, nids, parent, progress_updater)
+
+    with_generator_resources(parent, run)
