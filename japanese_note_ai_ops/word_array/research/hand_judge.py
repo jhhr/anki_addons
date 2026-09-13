@@ -1,6 +1,6 @@
 """Judging array words by hand, in the browser, for the judge's eval set.
 
-    py -3.10 word_array/research/hand_judge.py [--corpus export] [--per-word 1] [--port 8765]
+    py -3.10 word_array/research/hand_judge.py [--corpus export] [--per-word 1] [--port 8790]
 
 Serves a page on localhost that shows one word at a time from sentences of the migration export,
 taken in random order and generated on the spot: the sentence with the word marked (the words it
@@ -338,7 +338,7 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None, help="sentence order")
     parser.add_argument("--labels", default=str(hand_labels.HAND_LABELS), help="label file")
     parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to judge from a phone")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8790, help="not 8765, AnkiConnect's")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
@@ -349,6 +349,9 @@ def main() -> int:
     session = Session(sentences, hand_labels.Path(args.labels), args.per_word)
     print(f"{len(sentences)} sentences, {len(session.labels)} labels in {args.labels}")
 
+    # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server (Anki
+    # Connect) holds without error, and the browser then reaches that server instead.
+    HTTPServer.allow_reuse_address = False
     server = HTTPServer((args.host, args.port), make_handler(session))
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Serving {url} (Ctrl+C to stop)")
