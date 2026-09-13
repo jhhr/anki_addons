@@ -23,9 +23,12 @@ Morphs are the generator's (surface, pos, start, end); this module doesn't token
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 from ..kana_conv import to_hiragana
@@ -288,6 +291,29 @@ def build_lexicon(
             del lexicon[name]
             drop[name] = f"word, anchored {n} of {uses[name]}"
     return lexicon
+
+
+def save_lexicon(lexicon: dict[str, NameEntry], path: Path) -> None:
+    """The lexicon as json, {name: {"count", "sources", "readings"}}, replaced atomically."""
+    data = {
+        name: {"count": e.count, "sources": sorted(e.sources), "readings": sorted(e.readings)}
+        for name, e in sorted(lexicon.items())
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_lexicon(path: Path) -> dict[str, NameEntry]:
+    """The lexicon `save_lexicon` wrote, empty when there is none."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        name: NameEntry(e.get("count", 0), set(e.get("sources", [])), set(e.get("readings", [])))
+        for name, e in data.items()
+    }
 
 
 def _reads_as(entry: Optional[NameEntry], name: str, reading: str) -> bool:

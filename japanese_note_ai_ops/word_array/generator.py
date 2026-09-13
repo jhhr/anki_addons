@@ -28,13 +28,14 @@ import re
 import unicodedata
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Optional
+from typing import Iterable, Optional
 
 from sudachipy import Dictionary, SplitMode
 
 from ..kana_conv import to_hiragana
 from . import jmdict_index as jmdict
 from . import match_flags, numbers, resources, text_map
+from .names import build_lexicon, find_names, jmdict_word
 from .text_map import TextMap
 
 KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
@@ -165,6 +166,48 @@ def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
         else:
             out.append(m)
     return out
+
+
+# --- 2b. names -----------------------------------------------------------------------------
+
+NAME_POS = ("名詞", "固有名詞", "人名", "一般", "*", "*")
+
+
+def merge_names(tm: TextMap, morphs: list[Morph], lexicon: dict) -> list[Morph]:
+    """The morphs of each name the lexicon (`names.build_lexicon`) finds as one proper noun with
+    no sub-words: 里|樹 -> 里樹, ひま|りん -> ひまりん, and 山田, a 普通名詞 to Sudachi, relabelled.
+    A name has no parts worth a note; the honorific after it stays a word of its own."""
+    ends = {start: end for start, end, _ in find_names(morphs, lexicon, tm.surface_reading)}
+    out: list[Morph] = []
+    i = 0
+    while i < len(morphs):
+        end = ends.get(morphs[i].start)
+        if end is None:
+            out.append(morphs[i])
+            i += 1
+            continue
+        j = i + 1
+        while morphs[j - 1].end < end:
+            j += 1
+        run = morphs[i:j]
+        surface = "".join(m.surface for m in run)
+        reading = "".join(m.reading for m in run)
+        out.append(Morph(run[0].start, end, surface, NAME_POS, surface, surface, reading))
+        i = j
+    return out
+
+
+def name_corpus_row(sentence: str) -> tuple:
+    """(natural text, morphs, reader) of a sentence, as `names.build_lexicon` takes them."""
+    tm = text_map.build(sentence)
+    return tm.natural, tokenize(tm.natural), tm.surface_reading
+
+
+def build_name_lexicon(sentences: Iterable[str]) -> dict:
+    """The name lexicon of a corpus of furigana sentences (context already stripped), each
+    distinct sentence counted once."""
+    rows = [name_corpus_row(s) for s in dict.fromkeys(sentences) if s.strip()]
+    return build_lexicon(rows, word=jmdict_word)
 
 
 # --- 3. grouping ---------------------------------------------------------------------------
@@ -1176,9 +1219,13 @@ def _emit(
     return out
 
 
-def analyze(sentence: str) -> Analysis:
+def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
+    """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
     tm = text_map.build(sentence)
-    words = merge_cut_groups(tm, to_words(tokenize(tm.natural)))
+    morphs = tokenize(tm.natural)
+    if names:
+        morphs = merge_names(tm, morphs, names)
+    words = merge_cut_groups(tm, to_words(morphs))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun
@@ -1189,6 +1236,6 @@ def analyze(sentence: str) -> Analysis:
     return Analysis(tm, words, cands, final, _emit(tm, final, 0, len(tm.raw)))
 
 
-def generate(sentence: str) -> list[list]:
+def generate(sentence: str, names: Optional[dict] = None) -> list[list]:
     """The word array for a furigana sentence (html allowed, <b> tags dropped)."""
-    return analyze(sentence).array
+    return analyze(sentence, names).array

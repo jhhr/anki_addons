@@ -183,6 +183,9 @@ def main() -> int:
     )
     parser.add_argument("--traceback", action="store_true", help="traceback on a crash")
     parser.add_argument("--step", default="", help="list what this match step linked, instead")
+    parser.add_argument(
+        "--no-names", action="store_true", help="no name lexicon (built from the corpus otherwise)"
+    )
     args = parser.parse_args()
     if r"\u" in args.dump:
         args.dump = args.dump.encode("ascii", "backslashreplace").decode("unicode_escape")
@@ -196,6 +199,14 @@ def main() -> int:
     if not corpus:
         print(f"No sentences read from {path}")
         return 1
+
+    lexicon: dict = {}
+    if not args.no_names:
+        # As the op's lexicon is built from the whole collection's sentences
+        before = time.perf_counter()
+        sentences = [html_stripping.strip_context_sentences(s) for s, _ in corpus]
+        lexicon = generator.build_name_lexicon(sentences)
+        print(f"Name lexicon: {len(lexicon)} names, {time.perf_counter() - before:.0f} s")
 
     totals: Counter[str] = Counter()
     lost: Counter[tuple[str, str, str, str]] = Counter()
@@ -217,7 +228,7 @@ def main() -> int:
         count_malformed(word_lists, invalid)
         before = time.perf_counter()
         try:
-            arr = generator.generate(sentence)
+            arr = generator.generate(sentence, lexicon)
         except Exception as e:
             crashes[f"generate: {type(e).__name__}: {e}"[:160]] += 1
             if not args.quiet:

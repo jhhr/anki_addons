@@ -29,6 +29,8 @@ from . import jmdict_index
 USER_FILES = Path(__file__).resolve().parent.parent / "user_files"
 SUDACHI_DIR = USER_FILES / "sudachi"
 SUDACHI_DIC = SUDACHI_DIR / "system_core.dic"
+# Built from the collection's own sentences (names.build_lexicon), not downloaded
+NAME_LEXICON = USER_FILES / "name_lexicon.json"
 
 # The core and full dictionaries score the same on the gold examples; core is ~60% the size
 SUDACHI_DICT_VERSION = "20260723"

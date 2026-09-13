@@ -145,6 +145,23 @@ A number's dictionary form is the Japanese numeral whatever the text writes (`nu
 computed when the note gives none (三つ still reads みっつ, from JMdict). Lookups use the
 numeral, so 1日 and １日 both find 一日.
 
+## Names
+
+Sudachi doesn't know fictional names and nicknames, so it cuts them into words it does know
+(里|樹, ひま|りん) or tags a common one as a plain noun (山田). `names.py` finds them across a whole
+corpus by what grammar puts around a name: an honorific after it (里樹さま), a nickname suffix
+fused to it (ひまりん), or its opening quoted speech (「ひまりん、). One anchored use names every
+mention read the same way. A dictionary word needs at least two anchors and most of its uses
+anchored (娘さん doesn't make 娘 a name), and お-words and hiragana words never are names.
+
+`generator.build_name_lexicon(sentences)` builds the lexicon; `generate(sentence, names=lexicon)`
+merges each name it finds into one `proper noun` with no sub-words, leaving the honorific a word
+of its own. The add-on keeps the lexicon in `user_files/name_lexicon.json`, built by the browser
+menu entry "Build name lexicon from selected notes" (select the whole collection) and read by the
+migration op; without one, names stay cut up. Over the export: 115 names, links carried unchanged
+(76087), 22 fewer array words. `research/name_lexicon.py` reports what the lexicon holds and misses;
+`migrate_fit.py` builds one from its corpus unless given `--no-names`.
+
 ## match_data states
 
 `match_data` is in one of five states (`match_flags.MatchState`, `match_state()`):

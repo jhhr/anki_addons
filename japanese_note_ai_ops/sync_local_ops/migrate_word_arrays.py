@@ -14,13 +14,17 @@ A note whose old list held a link the array had no home for is tagged, so that w
 migration dropped can be looked at in the browser afterwards. Entries carrying no note id are
 dropped silently - the array is the correct word list now, and that is all such an entry was.
 
+Names Sudachi doesn't know come out as proper nouns when the name lexicon has them
+(`build_name_lexicon.py`, saved in user_files); without one they stay cut up.
+
 The first run downloads the Sudachi dictionary and JMdict (~83 MB), which is asked about once
 before any note is touched rather than in the middle of a bulk run.
 """
 
 import json
 import logging
-from typing import Any, Sequence, cast
+from functools import partial
+from typing import Any, Callable, Optional, Sequence, cast
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -36,7 +40,7 @@ from ..async_api_ops.base_ops import (
 from ..async_api_ops.match_words_to_notes import decode_word_list_field
 from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config, print_error_traceback
-from ..word_array import generator, migrate, resources
+from ..word_array import generator, migrate, names, resources
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +53,7 @@ def migrate_word_array_in_note(
     note: Note,
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
+    name_lexicon: Optional[dict] = None,
 ) -> bool:
     """Generate the word array for one note's sentence, carry its old note ids into it and
     write it over the old word list. False when the note has nothing to migrate."""
@@ -75,7 +80,7 @@ def migrate_word_array_in_note(
         return False
 
     try:
-        arr = generator.generate(sentence)
+        arr = generator.generate(sentence, name_lexicon)
     except Exception as e:
         logger.error(f"{log_prefix}Could not generate a word array: {e}")
         print_error_traceback(e, logger)
@@ -123,7 +128,9 @@ async def bulk_migrate_word_arrays_op(
     return await bulk_notes_op(
         message="Migrating word lists to word arrays",
         config=config,
-        op=migrate_word_array_in_note,
+        op=partial(
+            migrate_word_array_in_note, name_lexicon=names.load_lexicon(resources.NAME_LEXICON)
+        ),
         col=col,
         notes=notes,
         edited_nids=edited_nids,
@@ -140,22 +147,9 @@ def _run(nids: Sequence[NoteId], parent: Any):
     return selected_notes_op(done_text, bulk_migrate_word_arrays_op, nids, parent, progress_updater)
 
 
-def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
-    """Replace the selected notes' word lists with generated word arrays, asking first - the
-    old list is overwritten, and the ops that read that field have not been taught the new
-    format yet - and then for the downloads the generator needs on its first use."""
-    if not askUser(
-        f"Replace the word list of {len(nids)} note(s) with a generated word array?\n\n"
-        "The old list is overwritten in place. Only the note ids of words already matched are"
-        " carried over; a note that loses one is tagged"
-        f" {LEFTOVERS_TAG}, and every note migrated is tagged {MIGRATED_TAG}.\n\n"
-        "match_words_to_notes and clean_meaning still read the old format from this field, so"
-        " migrated notes will not work with them until they are updated.",
-        parent=parent,
-        title="Migrate word lists to word arrays",
-        defaultno=True,
-    ):
-        return
+def with_generator_resources(parent: Any, then: Callable[[], Any]) -> None:
+    """Run `then` once the generator can run: SudachiPy present, and the dictionaries it needs
+    downloaded, asking the user before the download."""
     if not resources.has_sudachipy():
         showWarning(
             "The word array generator needs SudachiPy, which is missing from this add-on's"
@@ -164,7 +158,8 @@ def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
         return
     needed = resources.missing()
     if not needed:
-        return _run(nids, parent)
+        then()
+        return
 
     downloads = "\n".join(f"  - {d.name}, {d.size_mb:.0f} MB" for d in needed)
     if not askUser(
@@ -183,5 +178,32 @@ def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
     QueryOp(
         parent=parent,
         op=fetch,
-        success=lambda _: _run(nids, parent),
+        success=lambda _: then(),
     ).with_progress("Downloading the word array generator's dictionaries").run_in_background()
+
+
+def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
+    """Replace the selected notes' word lists with generated word arrays, asking first - the
+    old list is overwritten, and the ops that read that field have not been taught the new
+    format yet - and then for the downloads the generator needs on its first use."""
+    lexicon_size = len(names.load_lexicon(resources.NAME_LEXICON))
+    lexicon_text = (
+        f"The name lexicon has {lexicon_size} names."
+        if lexicon_size
+        else "There is no name lexicon yet (Build name lexicon from selected notes), so names"
+        " Sudachi doesn't know stay cut up."
+    )
+    if not askUser(
+        f"Replace the word list of {len(nids)} note(s) with a generated word array?\n\n"
+        "The old list is overwritten in place. Only the note ids of words already matched are"
+        " carried over; a note that loses one is tagged"
+        f" {LEFTOVERS_TAG}, and every note migrated is tagged {MIGRATED_TAG}.\n\n"
+        f"{lexicon_text}\n\n"
+        "match_words_to_notes and clean_meaning still read the old format from this field, so"
+        " migrated notes will not work with them until they are updated.",
+        parent=parent,
+        title="Migrate word lists to word arrays",
+        defaultno=True,
+    ):
+        return
+    with_generator_resources(parent, lambda: _run(nids, parent))

@@ -162,5 +162,18 @@ class FindNamesTests(unittest.TestCase):
         self.assertEqual(names.find_names(HIMARIN, lexicon), [(0, 4, "ひまりん")])
 
 
+class StorageTests(unittest.TestCase):
+    def test_lexicon_round_trips_through_json(self):
+        import tempfile
+        from pathlib import Path
+
+        lexicon = {"里樹": names.NameEntry(3, {names.HONORIFIC, names.SUDACHI}, {"りしゅ"})}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sub" / "name_lexicon.json"
+            self.assertEqual(names.load_lexicon(path), {})
+            names.save_lexicon(lexicon, path)
+            self.assertEqual(names.load_lexicon(path), lexicon)
+
+
 if __name__ == "__main__":
     unittest.main()

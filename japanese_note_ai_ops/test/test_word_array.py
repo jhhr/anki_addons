@@ -76,6 +76,25 @@ class WordArrayTests(unittest.TestCase):
                 with self.subTest(example=num, word=e[0]):
                     self.assertTrue(balanced(self.tag_cleaning.apply_tag_fixes(html)), html)
 
+    def test_lexicon_names_are_one_proper_noun(self):
+        # 山田 is a 普通名詞 to Sudachi, with 山 + 田 as sub-words
+        names = load_ops_module("names", subdir="word_array")
+        sentence = (
+            "図書室[としょしつ]施錠[せじょう]の時間[じかん]まで山田[やまだ]を"
+            "足止[あしどめ]為[し]て良[よ]かったぜ。"
+        )
+        self.assertEqual(find_word(self.generator.generate(sentence), "山田")[1], "noun")
+        lexicon = {"山田": names.NameEntry(2, {names.HONORIFIC}, {"やまだ"})}
+        yamada = find_word(self.generator.generate(sentence, lexicon), "山田")
+        self.assertEqual(yamada[1:4], ["proper noun", "山田", "やまだ"])
+        self.assertEqual(yamada[5], [])
+        # Built from the gold: 里樹 is anchored by 様, which stays its own word
+        sentence = self.examples[6][0]
+        lexicon = self.generator.build_name_lexicon([sentence])
+        arr = self.generator.generate(sentence, lexicon)
+        self.assertEqual(find_word(arr, "里樹")[1], "proper noun")
+        self.assertTrue(find_word(arr, "様"))
+
     def test_sub_words_get_their_own_share_of_the_furigana(self):
         arr = self.generator.generate(self.examples[2][0])
         compound = find_word(arr, "見下ろす")

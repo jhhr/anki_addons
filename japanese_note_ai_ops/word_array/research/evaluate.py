@@ -59,8 +59,10 @@ def main(verbose: bool) -> None:
     tot: Counter[str] = Counter()
     lemma_miss: list[tuple] = []
     reading_miss: list[tuple] = []
-    for num, (sentence, gold_arr) in sorted(gold.load().items()):
-        an = generator.analyze(sentence)
+    examples = gold.load()
+    lexicon = generator.build_name_lexicon(s for s, _ in examples.values())
+    for num, (sentence, gold_arr) in sorted(examples.items()):
+        an = generator.analyze(sentence, lexicon)
         plain = gold.strip_to_plain(an.text_map.raw)
         g_all, s_all = spans(gold_arr), spans(an.array)
         g_top = {(s, e): el for d, s, e, el in g_all if d == 0}

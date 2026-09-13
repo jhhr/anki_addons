@@ -43,8 +43,11 @@ def main() -> None:
         "Regenerate with `python word_array/research/write_generated.py`.\n",
         "## Gold examples\n",
     ]
-    for num, (sentence, gold_arr) in sorted(gold.load().items()):
-        an = generator.analyze(sentence)
+    examples = gold.load()
+    # Names from the gold sentences alone; the unseen ones below get none
+    lexicon = generator.build_name_lexicon(s for s, _ in examples.values())
+    for num, (sentence, gold_arr) in sorted(examples.items()):
+        an = generator.analyze(sentence, lexicon)
         plain = gold.strip_to_plain(an.text_map.raw)
         parts.append(
             f"```\nExample sentence {num}: {sentence}\n```\n\n```json\n[\n{fmt(an.array)}\n]\n```\n"
