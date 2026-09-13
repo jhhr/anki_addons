@@ -532,12 +532,22 @@ def decompose(tm: TextMap, w: Word) -> list[Word]:
 def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
     """Whether the kana after `split` are the word's okurigana, not a word: JMdict has らか, か
     and た as words, but 柔らか, 静か and 新た (形状詞) are no 柔 + らか; nor are the adverbs 悉く,
-    幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て)."""
+    幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て). A noun's lone kana
+    other than も is okurigana (窪み, 夕べ, 逆さ; 何時|も), and so is a longer tail of a noun
+    that is a verb's ます-stem (味わい, 計らい, 見かけ); 赤|ちゃん, 口|コミ, 目|つき are words."""
     tail = tm.written_form(split, w.end)
     if KANJI_RE.search(tail):
         return False
     if w.head.pos[0] == "形状詞":
         return True
+    if w.head.pos[0] == "名詞":
+        written = tm.written_form(w.start, w.end)
+        stem = VERB_STEM_TO_DICT.get(written[-1])
+        return (
+            (len(tail) == 1 and tail != "も")
+            or bool(stem and jmdict.has_pos(written[:-1] + stem, "v5"))
+            or jmdict.has_pos(written + "る", "v1")
+        )
     return w.head.pos[0] == "副詞" and "prt" not in {
         p for _, rs, ps in jmdict.lookup(tail) if tail in rs for p in ps
     }

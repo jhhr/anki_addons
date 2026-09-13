@@ -171,6 +171,24 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("正[まさ]に その 通[とお]り")
         self.assertEqual([s[2] for s in find_word(arr, "正に")[5]], ["正", "に"])
 
+    def test_noun_okurigana_is_no_sub_word(self):
+        # a noun's lone kana, or the rest of a verb's ます-stem, is okurigana
+        for sentence, form in [
+            ("道[みち]の 窪[くぼ]みに 水[みず]が 溜[た]まる", "窪み"),
+            ("夕[ゆう]べ 雨[あめ]が 降[ふ]った", "夕べ"),
+            ("独特[どくとく]の 味[あじ]わいが 有[あ]る", "味わい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
+        # も and a word of its own after a noun still split
+        for sentence, form, subs in [
+            ("何時[いつ]も 忙[いそが]しい", "何時も", ["何時", "も"]),
+            ("赤[あか]ちゃんが 泣[な]く", "赤ちゃん", ["赤", "ちゃん"]),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual([s[2] for s in word[5]], subs)
+
     def test_an_adjective_stem_and_ge_are_one_na_adjective(self):
         # JMdict has 寂しげ but not 儚げ; both come out alike, and 忌々しげに isn't 忌々し + げに
         for sentence, form in [
