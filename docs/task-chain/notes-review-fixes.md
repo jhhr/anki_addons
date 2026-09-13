@@ -80,20 +80,27 @@ closed.
       one pass into a new list, reading entries through `normalize_word_tuple` — and
       `word_list_dict` is bound to `{}` above the `if`. New `test_match_single_word_bulk_op.py`
       (14 tests, 6 red before).*
-- [ ] **[USER] Decide what `bulk_op`'s word list deduplication is for.** Not a review finding —
-      found while fixing 6+7. `match_single_word_to_notes_from_selected`'s `bulk_op` decodes the
-      note's word list field, deduplicates the lists, and then never encodes them back or reads
-      them again; the decode still earns its keep (it tags an undecodable field and registers
-      the note in `notes_to_update_dict`) but the deduplication reaches nothing but the log.
-      Two ways out and they are not equivalent: write the deduplicated lists back to the note
-      and register it for update — a behaviour change to a shipped add-on, and the thing the
-      loop reads as intending — or delete the loop as dead code. Ask the user which, then do it.
-      `drop_duplicate_word_tuples` and its tests stay useful either way.
+- [ ] **Write `bulk_op`'s deduplicated word lists back to the note.** Not a review finding —
+      found while fixing 6+7, and the user has decided it (see Decisions made).
+      `match_single_word_to_notes_from_selected`'s `bulk_op` decodes the note's word list field,
+      deduplicates the lists via `drop_duplicate_word_tuples`, and then never encodes them back,
+      so the deduplication reaches nothing but the log. Make it stick: after the call, encode
+      `word_list_dict` with `word_lists_str_format` (the same encoder
+      `match_words_to_notes_for_note` uses at `match_words_to_notes.py:2596`), assign it to
+      `cur_note[word_list_field]`, and register `cur_note` in `notes_to_update_dict` — matching
+      that function's `if ... not in notes_to_update_dict` guard and its `None` check on the
+      encoder's result. Write only when the deduplication actually removed something, so an
+      untouched note is not marked edited; `drop_duplicate_word_tuples` returning what it
+      dropped (or whether it changed anything) is the natural way to know. Mind the note the
+      field is missing from, and the fake-id notes `bulk_op` can be handed: `decode_word_list_field`
+      guards its own registration with `note.id > 0`. Done when `test_match_single_word_bulk_op.py`
+      shows a note with duplicates coming out of `bulk_op` with a rewritten field and an entry in
+      `notes_to_update_dict`, and a note without duplicates coming out untouched and unregistered.
 
 ## State
 
-**All seven review findings are fixed.** The one entry left in the queue is a `[USER]`
-question raised by task-5, not a finding.
+**All seven review findings are fixed.** The one entry left in the queue is follow-up work
+raised by task-5 and decided by the user, not a finding.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -143,7 +150,9 @@ unreachable and deliberately left alone.
   decoded inside the loop and never encoded back, so the review's "the note keeps a duplicate
   word" overstates finding 6 — what the bug actually cost was the log line and the
   `encountered_words` bookkeeping. Fixed as filed rather than deleted, because whether that loop
-  should write back is the user's call; queued as the `[USER]` task above.
+  should write back is the user's call. **Asked, and the user chose: write the deduplicated
+  lists back** to the note rather than delete the loop — so a run that reports a list
+  deduplicated actually saves it that way. Queued as the last task above.
 - **task-3: `vendor_health` changed along with the ordering.** The review only asks
   `add_vendor_paths` to act on the verdict, but leaving `vendor_health` judging a tree that no
   longer leads `sys.path` would offer a rebuild forever over a tree that is not in use, so the
