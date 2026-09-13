@@ -59,3 +59,8 @@ class MakeMeaningsResult(Enum):
     SUCCESS = 1
     NO_DICTIONARY_ENTRY = 2
     ERROR = 3
+    # The dictionaries could not be asked, as opposed to having been asked and having nothing.
+    # Kept apart from NO_DICTIONARY_ENTRY because that one makes the caller write
+    # NO_DICTIONARY_ENTRY_TAG, which needs_meaning_mapping treats as terminal: a transient
+    # failure recorded that way costs the note its meanings permanently. See MDXLookupError.
+    DICTIONARY_LOOKUP_FAILED = 4

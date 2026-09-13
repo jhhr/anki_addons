@@ -812,7 +812,15 @@ class AnkiMDXHelper:
             max_length: Optional maximum character length for truncation
 
         Returns:
-            Plain text string with definitions from all dictionaries
+            Plain text string with definitions from all dictionaries, or None when the word is
+            genuinely in none of them.
+
+        Raises:
+            MDXLookupError: when a dictionary could not answer at all. This is deliberately not
+            folded into the None above: None means "not in any dictionary", which callers act on
+            by recording that fact about the word - a tag on the note, in one case - and a
+            transient failure must never be recorded as a fact about the word. See
+            MDXLookupError, and the except clause below.
         """
         if self.multi_dict is None:
             return None
@@ -828,11 +836,17 @@ class AnkiMDXHelper:
                 word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
             )
         except MDXLookupError as e:
-            # The run carries on with no definition for this word, exactly as it did before -
-            # the caller's next step either way is to have a model write one. What is different
-            # is that nothing was stored: the same word asked again, by this run or a later one
-            # in the same Anki session, scans again rather than being served this failure as a
-            # fact. See MDXLookupError.
+            # Nothing was stored: the same word asked again, by this run or a later one in the
+            # same Anki session, scans again rather than being served this failure as a fact.
+            # See MDXLookupError.
+            #
+            # The failure is also re-raised rather than collapsed into None, which is what this
+            # used to return. None is what a word absent from every dictionary returns, and the
+            # callers treat that as settled knowledge about the word: make_meanings_in_note and
+            # clean_meaning_in_note both tag the note NO_DICTIONARY_ENTRY_TAG, and that tag is
+            # now terminal - needs_meaning_mapping skips a note carrying it, so a 600ms outage
+            # would cost those notes their meanings for good. Keeping the memo clean is therefore
+            # only half of it; the distinction has to reach whoever writes the tag.
             logger.error(
                 "MDX lookup failed: '%s' (%s) [%s] - %s; not remembered",
                 word,
@@ -840,7 +854,7 @@ class AnkiMDXHelper:
                 pick_dictionary,
                 e,
             )
-            return None
+            raise
         logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
         return self._format_definition_text(word, reading, result.value, max_length)
 

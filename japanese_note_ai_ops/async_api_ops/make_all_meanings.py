@@ -20,7 +20,7 @@ from ..configuration import (
     MakeMeaningsResult,
     WordAndSentences,
 )
-from ..sync_local_ops.mdx_dictionary import mdx_helper
+from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
 from .api_client import run_cancelled
 from .collection_access import (
@@ -165,12 +165,20 @@ def make_all_meanings_for_word(
     mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
     timer.step("mdx_load")
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # Not NO_DICTIONARY_ENTRY: that answer is written to the collection as a tag the
+        # matching path now treats as terminal, and the dictionaries were never asked here.
+        # The word is left untouched so a later run asks again.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        timer.report(logger, "dictionary lookup failed")
+        return MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED
     timer.step("dictionary_lookup")
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
@@ -317,12 +325,17 @@ UNMATCHED USAGE {i + 1}:
     word_key = make_meaning_dict_key(word, reading)
     existing_meanings = all_meanings_dict.get(word_key, [])
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # See make_all_meanings_for_word: an outage is not an answer, so it is not recorded.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        return MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
@@ -471,6 +484,17 @@ def make_meanings_in_note(
             for meaning_note in all_meaning_notes:
                 meaning_note.add_tag(NO_DICTIONARY_ENTRY_TAG)
                 notes_to_update_dict[meaning_note.id] = meaning_note
+            return False
+        elif result == MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED:
+            # Deliberately none of what the branch above does. The dictionaries could not be
+            # asked, so nothing is known about this word yet: no tag, and word_key stays out of
+            # processed_words_set so another note of the same word may still get a working
+            # lookup this run. NO_DICTIONARY_ENTRY_TAG here would be permanent - the matching
+            # path skips a note that carries it - for a failure that may have lasted 600ms.
+            logger.error(
+                f"Dictionary lookup failed for word '{note[word_field]}'"
+                f" ({note[word_reading_field]}), leaving the note untagged to retry later"
+            )
             return False
         return False
     else:

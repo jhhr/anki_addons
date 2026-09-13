@@ -23,7 +23,7 @@ from .base_ops import (
     selected_notes_op,
     AsyncTaskProgressUpdater,
 )
-from ..sync_local_ops.mdx_dictionary import mdx_helper
+from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..configuration import (
     MEANINGS_DICT_FILE,
     NO_DICTIONARY_ENTRY_TAG,
@@ -867,15 +867,29 @@ def clean_meaning_in_note(
         )
         pick_dictionary = config.get("mdx_pick_dictionary", "all")
         # Get dictionary entry from mdx helper
-        jp_mdx_dict_entry = mdx_helper.get_definition_text(
-            word=note[word_field],
-            reading=note[word_reading_field],
-            pick_dictionary=pick_dictionary,
-        )
+        dict_lookup_failed = False
+        try:
+            jp_mdx_dict_entry = mdx_helper.get_definition_text(
+                word=note[word_field],
+                reading=note[word_reading_field],
+                pick_dictionary=pick_dictionary,
+            )
+        except MDXLookupError as e:
+            # The cleaning carries on without a dictionary entry, exactly as it does for a word
+            # that is in no dictionary - the prompt below is already written both ways. What it
+            # must not do is record the absence, so remember which of the two this was.
+            logger.error(
+                f"Dictionary lookup failed for word '{note[word_field]}'"
+                f" ({note[word_reading_field]}): {e}"
+            )
+            jp_mdx_dict_entry = None
+            dict_lookup_failed = True
         if note.id > 0 and note.id in notes_to_update_dict:
             note = notes_to_update_dict[note.id]
-        if not jp_mdx_dict_entry:
-            # Set tag to find notes without dictionary entry later
+        if not jp_mdx_dict_entry and not dict_lookup_failed:
+            # Set tag to find notes without dictionary entry later. Only when the dictionaries
+            # answered: the tag is terminal for the matching path, so an outage tagged here
+            # would cost this note its meaning mapping for good. See MDXLookupError.
             note.add_tag(NO_DICTIONARY_ENTRY_TAG)
             if note.id > 0 and note.id not in notes_to_update_dict:
                 notes_to_update_dict[note.id] = note
