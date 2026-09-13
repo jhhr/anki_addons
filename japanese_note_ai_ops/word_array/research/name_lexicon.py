@@ -37,17 +37,18 @@ def main() -> int:
         sentence = html_stripping.strip_context_sentences(raw)
         if not sentence.strip():
             continue
-        natural = text_map.build(sentence).natural
-        corpus.append((natural, generator.tokenize(natural)))
+        tm = text_map.build(sentence)
+        corpus.append((tm.natural, generator.tokenize(tm.natural), tm.surface_reading))
         for entry in migrate.read_word_lists(word_lists)[0]:
             if entry.word:
                 categories[entry.word].add(entry.category)
                 if entry.category == "proper_nouns":
                     old_proper[entry.word] += 1
-    lexicon = names.build_lexicon(corpus)
+    rejected: dict = {}
+    lexicon = names.build_lexicon(corpus, word=names.jmdict_word, rejected=rejected)
     found: Counter = Counter()
-    for _, morphs in corpus:
-        found.update(name for _, _, name in names.find_names(morphs, lexicon))
+    for _, morphs, read in corpus:
+        found.update(name for _, _, name in names.find_names(morphs, lexicon, read))
 
     def verdict(name: str) -> str:
         cats = categories.get(name)
@@ -80,6 +81,8 @@ def main() -> int:
         jm = " jmdict" if jmdict.lookup(name) else ""
         sources = ",".join(sorted(entry.sources))
         lines.append(f"  {found[name]:5} {entry.count:4} {name}  {sources}  [{verdict(name)}]{jm}")
+    lines += ["", "== candidates dropped (why, old lists)"]
+    lines += [f"  {name}  {why}  [{verdict(name)}]" for name, why in sorted(rejected.items())]
     lines += ["", "== old proper nouns the lexicon misses (Sudachi doesn't tag them as one)"]
     lines += [
         f"  {old_proper[w]:4} {w}"

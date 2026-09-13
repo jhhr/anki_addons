@@ -85,7 +85,70 @@ class LexiconTests(unittest.TestCase):
         self.assertEqual(lexicon["里樹"].count, 1)
 
 
+PREFIX = ("接頭辞", "*", "*")
+WORDS = {("娘", "むすめ"), ("梨花", "りか"), ("当時", "とうじ"), ("おじ", "おじ")}
+
+
+def word(form: str, reading: str) -> bool:
+    return (form, reading) in WORDS
+
+
+def reads(sentence: list, readings: dict):
+    """A reader of hand-built morphs: each morph's reading from `readings`, else its surface."""
+    return lambda start, end: "".join(
+        readings.get(m.surface, m.surface) for m in sentence if start <= m.start and m.end <= end
+    )
+
+
+class PrecisionTests(unittest.TestCase):
+    def test_polite_prefix_or_a_lone_prefix_is_no_name(self):
+        polite = morphs(("お", PREFIX), ("医者", NOUN), ("さん", SUFFIX))
+        self.assertEqual(names.build_lexicon([("", polite)], word=word), {})
+        great = morphs(("大", PREFIX), ("当時", NOUN), ("様", SUFFIX))
+        rejected: dict = {}
+        corpus = [("", great, reads(great, {"当時": "とうじ"}))]
+        self.assertEqual(names.build_lexicon(corpus, word=word, rejected=rejected), {})
+        self.assertIn("大当時", rejected)
+
+    def test_dictionary_word_before_the_name_is_trimmed(self):
+        run = morphs(("当時", NOUN), ("里", NOUN), ("樹", SUFFIX), ("さま", SUFFIX))
+        lexicon = names.build_lexicon([("", run, reads(run, {"当時": "とうじ"}))], word=word)
+        self.assertEqual(set(lexicon), {"里樹"})
+
+    def test_dictionary_word_needs_most_of_its_uses_anchored(self):
+        anchored = morphs(("娘", NOUN), ("さん", SUFFIX))
+        bare = morphs(("娘", NOUN), ("が", PARTICLE))
+        r = {"娘": "むすめ"}
+        corpus = [("", s, reads(s, r)) for s in [anchored, anchored, bare, bare, bare]]
+        rejected: dict = {}
+        self.assertEqual(names.build_lexicon(corpus, word=word, rejected=rejected), {})
+        self.assertEqual(rejected["娘"], "word, anchored 2 of 5")
+        corpus = [("", s, reads(s, r)) for s in [anchored, anchored, bare]]
+        self.assertIn("娘", names.build_lexicon(corpus, word=word))
+
+    def test_sudachi_proper_noun_at_an_anchor_is_kept(self):
+        tagged = morphs(("梨花", PROPER), ("さま", SUFFIX))
+        lexicon = names.build_lexicon([("", tagged, reads(tagged, {"梨花": "りか"}))], word=word)
+        self.assertIn("梨花", lexicon)
+
+    def test_hiragana_word_is_no_name(self):
+        uncle = morphs(("おじ", NOUN), ("さん", SUFFIX))
+        self.assertEqual(names.build_lexicon([("", uncle)] * 3, word=word), {})
+
+    def test_nickname_once_when_no_dictionary_word(self):
+        self.assertIn("ひまりん", names.build_lexicon([("ひまりん", HIMARIN)], word=word))
+
+
 class FindNamesTests(unittest.TestCase):
+    def test_mention_read_otherwise_is_no_name(self):
+        lexicon = {"真": names.NameEntry(1, {names.HONORIFIC}, {"まこと"})}
+        sentence = morphs(("真", NOUN), ("は", PARTICLE))
+        self.assertEqual(names.find_names(sentence, lexicon, reads(sentence, {"真": "しん"})), [])
+        self.assertEqual(
+            names.find_names(sentence, lexicon, reads(sentence, {"真": "まこと"})), [(0, 1, "真")]
+        )
+        self.assertEqual(names.find_names(sentence, lexicon, reads(sentence, {})), [(0, 1, "真")])
+
     def test_bare_mention_on_morph_boundaries(self):
         bare = morphs(("里", NOUN), ("樹", SUFFIX), ("は", PARTICLE))
         self.assertEqual(names.find_names(bare, {"里樹": None}), [(0, 2, "里樹")])
