@@ -418,6 +418,20 @@ class WordArrayTests(unittest.TestCase):
                 self.assertNotIn("auxiliary", [s[1] for s in word[5] if len(s) > 1], arr)
                 self.assertNotIn("particle", [s[1] for s in word[5] if len(s) > 1], arr)
 
+    def test_tsutsu_aru_is_a_word_after_the_verb(self):
+        for sentence, verb, raw, form in [
+            ("日本は変わりつつある。", "変わる", "つつある", "つつある"),
+            ("シェアを 下[さ]げつつある。", "下げる", "つつある", "つつある"),
+            # not JMdict's しつつある
+            ("問題は解決しつつあります。", "為る", "つつあります", "つつ有る"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                words = [w for w in arr if len(w) > 1]
+                i = next(i for i, w in enumerate(words) if w[2] == form)
+                self.assertEqual(words[i][:2], [raw, "verb"], arr)
+                self.assertEqual(words[i - 1][1:3], ["verb", verb], arr)
+
     def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
         for sentence, raw, form in [
             # a suffix that inflects as a verb or adjective takes its inflection

@@ -787,8 +787,21 @@ def opens_clause(c: Candidate, words: list[Word]) -> bool:
     return prev.kind == "punct" and any(prev.head.pos[: len(b)] == b for b in CLAUSE_BREAKS)
 
 
-# JMdict entries made only of particles and auxiliaries that are still words to learn: 一本たりとも
-FUNCTION_WORD_ENTRIES = {"足りとも", "たりとも"}
+# JMdict entries made only of particles and auxiliaries that are still words to learn: 一本たりとも,
+# 変わりつつある
+FUNCTION_WORD_ENTRIES = {"足りとも", "たりとも", "つつある"}
+
+
+def _reaches_into_tsutsu_aru(c: Candidate, words: list[Word]) -> bool:
+    """Whether a match takes in the verb before つつある (JMdict's しつつある), which is a word of
+    its own, つつある its own base word as what says the verb is under way."""
+    return any(
+        words[k].head.pos[0] == "助詞"
+        and words[k].head.surface == "つつ"
+        and words[k + 1].head.pos[0] == "動詞"
+        and words[k + 1].head.lemma in ("有る", "ある", "在る")
+        for k in range(c.i + 1, c.j - 1)
+    )
 
 
 def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool:
@@ -796,6 +809,8 @@ def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool
     studying, which the word matching judge decides. `openers`: let `opens_clause` in."""
     ws = words[c.i : c.j]
     opens = openers and opens_clause(c, words)
+    if _reaches_into_tsutsu_aru(c, words):
+        return False
     if c.form in FUNCTION_WORD_ENTRIES:
         return True
     if not opens and all(w.head.pos[0] in FUNCTION_POS for w in ws):
