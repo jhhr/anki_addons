@@ -33,6 +33,7 @@ Define which model to use for each task
 - `kanjify_sentence_model`
 - `extract_words_model`
 - `word_matching_judge_model` (falls back to `extract_words_model`)
+- `proper_nouns_model` (falls back to `extract_words_model`)
 - `match_words_model`
 
 ### temperature

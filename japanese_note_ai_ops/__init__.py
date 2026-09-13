@@ -62,6 +62,9 @@ from .async_api_ops.word_matching_judgev2 import (  # noqa: E402
     word_matching_judge_v2_from_selected_notes,
 )
 from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
+from .async_api_ops.find_proper_nouns import (  # noqa: E402
+    find_proper_nouns_from_selected_notes,
+)
 
 from .async_api_ops.make_all_meanings import (  # noqa: E402
     make_meanings_selected_notes,
@@ -121,6 +124,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     extract_words_action = QAction("Extract words", mw)
     extract_words_test_compare_action = QAction("Test extract words prompt", mw)
     migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
+    find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
     judge_words_action = QAction("Judge words matchability", mw)
     rejudge_matched_words_action = QAction("Re-judge matched words", mw)
     rejudge_all_words_action = QAction("Re-judge matched/judged words", mw)
@@ -173,6 +177,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     qconnect(
         migrate_compound_verbs_action.triggered,
         lambda: migrate_compound_verbs_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        find_proper_nouns_action.triggered,
+        lambda: find_proper_nouns_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         judge_words_action.triggered,
@@ -273,6 +281,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(extract_words_action)
     ai_menu.addAction(extract_words_test_compare_action)
     ai_menu.addAction(migrate_compound_verbs_action)
+    ai_menu.addAction(find_proper_nouns_action)
     ai_menu.addAction(judge_words_action)
     ai_menu.addAction(rejudge_matched_words_action)
     ai_menu.addAction(rejudge_all_words_action)

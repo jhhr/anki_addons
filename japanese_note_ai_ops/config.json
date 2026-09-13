@@ -10,6 +10,7 @@
   "kanjify_sentence_temperature": 0.1,
   "extract_words_model": "gemini-3.5-flash-lite",
   "word_matching_judge_model": "gemini-3.5-flash-lite",
+  "proper_nouns_model": "claude-haiku-4-5-20251001",
   "match_words_model": "gemini-3.5-flash-lite",
   "migrate_compound_verbs_model": "gemini-3.5-flash-lite",
   "word_lists_to_process": {
