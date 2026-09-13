@@ -331,6 +331,48 @@ class TestConditions:
         run(definition, note, logger)
         assert note["Note"] == "no"
 
+    def test_a_skip_inside_a_branch_ends_the_branch_and_nothing_more(self, note, logger):
+        # "Stop running the rest of this block" is what the editor calls this policy, and
+        # the block a stage is in is its branch. It used to leave the branch, leave the root
+        # block and end the definition, so every stage after the condition was skipped
+        # whenever the branch's query came back empty.
+        definition = d.staged(stages=[
+            d.condition(
+                d.code("return True"),
+                [
+                    d.note_query("none", "tag:nothing-has-this", if_empty="skip_block"),
+                    d.edit_note("trigger", [d.write("Meaning", d.text("reached"))]),
+                ],
+            ),
+            d.edit_note("trigger", [d.write("Note", d.text("after"))]),
+        ])
+        assert run(definition, note, logger)[0] is True
+        # The rest of the branch is skipped...
+        assert note["Meaning"] == "cat"
+        # ...and the definition carries on from the stage after the condition, which is what
+        # the analyser assumes when it accepts an export of a result declared there (§5.9).
+        assert note["Note"] == "after"
+
+    def test_a_skip_in_the_else_branch_behaves_the_same_way(self, note, logger):
+        definition = d.staged(stages=[
+            d.condition(
+                d.code("return False"),
+                [],
+                [d.note_query("none", "tag:nothing-has-this", if_empty="skip_block")],
+            ),
+            d.edit_note("trigger", [d.write("Note", d.text("after"))]),
+        ])
+        assert run(definition, note, logger)[0] is True
+        assert note["Note"] == "after"
+
+    def test_a_skip_at_the_root_still_ends_the_definition(self, note, logger):
+        definition = d.staged(stages=[
+            d.note_query("none", "tag:nothing-has-this", if_empty="skip_block"),
+            d.edit_note("trigger", [d.write("Note", d.text("after"))]),
+        ])
+        assert run(definition, note, logger)[0] is True
+        assert note["Note"] == ""
+
     def test_a_text_predicate_is_true_when_it_produced_something(self, note, logger):
         definition = d.staged(stages=[
             d.condition(

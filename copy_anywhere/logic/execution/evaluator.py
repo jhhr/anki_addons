@@ -248,7 +248,16 @@ def _run_condition(
         raise TriggerSkipped()
     branch = stage.get("then") if matched else stage.get("else")
     # Branch-local results do not escape, so the branch runs against a copy of the scope.
-    execute_block(branch or [], dict(env), frame, event)
+    try:
+        execute_block(branch or [], dict(env), frame, event)
+    except SkipBlock:
+        # `skip_block` inside a branch ends that branch and nothing more, the way it ends
+        # one iteration of a loop body rather than the loop. The block it names is the one
+        # the stage is in, which is what the editor's "stop running the rest of this block"
+        # says and what the analyser assumes: only a root-level skip makes the results after
+        # it maybe-unset (§5.9), so a branch that could end the whole definition would make
+        # an export the analyser accepted sometimes missing at runtime.
+        pass
 
 
 def _run_call(

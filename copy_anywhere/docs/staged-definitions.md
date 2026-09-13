@@ -117,6 +117,11 @@ outer list plus `store` is how a loop reports anything back.
   caller's -- no variables, no lists, no loop bindings. It shares the working notes, cards
   and files, and returns only what it declares in `exports`. Call cycles are refused, and a
   chain deeper than 32 is refused whatever the guids say.
+* **`skip_block` names the block the stage is in.** In a loop body it ends that iteration
+  and the loop carries on; in a `then` or `else` branch it ends the branch and the stage
+  after the condition runs; at the root it ends the definition, and what ran before it still
+  counts. Only the last of those makes later root results maybe-unset, which is why only
+  that one can invalidate an export.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
   note but the trigger, or to any card, cannot run against a note that has not been added
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
