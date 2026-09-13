@@ -61,6 +61,14 @@ Optional. The variables can be used in _Search Query_, _Field to Field_ and _Fie
 
 Required. Define a search query just like in the card browser, except you can include fields and data from the trigger note with ``{{}}`` like you do in the card template.
 
+- Query term order can affect performance even when it returns the same cards.
+- The useful rule of thumb is by term cost, not by what feels narrowest:
+  - put single exact field matches first
+  - then `re:` terms
+  - then negations like `-nid:` or `-field:re:...`
+  - leave `OR` groups for last
+- In particular, an `OR` group near the front of the query can be much slower than the same query with the `OR` group moved to the end.
+
 - **Sort queried notes by field**: Optionally sort the found notes by this field alphabetically. The options are from all note types in your collection - there's no detection of what note types your query might return, you'll need to ensure that the field works for your query.
   - Example use case: you have notes with a number field like _Frequency_ and you want to pick the note with the smallest/largest Frequency --> Set Sort by to "Frequency", Select multiple cards? to 1 and How to select card to _None_
 - **How to select a card to copy from**: Applies when not selecting all notes.

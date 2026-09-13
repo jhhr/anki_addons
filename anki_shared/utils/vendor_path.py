@@ -93,17 +93,32 @@ def add_vendor_paths(addon_dir: str) -> None:
     itself using is a bigger change than getting an addon its dependencies. Only the order
     *among* the three matters.
 
-    A locally rebuilt tree goes on first because it is the one that was resolved against this
-    exact interpreter. It is a layer, not a replacement: it is built from requirements.txt, so
-    it can never contain the hand-vendored packages that have no PyPI release - `mdict_query`
-    is one - and those have to keep resolving from the shipped `lib/` behind it.
+    A locally rebuilt tree goes on first *when its manifest still describes this machine*,
+    because then it is the one that was resolved against this exact interpreter. It is a
+    layer, not a replacement: it is built from requirements.txt, so it can never contain the
+    hand-vendored packages that have no PyPI release - `mdict_query` is one - and those have
+    to keep resolving from the shipped `lib/` behind it.
+
+    A rebuilt tree that no longer fits goes behind the shipped tree instead of in front of it,
+    and that demotion is the whole point of asking. `user_files` is the one directory Anki
+    carries across an addon update, and Anki's launcher can move Anki's Python underneath an
+    addon that has not changed - so a tree rebuilt for cp310 outlives the 3.10 it was built
+    on. Placed first it shadowed a shipped `lib/` that was perfectly good, and nothing ever
+    demoted it: `vendor_health` could name the condition, but the offer to rebuild fires once
+    per (Python, addon version) and says nothing at all when a rebuild is not possible, so the
+    user stayed on pure-Python fallbacks with no indication why. Last, it shadows nothing.
     """
     lib = shipped_lib(addon_dir)
     tag = platform_tag()
-    candidates = [user_lib(addon_dir)]
+    user = user_lib(addon_dir)
+    candidates: list[str] = []
     if tag:
         candidates.append(os.path.join(lib, "_platform", tag))
     candidates.append(lib)
+    if user_lib_mismatch(addon_dir) is None:
+        candidates.insert(0, user)
+    else:
+        candidates.append(user)
     for path in candidates:
         if os.path.isdir(path) and path not in sys.path:
             sys.path.append(path)
@@ -152,6 +167,30 @@ def _mismatch(manifest: dict, where: str) -> Optional[str]:
     return None
 
 
+def user_lib_mismatch(addon_dir: str) -> Optional[str]:
+    """Why the locally rebuilt tree does not fit this machine, or None if it does.
+
+    None also when there is no such tree: the question this answers is whether one may go in
+    front of the shipped tree, and an absent tree goes nowhere either way.
+    """
+    user = user_lib(addon_dir)
+    if not os.path.isdir(user):
+        return None
+    manifest = _read_manifest(user)
+    if manifest is None:
+        # The manifest is written last, so a tree without one is an interrupted rebuild
+        return "the locally rebuilt lib is missing its manifest, so it may be incomplete"
+    return _mismatch(manifest, "the locally rebuilt lib")
+
+
+def _shipped_mismatch(addon_dir: str) -> Optional[str]:
+    """Why the shipped tree does not fit this machine, or None if it does."""
+    manifest = _read_manifest(shipped_lib(addon_dir))
+    if manifest is None:
+        return "the vendored lib has no manifest, so what it was built for is unknown"
+    return _mismatch(manifest, "the vendored lib")
+
+
 def vendor_health(addon_dir: str) -> Optional[str]:
     """None if the live vendored tree fits this machine, else a short reason it does not.
 
@@ -161,23 +200,27 @@ def vendor_health(addon_dir: str) -> Optional[str]:
     `import charset_normalizer` succeeded there, silently falling back to pure Python. A check
     built on "does it import" passes on precisely the breakage this exists to catch.
 
+    "Live" is decided the same way `add_vendor_paths` decides it, which is why the two read
+    the same manifests. A rebuilt tree that fits is first on sys.path and is therefore the
+    tree to judge; one that does not fit was demoted behind the shipped tree and shadows
+    nothing, so what is live is the shipped tree - and if that one fits, there is nothing to
+    rebuild. Only when neither fits is there something to report, and then both reasons are
+    given, because the stale rebuilt tree is the thing a new rebuild will replace.
+
     Two string comparisons and a small JSON read, so it is cheap enough to run at every
     startup - and it has to, because Anki's launcher can move Anki's Python underneath an
     addon that has not itself changed.
     """
-    user = user_lib(addon_dir)
-    if os.path.isdir(user):
-        # It is first on sys.path, so a stale one shadows a shipped tree that would have been
-        # fine. Judge it on its own and do not fall through.
-        manifest = _read_manifest(user)
-        if manifest is None:
-            return "the locally rebuilt lib is missing its manifest, so it may be incomplete"
-        return _mismatch(manifest, "the locally rebuilt lib") or _smoke_test()
+    user_reason = user_lib_mismatch(addon_dir)
+    if user_reason is None and os.path.isdir(user_lib(addon_dir)):
+        return _smoke_test()
 
-    manifest = _read_manifest(shipped_lib(addon_dir))
-    if manifest is None:
-        return "the vendored lib has no manifest, so what it was built for is unknown"
-    return _mismatch(manifest, "the vendored lib") or _smoke_test()
+    shipped_reason = _shipped_mismatch(addon_dir)
+    if shipped_reason is None:
+        return _smoke_test()
+    if user_reason is not None:
+        return f"{shipped_reason}, and {user_reason}"
+    return shipped_reason
 
 
 def _smoke_test() -> Optional[str]:

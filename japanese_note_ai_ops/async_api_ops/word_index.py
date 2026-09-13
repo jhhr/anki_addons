@@ -245,11 +245,13 @@ class WordIndex:
         module regexes above, the field terms become the same collation-folded exact match the
         rest of the index uses, and the OR becomes a union of the two word maps.
 
-        None means the caller has to fall back to the search: both word values being empty is
-        the one case this cannot express, because `field:` with nothing after it asks for notes
-        whose field is empty and the word maps deliberately hold no empty keys. It is not a
-        case any real note reaches - a vocab note with neither word field filled in has nothing
-        to group by - but answering it wrongly would silently split a meaning group.
+        None means the caller has to fall back to the search: *either* word value being empty
+        is a case this cannot express, because `field:` with nothing after it is a real term
+        asking for notes whose field is empty, and the word maps deliberately hold no empty
+        keys. One empty value is reached by real notes - a kana-only vocab note leaves the
+        kanjified field blank - and the OR branch that term stands for would pull in every
+        other note with that field empty, so answering from the index alone would silently
+        split the meaning group.
 
         The one place a lookup can differ from the search is a word or reading containing an
         Anki search metacharacter (`*` and `_` are wildcards inside a quoted field term). The
@@ -258,14 +260,12 @@ class WordIndex:
         """
         normal_key = index_key(normal_value) if normal_value else ""
         kanjified_key = index_key(kanjified_value) if kanjified_value else ""
-        if not normal_key and not kanjified_key:
+        if not normal_key or not kanjified_key:
             return None
 
-        found: "set[NoteId]" = set()
-        if normal_key:
-            found.update(self.by_normal.get(normal_key, ()))
-        if kanjified_key:
-            found.update(self.by_kanjified.get(kanjified_key, ()))
+        # Both keys are non-empty by the guard above, so both maps can be asked.
+        found: "set[NoteId]" = set(self.by_normal.get(normal_key, ()))
+        found.update(self.by_kanjified.get(kanjified_key, ()))
         if exclude_note_id is not None:
             found.discard(exclude_note_id)
 

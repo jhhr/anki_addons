@@ -56,6 +56,14 @@ class MDXLookupError(Exception):
     Retrying is not the fix: a 600ms outage defeats a retry loop as easily as a single attempt.
     The fix is that this must not be storable. `DefinitionMemo.get` already declines to store
     anything for a compute that raised, so raising is all it takes.
+
+    The memo is not the only place a failure could be stored as a fact, which is why this
+    reaches the callers rather than stopping at `get_definition_text`. "In none of the
+    dictionaries" is written to the *collection*, as NO_DICTIONARY_ENTRY_TAG, and
+    `needs_meaning_mapping` made that tag terminal: a note carrying it is skipped by both the
+    meaning-making and the matching path on every subsequent run. A returned None cannot be
+    told from a real miss, so an outage that lasted 600ms would tag every note it touched and
+    those notes would never be looked up again.
     """
 
 
@@ -812,7 +820,15 @@ class AnkiMDXHelper:
             max_length: Optional maximum character length for truncation
 
         Returns:
-            Plain text string with definitions from all dictionaries
+            Plain text string with definitions from all dictionaries, or None when the word is
+            in none of them.
+
+        Raises:
+            MDXLookupError: a dictionary could not answer. Distinct from None, and the
+                distinction has to reach the caller: "not in any dictionary" is a fact the
+                callers write to the collection as a tag, and since `needs_meaning_mapping`
+                made that tag terminal, writing it for an outage skips the note on every
+                later run. See MDXLookupError.
         """
         if self.multi_dict is None:
             return None
@@ -828,11 +844,13 @@ class AnkiMDXHelper:
                 word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
             )
         except MDXLookupError as e:
-            # The run carries on with no definition for this word, exactly as it did before -
-            # the caller's next step either way is to have a model write one. What is different
-            # is that nothing was stored: the same word asked again, by this run or a later one
-            # in the same Anki session, scans again rather than being served this failure as a
-            # fact. See MDXLookupError.
+            # Logged here, where the word and the pick are in hand, and then re-raised rather
+            # than collapsed into None. Nothing was stored - the same word asked again, by
+            # this run or a later one in the same Anki session, scans again rather than being
+            # served this failure as a fact - and nothing should be written to the collection
+            # either, which is what returning None used to cause: the callers cannot tell it
+            # from "in none of the dictionaries" and tag the note accordingly. See
+            # MDXLookupError.
             logger.error(
                 "MDX lookup failed: '%s' (%s) [%s] - %s; not remembered",
                 word,
@@ -840,7 +858,7 @@ class AnkiMDXHelper:
                 pick_dictionary,
                 e,
             )
-            return None
+            raise
         logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
         return self._format_definition_text(word, reading, result.value, max_length)
 

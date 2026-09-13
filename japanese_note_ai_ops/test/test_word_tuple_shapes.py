@@ -78,3 +78,61 @@ class UnreadableEntriesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DropDuplicateWordTuplesTests(unittest.TestCase):
+    """Dedup that rewrites a note's word lists, and must not skip over what it rewrites."""
+
+    KEYS = ["words", "extra_words"]
+
+    def drop(self, word_list_dict):
+        mwtn.drop_duplicate_word_tuples(word_list_dict, self.KEYS)
+        return word_list_dict
+
+    def test_three_equal_entries_leave_one(self):
+        """The case `word_tuples.remove(wt)` during iteration got wrong.
+
+        `remove` deletes the first equal element - index 0, not necessarily `wt` - and every
+        entry past it shifts left, so the iterator went from index 1 to index 2, which was
+        now past the end. The third duplicate was never examined and stayed in the note.
+        """
+        lists = {"words": [["あ", "ア"], ["あ", "ア"], ["あ", "ア"]]}
+        self.assertEqual(self.drop(lists), {"words": [["あ", "ア"]]})
+
+    def test_the_list_object_is_rewritten_in_place(self):
+        words = [["引く", "ひく"], ["引く", "ひく"]]
+        lists = {"words": words}
+        self.drop(lists)
+        self.assertIs(lists["words"], words)
+        self.assertEqual(words, [["引く", "ひく"]])
+
+    def test_different_words_and_readings_are_all_kept(self):
+        lists = {"words": [["引く", "ひく"], ["引く", "びく"], ["退く", "ひく"]]}
+        self.assertEqual(
+            self.drop(lists), {"words": [["引く", "ひく"], ["引く", "びく"], ["退く", "ひく"]]}
+        )
+
+    def test_multi_meaning_entries_are_meant_to_repeat(self):
+        lists = {"words": [["掛かる", "かかる", 1], ["掛かる", "かかる", 2]]}
+        self.assertEqual(
+            self.drop(lists), {"words": [["掛かる", "かかる", 1], ["掛かる", "かかる", 2]]}
+        )
+
+    def test_a_word_already_seen_in_another_list_is_a_duplicate(self):
+        lists = {"words": [["引く", "ひく"]], "extra_words": [["引く", "ひく"], ["押す", "おす"]]}
+        self.assertEqual(
+            self.drop(lists), {"words": [["引く", "ひく"]], "extra_words": [["押す", "おす"]]}
+        )
+
+    def test_an_unreadable_entry_is_kept_rather_than_dropped(self):
+        # Rewriting the note's word list without an entry nobody understands is not this
+        # function's call to make
+        lists = {"words": [1378555076170, ["引く", "ひく"], ["引く", "ひく"]]}
+        self.assertEqual(self.drop(lists), {"words": [1378555076170, ["引く", "ひく"]]})
+
+    def test_a_key_holding_something_other_than_a_list_is_left_alone(self):
+        lists = {"words": "not a list"}
+        self.assertEqual(self.drop(lists), {"words": "not a list"})
+
+    def test_a_missing_key_is_not_an_error(self):
+        self.assertEqual(self.drop({}), {})

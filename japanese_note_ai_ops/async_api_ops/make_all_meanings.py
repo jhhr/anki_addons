@@ -20,7 +20,7 @@ from ..configuration import (
     MakeMeaningsResult,
     WordAndSentences,
 )
-from ..sync_local_ops.mdx_dictionary import mdx_helper
+from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
 from .api_client import run_cancelled
 from .collection_access import (
@@ -165,12 +165,20 @@ def make_all_meanings_for_word(
     mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
     timer.step("mdx_load")
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # A dictionary that could not answer is not a word that is not in it. ERROR rather
+        # than NO_DICTIONARY_ENTRY because the caller tags the note and its whole meaning
+        # group on NO_DICTIONARY_ENTRY, and that tag is terminal - see MDXLookupError.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        timer.report(logger, "dictionary lookup failed")
+        return MakeMeaningsResult.ERROR
     timer.step("dictionary_lookup")
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
@@ -317,12 +325,17 @@ UNMATCHED USAGE {i + 1}:
     word_key = make_meaning_dict_key(word, reading)
     existing_meanings = all_meanings_dict.get(word_key, [])
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # See make_all_meanings_for_word: an outage must not be reported as an absence.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        return MakeMeaningsResult.ERROR
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
