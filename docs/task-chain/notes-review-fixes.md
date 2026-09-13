@@ -24,13 +24,16 @@ regression test that proves it — the test matters as much as the fix, because 
 gives a concrete failing scenario for every finding and an untested fix cannot show it is
 closed.
 
-- [ ] **Finding 1 — `word_index.py:261` empty word value splits a meaning group.** Change the
+- [x] **Finding 1 — `word_index.py:261` empty word value splits a meaning group.** Change the
       `and` guard to `or` so `meaning_group_note_ids` returns `None` (falls back to the real
       search) whenever *either* word value is empty. Done when a test in
       `japanese_note_ai_ops/test/test_word_index.py` reproduces the kana-only note scenario
       (note 100 kanjified `""`, note 101 kanjified `""` same reading) and shows the index and
       the Anki search now agree. Update the docstring at lines 249-252, which currently
       describes the `and` behaviour.
+      *Done in `5a69655`: guard is `or`, docstring rewritten. The existing
+      `test_only_one_word_field_filled_in_is_still_answerable` asserted the buggy `[]`, so it
+      became the regression test rather than a second test beside it.*
 - [ ] **Finding 2 — `MDXLookupError` becomes a permanent `NO_DICTIONARY_ENTRY_TAG`.** Make the
       dictionary-outage case distinguishable from a genuine miss all the way to the tagging
       decision, so `make_meanings_in_note` (`make_all_meanings.py:464-473`) and
@@ -65,9 +68,9 @@ closed.
 
 ## State
 
-Nothing fixed yet — the queue is the full set of the review's seven findings, grouped into
-five tasks. All seven were re-verified against the working tree at `2bf37d7` before the chain
-was set up; every line number in the spec is still accurate.
+Finding 1 fixed; findings 2-7 remain, grouped into four tasks. All seven were re-verified
+against the working tree at `2bf37d7` before the chain was set up; every line number in the
+spec is still accurate for the files not yet touched.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -76,6 +79,9 @@ unreachable and deliberately left alone.
 ## Session log
 
 - `setup` — chain directory, notes and task prompt added; findings re-verified against the tree.
+- `task-1` `5a69655` — finding 1: `meaning_group_note_ids` guard `and` -> `or`; docstring now
+  says why *either* empty value is unanswerable. Regression test replaces the one that asserted
+  the bug. Suite at baseline (438 passed, 6 `mdict_query`).
 
 ## Decisions made
 
@@ -85,6 +91,8 @@ unreachable and deliberately left alone.
 - **Group by review seam, not by file count.** Findings 3+5 (vendoring) and 6+7 (one function)
   are single tasks because a reviewer would want them in one commit each.
 - **Every fix ships with a regression test** reproducing the review's stated scenario.
+- **A test that asserts a finding's wrong behaviour is part of that finding's fix.** Finding 1
+  had one; rewrite such a test rather than leaving it beside the new one.
 
 ## Notes for working in this repo
 
