@@ -1,5 +1,6 @@
 import html
 import uuid
+from copy import deepcopy
 from typing import Literal, Optional, Sequence, TypedDict, Union
 
 from aqt import mw
@@ -12,7 +13,7 @@ from .shared.interpolate.interpolate_fields import (
 )
 from .logic.definition_schema import Effects, is_format_2, read_effects
 from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
-from .shared.utils.logger import LogLevel
+from .shared.utils.logger import LogLevel, Logger
 
 tag = mw.addonManager.addonFromModule(__name__)
 
@@ -344,59 +345,118 @@ def compare_versions(version1: str, version2: str) -> int:
     return (v1_parts > v2_parts) - (v1_parts < v2_parts)
 
 
+#: The version a fully migrated config carries. Each migration below owns its own bump and
+#: spells its version out, so adding one is adding a block rather than editing this; this is
+#: here for the readers and tests that want to ask what "up to date" currently means.
+CONFIG_VERSION = "0.3.0"
+
+#: Where the format-1 definitions are kept when the staged migration converts them (§11).
+#: One release, so a user who hits a migration bug still has the originals to hand back.
+PRE_STAGE_MIGRATION_KEY = "pre_stage_migration_copy_definitions"
+
+
+def fill_in_missing_guids(definitions: Sequence[dict]) -> list[dict]:
+    """The 0.2.0 migration: give every definition and every nested def a guid of its own.
+
+    Everything that came later references things by guid -- the stage migrator derives its
+    synthesized stage guids from the definition's, and a call stage names its callee by one
+    -- so this has to have run before the 0.3.0 migration below reads any of them.
+
+    Every list is read with `or []` rather than a `get` default, because the format-1 editor
+    stores an absent process chain as `null` rather than leaving the key out.
+    """
+    updated_definitions = []
+    for definition in definitions:
+        if "guid" not in definition:
+            definition["guid"] = str(uuid.uuid4())
+        new_field_to_fields = []
+        for field_to_field in definition.get("field_to_field_defs") or []:
+            if "guid" not in field_to_field:
+                field_to_field["guid"] = str(uuid.uuid4())
+            new_processes = []
+            for process in field_to_field.get("process_chain") or []:
+                if "guid" not in process:
+                    process["guid"] = str(uuid.uuid4())
+                new_processes.append(process)
+            field_to_field["process_chain"] = new_processes
+            new_field_to_fields.append(field_to_field)
+        definition["field_to_field_defs"] = new_field_to_fields
+        new_field_to_files = []
+        for field_to_file in definition.get("field_to_file_defs") or []:
+            if "guid" not in field_to_file:
+                field_to_file["guid"] = str(uuid.uuid4())
+            new_processes = []
+            for process in field_to_file.get("process_chain") or []:
+                if "guid" not in process:
+                    process["guid"] = str(uuid.uuid4())
+                new_processes.append(process)
+            field_to_file["process_chain"] = new_processes
+            new_field_to_files.append(field_to_file)
+        definition["field_to_file_defs"] = new_field_to_files
+        new_field_to_variables = []
+        for field_to_variable in definition.get("field_to_variable_defs") or []:
+            if "guid" not in field_to_variable:
+                field_to_variable["guid"] = str(uuid.uuid4())
+            new_processes = []
+            for process in field_to_variable.get("process_chain") or []:
+                if "guid" not in process:
+                    process["guid"] = str(uuid.uuid4())
+                new_processes.append(process)
+            field_to_variable["process_chain"] = new_processes
+            new_field_to_variables.append(field_to_variable)
+        definition["field_to_variable_defs"] = new_field_to_variables
+        updated_definitions.append(definition)
+    return updated_definitions
+
+
+def stage_copy_definitions(config: "Config", logger: Logger) -> bool:
+    """The 0.3.0 migration: convert every stored definition to format 2 (§11).
+
+    All or nothing, and it says so by returning whether it succeeded. `stage_definitions`
+    leaves out a definition it could not migrate, so a short result means one would have
+    been dropped; rather than save a config that quietly lost it, the definitions are left
+    exactly as they were and the caller keeps the version behind, which makes the next start
+    try again. Nothing runs a format-1 definition any more, so a config that fails here is
+    one the user has to hear about -- hence the error rather than a silent skip.
+    """
+    from .logic.flow_analysis import stage_definitions
+
+    stored = list(config.data.get("copy_definitions") or [])
+    staged, problems = stage_definitions(stored)
+    for problem in problems:
+        logger.error(f"Copy definition migration: {problem}")
+    if len(staged) != len(stored):
+        logger.error(
+            "Copy definitions were left in their old format because some of them could not"
+            " be migrated. Anki will try again the next time it starts."
+        )
+        return False
+    # Only a config that still holds a format-1 definition has anything to back up, and only
+    # the first run may write the key: a later one would overwrite the originals with their
+    # own migration, which is the one thing the backup exists to protect against.
+    if PRE_STAGE_MIGRATION_KEY not in config.data and any(
+        not is_format_2(definition) for definition in stored
+    ):
+        config.data[PRE_STAGE_MIGRATION_KEY] = deepcopy(stored)
+    config.data["copy_definitions"] = staged
+    return True
+
+
 def migrate_config():
-    """
-    Migrates old copy definitions to newer formats going through all
-    version migrations.
-    """
+    """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed."""
     config = Config()
     config.load()
-    if compare_versions(config.version, "0.2.0") < 0:
-        updated_definitions = []
-        for definition in config.copy_definitions:
-            if "guid" not in definition:
-                definition["guid"] = str(uuid.uuid4())
-            new_field_to_fields = []
-            for field_to_field in definition.get("field_to_field_defs", []):
-                if "guid" not in field_to_field:
-                    field_to_field["guid"] = str(uuid.uuid4())
-                new_processes = []
-                for process in field_to_field.get("process_chain", []):
-                    if "guid" not in process:
-                        process["guid"] = str(uuid.uuid4())
-                    new_processes.append(process)
-                field_to_field["process_chain"] = new_processes
-                new_field_to_fields.append(field_to_field)
-            definition["field_to_field_defs"] = new_field_to_fields
-            new_field_to_files = []
-            for field_to_file in definition.get("field_to_file_defs", []):
-                if "guid" not in field_to_file:
-                    field_to_file["guid"] = str(uuid.uuid4())
-                new_processes = []
-                for process in field_to_file.get("process_chain", []):
-                    if "guid" not in process:
-                        process["guid"] = str(uuid.uuid4())
-                    new_processes.append(process)
-                field_to_file["process_chain"] = new_processes
-                new_field_to_files.append(field_to_file)
-            definition["field_to_file_defs"] = new_field_to_files
-            new_field_to_variables = []
-            for field_to_variable in definition.get("field_to_variable_defs", []):
-                if "guid" not in field_to_variable:
-                    field_to_variable["guid"] = str(uuid.uuid4())
-                new_processes = []
-                for process in field_to_variable.get("process_chain", []):
-                    if "guid" not in process:
-                        process["guid"] = str(uuid.uuid4())
-                    new_processes.append(process)
-                field_to_variable["process_chain"] = new_processes
-                new_field_to_variables.append(field_to_variable)
-            definition["field_to_variable_defs"] = new_field_to_variables
-            updated_definitions.append(definition)
-        config.data["copy_definitions"] = updated_definitions
-
-    # Finished, set the version to latest
-    config.data["version"] = "0.2.0"
+    logger = Logger(config.log_level)
+    # What the config has actually been brought up to, which is not always what was asked
+    # for: a migration that fails leaves this behind so the next start runs it again rather
+    # than recording a version the stored data never reached.
+    reached = config.version
+    if compare_versions(reached, "0.2.0") < 0:
+        config.data["copy_definitions"] = fill_in_missing_guids(config.copy_definitions)
+        reached = "0.2.0"
+    if compare_versions(reached, "0.3.0") < 0 and stage_copy_definitions(config, logger):
+        reached = "0.3.0"
+    config.data["version"] = reached
     config.save()
 
 
