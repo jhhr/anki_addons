@@ -153,6 +153,13 @@ matchability", "Re-judge matched words", "Re-judge matched/judged words"), model
 `word_matching_judge_model`. A note with nothing in the mode's states makes no request, a field
 still holding an old word list is skipped, and unlinked note ids are logged.
 
+Judge v2 (`judge_v2.py`, op `async_api_ops/word_matching_judgev2.py`, the same modes as "(v2)"
+menu entries) asks about each word alone: its prompt has the rules for its part of speech group
+(`POS_RULES`), the sentence with it in `<b>`, and the words it is part of or made of, and returns
+`{"reason", "decision"}`. Particles and the copula are judged `dontmatch` without a request. A
+note's requests run in parallel through `bulk_nested_notes_op`; the array is saved when all are
+done, a word whose request failed left as it was. Kept beside v1 until the eval compares them.
+
 `research/judge_eval.py` scores the judge against the hand-checked export, whose old lists count
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
 the copula no entry fits are left unscored. First run (gemini-3.5-flash-lite, 384 sentences, 6006
