@@ -80,7 +80,7 @@ closed.
       one pass into a new list, reading entries through `normalize_word_tuple` — and
       `word_list_dict` is bound to `{}` above the `if`. New `test_match_single_word_bulk_op.py`
       (14 tests, 6 red before).*
-- [ ] **Write `bulk_op`'s deduplicated word lists back to the note.** Not a review finding —
+- [x] **Write `bulk_op`'s deduplicated word lists back to the note.** Not a review finding —
       found while fixing 6+7, and the user has decided it (see Decisions made).
       `match_single_word_to_notes_from_selected`'s `bulk_op` decodes the note's word list field,
       deduplicates the lists via `drop_duplicate_word_tuples`, and then never encodes them back,
@@ -96,11 +96,15 @@ closed.
       guards its own registration with `note.id > 0`. Done when `test_match_single_word_bulk_op.py`
       shows a note with duplicates coming out of `bulk_op` with a rewritten field and an entry in
       `notes_to_update_dict`, and a note without duplicates coming out untouched and unregistered.
+      *Done in `e47453d`: `drop_duplicate_word_tuples` returns its drop count and `bulk_op`
+      encodes back only when it dropped something. A field holding a non-list word list is left
+      alone - the encoder would shred a bare string into one entry per character. 14 new tests,
+      10 red before.*
 
 ## State
 
-**All seven review findings are fixed.** The one entry left in the queue is follow-up work
-raised by task-5 and decided by the user, not a finding.
+**Queue empty — all seven review findings are fixed, plus the one follow-up the user decided.**
+Nothing is outstanding; a further link has nothing to do unless the user queues something.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -137,6 +141,12 @@ unreachable and deliberately left alone.
   no further, so rewriting shapes would be pointless). `word_list_dict: dict[str, Any] = {}`
   now precedes `if word_list_field in cur_note:`. New `test_match_single_word_bulk_op.py`
   captures `bulk_op` off a stubbed `selected_notes_op`; suite 467 passed, same 6 `mdict_query`.
+- `task-6` `e47453d` — the follow-up, not a finding: `bulk_op` now saves what it deduplicates.
+  `drop_duplicate_word_tuples` returns the number of entries dropped (cheaper than a deep copy
+  per note) and `bulk_op` encodes `word_list_dict` back with `word_lists_str_format`, registering
+  the note under the `id > 0` guard. Writes only when something was dropped, and never when any
+  word list value is not a list. `test_match_single_word_bulk_op.py` grew `DroppedCountTests` and
+  `WriteBackTests`; suite 480 passed, same 6 `mdict_query`.
 
 ## Decisions made
 
@@ -183,6 +193,12 @@ unreachable and deliberately left alone.
   end-to-end through the gate and the real estimates file.
 - **A test that asserts a finding's wrong behaviour is part of that finding's fix.** Finding 1
   had one; rewrite such a test rather than leaving it beside the new one.
+- **task-6: a malformed word list field blocks the write-back rather than being rewritten.**
+  `word_lists_str_format` iterates every value it is handed, so a value that is not a list is
+  encoded as one entry per character (`"nouns": "not a list"` -> `["n", "o", "t", ...]`). Before
+  this task the dict was never encoded, so the hazard was unreachable; now it is, and the note
+  keeps its duplicate instead. The write is all-or-nothing per note — splitting it per key is not
+  worth it for a field already that broken.
 
 ## Notes for working in this repo
 
@@ -199,7 +215,8 @@ python build.py link
   `python -m pytest anki_shared/test -q`.
 - **Known-good baseline after that setup** — match it before and after your change, and treat
   only *new* failures as yours:
-  - `japanese_note_ai_ops/test`: **452 passed, 6 failed** (438 before tasks 1-2 and 4). All 6 are
+  - `japanese_note_ai_ops/test`: **480 passed, 6 failed** (438 before the chain started; the
+    `467` this line claimed after task-5 was one too many — measured at 466). All 6 are
     `ModuleNotFoundError: No module named 'mdict_query'` in `test_mdx_dictionary.py`.
     `mdict_query` is hand-vendored, has no PyPI release, and cannot be installed in a cloud
     container — it is not obtainable, so do not spend a link trying.
