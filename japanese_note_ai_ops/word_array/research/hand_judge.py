@@ -79,8 +79,9 @@ def describe(elem: list) -> str:
 
 
 class Session:
-    def __init__(self, sentences: list[str], labels_path, per_word: int):
+    def __init__(self, sentences: list[str], lexicon: dict, labels_path, per_word: int):
         self.sentences = sentences
+        self.lexicon = lexicon
         self.next_sentence = 0
         self.labels_path = labels_path
         self.per_word = per_word
@@ -100,7 +101,7 @@ class Session:
         sentence = self.sentences[self.next_sentence]
         self.next_sentence += 1
         try:
-            arr = migrate_fit.generator.generate(sentence)
+            arr = migrate_fit.generator.generate(sentence, self.lexicon)
         except Exception as exc:  # a crash here is migrate_fit's business, not the GUI's
             print(f"generate failed: {exc!r}: {sentence}", file=sys.stderr)
             return True
@@ -346,7 +347,9 @@ def main() -> int:
     stripped = (migrate_fit.html_stripping.strip_context_sentences(s) for s, _ in corpus)
     sentences = list(dict.fromkeys(s for s in stripped if s.strip()))
     random.Random(args.seed).shuffle(sentences)
-    session = Session(sentences, hand_labels.Path(args.labels), args.per_word)
+    # Names come out as the migration op makes them: whole, from the collection's lexicon
+    lexicon = migrate_fit.export_name_lexicon()
+    session = Session(sentences, lexicon, hand_labels.Path(args.labels), args.per_word)
     print(f"{len(sentences)} sentences, {len(session.labels)} labels in {args.labels}")
 
     # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server (Anki

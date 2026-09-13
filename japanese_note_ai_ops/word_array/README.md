@@ -235,7 +235,9 @@ whole sentence's words in one prompt.
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
 the copula no entry fits are left unscored, and the judge is not scored on particles and the
 copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 78.1% precise with 49.1% recall
-(v1 had 74.1%, 50.5%, 45.0%). The labels are unsure for components of compounds, so more
+(v1 had 74.1%, 50.5%, 45.0%); with 94 hand-judged sentences added, 478: 82.9%, 75.4%, 48.7%, the
+277 hand-judged words 79.8%. `build` and `hand_judge.py` generate with the export's name lexicon,
+as the migration op does with the collection's. The labels are unsure for components of compounds, so more
 hand-judged words are to come: `research/hand_judge.py` serves a page that offers words of the
 migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and
 writes `output/word_matching_judge_hand_labels.jsonl`. `judge_eval.py build` lays those over the

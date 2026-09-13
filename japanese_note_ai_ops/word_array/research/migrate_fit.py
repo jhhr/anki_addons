@@ -48,6 +48,21 @@ CORPORA = {
 MARKER = "The sentence to process: "
 
 
+def name_lexicon(corpus: list[tuple[str, dict]]) -> dict:
+    """The name lexicon of a corpus' sentences. The op builds its lexicon from the whole
+    collection's sentences, so give this the export for arrays like the op's."""
+    before = time.perf_counter()
+    sentences = [html_stripping.strip_context_sentences(s) for s, _ in corpus]
+    lexicon = generator.build_name_lexicon(sentences)
+    print(f"Name lexicon: {len(lexicon)} names, {time.perf_counter() - before:.0f} s")
+    return lexicon
+
+
+def export_name_lexicon() -> dict:
+    """The name lexicon of the export, the collection's sentences."""
+    return name_lexicon(read_export(CORPORA["export"], Counter()))
+
+
 def read_fine_tuning(path: Path, invalid: Counter) -> list[tuple[str, dict]]:
     """(sentence, word list dict) for every line that holds both."""
     out = []
@@ -200,13 +215,7 @@ def main() -> int:
         print(f"No sentences read from {path}")
         return 1
 
-    lexicon: dict = {}
-    if not args.no_names:
-        # As the op's lexicon is built from the whole collection's sentences
-        before = time.perf_counter()
-        sentences = [html_stripping.strip_context_sentences(s) for s, _ in corpus]
-        lexicon = generator.build_name_lexicon(sentences)
-        print(f"Name lexicon: {len(lexicon)} names, {time.perf_counter() - before:.0f} s")
+    lexicon = {} if args.no_names else name_lexicon(corpus)
 
     totals: Counter[str] = Counter()
     lost: Counter[tuple[str, str, str, str]] = Counter()

@@ -71,6 +71,7 @@ def build(args) -> int:
     migrate, match_flags = migrate_fit.migrate, migrate_fit.migrate.match_flags
     invalid: Counter[str] = Counter()
     corpus = migrate_fit.read_export(migrate_fit.CORPORA["checked"], invalid)
+    lexicon = migrate_fit.export_name_lexicon()
     hand_by_sentence: dict[str, list[dict]] = {}
     for label in hand_labels.read_labels():
         hand_by_sentence.setdefault(label["sentence"], []).append(label)
@@ -97,12 +98,12 @@ def build(args) -> int:
         if not sentence.strip():
             invalid["no sentence once the context is stripped"] += 1
             continue
-        arr = migrate_fit.generator.generate(sentence)
+        arr = migrate_fit.generator.generate(sentence, lexicon)
         add_row(sentence, arr, label_array(word_lists, arr, migrate, match_flags))
     checked_rows = len(rows)
     # Sentences judged by hand outside the checked export expect only what was judged
     for sentence in list(hand_by_sentence):
-        arr = migrate_fit.generator.generate(sentence)
+        arr = migrate_fit.generator.generate(sentence, lexicon)
         add_row(sentence, arr, [None] * len(list(match_flags.iter_words(arr))))
     if hand:
         print(
