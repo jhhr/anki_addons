@@ -72,6 +72,18 @@ def run_definition_for_trigger_note(
         session.discard()
         return False
 
+    if session.add_note_compatible_only:
+        trigger_key = session.note_key(frame.trigger_note)
+        other_notes = [key for key in session.modified_notes if key != trigger_key]
+        if other_notes or session.edited_cards:
+            logger.error(
+                "Error in copy fields: definition"
+                f" '{staged.get('definition_name', '')}' is marked add-note compatible but"
+                " queued changes to another note or card; nothing was written"
+            )
+            session.discard()
+            return False
+
     session.update_counts(note_cnt_inc=1)
     legacy = staged.get("legacy") or {}
     if legacy.get("trigger_is_source"):

@@ -632,6 +632,7 @@ def copy_for_single_trigger_note(
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
     definitions_for_calls: Optional[Sequence[dict]] = None,
+    add_note_compatible_only: bool = False,
 ) -> bool:
     """Run one copy definition for one trigger note.
 
@@ -652,6 +653,8 @@ def copy_for_single_trigger_note(
     :param file_cache: a dictionary caching opened files' content for process chains
     :param progress_updater: optional object to update the progress bar
     :param definitions_for_calls: the definitions a `call_definition` stage may reach
+    :param add_note_compatible_only: refuse to commit anything but changes to the trigger
+        note, as the add-note hook needs when the note does not exist yet
     :return: True when the note is done -- written into or benignly skipped -- and False
         when the definition failed and the caller's bulk loop should stop
     """
@@ -689,6 +692,7 @@ def copy_for_single_trigger_note(
         file_cache=file_cache,
         definition_lookup=lookup,
         want_cancel=mw.progress.want_cancel,
+        add_note_compatible_only=add_note_compatible_only,
     )
     return run_definition_for_trigger_note(
         definition=staged_definition,

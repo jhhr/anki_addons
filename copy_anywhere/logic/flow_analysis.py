@@ -705,3 +705,32 @@ def callers_of(
                 callers.append(definition)
                 break
     return callers
+
+
+def stage_definitions(
+    definitions: Sequence[dict],
+    new_guid: Optional[Callable[[], str]] = None,
+) -> tuple[list[CopyDefinitionV2], list[str]]:
+    """Migrate a config's definitions to format 2 and fill in their `effects`.
+
+    `effects` is derived, never authored, and it is transitive through calls, so it can only
+    be computed once every definition is available to look up. This is what a save, a
+    startup migration and an import all need, which is why it lives next to the analyser
+    rather than in any one of them.
+    """
+    from .definition_migration import migrate_definitions
+
+    staged, problems = (
+        migrate_definitions(list(definitions), new_guid=new_guid)
+        if new_guid is not None
+        else migrate_definitions(list(definitions))
+    )
+    lookup = make_lookup(staged)
+    for definition in staged:
+        result = analyze_definition(definition, lookup=lookup)
+        definition["effects"] = result.effects
+        problems.extend(
+            f"'{definition.get('definition_name', '')}': {message}"
+            for message in result.problem_messages()
+        )
+    return staged, problems

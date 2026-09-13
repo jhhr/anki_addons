@@ -10,6 +10,7 @@ from .shared.interpolate.interpolate_fields import (
     QUERY_NOTE_INDEX,
     intr_format,
 )
+from .logic.definition_schema import Effects, is_format_2, read_effects
 from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
 from .shared.utils.logger import LogLevel
 
@@ -421,9 +422,45 @@ def get_variables_dict_from_variable_defs(
     return variable_menu_dict
 
 
+def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
+    """What this definition does to the collection, in whichever format it is stored.
+
+    A format-2 definition carries its `effects` object, computed by the flow analyser
+    transitively through the definitions it calls (§4, §6). A format-1 definition has no
+    such object, and inspecting its mode and direction is the exact answer for it, so that
+    is what the two predicates below still do.
+    """
+    if is_format_2(copy_definition):
+        return read_effects(copy_definition)
+    modifies_other = definition_modifies_other_notes(copy_definition)
+    return {
+        "edits_trigger": definition_modifies_trigger_note(copy_definition),
+        "edits_other_notes": modifies_other,
+        "edits_cards": bool(copy_definition.get("card_actions")),
+        "reads_files": False,
+        "writes_files": bool(copy_definition.get("field_to_file_defs")),
+        "queries_collection": copy_definition.get("copy_mode") == COPY_MODE_ACROSS_NOTES,
+        "calls_definitions": False,
+        "add_note_compatible": not modifies_other,
+    }
+
+
+def definition_is_add_note_compatible(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    """Whether this definition can run against a note that has not been added yet.
+
+    A note being added has id 0 and no cards, so a definition that writes to any other note
+    or to any card has nothing to write to. The add hook does not drop those definitions --
+    it defers them until the note exists and runs them under their own undo entry -- but it
+    is this flag that decides which pile a definition goes in.
+    """
+    return bool(definition_effects(copy_definition).get("add_note_compatible", False))
+
+
 def definition_modifies_trigger_note(
     copy_definition: CopyDefinition,
 ) -> bool:
+    if is_format_2(copy_definition):
+        return bool(definition_effects(copy_definition).get("edits_trigger", False))
     targets_trigger_note = (
         copy_definition.get("copy_mode", None) == COPY_MODE_WITHIN_NOTE
         or copy_definition.get("across_mode_direction", None) == DIRECTION_DESTINATION_TO_SOURCES
@@ -436,6 +473,8 @@ def definition_modifies_trigger_note(
 def definition_modifies_other_notes(
     copy_definition: CopyDefinition,
 ) -> bool:
+    if is_format_2(copy_definition):
+        return bool(definition_effects(copy_definition).get("edits_other_notes", False))
     # Destination to sources is Across notes too, but its only destination is the trigger note
     targets_other_notes = (
         copy_definition.get("copy_mode", None) == COPY_MODE_ACROSS_NOTES

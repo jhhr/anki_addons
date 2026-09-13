@@ -193,6 +193,7 @@ class ExecutionSession:
         definition_lookup: Optional[Callable[[str], Optional[dict]]] = None,
         want_cancel: Optional[Callable[[], bool]] = None,
         collect_trace: bool = False,
+        add_note_compatible_only: bool = False,
     ) -> None:
         self.logger = logger
         self.is_sync = is_sync
@@ -203,6 +204,10 @@ class ExecutionSession:
         self.definition_lookup = definition_lookup
         self._want_cancel = want_cancel
         self.collect_trace = collect_trace
+        #: Set while running against a note that has not been added yet. The commit refuses
+        #: any mutation to another note or to a card, whatever the definition's stored
+        #: `effects` claimed (§8).
+        self.add_note_compatible_only = add_note_compatible_only
 
         self.notes: dict[NoteKey, Note] = {}
         self.cards: dict[int, Card] = {}

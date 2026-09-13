@@ -23,6 +23,7 @@ from ..configuration import (
     Config,
     CopyDefinition,
     get_triggered_field_to_field_defs_for_field,
+    definition_is_add_note_compatible,
     definition_modifies_other_notes,
 )
 from ..logic.copy_fields import (
@@ -80,8 +81,11 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     editing_other_notes_definitions: list[CopyDefinition] = []
 
     for copy_definition in get_copy_definitions_for_add_note(note):
-        # If this definition modifies other notes, we need to defer it until the note is added
-        if definition_modifies_other_notes(copy_definition):
+        # A definition that writes to any other note or card has nothing to write to yet, so
+        # it waits until the note exists and runs under its own undo entry. The flag is the
+        # analyser's answer for a format-2 definition and the mode inspection for a
+        # format-1 one; either way the hook only reads it and never inspects stages (§8).
+        if not definition_is_add_note_compatible(copy_definition):
             editing_other_notes_definitions.append(copy_definition)
             continue
         copy_for_single_trigger_note(
@@ -89,6 +93,9 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             trigger_note=note,
             deck_id=deck_id,
             logger=logger,
+            # Backstop against hand-edited JSON claiming compatibility it does not have: a
+            # queued mutation to anything but this note fails the definition (§8).
+            add_note_compatible_only=True,
         )
 
     if not editing_other_notes_definitions:
@@ -385,9 +392,9 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
 
         modifies_other_notes = definition_modifies_other_notes(copy_definition)
 
-        if modifies_other_notes and is_new_note:
+        if is_new_note and not definition_is_add_note_compatible(copy_definition):
             # Do not run ops that edit other notes while editing a new note. Such ops should only
-            # be run when the new note is saved.
+            # be run when the new note is saved. Same flag the add hook checks (§8).
             continue
 
         # Each def this field triggers is gated by its own add/edit flag, so that one def
