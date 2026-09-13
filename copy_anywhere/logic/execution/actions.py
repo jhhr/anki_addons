@@ -289,9 +289,18 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     for field_write in stage.get("fields") or []:
         if not isinstance(field_write, dict):
             continue
-        if session.field_only is not None:
-            trigger_fields = field_write.get("unfocus_trigger_fields") or []
-            if session.field_only not in trigger_fields:
+        if session.field_only is not None and "unfocus_trigger_fields" in field_write:
+            # Only a migrated write carries this list. Format 1 watched editor fields per
+            # field write, and the migrator resolves that into the names here, so a run
+            # limited to one field still has to honour it.
+            #
+            # A write the stage editor produced has no such key and is deliberately not
+            # gated: format 2 watches fields for the definition as a whole (§8), and that
+            # test has already been passed by the time the stage runs. Treating a missing
+            # key as an empty list would skip every write in every natively authored
+            # definition that edits other notes -- silently, since the tags and card
+            # actions in the same stage would still apply.
+            if session.field_only not in (field_write["unfocus_trigger_fields"] or []):
                 continue
         field = field_write.get("field", "")
         try:

@@ -792,3 +792,73 @@ class TestAddNoteCompatibility:
         )
         assert ok is True, logger.errors
         assert new_note["Meaning"] == "猫"
+
+
+class TestRunningForOneEditorField:
+    """`field_only`, which the unfocus hook sets to the field that just lost focus.
+
+    A migrated write says which editor fields trigger it, because format 1 asked that
+    question per field write. A write the stage editor produced does not: format 2 watches
+    fields for the definition as a whole (§8), so by the time a stage runs the question has
+    already been answered.
+
+    The writes here land on a queried note, so they show up in `copied_into_notes` -- the
+    list the hook hands to `update_notes` -- rather than in the collection.
+    """
+
+    @pytest.fixture
+    def other(self, col):
+        return real_anki.add_note(col, VOCAB, {"Word": "other", "Note": ""}, tags=["pool"])
+
+    def definition(self, **write_extra):
+        return d.staged(stages=[
+            d.note_query("found", "tag:pool"),
+            d.for_each_note("found", [
+                d.edit_note(
+                    "note",
+                    [dict(d.write("Note", d.text("{{trigger.Word}}")), **write_extra)],
+                    tags={"add": ["ran"], "remove": []},
+                ),
+            ]),
+        ])
+
+    def test_a_natively_authored_write_runs(self, note, other, logger):
+        # The regression this guards: every write in a definition built in the new editor
+        # was skipped on unfocus, while its tags still applied, so the definition looked
+        # like it had run and only the field writes were missing.
+        ok, copied = run(self.definition(), note, logger, field_only="Word")
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["neko"]
+
+    def test_a_migrated_write_is_still_limited_to_its_own_trigger_fields(
+        self, note, other, logger
+    ):
+        ok, copied = run(
+            self.definition(unfocus_trigger_fields=["Reading"]), note, logger, field_only="Word"
+        )
+        assert ok is True
+        # The tag in the same stage is not gated, so the note is still touched -- which is
+        # exactly what made the skipped writes so hard to see.
+        assert [n["Note"] for n in copied] == [""]
+        assert copied[0].has_tag("ran")
+
+    def test_a_migrated_write_whose_trigger_field_matches_runs(self, note, other, logger):
+        ok, copied = run(
+            self.definition(unfocus_trigger_fields=["Word"]), note, logger, field_only="Word"
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["neko"]
+
+    def test_a_migrated_write_that_watches_nothing_never_runs(self, note, other, logger):
+        # An empty list is format 1 saying this write has no editor field to trigger it,
+        # which is not the same as a write that was never migrated at all.
+        ok, copied = run(
+            self.definition(unfocus_trigger_fields=[]), note, logger, field_only="Word"
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == [""]
+
+    def test_a_run_that_is_not_an_unfocus_gates_nothing(self, note, other, logger):
+        ok, copied = run(self.definition(unfocus_trigger_fields=["Reading"]), note, logger)
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["neko"]
