@@ -308,6 +308,26 @@ class WordArrayTests(unittest.TestCase):
         # The classical copula after a na-adjective stays
         self.assertEqual(find_word(self.generator.generate("切[せつ]なる 願[ねが]い"), "成る"), [])
 
+    def test_negation_nai_is_part_of_the_word_before_it(self):
+        # Sudachi calls these ない the adjective 無い rather than the auxiliary
+        for sentence, raw, pos, form in [
+            (" 風上[かざかみ]にも 置[お]け 無[な]い", " 置[お]け 無[な]い", "verb", "置く"),
+            (" 知[し]ら 無[な]い 人[ひと]", " 知[し]ら 無[な]い", "verb", "知る"),
+            ("住所[じゅうしょ]を 教[おし]えたくない。", " 教[おし]えたくない", "verb", "教える"),
+            ("少[すこ]しも 悪[わる]くない。", " 悪[わる]くない", "adjective", "悪い"),
+            ("酒[さけ]を 飲[の]んでなかったら", " 飲[の]んでなかったら", "verb", "飲む"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(find_word(arr, form)[:3], [raw, pos, form])
+                self.assertEqual(find_word(arr, "無い"), [])
+        # With a particle between, ない is a word of its own
+        for sentence in ["欲[ほ]しくもない 物[もの]", "時間[じかん]がない"]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(
+                    find_word(self.generator.generate(sentence), "無い")[1], "adjective"
+                )
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")

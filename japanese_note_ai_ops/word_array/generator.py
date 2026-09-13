@@ -380,7 +380,30 @@ def _attaches(prev: Morph, nxt: Morph, head: Morph) -> bool:
         and head.pos[0] in INFLECTING
     ):
         return True
+    if head.pos[0] in INFLECTING and is_negation(prev, nxt):
+        return True
     return is_copula(head) and nxt.pos[0] == "形容詞" and nxt.lemma == "ない"  # じゃない
+
+
+# Verb classes whose 連用形 is also the stem ない follows (置け無い, 為無い); a godan 連用形 isn't
+STEM_IS_MIZEN = ("上一段", "下一段", "カ行変格", "サ行変格")
+
+
+def is_negation(prev: Morph, nxt: Morph) -> bool:
+    """ない that Sudachi calls the adjective 無い but is the negation of the word before it, so
+    part of its inflection: 悪くない, 教えたくない, 飲んでない, and kanji-spelled 知ら無い, 置け無い.
+    With anything between (欲しくもない, 其れは無い) it stays a word of its own."""
+    if nxt.pos[0] != "形容詞" or nxt.lemma not in ("ない", "無い") or len(prev.pos) < 6:
+        return False
+    if prev.pos[0] in ("形容詞", "助動詞") and prev.surface.endswith("く"):
+        return prev.pos[5].startswith("連用形")
+    if prev.pos[:2] == ("助詞", "接続助詞"):
+        return prev.surface in ("て", "で")
+    if prev.pos[0] != "動詞":
+        return False
+    return prev.pos[5].startswith("未然形") or (
+        prev.pos[5].startswith("連用形") and prev.pos[4].startswith(STEM_IS_MIZEN)
+    )
 
 
 def group(morphs: list[Morph]) -> list[list[Morph]]:
