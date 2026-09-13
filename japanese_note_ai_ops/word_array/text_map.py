@@ -21,8 +21,9 @@ sub-words' own readings and records them with set_piece_reading.
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Optional
+from typing import Callable, Optional
 
+from ..kana_conv import to_hiragana
 from ..shared.jp_text_processing.all_types.main_types import WithTagsDef
 from ..shared.jp_text_processing.kana.kana_highlight import kana_highlight
 
@@ -31,6 +32,8 @@ SEG_RE = re.compile(r"(<[^>]+>)|( ?)([^ <>\[\]]+)\[([^\]]*)\]|(.)", re.S)
 KANJI_TAIL_RE = re.compile(r"[\d々ヶヵ一-龯㐀-䶿]+$")
 TAG_RE = re.compile(r"<[^>]+>")
 FURI_BRACKET_RE = re.compile(r"\[[^\]]*\]")
+KATAKANA_RE = re.compile(r"[ァ-ヺー]+")
+HIRAGANA_RE = re.compile(r"[ぁ-ゖ]")
 # kana_highlight's per-kanji output: <on> 世[せ]</on><kun> 高[たか]</kun><oku>く</oku>
 READING_UNIT_RE = re.compile(r"<(on|kun|juk)> ?([^<\[]+)\[([^\]]*)\]</\1>")
 SPLIT_READINGS = WithTagsDef(True, False, False, False)
@@ -225,7 +228,7 @@ class TextMap:
                 out += part if part is not None else seg.natural[off:stop]
                 i += stop - off
             else:
-                out += seg.natural[off]
+                out += seg.reading[off] if seg.kind == "furi" else seg.natural[off]
                 i += 1
         return out
 
@@ -247,7 +250,11 @@ def _char_seg(ch: str, pos: int) -> Seg:
     return seg
 
 
-def build(raw_sentence: str) -> TextMap:
+def build(
+    raw_sentence: str, hiragana_reading: Optional[Callable[[str, str], bool]] = None
+) -> TextMap:
+    """hiragana_reading(reading, rest) says whether a <k> group's katakana furigana, followed by
+    the group's hiragana `rest`, goes to the tokenizer in hiragana."""
     # <b> is parsed as a tag so it still delimits furigana bases ("二<b>隻[せき]</b>"), then left
     # out, so raw offsets refer to the <b>-free sentence.
     segs: list[Seg] = []
@@ -285,6 +292,28 @@ def build(raw_sentence: str) -> TextMap:
         else:
             segs.append(_char_seg(m.group(5), len(raw)))
             raw += m.group(5)
+
+    # Katakana furigana followed by hiragana in the same <k> group can go in as hiragana, when
+    # the tokenizer reads the word better that way (ホめる is a name ホ, suffix め and auxiliary
+    # る; ほめる is 褒める). A reading standing alone stays katakana, as ゼロ or コイン are read
+    # best as written.
+    if hiragana_reading:
+        for k, seg in enumerate(segs[:-1]):
+            if not (
+                seg.kind == "furi"
+                and seg.in_k
+                and KATAKANA_RE.fullmatch(seg.natural)
+                and segs[k + 1].kind == "char"
+                and HIRAGANA_RE.match(segs[k + 1].natural)
+            ):
+                continue
+            rest = ""
+            for nxt in segs[k + 1 :]:
+                if nxt.kind == "tag":
+                    break
+                rest += nxt.natural
+            if hiragana_reading(seg.natural, rest):
+                seg.natural = to_hiragana(seg.natural)
 
     natural = ""
     nat_pos: list[tuple[int, int]] = []

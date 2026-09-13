@@ -37,7 +37,7 @@ def main() -> int:
         sentence = html_stripping.strip_context_sentences(raw)
         if not sentence.strip():
             continue
-        tm = text_map.build(sentence)
+        tm = text_map.build(sentence, generator.reads_better_in_hiragana)
         corpus.append((tm.natural, generator.tokenize(tm.natural), tm.surface_reading))
         for entry in migrate.read_word_lists(word_lists)[0]:
             if entry.word:

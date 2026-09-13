@@ -383,6 +383,23 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("一緒[いっしょ]にやろう。")
         self.assertEqual(find_word(arr, "だろう"), [])
 
+    def test_katakana_furigana_before_okurigana_is_read_in_the_script_that_reads_the_word(self):
+        arr = self.generator.generate(
+            "「<k> 褒[ホ]める</k>と<k> 直[す]ぐ</k> 思[おも]い 上[あ]がる」"
+        )
+        self.assertEqual(
+            find_word(arr, "褒める")[:5], [" 褒[ホ]める", "verb", "褒める", "ほめる", []]
+        )
+        self.assertEqual(find_word(arr, "褒める")[5], [], arr)
+        arr = self.generator.generate("<k> 此[こ]の</k><k> 儘[まま]</k><k> 茶化[チャカ]して</k>")
+        self.assertEqual(find_word(arr, "茶化す")[:2], [" 茶化[チャカ]して", "verb"], arr)
+        # a tokenizer that reads the katakana as a word keeps it: フラれた is 振る, ふられた ふる
+        arr = self.generator.generate("恋人[こいびと]に<k> 振[フラ]れた</k>")
+        self.assertEqual(find_word(arr, "振る")[:2], [" 振[フラ]れた", "verb"], arr)
+        # a whole katakana reading keeps its word
+        arr = self.generator.generate("<k> 本当[ホント]</k>に")
+        self.assertEqual(find_word(arr, "本当")[:4], [" 本当[ホント]", "noun", "本当", "ほんと"])
+
     def test_okurigana_sudachi_cuts_off_is_part_of_the_word(self):
         for sentence, raw, form in [
             # a suffix that inflects as a verb or adjective takes its inflection

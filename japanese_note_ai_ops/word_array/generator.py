@@ -153,6 +153,24 @@ def tokenize(natural: str) -> list[Morph]:
     return _sou_naru(_split_number_counters(out))
 
 
+def _reads_whole(morphs: list[Morph], n: int) -> bool:
+    """The first morph covers the first n chars and is a word of its own there: it runs past
+    them, or inflects (フラ of フラれた)."""
+    return bool(morphs) and (
+        morphs[0].end > n or (morphs[0].end == n and morphs[0].pos[0] in INFLECTING)
+    )
+
+
+def reads_better_in_hiragana(reading: str, rest: str) -> bool:
+    """Whether katakana furigana followed by hiragana goes to the tokenizer in hiragana: when as
+    written it is cut off as a word that doesn't inflect (ホめる -> ホ + め + る, イビったり)
+    and in hiragana it isn't (ほめる, いびったり). フラれた, カモる, イキってる stay."""
+    n = len(reading)
+    return not _reads_whole(tokenize(reading + rest), n) and _reads_whole(
+        tokenize(to_hiragana(reading) + rest), n
+    )
+
+
 # The classical copula なり's forms read as the verb なる
 NARU_FORMS = {
     "なら": "未然形-一般",
@@ -416,7 +434,7 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
 
 def name_corpus_row(sentence: str) -> tuple:
     """(natural text, morphs, reader) of a sentence, as `names.build_lexicon` takes them."""
-    tm = text_map.build(sentence)
+    tm = text_map.build(sentence, reads_better_in_hiragana)
     return tm.natural, tokenize(tm.natural), tm.surface_reading
 
 
@@ -1598,7 +1616,7 @@ def _emit(
 
 def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
-    tm = text_map.build(sentence)
+    tm = text_map.build(sentence, reads_better_in_hiragana)
     morphs = merge_dotted_names(tokenize(tm.natural))
     if names:
         morphs = merge_names(tm, morphs, names)
