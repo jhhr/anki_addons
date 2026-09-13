@@ -77,6 +77,7 @@ class Word:
     surface_match: bool = False
     followed_by_verb: bool = False
     followed_by_suru: bool = False
+    nested: bool = False  # a sub-word of another word, set when emitting
 
     @property
     def start(self) -> int:
@@ -287,7 +288,8 @@ def _forms(tm: TextMap, ws: list[Word]) -> list[tuple[str, str, bool]]:
         forms.append((numeral, numeral, True))
     last = ws[-1]
     if last.head.pos[0] in INFLECTING:
-        deinflected = "".join(written[:-1]) + dict_form(tm, last)
+        # As a sub-word, so a verb stem ending the match deinflects: 気に入り -> 気に入る
+        deinflected = "".join(written[:-1]) + dict_form(tm, replace(last, nested=True))
         forms += [
             (deinflected, deinflected, False),
             ("".join(natural[:-1]) + last.head.lemma, deinflected, False),
@@ -670,7 +672,7 @@ def _common_prefix(a: str, b: str) -> int:
 
 def noun_form_verb(written: str, w: Word) -> Optional[str]:
     """囁き -> 囁く: a noun that is a godan verb's ます-stem is listed as the verb (old prompt
-    rule). Wrong for lexicalized nouns (積り), which is a judgement call left to the decision step."""
+    rule). `_noun_form_verb` keeps a lexicalized noun of its own (積り) as the noun."""
     if (
         w.head.pos[0] not in ("名詞", "接尾辞")
         or len(w.morphs) != 1
@@ -864,11 +866,26 @@ def _jmdict_suffix(tm: TextMap, w: Word) -> bool:
 
 
 def _noun_form_verb(tm: TextMap, w: Word) -> Optional[str]:
-    """The verb a noun or suffix is the stem of, unless it is a する-noun here (寝返り為る) or a
-    JMdict suffix of its own (振り[ぶり])."""
+    """The verb a sub-word noun or suffix is the stem of (買い of 買い物 -> 買う), unless it is a
+    する-noun here (寝返り為る), a JMdict suffix of its own (振り[ぶり]) or read as no form of the
+    verb (黙り[だんまり] is not 黙る). A word of its own is mostly a lexicalized noun (動き, 周り,
+    嫌い), so it stays the noun if JMdict has one spelled and read so."""
     if w.followed_by_suru or _jmdict_suffix(tm, w):
         return None
-    return noun_form_verb(tm.written_form(w.start, w.end), w)
+    written = tm.written_form(w.start, w.end)
+    verb = noun_form_verb(written, w)
+    if not verb:
+        return None
+    reading = to_hiragana(_furigana_reading(tm, w.start, w.end, w.morphs))
+    verb_reading = reading[:-1] + VERB_STEM_TO_DICT.get(reading[-1:], "")
+    if not {verb_reading, unvoiced(verb_reading)} & {to_hiragana(r) for r in jmdict.readings(verb)}:
+        return None
+    if not w.nested and any(
+        written in kebs and reading in {to_hiragana(r) for r in rebs}
+        for kebs, rebs, _ in jmdict.lookup(written)
+    ):
+        return None
+    return verb
 
 
 def _own_share(tm: TextMap, w: Word, furi: str) -> str:
@@ -1089,6 +1106,7 @@ def _emit(
         if w.kind == "punct":
             out.append([raw_text])
         else:
+            w.nested = nested
             subs = _emit(tm, w.subs, rs, re_ext, nested=True) if w.subs else []
             form, reading = dict_form(tm, w), dict_reading(tm, w)
             pos = pos_label(tm, w, prev, reading, nested)

@@ -236,15 +236,25 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(find_word(arr, "官")[1], "suffix")
 
     def test_a_verb_stem_listed_as_its_verb_is_a_verb(self):
-        # Sudachi has 買い of 買い物 and 継ぎ of 跡継ぎ as nouns, 動き alone too
+        # Sudachi has 買い of 買い物 and 継ぎ of 跡継ぎ as nouns
         cases = [
             ("買[か]い 物[もの]に 行[い]く", "買う"),
             ("跡継[あとつ]ぎが 居[い]る", "継ぐ"),
-            ("猫[ねこ]の 動[うご]き", "動く"),
         ]
         for sentence, form in cases:
             with self.subTest(sentence=sentence):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "verb")
+
+    def test_a_verb_stem_of_its_own_stays_the_noun_jmdict_has(self):
+        # 動き and 嫌い alone are lexicalized nouns, not listed as 動く and 嫌う
+        for sentence, form in (
+            ("猫[ねこ]の 動[うご]き", "動き"),
+            ("犬[いぬ]が 嫌[きら]いだ", "嫌い"),
+        ):
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertIsNotNone(word)
+                self.assertNotEqual(word[1], "verb")
 
     def test_a_suffix_jmdict_has_as_one_keeps_its_form(self):
         # 振り read ぶり is a JMdict suffix of its own, not a form of 振る

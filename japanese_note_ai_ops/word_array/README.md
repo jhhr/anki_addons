@@ -55,8 +55,10 @@ Status: phase 1 prototype, not wired into any op yet.
    is a noun. Of 855 top-level suffixes in the collection export, 73 change.
    A verb stem Sudachi calls a suffix is its verb (付き -> 付く) unless JMdict has the stem, read
    as the note reads it, as a `suf` of its own: 振り[ぶり], 通し[どおし], 合い, 込み stay as written.
-   A noun listed as its verb is labelled a verb too (動き -> 動く, 買い of 買い物 -> 買う), so the
-   judge reads it by the verb rules: 1430 words of the export.
+   A sub-word noun listed as its verb is labelled a verb too (買い of 買い物 -> 買う), so the
+   judge reads it by the verb rules. A word of its own stays the noun when JMdict has it spelled
+   and read so (動き, 周り, 嫌い, 積り: lexicalized, and the old lists kept the noun), and no stem
+   is its verb when the verb can't be read so (黙り[だんまり]). Export: 884 stems as verbs, 11 top-level.
    Furigana the note put on a word's last kanji for the text before it too (空</b>域[くういき],
    ネット上[ねっとじょう]) gives the word only its own part (いき, じょう), when the rest reads the
    text before it.
@@ -262,8 +264,8 @@ From [awesome-japanese-nlp-resources](https://github.com/taishi-i/awesome-japane
   its dictionary form: 秋と言った物 gives と言った (conj, "such as") where the gold has と言う,
   but そう言えば stays そう言えば rather than そう言う.
 - **Nesting depth.** Matches nest literally, so 無しには is 無しに + は with 無しに = 無し + に.
-- **Noun forms as verbs** (囁き -> 囁く, 違い -> 違う as a sub-word of 違い無い) are right for
-  the gold but wrong for lexicalized nouns (積り).
+- **Noun forms as verbs** only as sub-words (違い -> 違う in 違い無い). The gold still lists
+  top-level 囁き/掬い/入り as verbs (ex. 23), so dict_form scores 274/280 against it.
 - **Jukujikun decomposition.** Sharing a jukujikun reading out between sub-words is only done
   for splits the tokenizer already makes. The same derivation could let `decompose` split
   田舎者[いなかもの] into 田舎[いなか] + 者[もの], and it is its own safety check - the pieces of
