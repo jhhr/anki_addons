@@ -34,6 +34,7 @@ from copy_anywhere.ui.stage_editors import (
     tags_to_text,
 )
 from copy_anywhere.ui.stage_list import StageTreeWidget
+from copy_anywhere.ui.stage_triggers_editor import selected_names
 
 from conftest import KANJI, VOCAB
 
@@ -576,3 +577,84 @@ class TestTheSelectionSurvivesASave:
         editor.apply()
         assert "selection_error" not in stage["selection"]
         assert stage["selection"]["count"] == 2
+
+
+# -- the trigger editor's dependent boxes ----------------------------------------------
+
+
+def triggers_editor(col, widget_parent, **triggers):
+    from anki_shared.testing import real_anki
+    from copy_anywhere.ui.stage_triggers_editor import TriggersEditor
+
+    # The deck box only offers decks that actually hold a card of a selected note type, so
+    # there has to be one of each before "Default" is on offer at all.
+    real_anki.add_note(col, VOCAB, {"Word": "neko"})
+    real_anki.add_note(col, KANJI, {"Kanji": "猫"})
+    definition = new_definition("d", "A definition")
+    definition["triggers"].update(triggers)
+    return TriggersEditor(widget_parent, definition), definition
+
+
+def choose(box, *names):
+    box.setCurrentText(", ".join(f'"{name}"' for name in names))
+
+
+class TestClearingATriggerSelection:
+    """The deck and unfocus boxes are rebuilt whenever the note types change.
+
+    They used to treat an empty selection as "not filled in yet" and refill it from the
+    stored definition, so a list the user had deliberately emptied came back -- and if they
+    did not notice, saved.
+    """
+
+    def test_an_emptied_unfocus_list_stays_empty(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col,
+            widget_parent, note_types=[VOCAB], on_unfocus={"edit_fields": ["Word"],
+                                                           "add_fields": []}
+        )
+        choose(editor.unfocus_edit)
+        choose(editor.note_types_box, VOCAB, KANJI)
+        editor.apply()
+        assert definition["triggers"]["on_unfocus"]["edit_fields"] == []
+
+    def test_an_emptied_deck_list_stays_empty(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col,
+            widget_parent, note_types=[VOCAB], deck_names=["Default"]
+        )
+        assert selected_names(editor.decks_box) == ["Default"]
+        choose(editor.decks_box)
+        choose(editor.note_types_box, VOCAB, KANJI)
+        editor.apply()
+        assert definition["triggers"]["deck_names"] == []
+
+    def test_a_selection_the_user_has_not_touched_survives(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col,
+            widget_parent, note_types=[VOCAB], deck_names=["Default"],
+            on_unfocus={"edit_fields": ["Word"], "add_fields": []},
+        )
+        choose(editor.note_types_box, VOCAB, KANJI)
+        editor.apply()
+        assert definition["triggers"]["deck_names"] == ["Default"]
+        assert definition["triggers"]["on_unfocus"]["edit_fields"] == ["Word"]
+
+    def test_a_field_only_the_dropped_note_type_had_comes_back_with_it(
+        self, col, qapp, widget_parent
+    ):
+        # Chosen names outlive the box: it can only offer the fields of the note types that
+        # are selected right now, so reading it back as the whole answer would turn "not on
+        # offer" into "not wanted".
+        editor, definition = triggers_editor(
+            col,
+            widget_parent, note_types=[VOCAB, KANJI],
+            on_unfocus={"edit_fields": ["Word", "Kanji"], "add_fields": []},
+        )
+        choose(editor.note_types_box, VOCAB)
+        assert selected_names(editor.unfocus_edit) == ["Word"]
+        choose(editor.note_types_box, VOCAB, KANJI)
+        editor.apply()
+        # Order follows the field list the boxes offer, which follows the note type order
+        # Anki hands back, so it is not the order they were stored in.
+        assert sorted(definition["triggers"]["on_unfocus"]["edit_fields"]) == ["Kanji", "Word"]

@@ -185,10 +185,20 @@ class TriggersEditor(QWidget):
                 self,
             ),
         )
-        self._initial_unfocus = (
+        # What the user has chosen, as opposed to what the boxes can currently offer. The
+        # boxes are rebuilt from the note types on every change, so their contents cannot be
+        # the record: a name that the current note types do not have would be read back as
+        # "not chosen" and lost. Kept here instead, and narrowed only by what the user does.
+        self._chosen_decks = list(triggers.get("deck_names", []) or [])
+        self._chosen_unfocus = [
             list(unfocus.get("edit_fields", []) or []),
             list(unfocus.get("add_fields", []) or []),
-        )
+        ]
+        #: What each box was last filled with, or None before it has been filled at all. An
+        #: empty box means nothing until this is known: it is empty to begin with because
+        #: nothing has been put in it, not because the user emptied it.
+        self._offered_decks: Optional[list[str]] = None
+        self._offered_unfocus: list[Optional[list[str]]] = [None, None]
         self._refresh_dependent_boxes()
 
     # -- reacting ------------------------------------------------------------------------
@@ -206,11 +216,30 @@ class TriggersEditor(QWidget):
         self._refresh_unfocus(note_types)
         self._refresh_warning(note_types)
 
+    def _take_choice(
+        self, box: MultiComboBox, chosen: list[str], offered: Optional[list[str]]
+    ) -> None:
+        """Fold what `box` is showing back into `chosen`, in place, before it is refilled.
+
+        The box only ever offered `offered`, the names of the note types selected when it
+        was last filled, so that is all it can answer for. Names outside that list belong to
+        a note type that was not selected then and are left alone -- deselecting a note type
+        and selecting it again must not lose its fields or decks. Within it the box is the
+        whole answer, so a name the user unticked is gone, including the last one.
+
+        `offered` is None before the box has been filled at all, and then it answers for
+        nothing: it is empty because nothing has been put in it.
+        """
+        if offered is None:
+            return
+        live = selected_names(box)
+        chosen[:] = [name for name in chosen if name not in offered] + live
+
     def _refresh_decks(self, note_types) -> None:
-        chosen = selected_names(self.decks_box) or list(
-            self.triggers.get("deck_names", []) or []
-        )
         decks = decks_of_note_types(note_types)
+        self._take_choice(self.decks_box, self._chosen_decks, self._offered_decks)
+        self._offered_decks = [deck["name"] for deck in decks]
+        chosen = self._chosen_decks
         self.decks_box.blockSignals(True)
         self.decks_box.clear()
         for deck in decks:
@@ -231,9 +260,10 @@ class TriggersEditor(QWidget):
 
     def _refresh_unfocus(self, note_types) -> None:
         fields = field_names_of(note_types)
-        edit_chosen = selected_names(self.unfocus_edit) or self._initial_unfocus[0]
-        add_chosen = selected_names(self.unfocus_add) or self._initial_unfocus[1]
-        for box, chosen in ((self.unfocus_edit, edit_chosen), (self.unfocus_add, add_chosen)):
+        boxes = (self.unfocus_edit, self.unfocus_add)
+        for index, (box, chosen) in enumerate(zip(boxes, self._chosen_unfocus)):
+            self._take_choice(box, chosen, self._offered_unfocus[index])
+            self._offered_unfocus[index] = list(fields)
             box.blockSignals(True)
             box.clear()
             for field in fields:
