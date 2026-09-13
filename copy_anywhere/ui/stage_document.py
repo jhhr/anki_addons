@@ -252,10 +252,14 @@ class StageDocument:
         return self._analysis
 
     def problems_for(self, guid: str) -> list[SchemaProblem]:
-        return [problem for problem in self.analysis.problems if problem.stage_guid == guid]
+        return _unique(
+            problem for problem in self.analysis.problems if problem.stage_guid == guid
+        )
 
     def warnings_for(self, guid: str) -> list[SchemaProblem]:
-        return [problem for problem in self.analysis.warnings if problem.stage_guid == guid]
+        return _unique(
+            problem for problem in self.analysis.warnings if problem.stage_guid == guid
+        )
 
     def definition_problems(self) -> list[SchemaProblem]:
         """Problems that belong to no stage -- exports, the definition's own shape."""
@@ -507,9 +511,7 @@ class StageDocument:
         Warnings -- mixed note types, file writes outside undo -- are deliberately absent:
         §10 says they do not block.
         """
-        blockers = [
-            self._describe(problem) for problem in self.analysis.problems
-        ]
+        blockers = [self._describe(problem) for problem in _unique(self.analysis.problems)]
         if self.wants_add_note() and not self.add_note_compatible():
             blockers.append(
                 "This definition runs when a note is added, but it edits other notes or"
@@ -570,6 +572,23 @@ class StageDocument:
         return result
 
 
+def _unique(problems: Iterable[SchemaProblem]) -> list[SchemaProblem]:
+    """Drop repeats, keeping the first of each.
+
+    A missing result name is reported twice -- once by the structural validator and once by
+    the analyser as it tries to declare the binding -- which is right for a log and wrong
+    for a row that has one line to spend on it.
+    """
+    seen: set[tuple] = set()
+    unique: list[SchemaProblem] = []
+    for problem in problems:
+        key = (problem.message, problem.stage_guid, problem.stage_type)
+        if key not in seen:
+            seen.add(key)
+            unique.append(problem)
+    return unique
+
+
 def stage_label(stage: Any) -> str:
     """What a stage row and a path segment call this stage: its own name if it has one."""
     if not isinstance(stage, dict):
@@ -595,3 +614,80 @@ def _blank_result_names(stage: Stage) -> None:
         for output in stage.get("outputs", []) or []:
             if isinstance(output, dict):
                 output["result"] = ""
+
+
+def _expression_summary(expression: Any, limit: int = 48) -> str:
+    if not isinstance(expression, dict):
+        return ""
+    source = expression.get("code") if expression.get("mode") == "code" else expression.get("text")
+    source = " ".join((source or "").split())
+    if len(source) > limit:
+        source = source[: limit - 1] + "…"
+    return source
+
+
+def stage_summary(stage: Any) -> str:
+    """One line saying what this stage does, for the collapsed row.
+
+    It reads the stage rather than the analysis on purpose: a row has to say something
+    while the stage is still half-written, and "→ ?" is more use than a blank line.
+    """
+    if not isinstance(stage, dict):
+        return ""
+    stage_type = stage.get("type")
+    target = (stage.get("target") or {}).get("binding") or "?"
+    source = (stage.get("input") or {}).get("binding") or "?"
+    result = stage.get("result") or "?"
+    if stage_type == STAGE_VARIABLE:
+        return f"{result} = {_expression_summary(stage.get('value')) or '?'}"
+    if stage_type in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY):
+        what = "notes" if stage_type == STAGE_NOTE_QUERY else "cards"
+        selection = stage.get("selection") or {}
+        strategy = selection.get("strategy", "all")
+        count = selection.get("count")
+        how = "all" if strategy == "all" else f"{strategy} {count}" if count else strategy
+        return f"{result} = {how} {what} matching {_expression_summary(stage.get('query')) or '?'}"
+    if stage_type == STAGE_EDIT_NOTE:
+        parts = []
+        fields = [write.get("field") for write in stage.get("fields") or [] if isinstance(write, dict)]
+        if fields:
+            parts.append(", ".join(field for field in fields if field))
+        tags = stage.get("tags") or {}
+        if tags.get("add") or tags.get("remove"):
+            parts.append("tags")
+        if stage.get("card_actions"):
+            parts.append("card actions")
+        return f"{target}: {'; '.join(parts) if parts else 'nothing yet'}"
+    if stage_type == STAGE_EDIT_CARD:
+        count = len(stage.get("card_actions") or [])
+        return f"{target}: {count} card action{'' if count == 1 else 's'}"
+    if stage_type == STAGE_READ_FILE:
+        return f"{result} = contents of {_expression_summary(stage.get('filename')) or '?'}"
+    if stage_type == STAGE_WRITE_FILE:
+        where = _expression_summary(stage.get("filename")) or "the code's own filenames"
+        return f"write {where}{' (overwriting)' if stage.get('overwrite') else ''}"
+    if stage_type == STAGE_LIST_VARIABLE:
+        return f"{result}: an empty list of {stage.get('item_type', TEXT)}"
+    if stage_type == STAGE_STORE:
+        return f"append {_expression_summary(stage.get('value')) or '?'} to {target}"
+    if stage_type == STAGE_FOR_EACH_NOTE:
+        return f"each note in {source} as '{stage.get('item_binding') or 'note'}'"
+    if stage_type == STAGE_FOR_EACH_CARD:
+        return (
+            f"each card in {source} as '{stage.get('item_binding') or 'card'}'"
+            f", its note as '{stage.get('note_binding') or 'note'}'"
+        )
+    if stage_type == STAGE_REDUCE:
+        return f"{result} = fold {source}"
+    if stage_type == STAGE_CONDITION:
+        return _expression_summary(stage.get("predicate")) or "no condition yet"
+    if stage_type == STAGE_CALL_DEFINITION:
+        outputs = [
+            output.get("result")
+            for output in stage.get("outputs") or []
+            if isinstance(output, dict) and output.get("result")
+        ]
+        trigger = (stage.get("trigger") or {}).get("binding") or "?"
+        tail = f", keeping {', '.join(outputs)}" if outputs else ""
+        return f"run another definition on {trigger}{tail}"
+    return ""
