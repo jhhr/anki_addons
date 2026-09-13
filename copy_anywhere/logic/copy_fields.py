@@ -194,6 +194,7 @@ def copy_fields(
     trigger_notes: Optional[Sequence[Note]] = None,
     parent=None,
     field_only: Optional[str] = None,
+    unfocus_is_add: bool = False,
     undo_entry: Optional[int] = None,
     undo_text_suffix: Optional[str] = "",
     update_sync_result: Optional[Callable[[str, int], None]] = None,
@@ -215,6 +216,8 @@ def copy_fields(
         is created
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
+    :param unfocus_is_add: whether that unfocus is happening in the Add dialog, which is
+      which of format 1's two unfocus flags a migrated field write is judged by
     :param undo_text_suffix: Optional suffix to add to the undo text.
         Useless, if undo_entry is passed
     :param update_sync_result: Provided when this is a sync operation. Used to update the sync
@@ -330,6 +333,7 @@ def copy_fields(
                 copied_into_notes=copied_into_notes,
                 results=results,
                 field_only=field_only,
+                unfocus_is_add=unfocus_is_add,
                 progress_title=progress_title,
             )
             # Update each modified note after every operation, so that if multiple ops are updating
@@ -413,6 +417,7 @@ def copy_fields_in_background(
     note_ids: Optional[Sequence[int]] = None,
     trigger_notes: Optional[Sequence[Note]] = None,
     field_only: Optional[str] = None,
+    unfocus_is_add: bool = False,
     logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
     definitions_for_calls: Optional[Sequence[dict]] = None,
@@ -430,6 +435,7 @@ def copy_fields_in_background(
         still have to pass the query, so they are only used where it selects their id
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
+    :param unfocus_is_add: whether that unfocus is happening in the Add dialog
     :param logger: Logger to use for errors and debug messages
     :param is_sync: Whether this is a sync operation or not
     :param progress_title: Optional title for the progress dialog
@@ -525,6 +531,7 @@ def copy_fields_in_background(
             copied_into_notes=copied_into_notes,
             copied_into_cards_dict=copied_into_cards_dict,
             field_only=field_only,
+            unfocus_is_add=unfocus_is_add,
             logger=logger,
             file_cache=file_cache,
             progress_updater=progress_updater,
@@ -626,6 +633,7 @@ def copy_for_single_trigger_note(
     copied_into_notes: Optional[list[Note]] = None,
     copied_into_cards_dict: Optional[dict[int, Card]] = None,
     field_only: Optional[str] = None,
+    unfocus_is_add: bool = False,
     deck_id: Optional[int] = None,
     logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
@@ -647,6 +655,7 @@ def copy_for_single_trigger_note(
     :param copied_into_cards_dict: filled with the cards of every note the definition
         touched, keyed by card id, for the caller's batched `update_cards()`
     :param field_only: limits field writes to those the named editor field triggers
+    :param unfocus_is_add: whether that unfocus is happening in the Add dialog
     :param deck_id: the deck a not-yet-added note's cards will go into, since it has none
     :param logger: logger for errors and debug messages
     :param file_cache: a dictionary caching opened files' content for process chains
@@ -685,6 +694,7 @@ def copy_for_single_trigger_note(
         logger=logger,
         is_sync=bool(is_sync),
         field_only=field_only,
+        unfocus_is_add=unfocus_is_add,
         deck_id=deck_id,
         progress_updater=progress_updater,
         file_cache=file_cache,

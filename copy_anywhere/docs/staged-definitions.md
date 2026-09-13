@@ -159,6 +159,14 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   ran; the file is written by a stage after the one that writes the field, and a stage reads
   what the stages before it did.
 
+**What a migrated field write keeps.** Format 1 asked three questions per field write that
+format 2 asks once per definition: which editor fields trigger it, whether it runs on unfocus
+while editing, and whether it runs on unfocus while adding. The migrator records the answers
+on the write itself, as `unfocus_trigger_fields`, `unfocus_when_edit` and `unfocus_when_add`,
+and the executor narrows an unfocus run by them. A write that has none of those keys -- which
+is every write the stage editor produces -- is not narrowed: `triggers.on_unfocus` has already
+decided, for the definition as a whole, that this unfocus should run it.
+
 What migration deliberately does *not* change is a definition that format 1 refused to run.
 A `select_card_by` that is missing or unreadable selected nothing and said why, and it still
 does: mapping it to "take the first note" would make a definition that has never written a

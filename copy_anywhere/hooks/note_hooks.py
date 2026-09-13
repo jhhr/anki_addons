@@ -393,6 +393,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     copy_definition=copy_definition,
                     trigger_note=note,
                     copied_into_notes=[],
+                    # A migrated write still says which editor fields trigger it and
+                    # whether it runs on this kind of unfocus at all; passing the field and
+                    # the mode is what lets the stage honour that. A natively authored
+                    # write says neither and is not narrowed by either.
+                    field_only=field_name,
+                    unfocus_is_add=is_new_note,
                     deck_id=deck_id,
                     logger=logger,
                 )
@@ -445,6 +451,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             # database may not have the value just typed yet. This note always does.
             trigger_notes=[note],
             field_only=field_name,
+            unfocus_is_add=is_new_note,
             undo_text_suffix=f"triggered by unfocus field '{field_name}'",
         )
 

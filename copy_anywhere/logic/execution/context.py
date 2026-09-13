@@ -204,6 +204,7 @@ class ExecutionSession:
         logger: Logger = Logger("error"),
         is_sync: bool = False,
         field_only: Optional[str] = None,
+        unfocus_is_add: bool = False,
         deck_id: Optional[int] = None,
         progress_updater: Any = None,
         file_cache: Optional[dict] = None,
@@ -215,6 +216,9 @@ class ExecutionSession:
         self.logger = logger
         self.is_sync = is_sync
         self.field_only = field_only
+        #: Which of format 1's two unfocus flags a migrated field write is judged by. Only
+        #: meaningful while `field_only` is set, which is to say only during an unfocus.
+        self.unfocus_is_add = unfocus_is_add
         self.deck_id = deck_id
         self.progress_updater = progress_updater
         self.file_cache = file_cache if file_cache is not None else {}

@@ -109,12 +109,25 @@ class TestTriggerFieldSplitting:
         assert get_field_to_field_unfocus_trigger_fields(field_def, True) == []
 
     def test_field_only_runs_just_the_matching_def(self, note, logger):
+        # Both defs are on for unfocus while editing, because that is the only way the hook
+        # would reach them with a `field_only` at all; what separates them here is which
+        # editor field each one watches.
         modified, _ = run(
             note,
             logger,
             field_to_field_defs=[
-                d.field_to_field("Meaning", "{{Word}}", copy_on_unfocus_trigger_field="Word"),
-                d.field_to_field("Note", "{{Word}}", copy_on_unfocus_trigger_field="Reading"),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Reading",
+                    copy_on_unfocus_when_edit=True,
+                ),
             ],
             field_only="Word",
         )

@@ -672,6 +672,80 @@ class TestWhichFieldFiresADefinition:
         assert ran.names() == []
 
 
+class TestAMigratedDefinitionsPerWriteUnfocusSettings:
+    """The two settings format 1 kept on each field write, after the startup migration.
+
+    A migrated definition is stored as stages, so the handler takes the format-2 branch and
+    runs the whole definition. The settings survive on the writes themselves, and the
+    executor is what honours them now -- which is the only reason a write can still be left
+    out of an unfocus run while the rest of its definition runs.
+    """
+
+    def migrated(self, **defs):
+        # Through `stage_definitions`, so the definition carries the derived `effects` the
+        # startup migration would have given it and the handler branches on them as it will
+        # in a real collection.
+        from copy_anywhere.logic.flow_analysis import stage_definitions
+
+        staged, problems = stage_definitions([
+            d.within_note(
+                definition_name="within",
+                field_to_field_defs=[
+                    d.field_to_field(
+                        field,
+                        "{{Word}}",
+                        copy_on_unfocus_trigger_field="Word",
+                        **settings,
+                    )
+                    for field, settings in defs.items()
+                ],
+            )
+        ])
+        assert problems == []
+        return staged[0]
+
+    def test_a_write_that_is_off_for_editing_is_left_out_of_an_edit_unfocus(
+        self, col, set_definitions
+    ):
+        # The fast write fills straight away; the slow one was deliberately saved for the
+        # bulk action, and used to run on every unfocus once the definition was migrated.
+        set_definitions(
+            self.migrated(
+                Meaning={"copy_on_unfocus_when_edit": True},
+                Note={"copy_on_unfocus_when_edit": False},
+            )
+        )
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == "neko"
+        assert note["Note"] == ""
+
+    def test_the_add_flag_is_what_counts_in_the_add_dialog(self, col, set_definitions):
+        set_definitions(
+            self.migrated(
+                Meaning={"copy_on_unfocus_when_edit": True, "copy_on_unfocus_when_add": False},
+                Note={"copy_on_unfocus_when_edit": False, "copy_on_unfocus_when_add": True},
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == ""
+        assert note["Note"] == "neko"
+
+    def test_a_write_watching_another_field_is_left_out_too(self, col, set_definitions):
+        definition = self.migrated(
+            Meaning={"copy_on_unfocus_when_edit": True},
+            Note={"copy_on_unfocus_when_edit": True},
+        )
+        writes = definition["stages"][0]["fields"]
+        next(w for w in writes if w["field"] == "Note")["unfocus_trigger_fields"] = ["Reading"]
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == "neko"
+        assert note["Note"] == ""
+
+
 class TestTheDeckWhitelistOnThisPath:
     """An existing note is checked by its cards; a new one by the Add dialog's deck."""
 

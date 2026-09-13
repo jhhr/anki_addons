@@ -862,3 +862,54 @@ class TestRunningForOneEditorField:
         ok, copied = run(self.definition(unfocus_trigger_fields=["Reading"]), note, logger)
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
+
+    def test_a_write_turned_off_for_editing_does_not_run_while_editing(
+        self, note, other, logger
+    ):
+        # Format 1's `copy_on_unfocus_when_edit`, which is how a slow write -- downloading
+        # audio, say -- was kept for the bulk action instead of running on every keystroke
+        # that left a watched field.
+        ok, copied = run(
+            self.definition(unfocus_trigger_fields=["Word"], unfocus_when_edit=False),
+            note,
+            logger,
+            field_only="Word",
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == [""]
+
+    def test_that_same_write_runs_while_adding_if_it_is_on_for_adding(
+        self, note, other, logger
+    ):
+        ok, copied = run(
+            self.definition(
+                unfocus_trigger_fields=["Word"], unfocus_when_edit=False, unfocus_when_add=True
+            ),
+            note,
+            logger,
+            field_only="Word",
+            unfocus_is_add=True,
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["neko"]
+
+    def test_a_write_on_for_editing_only_does_not_run_while_adding(self, note, other, logger):
+        ok, copied = run(
+            self.definition(
+                unfocus_trigger_fields=["Word"], unfocus_when_edit=True, unfocus_when_add=False
+            ),
+            note,
+            logger,
+            field_only="Word",
+            unfocus_is_add=True,
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == [""]
+
+    def test_the_flags_do_not_reach_a_run_that_is_not_an_unfocus(self, note, other, logger):
+        # The bulk action the slow write was being saved for.
+        ok, copied = run(
+            self.definition(unfocus_when_edit=False, unfocus_when_add=False), note, logger
+        )
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["neko"]

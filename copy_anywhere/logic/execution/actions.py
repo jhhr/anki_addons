@@ -186,6 +186,29 @@ def _select(ids: list[int], selection: dict) -> list[int]:
     return ids[: int(count)]
 
 
+def _write_runs_on_unfocus(field_write: dict, session) -> bool:
+    """Whether this field write is one the unfocus in progress should run.
+
+    Only a migrated write can answer either question. Format 1 asked both per field write --
+    which editor fields trigger it, and whether it runs on unfocus at all while editing or
+    while adding -- and the migrator records the answers on the write.
+
+    A write the stage editor produced carries neither key and always runs. Format 2 watches
+    fields for the definition as a whole (§8), and a stage only runs once that test has been
+    passed, so there is nothing left here to decide. Treating a missing key as "no" would
+    skip every write in every natively authored definition -- quietly, because the tags and
+    card actions in the same stage are not gated and would still apply.
+    """
+    if "unfocus_trigger_fields" in field_write:
+        if session.field_only not in (field_write["unfocus_trigger_fields"] or []):
+            return False
+    flag = "unfocus_when_add" if session.unfocus_is_add else "unfocus_when_edit"
+    # A slow write -- downloading audio, say -- could be left out of the unfocus run and
+    # kept for the bulk action. Ignoring the flag ran it on every keystroke that left a
+    # watched field, and overwrote a value the user had set by hand.
+    return flag not in field_write or bool(field_write[flag])
+
+
 def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
     sort_field = selection.get("sort_field")
     if not sort_field:
@@ -289,19 +312,8 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     for field_write in stage.get("fields") or []:
         if not isinstance(field_write, dict):
             continue
-        if session.field_only is not None and "unfocus_trigger_fields" in field_write:
-            # Only a migrated write carries this list. Format 1 watched editor fields per
-            # field write, and the migrator resolves that into the names here, so a run
-            # limited to one field still has to honour it.
-            #
-            # A write the stage editor produced has no such key and is deliberately not
-            # gated: format 2 watches fields for the definition as a whole (§8), and that
-            # test has already been passed by the time the stage runs. Treating a missing
-            # key as an empty list would skip every write in every natively authored
-            # definition that edits other notes -- silently, since the tags and card
-            # actions in the same stage would still apply.
-            if session.field_only not in (field_write["unfocus_trigger_fields"] or []):
-                continue
+        if session.field_only is not None and not _write_runs_on_unfocus(field_write, session):
+            continue
         field = field_write.get("field", "")
         try:
             target[field]
