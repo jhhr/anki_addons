@@ -180,13 +180,16 @@ below). It is its own step of the migration: build the name lexicon, migrate, fi
 then judge.
 `research/proper_noun_eval.py` scores models on 300 export sentences with old proper nouns and 300
 without: names precision/recall against the old lists (noisy: 彼女 is listed 16 times), and old proper
-nouns labelled a top-level proper noun before and after the fix, 198 of 376 without it:
+nouns labelled a top-level proper noun before and after the fix, 194 of 375 without it:
 
 | Model | Names P / R | Top proper noun after | Names changed |
 | --- | --- | --- | --- |
-| gemini-3.1-flash-lite | 81.8% / 70.7% | 257 | 120 |
-| gpt-5.6-luna | 87.6% / 65.9% | 247 | 90 |
-| claude-haiku-4-5 | 80.9% / 69.9% | 256 | 115 (日本語, 猫足 wrongly) |
+| gemini-3.1-flash-lite | 82.7% / 69.0% | 254 | 114 |
+| gemini-3.5-flash-lite | 85.1% / 69.0% | 253 | 101 |
+| gpt-5.6-luna | 87.6% / 66.0% | 249 | 84 |
+| gpt-5.6-terra | 85.3% / 65.2% | 245 | 85 |
+| claude-haiku-4-5 | 80.0% / 67.4% | 251 | 113 (日本語, 猫足 wrongly) |
+| claude-sonnet-5 | 83.7% / 72.7% | 267 | 120 |
 
 Most names given that the old lists lack are real (高松塚古墳, 奈良県, 正親町天皇). A name off word
 boundaries is nearly always part of a word on purpose (スペイン語, 新宿駅, 奈良県明日香村). Where

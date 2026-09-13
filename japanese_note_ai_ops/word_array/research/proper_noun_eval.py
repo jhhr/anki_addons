@@ -32,7 +32,14 @@ from _bootstrap import ADDON_ROOT
 from migrate_fit import CORPORA, read_export
 
 RESULTS = ADDON_ROOT / "output" / "proper_noun_eval_results.jsonl"
-MODELS = ["gemini-3.1-flash-lite", "gpt-5.6-luna", "claude-haiku-4-5-20251001"]
+MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-5",
+]
 TOP_PROPER = "top proper noun"
 
 
