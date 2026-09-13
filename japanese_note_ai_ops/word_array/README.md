@@ -163,7 +163,7 @@ whole sentence's words in one prompt.
 `research/judge_eval.py` scores the judge against the hand-checked export, whose old lists count
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
 the copula no entry fits are left unscored, and the judge is not scored on particles and the
-copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 77.6% precise with 49.6% recall
+copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 78.1% precise with 49.1% recall
 (v1 had 74.1%, 50.5%, 45.0%). The labels are unsure for components of compounds, so more
 hand-judged words are to come.
 
