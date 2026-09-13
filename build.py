@@ -483,6 +483,34 @@ def copy_tree(src: Path, dst: Path) -> None:
     )
 
 
+def copy_per_platform(trees: dict[str, Path], packages: set[str], lib: Path) -> None:
+    """Give each platform its own copy of the packages that cannot share a flat directory.
+
+    Guarded the same way the flat loop is, and for a sharper reason. `per_platform` comes from
+    `platform_specific_packages`, which flags a top-level name as soon as *any two* trees
+    disagree about a path under it - it never asks whether all five trees have the name at all.
+    A dependency that is both binary and gated by an environment marker satisfies that without
+    being universal: `uvloop; sys_platform != 'win32'` is installed into the four non-Windows
+    trees, the two macOS ones disagree over `uvloop/loop.cpython-313-darwin.so`, and so
+    `uvloop` is per-platform - while `trees["win_amd64"]/uvloop` does not exist at all, and
+    copying it raised FileNotFoundError from the middle of a half-rebuilt lib/.
+
+    A top-level entry can also be a bare extension module rather than a directory
+    (`_cffi_backend` is one), which shutil.copytree refuses with NotADirectoryError.
+    """
+    for tag, tree in trees.items():
+        for name in sorted(packages):
+            src = tree / name
+            if not src.exists():
+                continue
+            dst = lib / "_platform" / tag / name
+            if src.is_dir():
+                copy_tree(src, dst)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+
+
 def check_per_platform_output(lib: Path, packages: set[str]) -> None:
     """Every platform got its own copy, and the copies are not all the same thing.
 
@@ -492,13 +520,22 @@ def check_per_platform_output(lib: Path, packages: set[str]) -> None:
 
     Two tags *may* share a build - a macOS universal2 wheel is one file serving both
     architectures - so identical copies are only wrong when every tag has the same one, which
-    means the split bought nothing.
+    means the split bought nothing. A tag with no copy at all is not a finding either: see
+    copy_per_platform for why a per-platform package need not be in every platform's tree.
     """
     for package in sorted(packages):
         builds: dict[str, list[str]] = {}
         for tag in VENDOR_PLATFORMS:
             tree = lib / "_platform" / tag / package
-            files = hash_tree(tree, skip_dist_info=False)
+            if not tree.exists():
+                # copy_per_platform found nothing to copy, which for a marker-gated dependency
+                # is the answer and not a fault: the resolution for this platform does not
+                # include the package, so there is no build of it to check.
+                continue
+            if tree.is_file():
+                files = {tree.name: hashlib.sha256(tree.read_bytes()).hexdigest()}
+            else:
+                files = hash_tree(tree, skip_dist_info=False)
             if not any(is_extension(Path(rel).name) for rel in files):
                 sys.exit(
                     f"vendor: {lib.name}/_platform/{tag}/{package} has no extension module.\n"
@@ -506,12 +543,15 @@ def check_per_platform_output(lib: Path, packages: set[str]) -> None:
                 )
             fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             builds.setdefault(fingerprint, []).append(tag)
-        if len(builds) == 1:
+        # One fingerprint shared by several tags is the failure; one fingerprint held by a
+        # single tag just means only that platform resolved the package at all.
+        if len(builds) == 1 and len(next(iter(builds.values()))) > 1:
             sys.exit(
                 f"vendor: every platform's {package} is byte-identical, so one wheel was used "
                 "for all of them and four platforms would fail to import."
             )
-        print(f"  {package}: {len(builds)} distinct builds across {len(VENDOR_PLATFORMS)} tags")
+        counted = sum(len(tags) for tags in builds.values())
+        print(f"  {package}: {len(builds)} distinct builds across {counted} tags")
 
 
 def clear_previous_vendoring(
@@ -523,6 +563,8 @@ def clear_previous_vendoring(
     is one - so this cannot just empty the directory. The manifest records exactly what the
     last run wrote; before there is one, fall back to removing only what this run is about to
     replace, and report the rest instead of guessing.
+
+    The manifest itself goes last, once what it described is gone - see the comment there.
     """
     manifest_path = lib / VENDOR_MANIFEST
     known: Optional[list[str]] = None
@@ -568,6 +610,15 @@ def clear_previous_vendoring(
             shutil.rmtree(target, ignore_errors=True)
         elif target.exists():
             target.unlink()
+
+    # Everything the old manifest described is gone, so the manifest is now a false claim about
+    # what lib/ holds, and it stays one until the caller writes the new one. Anything that ends
+    # the run in between - a copy that raises, a check that calls sys.exit - used to leave the
+    # previous manifest sitting on a half-rebuilt tree, which `build.py dist` would then ship
+    # and `vendor_path.vendor_health()` would trust at runtime. Removing it now makes the
+    # failure mode honest: no manifest reads as "what this was built for is unknown", which is
+    # a rebuild offer rather than a silent wrong answer.
+    manifest_path.unlink(missing_ok=True)
 
 
 def vendor_addon(addon: Addon, uv: str) -> None:
@@ -631,9 +682,7 @@ def vendor_addon(addon: Addon, uv: str) -> None:
             if not src.exists() or (tag != PRIMARY_PLATFORM and name.endswith(".dist-info")):
                 continue
             copy_missing(src, lib / name, strip_extensions=name in strip)
-    for tag, tree in trees.items():
-        for name in sorted(per_platform):
-            copy_tree(tree / name, lib / "_platform" / tag / name)
+    copy_per_platform(trees, per_platform, lib)
     check_per_platform_output(lib, per_platform)
 
     (lib / VENDOR_MANIFEST).write_text(

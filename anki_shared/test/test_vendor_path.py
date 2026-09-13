@@ -97,9 +97,14 @@ class TestVendorHealth:
         (shipped(addon) / vendor_path.VENDOR_MANIFEST).write_text("[]", "utf-8")
         assert vendor_path.vendor_health(str(addon)) is not None
 
-    def test_a_stale_rebuilt_tree_is_not_rescued_by_a_healthy_shipped_one(self, addon):
-        """It is first on sys.path, so it shadows the shipped tree rather than backing it up."""
-        write_manifest(shipped(addon))
+    def test_a_stale_rebuilt_tree_is_judged_on_its_own_while_it_leads(self, addon):
+        """It is first on sys.path, so a shipped tree behind it is shadowed, not a fallback.
+
+        This used to hold even when the shipped tree was healthy, because the rebuilt tree led
+        sys.path unconditionally. `add_vendor_paths` now demotes it in that case, so the health
+        of the shipped tree decides which tree is judged - see TestStaleRebuiltTreeIsDemoted.
+        """
+        write_manifest(shipped(addon), python_version=other_python_version())
         write_manifest(user(addon), python_version=other_python_version())
         assert "rebuilt" in (vendor_path.vendor_health(str(addon)) or "")
 
@@ -129,7 +134,7 @@ class TestVendorHealth:
 
     def test_rebuilt_tree_without_a_manifest_wants_a_rebuild(self, addon):
         """The manifest is written last, so a tree without one is an interrupted rebuild."""
-        write_manifest(shipped(addon))
+        write_manifest(shipped(addon), python_version=other_python_version())
         user(addon).mkdir(parents=True)
         assert "incomplete" in (vendor_path.vendor_health(str(addon)) or "")
 
@@ -166,3 +171,58 @@ class TestAddVendorPaths:
         vendor_path.add_vendor_paths(str(tmp_path))
         vendor_path.add_vendor_paths(str(tmp_path))
         assert sys.path == [str(tmp_path / "lib")]
+
+
+class TestStaleRebuiltTreeIsDemoted:
+    """The review's scenario: a cp310 `user_files/lib` left behind when Anki moved to 3.13.
+
+    The shipped tree is built for the Python that is now running and would work perfectly, so
+    the stale tree must not keep shadowing it on sys.path - `psutil` and `rapidfuzz` loading
+    their wrong-ABI extensions is not a visible failure, it is a silent fall back to a static
+    concurrency limit and pure-Python Levenshtein.
+    """
+
+    def stale_user_tree_over_a_healthy_shipped_one(self, addon):
+        tag = vendor_path.platform_tag()
+        write_manifest(shipped(addon))
+        (shipped(addon) / "_platform" / str(tag)).mkdir(parents=True)
+        write_manifest(user(addon), python_version=other_python_version(), rebuilt_locally=True)
+        return tag
+
+    def test_the_healthy_shipped_tree_goes_first(self, addon, monkeypatch):
+        tag = self.stale_user_tree_over_a_healthy_shipped_one(addon)
+        monkeypatch.setattr(sys, "path", ["/anki"])
+        vendor_path.add_vendor_paths(str(addon))
+        assert sys.path == [
+            "/anki",
+            str(shipped(addon) / "_platform" / str(tag)),
+            str(shipped(addon)),
+            str(user(addon)),
+        ]
+
+    def test_the_stale_tree_is_demoted_rather_than_dropped(self, addon, monkeypatch):
+        """It can still resolve a package the shipped tree happens not to have."""
+        self.stale_user_tree_over_a_healthy_shipped_one(addon)
+        monkeypatch.setattr(sys, "path", [])
+        vendor_path.add_vendor_paths(str(addon))
+        assert str(user(addon)) in sys.path
+
+    def test_a_demoted_tree_no_longer_asks_for_a_rebuild(self, addon):
+        """Health has to judge whichever tree is actually live, or the offer never stops."""
+        self.stale_user_tree_over_a_healthy_shipped_one(addon)
+        assert vendor_path.vendor_health(str(addon)) is None
+
+    def test_a_stale_tree_still_leads_when_the_shipped_one_is_stale_too(self, addon, monkeypatch):
+        """Nothing to demote it in favour of, and a rebuild is what either tree needs."""
+        write_manifest(shipped(addon), python_version=other_python_version())
+        write_manifest(user(addon), python_version=other_python_version(), rebuilt_locally=True)
+        monkeypatch.setattr(sys, "path", [])
+        vendor_path.add_vendor_paths(str(addon))
+        assert sys.path == [str(user(addon)), str(shipped(addon))]
+        assert "rebuilt" in (vendor_path.vendor_health(str(addon)) or "")
+
+    def test_a_rebuilt_tree_without_a_manifest_defers_to_a_healthy_shipped_one(self, addon):
+        """An interrupted rebuild is half a tree; the shipped one is whole."""
+        write_manifest(shipped(addon))
+        user(addon).mkdir(parents=True)
+        assert vendor_path.vendor_health(str(addon)) is None
