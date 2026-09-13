@@ -41,6 +41,7 @@ from .context import (
     StageError,
     TraceEvent,
     TriggerSkipped,
+    summarize,
 )
 from .expressions import evaluate_value
 
@@ -73,8 +74,12 @@ def execute_stage(
     parent_event: Optional[TraceEvent] = None,
 ) -> None:
     session = frame.session
-    event = session.start_event(stage, frame.loop_path, parent_event)
+    event = session.start_event(stage, frame.loop_path, parent_event, env)
     stage_type = stage.get("type")
+    # Actions record what they planned against whichever stage is running, so the trace can
+    # say which stage caused a change without every handler taking a trace parameter.
+    outer_event = session.current_event
+    session.current_event = event
     try:
         result = _dispatch(stage, env, frame, event)
     except SkipBlock:
@@ -103,6 +108,8 @@ def execute_stage(
         # `StageError` would hide the stack that says where they actually came from.
         session.finish_event(event, "failed", error=f"{type(error).__name__}: {error}")
         raise
+    finally:
+        session.current_event = outer_event
 
     name = stage_result_name(stage)
     if name and stage_type != STAGE_CALL_DEFINITION:
@@ -163,6 +170,7 @@ def _run_loop(
     item_binding = stage.get("item_binding") or ("card" if is_card_loop else "note")
     note_binding = stage.get("note_binding") or "note"
     count = len(items)
+    session.record_detail("iterations", count)
 
     previous_index = frame.legacy_values.get(QUERY_NOTE_INDEX)
     for index, item in enumerate(items, 1):
@@ -199,6 +207,7 @@ def _run_reduce(
     if not isinstance(items, list):
         raise frame.error("reduce input is not a list", stage)
 
+    frame.session.record_detail("items", len(items))
     if stage.get("operation") == "join":
         # The join the migrator synthesizes: format 1's `select_card_separator` between the
         # values it read from each source note, with no separator before the first.
@@ -272,6 +281,7 @@ def _run_call(
     # A fresh frame: the callee sees its trigger note and nothing else of the caller's --
     # no variables, no lists, no loop bindings, no result names (§5.9).
     callee_frame = DefinitionFrame(callee, session.working_note(trigger), session, frame.depth + 1)
+    session.record_detail("calls", callee.get("definition_name") or callee_guid)
     session.call_stack.append(callee_guid)
     try:
         exported = execute_definition(callee_frame, parent_event=event)
@@ -293,6 +303,7 @@ def _run_call(
         # Lists are copied on the way out so the child frame stays isolated; note and card
         # references still resolve through the shared overlays.
         env[result_name] = list(value) if isinstance(value, list) else value
+        session.record_detail(f"output {result_name}", summarize(value))
 
 
 # --------------------------------------------------------------------------------------

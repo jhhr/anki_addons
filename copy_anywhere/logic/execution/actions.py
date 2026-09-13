@@ -33,8 +33,43 @@ from ..copy_primitives import (
 )
 from ..definition_schema import expression_is_code
 from ..execute_code_wrappers import execute_code_for_files
-from .context import SkipBlock
+from .context import SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
+
+
+def describe_card(card: Card) -> str:
+    """The card properties a card action can change, for the preview's list of changes."""
+    parts = [f"deck {card.odid or card.did}", f"queue {card.queue}"]
+    flag = card.user_flag()
+    if flag:
+        parts.append(f"flag {flag}")
+    return ", ".join(parts)
+
+
+def _record_note_changes(session, snapshot: Note, target: Note) -> None:
+    """Say which fields and tags this stage changed, comparing against its own snapshot.
+
+    The snapshot is the note as the stage found it, so this is exactly the stage's own
+    contribution even when an earlier stage already edited the same note.
+
+    Comparing every field is not free and a bulk run does it per note per stage, so it is
+    skipped entirely when nothing is collecting a trace.
+    """
+    if not session.recording:
+        return
+    before = dict(zip(snapshot.keys(), snapshot.values()))
+    for field, value in zip(target.keys(), target.values()):
+        was = before.get(field)
+        if was != value:
+            session.record_mutation(
+                f"note {target.id} {field}: {summarize(was, 80)} → {summarize(value, 80)}"
+            )
+    added = [tag for tag in target.tags if tag not in snapshot.tags]
+    removed = [tag for tag in snapshot.tags if tag not in target.tags]
+    if added:
+        session.record_mutation(f"note {target.id} +tags {' '.join(added)}")
+    if removed:
+        session.record_mutation(f"note {target.id} -tags {' '.join(removed)}")
 
 
 def binding_name(reference: Any) -> Optional[str]:
@@ -195,10 +230,14 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
 
     session.check_cancel()
     ids = session.find_cards(query) if is_card_query else session.find_notes(query)
+    session.record_detail("query", query)
+    session.record_detail("found", len(ids))
     if not ids:
+        session.record_detail("selected", 0)
         return _empty_result(stage, frame, query, kind)
 
     selected = _select(list(ids), selection)
+    session.record_detail("selected", len(selected))
     if is_card_query:
         cards = [session.card_by_id(card_id) for card_id in selected]
         return _sort_cards(cards, selection, session)
@@ -287,6 +326,7 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     if modified:
         session.mark_note_modified(target)
         session.update_counts(processed_destinations_inc=1)
+        _record_note_changes(session, snapshot, target)
 
     cards = session.cards_of_note(target)
     # Format 1 handed every card of every destination note to the caller, edited or not: the
@@ -303,6 +343,8 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
         for card in cards:
             if getattr(card, "edited", False):
                 session.mark_card_edited(card)
+                if session.recording:
+                    session.record_mutation(f"card {card.id}: {describe_card(card)}")
 
 
 def run_edit_card(stage: dict, env: dict, frame) -> None:
@@ -321,6 +363,8 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
         if edited:
             session.mark_card_edited(card)
             session.update_counts(processed_cards_inc=1)
+            if session.recording:
+                session.record_mutation(f"card {card.id}: {describe_card(card)}")
     session.touch_cards([card])
 
 
@@ -338,8 +382,10 @@ def run_read_file(stage: dict, env: dict, frame) -> str:
         raise frame.error(str(error), stage) from error
     except UnicodeDecodeError as error:
         raise frame.error(f"File '{filename}' is not valid UTF-8: {error}", stage) from error
+    frame.session.record_detail("filename", filename)
     if content is not None:
         return content
+    frame.session.record_detail("missing", True)
     if_missing = stage.get("if_missing", "empty")
     if if_missing == "error":
         raise frame.error(f"File '{filename}' does not exist", stage)

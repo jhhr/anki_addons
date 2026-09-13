@@ -16,6 +16,7 @@ have run, and a preview could not match a real run.
 from __future__ import annotations
 
 import base64
+import re
 import time
 from typing import Any, Callable, Optional, Sequence, Union
 
@@ -162,15 +163,31 @@ class TraceEvent:
     def __repr__(self) -> str:
         return f"<TraceEvent {self.stage_type} {self.status}>"
 
+    def iteration_label(self) -> str:
+        """Which pass through the enclosing loops this event belongs to.
+
+        A loop body's stages each emit one event per iteration, all with the same stage
+        guid, so the trace view needs this to tell them apart (§9).
+        """
+        return ".".join(str(index) for index in self.loop_path)
+
 
 #: Trace values longer than this are cut for display; the full value stays out of the trace
 #: entirely rather than being kept twice.
 TRACE_VALUE_LIMIT = 500
 
+#: Enough to keep a note's label readable in the trace. Anki's own `strip_html_media` needs
+#: the translation backend to be initialised, which a pure unit test has no reason to do.
+_TAG = re.compile(r"<[^>]+>")
+
 
 def summarize(value: Any, limit: int = TRACE_VALUE_LIMIT) -> str:
     if isinstance(value, Note):
-        return f"<note {value.id}>"
+        # The sort field rather than the id alone: a preview showing "<note 1699…>" for
+        # every note in a loop says nothing about which note the iteration is on.
+        first = value.fields[0] if value.fields else ""
+        label = _TAG.sub(" ", first).strip()
+        return f"<note {value.id}: {label[:60]}>" if label else f"<note {value.id}>"
     if isinstance(value, Card):
         return f"<card {value.id}>"
     if isinstance(value, (list, tuple)):
@@ -221,6 +238,10 @@ class ExecutionSession:
         self.query_cache: dict[str, list[int]] = {}
         self.call_stack: list[str] = []
         self.trace: list[TraceEvent] = []
+        #: The event of the stage currently running, so an action can say what it planned
+        #: without every action handler having to take a trace parameter it mostly ignores.
+        #: `None` whenever the trace is off, which is what makes recording free then.
+        self.current_event: Optional[TraceEvent] = None
         self.cancelled = False
 
     # -- notes ------------------------------------------------------------------------
@@ -307,6 +328,10 @@ class ExecutionSession:
                 )
         self.file_overlay[name] = content
         self.pending_files.append({"filename": name, "content": content})
+        if self.recording:
+            # Recorded here rather than in the stage, because the name the write lands
+            # under is the normalized one and this is where that is known.
+            self.record_mutation(f"write '{name}' ({len(content)} characters)")
         return True
 
     def read_file(self, filename: str) -> Optional[str]:
@@ -369,7 +394,11 @@ class ExecutionSession:
     # -- trace ------------------------------------------------------------------------
 
     def start_event(
-        self, stage: dict, loop_path: Sequence[int], parent: Optional[TraceEvent]
+        self,
+        stage: dict,
+        loop_path: Sequence[int],
+        parent: Optional[TraceEvent],
+        env: Optional[dict] = None,
     ) -> Optional[TraceEvent]:
         if not self.collect_trace:
             return None
@@ -377,6 +406,10 @@ class ExecutionSession:
             stage.get("guid"), stage.get("type"), stage.get("name", ""), loop_path
         )
         event.details["started"] = time.time()
+        if env is not None:
+            # What the stage could see when it started, which is the question the preview
+            # pane is actually asked: not "what is this expression" but "what was in it".
+            event.inputs = {name: summarize(value) for name, value in env.items()}
         if parent is not None:
             parent.children.append(event)
         else:
@@ -396,6 +429,25 @@ class ExecutionSession:
         if result is not None:
             event.result = summarize(result)
         event.error = error
+
+    @property
+    def recording(self) -> bool:
+        """Whether anything is listening. Checked before describing an expensive change."""
+        return self.current_event is not None
+
+    def record_mutation(self, description: str) -> None:
+        """Note one change the running stage planned, for the preview pane.
+
+        Recorded where the change is made rather than at the commit, because by the time
+        the plan is committed there is no longer anything saying which stage caused what.
+        """
+        if self.current_event is not None:
+            self.current_event.mutations.append(description)
+
+    def record_detail(self, key: str, value: Any) -> None:
+        """Note something about the running stage that is not a result and not a change."""
+        if self.current_event is not None:
+            self.current_event.details[key] = value
 
 
 class DefinitionFrame:
