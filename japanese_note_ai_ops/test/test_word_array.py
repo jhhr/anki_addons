@@ -158,6 +158,31 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(self.examples[10][0])
         self.assertEqual(find_word(arr, "最近")[5], [])
 
+    def test_okurigana_is_no_sub_word(self):
+        # JMdict has らか, か and く as words, but they are the okurigana here
+        for sentence, form in [
+            ("<b> 柔[やわ]らか</b>な 布[ぬの]", "柔らか"),
+            ("静[しず]かな 夜[よる]", "静か"),
+            ("悉[ことごと]く 失敗[しっぱい]した", "悉く"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
+        # An adverb's particle still is a word
+        arr = self.generator.generate("正[まさ]に その 通[とお]り")
+        self.assertEqual([s[2] for s in find_word(arr, "正に")[5]], ["正", "に"])
+
+    def test_an_adjective_stem_and_ge_are_one_na_adjective(self):
+        # JMdict has 寂しげ but not 儚げ; both come out alike, and 忌々しげに isn't 忌々し + げに
+        for sentence, form in [
+            ("<b> 儚[はかな]げな</b> 笑顔[えがお]", "儚げ"),
+            ("寂[さび]しげな 笑顔[えがお]", "寂しげ"),
+            ("忌々[いまいま]しげに 言[い]う", "忌々しげ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word[1], "na-adjective")
+                self.assertEqual([s[1] for s in word[5]], ["adjective", "suffix"])
+
     def test_sub_word_readings_drop_the_compounds_rendaku(self):
         arr = self.generator.generate(self.examples[20][0])
         self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])

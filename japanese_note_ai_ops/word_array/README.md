@@ -115,7 +115,12 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
   furigana splits per kanji, each piece must be a JMdict entry with the reading the note gives
   it (the second may carry rendaku), and no piece may be a lone kanji read in on'yomi: those
   are mostly bound morphemes, and allowing them would split every on'yomi compound (最|近,
-  言|語).
+  言|語). Nor may the second piece be okurigana: kana ending a na-adjective (柔らか, 静か, 新た,
+  見たい; 68 in the export) or an adverb other than a particle (悉く, 幾ら, 何しろ), though JMdict
+  has らか, か and く as words. Nouns still split so (窪+み, 粘+り) beside real ones (赤+ちゃん).
+
+An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
+or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.
 
 A furigana group cut by the tokenizer is one word when JMdict has the whole read that way
 (八紘一宇, 業者; its sub-words then follow the rules above); otherwise its pieces are the words

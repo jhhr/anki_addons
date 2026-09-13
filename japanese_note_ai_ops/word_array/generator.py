@@ -338,7 +338,27 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
                         )
                     )
                     break
-    return cands
+    return cands + _stem_suffix_candidates(tm, words, cands)
+
+
+def _stem_suffix_candidates(
+    tm: TextMap, words: list[Word], cands: list[Candidate]
+) -> list[Candidate]:
+    """An adjective stem and the na-adjective suffix after it (儚 + げ) as one na-adjective where
+    JMdict lacks it, like 寂しげ which JMdict has: not 儚い + a げ of its own, nor 忌々し + げに."""
+    out = []
+    for i, (a, b) in enumerate(zip(words, words[1:])):
+        if (
+            len(a.morphs) == 1
+            and a.head.pos[0] == "形容詞"
+            and a.head.pos[5].startswith("語幹")
+            and len(b.morphs) == 1
+            and b.head.pos[:2] == ("接尾辞", "形状詞的")
+            and not any((c.i, c.j) == (i, i + 2) for c in cands)
+        ):
+            written = tm.written_form(a.start, b.end)
+            out.append(Candidate(i, i + 2, written, (), frozenset({"adj-na"}), True, written, ()))
+    return out
 
 
 # --- 6. structure --------------------------------------------------------------------------
@@ -500,13 +520,27 @@ def decompose(tm: TextMap, w: Word) -> list[Word]:
     if not KANJI_RE.search(tm.written_form(w.start, w.end)) or adjective_of(tm, w):
         return []  # an adjective form is no compound: not 大き + な
     for split in range(w.start + 1, w.end):
-        if not tm.can_split(split):
+        if not tm.can_split(split) or _okurigana_tail(tm, w, split):
             continue
         first = _piece(tm, w.start, split, second=False)
         second = first and _piece(tm, split, w.end, second=True)
         if first and second:
             return [first, second]
     return []
+
+
+def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
+    """Whether the kana after `split` are the word's okurigana, not a word: JMdict has らか, か
+    and た as words, but 柔らか, 静か and 新た (形状詞) are no 柔 + らか; nor are the adverbs 悉く,
+    幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て)."""
+    tail = tm.written_form(split, w.end)
+    if KANJI_RE.search(tail):
+        return False
+    if w.head.pos[0] == "形状詞":
+        return True
+    return w.head.pos[0] == "副詞" and "prt" not in {
+        p for _, rs, ps in jmdict.lookup(tail) if tail in rs for p in ps
+    }
 
 
 def add_decompositions(tm: TextMap, words: list[Word]) -> None:
