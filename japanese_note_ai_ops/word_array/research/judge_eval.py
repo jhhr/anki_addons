@@ -279,7 +279,7 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
             if got != expected:
                 (wrong_picks if got == match_flags.DONT_MATCH else missed)[word] += 1
                 if id(elem) in item.reasons:
-                    reasons.setdefault(word, []).append(item.reasons[id(elem)])
+                    reasons.setdefault((got, word), []).append(item.reasons[id(elem)])
 
     print(f"Sentences scored: {counts['sentences scored']}", end="")
     for key in (
@@ -300,15 +300,15 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
         print(f"\n{title}:")
         for key, c in sorted(table.items(), key=lambda kv: -sum(kv[1].values())):
             print(f"  {key:<14} {_rates(c)}")
-    for title, counter in (
-        ("Wrongly picked (expected match), most first:", wrong_picks),
-        ("Missed (expected dontmatch), most first:", missed),
+    for title, counter, got in (
+        ("Wrongly picked (expected match), most first:", wrong_picks, match_flags.DONT_MATCH),
+        ("Missed (expected dontmatch), most first:", missed, match_flags.MATCH),
     ):
         print(f"\n{title}")
         for word, count in counter.most_common(args.limit):
             form, reading, pos = word
             print(f"  {count:4} {form}[{reading}] {pos}")
-            for reason in reasons.get(word, [])[: args.reasons]:
+            for reason in reasons.get((got, word), [])[: args.reasons]:
                 print(f"         - {reason}")
     return 0
 
