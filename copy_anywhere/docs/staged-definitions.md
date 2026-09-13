@@ -10,16 +10,8 @@ Format 2 replaces that with an ordered program of **stages**. A stage names the 
 reads and the note it writes. A stage that produces a value names it, and later stages in
 scope can use it.
 
-**Status.** The executor runs format 2 and nothing else: a stored format-1 definition is
-migrated on the way in, every run. A new definition is created as a staged one, and the
-stage editor writes format 2 into the config. An existing format-1 definition still opens
-in its own editor and stays format 1 until you press **Save and convert to stages** there,
-which rewrites it and reopens it as stages. A config holding both formats is normal and
-works: the hooks, the picker and the bulk operation read a definition's trigger settings
-through one set of accessors that understands either shape.
-
-Still to come: the startup migration that converts every stored definition at once and
-retires the format-1 editor.
+**Status.** Format 2 is the only format. Anki converts every stored definition on the first
+start after this release, and there is one executor and one editor from there on.
 
 ## Shape
 
@@ -126,6 +118,32 @@ outer list plus `store` is how a loop reports anything back.
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
   regardless, in case the JSON was edited by hand.
 
+## The startup migration
+
+`migrate_config()` runs before anything can read a definition. It converts every stored
+definition to stages, fills in each one's derived `effects`, and bumps the config version.
+
+It is all or nothing. If any definition cannot be converted -- one naming no copy mode, say,
+which format 1 could not have run either -- nothing is converted, the version stays where it
+was, and the reason is printed. The next start tries again. That is deliberate: saving the
+definitions that did convert would drop the one that did not from a config you can still
+open and fix by hand.
+
+**The originals.** The run that converts them writes the format-1 definitions to
+`pre_stage_migration_copy_definitions` in the addon config first, and never touches that key
+again -- so it holds what you had before the upgrade, not the result of any later run. It is
+kept for one release.
+
+It is there to read, and to convert again: copying that list back over `copy_definitions` and
+setting `version` to `0.2.0` makes the next start migrate them afresh, which is what you want
+once a migration bug has been fixed. It is not a way to keep running format 1 -- there is no
+executor for it any more, so anything you put in `copy_definitions` is migrated before it
+runs. If a definition migrates to something you did not want, fix the stages it produced, or
+read the original here and build it again.
+
+A definition that somehow reaches the editor still in format 1 is converted on the way in
+by the same pure migrator, and one that cannot be converted is reported rather than opened.
+
 ## What migration changes on purpose
 
 * Across-note selection searches notes rather than cards, so a note with two matching cards
@@ -136,6 +154,15 @@ outer list plus `store` is how a loop reports anything back.
 * A definition with no copy mode is reported rather than raising out of the whole operation.
 * Trigger filtering runs before any stage, so a note the deck whitelist rejects no longer
   pays for the definition's variables first.
+* A file's name and its `__Dest__` spelling of the same field now agree. Format 1
+  interpolated the name over the live note but `__Dest__` over a copy taken before anything
+  ran; the file is written by a stage after the one that writes the field, and a stage reads
+  what the stages before it did.
+
+What migration deliberately does *not* change is a definition that format 1 refused to run.
+A `select_card_by` that is missing or unreadable selected nothing and said why, and it still
+does: mapping it to "take the first note" would make a definition that has never written a
+note start writing one.
 
 ## The editor
 
@@ -201,10 +228,10 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `logic/execution/runner.py` | one definition against one trigger note |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress |
 | `logic/preview.py` | a read-only run, its trace, and the trigger-note search |
-| `logic/legacy_executor.py` | format-1 behaviour, kept as the migration's oracle |
+| `configuration.py` | the config, the trigger accessors, and the startup migration |
 | `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
 | `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
-| `ui/stage_edit_state.py` | the `EditState`-shaped shim that lets the format-1 widgets be reused |
+| `ui/stage_edit_state.py` | the state object that lets the older shared widgets be reused |
 | `ui/value_expression_editor.py` | the one editor every value expression uses |
 | `ui/stage_editors.py` | one editor per stage type |
 | `ui/stage_list.py` | the ordered, indented stage list |

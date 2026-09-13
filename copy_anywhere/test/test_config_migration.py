@@ -144,6 +144,26 @@ class TestTheBackup:
         assert first[0]["copy_mode"] == "Within note"
 
 
+    def test_restoring_the_backup_migrates_it_afresh_and_keeps_the_backup(
+        self, config, stub_mw
+    ):
+        # The documented way back: copy the backup over `copy_definitions` and put the
+        # version back. The next start migrates them again -- there is no executor for
+        # format 1 -- and the originals stay where they were for the next attempt.
+        config["copy_definitions"] = [d.within_note(definition_name="w")]
+        migrate_config()
+        originals = stored(stub_mw)[PRE_STAGE_MIGRATION_KEY]
+
+        stored(stub_mw)["copy_definitions"] = [dict(one) for one in originals]
+        stored(stub_mw)["version"] = "0.2.0"
+        migrate_config()
+
+        after = stored(stub_mw)
+        assert is_format_2(after["copy_definitions"][0])
+        assert after[PRE_STAGE_MIGRATION_KEY] == originals
+        assert after[PRE_STAGE_MIGRATION_KEY][0]["copy_mode"] == "Within note"
+
+
 class TestRunningItAgain:
     def test_an_already_migrated_config_is_left_alone(self, config, stub_mw):
         config["copy_definitions"] = [d.within_note()]

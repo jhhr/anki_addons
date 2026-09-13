@@ -5,9 +5,10 @@ considers is decided by note type, deck and the event booleans, before any stage
 these controls are a plain editor over `definition["triggers"]` rather than anything the
 stage list knows about.
 
-They are a rewrite rather than a reuse of `BasicEditorFormLayout` because that one writes
-through `EditState.connect_*` into a format-1 definition's flat keys, and format 2 keeps
-the same settings as JSON arrays under one `triggers` object (§4).
+They were written from scratch rather than reusing the format-1 editor's trigger form: that
+one wrote through `EditState` into a definition's flat, comma-joined keys, while format 2
+keeps the same settings as JSON arrays under one `triggers` object (§4). Both it and
+`EditState` were removed with the rest of the format-1 editor.
 """
 
 from typing import Optional
