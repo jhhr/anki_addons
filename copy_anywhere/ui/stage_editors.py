@@ -206,15 +206,21 @@ def name_edit(parent: QWidget, current: str, placeholder: str) -> RequiredLineEd
 
 
 def tags_to_list(text: str) -> list[str]:
-    """Split the tag editor's quoted, comma-joined string into a JSON array (§4)."""
+    """Split the tag editor's comma-joined string into the JSON array format 2 stores (§4).
+
+    `MultiComboBox` joins the item texts with ", " and `TagEditor` fills it with bare tag
+    names, so what comes back is unquoted -- but a name that already carries quotes is
+    accepted too, because a definition written by hand may well have them.
+    """
     stripped = (text or "").strip()
     if not stripped:
         return []
-    return [tag for tag in stripped.strip('""').split('", "') if tag]
+    return [tag.strip().strip('"') for tag in stripped.split(",") if tag.strip().strip('"')]
 
 
 def tags_to_text(tags: Sequence[str]) -> str:
-    return '", "'.join(tags).join(('"', '"')) if tags else ""
+    """The quoted, comma-joined form `TagEditor` stores and selects on."""
+    return ", ".join(f'"{tag}"' for tag in tags)
 
 
 # --------------------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-from contextlib import suppress
 from typing import Optional
 from aqt import mw
 
@@ -14,6 +13,7 @@ from ..configuration import (
     DIRECTION_DESTINATION_TO_SOURCES,
     CopyDefinition,
     CopyModeType,
+    split_tags,
 )
 
 from ..shared.ui.multi_combo_box import MultiComboBox
@@ -65,6 +65,16 @@ class TagEditor(QWidget):
         self.remove_tags_combo_box = MultiComboBox(self)
         self.form_layout.addRow(self.remove_tags_label, self.remove_tags_combo_box)
 
+    def _fill_tag_box(self, box: MultiComboBox, stored: str):
+        """Offer every tag in the collection, plus any this definition names, and select."""
+        chosen = split_tags(stored)
+        names = list(self.all_tags)
+        for tag in chosen:
+            if tag not in names:
+                names.append(tag)
+        box.addItems([f'"{name}"' for name in names])
+        box.setCurrentText(", ".join(f'"{tag}"' for tag in chosen))
+
     def get_add_tags(self) -> str:
         return self.add_tags_combo_box.currentText()
 
@@ -92,20 +102,12 @@ class TagEditor(QWidget):
         self.direction_callback.is_visible = False
 
     def initialize_ui_state(self):
-        self.remove_tags_combo_box.addItems(self.all_tags)
-
-        with suppress(KeyError):
-            for tag in self.remove_tags_str.strip('""').split('", "'):
-                if tag and tag not in self.all_tags:
-                    self.remove_tags_combo_box.addItem(tag)
-            self.remove_tags_combo_box.setCurrentText(self.remove_tags_str)
-        self.add_tags_combo_box.addItems(self.all_tags)
-
-        with suppress(KeyError):
-            for tag in self.add_tags_str.strip('""').split('", "'):
-                if tag and tag not in self.all_tags:
-                    self.add_tags_combo_box.addItem(tag)
-            self.add_tags_combo_box.setCurrentText(self.add_tags_str)
+        # Items carry the quotes, because that is the form `split_tags()` reads back and
+        # the form `MultiComboBox.setCurrentText` has to match item for item: it splits the
+        # stored string on ", " and looks for an item of exactly that text. With bare items
+        # a two-tag selection matched nothing and silently loaded as no tags at all.
+        self._fill_tag_box(self.remove_tags_combo_box, self.remove_tags_str)
+        self._fill_tag_box(self.add_tags_combo_box, self.add_tags_str)
 
         self.update_direction_labels()
         self.enable_callbacks()

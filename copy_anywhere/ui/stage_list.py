@@ -153,7 +153,10 @@ class StageRow(QFrame):
     # -- interaction ---------------------------------------------------------------------
 
     def _toggle(self) -> None:
-        visible = not self.body.isVisible()
+        # `isHidden` rather than `isVisible`: a widget inside a window that has not been
+        # shown yet reports `isVisible() == False` whatever it was asked to do, which would
+        # make the first click on every row expand it again.
+        visible = self.body.isHidden()
         self.body.setVisible(visible)
         self.expand_button.setText("▾" if visible else "▸")
         if visible:
