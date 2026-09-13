@@ -34,7 +34,7 @@ closed.
       *Done in `5a69655`: guard is `or`, docstring rewritten. The existing
       `test_only_one_word_field_filled_in_is_still_answerable` asserted the buggy `[]`, so it
       became the regression test rather than a second test beside it.*
-- [ ] **Finding 2 — `MDXLookupError` becomes a permanent `NO_DICTIONARY_ENTRY_TAG`.** Make the
+- [x] **Finding 2 — `MDXLookupError` becomes a permanent `NO_DICTIONARY_ENTRY_TAG`.** Make the
       dictionary-outage case distinguishable from a genuine miss all the way to the tagging
       decision, so `make_meanings_in_note` (`make_all_meanings.py:464-473`) and
       `clean_meaning.py:877-881` write no tag on an outage. Touches
@@ -43,6 +43,9 @@ closed.
       `configuration.py`. Largest task in the queue; if it splits naturally, land the
       propagation and queue the rest. Done when a test shows an outage leaves the note
       untagged and a genuine miss still tags it.
+      *Done whole in `ff47058`, no split needed: `get_definition_text` re-raises,
+      `MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED` carries it, both tagging paths write no tag.
+      New `test/test_dictionary_outage.py` — 10 tests, 6 of them red before the fix.*
 - [ ] **Findings 3 and 5 — vendoring robustness.** Two small packaging fixes, reviewed
       together. (3) `anki_shared/utils/vendor_path.py:103`: `add_vendor_paths()` must not put
       `user_files/lib` ahead of a healthy shipped tree when `vendor_health()` judges the user
@@ -68,9 +71,9 @@ closed.
 
 ## State
 
-Finding 1 fixed; findings 2-7 remain, grouped into four tasks. All seven were re-verified
-against the working tree at `2bf37d7` before the chain was set up; every line number in the
-spec is still accurate for the files not yet touched.
+Findings 1 and 2 fixed; findings 3-7 remain, grouped into three tasks. All seven were
+re-verified against the working tree at `2bf37d7` before the chain was set up; every line number
+in the spec is still accurate for the files not yet touched.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -82,6 +85,11 @@ unreachable and deliberately left alone.
 - `task-1` `5a69655` — finding 1: `meaning_group_note_ids` guard `and` -> `or`; docstring now
   says why *either* empty value is unanswerable. Regression test replaces the one that asserted
   the bug. Suite at baseline (438 passed, 6 `mdict_query`).
+- `task-2` `ff47058` — finding 2: `get_definition_text` re-raises `MDXLookupError` instead of
+  returning `None`; new `MakeMeaningsResult.DICTIONARY_LOOKUP_FAILED`; the two
+  `*_meanings_for_word` functions return it, and `make_meanings_in_note` and
+  `clean_meaning_in_note` write no `NO_DICTIONARY_ENTRY_TAG` for it. New
+  `test/test_dictionary_outage.py`. Suite 448 passed, same 6 `mdict_query`.
 
 ## Decisions made
 
@@ -91,6 +99,12 @@ unreachable and deliberately left alone.
 - **Group by review seam, not by file count.** Findings 3+5 (vendoring) and 6+7 (one function)
   are single tasks because a reviewer would want them in one commit each.
 - **Every fix ships with a regression test** reproducing the review's stated scenario.
+- **`get_definition_text` raises rather than returning a sentinel** (task-2). The review allowed
+  either. Raising keeps "not in any dictionary" as the plain `None` the three call sites already
+  branch on, and the module raises `MDXLookupError` internally anyway; the cost is that a new
+  caller must catch it, which the docstring's new `Raises:` section states.
+- **An outage leaves the word out of `processed_words_set`** (task-2), so another note of the same
+  word can still get a working lookup later in the same run.
 - **A test that asserts a finding's wrong behaviour is part of that finding's fix.** Finding 1
   had one; rewrite such a test rather than leaving it beside the new one.
 
