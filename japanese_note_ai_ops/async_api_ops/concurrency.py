@@ -712,7 +712,20 @@ def load_per_task_estimates() -> dict:
     return _estimates_in(_read_estimates_file()[0])
 
 
-def save_per_task_estimate(op_key: str, value: float) -> None:
+def save_per_task_estimate(op_key: str, value: float, baseline: Optional[float] = None) -> None:
+    """Store `value` as what one task of `op_key` costs, blended into `baseline`.
+
+    `baseline` is the stored estimate the *measuring run started from*, and None means it
+    started from none. It is deliberately not read back out of the file here. A run persists
+    on every rising refit - so that a run that gets killed still leaves its measurement behind
+    - and blending each of those writes into the one before it applies ESTIMATE_BLEND several
+    times for a single run's measurement. A run that rose 2 MB -> 10 MB stored 7.87 MB where
+    one blend gives 5.2 MB, and the stored figure feeds max_concurrency_for, so one atypical
+    run moved the next run's ceiling far more than the 40% weight says it should.
+
+    Only this op's entry is touched; everything else in the file is read and written back as
+    it stands, because other ops measured it.
+    """
     path = _estimates_path()
     temp = path.with_name(f"{path.name}.tmp")
     try:
@@ -733,9 +746,8 @@ def save_per_task_estimate(op_key: str, value: float) -> None:
             )
             return
         estimates = _estimates_in(data)
-        previous = estimates.get(op_key)
-        if isinstance(previous, (int, float)) and previous > 0:
-            value = previous * (1 - ESTIMATE_BLEND) + value * ESTIMATE_BLEND
+        if isinstance(baseline, (int, float)) and baseline > 0:
+            value = baseline * (1 - ESTIMATE_BLEND) + value * ESTIMATE_BLEND
         estimates[op_key] = int(value)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Written beside the file and moved into place, so a crash or a force-quit partway
@@ -868,6 +880,10 @@ class MemoryEstimator:
 
     def __init__(self, op_key: Optional[str], stored: Optional[float] = None):
         self.op_key = op_key
+        # What the file held when this run started. Every persist blends into this rather than
+        # into whatever the last one wrote, so a run applies ESTIMATE_BLEND once however many
+        # times it persists. See save_per_task_estimate.
+        self.stored: Optional[float] = float(stored) if stored else None
         self.measured: Optional[float] = None
         self.estimate: float = float(stored) if stored else DEFAULT_PER_TASK_MEMORY
         self.from_measurement = bool(stored)
@@ -1059,7 +1075,7 @@ class MemoryEstimator:
 
     def persist(self) -> None:
         if self.op_key and self.measured:
-            save_per_task_estimate(self.op_key, self.measured)
+            save_per_task_estimate(self.op_key, self.measured, self.stored)
 
 
 class ConcurrencyGate:
@@ -1283,7 +1299,8 @@ class ConcurrencyGate:
         # its measurement away and leave the next run starting from the stale stored value,
         # so the machine that most needs to know what this op costs was the one that never
         # learned it. Measuring stops at MEASURE_SECONDS, so this writes a handful of times
-        # at the very start of a run and never again.
+        # at the very start of a run and never again - each of them a rewrite of this run's
+        # one blended answer, not a fresh blend on top of the last; see save_per_task_estimate.
         self.estimator.persist()
         if not self.adaptive:
             # Nothing to adapt against; we still learn the cost for next time

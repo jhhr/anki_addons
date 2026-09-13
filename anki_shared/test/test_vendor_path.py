@@ -97,11 +97,24 @@ class TestVendorHealth:
         (shipped(addon) / vendor_path.VENDOR_MANIFEST).write_text("[]", "utf-8")
         assert vendor_path.vendor_health(str(addon)) is not None
 
-    def test_a_stale_rebuilt_tree_is_not_rescued_by_a_healthy_shipped_one(self, addon):
-        """It is first on sys.path, so it shadows the shipped tree rather than backing it up."""
+    def test_a_stale_rebuilt_tree_is_demoted_behind_a_healthy_shipped_one(self, addon):
+        """It no longer shadows the shipped tree, so the shipped tree is what is live.
+
+        A cp310 rebuilt tree outlives the 3.10 it was built on - Anki's launcher moves Anki's
+        Python and `user_files` survives addon updates - and while it went first on sys.path
+        it shadowed a shipped `lib/` that was perfectly good. `add_vendor_paths` now puts it
+        last, so there is nothing here to rebuild and nothing to report.
+        """
         write_manifest(shipped(addon))
         write_manifest(user(addon), python_version=other_python_version())
-        assert "rebuilt" in (vendor_path.vendor_health(str(addon)) or "")
+        assert vendor_path.vendor_health(str(addon)) is None
+
+    def test_neither_tree_fitting_reports_both(self, addon):
+        """Then a rebuild really is wanted, and the stale tree is what it will replace."""
+        write_manifest(shipped(addon), platforms=["some_other_platform"])
+        write_manifest(user(addon), python_version=other_python_version())
+        reason = vendor_path.vendor_health(str(addon)) or ""
+        assert "the vendored lib" in reason and "the locally rebuilt lib" in reason
 
     def test_a_rebuilt_tree_fits_a_platform_no_build_is_shipped_for(self, addon, monkeypatch):
         """It was built here, so there is no shipped platform tag to hold it to.
@@ -127,9 +140,19 @@ class TestVendorHealth:
         )
         assert "Python" in (vendor_path.vendor_health(str(addon)) or "")
 
-    def test_rebuilt_tree_without_a_manifest_wants_a_rebuild(self, addon):
-        """The manifest is written last, so a tree without one is an interrupted rebuild."""
+    def test_a_rebuilt_tree_without_a_manifest_is_demoted_not_trusted(self, addon):
+        """The manifest is written last, so a tree without one is an interrupted rebuild.
+
+        It must not go in front of the shipped tree, but with a healthy shipped tree behind
+        it there is still nothing to rebuild.
+        """
         write_manifest(shipped(addon))
+        user(addon).mkdir(parents=True)
+        assert "incomplete" in (vendor_path.user_lib_mismatch(str(addon)) or "")
+        assert vendor_path.vendor_health(str(addon)) is None
+
+    def test_an_interrupted_rebuild_over_an_unfit_shipped_tree_wants_a_rebuild(self, addon):
+        write_manifest(shipped(addon), python_version=other_python_version())
         user(addon).mkdir(parents=True)
         assert "incomplete" in (vendor_path.vendor_health(str(addon)) or "")
 
@@ -172,10 +195,10 @@ class TestVendorHealth:
 
 
 class TestAddVendorPaths:
-    def test_layers_are_appended_in_order(self, tmp_path, monkeypatch):
+    def test_a_fitting_rebuilt_tree_goes_first(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "path", ["/anki"])
         tag = vendor_path.platform_tag()
-        (tmp_path / "user_files" / "lib").mkdir(parents=True)
+        write_manifest(tmp_path / "user_files" / "lib", rebuilt_locally=True)
         (tmp_path / "lib" / "_platform" / str(tag)).mkdir(parents=True)
         vendor_path.add_vendor_paths(str(tmp_path))
         assert sys.path == [
@@ -183,6 +206,28 @@ class TestAddVendorPaths:
             str(tmp_path / "user_files" / "lib"),
             str(tmp_path / "lib" / "_platform" / str(tag)),
             str(tmp_path / "lib"),
+        ]
+
+    def test_a_rebuilt_tree_that_does_not_fit_goes_last(self, tmp_path, monkeypatch):
+        """Behind the shipped tree it shadows nothing, which is the point of demoting it.
+
+        In front, its cp310 extensions were what `import psutil` found on a 3.13 runtime, and
+        the shipped tree that was built for 3.13 never got a look in.
+        """
+        monkeypatch.setattr(sys, "path", ["/anki"])
+        tag = vendor_path.platform_tag()
+        write_manifest(
+            tmp_path / "user_files" / "lib",
+            python_version=other_python_version(),
+            rebuilt_locally=True,
+        )
+        (tmp_path / "lib" / "_platform" / str(tag)).mkdir(parents=True)
+        vendor_path.add_vendor_paths(str(tmp_path))
+        assert sys.path == [
+            "/anki",
+            str(tmp_path / "lib" / "_platform" / str(tag)),
+            str(tmp_path / "lib"),
+            str(tmp_path / "user_files" / "lib"),
         ]
 
     def test_absent_layers_are_skipped(self, tmp_path, monkeypatch):

@@ -298,9 +298,25 @@ class MeaningGroupTests(unittest.TestCase):
         index = build(vocab_row(1, "私", "私", "わたし", "私 (m1)"))
         self.assertIsNone(self.group_ids(index, normal="", kanjified=""))
 
-    def test_only_one_word_field_filled_in_is_still_answerable(self):
-        index = build(vocab_row(1, "", "私", "わたし", "私 (m1)"))
-        self.assertEqual(self.group_ids(index, normal="私", kanjified=""), [1])
+    def test_one_empty_word_field_cannot_be_answered_here_either(self):
+        """A kana-only note leaves the kanjified field blank, and this is what that costs.
+
+        The search is `("normal:おちゃ" OR "kanjified:")`, and the empty half is a real term
+        matching every note whose kanjified field is empty - note 2 here. The index holds no
+        empty keys, so it can only answer the filled half, and a short answer is worse than
+        no answer: a non-None list stops `get_other_meaning_notes` falling back, and the
+        group gets regenerated from a partial set.
+        """
+        index = build(
+            vocab_row(1, "", "おちゃ", "おちゃ", "おちゃ (m1)"),
+            vocab_row(2, "", "御茶", "おちゃ", "御茶 (m2)"),
+        )
+        self.assertIsNone(
+            self.group_ids(index, reading="おちゃ", normal="おちゃ", kanjified="", exclude=1)
+        )
+        self.assertIsNone(
+            self.group_ids(index, reading="おちゃ", normal="", kanjified="おちゃ", exclude=1)
+        )
 
     def test_an_index_over_other_fields_is_not_trusted(self):
         # Two notetypes can be configured differently; a query written against one set of

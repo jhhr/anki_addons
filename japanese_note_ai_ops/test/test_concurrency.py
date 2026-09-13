@@ -124,7 +124,7 @@ def install_memory_stubs(memory: StubMemory) -> None:
     # ...and never write them. The gate persists a measurement as soon as it has one rather
     # than only from finish(), so without this every gate test that measures anything leaves
     # a "test op" entry in the add-on's own user_files.
-    conc.save_per_task_estimate = lambda op_key, value: None
+    conc.save_per_task_estimate = lambda op_key, value, baseline=None: None
 
 
 def restore_memory_probes() -> None:
@@ -802,9 +802,32 @@ class EstimatesFileTests(MemoryStubTestCase):
 
     def test_later_measurements_are_blended_so_one_odd_run_cannot_skew_it(self):
         conc.save_per_task_estimate("Making meanings", 1 * MB)
-        conc.save_per_task_estimate("Making meanings", 2 * MB)
+        conc.save_per_task_estimate("Making meanings", 2 * MB, baseline=1 * MB)
         expected = int(1 * MB * (1 - conc.ESTIMATE_BLEND) + 2 * MB * conc.ESTIMATE_BLEND)
         self.assertEqual(conc.load_per_task_estimates()["Making meanings"], expected)
+
+    def test_one_run_is_blended_in_once_however_often_it_persists(self):
+        """The blend is against the value the run started from, not the last write.
+
+        A run persists on every rising refit, so blending each write into the one before it
+        applied ESTIMATE_BLEND several times for one run's measurement: 2 MB rising to 10 MB
+        stored 7.87 MB where a single blend gives 5.2 MB. The stored figure is what
+        max_concurrency_for reads next time, so that is the next run's ceiling.
+        """
+        conc.save_per_task_estimate("Making meanings", 1 * MB)
+        estimator = conc.MemoryEstimator("Making meanings", 1 * MB)
+        for measurement in (2 * MB, 6 * MB, 10 * MB):
+            estimator.measured = measurement
+            estimator.persist()
+        expected = int(1 * MB * (1 - conc.ESTIMATE_BLEND) + 10 * MB * conc.ESTIMATE_BLEND)
+        self.assertEqual(conc.load_per_task_estimates()["Making meanings"], expected)
+
+    def test_a_first_run_stores_what_it_measured_however_often_it_persists(self):
+        estimator = conc.MemoryEstimator("Making meanings")
+        for measurement in (2 * MB, 6 * MB):
+            estimator.measured = measurement
+            estimator.persist()
+        self.assertEqual(conc.load_per_task_estimates()["Making meanings"], 6 * MB)
 
     def test_estimates_are_kept_per_op(self):
         conc.save_per_task_estimate("Making meanings", 1 * MB)
@@ -1568,7 +1591,9 @@ class GateCeilingRefitTests(GateTestCase):
         learned it.
         """
         saved: list = []
-        conc.save_per_task_estimate = lambda op_key, value: saved.append((op_key, value))
+        conc.save_per_task_estimate = lambda op_key, value, baseline=None: saved.append(
+            (op_key, value)
+        )
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB
         gate = self.make_gate()
