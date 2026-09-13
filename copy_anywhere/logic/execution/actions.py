@@ -110,6 +110,7 @@ def make_context(
     source_note: Note,
     destination_note: Optional[Note] = None,
     isolated_variables: bool = False,
+    purpose: str = "",
 ) -> ExpressionContext:
     return ExpressionContext(
         session=frame.session,
@@ -121,6 +122,7 @@ def make_context(
         multiple_note_types=frame.multiple_note_types,
         stage=stage,
         isolated_variables=isolated_variables,
+        purpose=purpose,
     )
 
 
@@ -309,7 +311,9 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
             # Read live rather than from the snapshot: an earlier write in this same stage
             # counts as filling the field, which is what format 1 did.
             continue
-        ctx = make_context(frame, write_env, stage, source_note, snapshot)
+        ctx = make_context(
+            frame, write_env, stage, source_note, snapshot, purpose=f"field {field}"
+        )
         target[field] = evaluate_text(field_write.get("value"), ctx)
         modified = True
 
@@ -433,7 +437,9 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
                 return
         except MediaFileError as error:
             raise frame.error(str(error), stage) from error
-    content_ctx = make_context(frame, env, stage, source_note, destination_note)
+    content_ctx = make_context(
+        frame, env, stage, source_note, destination_note, purpose=f"file {filename}"
+    )
     content = evaluate_text(content_expression, content_ctx)
     if _queue_file(frame, stage, filename, content, overwrite, skip_if_exists):
         session.update_counts(processed_files_inc=1)

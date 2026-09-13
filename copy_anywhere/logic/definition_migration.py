@@ -67,6 +67,11 @@ LEGACY_ITEM_BINDING = "note"
 
 DEFAULT_SELECT_CARD_SEPARATOR = ", "
 
+#: The only `select_card_by` values format 1 would act on. Spelled out here rather than
+#: imported from `configuration`, which the migrator stays clear of so it can be tested
+#: without an Anki to read a config from.
+LEGACY_SELECT_CARD_BY_VALUES = ("None", "Random", "Least_reps")
+
 
 def _split_quoted_list(value: Optional[str]) -> list[str]:
     """Format 1 stored name lists quoted and comma-joined; format 2 stores JSON arrays."""
@@ -164,8 +169,25 @@ def _card_actions(definition: dict) -> list[dict]:
 
 def _selection(definition: dict, warnings: list[str]) -> dict:
     """Map `select_card_by`/`select_card_count`/`sort_by_field` onto a format-2 selection."""
-    select_card_by = definition.get("select_card_by") or "None"
+    select_card_by = definition.get("select_card_by")
     strategy = "first"
+    if select_card_by is None or select_card_by not in LEGACY_SELECT_CARD_BY_VALUES:
+        # Format 1 refused to select anything at all here, which is the behaviour to keep: a
+        # definition whose stored value is missing or unreadable did nothing and said so, and
+        # quietly treating it as "take the first note" would start writing notes for a
+        # definition that has never written one.
+        return {
+            "strategy": "all",
+            "count": None,
+            "sort_field": None,
+            "sort_order": "descending",
+            "selection_error": (
+                "Error in copy fields: 'select_card_by' was missing"
+                if select_card_by is None
+                else f"Error in copy fields: incorrect 'select_card_by' value"
+                f" '{select_card_by}'"
+            ),
+        }
     if select_card_by == "Random":
         strategy = "random"
     elif select_card_by == "Least_reps":

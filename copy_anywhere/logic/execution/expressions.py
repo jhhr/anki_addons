@@ -110,6 +110,7 @@ class ExpressionContext:
         "multiple_note_types",
         "stage",
         "isolated_variables",
+        "purpose",
     )
 
     def __init__(
@@ -123,6 +124,7 @@ class ExpressionContext:
         multiple_note_types: bool = False,
         stage: Optional[dict] = None,
         isolated_variables: bool = False,
+        purpose: str = "",
     ) -> None:
         self.session = session
         self.frame = frame
@@ -133,6 +135,10 @@ class ExpressionContext:
         self.multiple_note_types = multiple_note_types
         self.stage = stage
         self.isolated_variables = isolated_variables
+        # What this expression is being evaluated for -- "field Meaning", "file out.txt" --
+        # for the messages that are about the thing rather than about the stage. A stage can
+        # hold many writes, so naming the stage is not enough to find the one that failed.
+        self.purpose = purpose
 
     @property
     def logger(self) -> Logger:
@@ -157,6 +163,10 @@ class ExpressionContext:
 
     def error(self, message: str) -> StageError:
         return self.frame.error(message, self.stage)
+
+    def for_purpose(self) -> str:
+        """` for field Meaning`, or nothing when the expression stands for the whole stage."""
+        return f" for {self.purpose}" if self.purpose else ""
 
 
 # --------------------------------------------------------------------------------------
@@ -320,7 +330,7 @@ def run_process_chain(value: str, expression: ValueExpression, ctx: ExpressionCo
     if processed is None:
         # `apply_process_chain` returns None only for a FatalProcessError, which it has
         # already logged; the stage fails so the rest of the definition does not run.
-        raise ctx.error("Process chain failed")
+        raise ctx.error(f"Process chain failed{ctx.for_purpose()}")
     return processed
 
 

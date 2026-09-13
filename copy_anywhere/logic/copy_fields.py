@@ -47,10 +47,9 @@ from .definition_migration import MigrationError
 from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
-from .legacy_executor import copy_into_single_note, get_across_target_notes
 
-# Re-exported so the characterization suite and any caller that has always imported these
-# from here keeps working while `legacy_executor` is on its way out.
+# Re-exported: these moved out into `copy_primitives` when the executor was split, and
+# everything that has always imported them from here keeps working.
 __all__ = [
     "CacheResults",
     "CopyFailedException",
@@ -64,8 +63,6 @@ __all__ = [
     "copy_fields",
     "copy_fields_in_background",
     "copy_for_single_trigger_note",
-    "copy_into_single_note",
-    "get_across_target_notes",
     "get_field_values_from_notes",
     "get_variable_values_for_note",
     "int_sort_by_field_value",
@@ -154,8 +151,6 @@ class CacheResults:
 
     def get_count(self):
         return self.count
-
-
 
 
 

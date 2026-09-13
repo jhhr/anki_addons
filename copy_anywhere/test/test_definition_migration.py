@@ -292,6 +292,19 @@ class TestSelection:
         selection = self.selection(select_card_count="not a number")
         assert "Incorrect 'select_card_count' value" in selection["selection_error"]
 
+    @pytest.mark.parametrize(
+        "select_card_by, fragment",
+        [(None, "was missing"), ("Most_reps", "incorrect 'select_card_by' value")],
+    )
+    def test_an_unusable_select_card_by_carries_the_complaint_too(
+        self, select_card_by, fragment
+    ):
+        # Format 1 selected nothing at all and said why. Mapping this to "take the first
+        # note" instead would make a definition that has never written anything start
+        # writing, so the refusal migrates with it.
+        selection = self.selection(select_card_by=select_card_by)
+        assert fragment in selection["selection_error"]
+
     def test_a_sort_field_sorts_numerically_and_descending_as_it_did(self):
         selection = self.selection(sort_by_field="Freq")
         assert selection["sort_field"] == "Freq"
