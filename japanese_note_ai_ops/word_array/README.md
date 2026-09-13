@@ -53,6 +53,11 @@ Status: phase 1 prototype, not wired into any op yet.
    labelled as JMdict has it: 家[うち] after 一日中 a noun, 等[など] a particle, 沿い a verb. Inside
    a compound only the verb stems are relabelled; 官 of 警察官 stays a suffix, though JMdict's 官
    is a noun. Of 855 top-level suffixes in the collection export, 73 change.
+   A verb stem Sudachi calls a suffix is its verb (付き -> 付く) unless JMdict has the stem, read
+   as the note reads it, as a `suf` of its own: 振り[ぶり], 通し[どおし], 合い, 込み stay as written.
+   Furigana the note put on a word's last kanji for the text before it too (空</b>域[くういき],
+   ネット上[ねっとじょう]) gives the word only its own part (いき, じょう), when the rest reads the
+   text before it.
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
 by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. A jukujikun group has no

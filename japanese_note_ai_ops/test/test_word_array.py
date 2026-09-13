@@ -235,6 +235,21 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(" 警察官[けいさつかん]が 来[き]た")
         self.assertEqual(find_word(arr, "官")[1], "suffix")
 
+    def test_a_suffix_jmdict_has_as_one_keeps_its_form(self):
+        # 振り read ぶり is a JMdict suffix of its own, not a form of 振る
+        word = find_word(self.generator.generate("十 年[ねん]<k> 振[ぶ]り</k>に 会[あ]う"), "振り")
+        self.assertEqual((word[1], word[3]), ("suffix", "ぶり"))
+
+    def test_a_reading_put_on_the_last_kanji_is_not_all_its_own(self):
+        # The note reads 空域 on 域 alone, and ネット上 on its whole group
+        cases = [
+            ("<b> 領[りょう] 空</b>域[くういき]です。", "域", "いき"),
+            ("ネット上[ねっとじょう]では", "上", "じょう"),
+        ]
+        for sentence, form, reading in cases:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[3], reading)
+
     def test_sudachis_readings_of_unread_sub_words_must_add_up(self):
         # Sudachi splits 無人島 as 無人[むじん] + 島[むじんとう]: 島 takes JMdict's とう instead
         word = find_word(self.generator.generate("無人島に 行[い]く"), "無人島")

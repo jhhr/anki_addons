@@ -786,7 +786,7 @@ def _dict_form(tm: TextMap, w: Word) -> str:
     adjective = adjective_of(tm, w)
     if adjective:
         return adjective
-    verb = None if w.followed_by_suru else noun_form_verb(written, w)
+    verb = None if w.followed_by_suru or _jmdict_suffix(tm, w) else noun_form_verb(written, w)
     if verb:
         return verb
     if len(w.morphs) == 1 and head.pos[0] not in INFLECTING and head.lemma == head.surface:
@@ -851,6 +851,39 @@ def _furigana_reading(tm: TextMap, start: int, end: int, morphs: list[Morph]) ->
     return furi
 
 
+def _jmdict_suffix(tm: TextMap, w: Word) -> bool:
+    """Whether a Sudachi suffix is one JMdict lists as spelled and read here: 振り read ぶり, 通し
+    read どおし and 張り read ばり are suffixes of their own, not forms of 振る, 通す and 張る."""
+    if w.head.pos[0] != "接尾辞" or len(w.morphs) != 1:
+        return False
+    reading = to_hiragana(_furigana_reading(tm, w.start, w.end, w.morphs))
+    return any(
+        reading in {to_hiragana(r) for r in rs} and "suf" in ps  # not n-suf: 付き, 合い, 持ち
+        for _, rs, ps in jmdict.lookup(tm.written_form(w.start, w.end))
+    )
+
+
+def _own_share(tm: TextMap, w: Word, furi: str) -> str:
+    """The word's own part of furigana the note put on it for the text before it too: 空</b>域[くう
+    いき], ネット上[ねっとじょう], 無人</b>島[むじんとう]. When the reading is none of the word's
+    own but ends in one, and the rest is how the text right before it reads, that part is taken."""
+    written = tm.written_form(w.start, w.end)
+    known = {to_hiragana(r) for r in jmdict.readings(written)} | {_sudachi_reading(written)}
+    if not KANJI_RE.search(written) or furi in known:
+        return furi
+    for own in sorted(known, key=len, reverse=True):
+        if not own or len(own) >= len(furi) or not furi.endswith(own):
+            continue
+        lead = furi[: len(furi) - len(own)]
+        for start in range(w.start - 1, max(w.start - 8, 0) - 1, -1):
+            text = to_hiragana(tm.surface_reading(start, w.start))
+            if text == lead or (
+                KANJI_RE.search(text) and _sudachi_reading(tm.written_form(start, w.end)) == furi
+            ):
+                return own
+    return furi
+
+
 def dict_reading(tm: TextMap, w: Word) -> str:
     head = w.head
     value = number_value(tm, w)
@@ -887,6 +920,8 @@ def dict_reading(tm: TextMap, w: Word) -> str:
     if lemma == written:
         # Uninflected: the note's furigana is the reading, less any rendaku from the compound
         # the word was split out of (閏日 -> 日[び] -> ひ)
+        if not KANJI_RE.search(tm.surface_reading(w.start, w.end)):
+            furi = _own_share(tm, w, furi)
         if KANJI_RE.search(written) and unvoiced(furi) != furi:
             known = {to_hiragana(r) for r in jmdict.readings(written)}
             if furi not in known and unvoiced(furi) in known:
