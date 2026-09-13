@@ -404,8 +404,25 @@ def dist_key(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def file_digest(path: Path) -> str:
+    """sha256 of one file, with CRLF folded to LF so five platforms' text can be compared."""
+    content = path.read_bytes()
+    if path.suffix.lower() in TEXT_SUFFIXES:
+        content = content.replace(b"\r\n", b"\n")
+    return hashlib.sha256(content).hexdigest()
+
+
 def hash_tree(tree: Path, skip_dist_info: bool = True) -> dict[str, str]:
-    """Every file under tree as {relative posix path: sha256}."""
+    """Every file under tree as {relative posix path: sha256}.
+
+    A `tree` that is itself a file hashes as that one entry under its own name. A top-level
+    name in an installed tree is not always a directory - a distribution can install a bare
+    extension module, `_cffi_backend` being one - and rglob over a file yields nothing, which
+    would read both as "every platform's copy is identical" and as "this platform's copy has
+    no extension module in it". Neither is true of a file that is the extension module.
+    """
+    if tree.is_file():
+        return {tree.name: file_digest(tree)}
     digests: dict[str, str] = {}
     for path in tree.rglob("*"):
         if not path.is_file() or "__pycache__" in path.parts:
@@ -416,10 +433,7 @@ def hash_tree(tree: Path, skip_dist_info: bool = True) -> dict[str, str]:
             continue
         if skip_dist_info and top.endswith((".dist-info", ".egg-info")):
             continue
-        content = path.read_bytes()
-        if path.suffix.lower() in TEXT_SUFFIXES:
-            content = content.replace(b"\r\n", b"\n")
-        digests[rel] = hashlib.sha256(content).hexdigest()
+        digests[rel] = file_digest(path)
     return digests
 
 
@@ -475,6 +489,11 @@ def copy_missing(src: Path, dst: Path, strip_extensions: bool = False) -> None:
 
 
 def copy_tree(src: Path, dst: Path) -> None:
+    """Copy one top-level vendored entry, whether it is a package directory or a lone file."""
+    if src.is_file():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        return
     shutil.copytree(
         src,
         dst,
@@ -493,11 +512,21 @@ def check_per_platform_output(lib: Path, packages: set[str]) -> None:
     Two tags *may* share a build - a macOS universal2 wheel is one file serving both
     architectures - so identical copies are only wrong when every tag has the same one, which
     means the split bought nothing.
+
+    A package may also be legitimately absent from some platforms: an environment marker
+    (`uvloop ; sys_platform != 'win32'`) keeps it out of the trees its marker excludes, and
+    the ones that do have it can still disagree, which is what put it in `packages` at all.
+    Those tags are reported and skipped rather than failed, and the two checks are then asked
+    only of the tags that have a copy.
     """
     for package in sorted(packages):
         builds: dict[str, list[str]] = {}
+        missing: list[str] = []
         for tag in VENDOR_PLATFORMS:
             tree = lib / "_platform" / tag / package
+            if not tree.exists():
+                missing.append(tag)
+                continue
             files = hash_tree(tree, skip_dist_info=False)
             if not any(is_extension(Path(rel).name) for rel in files):
                 sys.exit(
@@ -506,12 +535,16 @@ def check_per_platform_output(lib: Path, packages: set[str]) -> None:
                 )
             fingerprint = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
             builds.setdefault(fingerprint, []).append(tag)
-        if len(builds) == 1:
+        if not builds:
+            sys.exit(f"vendor: {package} was split per platform but no platform has a copy of it.")
+        if len(builds) == 1 and len(builds[next(iter(builds))]) > 1:
             sys.exit(
                 f"vendor: every platform's {package} is byte-identical, so one wheel was used "
                 "for all of them and four platforms would fail to import."
             )
-        print(f"  {package}: {len(builds)} distinct builds across {len(VENDOR_PLATFORMS)} tags")
+        have = len(VENDOR_PLATFORMS) - len(missing)
+        note = f" (not installed for {', '.join(missing)})" if missing else ""
+        print(f"  {package}: {len(builds)} distinct builds across {have} tags{note}")
 
 
 def clear_previous_vendoring(
@@ -523,6 +556,14 @@ def clear_previous_vendoring(
     is one - so this cannot just empty the directory. The manifest records exactly what the
     last run wrote; before there is one, fall back to removing only what this run is about to
     replace, and report the rest instead of guessing.
+
+    The manifest itself goes too, and goes *here*, before anything else is touched. It is
+    rewritten at the very end of a successful vendor run, so anything that stops the run in
+    between - a package one platform does not have, a `check_per_platform_output` that
+    refuses the output - would otherwise leave a half-rebuilt `lib/` still described by the
+    previous run's manifest. That manifest is exactly what `vendor_path.vendor_health` trusts
+    on the user's machine, and `build.py dist` would ship the pair without complaint. Absent,
+    it reads as "no manifest, so what it was built for is unknown", which is true.
     """
     manifest_path = lib / VENDOR_MANIFEST
     known: Optional[list[str]] = None
@@ -561,6 +602,9 @@ def clear_previous_vendoring(
                 "        "
                 + ", ".join(leftover)
             )
+
+    if manifest_path.is_file():
+        manifest_path.unlink()
 
     for name in doomed:
         target = lib / name
@@ -633,7 +677,16 @@ def vendor_addon(addon: Addon, uv: str) -> None:
             copy_missing(src, lib / name, strip_extensions=name in strip)
     for tag, tree in trees.items():
         for name in sorted(per_platform):
-            copy_tree(tree / name, lib / "_platform" / tag / name)
+            src = tree / name
+            # A name reaches `per_platform` as soon as any *two* trees disagree about a path
+            # under it, which does not make it present in all five: a dependency gated by an
+            # environment marker is simply not installed for the platforms its marker
+            # excludes. Copying it anyway raised FileNotFoundError here - between the tree
+            # being cleared and the manifest being rewritten, which is the worst place in
+            # this function to raise from.
+            if not src.exists():
+                continue
+            copy_tree(src, lib / "_platform" / tag / name)
     check_per_platform_output(lib, per_platform)
 
     (lib / VENDOR_MANIFEST).write_text(
