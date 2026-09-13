@@ -63,6 +63,32 @@ pushing to the next being live was about 60 seconds.
 This is why task sizing matters more in the cloud than locally. It also means the notes
 document's length is a recurring cash cost, not just a context cost.
 
+## What a real run cost
+
+A measured A/B on the same task — fixing seven code-review findings across six files in a
+large Python repo, same model and effort in both arms:
+
+| | one session, no chain | chained, 5 tasks + 1 discovered |
+|---|---|---|
+| cost | $12.28 | $17.31+ (6 links + setup) |
+| wall-clock | 16 min | ~55 min |
+| findings fixed | 7/7 | 7/7 |
+| diff | +454/−121 | +1150/−111 |
+
+Per-link costs once real work is involved were $1.80–$4.54, an order of magnitude above the
+idle boot floor — so the floor stops being the dominant term as soon as a task is
+substantial, and wall-clock, not money, becomes the thing a chain spends.
+
+The honest read: for work that fits one context, a chain costs more and takes longer for the
+same result. Chains earn their keep on work that does *not* fit — long queues, parallel
+lanes, or runs that must survive a session ending. Do not chain a job that one session could
+finish; say so and let the user decide.
+
+One thing the chain did buy on that run: a design question surfaced mid-task became a
+blocking `AskUserQuestion` that the user answered, and the chain resumed in place and
+implemented the decision. The single session found the same issue and filed it as a note in
+its summary, where it would have sat unanswered.
+
 ## Rate limits
 
 `get_session` returns `external_metadata.rate_limit_info` with `status`, `rateLimitType`

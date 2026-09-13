@@ -66,14 +66,27 @@ Size a task at **one coherent deliverable — the kind of thing that would be a 
 small PR on its own.** A feature slice with its tests. A module and its callers updated
 together. A migration applied across the files it touches.
 
-Two bounds to check each task against:
+**A source list is not a task list.** This is the mistake to guard against hardest, because
+it feels like diligence. A review with seven findings, a spec with twelve requirements, a
+migration with twenty call sites — the item count reflects how the work was *described*, not
+how it should be *executed*. Copying that structure into the queue produces a chain that
+pays a startup cost per item and re-reads the same files in session after session.
 
-- **Too small** if you'd describe it in under five words, it touches one function, or its
-  result is only meaningful once the next task also lands. Merge it with its neighbours.
-  Several related edits to the same file are one task, not four.
-- **Too big** if it spans two subsystems that could be reviewed independently, or if a
-  careful session would have to read so much before starting that it has little room left to
-  iterate. Split it at the seam where a reviewer would want a separate commit anyway.
+So build the queue by consolidating, not by transcribing. Start from the assumption that the
+whole list is **one** task, and split only where you can name the reason:
+
+- it plainly would not fit one session, or
+- two parts need genuinely different context to do well, or
+- one has to land before another can even start.
+
+Merge aggressively on shared context. Two items in the same file are one task — always,
+because two links editing one file race each other's pushes. Two items needing the same
+understanding of a subsystem are one task, even in different files: the second one is nearly
+free once a session has that code loaded.
+
+**Calibration, from a measured run:** seven small, localised bug fixes across six files is
+**two or three tasks**. A chain that made it five was still splitting too finely, and one
+that made it seven would have been transcribing rather than planning.
 
 When in doubt, err large. A link that finishes early and appends a newly discovered task to
 the queue costs nothing; a queue of trivia burns the budget on startup overhead.
@@ -216,3 +229,8 @@ makes the confirmation more important, not less.
   link stays alive to receive the answer.
 - **`list_sessions` rejects a `tags` filter from inside a session.** Set tags anyway for the
   web UI, but build any progress dashboard from the lane branches in git.
+- **Links will invent timestamps and omit their own session id unless told not to.** Both
+  were observed in a real run: two links wrote chain-log times that were an hour off, and no
+  link recorded which session it was, so the chain had to be reconstructed by hand to total
+  its cost. The task prompt now requires `date -u` and the session id; keep that if you
+  rewrite it.

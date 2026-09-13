@@ -29,6 +29,10 @@ ending in `__archive_session`. If neither is visible, search your deferred tools
 `create_session`. Establish this now, before you start work — if you cannot find it you will
 not be able to continue the chain, so go straight to "When you can't continue".
 
+While you are there, call the tool ending in `__get_session` **with no session id** — it then
+describes you — and note your own session id. You need it twice later: once in the chain log
+and once when you spawn your successor.
+
 ## Steps
 
 1. Confirm you are on `{{WORK_BRANCH}}` (`git rev-parse --abbrev-ref HEAD`). If not,
@@ -54,7 +58,14 @@ not be able to continue the chain, so go straight to "When you can't continue".
      session, split it and leave the rest queued. Size what you add the way the existing
      entries are sized: a coherent deliverable, not a single edit.
 9. Append one line to `{{CHAIN_DIR_REL}}/chain-log.md`:
-   `{{LANE_NAME}} task-N finished <ISO timestamp> — <one-line result>`
+   `{{LANE_NAME}} task-N <your session id> finished <timestamp> — <one-line result>`
+   - Read the timestamp off the machine — `date -u +%Y-%m-%dT%H:%M:%SZ` — never from your
+     own sense of the time, which is unreliable. A log of invented timestamps is worse than
+     one with no timestamps: it reads as authoritative while being wrong, and it makes the
+     chain's real latency impossible to reconstruct afterwards.
+   - Include your session id. It is what lets anyone total the chain's cost, find which link
+     made a given change, or reopen the session that got something wrong. Without it the
+     chain has to be reconstructed by hand from the session list.
 10. **Push**: `git push -u origin {{WORK_BRANCH}}`. Check that it actually succeeded rather
     than assuming — this is the step the whole chain depends on. Retry network failures up
     to four times (2s, 4s, 8s, 16s). If the push is *rejected* rather than failing on the
@@ -71,8 +82,7 @@ not be able to continue the chain, so go straight to "When you can't continue".
 
 ## The spawn call
 
-Get your own session id first (the tool ending in `__get_session`, called with no session id,
-describes you). Then:
+Using your own session id from the top of this file:
 
 ```
 title:           "{{PROJECT_TITLE}} · {{LANE_NAME}} · task-<N+1>"
@@ -99,9 +109,10 @@ When the first unchecked task is `[USER]`:
 
 1. Do **not** tick it and do **not** spawn a successor — a successor would hit the same wall
    and burn a link for nothing.
-2. Append to `chain-log.md`: `CHAIN PAUSED — waiting on user: <what they need to do>`.
+2. Append to `chain-log.md`:
+   `CHAIN PAUSED <your session id> <timestamp> — waiting on user: <what they need to do>`.
    Commit and push it *before* you ask, so the pause survives even if your container is
-   reclaimed while waiting.
+   reclaimed while waiting — and so whoever picks this up knows which session to reopen.
 3. Use **`AskUserQuestion`** to ask for exactly what you need. It reaches the user in
    claude.ai/code and on their phone, and your session stays alive for the answer — so if
    they reply you can simply carry on from step 5. Record the answer under
