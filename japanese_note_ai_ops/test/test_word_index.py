@@ -300,9 +300,20 @@ class MeaningGroupTests(unittest.TestCase):
         index = build(vocab_row(1, "私", "私", "わたし", "私 (m1)"))
         self.assertIsNone(self.group_ids(index, normal="", kanjified=""))
 
-    def test_only_one_word_field_filled_in_is_still_answerable(self):
-        index = build(vocab_row(1, "", "私", "わたし", "私 (m1)"))
-        self.assertEqual(self.group_ids(index, normal="私", kanjified=""), [1])
+    def test_one_empty_word_field_cannot_be_answered_here_either(self):
+        # A kana-only note whose kanjified field is blank, which is a note that really exists.
+        # The search the index stands in for is
+        #     ... "reading:おちゃ" ("normal:おちゃ" OR "kanjified:")
+        # and its `kanjified:` branch matches every note whose kanjified field is empty, so it
+        # finds 101. The index holds no empty keys and so has no branch to answer that with;
+        # returning [] would drop 101 and split the group, so it has to hand the question back.
+        index = build(
+            vocab_row(100, "", "おちゃ", "おちゃ", "おちゃ (m1)"),
+            vocab_row(101, "", "御茶", "おちゃ", "御茶 (m2)"),
+        )
+        self.assertIsNone(
+            self.group_ids(index, reading="おちゃ", normal="おちゃ", kanjified="", exclude=100)
+        )
 
     def test_an_index_over_other_fields_is_not_trusted(self):
         # Two notetypes can be configured differently; a query written against one set of

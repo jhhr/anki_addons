@@ -245,11 +245,14 @@ class WordIndex:
         module regexes above, the field terms become the same collation-folded exact match the
         rest of the index uses, and the OR becomes a union of the two word maps.
 
-        None means the caller has to fall back to the search: both word values being empty is
-        the one case this cannot express, because `field:` with nothing after it asks for notes
-        whose field is empty and the word maps deliberately hold no empty keys. It is not a
-        case any real note reaches - a vocab note with neither word field filled in has nothing
-        to group by - but answering it wrongly would silently split a meaning group.
+        None means the caller has to fall back to the search: an empty word value is the case
+        this cannot express, because `field:` with nothing after it is not a no-op but a real
+        term asking for notes whose field is empty, and the word maps deliberately hold no
+        empty keys. Either value being empty is enough to hand the question back - a kana-only
+        note with a blank kanjified field is a note that really exists, and the search's
+        `kanjified:` branch pulls in every other note whose kanjified field is blank. The index
+        has nothing to answer that branch with, so answering the rest of the query anyway would
+        silently split a meaning group.
 
         The one place a lookup can differ from the search is a word or reading containing an
         Anki search metacharacter (`*` and `_` are wildcards inside a quoted field term). The
@@ -258,7 +261,7 @@ class WordIndex:
         """
         normal_key = index_key(normal_value) if normal_value else ""
         kanjified_key = index_key(kanjified_value) if kanjified_value else ""
-        if not normal_key and not kanjified_key:
+        if not normal_key or not kanjified_key:
             return None
 
         found: "set[NoteId]" = set()
