@@ -21,6 +21,11 @@ from aqt.utils import tooltip
 from ..configuration import (
     Config,
     CopyDefinition,
+    # The trigger accessors live with the config because the hooks and the picker read the
+    # same settings, and they must read them the same way whichever format is stored.
+    definition_note_type_names,
+    definition_note_types_label,
+    definition_trigger_flag,
 )
 from ..shared.anki.write_custom_data import write_custom_data
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
@@ -153,31 +158,6 @@ class CacheResults:
 
 
 
-
-
-def definition_note_type_names(copy_definition: Union[CopyDefinition, dict]) -> list:
-    """The note type names a definition triggers on, in either stored format."""
-    if is_format_2(copy_definition):
-        return list(copy_definition.get("triggers", {}).get("note_types") or [])
-    stored = copy_definition.get("copy_into_note_types") or ""
-    # Split by comma and remove the first wrapping " but keeping the last one
-    return stored.strip('""').split('", "')
-
-
-def definition_note_types_label(copy_definition: Union[CopyDefinition, dict]):
-    """The note type names as the error messages have always spelled them, or None."""
-    if is_format_2(copy_definition):
-        names = copy_definition.get("triggers", {}).get("note_types")
-        return '", "'.join(names) if names else None
-    return copy_definition.get("copy_into_note_types", None)
-
-
-def definition_trigger_flag(
-    copy_definition: Union[CopyDefinition, dict], format_2_key: str, format_1_key: str
-) -> bool:
-    if is_format_2(copy_definition):
-        return bool(copy_definition.get("triggers", {}).get(format_2_key, False))
-    return bool(copy_definition.get(format_1_key, False))
 
 
 def definition_queries_collection(copy_definition: Union[CopyDefinition, dict]) -> bool:

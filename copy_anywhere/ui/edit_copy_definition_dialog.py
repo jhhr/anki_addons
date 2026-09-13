@@ -1182,9 +1182,19 @@ class EditCopyDefinitionDialog(ScrollableQDialog):
         # Define Ok and Cancel buttons as QPushButtons
         self.ok_button = QPushButton("Save")
         self.close_button = QPushButton("Cancel")
+        self.convert_button = QPushButton("Save and convert to stages")
+        self.convert_button.setToolTip(
+            "Rewrite this definition as an ordered list of stages, which is the format the"
+            " addon runs. Nothing is saved until you save the converted definition too."
+        )
+
+        #: Set when the user asks for the conversion; the caller does it, because it is the
+        #: caller that has the rest of the config and has to open the staged editor.
+        self.convert_to_stages_requested = False
 
         self.ok_button.clicked.connect(self.check_fields)
         self.close_button.clicked.connect(self.reject)
+        self.convert_button.clicked.connect(self.request_conversion)
 
         self.bottom_grid = QGridLayout()
         self.bottom_grid.setColumnMinimumWidth(0, 150)
@@ -1192,6 +1202,7 @@ class EditCopyDefinitionDialog(ScrollableQDialog):
         self.bottom_grid.setColumnMinimumWidth(2, 150)
 
         self.bottom_grid.addWidget(self.ok_button, 0, 0)
+        self.bottom_grid.addWidget(self.convert_button, 0, 1)
         self.bottom_grid.addWidget(self.close_button, 0, 2)
 
         super().__init__(parent, footer_layout=self.bottom_grid)
@@ -1347,6 +1358,14 @@ class EditCopyDefinitionDialog(ScrollableQDialog):
                     " name."
                 )
             self.accept()
+
+    def request_conversion(self):
+        """Save as usual, then tell the caller to reopen this as a staged definition."""
+        self.convert_to_stages_requested = True
+        self.check_fields()
+        if not self.result():
+            # check_fields() refused the save, so there is nothing to convert yet.
+            self.convert_to_stages_requested = False
 
     def get_copy_mode(self) -> CopyModeType:
         return self.selected_editor_type or COPY_MODE_ACROSS_NOTES

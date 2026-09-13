@@ -5,7 +5,6 @@ proof that a staged definition's menus follow the stage instead: a loop body off
 loop's note, a stage before the loop does not, and nothing ever offers a list.
 """
 
-import pytest
 
 from copy_anywhere.logic.definition_schema import (
     STAGE_CARD_QUERY,
@@ -31,7 +30,6 @@ from copy_anywhere.ui.stage_editor_context import (
     make_note_types_for,
     note_menu_dict,
     root_context,
-    scope_options_dict,
 )
 
 from conftest import VOCAB, KANJI

@@ -25,7 +25,13 @@ from ..configuration import (
     get_triggered_field_to_field_defs_for_field,
     definition_is_add_note_compatible,
     definition_modifies_other_notes,
+    definition_note_type_names,
+    definition_runs_on_add,
+    definition_runs_on_review,
+    definition_runs_on_sync,
+    definition_unfocus_fields,
 )
+from ..logic.definition_schema import is_format_2
 from ..logic.copy_fields import (
     copy_for_single_trigger_note,
     copy_fields,
@@ -51,15 +57,9 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     copy_definitions: list[CopyDefinition] = []
 
     for copy_definition in config.copy_definitions:
-        copy_on_add = copy_definition.get("copy_on_add", False)
-        if not copy_on_add:
+        if not definition_runs_on_add(copy_definition):
             continue
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        if not copy_into_note_types:
-            continue
-        # Split note_types by comma
-        copy_into_note_types = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in copy_into_note_types:
+        if note_type_name not in definition_note_type_names(copy_definition):
             continue
 
         copy_definitions.append(copy_definition)
@@ -210,26 +210,20 @@ def run_copy_fields_on_review(card: Card):
     has_definitions_to_process_on_sync = False
 
     for copy_definition in config.copy_definitions:
-        copy_on_review = copy_definition.get("copy_on_review", False)
-        if not copy_on_review:
-            copy_on_sync = copy_definition.get("copy_on_sync", False)
-            if copy_on_sync:
+        if not definition_runs_on_review(copy_definition):
+            if definition_runs_on_sync(copy_definition):
                 has_definitions_to_process_on_sync = True
             continue
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        # Split note_types by comma
-        if not copy_into_note_types:
-            continue
-        if not isinstance(copy_into_note_types, str):
+        stored_note_types = copy_definition.get("copy_into_note_types")
+        if stored_note_types is not None and not isinstance(stored_note_types, str):
             # The answer is already committed, so raising would only throw the error at the
             # reviewer from inside Anki's hook dispatch and stop every later definition too
             logger.error(
                 f"Copy definition '{copy_definition.get('definition_name')}' has"
-                f" copy_into_note_types that is not a string: {copy_into_note_types!r}"
+                f" copy_into_note_types that is not a string: {stored_note_types!r}"
             )
             continue
-        note_type_names = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in note_type_names:
+        if note_type_name not in definition_note_type_names(copy_definition):
             continue
 
         copy_definitions_to_run.append(copy_definition)
@@ -377,17 +371,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
     editing_other_notes_definitions: list[CopyDefinition] = []
 
     for copy_definition in config.copy_definitions:
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        if not copy_into_note_types:
-            continue
-        # Split note_types by comma
-        note_type_names = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in note_type_names:
-            continue
-
-        # Check field-to-field defs for a match on this field
-        field_to_field_defs = copy_definition.get("field_to_field_defs")
-        if not field_to_field_defs:
+        if note_type_name not in definition_note_type_names(copy_definition):
             continue
 
         modifies_other_notes = definition_modifies_other_notes(copy_definition)
@@ -395,6 +379,28 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         if is_new_note and not definition_is_add_note_compatible(copy_definition):
             # Do not run ops that edit other notes while editing a new note. Such ops should only
             # be run when the new note is saved. Same flag the add hook checks (§8).
+            continue
+
+        if is_format_2(copy_definition):
+            # A staged definition watches fields for the definition as a whole and runs all
+            # of it, because which stages a field feeds is not generally decidable (§8).
+            if field_name not in definition_unfocus_fields(copy_definition, is_new_note):
+                continue
+            if modifies_other_notes:
+                editing_other_notes_definitions.append(copy_definition)
+            else:
+                copy_for_single_trigger_note(
+                    copy_definition=copy_definition,
+                    trigger_note=note,
+                    copied_into_notes=[],
+                    deck_id=deck_id,
+                    logger=logger,
+                )
+            continue
+
+        # Check field-to-field defs for a match on this field
+        field_to_field_defs = copy_definition.get("field_to_field_defs")
+        if not field_to_field_defs:
             continue
 
         # Each def this field triggers is gated by its own add/edit flag, so that one def

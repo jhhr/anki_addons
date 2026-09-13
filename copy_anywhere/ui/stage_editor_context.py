@@ -236,12 +236,15 @@ def make_note_types_for(definition: CopyDefinitionV2) -> NoteTypesFor:
     binding comes from a query or a loop over one, and a query's note types are not knowable
     without running it, so those bindings report "any", which is what format 1's across-mode
     menu also offered.
+
+    The trigger's note types are looked up per call rather than captured: the editor holds
+    one of these for the life of a dialog, and the user changes the trigger note type from
+    inside that dialog.
     """
-    trigger_models = selected_note_types(definition)
 
     def note_types_for(binding: str) -> Optional[list[NotetypeDict]]:
         if binding == "trigger":
-            return trigger_models
+            return selected_note_types(definition)
         return None
 
     return note_types_for

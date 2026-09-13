@@ -3,6 +3,7 @@ import uuid
 import copy as copy_module
 from anki.notes import NoteId
 from aqt import mw
+from aqt.utils import showInfo
 
 from aqt.qt import (
     QVBoxLayout,
@@ -25,7 +26,12 @@ from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
     Config,
     CopyDefinition,
+    definition_deck_names,
+    definition_note_type_names,
 )
+from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
+from ..logic.definition_schema import is_format_2
+from .edit_staged_definition_dialog import EditStagedDefinitionDialog
 from ..logic.copy_fields import (
     copy_fields,
 )
@@ -524,6 +530,39 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
 
         return self.edit_definition(definition_index, definition_to_edit)
 
+    def run_definition_editor(
+        self, definition: Optional[CopyDefinition], config: Config
+    ) -> Optional[CopyDefinition]:
+        """Open whichever editor this definition's format needs, and return the result.
+
+        A new definition is a staged one: format 2 is what the executor runs, and the only
+        reason a stored format-1 definition still opens in the old editor is that nobody
+        should have their existing definitions converted out from under them. Converting is
+        offered there, and lands right back here in the staged editor.
+        """
+        staged_definitions = [
+            other for other in config.copy_definitions if is_format_2(other)
+        ]
+        if definition is None or is_format_2(definition):
+            dialog = EditStagedDefinitionDialog(self, definition, staged_definitions)
+            return dialog.get_copy_definition() if dialog.exec() else None
+
+        legacy_dialog = EditCopyDefinitionDialog(self, definition)
+        if not legacy_dialog.exec():
+            return None
+        edited = legacy_dialog.get_copy_definition()
+        if not getattr(legacy_dialog, "convert_to_stages_requested", False):
+            return edited
+        try:
+            migrated = migrate_definition_v1_to_v2(edited)
+        except MigrationError as error:
+            showInfo(f"This definition could not be converted to stages: {error}")
+            return edited
+        staged_dialog = EditStagedDefinitionDialog(self, migrated, staged_definitions)
+        # Cancelling the staged editor cancels the conversion, not the edits made before
+        # it: those were already made in a dialog the user pressed Save in.
+        return staged_dialog.get_copy_definition() if staged_dialog.exec() else edited
+
     def edit_definition(
         self, index: Optional[int] = None, copy_definition: Optional[CopyDefinition] = None
     ):
@@ -539,10 +578,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         else:
             definition = self.copy_definitions[index]
 
-        dialog = EditCopyDefinitionDialog(self, definition)
-
-        if dialog.exec():
-            copy_definition = dialog.get_copy_definition()
+        copy_definition = self.run_definition_editor(definition, config)
+        if copy_definition is not None:
             if index is None and copy_definition is not None:
                 # Adding new definition
                 if "guid" not in copy_definition:
@@ -617,19 +654,15 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             if checkbox.isChecked():
                 nothing_checked = False
                 checked_definition = self.copy_definitions[index]
-                decks_query = ""
-                whitelist_decknames = checked_definition.get("only_copy_into_decks")
-                if whitelist_decknames and whitelist_decknames != "-":
-                    # Remove the quotes and split the string into a list of deck names
-                    deck_names = whitelist_decknames.strip('""').split('", "')
-                    decks_query = make_query_string("deck", deck_names)
+                deck_names = definition_deck_names(checked_definition)
+                decks_query = make_query_string("deck", deck_names) if deck_names else ""
 
-                note_type_query = ""
-                # Split by comma and remove the first wrapping " but keeping the last one
-                note_type_names = checked_definition.get("copy_into_note_types")
-                if note_type_names and note_type_names != "-":
-                    note_type_names_list = note_type_names.strip('""').split('", "')
-                    note_type_query = make_query_string("note", note_type_names_list)
+                note_type_names_list = definition_note_type_names(checked_definition)
+                note_type_query = (
+                    make_query_string("note", note_type_names_list)
+                    if note_type_names_list
+                    else ""
+                )
                 def_note_ids = mw.col.find_notes(f"{note_type_query} {decks_query} {browser_query}")
 
                 self.selected_definitions_applicable_notes.update(def_note_ids)

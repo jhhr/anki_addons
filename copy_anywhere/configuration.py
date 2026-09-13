@@ -422,6 +422,84 @@ def get_variables_dict_from_variable_defs(
     return variable_menu_dict
 
 
+# --------------------------------------------------------------------------------------
+# Trigger settings, in whichever format a definition is stored
+# --------------------------------------------------------------------------------------
+#
+# Format 1 keeps these as flat keys with quoted, comma-joined name lists; format 2 keeps
+# them as JSON arrays under `triggers` (§4). Everything that decides whether a definition
+# applies to a note -- the hooks, the picker, the bulk operation -- goes through these, so
+# a config holding both formats behaves the same either way.
+
+
+def definition_note_type_names(copy_definition: Union[CopyDefinition, dict]) -> list[str]:
+    """The note type names a definition triggers on."""
+    if is_format_2(copy_definition):
+        return list((copy_definition.get("triggers") or {}).get("note_types") or [])
+    stored = copy_definition.get("copy_into_note_types") or ""
+    if not stored or stored == "-":
+        return []
+    # Split by comma and remove the first wrapping " but keeping the last one
+    return [name for name in stored.strip('""').split('", "') if name]
+
+
+def definition_note_types_label(copy_definition: Union[CopyDefinition, dict]) -> Optional[str]:
+    """The note type names as the error messages have always spelled them, or None."""
+    if is_format_2(copy_definition):
+        names = (copy_definition.get("triggers") or {}).get("note_types")
+        return '", "'.join(names) if names else None
+    return copy_definition.get("copy_into_note_types", None)
+
+
+def definition_deck_names(copy_definition: Union[CopyDefinition, dict]) -> list[str]:
+    """The decks a definition is limited to, empty meaning no limit."""
+    if is_format_2(copy_definition):
+        return list((copy_definition.get("triggers") or {}).get("deck_names") or [])
+    stored = copy_definition.get("only_copy_into_decks") or ""
+    if not stored or stored == "-":
+        return []
+    return [name for name in stored.strip('""').split('", "') if name]
+
+
+def definition_trigger_flag(
+    copy_definition: Union[CopyDefinition, dict], format_2_key: str, format_1_key: str
+) -> bool:
+    if is_format_2(copy_definition):
+        return bool((copy_definition.get("triggers") or {}).get(format_2_key, False))
+    return bool(copy_definition.get(format_1_key, False))
+
+
+def definition_include_subdecks(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    return definition_trigger_flag(copy_definition, "include_subdecks", "include_subdecks")
+
+
+def definition_runs_on_add(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    return definition_trigger_flag(copy_definition, "on_add", "copy_on_add")
+
+
+def definition_runs_on_sync(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    return definition_trigger_flag(copy_definition, "on_sync", "copy_on_sync")
+
+
+def definition_runs_on_review(copy_definition: Union[CopyDefinition, dict]) -> bool:
+    return definition_trigger_flag(copy_definition, "on_review", "copy_on_review")
+
+
+def definition_unfocus_fields(
+    copy_definition: Union[CopyDefinition, dict], is_new_note: bool
+) -> list[str]:
+    """The editor fields whose unfocus runs a format-2 definition, in whole (§8).
+
+    Format 1 has no equivalent: there, unfocus is stored per field write and runs only the
+    writes that field triggers, which is why that path keeps its own per-write gating and
+    this returns nothing for it.
+    """
+    if not is_format_2(copy_definition):
+        return []
+    unfocus = (copy_definition.get("triggers") or {}).get("on_unfocus") or {}
+    return list(unfocus.get("add_fields" if is_new_note else "edit_fields") or [])
+
+
 def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
     """What this definition does to the collection, in whichever format it is stored.
 
