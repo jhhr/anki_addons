@@ -59,12 +59,16 @@ closed.
       `vendor_health` reads it too, so both agree on which tree is live; the per-platform loop
       became `copy_per_platform()` and `clear_previous_vendoring()` drops the old manifest.
       5 new tests in `test_vendor_path.py`, new `test_build_vendor.py` (12 tests, 8 red before).*
-- [ ] **Finding 4 — `concurrency.py:1287` `ESTIMATE_BLEND` applied several times per run.**
+- [x] **Finding 4 — `concurrency.py:1287` `ESTIMATE_BLEND` applied several times per run.**
       A run must apply the 40% blend once, not once per rising refit plus again in `finish()`.
       Keep the persist-on-rising-refit behaviour the comment at 1280-1285 argues for (a killed
       run must not lose its measurement) while making the stored value what a single blend
       would give. Done when a test in `test_concurrency.py` shows the review's two
       reproductions land on 1.4 MB and 5.2 MB, not 1.64 MB and 7.87 MB.
+      *Done in `9fb93b8`: `MemoryEstimator.stored` holds the pre-run value and `persist()`
+      passes it as `save_per_task_estimate(..., blend_from=)`, so the run's repeated writes are
+      idempotent. 4 new tests in `EstimateBlendedOncePerRunTests`, both reproductions red
+      before (1.64 MB exactly as the review says).*
 - [ ] **Findings 6 and 7 — `match_single_word_to_notes_from_selected`'s `bulk_op`.** Both in
       the same function in `async_api_ops/match_words_to_notes.py`, so one task. (6) line 2992
       `word_tuples.remove(wt)` mutates the list being iterated — apply the same one-pass-into-a-
@@ -75,10 +79,9 @@ closed.
 
 ## State
 
-Findings 1, 2, 3 and 5 fixed; findings 4, 6 and 7 remain, grouped into two tasks. All seven
-were re-verified against the working tree at `2bf37d7` before the chain was set up; every line
-number in the spec is still accurate for the files not yet touched (`concurrency.py` and
-`match_words_to_notes.py` are both untouched).
+Findings 1-5 fixed; findings 6 and 7 remain, as the queue's last task. All seven were
+re-verified against the working tree at `2bf37d7` before the chain was set up; the spec's line
+numbers are still accurate for `match_words_to_notes.py`, which is untouched.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -102,6 +105,12 @@ unreachable and deliberately left alone.
   `check_per_platform_output` tolerates an absent tag and a lone tag's build, and
   `clear_previous_vendoring` unlinks the old manifest last. New `test_build_vendor.py` imports
   `build` by putting the repo root on `sys.path`.
+
+- `task-4` `9fb93b8` — finding 4: `save_per_task_estimate` grew a `blend_from` argument
+  (sentinel-defaulted, since `None` means "nothing was stored before this run"), and
+  `MemoryEstimator` keeps `self.stored` to pass into it. Every write a run makes now lands on
+  the same single blend. New `EstimateBlendedOncePerRunTests`; suite 452 passed, same 6
+  `mdict_query`.
 
 ## Decisions made
 
@@ -129,6 +138,16 @@ unreachable and deliberately left alone.
   caller must catch it, which the docstring's new `Raises:` section states.
 - **An outage leaves the word out of `processed_words_set`** (task-2), so another note of the same
   word can still get a working lookup later in the same run.
+- **task-4: the blend stayed in `save_per_task_estimate`.** Moving it into the estimator would
+  have been the smaller diff, but the file is read fresh inside that function's `try`, so the
+  blend there is against the value actually on disk; a caller-side blend would ignore anything
+  another session wrote. The caller only overrides the baseline, and only because its own
+  earlier writes are in the way.
+- **task-4: the rising-run reproduction is driven with given measurements, not a fit.** A fit
+  that actually reaches 10 MB is not reachable inside `MEASURE_SECONDS` (the shallow samples
+  stay in the 120-sample window; it converges to ~8.1 MB), and the finding is about the
+  sequence of writes rather than the fit that produced them. The 1 MB -> 2 MB reproduction is
+  end-to-end through the gate and the real estimates file.
 - **A test that asserts a finding's wrong behaviour is part of that finding's fix.** Finding 1
   had one; rewrite such a test rather than leaving it beside the new one.
 
@@ -147,7 +166,7 @@ python build.py link
   `python -m pytest anki_shared/test -q`.
 - **Known-good baseline after that setup** — match it before and after your change, and treat
   only *new* failures as yours:
-  - `japanese_note_ai_ops/test`: **448 passed, 6 failed** (438 before tasks 1-2). All 6 are
+  - `japanese_note_ai_ops/test`: **452 passed, 6 failed** (438 before tasks 1-2 and 4). All 6 are
     `ModuleNotFoundError: No module named 'mdict_query'` in `test_mdx_dictionary.py`.
     `mdict_query` is hand-vendored, has no PyPI release, and cannot be installed in a cloud
     container — it is not obtainable, so do not spend a link trying.
