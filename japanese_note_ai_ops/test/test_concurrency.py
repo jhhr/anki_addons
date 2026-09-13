@@ -124,7 +124,7 @@ def install_memory_stubs(memory: StubMemory) -> None:
     # ...and never write them. The gate persists a measurement as soon as it has one rather
     # than only from finish(), so without this every gate test that measures anything leaves
     # a "test op" entry in the add-on's own user_files.
-    conc.save_per_task_estimate = lambda op_key, value: None
+    conc.save_per_task_estimate = lambda op_key, value, **kwargs: None
 
 
 def restore_memory_probes() -> None:
@@ -1571,7 +1571,7 @@ class GateCeilingRefitTests(GateTestCase):
         learned it.
         """
         saved: list = []
-        conc.save_per_task_estimate = lambda op_key, value: saved.append((op_key, value))
+        conc.save_per_task_estimate = lambda op_key, value, **kwargs: saved.append((op_key, value))
         self.memory.total = 8 * GB
         self.memory.available = 8 * GB
         gate = self.make_gate()
@@ -1683,6 +1683,107 @@ class GateCeilingRefitTests(GateTestCase):
         gate._apply_estimate()
 
         self.assertEqual(gate.estimator.measured, 64 * MB)
+
+
+class EstimateBlendedOncePerRunTests(GateTestCase):
+    """One run spends ESTIMATE_BLEND once, however many times it writes its measurement out.
+
+    A run persists on every rising refit so that being killed does not cost it what it
+    measured, and finish() persists once more at the end. Each of those writes used to blend
+    into the value the write before it had left in the file, so the 40% weight the constant
+    documents was applied once per write rather than once per run and one atypical run moved
+    the stored estimate - and with it the next run's concurrency ceiling - far harder than
+    intended. These are the two reproductions the review gives.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.path = Path(self._tempdir.name) / "memory_estimates.json"
+        self._real_path = conc._estimates_path
+        conc._estimates_path = lambda: self.path
+        # The real reader and writer, pointed at a temporary file: what is under test is the
+        # value that ends up on disk after a whole run, so the stubs that keep other gate
+        # tests out of the add-on's own user_files would answer the question away.
+        conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
+        conc.save_per_task_estimate = REAL_SAVE_PER_TASK_ESTIMATE
+
+    def tearDown(self):
+        conc._estimates_path = self._real_path
+        self._tempdir.cleanup()
+        super().tearDown()
+
+    def store(self, op_key, value):
+        """Put a value in the file as a previous run would have left it."""
+        self.path.write_text(
+            json.dumps({"version": conc.ESTIMATES_VERSION, "estimates": {op_key: int(value)}}),
+            encoding="utf-8",
+        )
+
+    def blended(self, stored, measured):
+        return int(stored * (1 - conc.ESTIMATE_BLEND) + measured * conc.ESTIMATE_BLEND)
+
+    async def test_a_run_measuring_twice_the_stored_value_blends_it_in_once(self):
+        """1 MB stored, a run that measures 2 MB: 1.4 MB, not the 1.64 MB of two blends."""
+        self.store("test op", 1 * MB)
+        self.memory.total = 8 * GB
+        self.memory.available = 8 * GB
+        gate = self.make_gate()
+
+        # The refit inside this persists; finish() then persists the same measurement again.
+        self.measure_cost(gate, 2 * MB)
+        gate.finish()
+
+        expected = self.blended(1 * MB, 2 * MB)
+        self.assertEqual(conc.load_per_task_estimates()["test op"], expected)
+        self.assertEqual(expected, int(1.4 * MB))
+
+    def test_a_rising_run_blends_only_its_last_measurement_in(self):
+        """2 MB stored, a run rising to 10 MB: 5.2 MB, not the 7.87 MB of blend upon blend.
+
+        Driven through the estimator with the measurements given rather than fitted, because
+        what is under test is the sequence of writes a rising run makes - _apply_estimate on
+        each refit that rises, and finish() once more - and not the fit that produced them.
+        """
+        self.store("Making meanings", 2 * MB)
+        estimator = conc.MemoryEstimator("Making meanings", 2 * MB)
+
+        for measured in (2 * MB, 6 * MB, 10 * MB, 10 * MB):
+            estimator.measured = measured
+            estimator.persist()
+
+        expected = self.blended(2 * MB, 10 * MB)
+        self.assertEqual(conc.load_per_task_estimates()["Making meanings"], expected)
+        self.assertEqual(expected, int(5.2 * MB))
+
+    def test_a_first_ever_run_stores_what_it_measured(self):
+        """With nothing stored before it there is nothing to blend into, and repeating the
+        write must not start blending the value into itself either.
+        """
+        estimator = conc.MemoryEstimator("Making meanings")
+        estimator.measured = 3 * MB
+        estimator.persist()
+        estimator.persist()
+
+        self.assertEqual(conc.load_per_task_estimates()["Making meanings"], 3 * MB)
+
+    def test_the_next_run_blends_into_what_the_last_one_left(self):
+        """Only a run's own repeated writes are collapsed. Across runs the blend still
+        applies, which is the whole point of storing a blended value.
+        """
+        self.store("Making meanings", 1 * MB)
+        first = conc.MemoryEstimator("Making meanings", 1 * MB)
+        first.measured = 2 * MB
+        first.persist()
+
+        stored = conc.load_per_task_estimates()["Making meanings"]
+        second = conc.MemoryEstimator("Making meanings", stored)
+        second.measured = 2 * MB
+        second.persist()
+
+        self.assertEqual(
+            conc.load_per_task_estimates()["Making meanings"], self.blended(stored, 2 * MB)
+        )
 
 
 class BeginMeasuringTests(GateTestCase):

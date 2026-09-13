@@ -712,7 +712,21 @@ def load_per_task_estimates() -> dict:
     return _estimates_in(_read_estimates_file()[0])
 
 
-def save_per_task_estimate(op_key: str, value: float) -> None:
+# Sentinel for save_per_task_estimate's `blend_from`, because `None` is itself an answer
+# there - "nothing was stored before this run" - and has to mean something other than "work
+# out what is stored yourself".
+_STORED_VALUE = object()
+
+
+def save_per_task_estimate(op_key: str, value: float, blend_from=_STORED_VALUE) -> None:
+    """Blend a run's measurement into the stored estimate and write it out.
+
+    `blend_from` is what the measurement is blended into, for a caller that writes more than
+    once per run: the value stored before that run began, so that its second and later writes
+    land where its first one did instead of blending into their own output. See
+    MemoryEstimator.persist. Left out, whatever the file currently holds is used, which is the
+    same thing for a caller that writes once.
+    """
     path = _estimates_path()
     temp = path.with_name(f"{path.name}.tmp")
     try:
@@ -733,7 +747,7 @@ def save_per_task_estimate(op_key: str, value: float) -> None:
             )
             return
         estimates = _estimates_in(data)
-        previous = estimates.get(op_key)
+        previous = estimates.get(op_key) if blend_from is _STORED_VALUE else blend_from
         if isinstance(previous, (int, float)) and previous > 0:
             value = previous * (1 - ESTIMATE_BLEND) + value * ESTIMATE_BLEND
         estimates[op_key] = int(value)
@@ -862,13 +876,16 @@ class MemoryEstimator:
     acting on it raises the ceiling on a machine that cannot afford it. See refit.
 
     Within a run the largest fit wins, because what has to fit in RAM is the peak rather than
-    the average. Across runs the value is blended into the stored one, so a single odd run
-    does not skew it.
+    the average. Across runs the value is blended into the stored one - once per run, however
+    many times the run writes it out; see persist - so a single odd run does not skew it.
     """
 
     def __init__(self, op_key: Optional[str], stored: Optional[float] = None):
         self.op_key = op_key
         self.measured: Optional[float] = None
+        # What was stored before this run, kept as well as folded into the estimate because it
+        # is what persist() blends into - see it for why the run's own writes must not be.
+        self.stored: Optional[float] = float(stored) if stored else None
         self.estimate: float = float(stored) if stored else DEFAULT_PER_TASK_MEMORY
         self.from_measurement = bool(stored)
         self._traced = _Fit()
@@ -1058,8 +1075,22 @@ class MemoryEstimator:
         return per_task
 
     def persist(self) -> None:
+        """Write this run's measurement out, blended into what was stored before the run.
+
+        Blended into `self.stored` rather than into whatever the file holds now, because this
+        run may well have written to it already: the gate persists on every rising refit so
+        that a killed run does not lose what it measured, and finish() persists once more.
+        Blending each of those into the last would apply ESTIMATE_BLEND once per write instead
+        of once per run, and one run's measurement would carry far more than the 40% weight
+        the constant documents - a rising run measured at 10 MB against a stored 2 MB used to
+        end up storing 7.87 MB where a single blend gives 5.2 MB.
+
+        Naming the run's own starting point instead makes the repeated writes idempotent: each
+        one lands exactly where a single blend of (stored, measured) lands, so the last write
+        of the run is the whole of the run's contribution however many came before it.
+        """
         if self.op_key and self.measured:
-            save_per_task_estimate(self.op_key, self.measured)
+            save_per_task_estimate(self.op_key, self.measured, blend_from=self.stored)
 
 
 class ConcurrencyGate:
@@ -1283,7 +1314,9 @@ class ConcurrencyGate:
         # its measurement away and leave the next run starting from the stale stored value,
         # so the machine that most needs to know what this op costs was the one that never
         # learned it. Measuring stops at MEASURE_SECONDS, so this writes a handful of times
-        # at the very start of a run and never again.
+        # at the very start of a run and never again - and each of those writes replaces the
+        # previous one rather than blending into it, so the run still spends ESTIMATE_BLEND
+        # once in total; see MemoryEstimator.persist.
         self.estimator.persist()
         if not self.adaptive:
             # Nothing to adapt against; we still learn the cost for next time
