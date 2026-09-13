@@ -175,7 +175,9 @@ What rules and lexicon still miss, a language model catches: `proper_noun_llm.py
 proper nouns the sentence has (a JSON list), and `fix_array` makes every name that starts and ends on
 top-level word boundaries one proper noun without sub-words (a name inside a word, 日本 of 日本語,
 changes nothing). Op `async_api_ops/find_proper_nouns.py`, one request per note, browser entry "Find
-proper nouns in word arrays", model `proper_nouns_model`; run it before the judge.
+proper nouns in word arrays", model `proper_nouns_model` (default gpt-5.6-luna, the most precise
+below). It is its own step of the migration: build the name lexicon, migrate, find proper nouns,
+then judge.
 `research/proper_noun_eval.py` scores models on 300 export sentences with old proper nouns and 300
 without: names precision/recall against the old lists (noisy: 彼女 is listed 16 times), and old proper
 nouns labelled a top-level proper noun before and after the fix, 198 of 376 without it:
@@ -186,7 +188,11 @@ nouns labelled a top-level proper noun before and after the fix, 198 of 376 with
 | gpt-5.6-luna | 87.6% / 65.9% | 247 | 90 |
 | claude-haiku-4-5 | 80.9% / 69.9% | 256 | 115 (日本語, 猫足 wrongly) |
 
-Most names given that the old lists lack are real (高松塚古墳, 奈良県, 正親町天皇).
+Most names given that the old lists lack are real (高松塚古墳, 奈良県, 正親町天皇). A name off word
+boundaries is nearly always part of a word on purpose (スペイン語, 新宿駅, 奈良県明日香村); the
+generator cutting across a name (凛と as one adverb, 少年京太郎 as one noun) is rare. A JMdict
+common noun isn't refused for now: JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n`
+too, so such a guard would drop about 40% of the fixes.
 
 ## match_data states
 
