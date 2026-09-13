@@ -172,6 +172,8 @@ def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
 INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
+# Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
+SEPARATE_AUX = {"らしい", "べし", "まい"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
 PARTICLE_COPULA = ("な", "に", "で")
 FUNCTION_POS = ("助詞", "助動詞")
@@ -185,6 +187,8 @@ def _attaches(prev: Morph, nxt: Morph, head: Morph) -> bool:
     if head.pos[0] not in INFLECTING and head.pos[0] != "助動詞":
         return False
     if nxt.pos[0] == "助動詞":
+        if nxt.lemma in SEPARATE_AUX:
+            return False
         # だ as past tense after onbin (沈んだ) attaches; a copula after a noun starts a word
         return not (
             is_copula(nxt)

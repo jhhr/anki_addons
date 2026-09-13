@@ -36,7 +36,8 @@ Status: phase 1 prototype, not wired into any op yet.
    `normalized_form` turns kana lemmas back into kanjified ones (する -> 為る, これ -> 此れ,
    くださる -> 下さる).
 3. **Grouping** morphemes into words: a verb or adjective plus its inflection chain (助動詞,
-   て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words.
+   て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words, and so
+   do the modal 助動詞 らしい, べき and まい (捌いとる + らしい, 帰る + べき); たい stays in the chain.
 4. **Furigana groups are never split between top-level words**, which repairs tokenizer cuts
    like 八紘|一宇 and 業|者.
 5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,

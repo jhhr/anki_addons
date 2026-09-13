@@ -201,6 +201,19 @@ class WordArrayTests(unittest.TestCase):
                 word = find_word(self.generator.generate(sentence), form)
                 self.assertEqual([s[2] for s in word[5]], subs)
 
+    def test_modal_auxiliary_is_a_word_of_its_own(self):
+        # らしい, べき and まい are not the verb's inflection chain: 捌いとる + らしい, not 捌いとるらしい
+        arr = self.generator.generate("プラチナを 売[う]り<k> 捌[さば]いとる</k>らしい")
+        self.assertEqual(find_word(arr, "捌く")[0], " 捌[さば]いとる")
+        for sentence, raw, form in [
+            ("プラチナを 売[う]り<k> 捌[さば]いとる</k>らしい", "らしい", "らしい"),
+            ("早[はや]く 帰[かえ]るべきだ", "べき", "べし"),
+            ("二度[にど]と 行[い]くまい", "まい", "まい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual((word[0], word[1]), (raw, "auxiliary"))
+
     def test_conjunction_and_pronoun_okurigana_is_no_sub_word(self):
         for sentence, form in [
             ("但[ただ]し、 注意[ちゅうい]", "但し"),
