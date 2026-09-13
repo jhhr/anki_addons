@@ -12,8 +12,14 @@ Two defects the review found in that function's `bulk_op`, both of them pre-exis
 The deduplication is exercised through `drop_duplicate_word_tuples`, which is the loop itself;
 the binding is exercised through `bulk_op`, because the unbound name is a property of that
 function's body rather than of anything it calls.
+
+And one thing the review did not file, found while fixing those two and decided by the add-on's
+author: the deduplicated lists are now encoded back into the note, which is what makes the
+deduplication mean anything. Before that the decoded dict was read no further, so a run that
+logged a list deduplicated saved the duplicate regardless.
 """
 
+import json
 import unittest
 from copy import deepcopy
 
@@ -61,6 +67,9 @@ class FakeNote:
 
     def __getitem__(self, field):
         return self.fields_dict[field]
+
+    def __setitem__(self, field, value):
+        self.fields_dict[field] = value
 
     def add_tag(self, tag):
         self.tags.append(tag)
@@ -199,13 +208,17 @@ class BulkOpTestCase(unittest.TestCase):
         mwtn.match_single_word_to_notes_from_selected([n.id for n in notes], parent=None)
         self.assertEqual(len(self.captured), 1, "bulk_op was not handed to selected_notes_op")
         bulk_op = self.captured[0]
+        # Kept on the test case rather than passed in: what the write-back tests below check is
+        # which notes the op registered for saving, and that is this dict after the call.
+        self.notes_to_update_dict: dict = {}
+        self.edited_nids: list = []
         return bulk_op(
             col=None,
             notes=notes,
-            edited_nids=[],
+            edited_nids=self.edited_nids,
             progress_updater=None,
             notes_to_add_dict={},
-            notes_to_update_dict={},
+            notes_to_update_dict=self.notes_to_update_dict,
         )
 
 
@@ -254,6 +267,137 @@ class MissingWordListFieldTests(BulkOpTestCase):
         note = self.note_with_list(1, "not json at all")
         self.run_bulk_op([note])
         self.assertEqual(self.deduped, [{}])
+
+
+class DroppedCountTests(unittest.TestCase):
+    """`drop_duplicate_word_tuples` reports how many entries it dropped.
+
+    `bulk_op` needs to know whether the lists changed before it rewrites the note's field: a
+    note whose lists were already clean must not be marked edited and re-saved for nothing.
+    Comparing the dict against a copy taken beforehand would work too, but the loop already
+    knows the answer and a count is cheaper than a deep copy per note.
+    """
+
+    def dropped(self, word_list_dict, keys=None):
+        return mwtn.drop_duplicate_word_tuples(
+            word_list_dict, keys if keys is not None else WORD_LIST_KEYS, "test--"
+        )
+
+    def test_clean_lists_drop_nothing(self):
+        self.assertEqual(self.dropped({"nouns": [["あ", "ア"], ["い", "イ"]]}), 0)
+
+    def test_three_identical_entries_drop_two(self):
+        self.assertEqual(self.dropped({"nouns": [["あ", "ア"]] * 3}), 2)
+
+    def test_the_count_spans_the_note_s_lists(self):
+        word_list_dict = {"nouns": [["あ", "ア"], ["あ", "ア"]], "verbs": [["あ", "ア"]]}
+        self.assertEqual(self.dropped(word_list_dict), 2)
+
+    def test_an_unreadable_entry_is_not_counted(self):
+        """It is kept, so it is not a drop - see `normalize_word_tuple`."""
+        self.assertEqual(self.dropped({"nouns": [1378555076170, 1378555076170]}), 0)
+
+    def test_a_word_list_that_is_not_a_list_is_not_counted(self):
+        self.assertEqual(self.dropped({"nouns": "not a list"}), 0)
+
+
+class WriteBackTests(BulkOpTestCase):
+    """The deduplicated lists reach the note, and only when there was something to drop."""
+
+    def note(self, note_id, word_list_json):
+        return FakeNote(
+            note_id,
+            {
+                "WordKanjified": "引く",
+                "WordReading": "ひく",
+                WORD_LIST_FIELD: word_list_json,
+            },
+        )
+
+    def test_a_note_with_duplicates_is_rewritten_and_registered(self):
+        """The review's scenario, end to end: the saved field no longer holds the duplicate."""
+        note = self.note(1, '{"nouns": [["あ", "ア"], ["あ", "ア"], ["あ", "ア"]]}')
+        self.run_bulk_op([note])
+        self.assertEqual(json.loads(note[WORD_LIST_FIELD]), {"nouns": [["あ", "ア"]]})
+        self.assertEqual(self.notes_to_update_dict, {1: note})
+
+    def test_the_rewritten_field_is_in_the_encoder_s_format(self):
+        """`word_lists_str_format`, the same encoder `match_words_to_notes_for_note` uses."""
+        note = self.note(1, '{"nouns": [["あ", "ア"], ["あ", "ア"]], "verbs": [["く", "ク"]]}')
+        self.run_bulk_op([note])
+        self.assertEqual(
+            note[WORD_LIST_FIELD],
+            mwtn.word_lists_str_format({"nouns": [["あ", "ア"]], "verbs": [["く", "ク"]]}),
+        )
+
+    def test_a_note_without_duplicates_is_left_untouched(self):
+        """Not even reformatted: an unedited note has no business in notes_to_update_dict."""
+        original = '{"nouns": [["あ", "ア"], ["い", "イ"]]}'
+        note = self.note(1, original)
+        self.run_bulk_op([note])
+        self.assertEqual(note[WORD_LIST_FIELD], original)
+        self.assertEqual(self.notes_to_update_dict, {})
+
+    def test_a_note_that_lacks_the_field_is_not_registered(self):
+        """Nothing was decoded, so nothing can have been dropped, so nothing is written."""
+        note = FakeNote(1, {"WordKanjified": "見る", "WordReading": "みる"})
+        self.run_bulk_op([note])
+        self.assertEqual(self.notes_to_update_dict, {})
+
+    def test_an_undecodable_field_is_not_overwritten(self):
+        """decode_word_list_field tags and registers the note itself; the field stays as found.
+
+        Encoding the empty dict over it would destroy whatever the field did hold, which is the
+        one thing an unparseable word list still has going for it.
+        """
+        note = self.note(1, "not json at all")
+        self.run_bulk_op([note])
+        self.assertEqual(note[WORD_LIST_FIELD], "not json at all")
+        self.assertEqual(note.tags, ["invalid_word_list_json"])
+
+    def test_a_note_with_no_real_id_yet_is_rewritten_but_not_registered(self):
+        """`bulk_op` can be handed notes this run has yet to add, whose ids are placeholders.
+
+        Keying notes_to_update_dict by such an id is what `decode_word_list_field` guards
+        against with `note.id > 0`; the field is still worth fixing on the object itself, since
+        whoever adds the note saves it.
+        """
+        note = self.note(0, '{"nouns": [["あ", "ア"], ["あ", "ア"]]}')
+        self.run_bulk_op([note])
+        self.assertEqual(json.loads(note[WORD_LIST_FIELD]), {"nouns": [["あ", "ア"]]})
+        self.assertEqual(self.notes_to_update_dict, {})
+
+    def test_a_field_holding_a_non_list_word_list_is_not_rewritten(self):
+        """The encoder would turn a bare string into one entry per character.
+
+        `word_lists_str_format` iterates every value it is given, so `"nouns": "not a list"`
+        comes back as `"nouns": ["n", "o", "t", ...]`. Keeping the duplicate is much the lesser
+        loss, so a field with any non-list value is left exactly as it was found.
+        """
+        note = self.note(1, '{"nouns": "not a list", "verbs": [["う", "ウ"], ["う", "ウ"]]}')
+        original = note[WORD_LIST_FIELD]
+        self.run_bulk_op([note])
+        self.assertEqual(note[WORD_LIST_FIELD], original)
+        self.assertEqual(self.notes_to_update_dict, {})
+
+    def test_a_word_list_key_the_config_leaves_out_survives_the_rewrite(self):
+        """Only the configured lists are deduplicated, but the whole dict is re-encoded."""
+        note = self.note(
+            1, '{"nouns": [["あ", "ア"], ["あ", "ア"]], "adverbs": [["と", "ト"], ["と", "ト"]]}'
+        )
+        self.run_bulk_op([note])
+        self.assertEqual(
+            json.loads(note[WORD_LIST_FIELD]),
+            {"nouns": [["あ", "ア"]], "adverbs": [["と", "ト"], ["と", "ト"]]},
+        )
+
+    def test_one_note_s_rewrite_does_not_register_the_others(self):
+        notes = [
+            self.note(1, '{"nouns": [["あ", "ア"], ["い", "イ"]]}'),
+            self.note(2, '{"nouns": [["う", "ウ"], ["う", "ウ"]]}'),
+        ]
+        self.run_bulk_op(notes)
+        self.assertEqual(self.notes_to_update_dict, {2: notes[1]})
 
 
 if __name__ == "__main__":

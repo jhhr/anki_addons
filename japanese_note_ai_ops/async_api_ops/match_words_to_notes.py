@@ -262,8 +262,13 @@ def drop_duplicate_word_tuples(
     word_list_dict: dict[str, Any],
     word_list_keys: Sequence[str],
     log_prefix: str = "",
-) -> None:
+) -> int:
     """Drop repeated words from each of a note's word lists, editing the lists in place.
+
+    Returns how many entries were dropped, so a caller that writes the lists back can tell an
+    edited note from one whose lists were already clean and must not be re-saved. The count is
+    the loop's own bookkeeping; the alternative - comparing the dict against a copy taken
+    beforehand - would mean a deep copy per note for something already known here.
 
     One `encountered_words` for the whole note, not one per list: a word already seen in an
     earlier list is a duplicate when it turns up in a later one, which is what the loop this
@@ -279,10 +284,13 @@ def drop_duplicate_word_tuples(
     Entries are read through `normalize_word_tuple` but stored back as they were found. The
     reading is what needs normalizing - a bare string indexes character by character and used
     to make a word of its first two characters, so two spellings of one word could both be
-    kept - while rewriting the shapes is not this function's business: unlike the list in
-    `match_words_to_notes_for_note`, this dict is decoded here and read no further.
+    kept - while rewriting the shapes is not this function's business. The caller encodes this
+    dict back into the note, so an entry left alone is an entry the note keeps verbatim: a
+    deduplication pass is no place to decide that `"なんと"` should have become
+    `["なんと", "なんと"]` on disk.
     """
     encountered_words: set[str] = set()
+    dropped = 0
     for word_list_key in word_list_keys:
         word_tuples = word_list_dict.get(word_list_key, [])
         if not isinstance(word_tuples, list):
@@ -312,6 +320,7 @@ def drop_duplicate_word_tuples(
                     f"{log_prefix}Removing duplicate word '{word}' with reading"
                     f" '{reading}' from word list '{word_list_key}'"
                 )
+                dropped += 1
                 continue
             encountered_words.add(word_key)
             kept.append(wt)
@@ -325,6 +334,7 @@ def drop_duplicate_word_tuples(
             )
         # In place: the caller holds this same list through word_list_dict.
         word_tuples[:] = kept
+    return dropped
 
 
 def update_fake_note_ids(
@@ -3043,7 +3053,44 @@ def match_single_word_to_notes_from_selected(
                 target_word,
                 target_reading,
             )
-            drop_duplicate_word_tuples(word_list_dict, word_list_keys, log_prefix)
+            dropped_duplicates = drop_duplicate_word_tuples(
+                word_list_dict, word_list_keys, log_prefix
+            )
+            if dropped_duplicates:
+                # Encoding the deduplicated lists back is what makes the pass above mean
+                # anything. Without it `word_list_dict` was decoded here and read no further,
+                # so a run logged a list deduplicated and saved the duplicate regardless - the
+                # only lasting effect was on `encountered_words`, which lives no longer than
+                # this note's turn either.
+                #
+                # Only when something was actually dropped. The encoder reformats whatever it
+                # is given, so writing unconditionally would put every selected note into
+                # notes_to_update_dict and re-save a clean note just to reflow its JSON.
+                not_lists = [
+                    key for key, value in word_list_dict.items() if not isinstance(value, list)
+                ]
+                if not_lists:
+                    # word_lists_str_format iterates each value, so a value that is not a list -
+                    # a bare string above all - is encoded as one entry per character, and the
+                    # note would come back with `"nouns": ["n", "o", "t", ...]`. The duplicate
+                    # this note still has is much the lesser loss, so leave the field as it was
+                    # found. The lists the deduplication did clean are lost with it; splitting
+                    # the write per key is not worth it for a field this broken, which the
+                    # deduplication loop has already complained about if the key was one of
+                    # ours.
+                    logger.error(
+                        f"{log_prefix}Not writing the deduplicated word lists back: word list"
+                        f" field holds non-list values for {not_lists}"
+                    )
+                else:
+                    new_word_list = word_lists_str_format(word_list_dict)
+                    if new_word_list is not None:
+                        cur_note[word_list_field] = new_word_list
+                        # The same guard decode_word_list_field registers under: a note this
+                        # run has yet to add carries a placeholder id that is no key to save it
+                        # by, and a note already in the dict is this very object.
+                        if cur_note.id > 0 and cur_note.id not in notes_to_update_dict:
+                            notes_to_update_dict[cur_note.id] = cur_note
             target_word_regex = get_word_list_query_regex_for_word_and_reading(
                 word=target_word,
                 reading=target_reading,
