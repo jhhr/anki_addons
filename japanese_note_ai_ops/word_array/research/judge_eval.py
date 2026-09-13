@@ -12,7 +12,7 @@ shown to the judge as context and score nothing.
 
 `build` writes `output/word_matching_judge_eval.jsonl`, one row per sentence: the sentence, its
 array with every word unjudged, and `expected`, a label or null per word in `iter_words` order.
-It needs SudachiPy, hence `py -3.10`. `run` sends each row's judge prompt to the model (the op's
+It needs SudachiPy, hence `py -3.10`. `run` sends each word's judge prompt to the model (the op's
 own `word_matching_judge_model`, else `extract_words_model`, from the add-on's config) through
 the op's request code, caches the responses by model and prompt in
 `output/word_matching_judge_eval_results.jsonl` so that a rerun only pays for prompts that
@@ -102,7 +102,7 @@ def load_judge():
     if meta.exists():
         config.update(json.loads(meta.read_text(encoding="utf-8")).get("config", {}))
     mw.addonManager = SimpleNamespace(getConfig=lambda _name: config)
-    judge = load_ops_module("word_matching_judge")
+    judge = load_ops_module("word_matching_judgev2")
     match_flags = load_ops_module("match_flags", subdir="word_array")
     return judge, match_flags, load_ops_module("judge_v2", subdir="word_array"), config
 
@@ -133,29 +133,8 @@ class Judged(NamedTuple):
     reasons: dict[int, str]
 
 
-def v1_requests(rows: list, model: str, match_flags, _judge_v2) -> list[list[tuple[str, str]]]:
-    """(key, prompt) of every request each row needs: v1 asks once per sentence."""
-    out = []
-    for row in rows:
-        prompt = match_flags.judge_prompt(row["array"])[0]
-        out.append([(prompt_key(model, prompt), prompt)])
-    return out
-
-
-def v1_apply(row: dict, keys: list[str], cached: dict, match_flags, _judge_v2) -> Judged:
-    arr = copy.deepcopy(row["array"])
-    _, elements = match_flags.judge_prompt(arr)
-    if keys[0] not in cached:
-        return Judged(row, None, set(), {})
-    try:
-        match_flags.apply_judge_response(elements, cached[keys[0]]["response"])
-    except ValueError:
-        return Judged(row, None, set(), {})
-    return Judged(row, arr, {id(elem) for elem in elements}, {})
-
-
-def v2_requests(rows: list, model: str, _match_flags, judge_v2) -> list[list[tuple[str, str]]]:
-    """(key, prompt) of every request each row needs: v2 asks once per word not auto-judged."""
+def row_requests(rows: list, model: str, judge_v2) -> list[list[tuple[str, str]]]:
+    """(key, prompt) of every request each row needs: one per word not auto-judged."""
     out = []
     for row in rows:
         plan = judge_v2.plan_judgements(copy.deepcopy(row["array"]))
@@ -163,8 +142,8 @@ def v2_requests(rows: list, model: str, _match_flags, judge_v2) -> list[list[tup
     return out
 
 
-def v2_apply(row: dict, keys: list[str], cached: dict, _match_flags, judge_v2) -> Judged:
-    """The row judged by v2; a word whose request has no usable response stays unjudged."""
+def apply_row(row: dict, keys: list[str], cached: dict, judge_v2) -> Judged:
+    """The row judged; a word whose request has no usable response stays unjudged."""
     arr = copy.deepcopy(row["array"])
     plan = judge_v2.plan_judgements(arr)
     judge_v2.set_auto(plan)
@@ -180,9 +159,6 @@ def v2_apply(row: dict, keys: list[str], cached: dict, _match_flags, judge_v2) -
     return Judged(row, arr, asked, reasons)
 
 
-JUDGES = {"v1": (v1_requests, v1_apply), "v2": (v2_requests, v2_apply)}
-
-
 def run(args) -> int:
     if not EVAL_SET.exists():
         print(f"No {EVAL_SET.name}: run `build` first")
@@ -192,24 +168,22 @@ def run(args) -> int:
     rows = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines() if line]
     if args.n:
         rows = rows[: args.n]
-    make_requests, apply = JUDGES[args.judge]
 
-    requests = make_requests(rows, model, match_flags, judge_v2)
+    requests = row_requests(rows, model, judge_v2)
     cached = read_results()
     todo = sorted({k: p for reqs in requests for k, p in reqs if k not in cached}.items())
     if args.score_only:
         todo = []
     total = len({k for reqs in requests for k, _ in reqs})
     print(
-        f"{len(rows)} sentences, judge {args.judge}, model {model}: {len(todo)} requests,"
+        f"{len(rows)} sentences, model {model}: {len(todo)} requests,"
         f" {total - len(todo)} cached",
         file=sys.stderr,
     )
-    schema = judge_v2.RESPONSE_SCHEMA if args.judge == "v2" else judge.RESPONSE_SCHEMA
 
     def ask(item):
         key, prompt = item
-        return key, judge.get_response(model, prompt, response_schema=schema)
+        return key, judge.get_response(model, prompt, response_schema=judge_v2.RESPONSE_SCHEMA)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool, RESULTS.open(
         "a", encoding="utf-8"
@@ -224,8 +198,7 @@ def run(args) -> int:
             if done % 250 == 0:
                 print(f"  ...{done}", file=sys.stderr)
     judged = [
-        apply(row, [k for k, _ in reqs], cached, match_flags, judge_v2)
-        for row, reqs in zip(rows, requests)
+        apply_row(row, [k for k, _ in reqs], cached, judge_v2) for row, reqs in zip(rows, requests)
     ]
     return score(judged, match_flags, judge_v2, args)
 
@@ -266,7 +239,7 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
                     unexpected_picks[elem[1]] += 1
                 continue
             if elem[1] in judge_v2.AUTO_DONT_MATCH_POS:
-                # v2 decides these by rule (the user's call), so neither judge is scored on them
+                # The judge decides these by rule (the user's call), so they aren't scored
                 counts[f"particle/copula expected {expected}, unscored"] += 1
                 continue
             if got not in (match_flags.MATCH, match_flags.DONT_MATCH):
@@ -296,7 +269,7 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
     if unexpected_picks:
         top = ", ".join(f"{pos} {n}" for pos, n in unexpected_picks.most_common())
         print(f"  picks without an expectation: {top}")
-    for title, table in (("By v2 group", by_group), ("By part of speech", by_pos)):
+    for title, table in (("By group", by_group), ("By part of speech", by_pos)):
         print(f"\n{title}:")
         for key, c in sorted(table.items(), key=lambda kv: -sum(kv[1].values())):
             print(f"  {key:<14} {_rates(c)}")
@@ -320,10 +293,9 @@ def main() -> int:
     run_parser = sub.add_parser("run", help="ask the judge and score it")
     run_parser.add_argument("--model", default="", help="instead of the configured judge model")
     run_parser.add_argument("-n", type=int, default=0, help="only the first COUNT sentences")
-    run_parser.add_argument("--judge", choices=sorted(JUDGES), default="v1")
     run_parser.add_argument("--workers", type=int, default=8, help="requests at once")
     run_parser.add_argument("--limit", type=int, default=30, help="wrong words to list")
-    run_parser.add_argument("--reasons", type=int, default=0, help="v2 reasons per wrong word")
+    run_parser.add_argument("--reasons", type=int, default=0, help="reasons per wrong word")
     run_parser.add_argument(
         "--score-only", action="store_true", help="send nothing, score the cached responses"
     )

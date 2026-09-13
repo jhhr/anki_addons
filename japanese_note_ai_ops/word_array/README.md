@@ -138,32 +138,25 @@ numeral, so 1日 and １日 both find 一日.
 
 Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
 built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
-else is the word matching judge's call - `judge_prompt()` numbers the words in the states it is
-given, lists the rest for context, shows each word as the sentence with that occurrence in `<b>`
-(`iter_highlighted()`, built from the array's own raw texts, so the note's sentence isn't needed)
-and states the rules the old extract_words prompt used (a
-compound meaning no more than its parts, a word plus the particle it takes, the pieces of a
-yojijukugo); `apply_judge_response()` makes the picks `dontmatch` and every other numbered word
-`match`, keeping a link it has. The modes are `JUDGE_NEW` (state 1, the default),
-`REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away, and
-`apply_judge_response` returns the note ids it unlinked.
+else is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
+`REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away.
 
-The op is `async_api_ops/word_matching_judge.py`, one browser menu entry per mode ("Judge words
-matchability", "Re-judge matched words", "Re-judge matched/judged words"), model
-`word_matching_judge_model`. A note with nothing in the mode's states makes no request, a field
-still holding an old word list is skipped, and unlinked note ids are logged.
-
-Judge v2 (`judge_v2.py`, op `async_api_ops/word_matching_judgev2.py`, the same modes as "(v2)"
-menu entries) asks about each word alone: its prompt has the rules for its part of speech group
-(`POS_RULES`), the sentence with it in `<b>`, and the words it is part of or made of, and returns
-`{"reason", "decision"}`. Particles and the copula are judged `dontmatch` without a request. A
-note's requests run in parallel through `bulk_nested_notes_op`; the array is saved when all are
-done, a word whose request failed left as it was. Kept beside v1 until the eval compares them.
+The judge (`judge_v2.py`, op `async_api_ops/word_matching_judgev2.py`, one browser menu entry per
+mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
+`word_matching_judge_model`) asks about each word alone: its prompt has the rules for its part of
+speech group (`POS_RULES`), the sentence with it in `<b>` (`match_flags.iter_highlighted()`, built
+from the array's own raw texts, so the note's sentence isn't needed), and the words it is part of
+or made of, and returns `{"reason", "decision"}`. Particles and the copula are judged `dontmatch`
+without a request. A note's requests run in parallel through `bulk_nested_notes_op`; the array is
+saved when all are done, a word whose request failed left as it was. A field still holding an old
+word list is skipped, and unlinked note ids are logged. It replaced a v1 judge that asked about a
+whole sentence's words in one prompt.
 
 `research/judge_eval.py` scores the judge against the hand-checked export, whose old lists count
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
-the copula no entry fits are left unscored. First run (gemini-3.5-flash-lite, 384 sentences, 6006
-scored words): 81.5% as expected, picks 50.9% precise with 44.9% recall - label noise included.
+the copula no entry fits are left unscored, and the judge is not scored on particles and the
+copula at all. gemini-3.5-flash-lite, 384 sentences: 83.3%, picks 78.8% precise with 49.2% recall
+(v1 had 74.1%, 50.5%, 45.0%).
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.

@@ -38,7 +38,6 @@ STARTUP_MODULES = [
     "make_kanji_story",
     "translate_field",
     "migrate_compound_verbs",
-    "word_matching_judge",
     "word_matching_judgev2",
     "new_note_all_ops",
 ]

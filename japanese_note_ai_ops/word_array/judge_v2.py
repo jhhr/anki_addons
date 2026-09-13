@@ -1,8 +1,8 @@
 """Word matching judge v2: every word judged in a request of its own, under its part of speech's rules.
 
-v1 (`match_flags.judge_prompt`) asks about all the words of a sentence at once, under one set of
-rules for every kind of word. Here each word gets its own prompt, so the rules can go into detail
-for just its part of speech (`POS_RULES`), and the op sends a note's requests in parallel.
+v1, since removed, asked about all the words of a sentence at once, under one set of rules for
+every kind of word. Here each word gets its own prompt, so the rules can go into detail for just
+its part of speech (`POS_RULES`), and the op sends a note's requests in parallel.
 Particles and the copula never get a note: they are judged `dontmatch` without asking.
 
 The prompts are a first draft, to be tuned against the judge eval (task 6d-2).

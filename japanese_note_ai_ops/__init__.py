@@ -58,9 +58,6 @@ from .async_api_ops.match_words_to_notes import (  # noqa: E402
     match_single_word_to_notes_from_selected,
 )
 
-from .async_api_ops.word_matching_judge import (  # noqa: E402
-    word_matching_judge_from_selected_notes,
-)
 from .async_api_ops.word_matching_judgev2 import (  # noqa: E402
     word_matching_judge_v2_from_selected_notes,
 )
@@ -123,9 +120,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     judge_words_action = QAction("Judge words matchability", mw)
     rejudge_matched_words_action = QAction("Re-judge matched words", mw)
     rejudge_all_words_action = QAction("Re-judge matched/judged words", mw)
-    judge_words_v2_action = QAction("Judge words matchability (v2)", mw)
-    rejudge_matched_words_v2_action = QAction("Re-judge matched words (v2)", mw)
-    rejudge_all_words_v2_action = QAction("Re-judge matched/judged words (v2)", mw)
     match_words_action = QAction("Match extracted words to notes", mw)
     rematch_single_word_action = QAction("Rematch all single word to notes", mw)
     rematch_processed_single_word_action = QAction("Rematch processed single words to notes", mw)
@@ -177,36 +171,18 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     )
     qconnect(
         judge_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
+        lambda: word_matching_judge_v2_from_selected_notes(
             selected_nids, parent=browser, states=JUDGE_NEW
         ),
     )
     qconnect(
         rejudge_matched_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
+        lambda: word_matching_judge_v2_from_selected_notes(
             selected_nids, parent=browser, states=REJUDGE_MATCHED
         ),
     )
     qconnect(
         rejudge_all_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
-            selected_nids, parent=browser, states=REJUDGE_ALL
-        ),
-    )
-    qconnect(
-        judge_words_v2_action.triggered,
-        lambda: word_matching_judge_v2_from_selected_notes(
-            selected_nids, parent=browser, states=JUDGE_NEW
-        ),
-    )
-    qconnect(
-        rejudge_matched_words_v2_action.triggered,
-        lambda: word_matching_judge_v2_from_selected_notes(
-            selected_nids, parent=browser, states=REJUDGE_MATCHED
-        ),
-    )
-    qconnect(
-        rejudge_all_words_v2_action.triggered,
         lambda: word_matching_judge_v2_from_selected_notes(
             selected_nids, parent=browser, states=REJUDGE_ALL
         ),
@@ -291,9 +267,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(judge_words_action)
     ai_menu.addAction(rejudge_matched_words_action)
     ai_menu.addAction(rejudge_all_words_action)
-    ai_menu.addAction(judge_words_v2_action)
-    ai_menu.addAction(rejudge_matched_words_v2_action)
-    ai_menu.addAction(rejudge_all_words_v2_action)
     ai_menu.addAction(match_words_action)
     ai_menu.addAction(rematch_single_word_action)
     ai_menu.addAction(rematch_processed_single_word_action)

@@ -1,8 +1,16 @@
 """Word matching judge v2: the words of a note's word array judged one request each.
 
-Same modes, states and outcome as the v1 op (`word_matching_judge`), but every word is asked
-about alone, under the rules for its part of speech (`word_array.judge_v2`), so a note fans out
-into as many requests as it has words and runs through `bulk_nested_notes_op`. Particles and the
+The judge decides which words of a word array get a note, in `match_data` (see
+`word_array.match_flags`). Which words are asked about is the mode, a set of `MatchState`s:
+
+- `JUDGE_NEW` - only unjudged words, `[]`. The default; nothing already decided is touched.
+- `REJUDGE_MATCHED` - words with a note id, `[id]` and `[id, quality]`. A dontmatch unlinks it.
+- `REJUDGE_ALL` - every judged word, states 2-5.
+
+Every word is asked about alone, under the rules for its part of speech (`word_array.judge_v2`),
+so a note fans out into as many requests as it has words and runs through `bulk_nested_notes_op`.
+A note whose field still holds an old extract_words word list is skipped, and note ids a re-judge
+unlinked are logged, so a link lost to a bad call can be put back. Particles and the
 copula are judged `dontmatch` while planning, without a request. Once a note's requests are done
 the array is written back, keeping every word that got a decision; a word whose request failed
 stays as it was for the next run.
@@ -40,15 +48,18 @@ from .base_ops import (
     selected_notes_op,
 )
 from .concurrency import ConcurrencyGate
-from .word_matching_judge import judge_model
 
 logger = logging.getLogger(__name__)
 
 MODE_NAMES = {
-    JUDGE_NEW: "Judging words matchability (v2)",
-    REJUDGE_MATCHED: "Re-judging matched words (v2)",
-    REJUDGE_ALL: "Re-judging matched/judged words (v2)",
+    JUDGE_NEW: "Judging words matchability",
+    REJUDGE_MATCHED: "Re-judging matched words",
+    REJUDGE_ALL: "Re-judging matched/judged words",
 }
+
+
+def judge_model(config: dict) -> str:
+    return config.get("word_matching_judge_model") or config.get("extract_words_model", "")
 
 
 def plan_word_matching_judge_v2(
@@ -205,5 +216,5 @@ def word_matching_judge_v2_from_selected_notes(
     nids: Sequence[NoteId], parent: Browser, states: frozenset[MatchState] = JUDGE_NEW
 ):
     progress_updater = AsyncTaskProgressUpdater(title=f"Async AI op: {MODE_NAMES[states]}")
-    done_text = "Judged words matchability (v2)"
+    done_text = "Judged words matchability"
     return selected_notes_op(done_text, make_bulk_op(states), nids, parent, progress_updater)

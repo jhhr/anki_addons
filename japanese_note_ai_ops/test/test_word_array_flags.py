@@ -3,6 +3,7 @@
 Neither needs SudachiPy, JMdict or a network, so these run wherever the suite does.
 """
 
+import json
 import unittest
 
 from addon_modules import load_ops_module
@@ -135,61 +136,40 @@ class FlagHelperTests(unittest.TestCase):
         self.assertEqual(match_flags.matched_note_id(word(match_data=[123])), 123)
 
 
-class JudgePromptTests(unittest.TestCase):
-    def setUp(self):
-        self.arr = [
+class HighlightTests(unittest.TestCase):
+    def test_every_word_is_marked_in_the_sentence_sub_words_too(self):
+        arr = [
             ["<k>"],
             word(" 一[ひと]つ", "noun", "一つ", "ひとつ", subs=[word("一"), word("つ")]),
             ["</k>"],
             word("は", "particle", "は", "は"),
-            word("28", "number", "二十八", "にじゅうはち", match_data=["dontmatch"]),
-            word("本", "noun", "本", "ほん", match_data=[123, 4]),
+            word("28", "number", "二十八", "にじゅうはち"),
         ]
-        self.prompt, self.elements = match_flags.judge_prompt(self.arr)
-
-    def test_only_unjudged_words_are_numbered_and_sub_words_are_indented(self):
-        self.assertEqual([e[2] for e in self.elements], ["一つ", "X", "X", "は"])
-        self.assertIn("0. <b>一つ</b>は28本\n   一つ [ひとつ], noun\n", self.prompt)
-        self.assertIn("    1. <b>一</b>つは28本\n       X [x], noun\n", self.prompt)
-        self.assertIn("    2. 一<b>つ</b>は28本\n", self.prompt)
-
-    def test_decided_words_are_shown_for_context(self):
-        self.assertIn(
-            "- 一つは<b>28</b>本\n   二十八 [にじゅうはち], number (no note)", self.prompt
+        expected = [
+            (0, "<b>一つ</b>は28"),
+            (1, "<b>一</b>つは28"),
+            (1, "一<b>つ</b>は28"),
+            (0, "一つ<b>は</b>28"),
+            (0, "一つは<b>28</b>"),
+        ]
+        self.assertEqual(
+            [(depth, sentence) for depth, _, sentence in match_flags.iter_highlighted(arr)],
+            expected,
         )
-        self.assertIn("- 一つは28<b>本</b>\n   本 [ほん], noun (has a note)", self.prompt)
 
     def test_each_occurrence_of_a_repeated_word_is_marked_where_it_is(self):
         arr = [word("本", form="本"), word("と"), word(" 本[ほん]", form="本")]
-        prompt, _ = match_flags.judge_prompt(arr)
-        self.assertIn("0. <b>本</b>と本\n", prompt)
-        self.assertIn("2. 本と<b>本</b>\n", prompt)
+        sentences = [sentence for _, _, sentence in match_flags.iter_highlighted(arr)]
+        self.assertEqual(sentences, ["<b>本</b>と本", "本<b>と</b>本", "本と<b>本</b>"])
 
-    def test_a_rejudging_mode_numbers_the_states_it_is_given(self):
-        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_MATCHED)
-        self.assertEqual([e[2] for e in elements], ["本"])
-        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_ALL)
-        self.assertEqual([e[2] for e in elements], ["二十八", "本"])
 
-    def test_picked_words_are_dontmatch_and_the_rest_match(self):
-        self.assertEqual(match_flags.apply_judge_response(self.elements, {"dontmatch": [0]}), [])
-        self.assertEqual([e[4] for e in self.elements], [["dontmatch"]] + [["match"]] * 3)
-
-    def test_rejudging_reports_the_links_it_takes_away(self):
-        _, elements = match_flags.judge_prompt(self.arr, match_flags.REJUDGE_ALL)
-        self.assertEqual(match_flags.apply_judge_response(elements, {"dontmatch": [1]}), [123])
-        self.assertEqual([e[4] for e in elements], [["match"], ["dontmatch"]])
-
-    def test_numbers_that_name_no_word_are_ignored(self):
-        response = {"dontmatch": [99, -1, "0", True]}
-        self.assertEqual(match_flags.apply_judge_response(self.elements, response), [])
-        self.assertFalse(any(match_flags.is_flagged(e) for e in self.elements))
-
-    def test_a_response_without_the_key_is_refused_and_changes_nothing(self):
-        for response in [{}, {"dontmatch": "0"}, [], None]:
-            with self.assertRaises(ValueError):
-                match_flags.apply_judge_response(self.elements, response)
-        self.assertEqual([e[4] for e in self.elements], [[]] * 4)
+class DecodeWordArrayTests(unittest.TestCase):
+    def test_only_an_array_is_decoded(self):
+        arr = [word("A")]
+        self.assertEqual(match_flags.decode_word_array(json.dumps(arr)), arr)
+        for value in ["", '{"nouns": []}', "[not json"]:
+            with self.subTest(value=value):
+                self.assertIsNone(match_flags.decode_word_array(value))
 
 
 if __name__ == "__main__":

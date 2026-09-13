@@ -68,5 +68,15 @@ class ApplyTests(unittest.TestCase):
                 self.assertEqual(elem[4], [])
 
 
+class ModelConfigTests(unittest.TestCase):
+    def test_the_judge_model_falls_back_to_extract_words(self):
+        op = load_ops_module("word_matching_judgev2")
+        self.assertEqual(op.judge_model({"word_matching_judge_model": "a"}), "a")
+        self.assertEqual(op.judge_model({"extract_words_model": "b"}), "b")
+        self.assertEqual(
+            op.judge_model({"word_matching_judge_model": "", "extract_words_model": "b"}), "b"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

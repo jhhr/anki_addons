@@ -13,9 +13,9 @@ to take, the pieces of a yojijukugo.
 5. `[note_id, match_quality]` - fully matched.
 
 Numbers other than the base numerals start out judged `dontmatch` (numbers.py). Everything else
-is the judge's: judge_prompt() numbers the elements in the states it is given and states the
-rules for a model, and apply_judge_response() applies its answer. By default the judge sees only
-unjudged words; the re-judging modes let it take a link away, which apply_judge_response reports.
+is the judge's (`judge_v2`), which asks about the words in the states it is given, each shown in
+its sentence by iter_highlighted(). By default the judge sees only unjudged words; the re-judging
+modes let it take a link away.
 """
 
 import json
@@ -134,17 +134,7 @@ def default_match_data(part_of_speech: str, dict_form: str, sub_words: list) -> 
     return []
 
 
-# --- the word matching judge ---------------------------------------------------------------
-
-JUDGE_RETURN_FIELD = DONT_MATCH
-
-CONTEXT_NOTES = {
-    MatchState.UNJUDGED: "",
-    MatchState.DONT_MATCH: " (no note)",
-    MatchState.MATCH: " (gets a note)",
-    MatchState.LINKED: " (has a note)",
-    MatchState.RATED: " (has a note)",
-}
+# --- words marked in their sentence ---------------------------------------------------------
 
 
 def plain_text(raw_text: str) -> str:
@@ -164,61 +154,3 @@ def iter_highlighted(
             right = "".join(texts[index + 1 :]) + after
             yield depth, elem, f"{left}<b>{texts[index]}</b>{right}"
             yield from iter_highlighted(elem[5], left, right, depth + 1)
-
-
-def judge_prompt(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> tuple[str, list[list]]:
-    """The judge's prompt, and the word elements it numbers: those in `states`. The other words
-    are listed unnumbered for context. Each entry repeats the sentence with its word in `<b>`, so
-    a word that occurs twice is never mistaken for the other occurrence. With no element to judge
-    the prompt is still built; the caller should skip the request when the element list is
-    empty."""
-    wanted = set(states)
-    elements = []
-    lines = []
-    for depth, elem, sentence in iter_highlighted(arr):
-        state = match_state(elem)
-        if state in wanted:
-            label, note = f"{len(elements)}.", ""
-            elements.append(elem)
-        else:
-            label, note = "-", CONTEXT_NOTES[state]
-        indent = "    " * depth
-        lines.append(f"{indent}{label} {sentence}")
-        lines.append(f"{indent}   {elem[2]} [{elem[3]}], {elem[1]}{note}")
-    entries = "\n".join(lines)
-    prompt = f"""Below are the words a Japanese sentence is made of. Each entry repeats the sentence with its word marked in <b> tags, so you know exactly which part of the sentence is meant even when the same word occurs more than once; the next line gives the word's dictionary form, [reading] and part of speech. An indented entry is a part of the entry above it: a component of a compound word, or a word of a multi-word expression.
-
-The list is made by fixed rules, so it contains every unit that could be a word, including many that are not worth studying. Your task is to decide which of the numbered entries should NOT get a vocabulary note, a flashcard for learning what the word means in this sentence. Entries marked with "-" are already decided and are shown only for context.
-
-Pick an entry when:
-- It is a compound or expression that means no more than its parts put together: 遂行能力 is simply 遂行 + 能力, 連れて行く simply 連れる + 行く. Its parts keep their notes. Don't pick one whose meaning is more than its parts, like 登り切る, 見た目, 鳥肌が立つ or 間も無く.
-- It is a word plus the particle or copula it happens to take here: 此れは, 上の, 無しに. Don't pick a fixed expression, or a form far more common than the bare word: 正に, 共に, 先ずは, 同時に, ように.
-- It is a component of a four-kanji idiom (yojijukugo) or of a proper noun. The idiom or the name itself keeps its note.
-- It is a component that is not a word in this sentence, like 合 in 場合.
-
-Don't pick particles, the copula, auxiliary words, prefixes or suffixes (の, だ, 御, さん, 達): they get notes too. Don't pick ordinary single words for being common or easy. Every numbered entry you don't pick gets a note.
-
-Entries:
-{entries}
-
-Return a JSON object with the key "{JUDGE_RETURN_FIELD}": an array of the numbers of the entries you pick, [] if none."""
-    return prompt, elements
-
-
-def apply_judge_response(elements: list[list], response: Any) -> list[int]:
-    """Judge every element: the picked ones `dontmatch`, the rest `match` (keeping a link they
-    have). Returns the note ids the picks unlinked. Numbers that don't name an element are
-    ignored rather than trusted; a response without the array changes nothing."""
-    picked = response.get(JUDGE_RETURN_FIELD) if isinstance(response, dict) else None
-    if not isinstance(picked, list):
-        raise ValueError(f"Expected a {JUDGE_RETURN_FIELD!r} array in the response: {response!r}")
-    chosen = {i for i in picked if _is_int(i) and 0 <= i < len(elements)}
-    unlinked = []
-    for index, elem in enumerate(elements):
-        if index in chosen:
-            note_id = set_dont_match(elem)
-            if note_id is not None:
-                unlinked.append(note_id)
-        else:
-            set_match(elem)
-    return unlinked
