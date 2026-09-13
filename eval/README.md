@@ -16,9 +16,13 @@ Scoring is a diff against the branch state *before* the run. Capture it now — 
 pushed, the original tip is harder to name.
 
 ```
-A_BASE=bdc9fe36a3626b6b9639b9b1da2ba42379eb4d76
+A_BASE=a2bd8a73a404cbb7b2f63348e63bfef88af35112
 B_BASE=2bf37d72454cd4fccbb8de9d969a789a09247969
 ```
+
+Arm A's tip is post-`git merge d9e1353`, which equalised the two bases. Verified: the arms
+now differ by exactly the four files under `.claude/skills/cloud-task-chain/`, and both
+carry the findings doc at blob `b763141`.
 
 ## Score a run
 
