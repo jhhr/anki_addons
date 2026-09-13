@@ -254,3 +254,29 @@ class TestDuplicateQueryResults:
         )
         copy_for_single_trigger_note(definition, note, logger=logger)
         assert note["Note"] == "dup"
+
+
+class TestTargetNotesCount:
+    def test_a_zero_source_run_writes_nothing_rather_than_a_count(self, note, logger):
+        # The value is read once per source note, so with none there is nothing to read it
+        # with and the result is the empty join -- which is what format 1 wrote here too,
+        # for the same reason.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="Word:nothing-matches-this",
+            field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")],
+            run_also_if_no_sources_found=True,
+        )
+        assert copy_for_single_trigger_note(definition, note, logger=logger) is True
+        assert note["Note"] == ""
+
+    def test_it_counts_the_notes_the_query_found(self, col, note, logger):
+        real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
+        real_anki.add_note(col, VOCAB, {"Word": "b", "Meaning": "B"})
+        definition = d.destination_to_sources(
+            copy_from_cards_query='"Word:a" OR "Word:b"',
+            field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")],
+            select_card_count="0",
+            select_card_separator="+",
+        )
+        copy_for_single_trigger_note(definition, note, logger=logger)
+        assert note["Note"] == "2+2"
