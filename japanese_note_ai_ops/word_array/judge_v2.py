@@ -57,14 +57,18 @@ OTHER_GROUP = "other"
 
 INTRO = """You decide whether one word of a Japanese sentence gets a vocabulary note: a flashcard for learning what this word means in this sentence.
 
-The sentence was split into words by fixed rules that err towards too many words, so many of the words are not worth a note; your job is to catch those. A compound or expression and its components are all listed as words and judged separately: "Part of" names the larger word this one is a component of, "Made of" the components of this word. Judge only this word, the one marked with <b> tags in the sentence."""
+The sentence was split into words by fixed rules that err towards too many words, so many of the words are not worth a note; your job is to catch those. A compound or expression and its components are all listed as words and judged separately: "Part of" names the larger word this one is a component of, "Made of" the components of this word. Judge only this word, the one marked with <b> tags in the sentence.
+
+The basic test: imagine the flashcard for this word, in the meaning it has here, showing this sentence as its example. Does the sentence make sense as an example of that word? A card for 手 (hand) showing a sentence with 手紙 (letter) is no example of "hand", so 手 in 手紙 is dontmatch. A card for 母 (mother) or 親 (parent) showing a sentence with 母親 is a fine example of both, so they match."""
 
 POS_RULES = {
     "noun": """Rules for nouns, pronouns, proper nouns and numbers:
 - match an ordinary noun or pronoun, however common or easy: 人, 事, 時間, 私, 此れ, 誰.
 - match a compound noun whose meaning is more than its components, or that is an established word of its own: 見た目, 場合, 大学生.
 - dontmatch a compound noun that means no more than its components put together: 遂行能力 is simply 遂行 + 能力, 日本社会 is 日本 + 社会. Its components keep their notes.
-- match a word made of a word plus a suffix, however transparent: 芸術家, 科学者, 王様, 父さん, 詩人.
+- dontmatch a component of a compound whose meaning can't be built from its components' meanings: 手 and 紙 in 手紙, and the components of 名前, 花火, 電話, 学校, 物語, 電車, 会社, 世界, 時間, 大学, 文化. The compound keeps the note. Most two-kanji Sino-Japanese words are like this.
+- match a component whose own meaning still shows in the compound: 母 and 親 in 母親, 足 and 音 in 足音, 山 and 道 in 山道.
+- match a word made of a word plus a suffix, however transparent, and the word inside it: 芸術家 and 芸術, 科学者, 王様, 父さん, 詩人, 週 in 先週, 戦 in 戦後. But dontmatch a piece that is no word by itself, like 硬 in 硬化.
 - dontmatch a word that is only 御 plus a word: 御寺, 御姉さん, 御話. The word and 御 keep their notes. But 御前 (you) is a word of its own: match it.
 - dontmatch a pronoun that is only a pronoun plus a plural suffix (彼等, 私達, 奴等, 此奴等): the pronoun keeps the note.
 - dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it.
@@ -79,7 +83,7 @@ POS_RULES = {
 - match a verb that is a component of a compound verb or of an expression: 合う in 話し合う, 言う in と言う or 然う言う, 有る in で有る, 関する in に関して, 成る in 事に成る.
 - match a compound verb whose meaning is more than its components: 登り切る, 見付ける, 取り消す.
 - dontmatch a compound verb that means no more than its components put together: 連れて行く is simply 連れる + 行く. Its components keep their notes.
-- dontmatch 為る in として: it is only part of the particle.""",
+- dontmatch 為る in として and 就く in に就いて (について): they are only part of the particle.""",
     "adjective": """Rules for adjectives: い-adjectives, な-adjectives and adjectivals (given in their dictionary form, whatever form the sentence has):
 - match an ordinary adjective, however common or easy: 多い (also as 多く), 大きい (also as 大きな), 静か.
 - match the adjectivals 此の, 其の, 彼の, 何の.
@@ -99,7 +103,8 @@ POS_RULES = {
     "affix": """Rules for prefixes, suffixes and counters:
 - match a prefix, suffix or counter that adds a meaning of its own: 御 (お, ご), さん, 達, 等, 性, 本, 回, 年.
 - dontmatch the counter つ (三つ) and a prefix like 第 or 大 that only marks an order or size.
-- dontmatch a piece that is no prefix, suffix or counter in this sentence, only part of the word it is in, like 合 in 場合 or 御 in 御前 (you).""",
+- dontmatch a piece that is no prefix, suffix or counter in this sentence, only part of the word it is in, like 合 in 場合 or 御 in 御前 (you).
+- apply the basic test: 化 in 硬化 matches (a card for the suffix 化 fits it), 化 in 文化 does not (文化 is a word of its own, not 文 + 化).""",
     "auxiliary": """Rules for auxiliary verbs:
 - match an auxiliary that adds a meaning to learn: たい (want to), らしい, そうだ, まい, べき, させる, られる.
 - dontmatch an ending that only marks politeness or tense: ます, た.""",
