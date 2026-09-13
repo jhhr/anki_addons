@@ -69,19 +69,31 @@ closed.
       passes it as `save_per_task_estimate(..., blend_from=)`, so the run's repeated writes are
       idempotent. 4 new tests in `EstimateBlendedOncePerRunTests`, both reproductions red
       before (1.64 MB exactly as the review says).*
-- [ ] **Findings 6 and 7 — `match_single_word_to_notes_from_selected`'s `bulk_op`.** Both in
+- [x] **Findings 6 and 7 — `match_single_word_to_notes_from_selected`'s `bulk_op`.** Both in
       the same function in `async_api_ops/match_words_to_notes.py`, so one task. (6) line 2992
       `word_tuples.remove(wt)` mutates the list being iterated — apply the same one-pass-into-a-
       new-list fix this PR already used in `match_words_to_notes_for_note`. (7) line 2974 reads
       `word_list_dict`, which line 2960 binds only inside `if word_list_field in cur_note:` —
       hoist `word_list_dict = {}` above the `if`. Done when a test covers the three-identical-
       duplicates list and the missing-`word_list_field` note.
+      *Done in `0f2a376`: the dedup loop became module-level `drop_duplicate_word_tuples()` —
+      one pass into a new list, reading entries through `normalize_word_tuple` — and
+      `word_list_dict` is bound to `{}` above the `if`. New `test_match_single_word_bulk_op.py`
+      (14 tests, 6 red before).*
+- [ ] **[USER] Decide what `bulk_op`'s word list deduplication is for.** Not a review finding —
+      found while fixing 6+7. `match_single_word_to_notes_from_selected`'s `bulk_op` decodes the
+      note's word list field, deduplicates the lists, and then never encodes them back or reads
+      them again; the decode still earns its keep (it tags an undecodable field and registers
+      the note in `notes_to_update_dict`) but the deduplication reaches nothing but the log.
+      Two ways out and they are not equivalent: write the deduplicated lists back to the note
+      and register it for update — a behaviour change to a shipped add-on, and the thing the
+      loop reads as intending — or delete the loop as dead code. Ask the user which, then do it.
+      `drop_duplicate_word_tuples` and its tests stay useful either way.
 
 ## State
 
-Findings 1-5 fixed; findings 6 and 7 remain, as the queue's last task. All seven were
-re-verified against the working tree at `2bf37d7` before the chain was set up; the spec's line
-numbers are still accurate for `match_words_to_notes.py`, which is untouched.
+**All seven review findings are fixed.** The one entry left in the queue is a `[USER]`
+question raised by task-5, not a finding.
 
 The review's "Checked and clean" and "Noted, not filed as a finding" sections are **not** work.
 Do not open tasks from them. The `note_cache.py:89-90` docstring inaccuracy was judged
@@ -111,6 +123,13 @@ unreachable and deliberately left alone.
   `MemoryEstimator` keeps `self.stored` to pass into it. Every write a run makes now lands on
   the same single blend. New `EstimateBlendedOncePerRunTests`; suite 452 passed, same 6
   `mdict_query`.
+- `task-5` `0f2a376` — findings 6+7. The `bulk_op` dedup loop is now module-level
+  `drop_duplicate_word_tuples(word_list_dict, word_list_keys, log_prefix)`: one
+  `encountered_words` per note across its lists, one pass into `kept`, entries read through
+  `normalize_word_tuple` but stored back unchanged (this dict is decoded in `bulk_op` and read
+  no further, so rewriting shapes would be pointless). `word_list_dict: dict[str, Any] = {}`
+  now precedes `if word_list_field in cur_note:`. New `test_match_single_word_bulk_op.py`
+  captures `bulk_op` off a stubbed `selected_notes_op`; suite 467 passed, same 6 `mdict_query`.
 
 ## Decisions made
 
@@ -120,6 +139,11 @@ unreachable and deliberately left alone.
 - **Group by review seam, not by file count.** Findings 3+5 (vendoring) and 6+7 (one function)
   are single tasks because a reviewer would want them in one commit each.
 - **Every fix ships with a regression test** reproducing the review's stated scenario.
+- **`bulk_op`'s deduplication has no effect on the saved note** (task-5). The dict it edits is
+  decoded inside the loop and never encoded back, so the review's "the note keeps a duplicate
+  word" overstates finding 6 — what the bug actually cost was the log line and the
+  `encountered_words` bookkeeping. Fixed as filed rather than deleted, because whether that loop
+  should write back is the user's call; queued as the `[USER]` task above.
 - **task-3: `vendor_health` changed along with the ordering.** The review only asks
   `add_vendor_paths` to act on the verdict, but leaving `vendor_health` judging a tree that no
   longer leads `sys.path` would offer a rebuild forever over a tree that is not in use, so the
