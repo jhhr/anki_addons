@@ -500,9 +500,11 @@ class _Analyzer:
             ).run()
             self.analyzed_callees[callee_guid] = callee_result
         if callee_result.problems:
+            # Repeat the callee's first complaint: "that definition is not valid" on its own
+            # sends the user looking, and a cycle in particular is only named over there.
             self.problem(
                 f"calls definition '{callee.get('definition_name', callee_guid)}',"
-                " which is not valid",
+                f" which is not valid: {callee_result.problems[0].message}",
                 stage,
             )
 

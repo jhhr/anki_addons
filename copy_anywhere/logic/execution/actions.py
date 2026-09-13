@@ -236,6 +236,13 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     source_note = snapshot
     if binding_name(stage.get("legacy_source")):
         source_note = resolve_note(env, stage["legacy_source"], frame, stage, "source")
+    # Inside this stage the target's own binding names the snapshot, so `{{trigger.Word}}`
+    # on the right of a write reads the value the stage started with rather than one an
+    # earlier write in the same stage has already replaced.
+    write_env = dict(env)
+    target_name = binding_name(stage.get("target"))
+    if target_name:
+        write_env[target_name] = snapshot
 
     field_writes = []
     for field_write in stage.get("fields") or []:
@@ -263,7 +270,7 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
             # Read live rather than from the snapshot: an earlier write in this same stage
             # counts as filling the field, which is what format 1 did.
             continue
-        ctx = make_context(frame, env, stage, source_note, snapshot)
+        ctx = make_context(frame, write_env, stage, source_note, snapshot)
         target[field] = evaluate_text(field_write.get("value"), ctx)
         modified = True
 

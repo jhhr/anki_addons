@@ -243,16 +243,18 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
 def code_globals(ctx: ExpressionContext) -> dict:
     """The names a format-2 code expression runs with: every binding, as a facade."""
     globals_dict: dict[str, Any] = dict(code_helpers(ctx.session))
-    for name, value in ctx.environment.items():
-        globals_dict[name] = to_facade(value, ctx.session)
+    # `note` and `cards` mean the expression's own source note, as they always have -- but
+    # only where nothing in scope is called that. Inside a loop the loop's own binding is
+    # what `note` has to mean, or a predicate would silently read the trigger instead of the
+    # note being iterated.
     globals_dict["note"] = NoteFacade(ctx.source_note, ctx.session)
     globals_dict["cards"] = CardListFacade(
         ctx.session.cards_of_note(ctx.source_note), ctx.session
     )
     if ctx.destination_note is not None:
-        globals_dict.setdefault(
-            "destination", NoteFacade(ctx.destination_note, ctx.session)
-        )
+        globals_dict["destination"] = NoteFacade(ctx.destination_note, ctx.session)
+    for name, value in ctx.environment.items():
+        globals_dict[name] = to_facade(value, ctx.session)
     return globals_dict
 
 
