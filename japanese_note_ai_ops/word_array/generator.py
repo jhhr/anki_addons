@@ -250,6 +250,57 @@ def merge_names(tm: TextMap, morphs: list[Morph], lexicon: dict) -> list[Morph]:
     return out
 
 
+# --- 2c. verbs from nouns ------------------------------------------------------------------
+
+# Godan る-verb endings Sudachi leaves as a stray kana after a noun (裏目|っ|た, 裏目|る)
+RA_ROW_ENDINGS = ("ら", "り", "る", "れ", "ろ", "っ")
+
+
+def _godan_ru_verb(form: str, reading: str) -> bool:
+    return any(
+        form in forms and reading in readings and "v5r" in pos
+        for forms, readings, pos in jmdict.lookup(form)
+    )
+
+
+def merge_noun_verbs(morphs: list[Morph]) -> list[Morph]:
+    """A noun and the one kana of a godan る-verb ending after it as that verb, when JMdict has
+    the noun + る read so: 裏目|っ|た -> 裏目っ + た (裏目る), which Sudachi only knows as the
+    noun 裏目 and a stray っ. The verb's inflection then attaches as any verb's does."""
+    out: list[Morph] = []
+    i = 0
+    while i < len(morphs):
+        m = morphs[i]
+        nxt = morphs[i + 1] if i + 1 < len(morphs) else None
+        if (
+            nxt is None
+            or m.pos[0] != "名詞"
+            or m.name
+            or nxt.start != m.end
+            or nxt.surface not in RA_ROW_ENDINGS
+            or nxt.pos[0] in ("助詞", "接尾辞")
+            or not _godan_ru_verb(m.surface + "る", m.reading + "る")
+        ):
+            out.append(m)
+            i += 1
+            continue
+        form = "連用形-促音便" if nxt.surface == "っ" else "*"
+        pos = ("動詞", "一般", "*", "*", "五段-ラ行", form)
+        out.append(
+            Morph(
+                m.start,
+                nxt.end,
+                m.surface + nxt.surface,
+                pos,
+                m.surface + "る",
+                m.norm + "る",
+                m.reading + nxt.surface,
+            )
+        )
+        i += 2
+    return out
+
+
 def name_corpus_row(sentence: str) -> tuple:
     """(natural text, morphs, reader) of a sentence, as `names.build_lexicon` takes them."""
     tm = text_map.build(sentence)
@@ -1343,7 +1394,7 @@ def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     morphs = merge_dotted_names(tokenize(tm.natural))
     if names:
         morphs = merge_names(tm, morphs, names)
-    words = merge_cut_groups(tm, to_words(morphs))
+    words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun

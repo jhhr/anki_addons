@@ -284,6 +284,15 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
         self.assertEqual([s[2] for s in find_word(arr, "私たち")[5]], ["私", "達"])
 
+    def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
+        # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
+        arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")
+        self.assertEqual(
+            [(e[0], e[1], e[2]) for e in arr if len(e) > 1][2:],
+            [(" 裏目[うらめ]った", "verb", "裏目る"), ("なあ", "particle", "なあ")],
+        )
+        self.assertEqual(find_word(arr, "っ"), [])
+
     def test_an_adjective_stem_and_ge_are_one_na_adjective(self):
         # JMdict has 寂しげ but not 儚げ; both come out alike, and 忌々しげに isn't 忌々し + げに
         for sentence, form in [
