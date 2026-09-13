@@ -284,6 +284,21 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
         self.assertEqual([s[2] for s in find_word(arr, "私たち")[5]], ["私", "達"])
 
+    def test_a_conjunction_opening_a_clause_is_one_word(self):
+        # function words only (つー + か, で + も), which elsewhere are no word of their own
+        for sentence, raw in [
+            ("つーかもう１５ 時[じ]じゃん、<b> 撤収[てっしゅう]</b>作業[さぎょう]", "つーか"),
+            ("「 分[わ]かった。でも 無理[むり]だ」", "でも"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = next(e for e in self.generator.generate(sentence) if e[0] == raw)
+                self.assertEqual(word[1:3], ["conjunction", raw])
+        # after a closing bracket, or inside a clause, they stay apart
+        for sentence in ["｢ 前略[ぜんりゃく]｣ですが", "誰[だれ]でも 来[く]る"]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertFalse([e for e in arr if e[0] in ("ですが", "でも")])
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")

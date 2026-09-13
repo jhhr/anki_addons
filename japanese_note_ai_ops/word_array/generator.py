@@ -540,18 +540,34 @@ def spelled_alike(written: str, spelling: str) -> bool:
     return agree(kanji, spelling[pos:])
 
 
-def is_word_match(c: Candidate, words: list[Word]) -> bool:
+# What a sentence or clause opens after: 。！？…, 、, 「（, a space
+CLAUSE_BREAKS = (("補助記号", "句点"), ("補助記号", "読点"), ("補助記号", "括弧開"), ("空白",))
+
+
+def opens_clause(c: Candidate, words: list[Word]) -> bool:
+    """A JMdict conjunction opening a sentence or clause, which is one whatever it is made of:
+    でも, だから, つー+か, て+か. Not after a closing bracket (｢前略｣ですが)."""
+    if "conj" not in c.pos:
+        return False
+    if c.i == 0:
+        return True
+    prev = words[c.i - 1]
+    return prev.kind == "punct" and any(prev.head.pos[: len(b)] == b for b in CLAUSE_BREAKS)
+
+
+def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool:
     """Whether a JMdict match is a word of this text at all - not whether it is worth
-    studying, which the word matching judge decides."""
+    studying, which the word matching judge decides. `openers`: let `opens_clause` in."""
     ws = words[c.i : c.j]
-    if all(w.head.pos[0] in FUNCTION_POS for w in ws):
+    opens = openers and opens_clause(c, words)
+    if not opens and all(w.head.pos[0] in FUNCTION_POS for w in ws):
         return False  # function words only: には, のだ, か+の read as 彼の
     if not KANJI_RE.search(c.form):
         # Found only by its kana: a homophone unless JMdict spells the entry the way the text
         # does. The text has often kanjified what JMdict keeps in kana (有る), so only its kana
         # are compared.
         alike = any(spelled_alike(c.written, s) for s in c.spellings)
-        if ws[0].head.pos[0] == "助詞":
+        if ws[0].head.pos[0] == "助詞" and not opens:
             # Reaching across a particle, even an entry JMdict has only in kana: は+いくつ
             return KANJI_RE.search(c.written) is not None and alike
         if KANJI_RE.search(c.written) and c.spellings and not alike:
@@ -573,6 +589,9 @@ def choose_matches(cands: list[Candidate], words: list[Word]) -> list[Candidate]
             continue
         if any(_crosses(c, d) or (c.i, c.j) == (d.i, d.j) for d in chosen):
             continue
+        if not is_word_match(c, words, openers=False):
+            # A word only as a conjunction: not the noun 手下 of てか
+            c = replace(c, pos=frozenset({"conj"}))
         chosen.append(c)
     return chosen
 
@@ -1194,6 +1213,7 @@ JM_POS_MAP = [
     ("adj-na", "na-adjective"),
     ("pn", "pronoun"),
     ("n", "noun"),
+    ("conj", "conjunction"),
 ]
 
 
