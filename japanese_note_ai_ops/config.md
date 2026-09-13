@@ -160,6 +160,16 @@ You need to define
   10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
       file will simply not specify the deck
 
+## test data exports
+
+Tools > "AI ops: generate test data" runs the three browser-menu exports at once, each on the
+notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
+that export.
+
+- `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
+- `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify fine-tuning data"
+- `extract_words_fine_tuning_data_query`: notes for "Export extract-words fine-tuning data"
+
 ## optipnal specification
 
 ### `extract_words` operatation

@@ -86,6 +86,7 @@ from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
     make_kanjify_sentence_fine_tuning_data,
     make_extract_words_fine_tuning_data,
     make_extract_words_migration_data,
+    make_all_test_data,
 )
 
 
@@ -371,6 +372,15 @@ gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_men
 
 # Register to field unfocus hook
 gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
+
+
+def add_tools_menu_actions():
+    action = QAction("AI ops: generate test data", mw)
+    qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
+    mw.form.menuTools.addAction(action)
+
+
+gui_hooks.main_window_did_init.append(add_tools_menu_actions)
 
 # Offer to rebuild the vendored packages when they do not fit this machine, and put the same
 # rebuild in the Tools menu for anyone who wants rapidfuzz's compiled half - which the shipped

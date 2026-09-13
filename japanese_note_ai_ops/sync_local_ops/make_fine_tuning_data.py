@@ -2,11 +2,11 @@ import json
 import logging
 import os
 import random
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from anki.notes import NoteId
 from aqt import mw
-from aqt.utils import tooltip
+from aqt.utils import showInfo, tooltip
 
 from ..async_api_ops.base_ops import DEFAULT_SYSTEM_INSTRUCTION
 from ..async_api_ops.extract_words import (
@@ -112,19 +112,31 @@ def build_migration_rows(pairs: Sequence[tuple[str, str]]) -> tuple[list[str], i
     return rows, duplicates
 
 
-def make_extract_words_migration_data(
-    nids: Sequence[NoteId],
-    parent: Any = None,
-) -> None:
+def _run_with_config(write: Callable[[dict, Sequence[NoteId]], str], nids: Sequence[NoteId]):
+    config = mw.addonManager.getConfig(__name__)
+    if not config:
+        logger.error("Make test data: missing addon configuration.")
+        return
+    tooltip(write(config, nids), period=10000)
+
+
+def make_extract_words_migration_data(nids: Sequence[NoteId], parent: Any = None) -> None:
+    _run_with_config(_write_extract_words_migration_data, nids)
+
+
+def make_kanjify_sentence_fine_tuning_data(nids: Sequence[NoteId], parent: Any = None) -> None:
+    _run_with_config(_write_kanjify_sentence_fine_tuning_data, nids)
+
+
+def make_extract_words_fine_tuning_data(nids: Sequence[NoteId], parent: Any = None) -> None:
+    _run_with_config(_write_extract_words_fine_tuning_data, nids)
+
+
+def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) -> str:
     """Export the old extract_words word lists for testing the word array migration on the
     whole collection. The sentence is the raw `word_extraction_sentence_field`, `<i>` context
     included - the migration strips that itself. Notes whose list is already an array are
     skipped: there is nothing left to migrate in them."""
-    config = mw.addonManager.getConfig(__name__)
-    if not config:
-        logger.error("Make extract-words migration data: missing addon configuration.")
-        return
-
     pairs: list[tuple[str, str]] = []
     skipped = 0
     already_migrated = 0
@@ -157,23 +169,14 @@ def make_extract_words_migration_data(
 
     rows, duplicates = build_migration_rows(pairs)
     _write_jsonl_entries(output_path, rows)
-    tooltip(
+    return (
         f"Wrote {len(rows)} sentences to {output_path}. Skipped {duplicates} duplicate"
         f" sentences, {already_migrated} already migrated notes and {skipped} notes missing"
-        " a sentence or word list.",
-        period=10000,
+        " a sentence or word list."
     )
 
 
-def make_kanjify_sentence_fine_tuning_data(
-    nids: Sequence[NoteId],
-    parent: Any = None,
-) -> None:
-    config = mw.addonManager.getConfig(__name__)
-    if not config:
-        logger.error("Make kanjify fine-tuning data: missing addon configuration.")
-        return
-
+def _write_kanjify_sentence_fine_tuning_data(config: dict, nids: Sequence[NoteId]) -> str:
     entries: list[str] = []
     skipped = 0
 
@@ -214,7 +217,7 @@ def make_kanjify_sentence_fine_tuning_data(
 
     training_written, validation_written = _write_split_fine_tuning_files(output_path, entries)
     validation_output_path = _get_validation_output_path(output_path)
-    tooltip(
+    return (
         "Wrote "
         f"{training_written} kanjify training examples to {output_path} and "
         f"{validation_written} validation examples to {validation_output_path}. "
@@ -222,15 +225,7 @@ def make_kanjify_sentence_fine_tuning_data(
     )
 
 
-def make_extract_words_fine_tuning_data(
-    nids: Sequence[NoteId],
-    parent: Any = None,
-) -> None:
-    config = mw.addonManager.getConfig(__name__)
-    if not config:
-        logger.error("Make extract-words fine-tuning data: missing addon configuration.")
-        return
-
+def _write_extract_words_fine_tuning_data(config: dict, nids: Sequence[NoteId]) -> str:
     entries: list[str] = []
     skipped = 0
 
@@ -277,9 +272,48 @@ def make_extract_words_fine_tuning_data(
 
     training_written, validation_written = _write_split_fine_tuning_files(output_path, entries)
     validation_output_path = _get_validation_output_path(output_path)
-    tooltip(
+    return (
         "Wrote "
         f"{training_written} extract-words training examples to {output_path} and "
         f"{validation_written} validation examples to {validation_output_path}. "
         f"Skipped {skipped} notes."
     )
+
+
+# Config key holding the search query for each export, in the order they run.
+TEST_DATA_EXPORTS: list[tuple[str, Callable[[dict, Sequence[NoteId]], str]]] = [
+    ("extract_words_migration_data_query", _write_extract_words_migration_data),
+    ("kanji_sentence_fine_tuning_data_query", _write_kanjify_sentence_fine_tuning_data),
+    ("extract_words_fine_tuning_data_query", _write_extract_words_fine_tuning_data),
+]
+
+
+def run_test_data_exports(
+    config: dict,
+    find_notes: Callable[[str], Sequence[NoteId]],
+    exports: Sequence[tuple[str, Callable[[dict, Sequence[NoteId]], str]]] = TEST_DATA_EXPORTS,
+) -> list[str]:
+    """Run each export on the notes its config query finds, one message per export. An empty
+    query skips that export; a failing one is reported without stopping the rest."""
+    messages: list[str] = []
+    for query_key, write in exports:
+        query = (config.get(query_key) or "").strip()
+        if not query:
+            messages.append(f"Skipped: `{query_key}` is not set.")
+            continue
+        try:
+            messages.append(write(config, find_notes(query)))
+        except Exception as e:
+            logger.error(f"Make test data: `{query_key}` failed: {e}", exc_info=True)
+            messages.append(f"`{query_key}` failed: {e}")
+    return messages
+
+
+def make_all_test_data(parent: Any = None) -> None:
+    """Tools menu action: all three exports, each on the notes its config query finds."""
+    config = mw.addonManager.getConfig(__name__)
+    if not config:
+        logger.error("Make test data: missing addon configuration.")
+        return
+    messages = run_test_data_exports(config, mw.col.find_notes)
+    showInfo("\n\n".join(messages), parent=parent or mw, title="AI ops: generate test data")

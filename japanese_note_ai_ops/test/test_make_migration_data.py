@@ -30,5 +30,43 @@ class BuildMigrationRowsTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
 
+class RunTestDataExportsTests(unittest.TestCase):
+    def test_each_export_gets_the_notes_its_query_finds(self):
+        calls = []
+
+        def write(name):
+            return lambda config, nids: calls.append((name, nids)) or f"{name} done"
+
+        exports = [("a_query", write("a")), ("b_query", write("b")), ("c_query", write("c"))]
+        config = {"a_query": "deck:A", "b_query": "  ", "c_query": "tag:c"}
+        messages = make_fine_tuning_data.run_test_data_exports(
+            config, lambda query: [len(query)], exports
+        )
+        self.assertEqual(calls, [("a", [6]), ("c", [5])])
+        self.assertEqual(messages, ["a done", "Skipped: `b_query` is not set.", "c done"])
+
+    def test_a_failing_query_does_not_stop_the_rest(self):
+        def find_notes(query):
+            if query == "bad":
+                raise ValueError("invalid search")
+            return []
+
+        exports = [("a_query", lambda c, n: "a done"), ("b_query", lambda c, n: "b done")]
+        messages = make_fine_tuning_data.run_test_data_exports(
+            {"a_query": "bad", "b_query": "ok"}, find_notes, exports
+        )
+        self.assertEqual(messages, ["`a_query` failed: invalid search", "b done"])
+
+    def test_the_config_keys(self):
+        self.assertEqual(
+            [key for key, _ in make_fine_tuning_data.TEST_DATA_EXPORTS],
+            [
+                "extract_words_migration_data_query",
+                "kanji_sentence_fine_tuning_data_query",
+                "extract_words_fine_tuning_data_query",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
