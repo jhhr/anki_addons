@@ -2,7 +2,8 @@
 
 Two findings from the review of the staged-definitions work were deliberately left out of
 that change. Both have a decision behind them; this is the record of what was chosen and
-why, so the work can be picked up without re-arguing it.
+why, so the work can be picked up without re-arguing it. Sections marked **Done** have since
+been implemented and are kept here for the reasoning, not as work outstanding.
 
 ## Card actions and the Add dialog
 
@@ -56,15 +57,40 @@ the joined result. The replacement needs its own loop and join, with
 `replacement_separator`. No runtime change, nothing new for the executor to know, and the
 migrated definition is finally readable -- which the flag never was.
 
-**Also do, and do first:** have the migrator warn for any chain with `use_all_notes` on a
-definition with more than one potential source. It already collects warnings. This matters
-independently of the above, because a config already migrated on a user's machine will not
-be migrated again, so those definitions need to be reported rather than fixed.
+### Done: the warning
 
-**Worth checking before writing the migrator branch:** how many real definitions set
-`use_all_notes` together with a multi-note query. If it is rare enough, the warning alone --
-and rebuilding the few affected definitions by hand in the new editor -- is a better trade
-than a migrator branch that is hard to test and runs once.
+The migrator now reports it. Only Destination-to-sources is asked, and only when its
+selection could hold more than one note, because that is the whole of what format 1 could do
+here: Within note read a copy of the trigger note and Source-to-destinations read the trigger
+note, so `len(notes) > 1` was already false in both. Variables are left out for the same
+reason -- each was evaluated against a single note, so the flag never did anything there
+either.
+
+This stands on its own. A config already migrated on a user's machine will not be migrated
+again, so a warning is the only thing that can reach those definitions at all.
+
+### Still open: whether the migrator branch is worth writing
+
+**How often this happens is not answerable from this repository.** The shipped `config.json`
+carries no definitions, so the only corpora are users' own configs. Two things make the
+question answerable on a real machine rather than by guessing:
+
+* On a config that has not yet migrated, the warning above names the affected definitions the
+  first time Anki starts.
+* On one that already has, the format-1 originals are still under
+  `pre_stage_migration_copy_definitions`, so the same predicate can be run over them.
+
+**The recommendation is therefore the warning alone, for now.** Writing the branch first
+would mean a code path that may never fire on any real config, cannot be tested against
+reality, and runs exactly once per machine -- the combination that earns the least confidence
+per line. Wait until at least one affected definition is known to exist; then either write the
+branch or rebuild those few by hand in the new editor, whichever is smaller at that point.
+
+**One design point, checked and worth keeping:** the hoist is sound. Neither the pattern nor
+the replacement interpolation ever reads the text flowing through the chain -- both read only
+note fields and variables (`copy_primitives.py`, the `is_regex_process` branch) -- so their
+loops and joins can run as stages *before* the chain, with the process reading the two joined
+results. If the branch does get written, that is why it does not need the chain taken apart.
 
 **Rejected:** giving `ExpressionContext` a notes list (reintroduces the ambient "current
 source notes" format 2 was designed to remove, and needs an answer for nested loops that
