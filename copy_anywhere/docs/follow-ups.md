@@ -5,7 +5,7 @@ that change. Both have a decision behind them; this is the record of what was ch
 why, so the work can be picked up without re-arguing it. Sections marked **Done** have since
 been implemented and are kept here for the reasoning, not as work outstanding.
 
-## Card actions and the Add dialog
+## Card actions and the Add dialog — Done
 
 **The problem.** The analyser sets `edits_cards` for any card action, which makes
 `add_note_compatible` false, and both the unfocus hook and the editor act on that flag.
@@ -36,6 +36,18 @@ surfaces.
 format 1 exactly. It makes `edits_cards` stop meaning what it says, and the commit-time
 backstop would need a special case for "cards of the note being added" -- two rules where
 there is now one, to preserve a no-op.
+
+**As built,** one thing the decision did not anticipate: the two halves of "runs while a
+note is added" end differently and could not share a sentence. `on_add` defers the run to
+the moment the note is saved, so "it runs once the note is saved" is true. An unfocus-only
+trigger has nothing to defer to -- it is skipped in the Add dialog and `on_add` is off, so
+there is no later moment either -- and that case is told to turn on "Run when adding a new
+note" instead. The message is also worded around "notes or cards", not cards alone, because
+`incompatible_stage_paths()` covers editing another note as well.
+
+This also gave `analysis.warnings` its first inhabitant. The amber list in the dialog and the
+per-stage warning row in `stage_list.py` were both built in the first pass and had been dead
+code ever since.
 
 ## Process chains and `use_all_notes`
 
