@@ -29,6 +29,7 @@ import copy
 import hashlib
 import json
 import sys
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -231,11 +232,14 @@ def run(args) -> int:
         key, prompt = item
         return key, judge.get_response(model, prompt, response_schema=judge_v2.RESPONSE_SCHEMA)
 
+    started = time.monotonic()
+    failed = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool, RESULTS.open(
         "a", encoding="utf-8"
     ) as f:
         for done, (key, response) in enumerate(pool.map(ask, todo), 1):
             if response is None:
+                failed += 1
                 continue  # not cached, so a rerun asks again
             row = {"key": key, "model": model, "response": response}
             cached[key] = row
@@ -243,6 +247,13 @@ def run(args) -> int:
             f.flush()
             if done % 250 == 0:
                 print(f"  ...{done}", file=sys.stderr)
+    if todo:
+        minutes = (time.monotonic() - started) / 60
+        print(
+            f"{len(todo)} requests ({failed} failed) in {minutes:.1f} min,"
+            f" {len(todo) / (minutes or 1):.0f} calls/min at {args.workers} workers",
+            file=sys.stderr,
+        )
     judged = [
         apply_row(row, [k for k, _ in reqs], cached, judge_v2, match_flags)
         for row, reqs in zip(rows, requests)

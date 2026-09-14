@@ -241,7 +241,11 @@ as its ground truth: a word an old entry fits is `match`, one none fits `dontmat
 the copula no entry fits are left unscored, and the judge is not scored on particles and the
 copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 78.1% precise with 49.1% recall
 (v1 had 74.1%, 50.5%, 45.0%); with 237 hand-judged sentences added, 621: 82.8%, 72.8%, 47.5%, the
-645 hand-judged words 82.5%. `build` and `hand_judge.py` generate with the export's name lexicon,
+645 hand-judged words 82.5%. Providers on the first 80 sentences (487 words): gemini-3.5-flash-lite
+88.3% (P 81.1% R 58.3%); claude-haiku-4-5 over the API 84.4% (60.2%, 77.7%, 302 calls/min at 8
+workers); `terminal-claude-haiku-4-5`, the same model through the `claude` CLI on the subscription,
+85.8% (63.9%, 75.7%, 80 calls/min through its 16-process cap, 0 failures). Haiku picks far more
+dontmatch than gemini. `build` and `hand_judge.py` generate with the export's name lexicon,
 as the migration op does with the collection's. The labels are unsure for components of compounds, so more
 hand-judged words are to come: `research/hand_judge.py` serves a page that offers words of the
 migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and
