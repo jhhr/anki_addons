@@ -74,6 +74,21 @@ class GatherTargetsTests(unittest.TestCase):
             match_targets.gather_targets([word("本", ["maybe"])])
 
 
+class StatesToMatchTests(unittest.TestCase):
+    def test_a_run_matches_judged_words_and_linked_ones_when_replacing(self):
+        self.assertEqual(match_targets.states_to_match(), {State.MATCH})
+        self.assertEqual(
+            match_targets.states_to_match(replace_existing=True),
+            {State.MATCH, State.LINKED, State.RATED},
+        )
+
+    def test_a_single_word_run_takes_its_modes_states(self):
+        states = match_targets.states_to_match
+        self.assertEqual(states(True, "only_unprocessed"), {State.MATCH})
+        self.assertEqual(states(reprocess="only_processed"), {State.LINKED, State.RATED})
+        self.assertEqual(states(reprocess="both"), {State.MATCH, State.LINKED, State.RATED})
+
+
 class SaveResultsTests(unittest.TestCase):
     def test_note_ids_land_in_nested_elements(self):
         sub = word("様", ["match"])
@@ -154,8 +169,9 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             "word_lists_to_process": {"nouns": True},
         }
 
-    def plan(self, note, arr, progress, updates, edited_nids, config=None):
+    def plan(self, note, arr, progress, updates, edited_nids, config=None, **states):
         return self.mwtn.plan_word_array_matching(
+            **states,
             config=config or self.config,
             note=note,
             arr=arr,
@@ -258,6 +274,46 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(updates, {1: note})
         self.assertEqual(edited_nids, [1])
         self.assertEqual(progress.notes_done, 1)
+
+    def planned_states(self, config, **single_word):
+        arr = [word("本", ["match"])]
+        fields = {"furigana_sentence_field": "本", "word_list_field": json.dumps(arr)}
+        plans = []
+        with mock.patch.object(
+            self.mwtn, "plan_word_array_matching", lambda **kwargs: plans.append(kwargs)
+        ):
+            self.mwtn.match_words_to_notes_for_note(
+                config=config,
+                note=FakeNote(fields),
+                edited_nids=[],
+                notes_to_add_dict={},
+                notes_to_update_dict={},
+                progress_updater=Progress(),
+                cancel_state=None,
+                gate=None,
+                all_generated_meanings_dict={},
+                word_locks_dict={},
+                word_lock=None,
+                word_note_index_cache=None,
+                note_cache=None,
+                sentence_cache=None,
+                **single_word,
+            )
+        return plans[0]["states"]
+
+    def test_replacing_existing_matches_takes_the_linked_words_too(self):
+        self.assertEqual(self.planned_states(self.config), {State.MATCH})
+        replace = {**self.config, "replace_existing_matched_words": True}
+        self.assertEqual(self.planned_states(replace), {State.MATCH, State.LINKED, State.RATED})
+        # a single-word run's mode wins over the config
+        mode = {"limit_words_and_readings": [("本", "よみ")], "reprocess_words": "only_unprocessed"}
+        self.assertEqual(self.planned_states(replace, **mode), {State.MATCH})
+
+    def test_the_planned_states_are_the_ones_gathered(self):
+        arr = [word("本", ["match"]), word("様", [111]), word("棚", [222, 4]), word("を", [])]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        plan = self.plan(note, arr, Progress(), {}, [], states=[State.LINKED, State.RATED])
+        self.assertEqual(plan.task_count, 2)
 
     def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):
         arr = [word("様", [-1234567]), word("本", [1674931277303, 4])]

@@ -43,6 +43,15 @@ NOTE_PART_OF_SPEECH: dict[str, str] = {
 }
 
 
+# The states a single-word run's mode (match_words_to_notes.WithProcessed) matches: an unprocessed
+# word is judged worth a note, a processed one has a note id, with or without match_quality
+REMATCH_STATES: dict[str, frozenset[MatchState]] = {
+    "only_unprocessed": frozenset({MatchState.MATCH}),
+    "only_processed": frozenset({MatchState.LINKED, MatchState.RATED}),
+    "both": frozenset({MatchState.MATCH, MatchState.LINKED, MatchState.RATED}),
+}
+
+
 @dataclass
 class MatchTarget:
     elem: list
@@ -53,6 +62,18 @@ class MatchTarget:
 
 def note_part_of_speech(label: str) -> str:
     return NOTE_PART_OF_SPEECH.get(label, "")
+
+
+def states_to_match(
+    replace_existing: bool = False, reprocess: Optional[str] = None
+) -> frozenset[MatchState]:
+    """The `match_data` states a run matches with the main prompt. A single-word run takes the
+    states of its `reprocess` mode; any other run `["match"]`, and the words already linked to a
+    note too when replacing existing matches. Unjudged and dontmatch words are never matched:
+    they are the judge's to decide."""
+    if reprocess:
+        return REMATCH_STATES[reprocess]
+    return REMATCH_STATES["both" if replace_existing else "only_unprocessed"]
 
 
 def gather_targets(

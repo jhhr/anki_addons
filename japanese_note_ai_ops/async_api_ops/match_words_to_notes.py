@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Coroutine,
     Generator,
+    Iterable,
     Literal,
     Optional,
     Sequence,
@@ -49,7 +50,7 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback
 from ..word_array import match_targets
-from ..word_array.match_flags import decode_word_array
+from ..word_array.match_flags import MatchState, decode_word_array, word_array_query_regex
 from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
@@ -2458,8 +2459,10 @@ def plan_word_array_matching(
     sentence_cache: SentenceCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
     log_prefix: str,
+    states: Iterable[MatchState] = (MatchState.MATCH,),
 ) -> Optional[NotePlan]:
-    """Plan matching the words of a note's word array the judge made `["match"]`.
+    """Plan matching the words of a note's word array in `states`, by default the ones the
+    judge made `["match"]` (see match_targets.states_to_match).
 
     Each occurrence is its own task, matched like an old word list's word. Its result is kept
     by target index, and once every task is done the matched ids go into the elements'
@@ -2468,7 +2471,7 @@ def plan_word_array_matching(
     is nothing to match.
     """
     try:
-        targets = match_targets.gather_targets(arr, limit=limit_words_and_readings)
+        targets = match_targets.gather_targets(arr, states, limit=limit_words_and_readings)
     except ValueError as e:
         logger.error(f"{log_prefix}{e}")
         targets = []
@@ -2681,6 +2684,10 @@ def match_words_to_notes_for_note(
             sentence_cache=sentence_cache,
             limit_words_and_readings=limit_words_and_readings,
             log_prefix=log_prefix,
+            states=match_targets.states_to_match(
+                replace_existing,
+                reprocess_words if limit_words_and_readings else None,
+            ),
         )
     if word_list_field in note:
         word_list_dict = decode_word_list_field(
@@ -3148,19 +3155,15 @@ def match_single_word_to_notes_from_selected(
                 continue
             target_word, target_reading, word_list_field = note_word_info
 
-            if (
-                word_list_field in cur_note
-                and decode_word_array(cur_note[word_list_field]) is not None
-            ):
-                logger.debug(f"{log_prefix}Word arrays aren't matched in single-word mode yet")
-                continue
             # Bound before the `if`, not inside it. `word_list_field` can resolve to "" or to
             # a field this notetype does not have - a misconfigured `word_list_field` does
             # both - and it is read unconditionally below: on the first such note that raised
             # NameError out of bulk_op, and on a later one it silently re-read and
             # deduplicated the *previous* note's word lists.
             word_list_dict: dict[str, Any] = {}
-            if word_list_field in cur_note:
+            # A word array has no word lists to deduplicate, and decode_word_list_field would
+            # tag it invalid
+            if word_list_field in cur_note and decode_word_array(cur_note[word_list_field]) is None:
                 word_list_dict = (
                     decode_word_list_field(
                         cur_note, word_list_field, notes_to_update_dict, log_prefix
@@ -3178,6 +3181,12 @@ def match_single_word_to_notes_from_selected(
                 reading=target_reading,
                 with_processed=reprocess_words,
             )
+            array_word_regex = word_array_query_regex(
+                target_word,
+                target_reading,
+                match_targets.states_to_match(reprocess=reprocess_words),
+            )
+            target_word_regex = f"({target_word_regex}|{array_word_regex})"
             logger.debug(
                 f"{log_prefix}Single-word-only mode: Querying for notes with word '{target_word}'"
                 f" and reading '{target_reading}' using regex '{target_word_regex}'"
