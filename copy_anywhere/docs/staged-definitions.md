@@ -123,8 +123,10 @@ outer list plus `store` is how a loop reports anything back.
 * **`skip_block` names the block the stage is in.** In a loop body it ends that iteration
   and the loop carries on; in a `then` or `else` branch it ends the branch and the stage
   after the condition runs; at the root it ends the definition, and what ran before it still
-  counts. Only the last of those makes later root results maybe-unset, which is why only
-  that one can invalidate an export.
+  counts. Only the last of those leaves root results maybe-unset, which is why only that one
+  can invalidate an export -- and only from the skipping stage on. Its own result counts as
+  maybe-unset too, since a stage that skips never declared one; a result produced before it
+  is set whichever way the skip goes and stays exportable.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
   note but the trigger, or to any card, cannot run against a note that has not been added
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
@@ -195,7 +197,11 @@ decided, for the definition as a whole, that this unfocus should run it.
 What migration deliberately does *not* change is a definition that format 1 refused to run.
 A `select_card_by` that is missing or unreadable selected nothing and said why, and it still
 does: mapping it to "take the first note" would make a definition that has never written a
-note start writing one.
+note start writing one. A refusal also stops the block, exactly as an empty result does.
+Format 1 had one early return for both -- it was what kept a destination-to-sources
+definition from interpolating an empty source list and wiping the fields it was meant to
+fill -- so a query that cannot run goes through the stage's `if_empty` policy rather than
+handing back an empty list and letting the writes below it run.
 
 ## The editor
 
@@ -214,7 +220,14 @@ run, then the exports.
   scope *at that stage*. A loop body offers the loop's note; the stage above the loop does
   not. Lists never appear, because no interpolation could turn one into text.
 * A reference that stopped resolving -- to a result whose stage you deleted, say -- stays
-  selected and is marked in red on both rows. Nothing is silently rewritten.
+  selected and is marked in red on both rows. Nothing is silently rewritten. Moving a stage
+  keeps its export for the same reason: a stage moved into a loop cannot be exported, so its
+  row is marked rather than dropped, and moving it back out is all it takes to restore it.
+* A condition says which of its two forms it is. *Match it as an Anki search against a note*
+  is what a migrated copy condition is -- a search, run against the note the row names -- and
+  it has no code form; turning it off leaves the ordinary expression a condition authored
+  here holds. *Only check it during a sync* is format 1's `condition_only_on_sync`: outside
+  a sync the condition is not checked and the branch runs.
 * **Save** is disabled while the analyser has a complaint, and the complaints are listed
   under the stage list with the path of the stage each one belongs to. Warnings (several
   trigger note types, file writes outside undo) do not block a save.
