@@ -57,6 +57,27 @@ def decode_word_array(field_value: str) -> Optional[list]:
     return decoded if isinstance(decoded, list) else None
 
 
+# What follows a word's reading in the field text, by state; json.dumps separates with ", "
+_STATE_REGEX = {
+    MatchState.UNJUDGED: r"\]",
+    MatchState.DONT_MATCH: rf'"{DONT_MATCH}"\]',
+    MatchState.MATCH: rf'"{MATCH}"\]',
+    MatchState.LINKED: r"-?\d+\]",
+    MatchState.RATED: r"-?\d+,\s*\d+\]",
+}
+
+
+def word_array_query_regex(word: str, reading: str, states: Iterable[MatchState]) -> str:
+    """A regex finding, in a word array field's text, a word element of this dict_form and
+    reading whose `match_data` is in one of `states`, sub-words included. For a collection
+    search, as get_word_list_query_regex_for_word_and_reading is for the old word lists.
+
+    Only the dict_form and reading strings of an element are followed by `match_data`, so the
+    raw text and part of speech never pass for them."""
+    ends = "|".join(_STATE_REGEX[state] for state in sorted(set(states)))
+    return rf',\s*"{re.escape(word)}",\s*"{re.escape(reading)}",\s*\[\s*({ends})'
+
+
 def iter_words(arr: list, depth: int = 0) -> Iterator[tuple[int, list]]:
     """(depth, element) for every word element, sub-words after their parent."""
     for elem in arr:

@@ -17,6 +17,7 @@ from .base_ops import (
 )
 from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config
+from ..word_array.match_flags import decode_word_array
 from ..configuration import (
     RawOneMeaningWordType,
     RawMultiMeaningWordType,
@@ -928,6 +929,10 @@ def extract_words_in_note(
         logger.debug(f"sentence: {sentence}")
         # Check if the value is non-empty
         if sentence:
+            if decode_word_array(note[word_list_field]) is not None:
+                # Would be read as no word list and overwritten with a new one
+                logger.debug(f"Note {note.id} has a word array, extract_words skips it")
+                return False
             # Remove text within <i> tags, as it is not relevant for word extraction
             sentence = strip_context_sentences(sentence)
             current_word_lists_raw = note[word_list_field]
@@ -1024,6 +1029,9 @@ def extract_words_test_compare_in_note(
 
     sentence = note[word_extraction_sentence_field]
     if not sentence:
+        return False
+    if decode_word_array(note[word_list_field]) is not None:
+        logger.debug(f"Note {note.id} has a word array, the extract words test skips it")
         return False
     sentence = strip_context_sentences(sentence)
 

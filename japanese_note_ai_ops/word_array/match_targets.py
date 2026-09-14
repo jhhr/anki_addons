@@ -12,7 +12,7 @@ word matching judge's call (match_flags.py).
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from . import match_flags
 from .match_flags import MatchState
@@ -96,3 +96,17 @@ def save_results(targets: list[MatchTarget], results: dict[int, Any]) -> int:
         target.elem[4] = [note_id]
         saved += 1
     return saved
+
+
+def unlink_missing_notes(arr: list, note_exists: Callable[[int], bool]) -> list[int]:
+    """Put every word linked to a note that no longer exists back to `["match"]`, to be matched
+    again, returning the ids taken away. A negative id is a new note's placeholder, left for
+    match_words_to_notes to resolve."""
+    unlinked = []
+    for _, elem in match_flags.iter_words(arr):
+        note_id = match_flags.matched_note_id(elem)
+        if note_id is None or note_id < 0 or note_exists(note_id):
+            continue
+        elem[4] = [match_flags.MATCH]
+        unlinked.append(note_id)
+    return unlinked

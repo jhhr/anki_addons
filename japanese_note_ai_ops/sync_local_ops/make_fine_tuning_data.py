@@ -253,6 +253,10 @@ def _write_extract_words_fine_tuning_data(config: dict, nids: Sequence[NoteId]) 
             logger.warning(f"{log_prefix}Skipping: word list field is not valid JSON.")
             skipped += 1
             continue
+        if not isinstance(word_list_obj, dict):
+            logger.debug(f"{log_prefix}Skipping: word list field holds a word array.")
+            skipped += 1
+            continue
 
         word_list_obj = _clean_word_list_obj(word_list_obj)
         prompt_text = get_extract_words_prompt(sentence)

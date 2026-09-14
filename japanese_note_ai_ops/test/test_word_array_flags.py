@@ -4,6 +4,7 @@ Neither needs SudachiPy, JMdict or a network, so these run wherever the suite do
 """
 
 import json
+import re
 import unittest
 
 from addon_modules import load_ops_module
@@ -170,6 +171,42 @@ class DecodeWordArrayTests(unittest.TestCase):
         for value in ["", '{"nouns": []}', "[not json"]:
             with self.subTest(value=value):
                 self.assertIsNone(match_flags.decode_word_array(value))
+
+
+class WordArrayQueryRegexTests(unittest.TestCase):
+    def search(self, arr, states, form="本", reading="ほん"):
+        regex = match_flags.word_array_query_regex(form, reading, states)
+        return re.search(regex, json.dumps(arr, ensure_ascii=False)) is not None
+
+    def test_finds_the_word_in_the_states_asked_sub_words_too(self):
+        linked = [State.LINKED, State.RATED]
+        cases = [
+            ([word("本", form="本", reading="ほん", match_data=[1674931277303])], linked, True),
+            ([word("本", form="本", reading="ほん", match_data=[1674931277303, 4])], linked, True),
+            ([word("本", form="本", reading="ほん", match_data=[-1234567])], linked, True),
+            ([word("本", form="本", reading="ほん", match_data=["match"])], linked, False),
+            ([word("本", form="本", reading="ほん", match_data=["match"])], [State.MATCH], True),
+            ([word("本", form="本", reading="ほん", match_data=[])], [State.MATCH], False),
+            ([word("本", form="本", reading="もと", match_data=["match"])], [State.MATCH], False),
+            (
+                [
+                    word(
+                        "本屋",
+                        form="本屋",
+                        subs=[word("本", form="本", reading="ほん", match_data=[5])],
+                    )
+                ],
+                linked,
+                True,
+            ),
+        ]
+        for arr, states, found in cases:
+            with self.subTest(arr=arr, states=states):
+                self.assertEqual(self.search(arr, states), found)
+
+    def test_raw_text_and_part_of_speech_are_not_the_word(self):
+        arr = [word("本", pos="ほん", form="別", reading="べつ", match_data=["match"])]
+        self.assertFalse(self.search(arr, [State.MATCH]))
 
 
 if __name__ == "__main__":

@@ -87,6 +87,24 @@ class SaveResultsTests(unittest.TestCase):
         self.assertEqual(arr[1][4], ["match"])
 
 
+class UnlinkMissingNotesTests(unittest.TestCase):
+    def test_words_linked_to_missing_notes_are_set_to_be_rematched(self):
+        gone = word("様", [111, 4])
+        kept = word("本", [222])
+        placeholder = word("為る", [-1234567], pos="verb")
+        arr = [word("様に", ["dontmatch"], [gone, word("に", ["dontmatch"])]), kept, placeholder]
+        asked = []
+
+        def exists(nid):
+            asked.append(nid)
+            return nid == 222
+
+        self.assertEqual(match_targets.unlink_missing_notes(arr, exists), [111])
+        self.assertEqual((gone[4], kept[4], placeholder[4]), (["match"], [222], [-1234567]))
+        # a placeholder id is never looked up
+        self.assertEqual(asked, [111, 222])
+
+
 class Progress:
     def __init__(self):
         self.notes_done = 0
