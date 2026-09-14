@@ -207,7 +207,9 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         lines = [
             "Can run while a note is being added: <b>{}</b>".format("yes" if compatible else "no")
         ]
-        warnings = [problem.message for problem in self.document.analysis.warnings]
+        # The document's list, not the analyser's: the add-note case is worded from the
+        # triggers and named with stage paths, neither of which the analyser knows about.
+        warnings = self.document.warnings()
         if warnings:
             lines.append(
                 "<span style='color: #b8860b'>Worth knowing:</span><ul>"

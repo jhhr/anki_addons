@@ -295,18 +295,47 @@ def test_warnings_do_not_block_a_save():
     assert doc.can_save()
 
 
-def test_an_add_note_trigger_blocks_a_save_when_a_stage_edits_a_card():
+def filling_a_field_and_flagging_the_card(guid="e"):
+    """The definition format 1 ran happily, and the one the refusal trapped in the dialog.
+
+    Structurally valid and targeting the trigger note, so nothing but the card action stands
+    between it and a save -- which is the point: with the refusal in place there was no way
+    out of the dialog except deleting the card action or a trigger the user never set.
+    """
+    edit = default_stage(STAGE_EDIT_NOTE, guid)
+    edit["fields"] = [
+        {
+            "field": "Meaning",
+            "value": value_expression(text="{{trigger.Word}}"),
+            "write_if": "always",
+        }
+    ]
+    edit["card_actions"] = [{"card_type_name": "CA Vocab: Card 1", "set_flag": 1}]
+    return edit
+
+
+def test_an_add_note_trigger_warns_rather_than_blocks_when_a_stage_flags_a_card():
+    # Refusing the save protected nothing: the hooks and the commit read the stored flag,
+    # never the editor, so the run is deferred either way.
+    doc = document(filling_a_field_and_flagging_the_card())
+    doc.definition["triggers"]["on_add"] = True
+    assert not doc.add_note_compatible()
+    assert doc.can_save()
+    warnings = doc.warnings()
+    assert any("once the note is saved" in warning for warning in warnings)
+    assert any("has card actions" in warning for warning in warnings)
+
+
+def test_the_add_note_warning_names_a_stage_editing_a_card():
     edit = default_stage(STAGE_EDIT_CARD, "e")
     edit["target"] = {"binding": "card"}
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     doc = document(loop, edit)
     doc.definition["triggers"]["on_add"] = True
-    blockers = doc.save_blockers()
-    assert any("note is added" in blocker for blocker in blockers)
-    assert any("Edit Card — edits a card" in blocker for blocker in blockers)
+    assert any("Edit Card — edits a card" in warning for warning in doc.warnings())
 
 
-def test_the_add_note_block_also_names_a_stage_editing_another_note():
+def test_the_add_note_warning_also_names_a_stage_editing_another_note():
     query = default_stage(STAGE_NOTE_QUERY, "q")
     query["result"] = "A1"
     query["query"] = value_expression(text="deck:x")
@@ -317,9 +346,35 @@ def test_the_add_note_block_also_names_a_stage_editing_another_note():
     loop["body"] = [edit]
     doc = document(query, loop)
     doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
-    assert any(
-        "edits 'note', not the trigger" in blocker for blocker in doc.save_blockers()
-    )
+    assert doc.can_save()
+    assert any("edits 'note', not the trigger" in warning for warning in doc.warnings())
+
+
+def test_an_unfocus_only_add_trigger_is_told_what_to_turn_on():
+    # Nothing to defer to: without `on_add` the definition is skipped in the Add dialog and
+    # never runs on save either, so "it runs once the note is saved" would be a lie.
+    doc = document(filling_a_field_and_flagging_the_card())
+    doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
+    warning = doc.warnings()[0]
+    assert "skipped there" in warning
+    assert "Run when adding a new note" in warning
+
+
+def test_an_add_note_trigger_warns_about_nothing_when_the_definition_fits():
+    edit = default_stage(STAGE_EDIT_NOTE, "e")
+    edit["fields"] = [
+        {"field": "Meaning", "value": value_expression(text="{{trigger.Word}}"), "write_if": "always"}
+    ]
+    doc = document(edit)
+    doc.definition["triggers"]["on_add"] = True
+    assert doc.warnings() == []
+
+
+def test_a_definition_with_no_add_trigger_is_not_warned_about():
+    # The incompatibility only matters where a note is being added; a definition that never
+    # runs there is simply an ordinary definition with a card action.
+    doc = document(filling_a_field_and_flagging_the_card())
+    assert doc.warnings() == []
 
 
 def test_an_add_note_trigger_is_fine_for_a_trigger_only_definition():

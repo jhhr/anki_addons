@@ -508,24 +508,63 @@ class StageDocument:
     def save_blockers(self) -> list[str]:
         """Everything standing between this definition and a save, in the order to show it.
 
-        Warnings -- mixed note types, file writes outside undo -- are deliberately absent:
-        §10 says they do not block.
+        Warnings -- mixed note types, an add-note trigger on a definition that edits other
+        notes or cards -- are deliberately absent: §10 says they do not block.
         """
         blockers = [self._describe(problem) for problem in _unique(self.analysis.problems)]
-        if self.wants_add_note() and not self.add_note_compatible():
-            blockers.append(
-                "This definition runs when a note is added, but it edits other notes or"
-                " cards, which a note being added does not have yet."
-            )
-            blockers.extend(
-                f"    {path}" for path in self.incompatible_stage_paths()
-            )
         if not (self.definition.get("definition_name") or "").strip():
             blockers.append("The definition needs a name.")
         return blockers
 
     def can_save(self) -> bool:
         return not self.save_blockers()
+
+    def warnings(self) -> list[str]:
+        """What is worth telling the user about this definition without refusing the save."""
+        found = [problem.message for problem in _unique(self.analysis.warnings)]
+        found.extend(self.add_note_warnings())
+        return found
+
+    def add_note_warnings(self) -> list[str]:
+        """What an add-note trigger on an add-incompatible definition actually means.
+
+        This used to block the save, which left no way out of the dialog for the definition
+        format 1 ran happily: one that fills a field *and* flags the card. Deleting either
+        the card action or a trigger the user never set was the only way to close it.
+
+        It is not a refusal because refusing protected nothing. The add hook already defers
+        an incompatible definition until the note exists and runs it under its own undo
+        entry, the unfocus hook already skips it while a note is being added, and the commit
+        refuses anything but trigger-note changes whatever the stored `effects` claim. All
+        three read the flag, not the editor, so the behaviour is the same whether or not this
+        dialog would have let the definition through -- including for every definition that
+        arrived by migration and never passed through here at all.
+
+        What is left to say is when the work happens, which is what the wording does.
+        """
+        if not self.wants_add_note() or self.add_note_compatible():
+            return []
+        # Both halves of `wants_add_note` end differently, so they are not one sentence:
+        # `on_add` defers the run to the moment the note is saved, while an unfocus-only
+        # trigger has nothing to defer to and is simply not run there.
+        triggers = self.definition.get("triggers", {}) or {}
+        if triggers.get("on_add"):
+            message = (
+                "This definition runs when a note is added, and it edits notes or cards that"
+                " a note being added does not have yet. It runs once the note is saved,"
+                " rather than while it is being typed."
+            )
+        else:
+            message = (
+                "This definition runs when you leave a field while adding a note, and it"
+                " edits notes or cards that a note being added does not have yet, so it is"
+                " skipped there. Turn on 'Run when adding a new note' to have it run once"
+                " the note is saved."
+            )
+        paths = self.incompatible_stage_paths()
+        if paths:
+            message += " Because of: " + "; ".join(paths) + "."
+        return [message]
 
     def incompatible_stage_paths(self) -> list[str]:
         """The stages that make this definition unusable in the add hook, by path.

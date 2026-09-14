@@ -128,7 +128,10 @@ outer list plus `store` is how a loop reports anything back.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
   note but the trigger, or to any card, cannot run against a note that has not been added
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
-  regardless, in case the JSON was edited by hand.
+  regardless, in case the JSON was edited by hand. It defers such a definition rather than
+  dropping it: the add hook runs it once the note exists, under its own undo entry. The
+  editor warns about the combination and saves it anyway, since all three of those read
+  the stored flag and none of them the editor.
 
 ## The startup migration
 
@@ -170,6 +173,16 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   interpolated the name over the live note but `__Dest__` over a copy taken before anything
   ran; the file is written by a stage after the one that writes the field, and a stage reads
   what the stages before it did.
+* A definition that both fills a field and acts on a card fills the field a moment later
+  when a note is being added. Format 1 ran it on every unfocus in the Add dialog and let the
+  card action quietly do nothing, because a note with id 0 has no cards. Format 2 has one
+  rule for that -- a definition touching another note or any card waits until the note
+  exists -- so the whole definition is deferred to the moment the note is saved rather than
+  running as you type. The editor says so rather than refusing the definition: the rule is
+  enforced by the hooks and again by the commit, both of which read the stored `effects`, so
+  what the editor allows changes nothing about what runs. A definition triggered only by
+  unfocus-while-adding has nothing to defer to and is simply not run there; turning on
+  "Run when adding a new note" is what gives it a moment to run in.
 
 **What a migrated field write keeps.** Format 1 asked three questions per field write that
 format 2 asks once per definition: which editor fields trigger it, whether it runs on unfocus
