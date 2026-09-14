@@ -273,6 +273,11 @@ run matches them again) with a secondary prompt given only the linked note's mea
 `save_ratings()` makes them `[note_id, match_quality]`. A note with no meaning yet, or not found,
 stays `[note_id]`.
 
+clean_meaning's sentences (`clean_meaning.get_sentences_for_note`, the word note's own and those
+of the notes linking to it) go through `example_sentence()` too: a note holding an array gives
+its sentence with the occurrence linked to the word note in `<b>` (a new note, the first of its
+word), so the meaning is cleaned for the occurrence meant when a sentence uses the word twice.
+
 ## Migrating the old word lists
 
 `migrate.migrate(word_lists, arr)` fits a stored extract_words word list into a generated
