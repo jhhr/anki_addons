@@ -249,7 +249,9 @@ writes `output/word_matching_judge_hand_labels.jsonl`. `judge_eval.py build` lay
 checked labels (a hand-judged sentence outside the checked export is asked about only its judged
 words), and `run` scores them on a line of their own too. Export rows carry `nids`, every note with
 the sentence (`hand_labels.read_export_nids`), and `research/anki_connect.py` reads and edits those
-notes through AnkiConnect, for fixing a sentence from the hand judge's page.
+notes through AnkiConnect, for fixing a sentence from the hand judge's page: Open in Anki browses
+the sentence's notes, Refetch note regenerates an edited sentence at the front of the queue, moves
+its labels to the new text (dropping those whose word is gone) and rewrites its export and checked rows.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.

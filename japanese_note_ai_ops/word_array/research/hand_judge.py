@@ -12,6 +12,12 @@ already judged `--per-word` times in the same group and parent is not offered ag
 hundred judgements cover many different words. Skip is not saved; Undo takes back the last one.
 Under the buttons each group shows labelled/total, the total growing (marked +) while a thread
 generates the rest of the corpus.
+
+Open in Anki shows the sentence's notes (the export's `nids`) in Anki's browser, and Refetch note
+reads them back after an edit there, both through AnkiConnect (`--anki-connect`), which this server
+calls so that a phone can use them too. A changed sentence is generated again at the front of the
+queue, its labels move to the new text where the new array still has their word (the rest are
+dropped), and its rows in the export and the checked subset take the new text.
 """
 
 import argparse
@@ -27,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
 
+import anki_connect
 import hand_labels
 import migrate_fit
 from _bootstrap import load
@@ -89,8 +96,27 @@ def describe(elem: list) -> str:
     return f"{elem[2]} [{elem[3]}], {elem[1]}"
 
 
+NO_NIDS = (
+    "No note ids for this sentence: the export predates them. Run Tools > AI ops: generate test"
+    " data in Anki and restart this page's server to open or refetch it."
+)
+NO_CHANGE = (
+    "No change in Anki. The editor saves a field when it loses focus: click out of it, then"
+    " refetch."
+)
+
+
 class Session:
-    def __init__(self, sentences: list[str], lexicon: dict, labels_path, per_word: int):
+    def __init__(
+        self,
+        sentences: list[str],
+        lexicon: dict,
+        labels_path,
+        per_word: int,
+        nids: Optional[dict[str, list[int]]] = None,
+        raws: Optional[dict[int, str]] = None,
+        generate=None,
+    ):
         self.sentences = sentences
         self.lexicon = lexicon
         self.next_sentence = 0
@@ -98,16 +124,27 @@ class Session:
         self.per_word = per_word
         self.labels = hand_labels.read_labels(labels_path)
         self.pool: list[Candidate] = []
-        self.done: set[tuple] = {hand_labels.label_key(row) for row in self.labels}
-        self.word_counts: Counter[tuple] = Counter(
-            word_key(row["group"], tuple(row["path"]), row["reading"]) for row in self.labels
-        )
         self.history: list[tuple[Candidate, str]] = []
+        self._count_labels()
         self.offered: dict[int, Candidate] = {}
         self.judged_now = 0
         # Words of every sentence generated so far, for each group's total
         self.placements: Counter[tuple] = Counter()
+        self.arrays: dict[str, list] = {}
+        # Context-stripped sentence → its notes, and each note's raw sentence field
+        self.nids = nids or {}
+        self.raws = raws or {}
+        self.generate = generate or migrate_fit.generator.generate
         self.lock = threading.Lock()
+
+    def _count_labels(self) -> None:
+        skipped = {
+            hand_labels.placed_key(c.sentence, c.placed) for c, l in self.history if l == "skip"
+        }
+        self.done: set[tuple] = {hand_labels.label_key(row) for row in self.labels} | skipped
+        self.word_counts: Counter[tuple] = Counter(
+            word_key(row["group"], tuple(row["path"]), row["reading"]) for row in self.labels
+        )
 
     def generate_all(self) -> None:
         """Generates the sentences no request has reached yet, so the group totals cover the
@@ -122,11 +159,17 @@ class Session:
             return False
         sentence = self.sentences[self.next_sentence]
         self.next_sentence += 1
+        self.pool.extend(self._generate(sentence))
+        return True
+
+    def _generate(self, sentence: str) -> list[Candidate]:
         try:
-            arr = migrate_fit.generator.generate(sentence, self.lexicon)
+            arr = self.generate(sentence, self.lexicon)
         except Exception as exc:  # a crash here is migrate_fit's business, not the GUI's
             print(f"generate failed: {exc!r}: {sentence}", file=sys.stderr)
-            return True
+            return []
+        self.arrays[sentence] = arr
+        out = []
         for placed in hand_labels.placed_words(arr):
             elem = placed.elem
             if elem[1] in judge_v2.AUTO_DONT_MATCH_POS:
@@ -134,9 +177,97 @@ class Session:
             if match_flags.match_state(elem) != match_flags.MatchState.UNJUDGED:
                 continue
             group = judge_v2.rule_group(elem, placed.parents)
-            self.pool.append(Candidate(sentence, arr, placed, group))
+            out.append(Candidate(sentence, arr, placed, group))
             self.placements[word_key(group, placed.path, elem[3])] += 1
-        return True
+        return out
+
+    def _forget(self, sentence: str) -> None:
+        """Takes a sentence out of the corpus, with every word offered or counted from it."""
+        if sentence in self.sentences:
+            i = self.sentences.index(sentence)
+            del self.sentences[i]
+            if i < self.next_sentence:
+                self.next_sentence -= 1
+        for cand in self.pool:
+            if cand.sentence == sentence:
+                self.placements[word_key(cand.group, cand.placed.path, cand.placed.elem[3])] -= 1
+        self.placements = +self.placements
+        self.pool = [cand for cand in self.pool if cand.sentence != sentence]
+        self.offered = {k: cand for k, cand in self.offered.items() if cand.sentence != sentence}
+        self.arrays.pop(sentence, None)
+
+    def replace_sentence(self, old: str, new_texts: list[str]) -> tuple[int, int]:
+        """A sentence edited in Anki: its notes now read `new_texts`, first note's text first
+        (`old` among them where some notes kept it). The new texts are generated at the front of
+        the pool, so the word being judged comes back next, and the labels of `old` move to the
+        first text where its array still has their word. Returns labels moved and dropped."""
+        with self.lock:
+            if old not in new_texts:
+                self._forget(old)
+            for text in reversed([t for t in dict.fromkeys(new_texts) if t != old]):
+                self._forget(text)
+                self.sentences.insert(0, text)
+                self.next_sentence += 1
+                self.pool[0:0] = self._generate(text)
+            moved = dropped = 0
+            new = new_texts[0]
+            if new != old and new in self.arrays:
+                self.labels, moved, dropped = hand_labels.move_labels(
+                    self.labels, old, new, self.arrays[new]
+                )
+                self._save()
+            self.history = [(c, l) for c, l in self.history if c.sentence != old]
+            self._count_labels()
+            return moved, dropped
+
+    def apply_notes(self, sentence: str, raws: dict[int, str], paths) -> str:
+        """Takes the notes of `sentence` as Anki has them now (raw field by note id, in the
+        session's note order): unchanged, or the sentence replaced and the jsonl files at
+        `paths` rewritten. Returns what happened, for the page."""
+        texts = {
+            nid: migrate_fit.html_stripping.strip_context_sentences(raw)
+            for nid, raw in raws.items()
+        }
+        new_texts = list(dict.fromkeys(t for t in texts.values() if t.strip()))
+        if not new_texts or new_texts == [sentence]:
+            return NO_CHANGE
+        moved, dropped = self.replace_sentence(sentence, new_texts)
+        new_raw = {nid: raw for nid, raw in raws.items() if raw != self.raws.get(nid)}
+        renamed: dict[str, str] = {}
+        for nid, raw in new_raw.items():
+            if nid in self.raws:
+                renamed.setdefault(self.raws[nid], raw)
+        rows = sum(hand_labels.rewrite_rows(path, new_raw, renamed) for path in paths)
+        with self.lock:
+            self.nids.pop(sentence, None)
+            for nid, text in texts.items():
+                ids = self.nids.setdefault(text, [])
+                if nid not in ids:
+                    ids.append(nid)
+            self.raws.update(raws)
+        shown = " / ".join(new_texts)
+        return (
+            f"Sentence now {shown}: {moved} labels moved, {dropped} dropped,"
+            f" {rows} jsonl rows rewritten."
+        )
+
+    def refetch(self, sentence: str, anki, config: dict, paths) -> str:
+        nids = self.nids.get(sentence)
+        if not nids:
+            return NO_NIDS
+        raws = {
+            info["noteId"]: anki_connect.note_sentence(config, info)
+            for info in anki.notes_info(nids)
+            if info
+        }
+        return self.apply_notes(sentence, raws, paths)
+
+    def browse(self, sentence: str, anki) -> str:
+        nids = self.nids.get(sentence)
+        if not nids:
+            return NO_NIDS
+        anki.gui_browse(anki_connect.nids_query(nids))
+        return f"Opened {len(nids)} note(s) in Anki's browser."
 
     def group_totals(self) -> Counter[str]:
         """How many words of each group can be labelled, at most --per-word of each word."""
@@ -199,6 +330,8 @@ class Session:
                 "part_of": [describe(parent) for parent in reversed(p.parents)],
                 "made_of": " + ".join(f"{s[2]} [{s[3]}]" for s in subs),
                 "rules": judge_v2.POS_RULES[cand.group],
+                "notes": len(self.nids.get(cand.sentence, [])),
+                "no_notes": NO_NIDS,
             },
             "stats": stats,
         }
@@ -267,6 +400,8 @@ button.match { background:var(--match); color:#fff; border-color:var(--match); }
 button.dont { background:var(--dont); color:#fff; border-color:var(--dont); }
 details { margin-top:12px; color:var(--muted); white-space:pre-wrap; font-size:13px; }
 .stats { font-size:13px; color:var(--muted); }
+.notes { margin-top:8px; } .notes button { font-size:14px; padding:8px 12px; }
+.message { font-size:14px; white-space:pre-wrap; }
 </style></head><body><main>
 <div class="groups" id="groups"></div>
 <div class="card" id="card">Loading...</div>
@@ -276,6 +411,11 @@ details { margin-top:12px; color:var(--muted); white-space:pre-wrap; font-size:1
   <button onclick="send('skip')">Skip <small>(S)</small></button>
   <button onclick="undo()">Undo <small>(U)</small></button>
 </div>
+<div class="buttons notes">
+  <button id="browse" onclick="note('/api/browse')">Open in Anki <small>(O)</small></button>
+  <button id="refetch" onclick="note('/api/refetch')">Refetch note <small>(R)</small></button>
+</div>
+<p class="message" id="message"></p>
 <p class="stats" id="stats"></p>
 </main><script>
 const GROUPS = __GROUPS__, DEFAULT = __DEFAULT__;
@@ -301,7 +441,10 @@ function show(data) {
     `${s.now} judged now, ${s.labels} saved, sentences read ${s.sentences} | ` +
     s.by_group.map(([g, n, total]) => `${g} ${n}/${total}${s.counting ? "+" : ""}`).join(", ");
   const card = document.getElementById("card");
+  for (const b of ["browse", "refetch"])
+    document.getElementById(b).disabled = !current || !current.notes;
   if (!current) { card.textContent = "Nothing left to offer in the ticked groups."; return; }
+  if (!current.notes) document.getElementById("message").textContent = current.no_notes;
   card.innerHTML = `<div class="sentence">${current.html}</div>
     <div class="word">${esc(current.word)}<span class="badge">${esc(current.group)}</span></div>
     ${current.part_of.map(p => `<div class="meta">Part of: ${esc(p)}</div>`).join("")}
@@ -312,8 +455,17 @@ async function post(url, body) {
   const r = await fetch(url, {method: "POST", body: JSON.stringify({...body, groups: chosen})});
   show(await r.json());
 }
-function send(label) { if (current) post("/api/judge", {id: current.id, label}); }
-function undo() { post("/api/undo", {}); }
+const message = text => { document.getElementById("message").textContent = text; };
+function send(label) { if (current) { message(""); post("/api/judge", {id: current.id, label}); } }
+function undo() { message(""); post("/api/undo", {}); }
+async function note(url) {
+  if (!current || !current.notes) return;
+  message("...");
+  const r = await fetch(url, {method: "POST", body: JSON.stringify({id: current.id})});
+  const data = await r.json();
+  if (data.reload) await post("/api/next", {});
+  message(data.message);
+}
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
@@ -321,12 +473,29 @@ document.addEventListener("keydown", e => {
   else if (k === "d") send("dontmatch");
   else if (k === "s") send("skip");
   else if (k === "u") undo();
+  else if (k === "o") note("/api/browse");
+  else if (k === "r") note("/api/refetch");
 });
 post("/api/next", {});
 </script></body></html>"""
 
 
-def make_handler(session: Session):
+def note_action(session: Session, path: str, body: dict, anki, config: dict, paths) -> dict:
+    """`/api/browse` and `/api/refetch` on the card's sentence: a message for the page, and
+    whether the card is to be reloaded because the sentence changed."""
+    cand = session.offered.get(int(body.get("id", 0)))
+    if cand is None:
+        return {"message": "That card is gone; reload the page.", "reload": False}
+    try:
+        if path == "/api/browse":
+            return {"message": session.browse(cand.sentence, anki), "reload": False}
+        message = session.refetch(cand.sentence, anki, config, paths)
+    except anki_connect.AnkiConnectError as e:
+        return {"message": str(e), "reload": False}
+    return {"message": message, "reload": message not in (NO_CHANGE, NO_NIDS)}
+
+
+def make_handler(session: Session, anki=None, config=None, paths=()):
     page = (
         PAGE.replace("__GROUPS__", json.dumps(GROUPS))
         .replace("__DEFAULT__", json.dumps(list(DEFAULT_GROUPS)))
@@ -355,6 +524,10 @@ def make_handler(session: Session):
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
             groups = set(body.get("groups") or [])
+            if path in ("/api/browse", "/api/refetch"):
+                data = note_action(session, path, body, anki, config or {}, paths)
+                self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json")
+                return
             if path == "/api/judge" and body.get("label") in ("match", "dontmatch", "skip"):
                 session.judge(int(body.get("id", 0)), body["label"])
                 cand = session.next_candidate(groups)
@@ -380,22 +553,37 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to judge from a phone")
     parser.add_argument("--port", type=int, default=8790, help="not 8765, AnkiConnect's")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--anki-connect", default=anki_connect.URL, help="AnkiConnect's URL")
     args = parser.parse_args()
 
     corpus = migrate_fit.read_export(migrate_fit.CORPORA[args.corpus], Counter())
     stripped = (migrate_fit.html_stripping.strip_context_sentences(s) for s, _ in corpus)
     sentences = list(dict.fromkeys(s for s in stripped if s.strip()))
     random.Random(args.seed).shuffle(sentences)
+    # The checked subset has no note ids: its sentences find theirs in the export
+    nids: dict[str, list[int]] = {}
+    raws: dict[int, str] = {}
+    for raw, ids in hand_labels.read_export_nids(migrate_fit.CORPORA["export"]).items():
+        found = nids.setdefault(migrate_fit.html_stripping.strip_context_sentences(raw), [])
+        found.extend(nid for nid in ids if nid not in found)
+        raws.update((nid, raw) for nid in ids)
     # Names come out as the migration op makes them: whole, from the collection's lexicon
     lexicon = migrate_fit.export_name_lexicon()
-    session = Session(sentences, lexicon, hand_labels.Path(args.labels), args.per_word)
+    session = Session(
+        sentences, lexicon, hand_labels.Path(args.labels), args.per_word, nids=nids, raws=raws
+    )
     print(f"{len(sentences)} sentences, {len(session.labels)} labels in {args.labels}")
+    if not nids:
+        print("The export has no note ids: Open in Anki and Refetch need a fresh export.")
     threading.Thread(target=session.generate_all, daemon=True).start()
 
+    anki = anki_connect.AnkiConnect(args.anki_connect)
+    paths = [migrate_fit.CORPORA["export"], migrate_fit.CORPORA["checked"]]
     # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server (Anki
     # Connect) holds without error, and the browser then reaches that server instead.
     HTTPServer.allow_reuse_address = False
-    server = HTTPServer((args.host, args.port), make_handler(session))
+    handler = make_handler(session, anki, anki_connect.load_config(), paths)
+    server = HTTPServer((args.host, args.port), handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Serving {url} (Ctrl+C to stop)")
     if not args.no_browser:
