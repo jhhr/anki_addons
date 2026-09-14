@@ -119,6 +119,33 @@ def save_results(targets: list[MatchTarget], results: dict[int, Any]) -> int:
     return saved
 
 
+def has_placeholder_ids(arr: list) -> bool:
+    return any(
+        (match_flags.matched_note_id(elem) or 0) < 0 for _, elem in match_flags.iter_words(arr)
+    )
+
+
+def resolve_placeholder_ids(arr: list, find_notes: Callable[[int], list[int]]) -> int:
+    """Swap each new note's placeholder id left in `arr` by an earlier run for the id of the note
+    `find_notes` says holds it, keeping any match_quality. A placeholder no note holds was never
+    added, so its word goes back to `["match"]`; one several notes hold is left as it is. Each
+    placeholder is looked up once. Returns how many words changed."""
+    found: dict[int, list[int]] = {}
+    changed = 0
+    for _, elem in match_flags.iter_words(arr):
+        fake_id = match_flags.matched_note_id(elem)
+        if fake_id is None or fake_id >= 0:
+            continue
+        if fake_id not in found:
+            found[fake_id] = find_notes(fake_id)
+        note_ids = found[fake_id]
+        if len(note_ids) > 1:
+            continue
+        elem[4] = [note_ids[0], *elem[4][1:]] if note_ids else [match_flags.MATCH]
+        changed += 1
+    return changed
+
+
 def unlink_missing_notes(arr: list, note_exists: Callable[[int], bool]) -> list[int]:
     """Put every word linked to a note that no longer exists back to `["match"]`, to be matched
     again, returning the ids taken away. A negative id is a new note's placeholder, left for

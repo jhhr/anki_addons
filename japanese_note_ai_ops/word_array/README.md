@@ -257,6 +257,9 @@ array's part of speech label mapped to the one the word notes use. `states_to_ma
 states a run takes: `["match"]`, plus the linked states 4 and 5 with
 `replace_existing_matched_words`; the single-word rematch entries take their mode's states
 (unprocessed 3, processed 4 and 5, both), and find their notes with `word_array_query_regex`.
+Before gathering, `resolve_placeholder_ids()` swaps a new note's negative placeholder id an
+earlier run left behind for the id of the note holding it in `new_note_id_field` (the field is
+left set, other notes may still hold the placeholder); one no note holds goes back to `["match"]`.
 
 ## Migrating the old word lists
 

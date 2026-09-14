@@ -2469,20 +2469,51 @@ def plan_word_array_matching(
     `match_data` - the targets hold the elements themselves, however deeply nested - and the
     array is written back to the field. Returns None, with the note counted done, when there
     is nothing to match.
+
+    A new note's placeholder id an earlier run left in the array is first swapped for the id of
+    the note that was added (see match_targets.resolve_placeholder_ids), so a rematch doesn't
+    take it for a word of its own, and the array saved.
     """
-    try:
-        targets = match_targets.gather_targets(arr, states, limit=limit_words_and_readings)
-    except ValueError as e:
-        logger.error(f"{log_prefix}{e}")
-        targets = []
-    note_type = note.note_type() if targets else None
+
+    def gather() -> list[match_targets.MatchTarget]:
+        try:
+            return match_targets.gather_targets(arr, states, limit=limit_words_and_readings)
+        except ValueError as e:
+            logger.error(f"{log_prefix}{e}")
+            return []
+
+    placeholders = match_targets.has_placeholder_ids(arr)
+    targets = gather()
+    note_type = note.note_type() if targets or placeholders else None
     fields = get_match_fields(config, note_type) if note_type else None
+
+    def save_note():
+        current_note = notes_to_update_dict.get(note.id, note)
+        current_note[fields["word_list_field"]] = json.dumps(arr, ensure_ascii=False)
+        notes_to_update_dict[current_note.id] = current_note
+        if current_note.id not in edited_nids:
+            edited_nids.append(current_note.id)
+
+    if fields and placeholders:
+        new_note_id_field = fields["new_note_id_field"]
+
+        def notes_holding(fake_id: int) -> list[NoteId]:
+            if new_note_id_field in note and note[new_note_id_field] == str(fake_id):
+                return [note.id]
+            return list(
+                col_find_notes(f'''"note:{note_type["name"]}" "{new_note_id_field}:{fake_id}"''')
+            )
+
+        resolved = match_targets.resolve_placeholder_ids(arr, notes_holding)
+        if resolved:
+            logger.debug(f"{log_prefix}Resolved {resolved} new note placeholder ids")
+            save_note()
+            targets = gather()
     if not fields or not config.get("match_words_model", ""):
         if targets:
             logger.error(f"{log_prefix}Error: Missing match words model or fields in config")
         progress_updater.increment_counts(notes_done=1)
         return None
-    word_list_field = fields["word_list_field"]
     logger.debug(f"{log_prefix}Word array has {len(targets)} words to match")
     # Filled by match_single_word_in_word_tuple, keyed by target index
     results: dict[int, Optional[FinalWordTuple]] = {}
@@ -2533,10 +2564,7 @@ def plan_word_array_matching(
         saved = match_targets.save_results(targets, results)
         logger.debug(f"{log_prefix}Matched {saved} of {len(targets)} words in the word array")
         if saved:
-            current_note = notes_to_update_dict.get(note.id, note)
-            current_note[word_list_field] = json.dumps(arr, ensure_ascii=False)
-            notes_to_update_dict[current_note.id] = current_note
-            edited_nids.append(current_note.id)
+            save_note()
         progress_updater.increment_counts(notes_done=1)
 
     def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:

@@ -102,6 +102,32 @@ class SaveResultsTests(unittest.TestCase):
         self.assertEqual(arr[1][4], ["match"])
 
 
+class ResolvePlaceholderIdsTests(unittest.TestCase):
+    def test_placeholders_take_the_added_notes_id(self):
+        added = word("様", [-111, 4])
+        again = word("様", [-111])
+        never_added = word("本", [-222])
+        ambiguous = word("棚", [-333])
+        real = word("為る", [444], pos="verb")
+        arr = [word("様に", ["dontmatch"], [added, word("に", ["dontmatch"])]), again]
+        arr += [never_added, ambiguous, real]
+        holders = {-111: [55], -222: [], -333: [66, 77]}
+        asked = []
+
+        def find_notes(fake_id):
+            asked.append(fake_id)
+            return holders[fake_id]
+
+        self.assertTrue(match_targets.has_placeholder_ids(arr))
+        self.assertEqual(match_targets.resolve_placeholder_ids(arr, find_notes), 3)
+        self.assertEqual(
+            [e[4] for e in (added, again, never_added, ambiguous, real)],
+            [[55, 4], [55], ["match"], [-333], [444]],
+        )
+        self.assertEqual(asked, [-111, -222, -333])
+        self.assertFalse(match_targets.has_placeholder_ids([real, word("本", ["match"])]))
+
+
 class UnlinkMissingNotesTests(unittest.TestCase):
     def test_words_linked_to_missing_notes_are_set_to_be_rematched(self):
         gone = word("様", [111, 4])
@@ -314,6 +340,26 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
         plan = self.plan(note, arr, Progress(), {}, [], states=[State.LINKED, State.RATED])
         self.assertEqual(plan.task_count, 2)
+
+    def test_placeholders_left_by_an_earlier_run_are_resolved_before_gathering(self):
+        arr = [word("様", [-111]), word("本", [-222, 4]), word("棚", [-333])]
+        fields = {"word_list_field": json.dumps(arr), "new_note_id_field": "-111"}
+        note = FakeNote(fields)
+        queries = []
+
+        def find_notes(query):
+            queries.append(query)
+            return [55] if "-222" in query else []
+
+        updates, edited_nids = {}, []
+        with mock.patch.object(self.mwtn, "col_find_notes", find_notes):
+            plan = self.plan(note, arr, Progress(), updates, edited_nids)
+        # the note itself holds -111, -222 was added as note 55, -333 never was: matched again
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[1], [55, 4], ["match"]])
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(plan.task_count, 1)
+        self.assertEqual((updates, edited_nids), ({1: note}, [1]))
 
     def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):
         arr = [word("様", [-1234567]), word("本", [1674931277303, 4])]
