@@ -34,7 +34,15 @@ from _bootstrap import load
 judge_v2 = load("judge_v2")
 match_flags = load("match_flags")
 
-DEFAULT_GROUPS = ("noun-sub", "noun-phrase", "prefix-verb", "suffix-verb", "affix")
+DEFAULT_GROUPS = (
+    "noun-sub",
+    "noun-phrase",
+    "prefix-verb",
+    "suffix-verb",
+    "prefix",
+    "suffix",
+    "counter",
+)
 GROUPS = [g for g in judge_v2.POS_RULES]
 MORE_SENTENCES = 500  # generated per request at most, looking for a word to offer
 

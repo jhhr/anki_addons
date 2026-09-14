@@ -42,7 +42,7 @@ class PlanTests(unittest.TestCase):
         self.assertIn(judge_v2.POS_RULES["expression"], asks["BC"].prompt)
         self.assertIn("Sentence: XB<b>C</b>D", asks["C"].prompt)
         self.assertIn("Part of: BC [x], expression", asks["C"].prompt)
-        self.assertIn(judge_v2.POS_RULES["affix"], asks["C"].prompt)
+        self.assertIn(judge_v2.POS_RULES["suffix"], asks["C"].prompt)
         self.assertNotIn("\nPart of:", asks["D"].prompt)
         self.assertEqual(asks["D"].group, judge_v2.OTHER_GROUP)
 

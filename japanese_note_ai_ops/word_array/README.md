@@ -225,7 +225,8 @@ mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/ju
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
 cases apart - nouns into `noun-main` at the top level, `noun-phrase` inside a word made with a
 particle (本当に, 羽目を外す) and `noun-sub` inside any other word, either verb of a two-verb
-compound verb into `prefix-verb` / `suffix-verb`, and expressions of verbs only into
+compound verb into `prefix-verb` / `suffix-verb`, affixes into `prefix`, `suffix` and `counter`,
+and expressions of verbs only into
 `verb-expression`, of noun + particle + verb into `collocation`), the sentence with it in `<b>` (`match_flags.iter_highlighted()`, built
 from the array's own raw texts, so the note's sentence isn't needed), and the words it is part of
 or made of, and returns `{"reason", "decision"}`. Particles and the copula are judged `dontmatch`
@@ -238,8 +239,8 @@ whole sentence's words in one prompt.
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
 the copula no entry fits are left unscored, and the judge is not scored on particles and the
 copula at all. gemini-3.5-flash-lite, 384 sentences: 83.1%, picks 78.1% precise with 49.1% recall
-(v1 had 74.1%, 50.5%, 45.0%); with 94 hand-judged sentences added, 478: 82.9%, 75.4%, 48.7%, the
-277 hand-judged words 79.8%. `build` and `hand_judge.py` generate with the export's name lexicon,
+(v1 had 74.1%, 50.5%, 45.0%); with 237 hand-judged sentences added, 621: 82.8%, 72.8%, 47.5%, the
+645 hand-judged words 82.5%. `build` and `hand_judge.py` generate with the export's name lexicon,
 as the migration op does with the collection's. The labels are unsure for components of compounds, so more
 hand-judged words are to come: `research/hand_judge.py` serves a page that offers words of the
 migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and

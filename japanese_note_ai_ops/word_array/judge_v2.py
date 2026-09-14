@@ -48,9 +48,9 @@ POS_GROUPS = {
     "conjunction": "adverb",
     "interjection": "adverb",
     "expression": "expression",
-    "prefix": "affix",
-    "suffix": "affix",
-    "counter": "affix",
+    "prefix": "prefix",
+    "suffix": "suffix",
+    "counter": "counter",
     "auxiliary": "auxiliary",
 }
 OTHER_GROUP = "other"
@@ -136,11 +136,20 @@ POS_RULES = {
 - match a set phrase, the usual way to say it, learned as a unit even though its meaning is easy to guess: 迷惑を掛ける, 汗を掻く, 時間を稼ぐ, 頭を下げる, 腰を掛ける.
 - dontmatch a free combination of a noun and a verb that means no more than its words: 命を奪う, 空を飛ぶ, 皮を剥ぐ, 髪を梳かす. Its words keep their notes.
 - dontmatch a grammar pattern of a formal noun, a particle and a verb: 事が出来る, 事が有る, 事に成る. Its words keep their notes.""",
-    "affix": """Rules for prefixes, suffixes and counters:
-- match a prefix, suffix or counter that adds a meaning of its own: 御 (お, ご), さん, 達, 等, 性, 本, 回, 年.
-- dontmatch the counter つ (三つ) and a prefix like 第 or 大 that only marks an order or size.
-- dontmatch a piece that is no prefix, suffix or counter in this sentence, only part of the word it is in, like 合 in 場合 or 御 in 御前 (you).
-- apply the basic test: 化 in 硬化 matches (a card for the suffix 化 fits it), 化 in 文化 does not (文化 is a word of its own, not 文 + 化).""",
+    "prefix": """Rules for prefixes:
+- match a prefix that adds a meaning of its own, however transparent: the polite 御 (お, ご) in 御客様, 御正月, 御名前; 不 in 不適切, 最 in 最重要, 準 in 準惑星, 副 in 副収入, 高 in 高蛋白, 各, 約, 大 in 大パニック.
+- match a piece a word begins with whose own meaning still shows in it, even if it is no true prefix: 乳 in 乳製品.
+- dontmatch the prefix 第 that only marks an order (第三).
+- dontmatch a piece that is no prefix in this word, only part of a word of its own whose meaning isn't built from it: 御 in 御前 (you), 乙 in 乙女, 相 in 相手, 真 in 真菰.""",
+    "suffix": """Rules for suffixes:
+- match a suffix that adds a meaning of its own, however transparent the word it makes: 者 in 被害者, 人 in 日本人, 家 in 政治家, 的 in 技術的, 性 in 安全性, 化 in 硬化, 中 in 工事中, 方 in 読み方, 状 in 年賀状, さん, 様, 達 and 等 (ら) in 私達, 彼等, 奴ら.
+- match such a suffix also when the word it ends is an established word or a proper noun of its own: 店 in 百貨店, 界 in 社交界, 物 in 買い物, 星 in 冥王星, 系 in 太陽系. The larger word is judged separately.
+- dontmatch a piece that is no suffix in this word, only part of a word of its own whose meaning isn't built from it: 前 in 名前 and 御前, 物 in 建物, 手 in 相手, 女 in 乙女, 居 in 芝居, 事 in 見事, 目 in 裏目, 池 in 充電池, 化 in 文化 (文化 is not 文 + 化).
+- dontmatch a verb stem ending a compound noun: 代わり in 肩代わり, 止め in 足止め, 抜き in 手抜き. The compound keeps the note.
+- dontmatch さ that only turns an adjective into a noun: 大きさ, 美しさ, 鄭重さ. The adjective keeps the note.""",
+    "counter": """Rules for counters:
+- match a counter, also in a date, a time or a length of time: 月 in 七月, 日 (にち, か) in 一日 and 三日, 時 in 三時, 度 in 一度, 週間 in 一週間, 年間 in 一年間, 年, 円, 万 in 十万, 通り in 二通り.
+- dontmatch the counter つ (三つ): the number word keeps the note.""",
     "auxiliary": """Rules for auxiliary verbs:
 - match an auxiliary that adds a meaning to learn: たい (want to), らしい, そうだ, まい, べき, させる, られる.
 - dontmatch an ending that only marks politeness or tense: ます, た.""",
