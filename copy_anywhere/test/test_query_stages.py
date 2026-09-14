@@ -271,3 +271,73 @@ class TestTheQueryCache:
             col.find_notes = original
 
         assert searches == ["tag:pool", "Word:w1"]
+
+
+class TestARefusedQueryDoesNotWipeTheDestination:
+    """The guards above select nothing, and selecting nothing must stop the writes too.
+
+    Format 1 returned an empty source list from `get_across_target_notes` and its caller
+    then returned early "so that the target fields aren't wiped". In format 2 the early
+    return is the query stage's `if_empty` marker, so a refusal that hands back an empty
+    list without going through it leaves the rest of the block to interpolate nothing and
+    write it (§11 step 4).
+    """
+
+    @pytest.fixture
+    def trigger_with_a_note(self, col, trigger):
+        trigger["Note"] = "kept"
+        col.update_note(trigger)
+        return trigger
+
+    def test_an_unusable_select_card_by_writes_nothing(
+        self, col, trigger_with_a_note, targets, logger
+    ):
+        run_legacy(
+            trigger_with_a_note,
+            logger,
+            copy_from_cards_query="tag:pool",
+            select_card_by=None,
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+        )
+
+        assert trigger_with_a_note["Note"] == "kept"
+
+    def test_an_unusable_select_card_count_writes_nothing(
+        self, col, trigger_with_a_note, targets, logger
+    ):
+        run_legacy(
+            trigger_with_a_note,
+            logger,
+            copy_from_cards_query="tag:pool",
+            select_card_count="abc",
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+        )
+
+        assert trigger_with_a_note["Note"] == "kept"
+
+    def test_a_query_that_interpolates_to_nothing_writes_nothing(
+        self, col, trigger_with_a_note, logger
+    ):
+        run_legacy(
+            trigger_with_a_note,
+            logger,
+            copy_from_cards_query="{{Nonexistent}}",
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+        )
+
+        assert trigger_with_a_note["Note"] == "kept"
+
+    def test_the_empty_result_flag_still_lets_the_write_through(
+        self, col, trigger_with_a_note, logger
+    ):
+        # `run_also_if_no_sources_found` is what format 1 offered for the opposite case, and
+        # it has to keep working: there the empty write is what the user asked for.
+        run_legacy(
+            trigger_with_a_note,
+            logger,
+            copy_from_cards_query="tag:nothing",
+            run_also_if_no_sources_found=True,
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+        )
+
+        assert trigger_with_a_note["Note"] == ""

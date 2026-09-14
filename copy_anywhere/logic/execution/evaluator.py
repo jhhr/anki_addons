@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Optional, Sequence
 
 from ...shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX
+from ..definition_migration import MigrationError
 from ..definition_schema import (
     STAGE_CALL_DEFINITION,
     STAGE_CARD_QUERY,
@@ -276,7 +277,14 @@ def _run_call(
     if frame.depth + 1 > MAX_CALL_DEPTH:
         raise frame.error(f"call chain deeper than {MAX_CALL_DEPTH} definitions", stage)
 
-    callee = session.definition_lookup(callee_guid)
+    try:
+        callee = session.definition_lookup(callee_guid)
+    except MigrationError as error:
+        # The lookup migrates the callee on first use, so an unreadable one raises here,
+        # mid-run. A `MigrationError` is not a `StageError`, so letting it out would take
+        # the whole `CollectionOp` down into Anki's error dialog; as a stage error it fails
+        # this definition, with the migrator's own message and the stage that asked for it.
+        raise frame.error(str(error), stage) from error
     if callee is None:
         raise frame.error(f"calls unknown definition '{callee_guid}'", stage)
     if not is_format_2(callee):

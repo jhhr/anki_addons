@@ -222,6 +222,22 @@ def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
     return notes
 
 
+def _apply_if_empty(stage: dict, frame, message: str) -> list:
+    """The stage's `if_empty` policy, for every way a query can hand back no notes.
+
+    Selecting nothing is the same event whether the query ran and matched nothing or never
+    ran at all, and format 1 treated it as one: `get_across_target_notes` returned `[]` for
+    a refusal exactly as it did for an empty match, and the caller's one early return
+    covered both "so that the target fields aren't wiped" (§11 step 4).
+    """
+    if_empty = stage.get("if_empty", "continue")
+    if if_empty == "error":
+        raise frame.error(message, stage)
+    if if_empty == "skip_block":
+        raise SkipBlock()
+    return []
+
+
 def _empty_result(stage: dict, frame, query: str, kind: str) -> list:
     if stage.get("error_if_empty"):
         frame.session.logger.error(
@@ -229,12 +245,7 @@ def _empty_result(stage: dict, frame, query: str, kind: str) -> list:
         )
     else:
         frame.session.logger.debug(f'No {kind} found with query="{query}"')
-    if_empty = stage.get("if_empty", "continue")
-    if if_empty == "error":
-        raise frame.error(f"Query '{query}' matched no {kind}", stage)
-    if if_empty == "skip_block":
-        raise SkipBlock()
-    return []
+    return _apply_if_empty(stage, frame, f"Query '{query}' matched no {kind}")
 
 
 def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
@@ -243,15 +254,18 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
     query = evaluate_text(stage.get("query"), ctx)
     if not query:
-        # Format 1 logged and selected nothing rather than failing the definition.
+        # Format 1 logged and selected nothing rather than failing the definition. The
+        # complaint is the log line, so `error_if_empty` -- which is about a query that ran
+        # -- is not repeated here; what `if_empty` decides is whether the rest of the block
+        # still runs over nothing.
         session.logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
-        return []
+        return _apply_if_empty(stage, frame, f"Query for {kind} could not be interpolated")
 
     selection = stage.get("selection") or {}
     selection_error = selection.get("selection_error")
     if selection_error:
         session.logger.error(selection_error)
-        return []
+        return _apply_if_empty(stage, frame, selection_error)
 
     session.check_cancel()
     ids = session.find_cards(query) if is_card_query else session.find_notes(query)
@@ -450,11 +464,12 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
     filename = evaluate_text(stage.get("filename"), filename_ctx)
     if not filename:
         raise frame.error("Error in copy fields: No file name provided", stage)
-    if skip_if_exists and filename not in session.file_overlay:
+    if skip_if_exists:
+        # Asked before the content is evaluated, so a write that is going to be skipped does
+        # not pay for the expression that feeds it. `queue_file_write` asks the same question
+        # again for the writes that get that far, including every pair the code path names.
         try:
-            from ...utils.media_files import media_file_exists
-
-            if media_file_exists(filename):
+            if session.file_is_already_there(filename):
                 return
         except MediaFileError as error:
             raise frame.error(str(error), stage) from error

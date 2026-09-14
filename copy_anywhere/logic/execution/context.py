@@ -318,18 +318,30 @@ class ExecutionSession:
 
     # -- files ------------------------------------------------------------------------
 
+    def file_is_already_there(self, filename: str) -> bool:
+        """Whether a `skip_if_exists` write of `filename` has something to skip.
+
+        A file this run has already queued counts. It lands the moment the trigger commits,
+        so a later stage writing over it is doing exactly what `skip_if_exists` said not to
+        -- and the user cannot see the difference afterwards, only the second content in a
+        file the first stage thought it had written. The overlay is keyed by the stored
+        name, the one with the leading underscore `write_to_media_folder` adds, which is why
+        this normalizes rather than leaving it to the caller.
+        """
+        name = normalize_media_filename(filename)
+        return name in self.file_overlay or media_file_exists(name)
+
     def queue_file_write(
         self, filename: str, content: str, overwrite: bool = True, skip_if_exists: bool = False
     ) -> bool:
         """Queue one media write. Returns False when an existing file made it a no-op."""
         name = normalize_media_filename(filename)
-        if name not in self.file_overlay and (skip_if_exists or not overwrite):
-            if media_file_exists(name):
-                if skip_if_exists:
-                    return False
-                raise MediaFileError(
-                    f"File '{name}' already exists and the stage does not overwrite"
-                )
+        if skip_if_exists and self.file_is_already_there(name):
+            return False
+        if not overwrite and name not in self.file_overlay and media_file_exists(name):
+            raise MediaFileError(
+                f"File '{name}' already exists and the stage does not overwrite"
+            )
         self.file_overlay[name] = content
         self.pending_files.append({"filename": name, "content": content})
         if self.recording:

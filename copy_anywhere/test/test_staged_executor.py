@@ -495,6 +495,40 @@ class TestFiles:
         assert run(definition, note, logger)[0] is False
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
 
+    def test_skip_if_exists_leaves_an_existing_file_alone(self, col, note, media_dir, logger):
+        (media_dir / "_log.txt").write_text("keep", encoding="utf-8")
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("new"), overwrite=False, skip_if_exists=True)
+        ])
+
+        assert run(definition, note, logger)[0] is True, logger.errors
+        assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
+
+    def test_skip_if_exists_counts_a_file_this_run_has_already_written(
+        self, col, note, media_dir, logger
+    ):
+        # The queued write lands the moment the trigger commits, so the second stage is
+        # writing over a file that is about to be there -- which is what the stage said not
+        # to do. The overlay is keyed by the stored name, the one with the leading
+        # underscore, so checking it under the name the user typed never matched.
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("first")),
+            d.write_file("log.txt", d.text("second"), overwrite=False, skip_if_exists=True),
+        ])
+
+        assert run(definition, note, logger)[0] is True, logger.errors
+        assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first"
+
+    def test_skip_if_exists_still_writes_when_nothing_is_there(
+        self, col, note, media_dir, logger
+    ):
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("new"), overwrite=False, skip_if_exists=True)
+        ])
+
+        assert run(definition, note, logger)[0] is True, logger.errors
+        assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "new"
+
     def test_a_filename_with_a_path_separator_is_refused(self, col, note, media_dir, logger):
         definition = d.staged(stages=[d.write_file("../escape.txt", d.text("x"))])
         assert run(definition, note, logger)[0] is False
@@ -693,6 +727,31 @@ class TestCalls:
         assert ok is True, logger.errors
         assert sorted(n["Word"] for n in copied) == ["a", "b"]
         assert all(n["Note"] == "visited" for n in copied)
+
+    def test_an_unmigratable_callee_fails_the_definition_rather_than_the_op(
+        self, col, note, logger
+    ):
+        # The callee is migrated when the call actually looks it up, so the migrator can
+        # raise from inside the run. `MigrationError` is not a `StageError`, so nothing
+        # between the lookup and the `CollectionOp` caught it: the whole op ended in
+        # Anki's error dialog instead of the definition failing and saying why.
+        child = d.within_note("child")
+        child["guid"] = "child-guid"
+        child["copy_mode"] = None
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition("child-guid"),
+                d.edit_note("trigger", [d.write("Note", d.text("ran"))]),
+            ],
+        )
+
+        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+
+        assert ok is False
+        assert logger.has_error("missing copy mode value")
+        assert note["Note"] == ""
 
     def test_a_failing_callee_stops_the_parent_committing_anything(self, col, note, logger):
         child = d.staged(
