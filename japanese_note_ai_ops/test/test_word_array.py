@@ -182,6 +182,14 @@ class WordArrayTests(unittest.TestCase):
                 arr = self.generator.generate(self.examples[num][0])
                 self.assertEqual(find_word(arr, form), [])
 
+    def test_kana_homophones_starting_on_a_suffix_are_refused(self):
+        # さ + は is also JMdict's さは (左派), さん + が its さんが (参賀)
+        arr = self.generator.generate(
+            "彼[かれ]の 無神経[むしんけい]さは 車掌[しゃしょう]さんが 嫌[きら]う。"
+        )
+        self.assertEqual(find_word(arr, "さは"), [])
+        self.assertEqual(find_word(arr, "さんが"), [])
+
     def test_kana_homophones_spelled_otherwise_are_refused(self):
         # <k> kana 成ると is JMdict's なると (鳴門), 事に its ことに (殊に); 如何して is spelled
         # alike though the text kanjifies its し

@@ -820,8 +820,9 @@ def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool
         # does. The text has often kanjified what JMdict keeps in kana (有る), so only its kana
         # are compared.
         alike = any(spelled_alike(c.written, s) for s in c.spellings)
-        if ws[0].head.pos[0] == "助詞" and not opens:
-            # Reaching across a particle, even an entry JMdict has only in kana: は+いくつ
+        if ws[0].head.pos[0] in ("助詞", "接尾辞") and not opens:
+            # Reaching across a particle, even an entry JMdict has only in kana: は+いくつ; or
+            # starting on a suffix, which ends the word before it: 大切さ|が (性), 木下さん|と (三都)
             return KANJI_RE.search(c.written) is not None and alike
         if KANJI_RE.search(c.written) and c.spellings and not alike:
             return False  # 成[な]ると read as 鳴門, 事[こと]に as 殊に

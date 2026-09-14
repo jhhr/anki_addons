@@ -97,8 +97,9 @@ text at all:
 - function words only (には, のだ, か+の read as 彼の);
 - matched by its spelling where the note's furigana reads it as no reading of the entry:
   彼[かれ]の is not 彼の (あの), 今日[きょう]は not 今日は (こんにちは);
-- found only through its kana, starting on a particle, and not spelled that way in JMdict:
-  は+幾つ read as はいくつ (背屈) or を+持って as をもって (を以って). The text's kana must
+- found only through its kana, starting on a particle or a suffix, and not spelled that way in
+  JMdict: は+幾つ read as はいくつ (背屈), を+持って as をもって (を以って), 大切さ+が as さが (性),
+  木下さん+と as さんと (三都); 45 such suffix-led matches in the export. The text's kana must
   match one of the entry's spellings, with the same kanji or kanjified kana between them, so
   だけの事は有って still matches だけの事はある;
 - found only through its kana where the text writes kanji, and JMdict spells the entry otherwise:
