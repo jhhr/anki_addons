@@ -151,11 +151,17 @@ class _Analyzer:
         # Migrated definitions keep format-1 variable names, which were free text; the
         # identifier rule applies to newly authored ones only.
         self.relaxed_names = definition.get("migrated_from_format") == 1
-        #: Root-block results that may be unset because an earlier stage can skip the block.
-        self.root_results_may_be_unset = False
+        #: The first root stage that can skip the rest of the block, if there is one. Every
+        #: root result from that stage onwards may be unset; the ones before it are already
+        #: produced by the time it fires, whichever way it goes.
+        self.first_skipping_root_guid: Optional[str] = None
         self.root_result_stage_guids: dict[str, str] = {}
 
     # -- helpers ----------------------------------------------------------------------
+
+    def note_skipping_root_stage(self, stage: Stage) -> None:
+        if self.first_skipping_root_guid is None:
+            self.first_skipping_root_guid = stage.get("guid")
 
     def problem(self, message: str, stage: Optional[Stage] = None) -> None:
         self.result.problems.append(
@@ -324,9 +330,10 @@ class _Analyzer:
                 T_NOTE_LIST if stage_type == STAGE_NOTE_QUERY else T_CARD_LIST,
             )
             if at_root and stage.get("if_empty") == "skip_block":
-                # Everything declared after this in the root block may be unset, which is
-                # what makes exporting it invalid (§5.9).
-                self.root_results_may_be_unset = True
+                # This stage and everything after it in the root block may be unset, which
+                # is what makes exporting them invalid (§5.9). Its own result counts: when
+                # the skip fires, the stage never declared one.
+                self.note_skipping_root_stage(stage)
 
         elif stage_type == STAGE_EDIT_NOTE:
             target = self.resolve(scope, stage.get("target"), stage, "target")
@@ -357,7 +364,7 @@ class _Analyzer:
             self.check_expression(stage.get("filename"), scope, stage, "filename")
             self.declare(scope, stage, stage_result_name(stage), T_TEXT)
             if at_root and stage.get("if_missing") == "skip_block":
-                self.root_results_may_be_unset = True
+                self.note_skipping_root_stage(stage)
 
         elif stage_type == STAGE_WRITE_FILE:
             effects["writes_files"] = True
@@ -547,6 +554,19 @@ class _Analyzer:
     # -- exports ----------------------------------------------------------------------
 
     def analyze_exports(self, root_scope: Mapping[str, Binding]) -> None:
+        root_stages = [
+            stage for stage in self.definition.get("stages", []) or [] if isinstance(stage, dict)
+        ]
+        positions = {stage.get("guid"): index for index, stage in enumerate(root_stages)}
+        skip_index = (
+            positions.get(self.first_skipping_root_guid)
+            if self.first_skipping_root_guid is not None
+            else None
+        )
+        skip_label = ""
+        if skip_index is not None:
+            skipping = root_stages[skip_index]
+            skip_label = skipping.get("name") or skipping.get("type") or "a stage"
         for export in self.definition.get("exports", []) or []:
             if not isinstance(export, dict):
                 continue
@@ -569,12 +589,13 @@ class _Analyzer:
             if not result_name:
                 self.problem(f"export '{name}' names a stage that produces no result")
                 continue
-            if self.root_results_may_be_unset:
-                # An earlier `skip_block` makes later root results only maybe defined, and an
-                # export that might not exist is worse than no export at all (§5.9).
+            if skip_index is not None and positions.get(stage_guid, -1) >= skip_index:
+                # From the skipping stage onwards a root result is only maybe defined, and an
+                # export that might not exist is worse than no export at all (§5.9). Stages
+                # before it are unaffected: they have already run when the skip fires.
                 self.problem(
-                    f"export '{name}' cannot be guaranteed: an earlier root stage can skip"
-                    " the rest of the block"
+                    f"export '{name}' cannot be guaranteed: '{skip_label}' can skip the rest"
+                    " of the block before it is set"
                 )
                 continue
             # Read off the binding rather than `result_types`, which is keyed by stage: a

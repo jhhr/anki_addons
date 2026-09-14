@@ -255,6 +255,41 @@ class TestCalls:
         result = analyze_definition(child)
         assert "cannot be guaranteed" in messages(result)
 
+    def test_exporting_a_result_produced_before_the_skip_is_allowed(self):
+        # The skip stops the stages *after* it. A result already produced by the time it
+        # fires is set whichever way the skip goes, so refusing to export it refuses
+        # something that cannot happen -- and says the skip is earlier when it is later.
+        producer = d.variable("H1", d.text("x"))
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[producer, d.note_query("found", "deck:x", if_empty="skip_block")],
+            exports=[d.export("H1", producer)],
+        )
+        result = analyze_definition(child)
+        assert messages(result) == ""
+        assert result.export_types["H1"] == T_TEXT
+
+    def test_exporting_the_skipping_stages_own_result_is_refused(self):
+        # When the skip fires, the stage that skipped never declared its result either.
+        query = d.note_query("found", "deck:x", if_empty="skip_block")
+        child = d.staged(
+            "child", guid="child-guid", stages=[query], exports=[d.export("found", query)]
+        )
+        result = analyze_definition(child)
+        assert "cannot be guaranteed" in messages(result)
+
+    def test_a_skipping_read_file_does_not_invalidate_what_came_before(self):
+        producer = d.variable("H1", d.text("x"))
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[producer, d.read_file("body", "f.txt", if_missing="skip_block")],
+            exports=[d.export("H1", producer)],
+        )
+        result = analyze_definition(child)
+        assert messages(result) == ""
+
     def test_exporting_a_loop_local_result_is_refused(self):
         inner = d.variable("H1", d.text("x"))
         child = d.staged(
