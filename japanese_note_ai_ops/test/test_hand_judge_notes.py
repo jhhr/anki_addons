@@ -15,6 +15,7 @@ if str(RESEARCH) not in sys.path:
 
 import anki_connect  # noqa: E402
 import hand_labels  # noqa: E402
+import note_edits  # noqa: E402
 
 
 class FakeResponse:
@@ -114,6 +115,34 @@ class ExportNidsTests(unittest.TestCase):
             self.assertEqual(hand_labels.read_export_nids(Path(tmp) / "missing.jsonl"), {})
 
 
+class UnkanjifyTests(unittest.TestCase):
+    def test_a_span_keeps_only_its_furigana_readings(self):
+        field = "<k> 此[こ]の</k> 本[ほん]を<k> 下[くだ]さい</k>。"
+        self.assertEqual(note_edits.unkanjify(field, 0), "この 本[ほん]を<k> 下[くだ]さい</k>。")
+        self.assertEqual(note_edits.unkanjify(field, 1), "<k> 此[こ]の</k> 本[ほん]をください。")
+        self.assertEqual(note_edits.unkanjify("<k>奴[ヤツ]</k>", 0), "ヤツ")
+        self.assertEqual(
+            note_edits.unkanjify("<k><b> 間[ま]も 無[な]く</b></k>", 0), "<b>まもなく</b>"
+        )
+
+    def test_spans_are_counted_outside_the_context(self):
+        field = "<i><k> 其[そ]の</k>日[ひ]。</i><k> 此[こ]の</k> 日[ひ]<i><k> 彼[あ]の</k></i>"
+        self.assertEqual(
+            note_edits.unkanjify(field, 0),
+            "<i><k> 其[そ]の</k>日[ひ]。</i>この 日[ひ]<i><k> 彼[あ]の</k></i>",
+        )
+        with self.assertRaisesRegex(note_edits.NoteEditError, "no <k> span number 2"):
+            note_edits.unkanjify(field, 1)
+
+    def test_a_span_without_furigana_or_unclosed_is_refused_but_counted(self):
+        field = "<k>この</k><k> 為[し]ます<k> 此[こ]れ</k>"
+        self.assertEqual(note_edits.changes(field), [None, None, ("此[こ]れ", "これ")])
+        for k in (0, 1):
+            with self.assertRaises(note_edits.NoteEditError):
+                note_edits.unkanjify(field, k)
+        self.assertEqual(note_edits.unkanjify(field, 2), "<k>この</k><k> 為[し]ますこれ")
+
+
 def word(raw: str, dict_form: str, reading: str, pos: str = "noun") -> list:
     return [raw, pos, dict_form, reading, [], []]
 
@@ -203,6 +232,11 @@ class FakeAnki:
     def __init__(self, fields: dict[int, str]):
         self.fields = fields
         self.browsed: list[str] = []
+        self.written: list[tuple[int, dict]] = []
+
+    def update_note_fields(self, nid, fields):
+        self.written.append((nid, fields))
+        self.fields[nid] = fields["s"]
 
     def notes_info(self, nids):
         return [
@@ -294,6 +328,82 @@ class SentenceChangeTests(unittest.TestCase):
         self.assertIn("犬猫", s.sentences)
         self.assertEqual(
             {r["sentence"] for r in hand_labels.read_labels(self.labels_path)}, {"犬鳥"}
+        )
+
+
+@unittest.skipIf(hand_judge is None, "hand_judge needs the generator's imports")
+class UnkanjifySessionTests(unittest.TestCase):
+    SENTENCE = "犬<k> 猫[ねこ]</k>"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.labels_path = self.dir / "labels.jsonl"
+        write_jsonl(self.labels_path, [label(self.SENTENCE, "犬")])
+        self.export = self.dir / "export.jsonl"
+        raw = "<i>前</i>" + self.SENTENCE
+        write_jsonl(self.export, [{"sentence": raw, "word_list": "w", "nids": [7]}])
+        self.anki = FakeAnki({7: raw})
+        self.session = hand_judge.Session(
+            [self.SENTENCE],
+            {},
+            self.labels_path,
+            1,
+            nids={self.SENTENCE: [7]},
+            raws={7: raw},
+            generate=fake_generate,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def labelled(self) -> list[str]:
+        return [r["sentence"] for r in hand_labels.read_labels(self.labels_path)]
+
+    def test_span_written_as_kana_then_reverted(self):
+        s, anki = self.session, self.anki
+        message = s.unkanjify(self.SENTENCE, 0, anki, CONFIG, [self.export])
+        self.assertIn("1 labels moved", message)
+        self.assertEqual(anki.fields[7], "<i>前</i>犬ねこ")
+        self.assertEqual(s.sentences, ["犬ねこ"])
+        self.assertEqual(self.labelled(), ["犬ねこ"])
+        self.assertEqual(read_jsonl(self.export)[0]["sentence"], "<i>前</i>犬ねこ")
+
+        self.assertTrue(s.revert(anki, CONFIG, [self.export]).startswith(hand_judge.REVERTED))
+        self.assertEqual(anki.fields[7], "<i>前</i>" + self.SENTENCE)
+        self.assertEqual(s.sentences, [self.SENTENCE])
+        self.assertEqual(self.labelled(), [self.SENTENCE])
+        self.assertEqual(s.edits, [])
+        with self.assertRaisesRegex(hand_judge.Refused, "No edit"):
+            s.revert(anki, CONFIG, [])
+
+    def test_note_edited_in_anki_meanwhile_is_left_alone(self):
+        s, anki = self.session, self.anki
+        anki.fields[7] = "犬猫"
+        with self.assertRaisesRegex(hand_judge.Refused, "refetch it first"):
+            s.unkanjify(self.SENTENCE, 0, anki, CONFIG, [])
+        anki.fields[7] = self.SENTENCE
+        s.unkanjify(self.SENTENCE, 0, anki, CONFIG, [])
+        anki.fields[7] = "犬ネコ"
+        with self.assertRaisesRegex(hand_judge.Refused, "changed in Anki"):
+            s.revert(anki, CONFIG, [])
+        self.assertEqual(len(anki.written), 1)
+
+    def test_page_numbers_spans_as_the_field_does(self):
+        items = [
+            ["<k>"],
+            [" 此[こ]の</k> 本[ほん]", "noun", "此の本", "このほん", [], []],
+            ["を"],
+            ["<k>"],
+            [" 下[くだ]さい", "verb", "下さる", "くださる", [], []],
+            ["</k>"],
+        ]
+        html = hand_judge.render(items, items[4], [])
+        self.assertIn('<span class="k" data-k="0"><ruby>此<rt>こ</rt></ruby>の</span>', html)
+        self.assertIn('<mark><span class="k" data-k="1"><ruby>下', html)
+        self.assertNotIn('data-k="0"><ruby>本', html)
+        self.assertEqual(
+            len(note_edits.k_spans("<k> 此[こ]の</k> 本[ほん]を<k> 下[くだ]さい</k>")), 2
         )
 
 

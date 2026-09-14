@@ -18,6 +18,10 @@ reads them back after an edit there, both through AnkiConnect (`--anki-connect`)
 calls so that a phone can use them too. A changed sentence is generated again at the front of the
 queue, its labels move to the new text where the new array still has their word (the rest are
 dropped), and its rows in the export and the checked subset take the new text.
+
+The sentence outlines its `<k>` spans: clicking one, once confirmed, writes the span as kana to
+every note of the sentence (`note_edits.unkanjify`) and goes on as a refetch does. Anki can't undo
+that write, so Revert last edit writes the old field back while Anki still has the edited one.
 """
 
 import argparse
@@ -36,6 +40,7 @@ from urllib.parse import parse_qs, urlparse
 import anki_connect
 import hand_labels
 import migrate_fit
+import note_edits
 from _bootstrap import load
 
 judge_v2 = load("judge_v2")
@@ -69,8 +74,11 @@ def word_key(group: str, path: tuple[str, ...], reading: str) -> tuple:
     return (group, tuple(path[-2:]), reading)
 
 
-def ruby(raw_text: str) -> str:
-    text = html.unescape(TAG_RE.sub("", raw_text))
+K_TAG_RE = re.compile(r"(</?k>)")
+
+
+def _ruby(text: str) -> str:
+    text = html.unescape(TAG_RE.sub("", text))
     out, pos = [], 0
     for m in RUBY_RE.finditer(text):
         out.append(html.escape(text[pos : m.start()]))
@@ -80,15 +88,36 @@ def ruby(raw_text: str) -> str:
     return "".join(out).replace(" ", "")
 
 
-def render(items: list, target: list, parents: list[list]) -> str:
+def ruby(raw_text: str, k: Optional[dict] = None) -> str:
+    """Raw text as ruby, the text inside a `<k>` span wrapped in a span carrying its number.
+    `k` keeps count across the raw texts of one sentence: which span is open, and how many
+    were opened."""
+    k = {"open": None, "count": 0} if k is None else k
+    out = []
+    for chunk in K_TAG_RE.split(raw_text):
+        if chunk == "<k>":
+            k["open"] = k["count"]
+            k["count"] += 1
+        elif chunk == "</k>":
+            k["open"] = None
+        elif chunk:
+            text = _ruby(chunk)
+            if text and k["open"] is not None:
+                text = f'<span class="k" data-k="{k["open"]}">{text}</span>'
+            out.append(text)
+    return "".join(out)
+
+
+def render(items: list, target: list, parents: list[list], k: Optional[dict] = None) -> str:
+    k = {"open": None, "count": 0} if k is None else k
     parts = []
     for elem in items:
         if elem is target:
-            parts.append(f"<mark>{ruby(elem[0])}</mark>")
+            parts.append(f"<mark>{ruby(elem[0], k)}</mark>")
         elif len(elem) > 1 and any(elem is p for p in parents):
-            parts.append(f'<span class="parent">{render(elem[5], target, parents)}</span>')
+            parts.append(f'<span class="parent">{render(elem[5], target, parents, k)}</span>')
         else:
-            parts.append(ruby(elem[0]))
+            parts.append(ruby(elem[0], k))
     return "".join(parts)
 
 
@@ -104,6 +133,22 @@ NO_CHANGE = (
     "No change in Anki. The editor saves a field when it loses focus: click out of it, then"
     " refetch."
 )
+REVERTED = "Reverted."
+
+
+class Refused(Exception):
+    """An edit not made, with why, for the page."""
+
+
+class Edit(NamedTuple):
+    nid: int
+    field: str
+    old: str
+    new: str
+
+
+def _stripped(raw: str) -> str:
+    return migrate_fit.html_stripping.strip_context_sentences(raw)
 
 
 class Session:
@@ -135,6 +180,8 @@ class Session:
         self.nids = nids or {}
         self.raws = raws or {}
         self.generate = generate or migrate_fit.generator.generate
+        # Writes to Anki, latest last: the notes of one un-kanjified span each
+        self.edits: list[list[Edit]] = []
         self.lock = threading.Lock()
 
     def _count_labels(self) -> None:
@@ -224,10 +271,7 @@ class Session:
         """Takes the notes of `sentence` as Anki has them now (raw field by note id, in the
         session's note order): unchanged, or the sentence replaced and the jsonl files at
         `paths` rewritten. Returns what happened, for the page."""
-        texts = {
-            nid: migrate_fit.html_stripping.strip_context_sentences(raw)
-            for nid, raw in raws.items()
-        }
+        texts = {nid: _stripped(raw) for nid, raw in raws.items()}
         new_texts = list(dict.fromkeys(t for t in texts.values() if t.strip()))
         if not new_texts or new_texts == [sentence]:
             return NO_CHANGE
@@ -268,6 +312,68 @@ class Session:
             return NO_NIDS
         anki.gui_browse(anki_connect.nids_query(nids))
         return f"Opened {len(nids)} note(s) in Anki's browser."
+
+    def unkanjify(self, sentence: str, k: int, anki, config: dict, paths) -> str:
+        """Turns the `k`-th `<k>` span of `sentence` into kana in every note of it, as Anki has
+        them now; refused, nothing written, when a note reads otherwise or the span can't be
+        edited."""
+        nids = self.nids.get(sentence)
+        if not nids:
+            raise Refused(NO_NIDS)
+        edits = []
+        for info in anki.notes_info(nids):
+            if not info:
+                continue
+            raw = anki_connect.note_sentence(config, info)
+            if _stripped(raw) != sentence:
+                raise Refused(
+                    f"Note {info['noteId']} reads otherwise in Anki now: refetch it first."
+                )
+            try:
+                new = note_edits.unkanjify(raw, k)
+            except note_edits.NoteEditError as e:
+                raise Refused(str(e)) from None
+            field = anki_connect.sentence_field(config, info.get("modelName", ""))
+            edits.append(Edit(info["noteId"], field, raw, new))
+        if not edits:
+            raise Refused("None of the sentence's notes is in Anki any more.")
+        written = self._write(anki, edits, "new")
+        self.edits.append(written)
+        message = self.apply_notes(sentence, {e.nid: e.new for e in written}, paths)
+        if len(written) < len(edits):
+            message = f"Only {len(written)} of {len(edits)} notes written. {message}"
+        return message
+
+    def revert(self, anki, config: dict, paths) -> str:
+        """Writes back the fields of the last un-kanjified span, if Anki still has what was
+        written."""
+        if not self.edits:
+            raise Refused("No edit to revert.")
+        edits = self.edits[-1]
+        infos = {info["noteId"]: info for info in anki.notes_info([e.nid for e in edits]) if info}
+        for e in edits:
+            value = infos.get(e.nid, {}).get("fields", {}).get(e.field, {}).get("value")
+            if value != e.new:
+                raise Refused(f"Note {e.nid} changed in Anki since the edit: not reverted.")
+        written = self._write(anki, edits, "old")
+        self.edits.pop()
+        message = self.apply_notes(_stripped(edits[0].new), {e.nid: e.old for e in written}, paths)
+        return f"{REVERTED} {message}"
+
+    @staticmethod
+    def _write(anki, edits: list[Edit], side: str) -> list[Edit]:
+        """Writes each edit's `side` value; the edits written. A failure after the first write
+        keeps those written, as Anki already has them."""
+        written = []
+        for e in edits:
+            try:
+                anki.update_note_fields(e.nid, {e.field: getattr(e, side)})
+            except anki_connect.AnkiConnectError:
+                if not written:
+                    raise
+                break
+            written.append(e)
+        return written
 
     def group_totals(self) -> Counter[str]:
         """How many words of each group can be labelled, at most --per-word of each word."""
@@ -314,6 +420,7 @@ class Session:
             ],
             "sentences": f"{generated}/{len(self.sentences)}",
             "counting": generated < len(self.sentences),
+            "can_revert": bool(self.edits),
         }
         if cand is None:
             return {"item": None, "stats": stats}
@@ -331,6 +438,7 @@ class Session:
                 "made_of": " + ".join(f"{s[2]} [{s[3]}]" for s in subs),
                 "rules": judge_v2.POS_RULES[cand.group],
                 "notes": len(self.nids.get(cand.sentence, [])),
+                "kspans": note_edits.changes(cand.sentence),
                 "no_notes": NO_NIDS,
             },
             "stats": stats,
@@ -402,6 +510,7 @@ details { margin-top:12px; color:var(--muted); white-space:pre-wrap; font-size:1
 .stats { font-size:13px; color:var(--muted); }
 .notes { margin-top:8px; } .notes button { font-size:14px; padding:8px 12px; }
 .message { font-size:14px; white-space:pre-wrap; }
+.k { outline:1px dotted var(--muted); outline-offset:1px; border-radius:3px; cursor:pointer; }
 </style></head><body><main>
 <div class="groups" id="groups"></div>
 <div class="card" id="card">Loading...</div>
@@ -414,6 +523,7 @@ details { margin-top:12px; color:var(--muted); white-space:pre-wrap; font-size:1
 <div class="buttons notes">
   <button id="browse" onclick="note('/api/browse')">Open in Anki <small>(O)</small></button>
   <button id="refetch" onclick="note('/api/refetch')">Refetch note <small>(R)</small></button>
+  <button id="revert" onclick="action('/api/revert', {})" disabled>Revert last edit</button>
 </div>
 <p class="message" id="message"></p>
 <p class="stats" id="stats"></p>
@@ -441,6 +551,7 @@ function show(data) {
     `${s.now} judged now, ${s.labels} saved, sentences read ${s.sentences} | ` +
     s.by_group.map(([g, n, total]) => `${g} ${n}/${total}${s.counting ? "+" : ""}`).join(", ");
   const card = document.getElementById("card");
+  document.getElementById("revert").disabled = !s.can_revert;
   for (const b of ["browse", "refetch"])
     document.getElementById(b).disabled = !current || !current.notes;
   if (!current) { card.textContent = "Nothing left to offer in the ticked groups."; return; }
@@ -458,14 +569,25 @@ async function post(url, body) {
 const message = text => { document.getElementById("message").textContent = text; };
 function send(label) { if (current) { message(""); post("/api/judge", {id: current.id, label}); } }
 function undo() { message(""); post("/api/undo", {}); }
-async function note(url) {
-  if (!current || !current.notes) return;
+async function action(url, body) {
   message("...");
-  const r = await fetch(url, {method: "POST", body: JSON.stringify({id: current.id})});
+  const r = await fetch(url, {method: "POST", body: JSON.stringify(body)});
   const data = await r.json();
   if (data.reload) await post("/api/next", {});
   message(data.message);
 }
+function note(url, extra) {
+  if (current && current.notes) action(url, {...extra, id: current.id});
+}
+document.getElementById("card").addEventListener("click", e => {
+  const span = e.target.closest(".k");
+  if (!span || !current) return;
+  const k = Number(span.dataset.k), change = current.kspans[k];
+  if (!current.notes) { message(current.no_notes); return; }
+  if (!change) { message("That <k> span isn't closed or has no furigana: fix it in Anki."); return; }
+  if (confirm(`${change[0]} → ${change[1]}\n\nWrite this to ${current.notes} note(s) in Anki?`))
+    note("/api/unkanjify", {k});
+});
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
@@ -481,16 +603,23 @@ post("/api/next", {});
 
 
 def note_action(session: Session, path: str, body: dict, anki, config: dict, paths) -> dict:
-    """`/api/browse` and `/api/refetch` on the card's sentence: a message for the page, and
-    whether the card is to be reloaded because the sentence changed."""
-    cand = session.offered.get(int(body.get("id", 0)))
-    if cand is None:
-        return {"message": "That card is gone; reload the page.", "reload": False}
+    """`/api/browse`, `/api/refetch` and `/api/unkanjify` on the card's sentence, and
+    `/api/revert`: a message for the page, and whether the card is to be reloaded because the
+    sentence changed."""
     try:
+        if path == "/api/revert":
+            return {"message": session.revert(anki, config, paths), "reload": True}
+        cand = session.offered.get(int(body.get("id", 0)))
+        if cand is None:
+            return {"message": "That card is gone; reload the page.", "reload": False}
         if path == "/api/browse":
             return {"message": session.browse(cand.sentence, anki), "reload": False}
-        message = session.refetch(cand.sentence, anki, config, paths)
-    except anki_connect.AnkiConnectError as e:
+        if path == "/api/unkanjify":
+            k = int(body.get("k", -1))
+            message = session.unkanjify(cand.sentence, k, anki, config, paths)
+        else:
+            message = session.refetch(cand.sentence, anki, config, paths)
+    except (anki_connect.AnkiConnectError, Refused) as e:
         return {"message": str(e), "reload": False}
     return {"message": message, "reload": message not in (NO_CHANGE, NO_NIDS)}
 
@@ -524,7 +653,7 @@ def make_handler(session: Session, anki=None, config=None, paths=()):
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
             groups = set(body.get("groups") or [])
-            if path in ("/api/browse", "/api/refetch"):
+            if path in ("/api/browse", "/api/refetch", "/api/unkanjify", "/api/revert"):
                 data = note_action(session, path, body, anki, config or {}, paths)
                 self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"), "application/json")
                 return

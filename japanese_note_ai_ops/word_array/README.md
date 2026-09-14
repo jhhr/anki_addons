@@ -252,6 +252,9 @@ the sentence (`hand_labels.read_export_nids`), and `research/anki_connect.py` re
 notes through AnkiConnect, for fixing a sentence from the hand judge's page: Open in Anki browses
 the sentence's notes, Refetch note regenerates an edited sentence at the front of the queue, moves
 its labels to the new text (dropping those whose word is gone) and rewrites its export and checked rows.
+Clicking an outlined `<k>` span writes it back as kana to every note of the sentence
+(`research/note_edits.py`: `<k> 此[こ]の</k>` → `この`) and goes on as Refetch does; Anki can't
+undo that write, so Revert last edit puts the old field back.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
