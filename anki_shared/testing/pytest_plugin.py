@@ -43,7 +43,9 @@ requested but WebEnginePage still not deleted"). So the exit is no longer a fall
 PyQt that renamed its handler -- it is the guard, and unregistering is one step inside it.
 
 The exit runs only in the main process: an xdist worker still has results queued for the
-controller at this point, so it is left to shut down normally.
+controller at this point, so it is left to shut down normally. Parallel runs have their own
+requirement, which is nothing to do with the guard: `choose_xdist_distribution` says what it
+is and why.
 
 The guard only engages when a `QApplication` exists, which is to say when a real Anki was
 started in this process; a stub-only run never creates one and keeps the ordinary teardown
@@ -64,10 +66,45 @@ import pytest
 
 GUARD_ENV = "ANKI_TEST_SHUTDOWN_GUARD"
 
+#: What a parallel run is distributed by when the user asked for workers and not for a
+#: distribution. `loadfile` keeps every test of one file on one worker.
+DEFAULT_XDIST_DISTRIBUTION = "loadfile"
+
 _EXIT_STATUS = pytest.StashKey[int]()
 
 # The name pytest-anki2's entry point registers its plugin under.
 _PYTEST_ANKI_PLUGIN = "anki"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    # Before xdist builds its scheduler, which reads this option in its own `pytest_configure`.
+    choose_xdist_distribution(config)
+
+
+def choose_xdist_distribution(config: Any) -> bool:
+    """Send a parallel run to `--dist loadfile`, unless the user picked a distribution.
+
+    xdist's default, `load`, hands tests out one at a time from a single queue, which splits
+    the running-Anki file across workers and interleaves each worker's share with tests from
+    every other file. A worker that runs a real Anki that way segfaults partway through --
+    at every worker count from two up, with the shutdown guard on or off -- and xdist reports
+    `node down: Not properly terminated` for a suite that is green run serially. Keeping each
+    file on one worker is enough to avoid it, and costs nothing here: the suites are spread
+    over enough files to keep four workers busy either way.
+
+    Only the default is moved. `--dist` on the command line is the user saying what they
+    want, including `--dist load` to see the crash.
+    """
+    if not getattr(config.option, "numprocesses", None):
+        return False
+    if getattr(config.option, "dist", "no") != "load":
+        return False
+    args = getattr(getattr(config, "invocation_params", None), "args", ())
+    if any(arg == "-d" or arg == "--dist" or arg.startswith("--dist=") for arg in args):
+        return False
+    config.option.dist = DEFAULT_XDIST_DISTRIBUTION
+    return True
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

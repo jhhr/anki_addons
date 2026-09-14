@@ -35,7 +35,13 @@ would downgrade what the first step put in. `pip check` goes on reporting the py
 afterwards; that is expected. Without `pytest-anki2` every test that needs `anki_session`
 is reported as skipped, with the install command as its reason, and everything else runs.
 
-`pytest-xdist` is optional and works: `python -m pytest -n 4`.
+`pytest-xdist` is optional and works: `python -m pytest -n 4`. The plugin sends a parallel
+run to `--dist loadfile` when no `--dist` was given, so each file's tests stay on one
+worker. xdist's own default, `load`, splits the running-Anki file across workers and
+interleaves each worker's share with tests from every other file; a worker running a real
+Anki that way segfaults partway through and xdist reports `node down: Not properly
+terminated` for a suite that is green run serially. Passing `--dist` explicitly is left
+alone, `--dist load` included, which is how to see that crash.
 
 ## Running the suites
 
@@ -198,7 +204,9 @@ that crashes. The exit status is still pytest's own (1 for a failure, 2 for an i
 collection error, 5 for nothing collected), pytest's temporary directories are still cleaned
 up, and `pytest.main()` callers are unaffected. A stub-only run creates no `QApplication`
 and is left alone entirely; so is an xdist worker, which still has results queued for the
-controller at that point.
+controller at that point. What parallel runs do need is a distribution that keeps a file on
+one worker, which is not the guard's doing and is described under installing `pytest-xdist`
+above.
 
 The handlers are run rather than skipped because a bare `os._exit` would drop pytest's own,
 which remove this run's lock on its `pytest-of-<user>/pytest-N` directory and prune old
