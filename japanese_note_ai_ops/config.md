@@ -101,6 +101,20 @@ enough of the run has been measured to fit one.
 Default `180`. Seconds to wait for a single API response before giving up on that attempt.
 Timeouts are retried, subject to `max_request_retries`.
 
+### terminal- models (claude CLI)
+
+Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
+subscription instead of the HTTP API, e.g. `"word_matching_judge_model": "terminal-claude-haiku-4-5"`.
+Each request starts one `claude -p` process (thinking off, no tools), so it is far slower than the
+API: about 70 requests a minute on a 4-core PC. Put the API model back in the config to switch
+back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
+and `max_retry_wait_seconds` apply as for the API.
+
+- `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
+  takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
+- `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
+  `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
+
 ## config fields per note type name
 
 Add the fields by note type like this. You can set multiple different note types. You can't set

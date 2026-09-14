@@ -33,6 +33,7 @@ from .api_client import (
     run_cancelled,
     set_connection_pool_size,
 )
+from .terminal_client import get_response_from_terminal, is_terminal_model
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
 from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size
 from .diagnostics import (
@@ -181,7 +182,23 @@ def get_response(
     Returns:
         A dict containing the parsed JSON response, or None if there was an error.
     """
-    if model.startswith("gemini"):
+    if is_terminal_model(model):
+        config = mw.addonManager.getConfig(__name__)
+        if config is None:
+            logger.error("No configuration found for the addon.")
+            return None
+        return get_response_from_terminal(
+            model,
+            prompt,
+            config,
+            cancel_state=cancel_state,
+            instructions=instructions or DEFAULT_SYSTEM_INSTRUCTION,
+            response_schema=response_schema,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            json_result_corrector=json_result_corrector,
+        )
+    elif model.startswith("gemini"):
         return get_response_from_gemini(
             model,
             prompt,

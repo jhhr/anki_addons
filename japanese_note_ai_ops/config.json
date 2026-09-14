@@ -40,6 +40,8 @@
   "max_request_retries": 5,
   "max_retry_wait_seconds": 120,
   "request_timeout": 180,
+  "terminal_max_concurrent_requests": 16,
+  "claude_cli_path": "",
   "mdx_filenames": [],
   "mdx_pick_dictionary": "all",
   "extract_words_migration_data_query": "",
