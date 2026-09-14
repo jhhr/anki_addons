@@ -72,6 +72,10 @@ DEFAULT_SELECT_CARD_SEPARATOR = ", "
 #: without an Anki to read a config from.
 LEGACY_SELECT_CARD_BY_VALUES = ("None", "Random", "Least_reps")
 
+#: Format 1's name for the one process that could read more than one note at a time. Spelled
+#: out here for the same reason as the values above.
+LEGACY_REGEX_PROCESS = "Regex replace"
+
 
 def _split_quoted_list(value: Optional[str]) -> list[str]:
     """Format 1 stored name lists quoted and comma-joined; format 2 stores JSON arrays."""
@@ -240,6 +244,72 @@ def _selection(definition: dict, warnings: list[str]) -> dict:
         selection["sort_numeric"] = True
 
     return selection
+
+
+def _writes_reading_all_notes(definition: dict) -> list[str]:
+    """The field and file writes whose regex process interpolated across every source note.
+
+    Only those two kinds are asked. A variable's chain was evaluated against one note in
+    every mode -- format 1 passed `notes=[note]` -- so `use_all_notes` on a variable did
+    nothing then either, and reporting it would send the user looking for a change that
+    never happened.
+    """
+    named: list[str] = []
+    writes = [
+        (field_def, field_def.get("copy_into_note_field", ""))
+        for field_def in definition.get("field_to_field_defs") or []
+    ] + [
+        (file_def, file_def.get("copy_into_filename", ""))
+        for file_def in definition.get("field_to_file_defs") or []
+    ]
+    for write, target in writes:
+        for process in write.get("process_chain") or []:
+            if process.get("name") == LEGACY_REGEX_PROCESS and process.get("use_all_notes"):
+                name = target or "an unnamed write"
+                if name not in named:
+                    named.append(name)
+                break
+    return named
+
+
+def _warn_about_reading_all_notes(
+    definition: dict, selection: dict, warnings: list[str]
+) -> None:
+    """Report a `use_all_notes` that the migrated definition cannot honour.
+
+    Format 1 handed the whole source list to the process chain, and a regex process with
+    this flag built both its pattern and its replacement out of all of them, joined by
+    `regex_separator` and `replacement_separator`. A format-2 stage reads one note, so the
+    migrated definition interpolates the trigger note alone: a shorter result, or an empty
+    one, with nothing said at runtime.
+
+    Nothing is repaired here, only reported. A config already migrated on a user's machine
+    is never migrated again, so a warning is the only thing that can reach those definitions
+    at all -- which is why this is worth having whether or not the migrator ever learns to
+    build the join itself.
+
+    Only Destination-to-sources asks: it is the one mode whose source list could hold more
+    than one note. Within note read a copy of the trigger note, and Source-to-destinations
+    read the trigger note, so `len(notes) > 1` was false in both and the flag was already
+    dead there.
+    """
+    if selection.get("selection_error"):
+        # Format 1 selected no source notes at all here and said why. There was never a
+        # second note for the flag to read, and the refusal is the thing to fix first.
+        return
+    if selection.get("strategy") != "all" and (selection.get("count") or 0) <= 1:
+        # One source note is not "more than one": format 1 took the `[dest_note]` branch.
+        return
+    targets = _writes_reading_all_notes(definition)
+    if not targets:
+        return
+    warnings.append(
+        f"Definition '{definition.get('definition_name', '')}': a regex process with 'use"
+        " all notes' built its pattern and replacement out of every source note, which a"
+        " format-2 stage cannot do -- it reads one note. Affected:"
+        f" {', '.join(targets)}. These now interpolate the trigger note alone; rebuild them"
+        " as a loop collecting one value per note and a join."
+    )
 
 
 def _note_query_stage(definition: dict, definition_guid: str, warnings: list[str]) -> Stage:
@@ -435,6 +505,7 @@ def _destination_to_sources_stages(
     if separator is None:
         separator = DEFAULT_SELECT_CARD_SEPARATOR
     stages: list[Stage] = [_note_query_stage(definition, definition_guid, warnings)]
+    _warn_about_reading_all_notes(definition, stages[0].get("selection") or {}, warnings)
 
     join_index = 0
     field_writes = _field_writes(definition, modifies_other_notes=False)

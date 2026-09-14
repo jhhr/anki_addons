@@ -446,3 +446,130 @@ class TestRefusals:
         migrated, problems = migrate_definitions([broken, d.within_note(definition_name="fine")])
         assert [definition["definition_name"] for definition in migrated] == ["fine"]
         assert any("broken" in problem for problem in problems)
+
+
+class TestAProcessChainThatReadEveryNote:
+    """`use_all_notes` on a regex process, which format 2 has nowhere to put.
+
+    Format 1 kept one list of source notes and handed it to the whole process chain, so a
+    regex process with this flag interpolated its pattern across all of them. A stage reads
+    one note, so the migrated definition silently reads the trigger note instead. Nothing
+    here repairs that -- the point is that the user is told, since a config that has already
+    been migrated is never migrated again.
+    """
+
+    def warnings(self, **extra):
+        chain = [d.regex_process("{{Word}}", "[{{Meaning}}]", use_all_notes=True)]
+        definition = d.destination_to_sources(
+            definition_name="allnotes",
+            copy_from_cards_query="deck:x",
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}", process_chain=chain)
+            ],
+            **{"select_card_count": "0", **extra},
+        )
+        return migrate_definition_v1_to_v2(definition).get("migration_warnings", [])
+
+    def test_it_is_reported_with_the_definition_and_the_field(self):
+        warnings = self.warnings()
+        assert len(warnings) == 1
+        assert "allnotes" in warnings[0]
+        assert "use all notes" in warnings[0]
+        assert "Note" in warnings[0]
+
+    def test_a_file_write_is_reported_by_its_filename(self):
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=True)]
+        definition = d.destination_to_sources(
+            copy_from_cards_query="deck:x",
+            select_card_count="0",
+            field_to_file_defs=[
+                d.field_to_file("out.txt", "{{Word}}", process_chain=chain)
+            ],
+        )
+        warnings = migrate_definition_v1_to_v2(definition)["migration_warnings"]
+        assert any("out.txt" in warning for warning in warnings)
+
+    def test_one_source_note_is_not_more_than_one(self):
+        # `use_all_notes and len(notes) > 1`: with a count of 1 the flag never fired in
+        # format 1 either, so there is no change to report.
+        assert self.warnings(select_card_count="1") == []
+
+    def test_a_count_above_one_is_reported(self):
+        assert len(self.warnings(select_card_count="2")) == 1
+
+    def test_a_selection_that_refused_to_select_is_not_reported(self):
+        # Format 1 selected no sources at all and said so. The refusal migrates with it and
+        # is the thing to fix; a second warning about a flag that had no notes to read would
+        # only point away from it.
+        warnings = self.warnings(select_card_by="Most_reps")
+        assert not any("use all notes" in warning for warning in warnings)
+
+    def test_the_flag_turned_off_says_nothing(self):
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=False)]
+        definition = d.destination_to_sources(
+            copy_from_cards_query="deck:x",
+            select_card_count="0",
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}", process_chain=chain)
+            ],
+        )
+        assert migrate_definition_v1_to_v2(definition).get("migration_warnings", []) == []
+
+    @pytest.mark.parametrize(
+        "builder", [d.within_note, d.source_to_destinations], ids=["within", "to_dests"]
+    )
+    def test_the_modes_with_one_source_note_say_nothing(self, builder):
+        # Within note read a copy of the trigger note and Source-to-destinations read the
+        # trigger note, so the flag was already dead in both before any migration.
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=True)]
+        definition = builder(
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}", process_chain=chain)
+            ],
+            # Set so that the selection is not what is doing the work here: with a count of
+            # 1 the warning would stay quiet whatever the mode, and the test would pass
+            # without the mode ever being consulted.
+            select_card_count="0",
+        )
+        assert migrate_definition_v1_to_v2(definition).get("migration_warnings", []) == []
+
+    def test_a_variable_is_not_reported(self):
+        # Format 1 evaluated every variable against one note (`notes=[note]`), so the flag
+        # did nothing there in any mode. Reporting it would send the user hunting for a
+        # change that never happened.
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=True)]
+        definition = d.destination_to_sources(
+            copy_from_cards_query="deck:x",
+            select_card_count="0",
+            field_to_variable_defs=[
+                d.field_to_variable("V", "{{Word}}", process_chain=chain)
+            ],
+        )
+        assert migrate_definition_v1_to_v2(definition).get("migration_warnings", []) == []
+
+    def test_two_affected_writes_are_named_in_one_warning(self):
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=True)]
+        definition = d.destination_to_sources(
+            copy_from_cards_query="deck:x",
+            select_card_count="0",
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}", process_chain=chain),
+                d.field_to_field("Other", "{{Word}}", process_chain=chain),
+            ],
+        )
+        warnings = migrate_definition_v1_to_v2(definition)["migration_warnings"]
+        assert len(warnings) == 1
+        assert "Note" in warnings[0] and "Other" in warnings[0]
+
+    def test_the_whole_config_migration_collects_it(self):
+        chain = [d.regex_process("{{Word}}", "x", use_all_notes=True)]
+        definition = d.destination_to_sources(
+            definition_name="allnotes",
+            copy_from_cards_query="deck:x",
+            select_card_count="0",
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}", process_chain=chain)
+            ],
+        )
+        _migrated, problems = migrate_definitions([definition])
+        assert any("use all notes" in problem for problem in problems)
