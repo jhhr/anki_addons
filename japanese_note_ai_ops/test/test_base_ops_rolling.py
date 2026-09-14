@@ -528,6 +528,39 @@ class RollingDriverCancelTest(unittest.TestCase):
 
         asyncio.run(main())
 
+    def test_a_run_cancelled_by_its_own_work_stops(self):
+        """The claude CLI cancels the run from a worker when the usage limit is hit; nothing
+        tells the progress dialog, so the monitor has to see the run's flag itself."""
+        api = load_ops_module("api_client")
+        api.begin_run()
+        self.addCleanup(api.end_run)
+
+        async def main():
+            work, gate = Workload(200), FakeGate(limit=4)
+            runner = asyncio.ensure_future(
+                base_ops.run_plans_rolling(
+                    work.plans,
+                    gate=gate,
+                    progress_updater=FakeUpdater(),
+                    cancel_state=base_ops.CancelState(),
+                    label="test",
+                )
+            )
+            await settle()
+            api.cancel_run(reason="usage limit")
+            for _ in range(40):
+                if runner.done():
+                    break
+                await asyncio.sleep(0.05)
+
+            self.assertTrue(runner.done(), "the run did not notice the cancel")
+            self.assertTrue(await runner)
+            self.assertTrue(gate.aborted)
+            self.assertLess(len(work.finished), 200)
+
+        asyncio.run(main())
+        self.assertEqual(api.take_stop_reason(), "usage limit")
+
     def test_the_ops_own_task_being_cancelled_is_swallowed(self):
         """The run keeps what it has rather than the cancellation tearing the frame down."""
 

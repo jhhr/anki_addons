@@ -1,3 +1,4 @@
+import html
 import json
 import asyncio
 import logging
@@ -12,7 +13,7 @@ from anki.collection import Collection, OpChanges
 from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
-from aqt.utils import tooltip
+from aqt.utils import showWarning, tooltip
 from collections.abc import Sequence
 
 from .api_client import (
@@ -32,6 +33,7 @@ from .api_client import (
     rate_limit_tracker,
     run_cancelled,
     set_connection_pool_size,
+    take_stop_reason,
 )
 from .terminal_client import get_response_from_terminal, is_terminal_model
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
@@ -932,8 +934,9 @@ class CancelManager:
         """Monitor for cancellation requests and cancel all tasks if requested."""
         try:
             while not self.cancel_requested:
-                # Check for cancellation request from Anki
-                if mw.progress.want_cancel():
+                # Check for cancellation request from Anki, or from the run's own work (the
+                # claude CLI stops the run when the subscription's usage limit is hit)
+                if mw.progress.want_cancel() or run_cancelled():
                     logger.debug("Cancellation requested, setting cancel_requested to True")
                     self.request_cancel()
                     break
@@ -1940,6 +1943,12 @@ def on_bulk_success(
     message = f"{done_text} in {len(edited_nids)}/{len(nids)} selected notes."
     if edited_other_nids:
         message += f"<br>Edited {len(edited_other_nids)} other notes not among the selection."
+    stop_reason = take_stop_reason()
+    if stop_reason:
+        # A tooltip would be gone before the user looks: the rest of the notes were not done
+        message += f"<br><br><b>Stopped early.</b> {html.escape(stop_reason)}"
+        showWarning(message, parent=parent, textFormat="rich")
+        return
     tooltip(
         message,
         parent=parent,

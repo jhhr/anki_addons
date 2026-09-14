@@ -55,6 +55,10 @@ class FakeProcess:
 
     def communicate(self, input=None, timeout=None):  # noqa: A002 - Popen's name
         self.inputs.append(input)
+        if callable(self.outcome) and not self.killed:
+            # Runs while the process is "running", then keeps it running
+            self.outcome(self)
+            raise subprocess.TimeoutExpired("claude", timeout)
         if self.outcome == "hang" and not self.killed:
             self.clock.advance(timeout)
             raise subprocess.TimeoutExpired("claude", timeout)
@@ -228,6 +232,40 @@ class RequestTests(ClockTestCase):
         popen = FakePopen((0, SUCCESS))
         self.assertIsNone(self.ask(popen, cancel_state=FakeCancelState(True)))
         self.assertEqual(popen.calls, [])
+
+    def test_cancel_run_kills_live_processes(self):
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        seen = {}
+
+        def cancel_while_running(proc):
+            seen["registered"] = proc in tc._live_processes
+            api.cancel_run()
+
+        popen = FakePopen(cancel_while_running)
+        self.assertIsNone(self.ask(popen))
+        self.assertTrue(seen["registered"])
+        self.assertTrue(popen.processes[0].killed)
+        self.assertEqual(len(popen.calls), 1)
+        self.assertEqual(tc._live_processes, set())
+
+    def test_usage_limit_stops_the_run(self):
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        self.assertIsNone(self.ask(FakePopen((1, USAGE_LIMIT))))
+        self.assertTrue(api.run_cancelled())
+        self.assertIn("resets 5pm", api.take_stop_reason())
+        self.assertIsNone(api.take_stop_reason())
+
+        later = FakePopen((0, SUCCESS))
+        self.assertIsNone(self.ask(later))
+        self.assertEqual(later.calls, [])
+
+    def test_usage_limit_outside_a_run_only_fails(self):
+        self.assertIsNone(self.ask(FakePopen((1, USAGE_LIMIT))))
+        self.assertFalse(api.run_cancelled())
+        self.assertIsNone(api.take_stop_reason())
+        self.assertEqual(self.ask(FakePopen((0, SUCCESS))), {"decision": "match"})
 
     def test_long_instructions_go_in_a_file(self):
         seen = {}

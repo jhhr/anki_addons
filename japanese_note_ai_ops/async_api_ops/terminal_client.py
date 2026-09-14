@@ -29,9 +29,17 @@ from .api_client import (
     DEFAULT_MAX_RETRY_WAIT_SECONDS,
     _backoff_delay,
     _sleep_cancellable,
+    add_cancel_hook,
+    cancel_run,
+    current_run,
     is_cancelled,
     rate_limit_tracker,
 )
+
+try:
+    import psutil  # type: ignore
+except ImportError:  # the addon's lib/ was not vendored; see build.py vendor
+    psutil = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +216,44 @@ class ProcessResult(NamedTuple):
     timed_out: bool = False
 
 
+# Every `claude` process still running, so cancelling a run can kill them all at once instead of
+# each worker noticing on its next poll
+_live_lock = threading.Lock()
+_live_processes: set = set()
+
+
+def kill_process_tree(proc: Any) -> None:
+    """Kill a process and whatever it started (claude.exe runs git, cmd and conhost children)."""
+    pid = getattr(proc, "pid", None)
+    if psutil is not None and isinstance(pid, int):
+        try:
+            children = psutil.Process(pid).children(recursive=True)
+        except Exception:
+            children = []
+        for child in children:
+            try:
+                child.kill()
+            except Exception:
+                pass
+    try:
+        proc.kill()
+    except OSError:
+        # Already exited
+        pass
+
+
+def kill_live_processes() -> int:
+    """Kill every running `claude` process; api_client.cancel_run calls this."""
+    with _live_lock:
+        processes = list(_live_processes)
+    for proc in processes:
+        kill_process_tree(proc)
+    return len(processes)
+
+
+add_cancel_hook(kill_live_processes)
+
+
 def run_process(
     cmd: list[str],
     prompt: str,
@@ -233,8 +279,23 @@ def run_process(
         env={**os.environ, **CLI_ENV},
         **kwargs,
     )
+    with _live_lock:
+        _live_processes.add(proc)
+    try:
+        return _wait_process(proc, prompt, timeout, cancel_state)
+    finally:
+        with _live_lock:
+            _live_processes.discard(proc)
+
+
+def _wait_process(
+    proc: Any, prompt: str, timeout: float, cancel_state: Optional[Any]
+) -> Optional[ProcessResult]:
     deadline = time.monotonic() + timeout
     data: Optional[bytes] = prompt.encode("utf-8")
+    # A cancel between the spawn and the registry seeing the process would otherwise be missed
+    if is_cancelled(cancel_state):
+        kill_process_tree(proc)
     while True:
         try:
             # Input is only written on the first call; later calls keep collecting output
@@ -244,16 +305,29 @@ def run_process(
             data = None
             cancelled = is_cancelled(cancel_state)
             if cancelled or time.monotonic() >= deadline:
-                proc.kill()
+                kill_process_tree(proc)
                 out, err = proc.communicate()
                 if cancelled:
                     return None
                 return ProcessResult(proc.returncode, _text(out), _text(err), timed_out=True)
+    if is_cancelled(cancel_state):
+        return None
     return ProcessResult(proc.returncode, _text(out), _text(err))
 
 
 def _text(data: Optional[bytes]) -> str:
     return data.decode("utf-8", errors="replace") if data else ""
+
+
+def stop_run_for_usage_limit(message: str) -> None:
+    """Cancel the run: every request after this one would hit the same limit.
+
+    The processes still running are killed and nothing more is spawned; the op's end message
+    says why. A request outside a bulk run (an editor hook) only fails.
+    """
+    if current_run() is None:
+        return
+    cancel_run(reason=f"The claude CLI usage limit was reached: {message.strip()}")
 
 
 def get_response_from_terminal(
@@ -356,6 +430,7 @@ def _run_with_retry(
             return decode_text_result(outcome.message, json_result_corrector)
         if outcome.action == CliAction.EXHAUSTED:
             logger.error("claude CLI usage limit reached for %s: %s", key, outcome.message)
+            stop_run_for_usage_limit(outcome.message)
             return None
         if outcome.action == CliAction.FAIL:
             # Full output, so a failure this classifier doesn't know yet can be taught to it
