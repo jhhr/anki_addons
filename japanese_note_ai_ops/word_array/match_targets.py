@@ -7,7 +7,8 @@ each word to match together with its element, so a result can be written into th
 `match_data` however deeply it is nested.
 
 Only words in state 3, `["match"]`, are matched by the main prompt; which words those are is the
-word matching judge's call (match_flags.py).
+word matching judge's call (match_flags.py). Words in state 4, `[note_id]`, are rated by a
+secondary prompt that only gives their match_quality.
 """
 
 import re
@@ -97,7 +98,63 @@ def gather_targets(
     return targets
 
 
+def states_to_rate(match_states: Iterable[MatchState]) -> frozenset[MatchState]:
+    """The `match_data` states a run rates with the secondary prompt, given the ones it matches:
+    a word with a note id but no match_quality, unless the run matches those again anyway."""
+    if MatchState.LINKED in set(match_states):
+        return frozenset()
+    return frozenset({MatchState.LINKED})
+
+
 MATCH_QUALITIES = range(1, 6)
+
+# Shared by the main prompt and the secondary one, so a quality means the same from either
+MATCH_QUALITY_SCALE = """- 5: The meaning describes this usage exactly.
+- 4: The meaning fits well, with a small difference in nuance or scope.
+- 3: The meaning fits only in a broader or related sense; the usage here is a narrower or extended one.
+- 2: The meaning fits loosely; a learner would need more than it says to understand this usage.
+- 1: The meaning does not really fit this usage; it was only the closest available."""
+
+RATING_INSTRUCTIONS = f"""You are an expert Japanese lexicographer. A Japanese word in a _current sentence_ has already been matched to a dictionary meaning. Your task is only to rate how well that meaning fits the word's usage in the sentence. You are designed to output JSON.
+
+**Highlighted word**
+The part of the _current sentence_ in <b></b> is the occurrence of the word in question. The same word may occur elsewhere in the sentence unmarked; only the marked occurrence counts.
+
+**Match quality**
+Rate the fit as `"match_quality"`, an integer from 1 to 5:
+{MATCH_QUALITY_SCALE}
+
+**JSON OUTPUT RULES:**
+- The output is a single JSON object with one property, "match_quality": an integer from 1 to 5.
+
+---
+**Example**
+```json
+{{
+    "match_quality": 4
+}}
+```"""
+
+
+def rating_prompt(word: str, reading: str, jp_meaning: str, en_meaning: str, sentence: str) -> str:
+    """The secondary prompt's input for a word already linked to a note: that note's meaning and
+    the sentence with the occurrence in `<b>`. Instructions are RATING_INSTRUCTIONS."""
+    return f"""MATCHED MEANING
+- *word*: {word}
+- *reading*: {reading}
+- *jp_meaning*: {jp_meaning}
+- *en_meaning*: {en_meaning or "(none)"}
+
+_Current sentence_: {sentence}"""
+
+
+def rating_from_response(response: Any) -> Optional[int]:
+    """The match_quality of a secondary prompt's response, a dict or a list holding one."""
+    if isinstance(response, list) and response:
+        response = response[0]
+    if not isinstance(response, dict):
+        return None
+    return parse_match_quality(response.get("match_quality"))
 
 
 def parse_match_quality(value: Any) -> Optional[int]:
@@ -144,6 +201,21 @@ def save_results(
             continue
         quality = qualities.get(index)
         target.elem[4] = [note_id] if quality is None else [note_id, quality]
+        saved += 1
+    return saved
+
+
+def save_ratings(targets: list[MatchTarget], qualities: dict[int, int]) -> int:
+    """Add each rated target's match_quality after its note id, `[note_id]` becoming
+    `[note_id, match_quality]`, returning how many were written. `qualities` is keyed by target
+    index; a target without one stays `[note_id]` to be rated on the next run."""
+    saved = 0
+    for index, target in enumerate(targets):
+        quality = qualities.get(index)
+        note_id = match_flags.matched_note_id(target.elem)
+        if quality is None or note_id is None:
+            continue
+        target.elem[4] = [note_id, quality]
         saved += 1
     return saved
 

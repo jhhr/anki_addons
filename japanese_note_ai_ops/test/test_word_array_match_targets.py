@@ -109,6 +109,25 @@ class SaveResultsTests(unittest.TestCase):
         self.assertEqual((arr[0][4], arr[1][4]), ([111, 4], [222]))
 
 
+class RatingTests(unittest.TestCase):
+    def test_linked_words_are_rated_unless_matched_again(self):
+        self.assertEqual(match_targets.states_to_rate({State.MATCH}), {State.LINKED})
+        self.assertEqual(match_targets.states_to_rate({State.LINKED, State.RATED}), set())
+
+    def test_a_rating_is_saved_after_the_note_id(self):
+        arr = [word("様", [111]), word("本", [222]), word("棚", [333])]
+        targets = match_targets.gather_targets(arr, states=[State.LINKED])
+        self.assertEqual(match_targets.save_ratings(targets, {0: 2, 2: 5}), 2)
+        self.assertEqual([w[4] for w in arr], [[111, 2], [222], [333, 5]])
+
+    def test_the_rating_read_from_a_response(self):
+        read = match_targets.rating_from_response
+        self.assertEqual(read({"match_quality": 3}), 3)
+        self.assertEqual(read([{"match_quality": "5"}]), 5)
+        for bad in (None, [], {"match_quality": 9}, {}, "3"):
+            self.assertIsNone(read(bad))
+
+
 class MatchQualityTests(unittest.TestCase):
     def test_only_a_whole_number_from_one_to_five(self):
         parse = match_targets.parse_match_quality
@@ -234,7 +253,9 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             "word_lists_to_process": {"nouns": True},
         }
 
-    def plan(self, note, arr, progress, updates, edited_nids, config=None, **states):
+    def plan(
+        self, note, arr, progress, updates, edited_nids, config=None, note_cache=None, **states
+    ):
         return self.mwtn.plan_word_array_matching(
             **states,
             config=config or self.config,
@@ -251,7 +272,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             word_locks_dict={},
             word_lock=None,
             word_note_index_cache=WordIndexCache(),
-            note_cache=None,
+            note_cache=note_cache,
             sentence_cache=None,
             limit_words_and_readings=None,
             log_prefix="",
@@ -374,6 +395,71 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         mode = {"limit_words_and_readings": [("本", "よみ")], "reprocess_words": "only_unprocessed"}
         self.assertEqual(self.planned_states(replace, **mode), {State.MATCH})
 
+    def test_linked_words_without_a_quality_are_rated(self):
+        arr = [
+            word("本", [111], reading="ほん"),
+            word("と", ["dontmatch"]),
+            word("棚", [222]),
+            word("様", [333, 5]),
+            word("箱", [444]),
+        ]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        meanings = {
+            111: FakeNote({"meaning_field": "書物", "english_meaning_field": "book"}, 111),
+            222: FakeNote({"meaning_field": "", "english_meaning_field": ""}, 222),
+        }
+
+        class Cache:
+            async def get_notes(self, ids):
+                return {i: meanings[i] for i in ids if i in meanings}
+
+        prompts = []
+
+        def get_response(model, prompt, **kwargs):
+            prompts.append((model, prompt, kwargs["instructions"]))
+            return {"match_quality": 4}
+
+        def inner_bulk_op(config, op, **_):
+            async def process(**op_args):
+                return await op(config, **op_args)
+
+            return process
+
+        updates, edited_nids = {}, []
+        plan = self.plan(note, arr, Progress(), updates, edited_nids, note_cache=Cache())
+        # 本, 棚 and 箱 rated; 様 already has its quality
+        self.assertEqual(plan.task_count, 3)
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "get_response", get_response),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        # only 本 had a meaning to rate: 棚's note has none, 箱's is not found
+        (prompt,) = prompts
+        self.assertEqual(prompt[0], "model")
+        self.assertIn("書物", prompt[1])
+        self.assertIn("<b>本</b>と棚様箱", prompt[1])
+        self.assertEqual(prompt[2], match_targets.RATING_INSTRUCTIONS)
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[111, 4], ["dontmatch"], [222], [333, 5], [444]])
+        self.assertEqual(edited_nids, [1])
+
+    def test_words_matched_again_are_not_rated_too(self):
+        arr = [word("本", ["match"]), word("様", [111])]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        states = [State.MATCH, State.LINKED, State.RATED]
+        self.assertEqual(self.plan(note, arr, Progress(), {}, [], states=states).task_count, 2)
+        self.assertEqual(self.plan(note, arr, Progress(), {}, []).task_count, 2)
+        only_match = self.plan(note, [word("本", ["match"])], Progress(), {}, [])
+        self.assertEqual(only_match.task_count, 1)
+
     def test_the_planned_states_are_the_ones_gathered(self):
         arr = [word("本", ["match"]), word("様", [111]), word("棚", [222, 4]), word("を", [])]
         note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
@@ -397,7 +483,8 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         saved = json.loads(note["word_list_field"])
         self.assertEqual([w[4] for w in saved], [[1], [55, 4], ["match"]])
         self.assertEqual(len(queries), 2)
-        self.assertEqual(plan.task_count, 1)
+        # 棚 matched, 様 now linked without a quality: rated
+        self.assertEqual(plan.task_count, 2)
         self.assertEqual((updates, edited_nids), ({1: note}, [1]))
 
     def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):

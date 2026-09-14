@@ -267,7 +267,11 @@ occurrence in `<b>` (`highlighted_sentence()`, without the field's `<i>` context
 existing meaning's example sentence with that note's word in `<b>` when the note holds an array
 (`example_sentence()`: the occurrence linked to the note, else the first of its word); an old word
 list note's sentence is shown as it is. An old word list's words get the same prompt, their
-match_quality dropped.
+match_quality dropped. Every run also rates the `[note_id]` words (`states_to_rate()`: unless the
+run matches them again) with a secondary prompt given only the linked note's meaning and the
+`<b>` sentence (`rating_prompt()`, `RATING_INSTRUCTIONS`, same 1-5 scale as the main prompt);
+`save_ratings()` makes them `[note_id, match_quality]`. A note with no meaning yet, or not found,
+stays `[note_id]`.
 
 ## Migrating the old word lists
 

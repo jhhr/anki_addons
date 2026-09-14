@@ -49,7 +49,7 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
     make_furigana_from_reading,
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback
-from ..word_array import match_targets
+from ..word_array import match_flags, match_targets
 from ..word_array.match_flags import MatchState, decode_word_array, word_array_query_regex
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -1726,7 +1726,8 @@ async def match_single_word_in_word_tuple(
 - *example_sentence*: {example_sentence or ("(no example sentence)")}
 """
 
-        instructions = """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
+        instructions = (
+            """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
 
 **Primary Goal: Minimize creation of new meanings**
 Your main goal is to match to one of the existing meanings. If none fit, you may consider the **CREATE NEW** action.
@@ -1749,11 +1750,9 @@ You will generate a JSON object. This array will describe your actions. You must
 
 **Match quality**
 Always rate how well the meaning you chose, or the new one you wrote, fits the word's usage in the current sentence, as `"match_quality"`, an integer from 1 to 5:
-- 5: The meaning describes this usage exactly.
-- 4: The meaning fits well, with a small difference in nuance or scope.
-- 3: The meaning fits only in a broader or related sense; the usage here is a narrower or extended one.
-- 2: The meaning fits loosely; a learner would need more than it says to understand this usage.
-- 1: The meaning does not really fit this usage; it was only the closest available.
+"""
+            + match_targets.MATCH_QUALITY_SCALE
+            + """
 A low rating on a MATCH is fine and useful: prefer matching with an honest low rating over creating a near-duplicate meaning.
 
 **JSON OUTPUT RULES:**
@@ -1787,6 +1786,7 @@ None of the meanings fit, so you create a new one.
     "en_meaning": "A new English definition for the new usage."
 }
 ```"""
+        )
 
         prompt = f"""MEANINGS AND EXAMPLE SENTENCES
 {meanings_str}
@@ -2476,6 +2476,55 @@ def match_words_to_notes(
     return word_list_task_count, spawn_word_list_tasks
 
 
+async def rate_linked_word(
+    config: dict,
+    target: match_targets.MatchTarget,
+    prompt_sentence: str,
+    fields: dict[str, str],
+    notes_to_update_dict: dict[NoteId, Note],
+    note_cache: NoteCache,
+    cancel_state: CancelState,
+    log_prefix: str,
+) -> Optional[int]:
+    """Ask the secondary prompt how well the meaning of the note a word is already linked to fits
+    its occurrence, returning the match_quality, or None when there was no meaning to rate or no
+    valid rating came back."""
+    log_prefix = f"{log_prefix}rate--word:'{target.word}'--reading:'{target.reading}'--"
+    note_id = match_flags.matched_note_id(target.elem)
+    if note_id is None or note_id <= 0:
+        logger.debug(f"{log_prefix}No real note id to rate: {target.elem[4]}")
+        return None
+    note = notes_to_update_dict.get(cast(NoteId, note_id))
+    if note is None:
+        note = (await note_cache.get_notes([cast(NoteId, note_id)])).get(cast(NoteId, note_id))
+    if note is None:
+        logger.warning(f"{log_prefix}Linked note {note_id} not found, left unrated")
+        return None
+    meaning_field = fields["meaning_field"]
+    english_meaning_field = fields["english_meaning_field"]
+    jp_meaning = note[meaning_field] if meaning_field in note else ""
+    en_meaning = note[english_meaning_field] if english_meaning_field in note else ""
+    if not jp_meaning and not en_meaning:
+        logger.debug(f"{log_prefix}Linked note {note_id} has no meaning yet, left unrated")
+        return None
+    prompt = match_targets.rating_prompt(
+        target.word, target.reading, jp_meaning, en_meaning, prompt_sentence
+    )
+    raw_result = await asyncio.to_thread(
+        get_response,
+        config.get("match_words_model", ""),
+        prompt,
+        cancel_state=cancel_state,
+        instructions=match_targets.RATING_INSTRUCTIONS,
+        # Thinking counts towards the limit; the answer itself is a few tokens
+        max_output_tokens=4000,
+    )
+    quality = match_targets.rating_from_response(raw_result)
+    if quality is None:
+        logger.debug(f"{log_prefix}No valid match_quality in result: {raw_result}")
+    return quality
+
+
 def plan_word_array_matching(
     config: dict,
     note: Note,
@@ -2506,21 +2555,28 @@ def plan_word_array_matching(
     array is written back to the field. Returns None, with the note counted done, when there
     is nothing to match.
 
+    Words linked to a note without a match_quality, `[note_id]`, are rated by the secondary
+    prompt in the same run (rate_linked_word), unless `states` has them matched again.
+
     A new note's placeholder id an earlier run left in the array is first swapped for the id of
     the note that was added (see match_targets.resolve_placeholder_ids), so a rematch doesn't
     take it for a word of its own, and the array saved.
     """
+    rate_states = match_targets.states_to_rate(states)
 
-    def gather() -> list[match_targets.MatchTarget]:
+    def gather(
+        wanted: Iterable[MatchState],
+    ) -> list[match_targets.MatchTarget]:
         try:
-            return match_targets.gather_targets(arr, states, limit=limit_words_and_readings)
+            return match_targets.gather_targets(arr, wanted, limit=limit_words_and_readings)
         except ValueError as e:
             logger.error(f"{log_prefix}{e}")
             return []
 
     placeholders = match_targets.has_placeholder_ids(arr)
-    targets = gather()
-    note_type = note.note_type() if targets or placeholders else None
+    targets = gather(states)
+    rate_targets = gather(rate_states) if rate_states else []
+    note_type = note.note_type() if targets or rate_targets or placeholders else None
     fields = get_match_fields(config, note_type) if note_type else None
 
     def save_note():
@@ -2544,16 +2600,21 @@ def plan_word_array_matching(
         if resolved:
             logger.debug(f"{log_prefix}Resolved {resolved} new note placeholder ids")
             save_note()
-            targets = gather()
+            targets = gather(states)
+            rate_targets = gather(rate_states) if rate_states else []
     if not fields or not config.get("match_words_model", ""):
-        if targets:
+        if targets or rate_targets:
             logger.error(f"{log_prefix}Error: Missing match words model or fields in config")
         progress_updater.increment_counts(notes_done=1)
         return None
-    logger.debug(f"{log_prefix}Word array has {len(targets)} words to match")
+    logger.debug(
+        f"{log_prefix}Word array has {len(targets)} words to match, {len(rate_targets)} to rate"
+    )
     # Filled by match_single_word_in_word_tuple, keyed by target index
     results: dict[int, Optional[FinalWordTuple]] = {}
     qualities: dict[int, int] = {}
+    # Filled by rate_op, keyed by rate target index
+    ratings: dict[int, int] = {}
 
     async def match_op(
         _,
@@ -2591,9 +2652,33 @@ def plan_word_array_matching(
             ),
         )
 
-    def make_error_handler(target: match_targets.MatchTarget) -> Callable[[Exception], None]:
+    async def rate_op(
+        _,
+        notes_to_add_dict: dict[str, list[Note]],
+        notes_to_update_dict: dict[NoteId, Note],
+        target_index: int,
+    ) -> bool:
+        target = rate_targets[target_index]
+        quality = await rate_linked_word(
+            config=config,
+            target=target,
+            prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+            fields=fields,
+            notes_to_update_dict=notes_to_update_dict,
+            note_cache=note_cache,
+            cancel_state=cancel_state,
+            log_prefix=log_prefix,
+        )
+        if quality is None:
+            return False
+        ratings[target_index] = quality
+        return True
+
+    def make_error_handler(
+        target: match_targets.MatchTarget, action: str
+    ) -> Callable[[Exception], None]:
         def handle_op_error(e: Exception):
-            logger.error(f"{log_prefix}Error matching word {target.word}/{target.reading}: {e}")
+            logger.error(f"{log_prefix}Error {action} word {target.word}/{target.reading}: {e}")
             print_error_traceback(e, logger)
 
         return handle_op_error
@@ -2601,35 +2686,43 @@ def plan_word_array_matching(
     async def save_results(word_tasks: list[asyncio.Task]):
         await asyncio.gather(*word_tasks)
         saved = match_targets.save_results(targets, results, qualities)
-        logger.debug(f"{log_prefix}Matched {saved} of {len(targets)} words in the word array")
-        if saved:
+        rated = match_targets.save_ratings(rate_targets, ratings)
+        logger.debug(
+            f"{log_prefix}Matched {saved} of {len(targets)} and rated {rated} of"
+            f" {len(rate_targets)} words in the word array"
+        )
+        if saved or rated:
             save_note()
         progress_updater.increment_counts(notes_done=1)
 
     def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
         word_tasks: list[asyncio.Task] = []
-        for target_index, target in enumerate(targets):
-            process_word: Callable[..., Coroutine[Any, Any, bool]] = make_inner_bulk_op(
-                config=config,
-                op=match_op,
-                gate=gate,
-                progress_updater=progress_updater,
-                handle_op_error=make_error_handler(target),
-                handle_op_result=lambda _: None,
-                cancel_state=cancel_state,
-            )
-            task = asyncio.create_task(
-                process_word(
-                    notes_to_add_dict=notes_to_add_dict,
-                    notes_to_update_dict=notes_to_update_dict,
-                    target_index=target_index,
+        for op, op_targets, action in (
+            (match_op, targets, "matching"),
+            (rate_op, rate_targets, "rating"),
+        ):
+            for target_index, target in enumerate(op_targets):
+                process_word: Callable[..., Coroutine[Any, Any, bool]] = make_inner_bulk_op(
+                    config=config,
+                    op=op,
+                    gate=gate,
+                    progress_updater=progress_updater,
+                    handle_op_error=make_error_handler(target, action),
+                    handle_op_result=lambda _: None,
+                    cancel_state=cancel_state,
                 )
-            )
-            word_tasks.append(task)
-            tasks.append(task)
+                task = asyncio.create_task(
+                    process_word(
+                        notes_to_add_dict=notes_to_add_dict,
+                        notes_to_update_dict=notes_to_update_dict,
+                        target_index=target_index,
+                    )
+                )
+                word_tasks.append(task)
+                tasks.append(task)
         tasks.append(asyncio.create_task(save_results(word_tasks)))
 
-    return NotePlan(task_count=len(targets), spawn=spawn_note_tasks)
+    return NotePlan(task_count=len(targets) + len(rate_targets), spawn=spawn_note_tasks)
 
 
 def match_words_to_notes_for_note(
