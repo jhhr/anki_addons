@@ -160,6 +160,35 @@ def test_removing_a_loop_drops_exports_naming_stages_inside_it():
     assert doc.exports() == []
 
 
+def test_a_stage_moved_into_a_block_and_back_out_keeps_its_export():
+    # Moving goes through `remove_stage`, which strips exports naming what it removed. That
+    # is right for a delete -- the stage is gone -- but a move puts the same stage back, so
+    # stripping there loses the export name the user chose, silently, for a round trip that
+    # ends where it started.
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "A1"
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    doc = document(query, loop)
+    doc.set_exports([{"name": "shared", "stage_guid": "q", "result": "A1"}])
+
+    assert doc.move_to("q", "loop", "body") is True
+    assert doc.move_to("q", None, None) is True
+
+    assert doc.exports() == [{"name": "shared", "stage_guid": "q", "result": "A1"}]
+
+
+def test_a_stage_moved_at_the_top_level_keeps_its_export():
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "A1"
+    other = default_stage(STAGE_VARIABLE, "v")
+    doc = document(query, other)
+    doc.set_exports([{"name": "A1", "stage_guid": "q", "result": "A1"}])
+
+    assert doc.move_to("q", None, None, 1) is True
+
+    assert doc.exports() == [{"name": "A1", "stage_guid": "q", "result": "A1"}]
+
+
 def test_duplicate_lands_directly_below_and_blanks_only_its_own_name():
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     inner = default_stage(STAGE_VARIABLE, "inner")

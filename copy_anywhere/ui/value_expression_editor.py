@@ -109,6 +109,9 @@ class ValueExpressionEditor(QWidget):
             )
             self.vbox.addWidget(self.process_widget)
 
+        #: Whether the code half applies at all. `allow_code` settles it at build time;
+        #: `set_code_allowed` moves it afterwards, for an owner whose own controls decide.
+        self.code_is_allowed = allow_code
         self._apply_mode(self.expression.get("mode") == MODE_CODE)
         if self.use_code_toggle is not None:
             self.use_code_toggle.setChecked(self.expression.get("mode") == MODE_CODE)
@@ -134,8 +137,30 @@ class ValueExpressionEditor(QWidget):
             )
         self.changed.emit()
 
+    def set_code_allowed(self, allowed: bool) -> None:
+        """Show or hide the code half after the fact.
+
+        `allow_code` is settled when the widget is built and a stage whose kind the user can
+        change while the dialog is open needs to move it: the condition stage switches
+        between an Anki search, which has no code form at all, and an expression, which
+        does. Taking code away also turns the mode back to text, because code sitting behind
+        a hidden toggle is code that would never run.
+        """
+        self.code_is_allowed = allowed
+        if self.use_code_toggle is None:
+            return
+        if not allowed and self.use_code_toggle.isChecked():
+            self.use_code_toggle.setChecked(False)
+        self.use_code_toggle.setVisible(allowed)
+        if not allowed and self.code_layout is not None:
+            self.code_layout.setVisible(False)
+
     def is_code_mode(self) -> bool:
-        return bool(self.use_code_toggle is not None and self.use_code_toggle.isChecked())
+        return bool(
+            self.code_is_allowed
+            and self.use_code_toggle is not None
+            and self.use_code_toggle.isChecked()
+        )
 
     def apply(self) -> ValueExpression:
         """Write the widgets back into the expression dict and return it."""

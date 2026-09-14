@@ -16,6 +16,7 @@ from copy_anywhere.configuration import (
 )
 from copy_anywhere.logic.definition_schema import (
     STAGE_CARD_QUERY,
+    STAGE_CONDITION,
     STAGE_EDIT_CARD,
     STAGE_EDIT_NOTE,
     STAGE_FOR_EACH_CARD,
@@ -473,6 +474,78 @@ def test_an_export_stored_without_a_result_still_names_its_stage(col, qapp):
     assert [problem.message for problem in document.analysis.problems] == []
 
 
+def exports_panel(widget_parent, definition):
+    from copy_anywhere.ui.stage_exports_editor import ExportsEditor
+
+    definition["triggers"]["note_types"] = [VOCAB]
+    document = StageDocument(definition)
+    return ExportsEditor(widget_parent, document), document
+
+
+def test_an_export_whose_stage_left_the_top_level_keeps_its_row(col, qapp, widget_parent):
+    # The panel rebuilds `exports` from its rows, so an export with no row is dropped the
+    # next time anything in the dialog changes. A stage moved into a loop cannot be
+    # exported, and saying so is §6's rule for a reference that broke: show it, mark it, and
+    # let the user decide -- rather than quietly unpicking what they chose.
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [variable("v", "M")]
+    definition = new_definition("d", "A definition", stages=[loop])
+    definition["exports"] = [{"name": "M", "stage_guid": "v", "result": "M"}]
+
+    panel, document = exports_panel(widget_parent, definition)
+
+    assert [name.text() for _guid, _result, _keep, name in panel.rows] == ["M"]
+    panel.apply()
+    assert document.exports() == [{"name": "M", "stage_guid": "v", "result": "M"}]
+
+
+def test_a_stray_export_can_be_unticked(col, qapp, widget_parent):
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [variable("v", "M")]
+    definition = new_definition("d", "A definition", stages=[loop])
+    definition["exports"] = [{"name": "M", "stage_guid": "v", "result": "M"}]
+
+    panel, document = exports_panel(widget_parent, definition)
+    panel.rows[0][2].setChecked(False)
+    panel.apply()
+
+    assert document.exports() == []
+
+
+def test_a_stray_export_stored_without_a_result_keeps_the_stages_own_name(
+    col, qapp, widget_parent
+):
+    # Keyed by what the stage produces, not by the export's name, so the row is the same one
+    # it will have when the stage is back at the top level rather than a second one beside it.
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [variable("v", "M")]
+    definition = new_definition("d", "A definition", stages=[loop])
+    definition["exports"] = [{"name": "exported_as", "stage_guid": "v"}]
+
+    panel, document = exports_panel(widget_parent, definition)
+
+    assert [keep.text() for _guid, _result, keep, _name in panel.rows] == ["M"]
+    panel.apply()
+    assert document.exports() == [
+        {"name": "exported_as", "stage_guid": "v", "result": "M"}
+    ]
+
+
+def test_an_export_of_a_deleted_stage_is_not_resurrected_as_a_row(col, qapp, widget_parent):
+    # Deleting is the case where the stage really is gone, and `remove_stage` drops the
+    # export with it; nothing should put a row back for one that was never stored.
+    definition = new_definition("d", "A definition", stages=[variable("v", "M")])
+    document = StageDocument(definition)
+    document.set_exports([{"name": "M", "stage_guid": "v", "result": "M"}])
+    document.remove_stage("v")
+
+    from copy_anywhere.ui.stage_exports_editor import ExportsEditor
+
+    panel = ExportsEditor(widget_parent, document)
+
+    assert panel.rows == []
+
+
 # -- tags -----------------------------------------------------------------------------
 
 
@@ -620,6 +693,113 @@ class TestTheSelectionSurvivesASave:
         assert stage["selection"]["count"] == 2
 
 
+# -- the condition stage's predicate ----------------------------------------------------
+
+
+def condition_stage_editor(widget_parent, **stage_keys):
+    """A condition editor over a stage holding exactly these keys besides its predicate."""
+    stage = default_stage(STAGE_CONDITION, "s")
+    stage.setdefault("then", [])
+    stage.update(stage_keys)
+    definition = new_definition("d", "A definition", stages=[stage])
+    definition["triggers"]["note_types"] = [VOCAB]
+    document = StageDocument(definition)
+    environment = StageEditorEnvironment(make_note_types_for(document.definition), [definition], "d")
+    editor = make_stage_editor(
+        widget_parent, document.stage("s"), build_contexts(document)["s"], environment
+    )
+    return editor, document.stage("s")
+
+
+def migrated_condition(widget_parent, **stage_keys):
+    """What the migrator writes for `copy_condition_query` (§11): a search, not a value."""
+    return condition_stage_editor(
+        widget_parent,
+        predicate=value_expression(text="tag:done", syntax_version=1),
+        predicate_kind="note_query",
+        predicate_target={"binding": "trigger"},
+        **{"only_on_sync": False, **stage_keys},
+    )
+
+
+class TestTheConditionEditorOwnsHowThePredicateIsRun:
+    """`predicate_kind`, `predicate_target` and `only_on_sync` decide what the executor runs.
+
+    A migrated copy condition is an Anki search scoped to one note; a newly authored one is
+    boolean code or a value. The editor showed the same generic expression box for both and
+    wrote none of the three keys back, so the only way to tell which was stored was to read
+    the JSON -- and the code toggle it offered on a migrated condition wrote code the
+    executor would never reach.
+    """
+
+    def test_a_migrated_condition_says_it_is_a_search(self, col, qapp, widget_parent):
+        editor, _stage = migrated_condition(widget_parent)
+
+        assert editor.match_as_search.isChecked() is True
+        assert editor.target.currentText() == "trigger"
+
+    def test_a_search_condition_round_trips(self, col, qapp, widget_parent):
+        editor, stage = migrated_condition(widget_parent, only_on_sync=True)
+
+        assert editor.only_on_sync.isChecked() is True
+        editor.apply()
+        assert stage["predicate_kind"] == "note_query"
+        assert stage["predicate_target"] == {"binding": "trigger"}
+        assert stage["only_on_sync"] is True
+        assert stage["predicate"]["text"] == "tag:done"
+
+    def test_a_search_condition_offers_no_code(self, col, qapp, widget_parent):
+        # The executor reads `text` and runs it as a search whatever the mode says, so a
+        # code toggle here can only produce code that is silently never run.
+        editor, _stage = migrated_condition(widget_parent)
+
+        assert editor.predicate.code_is_allowed is False
+
+    def test_turning_the_search_off_leaves_an_ordinary_expression(
+        self, col, qapp, widget_parent
+    ):
+        editor, stage = migrated_condition(widget_parent, only_on_sync=True)
+
+        editor.match_as_search.setChecked(False)
+        editor.apply()
+
+        assert "predicate_kind" not in stage
+        assert "predicate_target" not in stage
+        # `only_on_sync` is checked before the kind is, so it belongs to both of them.
+        assert stage["only_on_sync"] is True
+
+    def test_only_on_sync_can_be_turned_off(self, col, qapp, widget_parent):
+        editor, stage = migrated_condition(widget_parent, only_on_sync=True)
+
+        editor.only_on_sync.setChecked(False)
+        editor.apply()
+
+        assert stage["only_on_sync"] is False
+
+    def test_an_authored_condition_grows_no_migrated_keys(self, col, qapp, widget_parent):
+        editor, stage = condition_stage_editor(
+            widget_parent, predicate=value_expression(mode="code", code="return True")
+        )
+
+        assert editor.match_as_search.isChecked() is False
+        editor.apply()
+
+        assert "predicate_kind" not in stage
+        assert "predicate_target" not in stage
+        assert stage["only_on_sync"] is False
+
+    def test_an_authored_condition_can_be_made_a_search(self, col, qapp, widget_parent):
+        editor, stage = condition_stage_editor(
+            widget_parent, predicate=value_expression(text="tag:done")
+        )
+
+        editor.match_as_search.setChecked(True)
+        editor.apply()
+
+        assert stage["predicate_kind"] == "note_query"
+        assert stage["predicate_target"] == {"binding": "trigger"}
+
+
 # -- the trigger editor's dependent boxes ----------------------------------------------
 
 
@@ -699,3 +879,70 @@ class TestClearingATriggerSelection:
         # Order follows the field list the boxes offer, which follows the note type order
         # Anki hands back, so it is not the order they were stored in.
         assert sorted(definition["triggers"]["on_unfocus"]["edit_fields"]) == ["Kanji", "Word"]
+
+
+class TestSavingWhatTheBoxesCannotOffer:
+    """`apply()` has to read the chosen names, not the boxes.
+
+    A box only ever holds what the currently selected note types put in it, so reading it
+    back as the whole answer drops every stored name that is out of its reach -- and a deck
+    whitelist that drops to empty stops meaning "only these decks" and starts meaning "every
+    deck", which is the definition running where it never used to.
+    """
+
+    def test_a_whitelisted_deck_the_box_cannot_offer_survives_a_save(
+        self, col, qapp, widget_parent
+    ):
+        # No card of a trigger note type is in "Archive", so the box has no row for it: the
+        # deck was emptied, or renamed, or its cards moved after the whitelist was written.
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[VOCAB], deck_names=["Archive"]
+        )
+        assert selected_names(editor.decks_box) == []
+
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == ["Archive"]
+
+    def test_a_deck_only_the_dropped_note_type_had_survives_a_save(
+        self, col, qapp, widget_parent
+    ):
+        from anki_shared.testing import real_anki
+
+        real_anki.add_note(col, KANJI, {"Kanji": "犬"}, deck_name="Kanji only")
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[VOCAB, KANJI], deck_names=["Kanji only"]
+        )
+        assert selected_names(editor.decks_box) == ["Kanji only"]
+
+        choose(editor.note_types_box, VOCAB)
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == ["Kanji only"]
+
+    def test_a_field_only_the_dropped_note_type_had_survives_a_save(
+        self, col, qapp, widget_parent
+    ):
+        editor, definition = triggers_editor(
+            col,
+            widget_parent, note_types=[VOCAB, KANJI],
+            on_unfocus={"edit_fields": ["Word", "Kanji"], "add_fields": []},
+        )
+
+        choose(editor.note_types_box, VOCAB)
+        editor.apply()
+
+        assert sorted(definition["triggers"]["on_unfocus"]["edit_fields"]) == ["Kanji", "Word"]
+
+    def test_unticking_an_offered_deck_still_removes_it(self, col, qapp, widget_parent):
+        # The other half of the same rule: within what the box does offer, it is the whole
+        # answer, so a name the user unticked is gone.
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[VOCAB], deck_names=["Default", "Archive"]
+        )
+        assert selected_names(editor.decks_box) == ["Default"]
+
+        choose(editor.decks_box)
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == ["Archive"]

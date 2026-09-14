@@ -458,13 +458,22 @@ class StageDocument:
             own = {stage.get("guid") for stage in walk_stages([self.stage(guid) or {}])}
             if parent_guid in own:
                 return False
+        # `remove_stage` strips the exports naming what it removed, which is right for a
+        # delete and wrong here: the stage is still in the definition afterwards, so the
+        # export is not dangling and the name the user chose is theirs to keep. An export
+        # naming a stage that has landed inside a block is reported by the analyser and
+        # stays visible in the Exports panel, where it can be cleared or ridden out until
+        # the stage comes back to the top level.
+        exports = list(self.exports())
         stage = self.remove_stage(guid)
         if stage is None:
             return False
         if not self.insert_stage(stage, parent_guid, body_key, index):
             # Put it back where it was rather than dropping the user's work on the floor.
             self.insert_stage(stage, None, None, None)
+            self.set_exports(exports)
             return False
+        self.set_exports(exports)
         return True
 
     # -- exports -------------------------------------------------------------------------

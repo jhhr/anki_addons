@@ -289,12 +289,23 @@ class TriggersEditor(QWidget):
     def apply(self) -> None:
         self.definition["definition_name"] = self.name_edit.text().strip()
         self.triggers["note_types"] = selected_names(self.note_types_box)
-        self.triggers["deck_names"] = selected_names(self.decks_box)
+        # What gets saved is the chosen list, not the box. The box holds only what the
+        # currently selected note types put in it, so a whitelisted deck whose cards have
+        # moved, or a field belonging to a note type the user has just deselected, has no
+        # row there -- and reading the box as the whole answer would drop it. A deck list
+        # that drops to empty is the worst of those: it stops meaning "only these decks" and
+        # starts meaning every deck in the collection.
+        self._take_choice(self.decks_box, self._chosen_decks, self._offered_decks)
+        for box, chosen, offered in zip(
+            (self.unfocus_edit, self.unfocus_add), self._chosen_unfocus, self._offered_unfocus
+        ):
+            self._take_choice(box, chosen, offered)
+        self.triggers["deck_names"] = list(self._chosen_decks)
         self.triggers["include_subdecks"] = self.include_subdecks.isChecked()
         self.triggers["on_sync"] = self.on_sync.isChecked()
         self.triggers["on_add"] = self.on_add.isChecked()
         self.triggers["on_review"] = self.on_review.isChecked()
         self.triggers["on_unfocus"] = {
-            "edit_fields": selected_names(self.unfocus_edit),
-            "add_fields": selected_names(self.unfocus_add),
+            "edit_fields": list(self._chosen_unfocus[0]),
+            "add_fields": list(self._chosen_unfocus[1]),
         }

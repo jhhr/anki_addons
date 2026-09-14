@@ -17,6 +17,7 @@ from aqt.qt import (
     pyqtSignal,
 )
 
+from ..logic.definition_schema import stage_result_name
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .stage_document import StageDocument
 
@@ -62,6 +63,8 @@ class ExportsEditor(QWidget):
             if isinstance(export, dict)
         }
         candidates = self.document.exportable_stages()
+        stray = self._stray_exports(candidates, exported)
+        candidates.extend(sorted(stray))
         if not candidates:
             self.rows_layout.addWidget(
                 QLabel(
@@ -90,9 +93,44 @@ class ExportsEditor(QWidget):
             layout.addWidget(keep)
             layout.addWidget(QLabel("as", row))
             layout.addWidget(name)
+            if (guid, result_name) in stray:
+                marker = QLabel(
+                    "<span style='color: orange'>no longer at the top level</span>", row
+                )
+                marker.setToolTip(
+                    "Only a result produced at the top level can be exported. Move the"
+                    " stage back out, or untick this to drop the export."
+                )
+                layout.addWidget(marker)
             layout.addStretch()
             self.rows_layout.addWidget(row)
             self.rows.append((guid, result_name, keep, name))
+
+    def _stray_exports(self, candidates, exported) -> set[tuple[str, str]]:
+        """Stored exports whose stage no longer offers the result they name.
+
+        A stage moved into a loop or a branch is still in the definition, and still holds
+        the export the user gave it, but it is no longer exportable: §5.9 keeps exports free
+        of values that might not be produced. Without a row the panel would drop the export
+        the next time it wrote itself back, so the choice would disappear on the way past
+        rather than when the user made it -- and moving the stage back out would not bring
+        it back. A row keeps it visible and, since the analyser reports it, fixable either
+        way: untick it, or move the stage back to the top level.
+        """
+        offered = set(candidates)
+        stray: set[tuple[str, str]] = set()
+        for (guid, result_name), name in exported.items():
+            if not guid or (guid, result_name) in offered:
+                continue
+            stage = self.document.stage(guid)
+            if stage is None:
+                # Really gone: `remove_stage` drops these, and nothing puts them back.
+                continue
+            # An export stored before `result` existed names only its stage, so the row is
+            # keyed by what that stage actually produces -- which is also the key it will
+            # have once it is back at the top level, so the row does not split in two.
+            stray.add((guid, result_name or stage_result_name(stage) or name))
+        return stray
 
     def _on_changed(self, *_args) -> None:
         self.changed.emit()

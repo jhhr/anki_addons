@@ -802,8 +802,37 @@ class ReduceStageEditor(StageEditor):
 
 
 class ConditionStageEditor(StageEditor):
+    """A condition runs its first branch when the predicate holds -- in one of two ways.
+
+    A migrated copy condition is an Anki search run against one note, which is how format 1
+    ran it (§11); anything authored here is boolean code, or a value the branch takes the
+    truthiness of. `predicate_kind` is what tells the executor which, so it belongs on the
+    editor: while it was a hidden key, a migrated condition was shown as an ordinary
+    expression, code toggle and all, and the code the toggle invited was never run -- the
+    executor still took the search branch and still ran the untouched text.
+    """
+
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
+        is_search = stage.get("predicate_kind") == "note_query"
+        self.match_as_search = QCheckBox("Match it as an Anki search against a note", self)
+        self.match_as_search.setChecked(is_search)
+        self.form.addRow(self.match_as_search)
+        self.target = binding_combo(
+            self,
+            context.note_bindings,
+            (stage.get("predicate_target") or {}).get("binding", "") or "trigger",
+            "Which note the search has to match",
+        )
+        self.target.currentTextChanged.connect(self.notify)
+        self.add_row("Against", self.target)
+        self.only_on_sync = QCheckBox("Only check it during a sync", self)
+        self.only_on_sync.setChecked(bool(stage.get("only_on_sync", False)))
+        self.only_on_sync.setToolTip(
+            "Outside a sync the condition is not checked at all and the branch runs."
+        )
+        self.only_on_sync.toggled.connect(self.notify)
+        self.form.addRow(self.only_on_sync)
         self.predicate = self.expression_editor(
             stage.setdefault("predicate", value_expression(mode="code")),
             "Run the first branch when",
@@ -814,6 +843,31 @@ class ConditionStageEditor(StageEditor):
             allow_process_chain=False,
         )
         self.form.addRow(self.predicate)
+        self.match_as_search.toggled.connect(self._on_kind_changed)
+        self._apply_kind(is_search)
+
+    def _apply_kind(self, is_search: bool) -> None:
+        self.target.setEnabled(is_search)
+        # A search is text run through `find_notes`; there is no code form of it, and an
+        # expression has no note to be matched against.
+        self.predicate.set_code_allowed(not is_search)
+        self.predicate.set_label(
+            "An Anki search the note has to match" if is_search else "Run the first branch when"
+        )
+
+    def _on_kind_changed(self, is_search: bool) -> None:
+        self._apply_kind(is_search)
+        self.notify()
+
+    def apply(self):
+        super().apply()
+        self.stage["only_on_sync"] = self.only_on_sync.isChecked()
+        if self.match_as_search.isChecked():
+            self.stage["predicate_kind"] = "note_query"
+            self.stage["predicate_target"] = {"binding": self.target.currentText()}
+        else:
+            self.stage.pop("predicate_kind", None)
+            self.stage.pop("predicate_target", None)
 
 
 class CallDefinitionStageEditor(StageEditor):
