@@ -95,21 +95,22 @@ def _write_split_fine_tuning_files(output_path: str, entries: list[str]) -> tupl
     return len(training_entries), len(validation_entries)
 
 
-def build_migration_rows(pairs: Sequence[tuple[str, str]]) -> tuple[list[str], int]:
+def build_migration_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[str], int]:
     """One jsonl row per distinct sentence, holding the sentence and its word list exactly as
     the fields have them: unparsed, so that invalid production data reaches the migration test
-    as it is. Returns the rows and how many duplicate sentences were left out, the first
-    note's word list winning."""
-    rows: list[str] = []
-    seen: set[str] = set()
+    as it is. `notes` are (note id, sentence, word list). A row's `nids` are every note with
+    that sentence, so that a tool editing the sentence reaches them all. Returns the rows and
+    how many duplicate sentences were folded in, the first note's word list winning."""
+    rows: dict[str, dict] = {}
     duplicates = 0
-    for sentence, word_list in pairs:
-        if sentence in seen:
+    for nid, sentence, word_list in notes:
+        row = rows.get(sentence)
+        if row is None:
+            rows[sentence] = {"sentence": sentence, "word_list": word_list, "nids": [nid]}
+        else:
             duplicates += 1
-            continue
-        seen.add(sentence)
-        rows.append(json.dumps({"sentence": sentence, "word_list": word_list}, ensure_ascii=False))
-    return rows, duplicates
+            row["nids"].append(nid)
+    return [json.dumps(row, ensure_ascii=False) for row in rows.values()], duplicates
 
 
 def _run_with_config(write: Callable[[dict, Sequence[NoteId]], str], nids: Sequence[NoteId]):
@@ -137,7 +138,7 @@ def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) ->
     whole collection. The sentence is the raw `word_extraction_sentence_field`, `<i>` context
     included - the migration strips that itself. Notes whose list is already an array are
     skipped: there is nothing left to migrate in them."""
-    pairs: list[tuple[str, str]] = []
+    notes: list[tuple[NoteId, str, str]] = []
     skipped = 0
     already_migrated = 0
 
@@ -165,9 +166,9 @@ def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) ->
         if word_list_raw.startswith("["):
             already_migrated += 1
             continue
-        pairs.append((sentence, word_list_raw))
+        notes.append((nid, sentence, word_list_raw))
 
-    rows, duplicates = build_migration_rows(pairs)
+    rows, duplicates = build_migration_rows(notes)
     _write_jsonl_entries(output_path, rows)
     return (
         f"Wrote {len(rows)} sentences to {output_path}. Skipped {duplicates} duplicate"

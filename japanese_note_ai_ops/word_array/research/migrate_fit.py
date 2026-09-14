@@ -4,7 +4,7 @@ Three corpora of the old format can be measured:
 
 - `export` (the default): `output/extract_words_migration_data.jsonl`, every sentence of the
   collection with its raw word list field, as `make_extract_words_migration_data` writes it -
-  `{"sentence", "word_list"}` per row. The field is read the way the migration op reads it,
+  `{"sentence", "word_list", "nids"}` per row (`nids` every note with the sentence, unused here). The field is read the way the migration op reads it,
   through repair_json, so this is a dry run of the real migration, invalid data included.
 - `checked`: `output/extract_words_migration_data_checked.jsonl`, a hand-checked subset of that.
 - `fine_tuning`: `output/extract_words_fine_tuning.jsonl`, a validated corpus whose entries carry

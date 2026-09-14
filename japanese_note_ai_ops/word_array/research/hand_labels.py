@@ -77,6 +77,21 @@ def write_labels(rows: list[dict], path: Path = HAND_LABELS) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def read_export_nids(path: Path) -> dict[str, list[int]]:
+    """The note ids of every raw sentence of a migration export, context kept as the export has
+    it. A row written before the export carried `nids` gives none."""
+    out: dict[str, list[int]] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        nids = out.setdefault(row["sentence"], [])
+        nids.extend(nid for nid in row.get("nids", []) if nid not in nids)
+    return {sentence: nids for sentence, nids in out.items() if nids}
+
+
 def apply_labels(arr: list, expected: list, labels: list[dict]) -> tuple[list[int], int, int]:
     """Write `labels` (all of one sentence) into `expected`, which is in `iter_words` order.
     Returns the indices labelled by hand, how many of them changed a label that was there,

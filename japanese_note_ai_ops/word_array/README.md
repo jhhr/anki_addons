@@ -247,7 +247,9 @@ hand-judged words are to come: `research/hand_judge.py` serves a page that offer
 migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and
 writes `output/word_matching_judge_hand_labels.jsonl`. `judge_eval.py build` lays those over the
 checked labels (a hand-judged sentence outside the checked export is asked about only its judged
-words), and `run` scores them on a line of their own too.
+words), and `run` scores them on a line of their own too. Export rows carry `nids`, every note with
+the sentence (`hand_labels.read_export_nids`), and `research/anki_connect.py` reads and edits those
+notes through AnkiConnect, for fixing a sentence from the hand judge's page.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
