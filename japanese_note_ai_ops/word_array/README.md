@@ -260,6 +260,14 @@ states a run takes: `["match"]`, plus the linked states 4 and 5 with
 Before gathering, `resolve_placeholder_ids()` swaps a new note's negative placeholder id an
 earlier run left behind for the id of the note holding it in `new_note_id_field` (the field is
 left set, other notes may still hold the placeholder); one no note holds goes back to `["match"]`.
+The main prompt asks for a `match_quality` (1-5) with every match or new meaning, and a target is
+saved `[note_id, match_quality]`, or `[note_id]` when the response gave no valid one
+(`parse_match_quality()`). The prompt shows the target's sentence in plain text with the very
+occurrence in `<b>` (`highlighted_sentence()`, without the field's `<i>` context), and each
+existing meaning's example sentence with that note's word in `<b>` when the note holds an array
+(`example_sentence()`: the occurrence linked to the note, else the first of its word); an old word
+list note's sentence is shown as it is. An old word list's words get the same prompt, their
+match_quality dropped.
 
 ## Migrating the old word lists
 

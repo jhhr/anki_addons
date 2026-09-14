@@ -752,7 +752,14 @@ def word_index_fields(fields: dict[str, str]) -> WordFields:
     )
 
 
-class MatchOpArgs(TypedDict):
+class _WordArrayMatchOpArgs(TypedDict, total=False):
+    # A word array's target: its sentence in plain text with the occurrence in <b>, shown to the
+    # prompt instead of `sentence`, and where its match_quality goes, keyed by word_index
+    prompt_sentence: str
+    match_qualities: dict[int, int]
+
+
+class MatchOpArgs(_WordArrayMatchOpArgs):
     current_note: Note
     note_type: NotetypeDict
     word_index: int
@@ -1455,6 +1462,9 @@ async def match_single_word_in_word_tuple(
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     new_note_id_field = match_op_args["new_note_id_field"]
+    word_list_field = match_op_args["word_list_field"]
+    prompt_sentence = match_op_args.get("prompt_sentence") or sentence
+    match_qualities = match_op_args.get("match_qualities")
 
     # If the word contains only non-japanese characters, skip it
     if not re.search(r"[ぁ-んァ-ン一-龯]", word):
@@ -1589,13 +1599,17 @@ async def match_single_word_in_word_tuple(
             )
             if meaning_field in note:
                 meaning = note[meaning_field]
-                other_sentence = (
-                    note[furigana_sentence_field] if furigana_sentence_field in note else ""
-                )
                 english_meaning = (
                     note[english_meaning_field] if english_meaning_field in note else ""
                 )
                 match_word = note[word_kanjified_field] if word_kanjified_field in note else ""
+                other_sentence = match_targets.example_sentence(
+                    note[furigana_sentence_field] if furigana_sentence_field in note else "",
+                    note[word_list_field] if word_list_field in note else "",
+                    match_word,
+                    note[word_reading_field] if word_reading_field in note else "",
+                    note.id,
+                )
                 if meaning:
                     sort_field = note[word_sort_field]
                     # Get the meaning number, if any from sort field, in the form (m1), (m2), etc.
@@ -1717,6 +1731,9 @@ async def match_single_word_in_word_tuple(
 **Primary Goal: Minimize creation of new meanings**
 Your main goal is to match to one of the existing meanings. If none fit, you may consider the **CREATE NEW** action.
 
+**Highlighted word**
+Where a sentence has a part in <b></b>, that is the occurrence of the word in question: in the _current sentence_ the word you are matching, in an example sentence the word of that meaning. The same word may occur elsewhere in the sentence unmarked; only the marked occurrence counts.
+
 **Your Actions**
 You will generate a JSON object. This array will describe your actions. You must provide one of the two actions.
 
@@ -1730,10 +1747,20 @@ You will generate a JSON object. This array will describe your actions. You must
     -   In the JSON, create a object with `"is_matched_meaning": false"` and `"meaning_number": null`.
     -   You MUST provide a new `"jp_meaning"` and `"en_meaning"`.
 
+**Match quality**
+Always rate how well the meaning you chose, or the new one you wrote, fits the word's usage in the current sentence, as `"match_quality"`, an integer from 1 to 5:
+- 5: The meaning describes this usage exactly.
+- 4: The meaning fits well, with a small difference in nuance or scope.
+- 3: The meaning fits only in a broader or related sense; the usage here is a narrower or extended one.
+- 2: The meaning fits loosely; a learner would need more than it says to understand this usage.
+- 1: The meaning does not really fit this usage; it was only the closest available.
+A low rating on a MATCH is fine and useful: prefer matching with an honest low rating over creating a near-duplicate meaning.
+
 **JSON OUTPUT RULES:**
-- The output is a single JSON object with 2-4 properties:
+- The output is a single JSON object with 3-5 properties:
 - "is_matched_meaning": A boolean indicating whether you are matching an existing meaning (true) or creating a new one (false).
 - "meaning_number": An integer (1-based index) indicating which existing meaning you are matching, or null if creating a new meaning.
+- "match_quality": An integer from 1 to 5 rating how well the meaning fits the usage in the current sentence.
 - "jp_meaning": (optional) A string with the new Japanese meaning, if creating a new one.
 - "en_meaning": (optional) A string with the new English meaning, if creating a new one.
 - **CRITICAL**: `meaning_number` must be a valid 1-based index from the provided list. Do not invent numbers.
@@ -1745,6 +1772,7 @@ The first meaning is a good match.
 {
     "is_matched_meaning": true,
     "meaning_number": 1,
+    "match_quality": 5
 }
 ```
 
@@ -1754,6 +1782,7 @@ None of the meanings fit, so you create a new one.
 {
     "is_matched_meaning": false,
     "meaning_number": null,
+    "match_quality": 5,
     "jp_meaning": "新しい日本語の定義。",
     "en_meaning": "A new English definition for the new usage."
 }
@@ -1763,7 +1792,7 @@ None of the meanings fit, so you create a new one.
 {meanings_str}
 
 _Targeted word_: {word}
-_Current sentence_: {sentence}"""
+_Current sentence_: {prompt_sentence}"""
 
         # response_schema = {
         #     "type": "object",
@@ -1894,6 +1923,13 @@ _Current sentence_: {sentence}"""
         meaning_number = meaning_action.get("meaning_number", None)
         jp_meaning = meaning_action.get("jp_meaning", None)
         en_meaning = meaning_action.get("en_meaning", None)
+        match_quality = match_targets.parse_match_quality(meaning_action.get("match_quality"))
+        if match_quality is None:
+            # Not a reason to drop the match: the word is saved without one, to be rated later
+            logger.debug(f"{log_prefix}No valid match_quality in result: {meaning_action}")
+        elif match_qualities is not None:
+            # Only read for a word whose action below leaves a result
+            match_qualities[word_index] = match_quality
         # If meaning_number is too big, the AI got confused, skip this
         if meaning_number is not None and meaning_number > len(meanings):
             logger.debug(
@@ -2517,6 +2553,7 @@ def plan_word_array_matching(
     logger.debug(f"{log_prefix}Word array has {len(targets)} words to match")
     # Filled by match_single_word_in_word_tuple, keyed by target index
     results: dict[int, Optional[FinalWordTuple]] = {}
+    qualities: dict[int, int] = {}
 
     async def match_op(
         _,
@@ -2541,6 +2578,8 @@ def plan_word_array_matching(
                 word=target.word,
                 reading=target.reading,
                 sentence=sentence,
+                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                match_qualities=qualities,
                 processed_word_tuples=results,
                 all_generated_meanings_dict=all_generated_meanings_dict,
                 notes_to_add_dict=notes_to_add_dict,
@@ -2561,7 +2600,7 @@ def plan_word_array_matching(
 
     async def save_results(word_tasks: list[asyncio.Task]):
         await asyncio.gather(*word_tasks)
-        saved = match_targets.save_results(targets, results)
+        saved = match_targets.save_results(targets, results, qualities)
         logger.debug(f"{log_prefix}Matched {saved} of {len(targets)} words in the word array")
         if saved:
             save_note()

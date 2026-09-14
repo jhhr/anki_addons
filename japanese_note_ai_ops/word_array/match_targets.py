@@ -97,14 +97,42 @@ def gather_targets(
     return targets
 
 
-def save_results(targets: list[MatchTarget], results: dict[int, Any]) -> int:
+MATCH_QUALITIES = range(1, 6)
+
+
+def parse_match_quality(value: Any) -> Optional[int]:
+    """The match_quality a response gave, 1-5, or None when it gave none that is one. A whole
+    number written as a float or a string is taken too."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value.isdigit():
+            return None
+        value = int(value)
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if isinstance(value, int) and value in MATCH_QUALITIES:
+        return value
+    return None
+
+
+def save_results(
+    targets: list[MatchTarget],
+    results: dict[int, Any],
+    qualities: Optional[dict[int, int]] = None,
+) -> int:
     """Write each matched target's note id into its element's `match_data`, returning how many
     were written. `results` is keyed by target index, each value the word tuple the matching
-    left, its note id last. The id is a real note's or a new note's negative placeholder, which
-    update_fake_note_ids swaps in the field text once the note exists. A target without a
-    result stays `["match"]` to be matched on the next run.
+    left, its note id last, and `qualities` by target index too. The id is a real note's or a
+    new note's negative placeholder, which update_fake_note_ids swaps in the field text once the
+    note exists. A target without a result stays `["match"]` to be matched on the next run.
 
-    The saved `[note_id]` has no match_quality until the main prompt gives one."""
+    A result with a match_quality is saved `[note_id, match_quality]`, one without `[note_id]`,
+    for the secondary prompt to rate."""
+    qualities = qualities or {}
     saved = 0
     for index, target in enumerate(targets):
         result = results.get(index)
@@ -114,9 +142,45 @@ def save_results(targets: list[MatchTarget], results: dict[int, Any]) -> int:
             note_id = int(result[-1])
         except (TypeError, ValueError):
             continue
-        target.elem[4] = [note_id]
+        quality = qualities.get(index)
+        target.elem[4] = [note_id] if quality is None else [note_id, quality]
         saved += 1
     return saved
+
+
+def highlighted_sentence(arr: list, elem: list) -> Optional[str]:
+    """The array's sentence in plain text with this very element in `<b>`, None when the element
+    isn't one of the array's words."""
+    for _, candidate, sentence in match_flags.iter_highlighted(arr):
+        if candidate is elem:
+            return sentence
+    return None
+
+
+def example_sentence(
+    sentence_field: str, word_list_field: str, word: str, reading: str, note_id: int
+) -> str:
+    """A word note's example sentence for the matching prompt, its word in `<b>`. When the note's
+    word list field holds a word array the sentence is built from it, marking the occurrence
+    linked to the note itself, else the first one of the word and reading, else the first of the
+    word. Otherwise, or when the word isn't in the array, the sentence field as it is."""
+    arr = match_flags.decode_word_array(word_list_field)
+    if not arr:
+        return sentence_field
+    try:
+        words = list(match_flags.iter_highlighted(arr))
+        fits = (
+            lambda e: match_flags.matched_note_id(e) == note_id,
+            lambda e: e[2] == word and e[3] == reading,
+            lambda e: e[2] == word,
+        )
+        for fit in fits:
+            for _, elem, sentence in words:
+                if fit(elem):
+                    return sentence
+    except (IndexError, TypeError):
+        pass
+    return sentence_field
 
 
 def has_placeholder_ids(arr: list) -> bool:

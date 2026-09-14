@@ -101,6 +101,45 @@ class SaveResultsTests(unittest.TestCase):
         self.assertEqual(arr[0][4], ["match"])
         self.assertEqual(arr[1][4], ["match"])
 
+    def test_a_match_quality_is_saved_after_the_note_id(self):
+        arr = [word("様", ["match"]), word("本", ["match"])]
+        targets = match_targets.gather_targets(arr)
+        results = {0: ("様", "さま", "様", 111), 1: ("本", "ほん", "本", 222)}
+        self.assertEqual(match_targets.save_results(targets, results, {0: 4}), 2)
+        self.assertEqual((arr[0][4], arr[1][4]), ([111, 4], [222]))
+
+
+class MatchQualityTests(unittest.TestCase):
+    def test_only_a_whole_number_from_one_to_five(self):
+        parse = match_targets.parse_match_quality
+        self.assertEqual([parse(v) for v in (1, 5, 3.0, " 4", "2")], [1, 5, 3, 4, 2])
+        for bad in (0, 6, 2.5, "x", "", None, True, [3]):
+            self.assertIsNone(parse(bad))
+
+
+class HighlightedSentenceTests(unittest.TestCase):
+    def test_the_very_occurrence_is_marked(self):
+        first, second = word("為る", pos="verb"), word("為る", pos="verb")
+        arr = [first, word("と"), second, ["。"]]
+        self.assertEqual(match_targets.highlighted_sentence(arr, second), "為ると<b>為る</b>。")
+        sub = word("様", ["match"])
+        arr = [word("様に", [], [sub, word("に")]), word("本")]
+        self.assertEqual(match_targets.highlighted_sentence(arr, sub), "<b>様</b>に本")
+        self.assertIsNone(match_targets.highlighted_sentence(arr, word("本")))
+
+    def test_an_example_sentence_marks_the_notes_own_word(self):
+        example = match_targets.example_sentence
+        arr = [word("本", [222]), word("と"), word("本", [111], reading="ほん"), ["。"]]
+        text = json.dumps(arr, ensure_ascii=False)
+        # the occurrence linked to the note, then the word and reading, then the word
+        self.assertEqual(example("field", text, "本", "ほん", 111), "本と<b>本</b>。")
+        self.assertEqual(example("field", text, "本", "ほん", 333), "本と<b>本</b>。")
+        self.assertEqual(example("field", text, "本", "もと", 333), "<b>本</b>と本。")
+        # no array, or the word not in it: the field as it is
+        self.assertEqual(example("<b>本</b>", "", "本", "ほん", 111), "<b>本</b>")
+        self.assertEqual(example("field", text, "棚", "たな", 333), "field")
+        self.assertEqual(example("field", '{"nouns": []}', "本", "ほん", 111), "field")
+
 
 class ResolvePlaceholderIdsTests(unittest.TestCase):
     def test_placeholders_take_the_added_notes_id(self):
@@ -262,10 +301,11 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
 
         async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
             args = match_op_args
-            seen.append((args["word"], args["part_of_speech"], args["word_list_field"]))
+            seen.append((args["word"], args["part_of_speech"], args["prompt_sentence"]))
             if args["word"] == "様":
                 results = args["processed_word_tuples"]
                 results[args["word_index"]] = ("様", "よみ", "様", -1234567)
+                args["match_qualities"][args["word_index"]] = 3
             return True
 
         def inner_bulk_op(config, op, **_):
@@ -291,11 +331,10 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         ):
             asyncio.run(run())
 
-        self.assertEqual(
-            seen, [("様", "Suffix", "word_list_field"), ("本", "Noun", "word_list_field")]
-        )
+        # each word's prompt has its own occurrence in <b>
+        self.assertEqual(seen, [("様", "Suffix", "<b>様</b>本"), ("本", "Noun", "様に<b>本</b>")])
         saved = json.loads(note["word_list_field"])
-        self.assertEqual(saved[0][5][0][4], [-1234567])
+        self.assertEqual(saved[0][5][0][4], [-1234567, 3])
         self.assertEqual(saved[1][4], ["match"])
         self.assertEqual(updates, {1: note})
         self.assertEqual(edited_nids, [1])
@@ -362,7 +401,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual((updates, edited_nids), ({1: note}, [1]))
 
     def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):
-        arr = [word("様", [-1234567]), word("本", [1674931277303, 4])]
+        arr = [word("様", [-1234567, 3]), word("本", [1674931277303, 4])]
         fields = {"word_list_field": json.dumps(arr), "new_note_id_field": ""}
         referencing = FakeNote(fields, note_id=2)
         new_note = FakeNote({"word_list_field": "", "new_note_id_field": "-1234567"}, 99)
@@ -372,7 +411,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         ):
             updated = self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
         saved = json.loads(referencing["word_list_field"])
-        self.assertEqual([saved[0][4], saved[1][4]], [[99], [1674931277303, 4]])
+        self.assertEqual([saved[0][4], saved[1][4]], [[99, 3], [1674931277303, 4]])
         self.assertEqual(set(updated), {2, 99})
 
 
