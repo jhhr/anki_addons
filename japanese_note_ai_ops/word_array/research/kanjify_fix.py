@@ -77,22 +77,29 @@ def _current(infos: list[dict], config: dict) -> dict[int, tuple[Optional[str], 
     return out
 
 
+def _padding(value: str) -> tuple[str, str]:
+    """The whitespace around the field's text; the export strips it, notes starting with a
+    furigana group keep a leading space, which is part of that group's markup."""
+    return value[: len(value) - len(value.lstrip())], value[len(value.rstrip()) :]
+
+
 def plan_writes(rows: list[dict], infos: list[dict], config: dict) -> tuple[list[Write], list[str]]:
-    """The writes that apply the rows to notes whose field is still `before`; why the others
-    are refused."""
+    """The writes that apply the rows to notes whose field is still `before`, padding aside; why
+    the others are refused. A written field keeps the padding it had."""
     current = _current(infos, config)
     writes, refused = [], []
     for row in rows:
         for nid in row.get("nids") or []:
             field, value = current.get(nid, (None, "no such note"))
+            lead, tail = _padding(value or "")
             if field is None:
                 refused.append(f"nid {nid}: {value}")
-            elif value == row["after"]:
+            elif value.strip() == row["after"].strip():
                 refused.append(f"nid {nid}: already fixed")
-            elif value != row["before"]:
+            elif value.strip() != row["before"].strip():
                 refused.append(f"nid {nid}: field changed since the export")
             else:
-                writes.append(Write(nid, field, row["before"], row["after"]))
+                writes.append(Write(nid, field, value, lead + row["after"].strip() + tail))
     return writes, refused
 
 

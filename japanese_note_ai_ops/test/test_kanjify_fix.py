@@ -72,6 +72,17 @@ class KanjifyFixTests(unittest.TestCase):
             [{"nid": 1, "field": "k", "before": BEFORE, "after": AFTER}],
         )
 
+    def test_padding_the_export_stripped_is_kept(self):
+        anki = FakeAnki({1: f" {BEFORE}\n", 2: f" {AFTER}"})
+        written, refused = kanjify_fix.apply(anki, [fix_row([1, 2])], CONFIG, self.undo)
+        self.assertEqual(written, 1)
+        self.assertEqual(anki.written, [(1, {"k": f" {AFTER}\n"})])
+        self.assertEqual(refused, ["nid 2: already fixed"])
+        self.assertEqual(
+            kanjify_fix.read_jsonl(self.undo),
+            [{"nid": 1, "field": "k", "before": f" {BEFORE}\n", "after": f" {AFTER}\n"}],
+        )
+
     def test_note_type_without_the_field_config_is_refused(self):
         anki = FakeAnki({1: BEFORE}, model="Other")
         written, refused = kanjify_fix.apply(anki, [fix_row([1])], CONFIG, self.undo)
