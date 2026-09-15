@@ -106,10 +106,14 @@ Content modification rules:
 
 Policy on edge cases (not be considered an exhaustive list, but can be used as a guideline for cases not listed here):
 
+The basic test: kanjify a word when it carries a meaning of its own; leave it in kana when it only does grammar. Whether the word conjugates is not the test.
+
 Do not kanjify:
-- あげる when meant as "to give". あげる is written in hiragana specifically to indicate that it is different from 揚げる, 上げる or 挙げる
-- ない auxiliary in negated verbs. ない is not considered 無い written in hiragana, but rather a grammatical auxiliary.
-- いる and いく as an auxiliary verb in verb conjugation, for example 書いている, 食べていく, etc. These auxiliaries should be considered a part of a verb's conjugation and, thus, its okurigana, and so enclosed within the <k> tag of a kanjified verb.
+- あげる when meant as "to give". あげる is written in hiragana specifically to indicate that it is different from 揚げる, 上げる or 挙げる. This is an exception to the basic test.
+- The copula である in all its forms: である, であった, であり, であって, であれば, であろう. It is the copula like だ and です, not で + 有る.
+- ない in negations: the auxiliary in negated verbs (食べない), ではない / じゃない / ではなかった after nouns and na-adjectives, and くない / くなかった after i-adjectives (高くない). This ない is not 無い written in hiragana, but a grammatical auxiliary.
+- て-form helper verbs, in all their forms: ている, てある, てみる, てくる, ていく, てくれる, てしまう, ておく, てもらう, ていただく, てください, てあげる, てやる, and the humble/honorific ておる, ていらっしゃる, てまいる. Also their contractions (てる, とく, ちゃう). The same verbs used alone keep their meaning and are kanjified (見[み]る, 来[く]る, 置[お]く, 貰[もら]う, 呉[く]れる, 遣[や]る, 仕舞[しま]う, 頂[いただ]く, 下[くだ]さい), for example 見てみる, not 見て見る. When the verb before the helper is kanjified, the kana helper is part of its okurigana and goes inside the same <k> tag: "してみます" becomes "<k> 為[し]てみます</k>". When the verb before it was already in kanji, the helper gets no <k> tag: "行[い]ってみましょう" stays as is.
+- て-form patterns with adjectives and verbs: てほしい, てもいい / てもよい, てはいけない, てはならない, てもかまわない, てはだめ. Alone the same words are kanjified (欲[ほ]しい, 良[い]い, 行[い]けない, 構[かま]わない).
 - なんか when it is acting more as a particle or filler and could removed without (significant) loss of meaning, for example 今日なんか暑いですね
 - もう used purely as exclamatory particle, for example もう！ or もう、やめてよ！
 - もっと as it is not truly component in もっとも which does have a kanjified form as 最も or 尤も
@@ -120,7 +124,12 @@ Do not kanjify:
 Do kanjify:
 - ない when used as a standalone word, including conjugated forms like なかった, なくて. 無い is even currently used in modern text, but is simply often written in hiragana.
 - いる and いく when is used as a standalone verb, for example 彼は家にいる, あっちにいく
+- ある when used as a standalone verb of existence or possession, for example 机の上に本がある (not the copula である).
 - する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification.
+- なる as 成る in all its uses, including ようになる, ことになる and くなる.
+- The formal nouns こと, もの, ため, よう, ところ as 事, 物, 為, 様, 所 in all their uses, including grammatical ones like ことができる, ものだ, ために, ようだ, ところだ.
+- によって, により, による, によれば, によると as に依る or に因る, chosen by meaning: 因る when it gives a cause or reason (事故[じこ]に因って 壊[こわ]れた), 依る when it means "by means of", "depending on" or "according to" (人[ひと]に依って 違[ちが]う, 天気予報[てんきよほう]に依ると).
+- Any word with several possible kanji spellings (よる: 依る, 因る, 拠る, 寄る; はかる: 図る, 計る, 測る, 量る; とる: 取る, 採る, 撮る, 執る): choose the kanji by the meaning in this sentence.
 - なんか when it is clearly a contraction of なにか its removal would change the questioning meaning of a phrase, for example なんか食べたい
 - やすい as used in verbs like 食べやすい, 書きやすい, etc. This is a a form of 易い
 - the honorific prefix お
@@ -146,7 +155,7 @@ Example sentence 4: おかげで　この 守銭奴[しゅせんど]の 性[し�
 Kanjified example 4: <k> 御蔭[おかげ]</k>で<k> 此[この]</k> 守銭奴[しゅせんど]の 性[しょう] 悪天使[あくてんし]にぼっ<k> 手繰[たく]られた</k>ぜ。
 
 Example sentence 5: 毎日[まいにち]一キロ 以上[いじょう] 水泳[すいえい]をしてきただけのことはあって、 彼[かれ]は九十 歳[さい]の 今[いま]もかくしゃくとしている。
-Kanjified example 5: 毎日[まいにち] 一[いち]キロ 以上[いじょう] 水泳[すいえい]を<k> 為[し]て</k><k> 来[き]た</k>だけの<k> 事[こと]</k>は<k> 有[あ]って</k>、 彼[かれ]は 九十[きゅうじゅう] 歳[さい]の 今[いま]も<k> 矍鑠[かくしゃく]</k>として<k> 居[い]る</k>。
+Kanjified example 5: 毎日[まいにち] 一[いち]キロ 以上[いじょう] 水泳[すいえい]を<k> 為[し]てきた</k>だけの<k> 事[こと]</k>は<k> 有[あ]って</k>、 彼[かれ]は 九十[きゅうじゅう] 歳[さい]の 今[いま]も<k> 矍鑠[かくしゃく]</k>としている。
 
 Example sentence 6: 俺はちっぽけでどうしようもないろくでなしですよ。
 Kanjified example 6: 俺[おれ]は<k> 小[ち]</k>っぽけで<k> 如何[どう]</k><k> 仕様[しよう]</k>も<k> 無[な]い</k><k> 碌[ろく]</k>で<k> 無[な]し</k> ですよ。
@@ -158,13 +167,13 @@ Example sentence 8: <ul><li>いろいろなもので 遊[あそ]んでいるう�
 Kanjified example 8: <ul><li><k> 色々[いろいろ]</k>な<k> 物[もの]</k>で 遊[あそ]んでいる<k> 内[うち]に</k> 家[いえ]の 中[なか]は<span style="font-weight: bold;"><k> 滅茶苦茶[めちゃくちゃ]</k></span>に<k> 成[な]っていた</k>。<k> 不図[ふと]</k> 気[き]が 付[つ]けば 時計[とけい]は11 時[じ]を 指[さ]していた。</li></ul><br>
 
 Example sentence 9: しかもけっして 食欲[しょくよく]がないからではなかったのだ。また、 彼[かれ]の 口[くち]にもっと 合[あ]うような 別[べつ]な 食[た]べものをもってくるのだろうか。 妹[いもうと]が 自分[じぶん]でそうしてくれないだろうか。
-Kanjified example 9: <k> 然[しか]も</k><k> 決[け]っして</k> 食欲[しょくよく]が<k> 無[な]い</k>からでは<k> 無[な]かった</k>のだ。<k> 又[また]</k>、 彼[かれ]の 口[くち]にもっと<k> 合[あ]う</k><k> 様[よう]な</k><k> 別[べつ]</k>な<k> 食[た]べ物[もの]</k>を<k> 持[も]って</k><k> 来[く]る</k>のだろうか。 妹[いもうと]が 自分[じぶん]で<k> 然[そ]う</k><k> 為[し]て</k><k> 呉[く]れない</k>だろうか。
+Kanjified example 9: <k> 然[しか]も</k><k> 決[け]っして</k> 食欲[しょくよく]が<k> 無[な]い</k>からではなかったのだ。<k> 又[また]</k>、 彼[かれ]の 口[くち]にもっと<k> 合[あ]う</k><k> 様[よう]な</k><k> 別[べつ]</k>な<k> 食[た]べ物[もの]</k>を<k> 持[も]ってくる</k>のだろうか。 妹[いもうと]が 自分[じぶん]で<k> 然[そ]う</k><k> 為[し]てくれない</k>だろうか。
 
 Example sentence 10: 私[わたし]は 毎朝[まいあさ]<b>コーヒー</b>を 飲[の]みます。
 Kanjified example 10: 私[わたし]は 毎朝[まいあさ]<b><k> 珈琲[コーヒー]</k></b>を 飲[の]みます。
 
 Example sentence 11: <b> 上司[じょうし]</b>に 相談[そうだん]してみます。
-Kanjified example 11: <b> 上司[じょうし]</b>に 相談[そうだん]<k> 為[し]て</k><k> 見[み]ます</k>。
+Kanjified example 11: <b> 上司[じょうし]</b>に 相談[そうだん]<k> 為[し]てみます</k>。
 
 Example sentence 12: <b> 未来[みらい]</b>は 誰[だれ]にも 分[わ]からない。
 Kanjified example 12: <b> 未来[みらい]</b>は 誰[だれ]にも 分[わ]からない。
@@ -182,13 +191,13 @@ Example sentence 16: 娘[むすめ]が 初[はじ]めて<b> 寝返[ねがえ]り
 Example kanjified 16: 娘[むすめ]が 初[はじ]めて<b> 寝返[ねがえ]り</b><k> 為[し]</k>ました。
 
 Example sentence 17: <b>とにかく</b> 現場[げんば]へ 行[い]ってみましょう。
-Example kanjified 17: <b><k> 兎[と]に 角[かく]</k></b> 現場[げんば]へ 行[い]って<k> 見[み]ましょう</k>。
+Example kanjified 17: <b><k> 兎[と]に 角[かく]</k></b> 現場[げんば]へ 行[い]ってみましょう。
 
 Example sentence 18: <i>なっ…バカもん！ 麦[むぎ]のあとは 放牧[ほうぼく]だ。</i> 切[き]り 株[かぶ]を 長[なが]めに 残[のこ]しておくのはあとで 家畜[かちく]に 食[く]わせるためなんだぞ。
 Example kanjified 18: <i>なっ…<k> 馬鹿者[バカもん]</k>！ 麦[むぎ]の<k> 後[あと]</k>は 放牧[ほうぼく]だ。</i> 切[き]り 株[かぶ]を 長[なが]めに 残[のこ]しておくのは<k> 後[あと]</k>で 家畜[かちく]に<b> 食[く]わせる</b><k> 為[ため]</k>なんだぞ。
 
 Example sentence 19: あの 逃[に]げ 方[かた]は 一番[いちばん]マズい。 背中[せなか]を<b> 蹴[け]って</b>くれと 言[い]ってるようなものだ
-Example kanjified 19: <k> 彼[あ]の</k> 逃[に]げ 方[かた]は 一番[いちばん]<k> 不味[マズ]い</k>。 背中[せなか]を<b> 蹴[け]って</b><k> 呉[く]れ</k>と 言[い]ってる<k> 様[よう]な</k><k> 物[もの]</k>だ
+Example kanjified 19: <k> 彼[あ]の</k> 逃[に]げ 方[かた]は 一番[いちばん]<k> 不味[マズ]い</k>。 背中[せなか]を<b> 蹴[け]って</b>くれと 言[い]ってる<k> 様[よう]な</k><k> 物[もの]</k>だ
 
 Example sentence 20: 北[きた]アメリカでは １つの 家[いえ]に １つ<b>ないし</b> ２つの 車庫[しゃこ]があるのはよくあることだ。
 Example kanjified 20: 北アメリカでは １[ひと]つの 家[いえ]に １[ひと]つ<b><k> 乃至[ないし]</k></b> ２[ふた]つの 車庫[しゃこ]が<k> 有[あ]る</k>のは<k> 良[よ]く</k><k> 有[あ]る</k><k> 事[こと]</k>だ。
@@ -198,6 +207,11 @@ Example kanjified 21: <k> 其[そ]れ</k>に 触[ふ]れた 銀[ぎん]の<b><k>
 
 Example sentence 22: それらの 作品[さくひん]には<b>優劣[ゆうれつ]</b>をつけがたい。
 Kanjified example 22: <k> 其[そ]れ 等[ら]</k>の 作品[さくひん]には<b><k> 優劣[ゆうれつ]</k></b>を<k> 付[つ]け 難[がた]い</k>。
+Example sentence 23: これは 事故[じこ]によって 壊[こわ]れたのであって、わざとではないので、 許[ゆる]してほしい。
+Kanjified example 23: <k> 此[こ]れ</k>は 事故[じこ]に<k> 因[よ]って</k> 壊[こわ]れたのであって、<k> 態[わざ]と</k>ではないので、 許[ゆる]してほしい。
+
+Example sentence 24: 天気予報[てんきよほう]によると 明日[あした]は 雨[あめ]らしいから、 傘[かさ]を 用意[ようい]しておいてもいいよ。
+Kanjified example 24: 天気予報[てんきよほう]に<k> 依[よ]ると</k> 明日[あした]は 雨[あめ]らしいから、 傘[かさ]を 用意[ようい]<k> 為[し]ておいてもいい</k>よ。
 
 Return a JSON string with the following key-value pairs:
  "{KANJIFIED_SENTENCE_RETURN_FIELD}": The fully kanjified sentence.
