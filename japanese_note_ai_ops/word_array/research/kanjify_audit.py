@@ -278,6 +278,17 @@ def row_fix(label: str, toks: list[Tok], targets: dict) -> tuple[str, list[dict]
             new_span = note_edits.span_kana(content, by_span[k]["kana"])
         else:
             new_span = f"<k>{content}</k>"
+        prev = spans[k - 1] if k else None
+        if (
+            "<k>" not in new_span
+            and prev is not None
+            and prev.end == span.start
+            and prev.content is not None
+            and k - 1 not in by_span
+        ):
+            # kana right after a span that stays goes inside it: <k> 為[し]てください</k>
+            out = out[: prev.end - len("</k>")] + new_span + "</k>" + out[span.end :]
+            continue
         out = out[: span.start] + new_span + out[span.end :]
     return out, fixes
 

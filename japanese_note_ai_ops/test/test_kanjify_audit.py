@@ -89,6 +89,12 @@ class AuditTests(unittest.TestCase):
         after, _ = audit.row_fix(rows[3], toks[3], targets)
         self.assertEqual(after, "<b>猫</b>を<k> 此[こ]の</k> 所[ところ]")
 
+    def test_row_fix_moves_a_helper_into_the_kanjified_verb_before_it(self):
+        label = "電話[でんわ]<k> 為[し]て</k><k> 下[くだ]さい</k>。"
+        after, fixes = self.audit.row_fix(label, self.audit.analyze_row(0, label), {})
+        self.assertEqual(after, "電話[でんわ]<k> 為[し]てください</k>。")
+        self.assertEqual([f["class"] for f in fixes], ["て-helper"])
+
 
 if __name__ == "__main__":
     unittest.main()
