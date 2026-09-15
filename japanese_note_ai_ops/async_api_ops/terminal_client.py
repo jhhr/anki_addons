@@ -136,9 +136,33 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
     return CliOutcome(CliAction.FAIL, None, text or stdout.strip()[-500:], status)
 
 
+def last_json_object(text: str) -> Optional[dict]:
+    """The last complete top-level JSON object in `text`, None if there is none.
+
+    Claude in the terminal sometimes answers, writes "Wait, let me reconsider..." and answers
+    again; the later object is the one it settled on.
+    """
+    decoder = json.JSONDecoder()
+    found = None
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+        except ValueError:
+            pos = text.find("{", pos + 1)
+            continue
+        if isinstance(obj, dict):
+            found = obj
+        pos = text.find("{", end)
+    return found
+
+
 def decode_text_result(text: str, corrector: Optional[Callable[[str], str]] = None):
-    """The JSON object in a text answer, as the API providers read one: from the first "{" to
-    the last "}", given to `corrector` once if it doesn't parse."""
+    """The JSON object in a text answer: the last complete one, else read as the API providers
+    read one, from the first "{" to the last "}", given to `corrector` once if it doesn't parse."""
+    found = last_json_object(text)
+    if found is not None:
+        return found
     start, end = text.find("{"), text.rfind("}")
     json_text = text[start : end + 1] if start != -1 and end != -1 else text
     for attempt in (json_text, None):

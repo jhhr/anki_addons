@@ -169,6 +169,17 @@ class PureTests(unittest.TestCase):
         self.assertEqual(fixed, {"a": 1})
         self.assertIsNone(tc.decode_text_result("no json"))
 
+    def test_second_guessed_answer_takes_the_last_object(self):
+        # Shape of the terminal Opus/Haiku answers in output/kanjify_eval_21e_stderr.txt
+        text = (
+            '```json\n{\n  "kanjified_sentence": "<k> 真事[マジック]</k>"\n}\n```\n\n'
+            'Wait, let me reconsider. {not json} "マジック" is a loanword.\n\n'
+            '```json\n{\n  "kanjified_sentence": "マジック"\n}\n```\n\nThis is correct.'
+        )
+        self.assertEqual(tc.decode_text_result(text), {"kanjified_sentence": "マジック"})
+        nested = '{"a": {"b": 1}}\n\nWait — correction below.\n\n{"a": {"b": 2}}'
+        self.assertEqual(tc.decode_text_result(nested), {"a": {"b": 2}})
+
     def test_find_cli(self):
         self.assertEqual(tc.find_cli({"claude_cli_path": "D:/c.exe"}, which), "D:/c.exe")
         self.assertIsNone(tc.find_cli({}, lambda _n: None))
@@ -202,6 +213,12 @@ class RequestTests(ClockTestCase):
         popen = FakePopen((0, cli_json(result='{"decision": "x",}')))
         result = self.ask(popen, json_result_corrector=lambda s: s.replace(",}", "}"))
         self.assertEqual(result, {"decision": "x"})
+
+    def test_second_guessed_answer_is_not_retried(self):
+        text = '{"decision": "match"}\n\nWait — correction below.\n\n{"decision": "dontmatch"}'
+        popen = FakePopen((0, cli_json(result=text)))
+        self.assertEqual(self.ask(popen), {"decision": "dontmatch"})
+        self.assertEqual(len(popen.calls), 1)
 
     def test_retry_then_success(self):
         popen = FakePopen((1, RATE_LIMITED), (0, "not json"), (0, SUCCESS))
