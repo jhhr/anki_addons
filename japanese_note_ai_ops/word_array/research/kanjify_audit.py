@@ -378,6 +378,7 @@ def main() -> int:
             task = {"class": "left-kana", "word": key[0], "pos": key[1]}
             task["kanjified"] = dict(spelled.most_common())
             task["items"] = [item(t) for t in kana[key]]
+            task["kanjified_items"] = [{**item(t), "kanji": t.kanji} for t in kanjified[key]]
             f.write(json.dumps(task, ensure_ascii=False) + "\n")
         for key, spelled, ts in meaning:
             task = {"class": "meaning", "word": key[0], "pos": key[1]}
