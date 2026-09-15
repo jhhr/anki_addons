@@ -338,10 +338,25 @@ class ExecutionSession:
         name = normalize_media_filename(filename)
         if skip_if_exists and self.file_is_already_there(name):
             return False
-        if not overwrite and name not in self.file_overlay and media_file_exists(name):
-            raise MediaFileError(
-                f"File '{name}' already exists and the stage does not overwrite"
-            )
+        if not overwrite:
+            # Asked the same way round as `skip_if_exists` above, and for the same reason: a
+            # file this run has queued is about to be there, so replacing it is the thing the
+            # stage said not to do. Checking only the disk made the answer depend on whether
+            # a previous run had committed -- the first run overwrote silently and the second
+            # refused, for the same definition over the same two stages.
+            #
+            # Spelled out rather than routed through `file_is_already_there`, because the two
+            # cases need different words: a name that is only in the overlay is not in the
+            # media folder yet, and sending the user to look for it there explains nothing.
+            if name in self.file_overlay:
+                raise MediaFileError(
+                    f"File '{name}' was already written earlier in this run and the stage"
+                    " does not overwrite"
+                )
+            if media_file_exists(name):
+                raise MediaFileError(
+                    f"File '{name}' already exists and the stage does not overwrite"
+                )
         self.file_overlay[name] = content
         self.pending_files.append({"filename": name, "content": content})
         if self.recording:

@@ -116,6 +116,11 @@ outer list plus `store` is how a loop reports anything back.
 * **Files are UTF-8, no BOM, no newline translation**, and a filename resolves inside the
   media folder -- a path separator or a `..` segment is refused. There is no append mode:
   `read_file`, build the new content, `write_file` with `overwrite: true`.
+* **A file this run has queued counts as already there.** Both `skip_if_exists` and
+  `overwrite: false` ask about the pending write as well as the media folder, so a second
+  stage naming a file an earlier one wrote skips or refuses rather than replacing it. Asking
+  only about the folder made the answer depend on whether a previous run had committed: the
+  same two stages overwrote silently the first time and refused the second.
 * **A called definition is isolated.** It gets its trigger note and nothing else of the
   caller's -- no variables, no lists, no loop bindings. It shares the working notes, cards
   and files, and returns only what it declares in `exports`. Call cycles are refused, and a

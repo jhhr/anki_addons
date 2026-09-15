@@ -519,6 +519,49 @@ class TestFiles:
         assert run(definition, note, logger)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first"
 
+    def test_overwrite_false_refuses_a_file_this_run_has_already_written(
+        self, col, note, media_dir, logger
+    ):
+        # The sibling of the `skip_if_exists` case above, and the reason it is worth its own
+        # test: checking only the disk made the answer depend on whether a previous run had
+        # committed. The same definition overwrote silently the first time and refused the
+        # second, with nothing in between to explain the difference.
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("first")),
+            d.write_file("log.txt", d.text("second"), overwrite=False),
+        ])
+
+        assert run(definition, note, logger)[0] is False
+        # Nothing lands at all, the first write included: the refusal is a stage error and a
+        # failed definition discards its queued files. That is what `overwrite: false` has
+        # always done to a file already on disk, and now the same two stages behave the same
+        # way whether or not an earlier run put one there.
+        assert not (media_dir / "_log.txt").exists()
+
+    def test_the_refusal_says_the_file_came_from_this_run(
+        self, col, note, media_dir, logger
+    ):
+        # "already exists" would point at the media folder, where there is nothing to find:
+        # the first write has not been committed yet either.
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("first")),
+            d.write_file("log.txt", d.text("second"), overwrite=False),
+        ])
+
+        run(definition, note, logger)
+        assert logger.has_error("already written earlier in this run")
+
+    def test_overwrite_false_still_writes_a_name_nothing_else_has_taken(
+        self, col, note, media_dir, logger
+    ):
+        definition = d.staged(stages=[
+            d.write_file("first.txt", d.text("one")),
+            d.write_file("second.txt", d.text("two"), overwrite=False),
+        ])
+
+        assert run(definition, note, logger)[0] is True, logger.errors
+        assert (media_dir / "_second.txt").read_text(encoding="utf-8") == "two"
+
     def test_skip_if_exists_still_writes_when_nothing_is_there(
         self, col, note, media_dir, logger
     ):
