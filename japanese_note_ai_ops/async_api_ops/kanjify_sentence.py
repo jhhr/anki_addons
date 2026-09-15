@@ -44,7 +44,9 @@ def make_k_word_replacer(sentence: str):
             return match.group(0)
 
     def k_word_replacer(match: re.Match[str]) -> str:
+        nonlocal k_words_in_sentence
         # the match is of the form <k>...</k> which may contain multiple furigana words
+        k_words_in_sentence = False
         res = K_INNER_REC.sub(inner_k_word_replacer, match.group(1))
         if k_words_in_sentence:
             return res
@@ -220,26 +222,66 @@ The sentence to process: {sentence}
 """
 
 
+def kanjify_temperature(config: dict[str, str]) -> float:
+    config_temp = config.get("kanjify_sentence_temperature", None)
+    if config_temp is None:
+        return KANJIFY_SENTENCE_DEFAULT_TEMPERATURE
+    try:
+        return float(config_temp)
+    except ValueError:
+        logger.error(
+            "Invalid temperature value in config: %s. Using default temperature: %f",
+            config_temp,
+            KANJIFY_SENTENCE_DEFAULT_TEMPERATURE,
+        )
+        return KANJIFY_SENTENCE_DEFAULT_TEMPERATURE
+
+
+def clean_kanjified(sentence: str, kanjified_sentence: str) -> tuple[str, bool]:
+    """The model's kanjified sentence with its common mistakes cleaned up, and whether turning
+    its <k> spans back into kana gives the original sentence (whitespace and <b> aside)."""
+    # Sometimes kanjifying する results in 為[し]る
+    kanjified_sentence = kanjified_sentence.replace("<k> 為[し]る</k>", "<k> 為[す]る</k>")
+    # Sometimes when kanjifying その it leaves out the の --> <k> 其[そ]</k>
+    kanjified_sentence = SO_WITHOUT_NO.sub("<k> 其[そ]の</k>", kanjified_sentence)
+    # Or puts the の inside the furigana tags -->  <k> 其[その]</k>
+    kanjified_sentence = SO_INSIDE_NO.sub(" <k> 其[そ]の</k>", kanjified_sentence)
+    # Sometimes it wraps the sentence in 「」when the original sentence wasn't
+    if not (sentence.startswith("「") and sentence.endswith("」")) and (
+        kanjified_sentence.startswith("「") and kanjified_sentence.endswith("」")
+    ):
+        # Remove the wrapping
+        kanjified_sentence = kanjified_sentence[1:-1]
+
+    # It may unnecessarily wrap words in <k> tags that were already kanjified in the
+    # original sentence
+    k_word_replacer = make_k_word_replacer(sentence)
+    kanjified_sentence = K_WORD_REC.sub(k_word_replacer, kanjified_sentence)
+
+    # Clean double spaces
+    kanjified_sentence = kanjified_sentence.replace("  ", " ")
+    # Clean extra space before <k> tags
+    kanjified_sentence = kanjified_sentence.replace(" <k> ", "<k> ")
+
+    reversed_sentence = B_TAGS_REC.sub("", kanjified_sentence)
+    reversed_sentence = K_WORD_REC.sub(k_word_reversing_replacer, reversed_sentence)
+    number_furi_replacer = make_number_furi_replacer(sentence)
+    reversed_sentence = NUMBER_FURI_REC.sub(number_furi_replacer, reversed_sentence)
+    # Remove all whitespace as the comparison often fails due to trivial differences
+    reversed_sentence = re.sub(r"\s", "", reversed_sentence)
+    cleaned_sentence = re.sub(r"\s", "", B_TAGS_REC.sub("", sentence))
+    if cleaned_sentence != reversed_sentence:
+        logger.debug("Reversed %s != original %s", reversed_sentence, cleaned_sentence)
+    return kanjified_sentence, cleaned_sentence == reversed_sentence
+
+
 def get_kanjified_sentence_from_model(
     config: dict[str, str],
     sentence: str,
 ) -> Union[list[str], None]:
     prompt = get_kanjify_sentence_prompt(sentence)
     model = config.get("kanjify_sentence_model", "")
-    config_temp = config.get("kanjify_sentence_temperature", None)
-    if config_temp is not None:
-        try:
-            temperature = float(config_temp)
-        except ValueError:
-            logger.error(
-                "Invalid temperature value in config: %s. Using default temperature: %f",
-                config_temp,
-                KANJIFY_SENTENCE_DEFAULT_TEMPERATURE,
-            )
-            temperature = KANJIFY_SENTENCE_DEFAULT_TEMPERATURE
-    else:
-        temperature = KANJIFY_SENTENCE_DEFAULT_TEMPERATURE
-    result = get_response(model, prompt, temperature=temperature)
+    result = get_response(model, prompt, temperature=kanjify_temperature(config))
     if result is None:
         logger.error("Failed to get a response from the API.")
         # If the prompt failed, return nothing
@@ -290,54 +332,16 @@ def kanjify_sentence_in_note(
             if result is not None:
                 [kanjified_sentence] = result
                 logger.debug("kanjified_sentence: %s", kanjified_sentence)
-                # Clean up common mistakes by the AI
-                # Sometimes kanjifying する results in 為[し]る
-                kanjified_sentence = kanjified_sentence.replace(
-                    "<k> 為[し]る</k>", "<k> 為[す]る</k>"
-                )
-                # Sometimes when kanjifying その it leaves out the の --> <k> 其[そ]</k>
-                kanjified_sentence = SO_WITHOUT_NO.sub("<k> 其[そ]の</k>", kanjified_sentence)
-                # Or puts the の inside the furigana tags -->  <k> 其[その]</k>
-                kanjified_sentence = SO_INSIDE_NO.sub(" <k> 其[そ]の</k>", kanjified_sentence)
-                # Sometimes it wraps the sentence in 「」when the original sentence wasn't
-                if not (sentence.startswith("「") and sentence.endswith("」")) and (
-                    kanjified_sentence.startswith("「") and kanjified_sentence.endswith("」")
-                ):
-                    # Remove the wrapping
-                    kanjified_sentence = kanjified_sentence[1:-1]
-
-                # It may unnecessarily wrap words in <k> tags that were already kanjified in the
-                # original sentence
-
-                k_word_replacer = make_k_word_replacer(sentence)
-                kanjified_sentence = K_WORD_REC.sub(k_word_replacer, kanjified_sentence)
-
-                # Clean double spaces
-                kanjified_sentence = kanjified_sentence.replace("  ", " ")
-                # Clean extra space before <k> tags
-                kanjified_sentence = kanjified_sentence.replace(" <k> ", "<k> ")
+                kanjified_sentence, reverses = clean_kanjified(sentence, kanjified_sentence)
 
                 # Update the note with the new values
                 note[kanjified_sentence_field] = kanjified_sentence
 
-                # Check if reversing the kanjification results in the original sentence and tag
-                # the note if not
-                reversed_sentence = B_TAGS_REC.sub("", kanjified_sentence)
-                reversed_sentence = K_WORD_REC.sub(k_word_reversing_replacer, reversed_sentence)
-                number_furi_replacer = make_number_furi_replacer(sentence)
-                reversed_sentence = NUMBER_FURI_REC.sub(number_furi_replacer, reversed_sentence)
-                # Remove all whitespace as the comparison often fails due to trivial differences
-                reversed_sentence = re.sub(r"\s", "", reversed_sentence)
-
-                cleaned_sentence = B_TAGS_REC.sub("", sentence)
-                cleaned_sentence = re.sub(r"\s", "", cleaned_sentence)
-                if cleaned_sentence != reversed_sentence:
+                # Tag the note if reversing the kanjification doesn't give the original sentence
+                if not reverses:
                     note.add_tag("kanjify_sentence_mismatch")
                     # try again until MAX_ATTEMPTS is reached
-                    print(
-                        f"Reversed sentence does not match original:\n{reversed_sentence}\n"
-                        f"{cleaned_sentence}"
-                    )
+                    print(f"Reversed sentence does not match original:\n{sentence}")
                     if attempt < MAX_ATTEMPTS:
                         logger.debug(
                             "Reversed sentence does not match original. Attempt %d of %d",
