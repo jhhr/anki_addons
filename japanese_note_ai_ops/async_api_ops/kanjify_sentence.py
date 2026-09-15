@@ -121,18 +121,18 @@ Do not kanjify:
 - もう used purely as exclamatory particle, for example もう！ or もう、やめてよ！
 - もっと as it is not truly component in もっとも which does have a kanjified form as 最も or 尤も
 - そんな, こんな, あんな, どんな
-- The expression として should be considered to not contain する and should be left as is.
+- The expression として meaning "as, in the role of" (教師[きょうし]として) should be considered to not contain する and should be left as is. An adverb or noun + と + する describing a state is 為る (嬉々[きき]と<k> 為[し]て</k>).
 ― Gikun-type, reading-as-meaning conversions. Only perform kanjification, if there is some evidence of usage in dictionaries.
 
 Do kanjify:
 - ない when used as a standalone word, including conjugated forms like なかった, なくて, なく. 無い is even currently used in modern text, but is simply often written in hiragana. After a noun and は, が, も or しか it is this standalone 無い, not the negation of the copula: "ことはなかった" becomes "<k> 事[こと]</k>は<k> 無[な]かった</k>", "一 膳[ぜん]しかない" becomes "一 膳[ぜん]しか<k> 無[な]い</k>". Also inside set phrases and after kanji: "絶[た]え 間[ま]なく" becomes "絶[た]え 間[ま]<k> 無[な]く</k>". Only では / じゃ + ない stays kana.
 - いる and いく when is used as a standalone verb, for example 彼は家にいる, あっちにいく
 - ある when used as a standalone verb of existence or possession, for example 机の上に本がある (not the copula である).
-- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification. This includes every する after a noun already in kanji, which is easy to overlook: "遅刻[ちこく]している" becomes "遅刻[ちこく]<k> 為[し]ている</k>", "に 関[かん]して" becomes "に 関[かん]<k> 為[し]て</k>", "支給[しきゅう]される" becomes "支給[しきゅう]<k> 為[さ]れる</k>". The same after a noun with the honorific お or ご, and after kana words such as onomatopoeia: "お 願[ねが]いした" becomes "<k> 御[お]</k> 願[ねが]い<k> 為[し]た</k>", "にこにこしています" becomes "にこにこ<k> 為[し]ています</k>".
+- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification. This includes every する after a noun already in kanji, which is easy to overlook: "遅刻[ちこく]している" becomes "遅刻[ちこく]<k> 為[し]ている</k>", "に 関[かん]して" becomes "に 関[かん]<k> 為[し]て</k>", "支給[しきゅう]される" becomes "支給[しきゅう]<k> 為[さ]れる</k>". The same after a noun with the honorific お or ご, and after kana words such as onomatopoeia: "お 願[ねが]いした" becomes "<k> 御[お]</k> 願[ねが]い<k> 為[し]た</k>", "にこにこしています" becomes "にこにこ<k> 為[し]ています</k>". It stays 為る in every form and whatever follows it: before a て-helper or ください ("約束[やくそく]してください" becomes "約束[やくそく]<k> 為[し]てください</k>"), passive, causative and negative forms (洗練[せんれん]<k> 為[さ]れた</k>, 接触[せっしょく]<k> 為[せ]ず</k>, 口外[こうがい]<k> 為[せ]ぬ</k>), なさい (加減[かげん]に<k> 為[し]なさい</k>), "try to" after a volitional verb (立[た]ち 上[あ]がろうと<k> 為[し]た</k>), and after an adverb or noun + と (平然[へいぜん]と<k> 為[し]ていた</k>, 嬉々[きき]と<k> 為[し]て</k>). どうして is "<k> 如何[どう] 為[し]て</k>". Only the expression として meaning "as, in the role of" stays kana.
 - The kana part of a word that is already partly written in kanji, when that part has a kanji spelling: "引[ひ]っかけて" becomes "引[ひ]っ<k> 掛[か]けて</k>", "近[ちか]づいている" becomes "近[ちか]<k> 付[づ]いている</k>".
 - The demonstrative adverbs こう 斯う, そう 然う, どう 如何 (also in どうも, どうして, どうにも), and いう after them as 言う: "そういう" becomes "<k> 然[そ]う 言[い]う</k>", "どうもどうも" becomes "<k> 如何[どう]</k>も<k> 如何[どう]</k>も". その / それ stay 其の / 其れ, この / これ 此の / 此れ.
-- Particle-like words and set phrases that have a kanji spelling, even though they are mostly written in kana: まで 迄, だけ 丈, くらい / ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, など 等, たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いや 否, ああ 嗚呼, いつ 何時, どれ / どの 何れ / 何の, まるで 丸で, ちかづく 近付く. For example "これだけは" becomes "<k> 此[こ]れ 丈[だけ]</k>は", "どれくらい" becomes "<k> 何[ど]れ 位[くらい]</k>", "きちがいみたいに" becomes "<k> 気違[きちが]い 見[み]たい</k>に".
-- なる as 成る in all its uses, including ようになる, ことになる and くなる.
+- Particle-like words and set phrases that have a kanji spelling, even though they are mostly written in kana: まで 迄, だけ 丈, くらい / ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, まま 儘, など 等, たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いや 否, ああ 嗚呼, いつ 何時, どれ / どの 何れ / 何の, まるで 丸で, ちかづく 近付く. For example "これだけは" becomes "<k> 此[こ]れ 丈[だけ]</k>は", "どれくらい" becomes "<k> 何[ど]れ 位[くらい]</k>", "きちがいみたいに" becomes "<k> 気違[きちが]い 見[み]たい</k>に".
+- なる as 成る in all its uses, including ようになる, ことになる, そうになる, なければならない / なくてはならない and くなる. After an adjective's or negation's く it is still its own word: "いかなくなる" becomes "<k> 行[い]かなく 成[な]る</k>", "探[さぐ]らなければならない" becomes "探[さぐ]らなければ<k> 成[な]らない</k>". Only the て-pattern てはならない stays kana.
 - The formal nouns こと, もの, ため, よう, ところ as 事, 物, 為, 様, 所 in all their uses, including grammatical ones like ことができる, ものだ, ために, ようだ, ところだ.
 - によって, により, による, によれば, によると as に依る or に因る, chosen by meaning: 因る when it gives a cause or reason (事故[じこ]に因って 壊[こわ]れた), 依る when it means "by means of", "depending on" or "according to" (人[ひと]に依って 違[ちが]う, 天気予報[てんきよほう]に依ると).
 - Any word with several possible kanji spellings (よる: 依る, 因る, 拠る, 寄る; はかる: 図る, 計る, 測る, 量る; とる: 取る, 採る, 撮る, 執る): choose the kanji by the meaning in this sentence. In particular: ある is 在る when something is located somewhere (谷[たに]に 在[あ]る, 向[む]こうに 在[あ]る) and 有る for possession, events and abstract existence (自信[じしん]が 有[あ]る, 祭[まつ]りが 有[あ]る); いい is 良い, except 好い in いい加減; ただ and たった meaning "only, just" are 只 (只[ただ] 今[いま], 只[たった] 一回[いっかい]).
@@ -146,6 +146,7 @@ Do kanjify:
 
 Important final checks:
 - MAKE SURE TO NOT TO OMIT ANY PARTICLES OR COPULA FROM THE KANJIFIED SENTENCE
+- Look again at every し, さ, せ, す, する and なる/なら/なり/なっ in the sentence, especially right after a word already in kanji or before て, ください, ない or ます: when it is the verb する or なる, it must be kanjified as 為 or 成.
 
 # Examples to illustrate the conversions:
 Example sentence 1: 「これでもちゃんと 皆[みな]さんのことを 考[かんが]えてるつもりなんですよ！」<br>「なんかいよいよお 前[まえ]も 完全[かんぜん]に 内政[ないせい] 官[かん]だな。」
