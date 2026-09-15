@@ -82,16 +82,16 @@ def load_config(root: Path = ADDON_ROOT) -> dict:
     return config
 
 
-def sentence_field(config: dict, model_name: str) -> str:
-    field = (config.get(model_name) or {}).get(SENTENCE_FIELD)
+def sentence_field(config: dict, model_name: str, key: str = SENTENCE_FIELD) -> str:
+    field = (config.get(model_name) or {}).get(key)
     if not field:
-        raise AnkiConnectError(f'Note type "{model_name}" has no {SENTENCE_FIELD} in the config.')
+        raise AnkiConnectError(f'Note type "{model_name}" has no {key} in the config.')
     return field
 
 
-def note_sentence(config: dict, info: dict) -> str:
-    """The raw sentence field of a `notes_info` note, `<i>` context and all."""
-    field = sentence_field(config, info.get("modelName", ""))
+def note_sentence(config: dict, info: dict, key: str = SENTENCE_FIELD) -> str:
+    """The raw sentence field (config `key`) of a `notes_info` note, `<i>` context and all."""
+    field = sentence_field(config, info.get("modelName", ""), key)
     try:
         return info["fields"][field]["value"]
     except KeyError:
