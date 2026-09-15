@@ -35,7 +35,11 @@ callbacks. Skip them and every run leaves a ~90 MB directory behind that pytest 
 delete for three days. Running them first keeps all of that.
 
 PyQt's own `atexit` handler, `_qtcore_cleanup`, is unregistered before that hand-run, since
-destroying the application is the very thing being avoided. Unregistering it *used* to be
+destroying the application is the very thing being avoided. PyQt keeps no reference to it, so
+the only way to reach it is a scan of live objects for a builtin function of that name, and
+the guard checks whether that scan actually found it: if it did not, the handler is still in
+the registry and the hand-run is skipped entirely, because running it would invoke the
+teardown rather than avoid it. That costs the tmpdir housekeeping and keeps the exit status. Unregistering it *used* to be
 the whole guard, on the theory that normal interpreter shutdown was then safe. It is not,
 and has not been since PyQt6 6.11 / QtWebEngine 6.11: with that handler gone the process
 still segfaults, now on the way through QtWebEngine's own teardown ("Release of profile
@@ -157,14 +161,12 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     # Removed before the handlers are run by hand below: destroying the application is
     # exactly what must not happen.
-    handler = _pyqt_exit_handler()
-    if handler is not None:
-        atexit.unregister(handler)
+    disarmed = _disarm_qt_teardown()
 
     exit_status = config.stash.get(_EXIT_STATUS, None)
     if exit_status is None or _is_xdist_worker(config):
         return
-    _exit_without_interpreter_shutdown(exit_status)
+    _exit_without_interpreter_shutdown(exit_status, run_handlers=disarmed)
 
 
 def _running_qt_application() -> Optional[Any]:
@@ -192,25 +194,54 @@ def _pyqt_exit_handler() -> Optional[types.BuiltinFunctionType]:
     return None
 
 
+def _disarm_qt_teardown() -> bool:
+    """Unregister PyQt's `atexit` handler, and say whether it is really out of the registry.
+
+    The answer decides whether the registry can be run by hand afterwards, so it has to be
+    the truth rather than an assumption. `_pyqt_exit_handler` reaches `_qtcore_cleanup` by
+    scanning live objects for a builtin function of that name, which is the only way there
+    is -- and which a rename, a C-level change, or a PyQt that registers a bound method or a
+    `functools.partial` would defeat.
+    """
+    handler = _pyqt_exit_handler()
+    if handler is None:
+        return False
+    atexit.unregister(handler)
+    return True
+
+
 def _is_xdist_worker(config: pytest.Config) -> bool:
     return hasattr(config, "workerinput") or "PYTEST_XDIST_WORKER" in os.environ
 
 
-def _exit_without_interpreter_shutdown(exit_status: int) -> None:
+def _exit_without_interpreter_shutdown(exit_status: int, run_handlers: bool = True) -> None:
     """Leave now with `exit_status`, before the interpreter can tear Qt down.
 
-    The `atexit` handlers are run here rather than skipped -- pytest's temporary-directory
-    housekeeping is one of them -- and everything buffered is pushed out afterwards, because
-    no finalizer will flush it later.
+    The `atexit` handlers are run here rather than skipped when it is safe to run them --
+    pytest's temporary-directory housekeeping is one of them -- and everything buffered is
+    pushed out afterwards, because no finalizer will flush it later.
+
+    `run_handlers` is false when PyQt's handler could not be found and so is still in the
+    registry. Running it then would invoke the application teardown this whole function
+    exists to avoid, at the one point nothing can recover from it: the process segfaults and
+    `os._exit` below is never reached, so a green suite exits 139. Forcing the scan to fail
+    against this repo's own real-Anki suite reproduces that in three runs out of eight, which
+    is the worst shape for CI -- an intermittent 139 on "1 passed" reads as a flaky test.
+
+    Skipping the hand-run costs pytest's tmpdir lock and pruning, so a run that takes this
+    path leaves its `pytest-of-<user>/pytest-N` behind for three days. That is the right
+    trade: the exit status is the thing the guard is for, and a stale directory is visible
+    and harmless where a segfault is neither.
     """
-    try:
-        # Private, but stable since 2.x and the only way to run these without exiting. It
-        # also clears the registry, so nothing can run twice.
-        atexit._run_exitfuncs()
-    except Exception:  # noqa: BLE001 -- housekeeping is best effort
-        # A handler that raises must not stop the exit: carrying on into normal interpreter
-        # shutdown is the crash this exists to avoid.
-        pass
+    if run_handlers:
+        try:
+            # Private, but stable since 2.x and the only way to run these without exiting. It
+            # also clears the registry, so nothing can run twice.
+            atexit._run_exitfuncs()
+        except Exception:  # noqa: BLE001 -- housekeeping is best effort
+            # A handler that raises must not stop the exit: carrying on into normal
+            # interpreter shutdown is the crash this exists to avoid.
+            pass
     logging.shutdown()
     for stream in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__):
         try:

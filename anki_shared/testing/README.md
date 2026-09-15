@@ -212,6 +212,19 @@ The handlers are run rather than skipped because a bare `os._exit` would drop py
 which remove this run's lock on its `pytest-of-<user>/pytest-N` directory and prune old
 ones — every run would otherwise leave ~90 MB behind for three days.
 
+They are run only once PyQt's own handler is known to be out of the registry. PyQt keeps no
+reference to `_qtcore_cleanup`, so the only way to reach it is to scan live objects for a
+builtin function of that name, and a rename or a PyQt that registers a bound method would
+defeat that scan. Running the registry with the handler still in it would invoke the
+application teardown the guard exists to avoid, at the point nothing can recover from it:
+`os._exit` is never reached and a green suite exits 139. Forcing the scan to fail against
+`anki_shared/test_anki/` reproduced that in three runs out of eight, against none with the
+scan working and four out of eight with the guard switched off — so a failed scan put the
+guard back to roughly no guard at all, intermittently, which reads in CI as a flaky test
+rather than a shutdown problem. When the scan comes back empty the hand-run is skipped and
+the process leaves immediately: that run leaves its temporary directory behind, and keeps
+the exit status the guard is for.
+
 This used to be smaller: it unregistered PyQt's `_qtcore_cleanup` handler and let the
 interpreter shut down normally. That stopped being enough at PyQt6 6.11 / QtWebEngine 6.11,
 where the process segfaults on the way through QtWebEngine's own teardown even with that
