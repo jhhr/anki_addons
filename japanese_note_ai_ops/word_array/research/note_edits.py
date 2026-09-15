@@ -64,15 +64,39 @@ def changes(sentence: str) -> list[Optional[tuple[str, str]]]:
     return out
 
 
-def unkanjify(field: str, k: int) -> str:
-    """The field with its `k`-th `<k>` span turned into kana."""
+def _span(field: str, k: int) -> Span:
     spans = k_spans(field)
     if not 0 <= k < len(spans):
         raise NoteEditError(f"The sentence has no <k> span number {k + 1}.")
-    span = spans[k]
+    return spans[k]
+
+
+def unkanjify(field: str, k: int) -> str:
+    """The field with its `k`-th `<k>` span turned into kana."""
+    span = _span(field, k)
     kana = as_kana(span.content)
     if kana is None:
         raise NoteEditError(
             "That <k> span isn't closed or has no furigana to keep: fix it in Anki."
         )
     return field[: span.start] + kana + field[span.end :]
+
+
+def span_kana(content: str, groups: set[int]) -> str:
+    """A `<k>` span with only these furigana groups (by their order in `content`) as kana, tags
+    included; a span with no furigana left loses its tags. Kana after a verb that stays kanji
+    stays inside its tags: ` 為[し]て 来[き]た` with {1} → `<k> 為[し]てきた</k>`."""
+    found = GROUP_RE.findall(content)
+    if "<k>" in content or not found or not groups <= set(range(len(found))):
+        raise NoteEditError("That <k> span has no such furigana group: fix it in Anki.")
+    index = iter(range(len(found)))
+    text = GROUP_RE.sub(lambda m: m[2] if next(index) in groups else m[0], content)
+    return f"<k>{text}</k>" if len(groups) < len(found) else text
+
+
+def unkanjify_groups(field: str, k: int, groups: set[int]) -> str:
+    """The field with some furigana groups of its `k`-th `<k>` span turned into kana."""
+    span = _span(field, k)
+    if span.content is None:
+        raise NoteEditError("That <k> span isn't closed: fix it in Anki.")
+    return field[: span.start] + span_kana(span.content, groups) + field[span.end :]
