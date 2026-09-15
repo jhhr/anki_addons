@@ -67,6 +67,17 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     return copy_definitions
 
 
+def _edited_cards_for_update(copied_into_cards_dict: dict[int, Card]) -> list[Card]:
+    edited_cards = [
+        card
+        for card in copied_into_cards_dict.values()
+        if hasattr(card, "edited") and card.edited
+    ]
+    for card in edited_cards:
+        del card.edited
+    return edited_cards
+
+
 def run_copy_fields_on_add(note: Note, deck_id: int):
     """
     Copy fields when a note is about to be added. This applies to notes being added
@@ -107,6 +118,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     undo_entry: Optional[int] = None
     for copy_definition in editing_other_notes_definitions:
         copied_into_notes: list[Note] = []
+        copied_into_cards_dict: dict[int, Card] = {}
         # Can't use copy_fields here as it'd lead to a
         # "bug: run_in_background not called from main thread" exception
         # TODO: non CollectionOp version of copy_fields
@@ -114,6 +126,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             copy_definition=copy_definition,
             trigger_note=note,
             copied_into_notes=copied_into_notes,
+            copied_into_cards_dict=copied_into_cards_dict,
             deck_id=deck_id,
             logger=logger,
         )
@@ -121,10 +134,11 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         # query, which can't find the unsaved note. Still, an id 0 note would make
         # mw.col.update_notes fail, so keep it out regardless
         copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-        if not copied_into_notes:
+        edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+        if not copied_into_notes and not edited_cards:
             # Nothing was written into other notes (the query matched nothing or the deck
-            # whitelist rejected the note), so there's nothing to undo and an empty entry would
-            # only clutter the undo stack.
+            # whitelist rejected the note), and no card action changed a card either, so
+            # there's nothing to undo and an empty entry would only clutter the undo stack.
             continue
 
         if undo_entry is None:
@@ -143,7 +157,10 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         # Write after every definition, as the next one fetches its destinations from the
         # database: writing once at the end would let a later definition's copy of a note,
         # fetched without an earlier one's edit, overwrite that edit
-        mw.col.update_notes(copied_into_notes)
+        if copied_into_notes:
+            mw.col.update_notes(copied_into_notes)
+        if edited_cards:
+            mw.col.update_cards(edited_cards)
         # Merge after every write, or the entry's step falls behind and can't be found
         mw.col.merge_undo_entries(undo_entry)
 
@@ -389,10 +406,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             if modifies_other_notes:
                 editing_other_notes_definitions.append(copy_definition)
             else:
+                copied_into_cards_dict: dict[int, Card] = {}
                 copy_for_single_trigger_note(
                     copy_definition=copy_definition,
                     trigger_note=note,
                     copied_into_notes=[],
+                    copied_into_cards_dict=copied_into_cards_dict,
                     # A migrated write still says which editor fields trigger it and
                     # whether it runs on this kind of unfocus at all; passing the field and
                     # the mode is what lets the stage honour that. A natively authored
@@ -402,6 +421,9 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     deck_id=deck_id,
                     logger=logger,
                 )
+                edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+                if edited_cards:
+                    mw.col.update_cards(edited_cards)
             continue
 
         # Check field-to-field defs for a match on this field
@@ -431,12 +453,14 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             # Run these separate with an undo entry
             editing_other_notes_definitions.append(gated_definition)
         else:
+            copied_into_cards_dict: dict[int, Card] = {}
             # Either within note or destination to sources, we can run these right away
             # without an undo entry needed
             copy_for_single_trigger_note(
                 copy_definition=gated_definition,
                 trigger_note=note,
                 copied_into_notes=[],
+                copied_into_cards_dict=copied_into_cards_dict,
                 field_only=field_name,
                 # The defs above are already gated by this flag, and the executor checks the
                 # migrated copy of it as well; telling it which flag to look at is what
@@ -445,6 +469,9 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 deck_id=deck_id,
                 logger=logger,
             )
+            edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+            if edited_cards:
+                mw.col.update_cards(edited_cards)
 
     if editing_other_notes_definitions:
         # Use the CollectionOp version so we get the full report and progress dialog
