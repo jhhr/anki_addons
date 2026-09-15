@@ -118,15 +118,22 @@ def decode_word_list_field(
     # of the repairs it made
     # When the json is valid, it returns just the decoded object
     if isinstance(repair_res, tuple) and len(repair_res) == 2 and isinstance(repair_res[1], list):
-        word_list_dict = repair_res[0]
+        word_list = repair_res[0]
         json_repair_log: list[dict[str, str]] = repair_res[1]
     else:
-        word_list_dict = repair_res
+        word_list = repair_res
         json_repair_log = []
-    if not isinstance(word_list_dict, dict):
+    if isinstance(word_list, list):
+        # This is probably not the old word list format, but the new word array
+        logger.warning(
+            f"{log_prefix}Word list field is a list, expected a dict. Original:"
+            f" {note[word_list_field]}\nDecoded: {json.dumps(word_list, ensure_ascii=False)}"
+        )
+        return None
+    if not isinstance(word_list, dict):
         logger.error(
             f"{log_prefix}Failed to decode valid dict from word list field, original:"
-            f" {note[word_list_field]}\ndecoded: {json.dumps(word_list_dict, ensure_ascii=False)}"
+            f" {note[word_list_field]}\ndecoded: {json.dumps(word_list, ensure_ascii=False)}"
             f"\njson_repair_log: {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
         )
         # tag note
@@ -136,10 +143,10 @@ def decode_word_list_field(
         return None
     logger.debug(
         f"{log_prefix}Decoded word list field, original: {note[word_list_field]}\ndecoded:"
-        f" {json.dumps(word_list_dict, ensure_ascii=False)}\njson_repair_log:"
+        f" {json.dumps(word_list, ensure_ascii=False)}\njson_repair_log:"
         f" {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
     )
-    return word_list_dict
+    return word_list
 
 
 def check_note_processed_furigana_field(
@@ -289,8 +296,7 @@ def drop_duplicate_word_tuples(
         word_tuples = word_list_dict.get(word_list_key, [])
         if not isinstance(word_tuples, list):
             logger.error(
-                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in"
-                " the note"
+                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in the note"
             )
             continue
         kept: list = []
@@ -597,15 +603,13 @@ def deduplicate_notes_list(
                 canonical_note[jp_meaning_field] if jp_meaning_field in canonical_note else ""
             )
 
-            meaning_overrides.append(
-                (
-                    keep_note,
-                    canonical_meaning,
-                    canonical_jp_meaning,
-                    english_meaning_field,
-                    jp_meaning_field,
-                )
-            )
+            meaning_overrides.append((
+                keep_note,
+                canonical_meaning,
+                canonical_jp_meaning,
+                english_meaning_field,
+                jp_meaning_field,
+            ))
 
             for _meaning_num, dup_note, _ in cluster[1:]:
                 dup_ref = get_note_reference(dup_note, new_note_id_field)
@@ -1626,16 +1630,14 @@ async def match_single_word_in_word_tuple(
                     en_meaning_in_meanings.add(english_meaning)
                     jp_meaning_in_meanings.add(meaning)
                     has_existing_note_meanings = True
-                    meanings.append(
-                        (
-                            meaning,
-                            matched_meaning_number,
-                            note.id,
-                            other_sentence,
-                            english_meaning,
-                            match_word,
-                        )
-                    )
+                    meanings.append((
+                        meaning,
+                        matched_meaning_number,
+                        note.id,
+                        other_sentence,
+                        english_meaning,
+                        match_word,
+                    ))
                 else:
                     logger.debug(f"{log_prefix}Note {note.id} has empty meaning field")
             else:
@@ -1685,18 +1687,16 @@ async def match_single_word_in_word_tuple(
                     gen_meaning["jp_meaning"] not in jp_meaning_in_meanings
                     and gen_meaning["en_meaning"] not in en_meaning_in_meanings
                 ):
-                    meanings.append(
-                        (
-                            gen_meaning["jp_meaning"],
-                            # Since these are not existing notes, we use the largest_meaning_index
-                            # so that selecting one of these will increment the meaning number correctly
-                            largest_meaning_index,
-                            None,
-                            "",
-                            gen_meaning["en_meaning"],
-                            word,
-                        )
-                    )
+                    meanings.append((
+                        gen_meaning["jp_meaning"],
+                        # Since these are not existing notes, we use the largest_meaning_index
+                        # so that selecting one of these will increment the meaning number correctly
+                        largest_meaning_index,
+                        None,
+                        "",
+                        gen_meaning["en_meaning"],
+                        word,
+                    ))
                     gen_meaning_by_index[len(meanings) - 1] = gen_meaning
 
         if note_to_copy:

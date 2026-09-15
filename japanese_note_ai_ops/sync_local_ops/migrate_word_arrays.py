@@ -71,6 +71,9 @@ def migrate_word_array_in_note(
         return False
 
     log_prefix = f"Migrate word array--nid:{note.id}--"
+    if note.has_tag(MIGRATED_TAG):
+        logger.debug(f"{log_prefix}Note already migrated")
+        return False
     # The same sentence extract_words worked from, so that the array covers the words the old
     # list was made of and no others. The array therefore reconstructs the sentence without its
     # <i> context, not the whole field.
@@ -190,8 +193,10 @@ def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
     lexicon_text = (
         f"The name lexicon has {lexicon_size} names."
         if lexicon_size
-        else "There is no name lexicon yet (Build name lexicon from selected notes), so names"
-        " Sudachi doesn't know stay cut up."
+        else (
+            "There is no name lexicon yet (Build name lexicon from selected notes), so names"
+            " Sudachi doesn't know stay cut up."
+        )
     )
     if not askUser(
         f"Replace the word list of {len(nids)} note(s) with a generated word array?\n\n"
