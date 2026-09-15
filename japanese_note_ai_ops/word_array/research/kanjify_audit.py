@@ -131,10 +131,15 @@ def _te_before(morphs: list, i: int, particles: set[str]) -> bool:
 
 
 def _copula_de(morphs: list, j: int) -> bool:
-    """morphs[j] is the copula で/じゃ, or は/も right after the copula で."""
+    """morphs[j] is the copula で/じゃ, or は/も right after the copula で (not に of 十分に)."""
     if j >= 0 and morphs[j].surface in ("は", "も") and morphs[j].pos[0] == "助詞":
         j -= 1
-    return j >= 0 and morphs[j].pos[0] == "助動詞" and morphs[j].lemma == "だ"
+    return (
+        j >= 0
+        and morphs[j].pos[0] == "助動詞"
+        and morphs[j].lemma == "だ"
+        and morphs[j].surface in ("で", "じゃ")
+    )
 
 
 def policy_use(morphs: list, i: int) -> Optional[str]:

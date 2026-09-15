@@ -62,6 +62,7 @@ class AuditTests(unittest.TestCase):
         aru = m("ある", "ある", "有る", "動詞", "非自立可能")
         self.assertEqual(use([de, aru], 1), "である")
         self.assertIsNone(use([m("で", "で", "で", "助詞", "格助詞"), aru], 1))
+        self.assertIsNone(use([m("に", "だ", "だ", "助動詞"), aru], 1))  # 十分にある
         nai = m("ない", "ない", "無い", "形容詞", "非自立可能")
         self.assertEqual(use([m("悪く", "悪い", "悪い", "形容詞"), nai], 1), "negation ない")
         self.assertIsNone(use([m("が", "が", "が", "助詞", "格助詞"), nai], 1))
