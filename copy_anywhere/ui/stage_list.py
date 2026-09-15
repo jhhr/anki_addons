@@ -335,6 +335,16 @@ class StageTreeWidget(QWidget):
         still typing into one of them.
         """
         self.apply_editors()
+        self.refresh_contexts()
+        self.definition_changed.emit()
+
+    def refresh_contexts(self) -> None:
+        """Relist every open editor's menus against the definition as it now is.
+
+        Separate from `contents_changed` because the definition can change from outside the
+        stage list -- the trigger note type is chosen at the top of the same dialog, and the
+        field pickers below it are built from exactly that.
+        """
         self.contexts = build_contexts(
             self.document, make_note_types_for(self.document.definition)
         )
@@ -344,7 +354,11 @@ class StageTreeWidget(QWidget):
             context = self.contexts.get(guid)
             if context is not None:
                 row.set_context(context)
-        self.definition_changed.emit()
+        # Relisting a menu can change what it holds -- a field the new trigger note type does
+        # not have is dropped rather than left selected -- so the stage dicts are written
+        # again from the widgets as they now are. Without it the stage would keep naming a
+        # field the picker no longer offers, which is the state this exists to prevent.
+        self.apply_editors()
 
     # -- structural edits ----------------------------------------------------------------
 

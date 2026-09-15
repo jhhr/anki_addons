@@ -150,6 +150,13 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
     def schedule_refresh(self) -> None:
         self._refresh_timer.start()
 
+    def done(self, result: int) -> None:
+        # Both Save and Cancel come through here. A pending re-analysis must not outlive the
+        # dialog: it reads the collection and rebuilds every field picker from it, which is
+        # not something to be doing once the dialog the pickers belong to is on its way out.
+        self._refresh_timer.stop()
+        super().done(result)
+
     def apply_editors(self) -> None:
         """Fold every control in the dialog back into the definition."""
         self.triggers_editor.apply()
@@ -159,6 +166,10 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
 
     def refresh_status(self) -> None:
         self.apply_editors()
+        # Field pickers and the per-write unfocus boxes list the trigger note type's fields,
+        # and the trigger editor that chooses it is in this same dialog, so they have to be
+        # relisted here rather than only when a stage itself is edited.
+        self.stage_tree.refresh_contexts()
         # The exports panel lists root results, which the stage list decides.
         self.exports_editor.rebuild()
         blockers = list(self.document.save_blockers())

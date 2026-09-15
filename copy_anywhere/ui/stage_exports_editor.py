@@ -145,6 +145,15 @@ class ExportsEditor(QWidget):
         for guid, result_name, keep, name in self.rows:
             if not keep.isChecked():
                 continue
+            if guid and self.document.stage(guid) is None:
+                # The stage was deleted since this row was built, and `remove_stage` dropped
+                # its export on the way out for a reason it states: an export naming a stage
+                # that is gone is invisible corruption -- the analyser refuses the save and
+                # the entry belongs to no row the user can see, so nothing in the dialog can
+                # clear it. `refresh_status` applies before it rebuilds, so without this the
+                # stale row put the export straight back and then lost the row that could
+                # have removed it.
+                continue
             exports.append({
                 "name": name.text().strip() or keep.text(),
                 "stage_guid": guid,

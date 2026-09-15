@@ -6,6 +6,7 @@ from aqt.qt import (
     QVBoxLayout,
     QLabel,
     QFormLayout,
+    pyqtSignal,
 )
 
 from ..configuration import (
@@ -26,6 +27,9 @@ class TagEditor(QWidget):
     """
     Class for editing tags to add/remove for a note or notes
     """
+
+    #: Something the user changed here would change the stored tags.
+    changed = pyqtSignal()
 
     def __init__(
         self,
@@ -65,6 +69,12 @@ class TagEditor(QWidget):
         self.remove_tags_combo_box = MultiComboBox(self)
         self.form_layout.addRow(self.remove_tags_label, self.remove_tags_combo_box)
 
+        # `dataChanged` on the model, not `currentTextChanged` on the box: ticking an item is
+        # what a user does here, and `MultiComboBox.setCurrentText` blocks the model's signals
+        # on purpose so that filling a box from stored text does not read as an edit.
+        for box in (self.add_tags_combo_box, self.remove_tags_combo_box):
+            box.model().dataChanged.connect(self._on_changed)
+
     def _fill_tag_box(self, box: MultiComboBox, stored: str):
         """Offer every tag in the collection, plus any this definition names, and select."""
         chosen = split_tags(stored)
@@ -74,6 +84,9 @@ class TagEditor(QWidget):
                 names.append(tag)
         box.addItems([f'"{name}"' for name in names])
         box.setCurrentText(", ".join(f'"{tag}"' for tag in chosen))
+
+    def _on_changed(self, *_args) -> None:
+        self.changed.emit()
 
     def get_add_tags(self) -> str:
         return self.add_tags_combo_box.currentText()

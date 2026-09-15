@@ -21,7 +21,9 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_EDIT_NOTE,
     STAGE_FOR_EACH_CARD,
     STAGE_FOR_EACH_NOTE,
+    STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
+    STAGE_REDUCE,
     STAGE_VARIABLE,
     new_definition,
     value_expression,
@@ -30,6 +32,7 @@ from copy_anywhere.ui.stage_document import StageDocument, default_stage
 from copy_anywhere.ui.stage_editor_context import build_contexts, make_note_types_for
 from copy_anywhere.ui.stage_editors import (
     StageEditorEnvironment,
+    combo_value,
     make_stage_editor,
     tags_to_list,
     tags_to_text,
@@ -49,6 +52,9 @@ def dialog(col, qapp):
     definition["triggers"]["note_types"] = [VOCAB]
     built = EditStagedDefinitionDialog(None, definition)
     yield built
+    # The re-analysis is deferred through a timer, so a case that scheduled one would
+    # otherwise have it fire against a collection this case has already finished with.
+    built._refresh_timer.stop()
     built.deleteLater()
 
 
@@ -820,6 +826,17 @@ def choose(box, *names):
     box.setCurrentText(", ".join(f'"{name}"' for name in names))
 
 
+def tick_first(box):
+    """Check a `MultiComboBox`'s first item the way clicking its row does.
+
+    `setCurrentText` is the programmatic path and blocks the model's signals on purpose, so
+    it is not what a test about noticing a user's edit should drive.
+    """
+    from aqt.qt import Qt
+
+    box.model().item(0).setCheckState(Qt.CheckState.Checked)
+
+
 class TestClearingATriggerSelection:
     """The deck and unfocus boxes are rebuilt whenever the note types change.
 
@@ -946,3 +963,512 @@ class TestSavingWhatTheBoxesCannotOffer:
         editor.apply()
 
         assert definition["triggers"]["deck_names"] == ["Archive"]
+
+
+class TestAddingASecondActionToAnEditCardStage:
+    """Whether "Add Card Action" survives an Edit Card stage that already has one action.
+
+    `CardActionsEditor` loads the actions a definition arrives with a few at a time, so the
+    dialog opens rather than freezing on a large one. While that runs it disables the card
+    type selector and the Add button, and `_finish_loading_initial_actions` re-enables them
+    by calling `update_card_type_options`.
+
+    That method's whole job is the card type dropdown, so its first line returns early in
+    `single_card_mode` -- an Edit Card stage names one card, so there is no card type to
+    pick. The re-enable lives after that line. Nothing else in the class enables the button,
+    so for the one mode with no dropdown the disable is permanent: opening a stage that has
+    an action and trying to add a second one gives a greyed-out button with no explanation
+    and nothing the user can do to it. A stage with no actions yet never takes the loading
+    path, so the first action can always be added -- which is what makes this look like the
+    stage supports exactly one.
+    """
+
+    def stage_with(self, action_count):
+        edit = default_stage(STAGE_EDIT_CARD, "e")
+        edit["target"] = {"binding": "card"}
+        edit["card_actions"] = [
+            {
+                "guid": f"a{index}",
+                "card_type_name": "",
+                "change_deck": None,
+                "set_flag": index,
+                "suspend": None,
+                "bury": None,
+                "set_desired_retention": None,
+                "use_code": False,
+                "action_code": "",
+            }
+            for index in range(action_count)
+        ]
+        return edit
+
+    def editor_for(self, col, stage):
+        query = default_stage(STAGE_CARD_QUERY, "cq")
+        query["result"] = "C1"
+        query["query"] = value_expression(text="deck:Default")
+        loop = default_stage(STAGE_FOR_EACH_CARD, "loop")
+        loop["input"] = {"binding": "C1"}
+        loop["body"] = [stage]
+        tree = tree_for(col, query, loop)
+        actions = tree.rows["e"].editor.card_actions
+        # What the event loop would do once the dialog is up: drain the staged load.
+        actions.finish_loading_initial_actions()
+        return tree, actions
+
+    def test_the_button_is_enabled_on_a_stage_with_no_actions_yet(self, col, qapp):
+        _tree, actions = self.editor_for(col, self.stage_with(0))
+
+        assert actions.add_action_button.isEnabled()
+
+    def test_the_button_is_still_enabled_on_a_stage_that_has_one(self, col, qapp):
+        _tree, actions = self.editor_for(col, self.stage_with(1))
+
+        assert actions.add_action_button.isEnabled()
+
+    def test_a_second_action_can_be_added_and_saved(self, col, qapp):
+        tree, actions = self.editor_for(col, self.stage_with(1))
+
+        assert actions.add_action_button.isEnabled()
+        actions.add_new_action()
+        # An action that would do nothing is dropped on the way out, so the new one has to
+        # say something before the save can show it survived.
+        key = [k for k in actions.action_ui_components if k != "a0"][0]
+        actions.action_ui_components[key]["deck_combo"].setCurrentText("Default")
+        tree.apply_editors()
+
+        assert len(tree.document.stage("e")["card_actions"]) == 2
+
+
+class TestDeletingAStageThatWasExported:
+    """Deleting an exported stage, and the stale row that puts its export back.
+
+    `StageDocument.remove_stage` strips the exports naming what it removed, and says why in
+    a comment: an export whose producer is gone is invisible corruption, because the
+    analyser reports a missing producer but the entry belongs to no row the user can see.
+
+    `refresh_status` then undoes it. It calls `apply_editors()` first, and `apply_editors()`
+    ends with `exports_editor.apply()`, which writes the panel's `self.rows` back over
+    `exports` -- and those rows are still the ones built before the deletion, including a
+    ticked row for the stage that is gone. Only afterwards does `rebuild()` relist the
+    panel, and the relisted panel correctly has no row for a stage that no longer exists.
+
+    So the export is restored by the panel and then dropped from the panel, which leaves the
+    definition in exactly the state `remove_stage` set out to prevent: Save is greyed out
+    with "export 'M' names stage '...', which is not a root stage", and there is no control
+    anywhere in the dialog that can clear it. Reopening the dialog does not help, because
+    the bad export is what was saved. The user's way out is to recreate a stage with the
+    same guid, which the editor gives no way to do.
+    """
+
+    def dialog_with_an_exported_variable(self, dialog):
+        dialog.stage_tree.add_stage(STAGE_VARIABLE, None, None)
+        guid = dialog.document.root_block()[0]["guid"]
+        dialog.stage_tree.rows[guid].editor.result.setText("M")
+        dialog.refresh_status()
+        dialog.exports_editor.rows[0][2].setChecked(True)
+        dialog.refresh_status()
+        assert dialog.document.exports() == [{"name": "M", "stage_guid": guid, "result": "M"}]
+        return guid
+
+    def test_the_export_goes_with_the_stage(self, dialog):
+        guid = self.dialog_with_an_exported_variable(dialog)
+
+        dialog.stage_tree.remove_stage(guid)
+        dialog.refresh_status()
+
+        assert dialog.document.exports() == []
+
+    def test_the_save_button_is_not_left_blocked(self, dialog):
+        guid = self.dialog_with_an_exported_variable(dialog)
+
+        dialog.stage_tree.remove_stage(guid)
+        dialog.refresh_status()
+
+        assert list(dialog.document.save_blockers()) == []
+        assert dialog.ok_button.isEnabled()
+
+    def test_the_panel_has_no_row_offering_to_undo_it(self, dialog):
+        # The half that makes it unrecoverable rather than merely wrong: if a row survived,
+        # unticking it would clear the export. The rebuild is right to drop the row -- the
+        # stage is gone -- so the entry it writes back has nothing to remove it.
+        guid = self.dialog_with_an_exported_variable(dialog)
+
+        dialog.stage_tree.remove_stage(guid)
+        dialog.refresh_status()
+
+        assert dialog.exports_editor.rows == []
+        assert dialog.document.exports() == []
+
+
+class TestEditingAMigratedJoin:
+    """The Reduce editor, on the one shape the migrator actually produces.
+
+    A `reduce` stage has two forms. A fold runs the `value` expression once per item with an
+    accumulator; a join ignores `initial`, `item_binding`, `accumulator_binding` and `value`
+    entirely and returns `separator.join(...)`. Which one it is comes from `operation`, and
+    a Destination-to-sources definition migrates into one join per field write, carrying
+    format 1's `select_card_separator`.
+
+    `ReduceStageEditor` offers no control for either key. It never writes them, so the stored
+    `operation: "join"` survives a save -- the stage keeps working -- but everything the
+    editor does show for it is dead: two expression editors and two binding names that the
+    executor will not read, presented exactly as they are on a fold that does read them. The
+    separator, the one part of a join a user has any reason to change, cannot be seen or
+    changed at all; it was editable in the format-1 editor, so a definition that had one set
+    loses the ability to change it on migration.
+    """
+
+    def reduce_editor(self, col, operation, separator=", "):
+        source = default_stage(STAGE_LIST_VARIABLE, "lv")
+        source["result"] = "L1"
+        source["item_type"] = "Text"
+        stage = default_stage(STAGE_REDUCE, "r")
+        stage["input"] = {"binding": "L1"}
+        stage["result"] = "joined"
+        stage["operation"] = operation
+        stage["separator"] = separator
+        tree = tree_for(col, source, stage)
+        return tree, tree.rows["r"].editor
+
+    def test_the_editor_says_which_of_the_two_it_is(self, col, qapp):
+        _tree, editor = self.reduce_editor(col, "join")
+
+        assert combo_value(editor.operation) == "join"
+
+    def test_the_separator_is_shown_and_can_be_changed(self, col, qapp):
+        tree, editor = self.reduce_editor(col, "join", separator=" / ")
+
+        assert editor.separator.text() == " / "
+        editor.separator.setText(" + ")
+        tree.apply_editors()
+
+        assert tree.document.stage("r")["separator"] == " + "
+
+    def test_a_join_does_not_show_the_fold_controls_that_do_nothing(self, col, qapp):
+        # A join reads none of these, so showing them beside a filled-in separator invites
+        # the user to write a reducer the stage will never run.
+        _tree, editor = self.reduce_editor(col, "join")
+
+        assert editor.value.isHidden()
+        assert editor.initial.isHidden()
+
+    def test_a_fold_keeps_being_a_fold_through_a_save(self, col, qapp):
+        tree, _editor = self.reduce_editor(col, "fold")
+        tree.apply_editors()
+
+        assert tree.document.stage("r").get("operation") == "fold"
+
+
+class TestACallStageWhoseCalleeCannotBeResolved:
+    """What happens to a call stage's bound outputs when the callee is not in the config.
+
+    `_rebuild_outputs` lists the callee's exports and builds one row each. When the callee is
+    missing -- deleted, renamed away, or still in format 1, which has no exports -- there are
+    no rows, and the panel correctly says so. But `apply()` rebuilds `stage["outputs"]` from
+    those rows, so with no rows it writes an empty list.
+
+    `apply()` is not something the user triggers. `refresh_status()` calls `apply_editors()`,
+    and the dialog calls `refresh_status()` while it is being built, so the bindings are
+    gone before the user has seen the stage -- and they are gone from the saved definition,
+    not just from the screen. The combo goes on naming the missing callee as "(not found)",
+    which is the right call and makes it worse: the stage still says what it wants to run and
+    the analyser still reports the callee as missing, so the obvious fix is to put the callee
+    back. Do that and the outputs do not come back, because they were deleted on open.
+    """
+
+    def dialog_calling(self, col, qapp, callee_definitions):
+        from copy_anywhere.ui.edit_staged_definition_dialog import EditStagedDefinitionDialog
+
+        call = default_stage("call_definition", "c")
+        call["definition_guid"] = "callee"
+        call["outputs"] = [{"export": "H1", "result": "M1"}]
+        definition = new_definition("d", "A definition", stages=[call])
+        definition["triggers"]["note_types"] = [VOCAB]
+        built = EditStagedDefinitionDialog(
+            None, definition, [definition, *callee_definitions]
+        )
+        built._refresh_timer.stop()
+        return built, definition
+
+    def test_a_missing_callee_does_not_cost_the_bindings(self, col, qapp):
+        # Read from the document, not from the dict handed in: `StageDocument` deep-copies,
+        # so the caller's own definition would look untouched however badly this went.
+        dialog, _definition = self.dialog_calling(col, qapp, [])
+        try:
+            assert dialog.document.stage("c")["outputs"] == [
+                {"export": "H1", "result": "M1"}
+            ]
+        finally:
+            dialog.deleteLater()
+
+    def test_they_come_back_when_the_callee_does(self, col, qapp):
+        # The bindings are the user's work and the callee's absence is temporary, so keeping
+        # them is what makes putting the callee back a fix rather than a restart.
+        dialog, definition = self.dialog_calling(col, qapp, [])
+        try:
+            callee = new_definition("callee", "The callee", stages=[variable("x", "H1")])
+            callee["exports"] = [{"name": "H1", "stage_guid": "x"}]
+            dialog.stage_tree.rows["c"].editor.environment.definitions.append(callee)
+            dialog.stage_tree.rows["c"].editor._rebuild_outputs()
+            rows = dialog.stage_tree.rows["c"].editor.output_rows
+            assert [(name, keep.isChecked(), local.text()) for name, keep, local in rows] == [
+                ("H1", True, "M1")
+            ]
+        finally:
+            dialog.deleteLater()
+
+
+class TestEditsThatDoNotReachTheDefinition:
+    """Three controls in the Edit Note editor that never say they changed.
+
+    Everything else in the dialog reports an edit: a field combo, an expression editor, a
+    binding combo and a name box all connect to `changed`, which reaches `contents_changed`,
+    which folds the open editors back into the stage dicts, re-analyses, and marks the
+    preview's trace stale.
+
+    The tag editor, the card actions editor and a field write's "write if" combo connect to
+    nothing. So an edit to any of them stays in the widget: `apply_editors()` has not run, so
+    the definition still holds the old value, and `run_preview()` reads
+    `self.definition` directly without applying anything first. The preview therefore runs
+    the definition as it was before the edit, and -- because nothing marked it stale -- it
+    presents that result as current. The user changes a tag, runs the preview to check it,
+    and sees a trace that does not include the change, with no indication why.
+
+    Saving is not affected: `accept()` applies the editors first. That is what makes this
+    specifically a preview-and-analysis problem rather than lost data, and it is also why it
+    survives casual use -- the change is really there once you close the dialog.
+    """
+
+    def edit_note_editor(self, col):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["fields"] = [
+            {"field": "Word", "value": value_expression(text="x"), "write_if": "always"}
+        ]
+        tree = tree_for(col, stage)
+        return tree, tree.rows["e"].editor
+
+    def changes_from(self, tree, act):
+        seen = []
+        tree.definition_changed.connect(lambda: seen.append(True))
+        act()
+        return seen
+
+    def test_changing_write_if_reports_the_change(self, col, qapp):
+        tree, editor = self.edit_note_editor(col)
+        row = editor.field_rows[0]
+
+        seen = self.changes_from(tree, lambda: row.write_if.setCurrentIndex(1))
+
+        assert seen
+
+    def test_changing_a_tag_reports_the_change(self, col, qapp):
+        from anki_shared.testing import real_anki
+
+        # The box offers the collection's tags, so there has to be one to tick.
+        real_anki.add_note(col, VOCAB, {"Word": "neko"}, tags=["known"])
+        tree, editor = self.edit_note_editor(col)
+
+        seen = self.changes_from(tree, lambda: tick_first(editor.tag_editor.add_tags_combo_box))
+
+        assert seen
+        assert tags_to_list(editor.tag_editor.get_add_tags()) == ["known"]
+
+    def test_adding_a_card_action_reports_the_change(self, col, qapp):
+        # An Edit Card stage, because that is where "Add Card Action" needs no card type
+        # chosen first; the editor class is the same one an Edit Note stage embeds.
+        edit = default_stage(STAGE_EDIT_CARD, "ec")
+        edit["target"] = {"binding": "card"}
+        query = default_stage(STAGE_CARD_QUERY, "cq")
+        query["result"] = "C1"
+        query["query"] = value_expression(text="deck:Default")
+        loop = default_stage(STAGE_FOR_EACH_CARD, "loop")
+        loop["input"] = {"binding": "C1"}
+        loop["body"] = [edit]
+        tree = tree_for(col, query, loop)
+        actions = tree.rows["ec"].editor.card_actions
+
+        seen = self.changes_from(tree, actions.add_new_action)
+
+        assert seen
+        assert len(actions.card_actions) == 1
+
+    def test_a_field_combo_reports_the_change(self, col, qapp):
+        # The guard: this is the wiring the three above are missing, on a control beside them
+        # in the same row.
+        tree, editor = self.edit_note_editor(col)
+        row = editor.field_rows[0]
+
+        seen = self.changes_from(tree, lambda: row.field.setCurrentText("Meaning"))
+
+        assert seen
+
+
+class TestChangingTheTriggerNoteType:
+    """Whether the stage list follows the trigger note type the dialog is still open on.
+
+    Field pickers are built once, when a stage's editor is created, from the note types the
+    definition triggers on. Changing that selection is an ordinary thing to do in this
+    dialog -- the trigger editor is at the top of the same scroll area as the stages -- and
+    it emits `changed`, which the dialog connects to `schedule_refresh`.
+
+    `refresh_status()` re-applies the editors, relists the exports, re-analyses and refreshes
+    the preview. It does not touch the stage tree. So every field dropdown goes on offering
+    the old note type's fields, grouped under the old note type's name, with the old
+    selection still in it. Picking from it saves a field the trigger note does not have, and
+    the run fails per note with "Field 'X' not found in note" -- which is reported against
+    the stage, not against the note type change that caused it.
+    """
+
+    def dialog_with_an_edit_stage(self, dialog):
+        dialog.stage_tree.add_stage(STAGE_EDIT_NOTE, None, None)
+        guid = dialog.document.root_block()[0]["guid"]
+        editor = dialog.stage_tree.rows[guid].editor
+        editor._on_add_field()
+        return editor.field_rows[0]
+
+    def offered_fields(self, dialog):
+        guid = dialog.document.root_block()[0]["guid"]
+        combo = dialog.stage_tree.rows[guid].editor.field_rows[0].field
+        return [combo.itemText(index) for index in range(combo.count())]
+
+    def test_the_field_picker_follows_the_new_note_type(self, col, qapp, dialog):
+        row = self.dialog_with_an_edit_stage(dialog)
+        row.field.setCurrentText("Word")
+        assert "Meaning" in self.offered_fields(dialog)
+
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
+        dialog.refresh_status()
+
+        offered = self.offered_fields(dialog)
+        assert "Kanji" in offered
+        assert "Meaning" not in offered
+
+    def test_a_field_the_new_note_type_does_not_have_is_not_left_selected(
+        self, col, qapp, dialog
+    ):
+        # The half that reaches the run: the stage keeps naming `Word`, the trigger note no
+        # longer has it, and `run_edit_note` fails the definition per note with "Field
+        # 'Word' not found in note".
+        row = self.dialog_with_an_edit_stage(dialog)
+        row.field.setCurrentText("Word")
+
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
+        dialog.refresh_status()
+
+        guid = dialog.document.root_block()[0]["guid"]
+        assert dialog.document.stage(guid)["fields"][0]["field"] != "Word"
+
+
+class TestTheUnfocusGateOnAMigratedWrite:
+    """The per-write unfocus list, which used to be the one thing on a write with no control.
+
+    A migrated field write carries `unfocus_trigger_fields`: the editor fields format 1 asked
+    it to watch, which `run_edit_note` still honours. The row showed a field picker, a "write
+    if" combo and a value, and `apply()` wrote those three -- so the key survived every edit
+    and every save with no way to see it. Adding a field to the definition's own unfocus list
+    widened the gate that starts a run and not this one, and because tags and card actions in
+    the same stage are not gated, the result was a note tagged and saved with the field it
+    was supposed to fill still empty.
+
+    A write the stage editor produced carries no such key and must not grow one: format 2
+    watches fields for the definition as a whole, so there is nothing per write to decide,
+    and adding an empty list would mean "never runs on unfocus".
+    """
+
+    def row_for(self, col, field_write):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["fields"] = [field_write]
+        tree = tree_for(col, stage)
+        return tree, tree.rows["e"].editor.field_rows[0]
+
+    def migrated_write(self, **extra):
+        return {
+            "field": "Meaning",
+            "value": value_expression(text="x"),
+            "write_if": "always",
+            "unfocus_trigger_fields": ["Word"],
+            "unfocus_when_edit": True,
+            "unfocus_when_add": False,
+            **extra,
+        }
+
+    def test_the_row_shows_what_the_write_watches(self, col, qapp):
+        _tree, row = self.row_for(col, self.migrated_write())
+
+        assert row.unfocus_fields is not None
+        assert selected_names(row.unfocus_fields) == ["Word"]
+
+    def test_it_offers_the_trigger_note_types_fields(self, col, qapp):
+        _tree, row = self.row_for(col, self.migrated_write())
+        box = row.unfocus_fields
+
+        offered = [box.itemText(index) for index in range(box.count())]
+        assert '"Reading"' in offered
+
+    def test_widening_it_is_saved(self, col, qapp):
+        tree, row = self.row_for(col, self.migrated_write())
+
+        choose(row.unfocus_fields, "Word", "Reading")
+        tree.apply_editors()
+
+        saved = tree.document.stage("e")["fields"][0]["unfocus_trigger_fields"]
+        assert sorted(saved) == ["Reading", "Word"]
+
+    def test_a_natively_authored_write_gets_no_gate_at_all(self, col, qapp):
+        tree, row = self.row_for(
+            col, {"field": "Meaning", "value": value_expression(text="x"), "write_if": "always"}
+        )
+
+        assert row.unfocus_fields is None
+        tree.apply_editors()
+        assert "unfocus_trigger_fields" not in tree.document.stage("e")["fields"][0]
+
+    def test_a_stored_name_the_note_type_no_longer_has_survives_a_save(self, col, qapp):
+        # Same rule the trigger editor follows for a whitelisted deck it cannot offer: a box
+        # can only hold what is in it, so a name out of its reach would be dropped on the way
+        # through and "not on offer" would silently become "not wanted".
+        tree, _row = self.row_for(
+            col, self.migrated_write(unfocus_trigger_fields=["Word", "Gone"])
+        )
+
+        tree.apply_editors()
+
+        saved = tree.document.stage("e")["fields"][0]["unfocus_trigger_fields"]
+        assert sorted(saved) == ["Gone", "Word"]
+
+
+class TestTheCopyConditionMarkerOnAConditionStage:
+    """`unmatched_skips_trigger`, and what unticking the search form does to it.
+
+    It is the marker the migrator writes for format 1's copy condition: a non-match skips the
+    whole trigger note rather than taking the empty `else`, which is only ever right for the
+    one shape the migrator builds, where the condition wraps the entire definition. The
+    editor shows nothing about it, so it has to follow the one control that does bear on it.
+    """
+
+    def condition_stage(self, **extra):
+        stage = default_stage(STAGE_CONDITION, "c")
+        stage["predicate"] = value_expression(text="tag:wanted")
+        stage["predicate_kind"] = "note_query"
+        stage["predicate_target"] = {"binding": "trigger"}
+        stage["unmatched_skips_trigger"] = True
+        stage.update(extra)
+        return stage
+
+    def test_it_survives_a_save_that_leaves_the_search_form_on(self, col, qapp):
+        tree = tree_for(col, self.condition_stage())
+
+        tree.apply_editors()
+
+        assert tree.document.stage("c")["unmatched_skips_trigger"] is True
+
+    def test_turning_off_the_search_form_takes_it_too(self, col, qapp):
+        tree = tree_for(col, self.condition_stage())
+        editor = tree.rows["c"].editor
+
+        editor.match_as_search.setChecked(False)
+        tree.apply_editors()
+
+        saved = tree.document.stage("c")
+        assert "predicate_kind" not in saved
+        assert "unmatched_skips_trigger" not in saved

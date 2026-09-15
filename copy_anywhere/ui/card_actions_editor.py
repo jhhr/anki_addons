@@ -17,6 +17,7 @@ from aqt.qt import (
     QDoubleSpinBox,
     QLineEdit,
     QTimer,
+    pyqtSignal,
     qtmajor,
 )
 
@@ -83,6 +84,9 @@ class CardActionsEditor(QWidget):
     Editor for card actions. Shows a dropdown to select card types from the selected note types,
     and inline editors for each CardAction property (change_deck, set_flag, suspend, bury).
     """
+
+    #: Something the user changed here would change the stored card actions.
+    changed = pyqtSignal()
 
     def __init__(
         self,
@@ -165,6 +169,12 @@ class CardActionsEditor(QWidget):
             self.card_type_label.hide()
             self.add_action_button.setText("Add Card Action")
 
+    def _on_changed(self, *_args) -> None:
+        if self._building_initial_actions or self._loading_initial_actions:
+            # Building the rows a definition arrived with is not the user editing them.
+            return
+        self.changed.emit()
+
     def enable_callbacks(self):
         """Enable callbacks when the widget becomes visible"""
         self.selected_model_callback.is_visible = True
@@ -241,6 +251,15 @@ class CardActionsEditor(QWidget):
             self.loading_indicator = None
         self._building_initial_actions = False
         self._loading_initial_actions = False
+        if self.single_card_mode:
+            # `update_card_type_options` returns early in this mode -- there is no card type
+            # to pick -- and the re-enable lives after that line, so it would never run. A
+            # stage that arrived with an action would be stuck with a greyed-out Add button
+            # for the life of the dialog, while one with no actions never takes the loading
+            # path and can always add its first.
+            self.card_type_selector.setDisabled(False)
+            self.add_action_button.setDisabled(False)
+            return
         self.update_card_type_options()
 
     def finish_loading_initial_actions(self):
@@ -391,6 +410,7 @@ class CardActionsEditor(QWidget):
 
         # Create and display the action editor
         self.create_action_editor(card_type_name, new_action)
+        self._on_changed()
 
         # Clear the selector and refresh dropdown to remove the added card type
         self.card_type_selector.setCurrentIndex(-1)
@@ -412,6 +432,7 @@ class CardActionsEditor(QWidget):
         }
         self.card_actions[key] = new_action
         self.create_action_editor(key, new_action)
+        self._on_changed()
 
     def create_action_editor(self, card_type_name: str, action: CardAction):
         """Create the UI for editing a single CardAction and add it inline"""
@@ -609,6 +630,18 @@ class CardActionsEditor(QWidget):
         delete_button.clicked.connect(lambda: self.delete_action(card_type_name))
         frame_layout.addWidget(delete_button)
 
+        # Every control that can change what `get_card_actions()` returns reports it, so the
+        # stage editor above can fold this panel back into the definition and mark the
+        # preview's trace stale. Without it an edit here stayed in the widget: the preview
+        # re-ran the definition as it was before the change and presented that as current.
+        deck_combo.currentIndexChanged.connect(self._on_changed)
+        for group in (flag_group, suspend_group, bury_group):
+            group.buttonToggled.connect(self._on_changed)
+        dr_number_input.valueChanged.connect(self._on_changed)
+        dr_string_input.textChanged.connect(self._on_changed)
+        use_code_toggle.toggled.connect(self._on_changed)
+        code_editor.text_edit.textChanged.connect(self._on_changed)
+
         # Store UI components for later retrieval
         self.action_ui_components[card_type_name] = {
             "frame": frame,
@@ -693,6 +726,7 @@ class CardActionsEditor(QWidget):
 
         # Refresh dropdown to show the deleted card type as available again
         self.update_card_type_options()
+        self._on_changed()
 
     def get_card_actions(self) -> list[CardAction]:
         """Return the list of card actions"""

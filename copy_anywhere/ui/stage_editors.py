@@ -22,6 +22,7 @@ from aqt.qt import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -60,17 +61,27 @@ from ..logic.definition_schema import (
     value_expression,
 )
 from ..shared.ui.grouped_combo_box import GroupedComboBox
+from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .card_actions_editor import CardActionsEditor
 from .code_notices import FILE_CODE_NOTICE
 from .stage_edit_state import StageEditState
 from .stage_editor_context import NoteTypesFor, StageEditorContext
+from .stage_triggers_editor import quoted_items, selected_names
 from .tag_editor import TagEditor
 from .value_expression_editor import ValueExpressionEditor
 
 #: What the write_if choices are called in the editor.
 WRITE_IF_LABELS = {"always": "always", "empty": "only if the field is empty"}
+
+#: What a reduce does with its list. A join is what the migrator builds for format 1's
+#: implicit many-notes join; a fold is what format 2 adds.
+REDUCE_OPERATIONS = ("join", "fold")
+REDUCE_OPERATION_LABELS = {
+    "join": "join them into one text",
+    "fold": "fold them with an expression",
+}
 
 #: The empty-result policies, in menu order, with what they mean spelled out.
 IF_EMPTY_LABELS = {
@@ -185,17 +196,41 @@ def field_combo(
 ) -> GroupedComboBox:
     """A field picker for whichever note types the target binding may hold."""
     combo = GroupedComboBox(parent, placeholder_text="Select a field", is_required=True)
-    for model in note_types_of(binding, note_types_for):
-        assert mw is not None and mw.col is not None
-        names = mw.col.models.field_names(model)
-        if not names:
-            continue
-        combo.addGroup(model["name"])
-        for name in names:
-            combo.addItemToGroup(model["name"], name)
-    if current:
-        combo.setCurrentText(current)
+    fill_field_combo(combo, binding, note_types_for, current)
     return combo
+
+
+def fill_field_combo(
+    combo: GroupedComboBox, binding: str, note_types_for: NoteTypesFor, current: str
+) -> None:
+    """(Re)list the fields on offer, keeping the current choice if it is still one of them.
+
+    Refillable because the trigger note type is chosen in the same dialog, at the top of the
+    same scroll area: a picker built once goes on offering the fields of whichever note type
+    the definition happened to name when the stage's editor was created, grouped under that
+    note type's name, with a selection the trigger note may no longer have. Saving that
+    fails the run per note with "Field 'X' not found in note", reported against the stage
+    rather than against the change that caused it.
+    """
+    combo.blockSignals(True)
+    try:
+        combo.clear()
+        offered: list[str] = []
+        for model in note_types_of(binding, note_types_for):
+            assert mw is not None and mw.col is not None
+            names = mw.col.models.field_names(model)
+            if not names:
+                continue
+            combo.addGroup(model["name"])
+            for name in names:
+                combo.addItemToGroup(model["name"], name)
+                offered.append(name)
+        # A name no longer on offer is dropped rather than kept: unlike a deck whitelist,
+        # this one is checked against the note at run time, so keeping it would preserve a
+        # write that cannot work. Blanking it makes the analyser ask for a field instead.
+        combo.setCurrentText(current if current in offered else "")
+    finally:
+        combo.blockSignals(False)
 
 
 def name_edit(parent: QWidget, current: str, placeholder: str) -> RequiredLineEdit:
@@ -253,6 +288,10 @@ class StageEditor(QWidget):
         self.form = QFormLayout(self)
         self.form.setContentsMargins(0, 0, 0, 0)
         self._expression_editors: list[ValueExpressionEditor] = []
+        #: The label widget of each row added through `add_row`, keyed by its text, so an
+        #: editor whose shape depends on a choice can hide a row whole rather than leaving a
+        #: caption over nothing.
+        self.row_labels: dict[str, QLabel] = {}
 
     # -- helpers for subclasses ----------------------------------------------------------
 
@@ -262,8 +301,12 @@ class StageEditor(QWidget):
         self._expression_editors.append(editor)
         return editor
 
-    def add_row(self, label, widget) -> None:
-        self.form.addRow(label, widget)
+    def add_row(self, label, widget) -> QLabel:
+        made = QLabel(label, self) if isinstance(label, str) else label
+        self.form.addRow(made, widget)
+        if isinstance(label, str):
+            self.row_labels[label] = made
+        return made
 
     def notify(self, *_args) -> None:
         self.changed.emit()
@@ -448,6 +491,7 @@ class FieldWriteRow(QFrame):
         self.write_if = labelled_combo(
             self, WRITE_IF_POLICIES, WRITE_IF_LABELS, field_write.get("write_if", "always")
         )
+        self.write_if.currentIndexChanged.connect(self.changed)
         remove = QPushButton("Remove", self)
         remove.clicked.connect(lambda: self.removed.emit(self))
         header.addWidget(QLabel("Write", self))
@@ -468,14 +512,70 @@ class FieldWriteRow(QFrame):
         self.value.changed.connect(self.changed)
         layout.addWidget(self.value)
 
+        # Only a migrated write has one of these. Format 1 asked per field write which editor
+        # fields trigger it, and `run_edit_note` still honours the answer, so leaving it off
+        # the row made it the one thing about a write that could not be changed: adding a
+        # field to the definition's own unfocus list widened the gate that starts a run and
+        # not this one, so the definition ran and every migrated write in it was skipped --
+        # silently, because the tags and card actions beside them are not gated.
+        self.unfocus_fields: Optional[MultiComboBox] = None
+        if "unfocus_trigger_fields" in field_write:
+            self.unfocus_fields = MultiComboBox(
+                self, placeholder_text="No fields (this write never runs on unfocus)"
+            )
+            self._fill_unfocus_fields(parent.context)
+            self.unfocus_fields.currentTextChanged.connect(self.changed)
+            watched = QHBoxLayout()
+            watched.addWidget(QLabel("only when leaving", self))
+            watched.addWidget(self.unfocus_fields)
+            watched.addStretch()
+            layout.addLayout(watched)
+
+    def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
+        """Offer the trigger note's fields: these name editor fields, not the write's target.
+
+        A `MultiComboBox` can only offer what is in it, so a stored name the trigger note
+        type no longer has would be dropped on the way through. It is added as its own item
+        instead, the way the trigger editor keeps a whitelisted deck it cannot offer.
+        """
+        box = self.unfocus_fields
+        if box is None:
+            return
+        stored = [name for name in self.field_write.get("unfocus_trigger_fields") or [] if name]
+        offered: list[str] = []
+        assert mw is not None and mw.col is not None
+        for model in note_types_of("trigger", self.owner.environment.note_types_for):
+            for name in mw.col.models.field_names(model):
+                if name not in offered:
+                    offered.append(name)
+        for name in stored:
+            if name not in offered:
+                offered.append(name)
+        # Quoted item texts, as every other name box in this editor holds them: that is the
+        # form `selected_names` reads back, and a field name can contain a comma.
+        box.blockSignals(True)
+        box.clear()
+        box.addItems(quoted_items(offered))
+        box.setCurrentText(", ".join(quoted_items(stored)))
+        box.blockSignals(False)
+
     def apply(self) -> dict:
         self.field_write["field"] = self.field.currentText()
         self.field_write["write_if"] = combo_value(self.write_if)
+        if self.unfocus_fields is not None:
+            self.field_write["unfocus_trigger_fields"] = selected_names(self.unfocus_fields)
         self.value.apply()
         return self.field_write
 
     def set_context(self, context: StageEditorContext) -> None:
         self.value.set_context(context)
+        fill_field_combo(
+            self.field,
+            (self.owner.stage.get("target") or {}).get("binding", "trigger"),
+            self.owner.environment.note_types_for,
+            self.field.currentText(),
+        )
+        self._fill_unfocus_fields(context)
 
 
 class EditNoteStageEditor(StageEditor):
@@ -513,6 +613,7 @@ class EditNoteStageEditor(StageEditor):
             self.state.copy_mode,
         )
         self.tag_editor.initialize_ui_state()
+        self.tag_editor.changed.connect(self.changed)
         self.form.addRow(self.tag_editor)
 
         self.card_actions = CardActionsEditor(
@@ -521,6 +622,7 @@ class EditNoteStageEditor(StageEditor):
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
         )
         self.card_actions.initialize_ui_state()
+        self.card_actions.changed.connect(self.changed)
         self.form.addRow(self.card_actions)
 
     def _add_field_row(self, field_write: dict) -> FieldWriteRow:
@@ -587,6 +689,7 @@ class EditCardStageEditor(StageEditor):
             single_card_mode=True,
         )
         self.card_actions.initialize_ui_state()
+        self.card_actions.changed.connect(self.changed)
         self.form.addRow(self.card_actions)
 
     def apply(self):
@@ -753,6 +856,21 @@ class ForEachCardStageEditor(StageEditor):
 
 
 class ReduceStageEditor(StageEditor):
+    """A reduce is one of two things, and only one of them reads the expressions below.
+
+    `join` returns `separator.join(...)` and ignores `initial`, `item_binding`,
+    `accumulator_binding` and `value` entirely; `fold` runs `value` once per item with an
+    accumulator. Which one it is lives in `operation`, and every reduce a migration produces
+    is a join carrying format 1's `select_card_separator`.
+
+    Both keys used to be invisible. A stored join kept working -- `apply()` did not write
+    `operation`, so it survived -- but everything shown for it was dead: two expression
+    editors and two binding names the executor would not read, presented exactly as they are
+    on a fold that does read them. The separator, the one part of a join a user has reason to
+    change, could not be seen at all, though it was an ordinary text field in the format-1
+    editor it came from.
+    """
+
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
         sources = (
@@ -766,6 +884,19 @@ class ReduceStageEditor(StageEditor):
         self.result = name_edit(self, stage.get("result", ""), "A name for the result")
         self.result.textChanged.connect(self.notify)
         self.add_row("Call the result", self.result)
+        self.operation = labelled_combo(
+            self,
+            REDUCE_OPERATIONS,
+            REDUCE_OPERATION_LABELS,
+            stage.get("operation", "fold") or "fold",
+        )
+        self.operation.currentIndexChanged.connect(self._on_operation_changed)
+        self.add_row("By", self.operation)
+        self.separator = QLineEdit(self)
+        self.separator.setText(stage.get("separator", ", ") or "")
+        self.separator.setPlaceholderText("nothing between the values")
+        self.separator.textChanged.connect(self.notify)
+        self.separator_row = self.add_row("With this between them", self.separator)
         self.initial = self.expression_editor(
             stage.setdefault("initial", value_expression()),
             "Starting from",
@@ -790,11 +921,32 @@ class ReduceStageEditor(StageEditor):
             ),
         )
         self.form.addRow(self.value)
+        self._apply_operation()
+
+    def _apply_operation(self) -> None:
+        """Show only the controls the chosen operation actually reads."""
+        is_join = combo_value(self.operation) == "join"
+        self.separator_row.setVisible(is_join)
+        self.separator.setVisible(is_join)
+        for widget in (self.initial, self.value):
+            widget.setVisible(not is_join)
+        for label_text, widget in (
+            ("Call each item", self.item_binding),
+            ("Call the running value", self.accumulator_binding),
+        ):
+            widget.setVisible(not is_join)
+            self.row_labels[label_text].setVisible(not is_join)
+
+    def _on_operation_changed(self, *_args) -> None:
+        self._apply_operation()
+        self.notify()
 
     def apply(self):
         super().apply()
         self.stage["input"] = {"binding": self.input.currentText()}
         self.stage["result"] = self.result.text().strip()
+        self.stage["operation"] = combo_value(self.operation)
+        self.stage["separator"] = self.separator.text()
         self.stage["item_binding"] = self.item_binding.text().strip() or "item"
         self.stage["accumulator_binding"] = (
             self.accumulator_binding.text().strip() or "accumulator"
@@ -868,6 +1020,11 @@ class ConditionStageEditor(StageEditor):
         else:
             self.stage.pop("predicate_kind", None)
             self.stage.pop("predicate_target", None)
+            # A condition that no longer matches a search cannot be format 1's copy
+            # condition either, and the marker is what makes a non-match end the whole
+            # definition rather than take the empty branch. Leaving it behind would keep
+            # that on a stage whose editor shows nothing about it.
+            self.stage.pop("unmatched_skips_trigger", None)
 
 
 class CallDefinitionStageEditor(StageEditor):
@@ -952,7 +1109,10 @@ class CallDefinitionStageEditor(StageEditor):
             self.outputs_layout.addWidget(
                 QLabel(
                     "<small>That definition exports nothing, so there is nothing to keep."
-                    "</small>",
+                    "</small>"
+                    if callee is not None
+                    else "<small>That definition is not in this collection, so its exports"
+                    " cannot be listed. What this stage binds is kept until it can be.</small>",
                     self.outputs_container,
                 )
             )
@@ -987,6 +1147,14 @@ class CallDefinitionStageEditor(StageEditor):
         super().apply()
         self.stage["definition_guid"] = self.selected_guid()
         self.stage["trigger"] = {"binding": self.trigger.currentText()}
+        if self._callee() is None and self.selected_guid():
+            # Nothing was listed, so there is nothing to read back, and rebuilding `outputs`
+            # from no rows would delete the bindings rather than leave them alone. `apply` is
+            # not a user action -- `refresh_status` runs it while the dialog is still being
+            # built -- so the bindings would be gone before the stage was ever on screen, and
+            # gone from the saved definition. The combo goes on naming the missing callee, so
+            # putting it back has to be the fix, and it only is if these survive.
+            return
         self.stage["outputs"] = [
             {"export": name, "result": local.text().strip()}
             for name, keep, local in self.output_rows
