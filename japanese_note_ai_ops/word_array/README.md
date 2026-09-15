@@ -42,6 +42,10 @@ Status: phase 1 prototype, not wired into any op yet.
    like 八紘|一宇 and 業|者.
 5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,
    as tokenized (the `<k>` kana) and with the last word deinflected (様に成った -> 様に成る).
+   When the dictionary form is another JMdict entry it is tried first (気を付けて -> 気を付ける,
+   に依って -> に依る, に対して -> に対する), the as-written match kept for when it is no word
+   there (に就いて); entrenched inflections stay as written: `ENTRENCHED_EXPRESSIONS` (そう言えば,
+   と言われる, 主として, 面と向かって) and adverbial 〜無く (間も無く, 余儀無く).
 6. **Structure** (below).
 7. **Dictionary form and reading.** Readings come from the note's own furigana wherever it has
    it; inflected words take the JMdict reading of their lemma that agrees with the furigana stem.
@@ -374,9 +378,6 @@ From [awesome-japanese-nlp-resources](https://github.com/taishi-i/awesome-japane
 
 ## Open decisions
 
-- **Surface vs deinflected match.** A JMdict entry for the text as written wins over one for
-  its dictionary form: 秋と言った物 gives と言った (conj, "such as") where the gold has と言う,
-  but そう言えば stays そう言えば rather than そう言う.
 - **Nesting depth.** Matches nest literally, so 無しには is 無しに + は with 無しに = 無し + に.
 - **Noun forms as verbs** only as sub-words (違い -> 違う in 違い無い). The gold still lists
   top-level 囁き/掬い/入り as verbs (ex. 23), so dict_form scores 274/280 against it.

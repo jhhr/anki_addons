@@ -163,6 +163,36 @@ class WordArrayTests(unittest.TestCase):
         expression = find_word(arr, "そう言えば")
         self.assertEqual([s[2] for s in expression[5]], ["そう", "言う"])
 
+    def test_an_inflected_expression_is_its_dictionary_form(self):
+        cases = [
+            ("体[からだ]に 気[き]を 付[つ]けて 下[くだ]さい。", "気を付ける", "気を付けて"),
+            (
+                "税金[ぜいきん]の 額[がく]は 年収[ねんしゅう]に<k> 依[よ]って</k> 変[か]わります。",
+                "に依る",
+                "に依って",
+            ),
+        ]
+        for sentence, form, written in cases:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertNotEqual(find_word(arr, form), [])
+                self.assertEqual(find_word(arr, written), [])
+        # Entrenched ones stay as written: そう言えば, 間も無く "soon"
+        for sentence, written in [
+            (
+                "<k> 間[ま]も 無[な]く</k> 飛行機[ひこうき]が 離陸[りりく]<k> 為[し]ます</k>。",
+                "間も無く",
+            ),
+            ("彼[かれ]は 驚[おどろ]いた 顔[かお]で<k> 然[そ]う</k> 言[い]った。", "そう言った"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertNotEqual(find_word(self.generator.generate(sentence), written), [])
+        # A dictionary form that is no word here leaves the match as written: に就いて
+        arr = self.generator.generate(
+            "今日[きょう]は 此[こ]の 問題[もんだい]に<k> 就[つ]いて</k> 話[はな]します。"
+        )
+        self.assertNotEqual(find_word(arr, "に就いて"), [])
+
     def test_a_jmdict_match_inside_another_nests_in_it(self):
         arr = self.generator.generate(self.examples[5][0])
         outer = find_word(arr, "様に成る")
@@ -527,7 +557,7 @@ class WordArrayTests(unittest.TestCase):
     def test_a_word_partly_in_k_is_spelled_as_jmdict_spells_it(self):
         # The 為 and the second 当 were kana before kanjify_sentence; JMdict has 私達 as it is
         cases = [
-            ("彼[かれ]に 対[たい]<k> 為[し]て</k> 怒[おこ]る", "に対して", "にたいして"),
+            ("彼[かれ]に 対[たい]<k> 為[し]て</k> 怒[おこ]る", "に対する", "にたいする"),
             ("日当[ひあ]<k> 当[た]り</k>が 良[い]い", "日当たり", "ひあたり"),
             ("私[わたし]<k> 達[たち]</k>が 行[い]く", "私達", "わたしたち"),
         ]

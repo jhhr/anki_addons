@@ -692,6 +692,37 @@ def reads_as(parts: list[str], readings: tuple[str, ...]) -> bool:
     return any("".join(combo) in known for combo in itertools.product(*options))
 
 
+# Inflected expressions kept as written although their dictionary form is a JMdict entry too:
+# the inflection is entrenched with a nuance of its own (そう言えば "come to think of it", not
+# そう言う). Every other one is its dictionary form: 気を付けて -> 気を付ける, に依って -> に依る,
+# に対して -> に対する, と言わず -> と言う.
+ENTRENCHED_EXPRESSIONS = {
+    "そう言えば",
+    "然う言えば",
+    "と言って",
+    "と言えば",
+    "と言われる",
+    "そう言った",
+    "然う言った",
+    "そう言われる",
+    "然う言われる",
+    "これと言った",
+    "此れと言った",
+    "主として",
+    "主と為て",
+    "ことになっている",
+    "事に成っている",
+    "面と向かって",
+}
+# Adverbial く-forms of a 無い expression, like LEXICAL_KU_ADVERBS: 間も無く "soon", 余儀無く
+NEGATIVE_ADVERB_ENDINGS = ("無く", "なく")
+
+
+def _entrenched(form: str, hits: list) -> bool:
+    spellings = {form} | {k for kebs, _, _ in hits for k in kebs}
+    return bool(spellings & ENTRENCHED_EXPRESSIONS) or form.endswith(NEGATIVE_ADVERB_ENDINGS)
+
+
 def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[Candidate]:
     cands = []
     for i in range(len(words)):
@@ -701,26 +732,40 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
             if words[j - 1].kind == "punct":
                 break
             parts = [to_hiragana(tm.surface_reading(w.start, w.end)) for w in words[i:j]]
+            found = []
             for form, written, surface in _forms(tm, words[i:j]):
                 hits = jmdict.lookup(form)
                 if surface and not UNREAD_RE.search("".join(parts)):
                     # A homograph the note's furigana reads otherwise is not this entry:
                     # 彼[かれ]の is no 彼の (あの), 今日[きょう]は no 今日は (こんにちは)
                     hits = [h for h in hits if reads_as(parts, h[1])]
-                if hits:
-                    cands.append(
-                        Candidate(
-                            i,
-                            j,
-                            form,
-                            readings=tuple(r for _, rs, _ in hits for r in rs),
-                            pos=frozenset(p for _, _, ps in hits for p in ps),
-                            surface=surface,
-                            written=written,
-                            spellings=tuple(k for ks, _, _ in hits for k in ks),
-                        )
-                    )
+                if not hits:
+                    continue
+                if not found:
+                    found.append((form, written, surface, hits))
+                    if not surface or _entrenched(form, hits):
+                        break
+                elif not surface:
+                    # The dictionary form is another entry: 気を付けて -> 気を付ける, tried first,
+                    # the form as written left for when it is no word here (に就いて). The same
+                    # entry spelled otherwise (ではない, では無い) is task 18's spelling question.
+                    own = {(h[0], h[1]) for h in found[0][3]}
+                    if any((h[0], h[1]) not in own for h in hits):
+                        found.insert(0, (form, written, surface, hits))
                     break
+            for form, written, surface, hits in found:
+                cands.append(
+                    Candidate(
+                        i,
+                        j,
+                        form,
+                        readings=tuple(r for _, rs, _ in hits for r in rs),
+                        pos=frozenset(p for _, _, ps in hits for p in ps),
+                        surface=surface,
+                        written=written,
+                        spellings=tuple(k for ks, _, _ in hits for k in ks),
+                    )
+                )
     return cands + _stem_suffix_candidates(tm, words, cands)
 
 
@@ -838,7 +883,8 @@ def choose_matches(cands: list[Candidate], words: list[Word]) -> list[Candidate]
     nests in it (様に in 様に成る); of two that cross, the longer wins, then the one found by
     its kanji spelling, then the earlier (一つ over つの)."""
     chosen: list[Candidate] = []
-    for c in sorted(cands, key=lambda c: (c.i - c.j, not KANJI_RE.search(c.form), c.i)):
+    # Of two matches of one span, the dictionary form comes first (see jmdict_candidates)
+    for c in sorted(cands, key=lambda c: (c.i - c.j, not KANJI_RE.search(c.form), c.i, c.surface)):
         if not is_word_match(c, words):
             continue
         if any(_crosses(c, d) or (c.i, c.j) == (d.i, d.j) for d in chosen):
