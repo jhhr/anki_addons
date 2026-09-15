@@ -23,6 +23,7 @@ update; everything else is sent to the trash and re-extracted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -50,6 +51,9 @@ _MACHINES = {
 # Written by `build.py vendor` into lib/, and by rebuild_libs into user_files/lib/ in the
 # same shape, so the health check below is one code path whichever tree is live.
 VENDOR_MANIFEST = ".vendored.json"
+
+# What either tree is built from. Shipped with the addon, beside lib/.
+REQUIREMENTS = "requirements.txt"
 
 # One package that is expected to be importable once either tree is on sys.path. Only a
 # backstop for a half-extracted directory - see vendor_health.
@@ -122,6 +126,20 @@ def add_vendor_paths(addon_dir: str) -> None:
     for path in candidates:
         if os.path.isdir(path) and path not in sys.path:
             sys.path.append(path)
+
+
+def requirements_digest(addon_dir: str) -> Optional[str]:
+    """sha256 of the addon's requirements.txt, or None if it has none.
+
+    Line endings are normalised first: git can check the same file out either way, and that
+    is not a change in what gets installed.
+    """
+    try:
+        with open(os.path.join(addon_dir, REQUIREMENTS), "rb") as f:
+            content = f.read()
+    except OSError:
+        return None
+    return hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _read_manifest(lib: str) -> Optional[dict]:
@@ -211,9 +229,11 @@ def vendor_health(addon_dir: str) -> Optional[str]:
     startup - and it has to, because Anki's launcher can move Anki's Python underneath an
     addon that has not itself changed.
     """
+    user = user_lib(addon_dir)
     user_reason = user_lib_mismatch(addon_dir)
-    if user_reason is None and os.path.isdir(user_lib(addon_dir)):
-        return _smoke_test()
+    if user_reason is None and os.path.isdir(user):
+        # A fitting rebuilt tree is live, but it can still predate requirements.txt
+        return _outdated(_read_manifest(user) or {}, addon_dir) or _smoke_test()
 
     shipped_reason = _shipped_mismatch(addon_dir)
     if shipped_reason is None:
@@ -221,6 +241,23 @@ def vendor_health(addon_dir: str) -> Optional[str]:
     if user_reason is not None:
         return f"{shipped_reason}, and {user_reason}"
     return shipped_reason
+
+
+def _outdated(manifest: dict, addon_dir: str) -> Optional[str]:
+    """Whether a locally rebuilt tree predates the requirements.txt now in the addon.
+
+    Only the rebuilt tree can drift this way. The shipped lib/ and requirements.txt arrive in
+    the same zip, but user_files/lib outlives any number of addon updates, so without this a
+    package added in a later version would never reach a machine that had rebuilt once: the
+    Python and the platform still match, and nothing else was ever compared.
+
+    A manifest from before the digest was recorded counts as outdated. That costs a machine
+    with a rebuilt tree one extra offer, which is cheaper than missing the new package.
+    """
+    current = requirements_digest(addon_dir)
+    if current is None or manifest.get("requirements_sha256") == current:
+        return None
+    return "the locally rebuilt lib was built from an older requirements.txt"
 
 
 def _smoke_test() -> Optional[str]:

@@ -2,6 +2,20 @@ import re
 from html.parser import HTMLParser
 from html import unescape
 
+CONTEXT_SENTENCE_RE = re.compile(r"<i>.*?</i>", re.DOTALL)
+
+
+def strip_context_sentences(sentence: str) -> str:
+    """A sentence field without the sentences around the one it is about.
+
+    The word extraction field keeps the neighbouring sentences of the source passage wrapped
+    in <i> so a human can read it in context, but they are not what the note is about: no word
+    of theirs should get a vocabulary note, and so none should reach a word array either. It
+    lives here rather than in utils.py so that the word_array research scripts, which cannot
+    import anki, can strip a sentence the way the ops do.
+    """
+    return CONTEXT_SENTENCE_RE.sub("", sentence)
+
 
 class HTMLStripper(HTMLParser):
     """Custom HTML parser to strip tags while preserving text"""

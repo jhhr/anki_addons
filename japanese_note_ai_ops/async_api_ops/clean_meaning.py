@@ -42,8 +42,18 @@ from .make_all_meanings import (
 
 from ..utils import get_field_config
 from ..html_stripping import strip_html
+from ..word_array import match_targets
 
 logger = logging.getLogger(__name__)
+
+
+def _field_value(config: dict[str, str], note: Note, field_key: str) -> str:
+    """The note's value of an optional configured field, empty when unconfigured or absent."""
+    try:
+        field = get_field_config(config, field_key, note.note_type())
+    except Exception:
+        return ""
+    return note[field] if field in note else ""
 
 
 def get_sentences_for_note(
@@ -62,6 +72,11 @@ def get_sentences_for_note(
     :param note_cache: The run's fetched notes, if the caller has one. The sibling notes are
         fetched in one turn either way; through the cache, a note the run already holds costs
         no turn at all.
+
+    A sentence from a note whose word list field holds a word array has this note's word in
+    `<b>`: the occurrence linked to this note, else the first of its word
+    (`match_targets.example_sentence`), so a sentence using the word twice says which one the
+    meaning is for. A note with an old word list gives its sentence as it is.
     """
     note_type = note.note_type()
     if not note_type:
@@ -70,11 +85,21 @@ def get_sentences_for_note(
     word_list_field = get_field_config(config, "word_list_field", note_type)
     sentence_field = get_field_config(config, "sentence_field", note_type)
     translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
+    word = _field_value(config, note, "word_kanjified_field") or _field_value(
+        config, note, "word_field"
+    )
+    reading = _field_value(config, note, "word_reading_field")
 
-    def make_en_and_jp_sentence(note: Note) -> EnAndJPSentence:
+    def make_en_and_jp_sentence(onote: Note) -> EnAndJPSentence:
         return EnAndJPSentence(
-            jp_sentence=strip_html(note[sentence_field]),
-            en_sentence=strip_html(note[translated_sentence_field]),
+            jp_sentence=match_targets.example_sentence(
+                strip_html(onote[sentence_field]),
+                onote[word_list_field] if word_list_field in onote else "",
+                word,
+                reading,
+                note.id,
+            ),
+            en_sentence=strip_html(onote[translated_sentence_field]),
         )
 
     cur_note_sentence = make_en_and_jp_sentence(note)

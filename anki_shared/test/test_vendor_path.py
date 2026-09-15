@@ -156,6 +156,37 @@ class TestVendorHealth:
         user(addon).mkdir(parents=True)
         assert "incomplete" in (vendor_path.vendor_health(str(addon)) or "")
 
+    def test_a_rebuilt_tree_from_the_current_requirements_is_healthy(self, addon):
+        (addon / "requirements.txt").write_text("psutil==7.2.2\n", "utf-8")
+        digest = vendor_path.requirements_digest(str(addon))
+        write_manifest(user(addon), rebuilt_locally=True, requirements_sha256=digest)
+        assert vendor_path.vendor_health(str(addon)) is None
+
+    def test_a_rebuilt_tree_from_older_requirements_wants_a_rebuild(self, addon):
+        """user_files/lib outlives addon updates, so a package added later never reached it."""
+        (addon / "requirements.txt").write_text("psutil==7.2.2\n", "utf-8")
+        digest = vendor_path.requirements_digest(str(addon))
+        (addon / "requirements.txt").write_text("psutil==7.2.2\nsudachipy==0.6.11\n", "utf-8")
+        write_manifest(user(addon), rebuilt_locally=True, requirements_sha256=digest)
+        assert "requirements.txt" in (vendor_path.vendor_health(str(addon)) or "")
+
+    def test_a_rebuilt_tree_that_recorded_no_requirements_wants_a_rebuild(self, addon):
+        (addon / "requirements.txt").write_text("psutil==7.2.2\n", "utf-8")
+        write_manifest(user(addon), rebuilt_locally=True)
+        assert "requirements.txt" in (vendor_path.vendor_health(str(addon)) or "")
+
+    def test_requirements_line_endings_do_not_count_as_a_change(self, addon):
+        (addon / "requirements.txt").write_bytes(b"psutil==7.2.2\n")
+        digest = vendor_path.requirements_digest(str(addon))
+        (addon / "requirements.txt").write_bytes(b"psutil==7.2.2\r\n")
+        assert vendor_path.requirements_digest(str(addon)) == digest
+
+    def test_the_shipped_tree_is_not_held_to_requirements(self, addon):
+        """It and requirements.txt arrive in the same zip, so they cannot drift apart."""
+        (addon / "requirements.txt").write_text("psutil==7.2.2\n", "utf-8")
+        write_manifest(shipped(addon))
+        assert vendor_path.vendor_health(str(addon)) is None
+
     def test_the_smoke_import_is_only_a_backstop(self, addon, monkeypatch):
         """A matching manifest still fails health when the tree it describes is not there."""
         monkeypatch.setattr(vendor_path, "_smoke_test", lambda: "psutil is not in it")

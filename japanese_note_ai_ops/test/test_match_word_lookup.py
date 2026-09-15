@@ -67,14 +67,14 @@ class LookupTestCase(unittest.TestCase):
 
 class WordSpellingTests(LookupTestCase):
     def test_a_word_with_a_matching_reading_is_found(self):
-        self.assertEqual(
-            self.lookup("私", "わたし", vocab_row(1, "私", "私", "わたし", "私")), [1]
-        )
+        self.assertEqual(self.lookup("私", "わたし", vocab_row(1, "私", "私", "わたし", "私")), [1])
 
     def test_the_suru_form_of_the_word_is_looked_up_too(self):
         self.assertEqual(
             self.lookup(
-                "勉強", "べんきょう", vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する")
+                "勉強",
+                "べんきょう",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
             [1],
         )
@@ -97,7 +97,9 @@ class WordSpellingTests(LookupTestCase):
     def test_a_kana_only_word_is_found_by_its_reading_alone(self):
         # No kanji to match on, so the reading in the plain word field identifies it
         self.assertEqual(
-            self.lookup("ください", "ください", vocab_row(1, "", "ください", "ください", "ください")),
+            self.lookup(
+                "ください", "ください", vocab_row(1, "", "ください", "ください", "ください")
+            ),
             [1],
         )
 
@@ -123,7 +125,9 @@ class ReadingFilterTests(LookupTestCase):
     def test_the_suru_reading_matches_the_plain_one(self):
         self.assertEqual(
             self.lookup(
-                "勉強", "べんきょう", vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する")
+                "勉強",
+                "べんきょう",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
             [1],
         )
@@ -147,7 +151,9 @@ class FetchingTests(LookupTestCase):
         self.assertEqual(self.fetched, [[1, 3]])
 
     def test_nothing_is_fetched_when_no_note_matches(self):
-        self.assertEqual(self.lookup("彼女", "かのじょ", vocab_row(1, "私", "私", "わたし", "私")), [])
+        self.assertEqual(
+            self.lookup("彼女", "かのじょ", vocab_row(1, "私", "私", "わたし", "私")), []
+        )
         # The collection is not asked at all, not even for an empty list of ids
         self.assertEqual(self.fetched, [])
 
@@ -192,9 +198,7 @@ class FetchingTests(LookupTestCase):
                 reading="わたし",
                 notes_to_update_dict={1: edited},
                 log_prefix="test--",
-                word_note_index=wi.WordIndex.from_rows(
-                    FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows
-                ),
+                word_note_index=wi.WordIndex.from_rows(FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows),
                 note_cache=self.note_cache,
             )
         )

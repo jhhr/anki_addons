@@ -114,6 +114,7 @@ class TestRebuildLibs:
         assert manifest["python_version"] == vendor_path.runtime_python_version()
         assert manifest["platforms"] == [vendor_path.platform_tag()]
         assert manifest["flat"] == ["psutil"]
+        assert manifest["requirements_sha256"] == vendor_path.requirements_digest(str(tmp_path))
         # The manifest it just wrote is the one vendor_health reads
         monkeypatch.setattr(vendor_path, "_smoke_test", lambda: None)
         assert vendor_path.vendor_health(str(tmp_path)) is None

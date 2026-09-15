@@ -6,6 +6,7 @@ is where the property that matters lives - what is cached is the *other* notes' 
 the two call shapes cannot poison each other.
 """
 
+import json
 import threading
 import unittest
 
@@ -229,6 +230,63 @@ class GetSentencesForNoteTests(unittest.TestCase):
     def test_the_search_is_the_one_it_always_was(self):
         self.sentences(FakeNote(1))
         self.assertEqual(self.searches, ['"sentence-vocab-list:*1*" -nid:1'])
+
+
+def array_note(note_id, arr, translation="", word="猫", reading="ねこ"):
+    note = FakeNote(note_id, "猫と猫", translation)
+    note.fields["sentence-vocab-list"] = json.dumps(arr, ensure_ascii=False)
+    note.fields["word"] = word
+    note.fields["reading"] = reading
+    return note
+
+
+def cat_array(first_match, second_match):
+    return [
+        ["猫[ねこ]", "noun", "猫", "ねこ", first_match, []],
+        ["と", "particle", "と", "と", ["dontmatch"], []],
+        ["猫[ねこ]", "noun", "猫", "ねこ", second_match, []],
+    ]
+
+
+WORD_CONFIG = {
+    "Vocab": {
+        **CONFIG["Vocab"],
+        "word_kanjified_field": "word",
+        "word_reading_field": "reading",
+    }
+}
+
+
+class HighlightedSentenceTests(GetSentencesForNoteTests):
+    """A note holding a word array gives its sentence with the word it links to this note in <b>,
+    so a sentence using the word twice says which occurrence the meaning is for."""
+
+    def sentences(self, note, exclude_self=False, cache=True):
+        return cm.get_sentences_for_note(
+            WORD_CONFIG,
+            note,
+            exclude_self=exclude_self,
+            sentence_cache=self.cache if cache else None,
+        )
+
+    def test_the_occurrence_linked_to_the_note_is_marked(self):
+        self.notes = {2: array_note(2, cat_array([5, 4], [1, 3]), "cat and cat")}
+        self.found = [2]
+        note = array_note(1, cat_array([1], [5]), "this")
+        self.assertEqual(
+            [s["jp_sentence"] for s in self.sentences(note)],
+            ["<b>猫</b>と猫", "猫と<b>猫</b>"],
+        )
+
+    def test_a_new_note_marks_the_first_occurrence_of_its_word(self):
+        new_note = array_note(0, cat_array(["match"], ["match"]))
+        self.assertEqual(self.sentences(new_note)[0]["jp_sentence"], "<b>猫</b>と猫")
+
+    def test_an_old_word_list_note_keeps_its_sentence_as_it_is(self):
+        note = FakeNote(1, "<b>猫</b>と猫", "this")
+        note.fields["sentence-vocab-list"] = '{"nouns": []}'
+        self.found = []
+        self.assertEqual(self.sentences(note)[0]["jp_sentence"], "猫と猫")
 
 
 if __name__ == "__main__":
