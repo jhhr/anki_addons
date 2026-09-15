@@ -127,7 +127,8 @@ Do kanjify:
 - ない when used as a standalone word, including conjugated forms like なかった, なくて. 無い is even currently used in modern text, but is simply often written in hiragana.
 - いる and いく when is used as a standalone verb, for example 彼は家にいる, あっちにいく
 - ある when used as a standalone verb of existence or possession, for example 机の上に本がある (not the copula である).
-- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification.
+- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification. This includes every する after a noun already in kanji, which is easy to overlook: "遅刻[ちこく]している" becomes "遅刻[ちこく]<k> 為[し]ている</k>", "に 関[かん]して" becomes "に 関[かん]<k> 為[し]て</k>", "支給[しきゅう]される" becomes "支給[しきゅう]<k> 為[さ]れる</k>".
+- Particle-like words and set phrases that have a kanji spelling, even though they are mostly written in kana: まで 迄, だけ 丈, くらい / ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, など 等, たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いや 否, ああ 嗚呼, いつ 何時, どれ / どの 何れ / 何の, まるで 丸で, ちかづく 近付く. For example "これだけは" becomes "<k> 此[こ]れ 丈[だけ]</k>は", "どれくらい" becomes "<k> 何[ど]れ 位[くらい]</k>", "きちがいみたいに" becomes "<k> 気違[きちが]い 見[み]たい</k>に".
 - なる as 成る in all its uses, including ようになる, ことになる and くなる.
 - The formal nouns こと, もの, ため, よう, ところ as 事, 物, 為, 様, 所 in all their uses, including grammatical ones like ことができる, ものだ, ために, ようだ, ところだ.
 - によって, により, による, によれば, によると as に依る or に因る, chosen by meaning: 因る when it gives a cause or reason (事故[じこ]に因って 壊[こわ]れた), 依る when it means "by means of", "depending on" or "according to" (人[ひと]に依って 違[ちが]う, 天気予報[てんきよほう]に依ると).
@@ -157,7 +158,7 @@ Example sentence 4: おかげで　この 守銭奴[しゅせんど]の 性[し�
 Kanjified example 4: <k> 御蔭[おかげ]</k>で<k> 此[この]</k> 守銭奴[しゅせんど]の 性[しょう] 悪天使[あくてんし]にぼっ<k> 手繰[たく]られた</k>ぜ。
 
 Example sentence 5: 毎日[まいにち]一キロ 以上[いじょう] 水泳[すいえい]をしてきただけのことはあって、 彼[かれ]は九十 歳[さい]の 今[いま]もかくしゃくとしている。
-Kanjified example 5: 毎日[まいにち] 一[いち]キロ 以上[いじょう] 水泳[すいえい]を<k> 為[し]てきた</k>だけの<k> 事[こと]</k>は<k> 有[あ]って</k>、 彼[かれ]は 九十[きゅうじゅう] 歳[さい]の 今[いま]も<k> 矍鑠[かくしゃく]</k>としている。
+Kanjified example 5: 毎日[まいにち] 一[いち]キロ 以上[いじょう] 水泳[すいえい]を<k> 為[し]てきた 丈[だけ]</k>の<k> 事[こと]</k>は<k> 有[あ]って</k>、 彼[かれ]は 九十[きゅうじゅう] 歳[さい]の 今[いま]も<k> 矍鑠[かくしゃく]</k>としている。
 
 Example sentence 6: 俺はちっぽけでどうしようもないろくでなしですよ。
 Kanjified example 6: 俺[おれ]は<k> 小[ち]</k>っぽけで<k> 如何[どう]</k><k> 仕様[しよう]</k>も<k> 無[な]い</k><k> 碌[ろく]</k>で<k> 無[な]し</k> ですよ。
