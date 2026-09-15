@@ -67,6 +67,16 @@ Status: phase 1 prototype, not wired into any op yet.
    Furigana the note put on a word's last kanji for the text before it too (空</b>域[くういき],
    ネット上[ねっとじょう]) gives the word only its own part (いき, じょう), when the rest reads the
    text before it.
+   **One spelling per JMdict entry** (`canonical_form`, last): spellings of the entry read so
+   with the same kanji, or kanji in place of kana, are one word spelled with the most kanji
+   (私たち -> 私達, という -> と言う, まで -> 迄, お願いします -> 御願いします), ties going to the
+   unmarked, then common, then first JMdict spelling (積り -> 積もり); outdated kanji collapse
+   too (爲に -> 為に). Other kanji stay words of their own (聴く, 体 not 身体), as do kanji added
+   to kana (高い, not the search-only 高価い), katakana (フランス), a kana word JMdict doesn't mark
+   usually-kana (そうに, not 僧尼) and one with several kanji choices (よる: 依る/因る/拠る/由る,
+   `research/canonical_forms.py` lists them). The JMdict index keeps each spelling's ke_inf/ke_pri,
+   re_restr and uk for this. Export: 1636 words respelled, entries reached by more than one
+   spelling 720 -> 444 (different kanji: 有る/在る, 聞く/聴く).
 
 A sub-word that ends inside a furigana group gets its own share of the reading, split per kanji
 by `kana_highlight`: `見下[みお]ろせた` -> ` 見[み]` + `下[お]ろせた`. A jukujikun group has no
@@ -388,8 +398,8 @@ From [awesome-japanese-nlp-resources](https://github.com/taishi-i/awesome-japane
 
 Known limitations: classical forms (肥ゆる tokenizes as 肥 + ゆる); short kana after `<k>`
 reversion can confuse Sudachi (`<k> 四[し]の 五[ご]の` as しのごの); colloquial contractions
-keep their written form (物ん); the note's spelling is kept where JMdict's differs (向う, not
-向こう).
+keep their written form (物ん); a word in kanji JMdict spells with other kanji keeps the note's
+kanji (聴く, 在る).
 
 ## Running
 

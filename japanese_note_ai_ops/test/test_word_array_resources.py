@@ -126,6 +126,44 @@ class JmdictBuildTests(TempDirTest):
         expected = [(("様に成る",), ("ようになる",), frozenset({"exp", "v5r"}))]
         self.assertEqual(index, {"様に成る": expected, "ようになる": expected})
 
+    def test_spelling_marks_are_kept_per_entry(self):
+        gz = self.dir / "JMdict_e.gz"
+        entries = """<entry>
+<k_ele><keb>等</keb><ke_pri>spec1</ke_pri></k_ele>
+<k_ele><keb>抔</keb><ke_inf>&rK;</ke_inf></k_ele>
+<r_ele><reb>など</reb></r_ele>
+<sense><pos>&prt;</pos><misc>&uk;</misc></sense>
+</entry>
+<entry>
+<k_ele><keb>矢張り</keb></k_ele>
+<k_ele><keb>矢っ張り</keb></k_ele>
+<k_ele><keb>矢張</keb><ke_inf>&sK;</ke_inf></k_ele>
+<r_ele><reb>やはり</reb></r_ele>
+<r_ele><reb>やっぱり</reb><re_restr>矢っ張り</re_restr></r_ele>
+<r_ele><reb>ヤッパリ</reb><re_nokanji/></r_ele>
+<sense><pos>&adv;</pos></sense>
+</entry>
+</JMdict>"""
+        with gzip.open(gz, "wt", encoding="utf-8") as f:
+            f.write(JMDICT_SAMPLE.replace("</JMdict>", entries))
+        spellings = {}
+        jmdict_index.build(gz, spellings)
+        self.assertEqual(
+            spellings,
+            {
+                (("等", "抔"), ("など",)): (
+                    {"等": frozenset({jmdict_index.COMMON}), "抔": frozenset({"rK"})},
+                    {},
+                    True,
+                ),
+                (("矢張り", "矢っ張り", "矢張"), ("やはり", "やっぱり", "ヤッパリ")): (
+                    {"矢張": frozenset({"sK"})},
+                    {"やっぱり": ("矢っ張り",), "ヤッパリ": ()},
+                    False,
+                ),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

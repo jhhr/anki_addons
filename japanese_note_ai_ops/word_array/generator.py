@@ -1281,6 +1281,90 @@ def dict_form(tm: TextMap, w: Word) -> str:
     return kana if jmdict.lookup(kana) else form
 
 
+def _kanji_set(spelling: str) -> frozenset[str]:
+    return frozenset(KANJI_RE.findall(spelling))
+
+
+def _kanjifies(form: str, spelling: str) -> bool:
+    """Whether a spelling is the form with the same kanji and other okurigana (積り, 積もり), or
+    with kanji put in for kana, no longer than the kana (私たち, 私達; ない, 無い), but not with
+    kanji added (体, 身体; 高い, 高価い) or kana swapped for kana (じゃ無い, ぢゃ無い)."""
+    if _kanji_set(form) == _kanji_set(spelling):
+        return True
+    chunks = SCRIPT_CHUNK_RE.findall(form)
+    pattern = "".join(re.escape(c) if KANJI_RE.match(c) else f"(.{{1,{len(c)}}})" for c in chunks)
+    m = re.fullmatch(pattern, spelling)
+    kana = [c for c in chunks if not KANJI_RE.match(c)]
+    return m is not None and all(
+        put == c or KANJI_RE.search(put) for put, c in zip(m.groups(), kana)
+    )
+
+
+def _widest_kanji_sets(spellings: list[str]) -> list[frozenset[str]]:
+    sets = {_kanji_set(k) for k in spellings}
+    return [s for s in sets if not any(s < t for t in sets)]
+
+
+def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str]:
+    """Of one entry's kanji spellings the form fits, one for each set of kanji no other fitting
+    spelling has more of: there unmarked before marked, common before not, then JMdict's order.
+    Rarely used kanji only drop out where the choice is between kanji (など: 等, not 抔)."""
+    if KATAKANA_RE.search(form) or "〇" in form:
+        return []  # loanwords and names aren't ateji (フランス, not 仏蘭西), 〇 is a numeral
+    info, restr, usually_kana = jmdict.spellings(kebs, rebs)
+    if not KANJI_RE.search(form) and not usually_kana:
+        return []  # a kana word JMdict writes in kanji may be any homophone: そうに, not 僧尼
+    allowed = restr.get(next(r for r in rebs if to_hiragana(r) == kana), kebs)
+    usable = [k for k in kebs if k in allowed and "oK" not in info.get(k, ())]
+    usual = [k for k in usable if "sK" not in info.get(k, ())]
+    marked = info.get(form, frozenset())
+    if "oK" in marked or (
+        "sK" in marked and not any(_kanji_set(k) <= _kanji_set(form) for k in usual)
+    ):
+        # Outdated or search-only kanji none of the usual spellings has: 爲に, 氣持ち, わたし達.
+        # Search-only kanji put in for kana or added stay spellings (御願い, 事は無い, 先刻)
+        fits = usual or [k for k in usable if k != form]
+    else:
+        fits = [k for k in usable if _kanjifies(form, k)]
+    widest = _widest_kanji_sets(fits)
+    rare = [k for k in fits if "rK" in info.get(k, ())]
+    if len(widest) > 1 and len(rare) < len(fits):
+        fits = [k for k in fits if k not in rare]
+        widest = _widest_kanji_sets(fits)
+    order = {
+        k: (
+            bool(info.get(k, frozenset()) - {jmdict.COMMON}),
+            jmdict.COMMON not in info.get(k, ()),
+            i,
+        )
+        for i, k in enumerate(kebs)
+    }
+    firsts = [min((k for k in fits if _kanji_set(k) == s), key=order.get) for s in widest]
+    return sorted(firsts, key=order.get)
+
+
+def entry_spellings(form: str, reading: str) -> list[list[str]]:
+    """Per JMdict entry spelled and read so, the spellings it could take as its one spelling."""
+    kana = to_hiragana(reading)
+    entries = {
+        (kebs, rebs)
+        for kebs, rebs, _ in jmdict.lookup(form)
+        if kana in {to_hiragana(r) for r in rebs}
+    }
+    return [_entry_spellings(form, kana, kebs, rebs) for kebs, rebs in sorted(entries)]
+
+
+def canonical_form(form: str, reading: str) -> str:
+    """One spelling per JMdict entry, so one learnable word is one base word. Spellings of the
+    entry read so that use the same kanji, or kana in place of some, are one word spelled with
+    the most kanji (私たち -> 私達, 積り -> 積もり, という -> と言う, など -> 等 over the rare 抔);
+    outdated and search-only kanji (爲に -> 為に) count as the same word. Other kanji stay a word of
+    their own (聴く, not 聞く; 体, not 身体), and so does a word with several kanji choices, which
+    depend on meaning (よる: 依る, 因る, 拠る, 由る), or several entries that spell it apart."""
+    found = {s[0] if len(s) == 1 else form for s in entry_spellings(form, reading)}
+    return found.pop() if len(found) == 1 else form
+
+
 def _dict_form(tm: TextMap, w: Word) -> str:
     if w.kind == "expression":
         # In the note's spelling, whichever spelling JMdict matched (様に成る, not ようになる)
@@ -1706,6 +1790,7 @@ def _emit(
             else:
                 form, reading = dict_form(tm, w), dict_reading(tm, w)
                 pos = pos_label(tm, w, prev, reading, nested)
+                form = canonical_form(form, reading)
             match_data = match_flags.default_match_data(pos, form, subs)
             out.append([raw_text, pos, form, reading, match_data, subs])
         cursor = re_ext

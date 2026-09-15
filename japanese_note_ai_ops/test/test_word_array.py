@@ -193,6 +193,28 @@ class WordArrayTests(unittest.TestCase):
         )
         self.assertNotEqual(find_word(arr, "に就いて"), [])
 
+    def test_one_spelling_per_jmdict_entry(self):
+        # Kana or other okurigana for the entry's kanji: the spelling with the most kanji
+        for sentence, form, written in [
+            ("私[わたし]たちは 学生[がくせい]です。", "私達", "私たち"),
+            ("明日[あした] 行[い]く 積[つも]りだ。", "積もり", "積り"),
+            ("本[ほん]など 読[よ]む。", "等", "など"),  # not the rarely used 抔
+            ("君[きみ]の 爲[ため]に 歌[うた]う。", "為に", "爲に"),  # outdated kanji
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertNotEqual(find_word(arr, form), [])
+                self.assertEqual(find_word(arr, written), [])
+        # Other kanji, and kana with several kanji to choose from by meaning, stay as written
+        for sentence, written in [
+            ("音楽[おんがく]を 聴[き]く。", "聴く"),  # not 聞く
+            ("体[からだ]に 気[き]を 付[つ]けて。", "体"),  # not 身体
+            ("天井[てんじょう]が 高[たか]い。", "高い"),  # not the search-only 高価い
+            ("天気予報[てんきよほう]に よると 明日[あした]は 雨[あめ]だ。", "よる"),  # 依る, 因る
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertNotEqual(find_word(self.generator.generate(sentence), written), [])
+
     def test_a_jmdict_match_inside_another_nests_in_it(self):
         arr = self.generator.generate(self.examples[5][0])
         outer = find_word(arr, "様に成る")
@@ -302,7 +324,7 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(find_word(arr, "捌く")[0], " 捌[さば]いとる")
         for sentence, raw, form in [
             ("プラチナを 売[う]り<k> 捌[さば]いとる</k>らしい", "らしい", "らしい"),
-            ("早[はや]く 帰[かえ]るべきだ", "べき", "べし"),
+            ("早[はや]く 帰[かえ]るべきだ", "べき", "可し"),
             ("二度[にど]と 行[い]くまい", "まい", "まい"),
         ]:
             with self.subTest(sentence=sentence):
@@ -320,7 +342,7 @@ class WordArrayTests(unittest.TestCase):
             with self.subTest(sentence=sentence):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
-        self.assertEqual([s[2] for s in find_word(arr, "私たち")[5]], ["私", "達"])
+        self.assertEqual([s[2] for s in find_word(arr, "私達")[5]], ["私", "達"])
 
     def test_a_conjunction_opening_a_clause_is_one_word(self):
         # function words only (つー + か, で + も), which elsewhere are no word of their own
@@ -503,10 +525,11 @@ class WordArrayTests(unittest.TestCase):
         self.assertEqual(find_word(arr, "っ"), [])
 
     def test_an_adjective_stem_and_ge_are_one_na_adjective(self):
-        # JMdict has 寂しげ but not 儚げ; both come out alike, and 忌々しげに isn't 忌々し + げに
+        # JMdict has 寂しげ (spelled 寂し気) but not 儚げ; both come out alike, and 忌々しげに isn't
+        # 忌々し + げに
         for sentence, form in [
             ("<b> 儚[はかな]げな</b> 笑顔[えがお]", "儚げ"),
-            ("寂[さび]しげな 笑顔[えがお]", "寂しげ"),
+            ("寂[さび]しげな 笑顔[えがお]", "寂し気"),
             ("忌々[いまいま]しげに 言[い]う", "忌々しげ"),
         ]:
             with self.subTest(sentence=sentence):
