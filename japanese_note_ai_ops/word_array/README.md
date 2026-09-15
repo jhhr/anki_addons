@@ -277,10 +277,11 @@ undo that write, so Revert last edit puts the old field back.
 `research/kanjify_eval.py` scores kanjify_sentence's prompt against the checked kanjified
 sentences (the audit's rows): answers cleaned as the op cleans them (`clean_kanjified`), `<k>`
 furigana groups placed by their kana and scored right / wrong kanji / missed / extra, by class
-(policy, formal noun, 為る, 成る, 依る/因る, other). Baseline on the old 461 labels, before their
-audit fixes (span P/R): claude-sonnet-5 88.4/71.6%, gpt-5.6-luna 84.9/73.9%, gemini-3.5-flash-lite
-83.6/68.7%; `terminal-claude-opus-5` 79.7/74.8% and `terminal-claude-haiku-4-5` 61.0/51.8% on only
-279/290 rows (usage limit). Policy recall ~2% is the labels kanjifying て-helpers.
+(policy, formal noun, 為る, 成る, 依る/因る, other). On the 463 audit-fixed labels (span P/R), prompt
+before draft 1: claude-sonnet-5 92.4/77.2%, gpt-5.6-luna 89.3/79.7%, gemini-3.5-flash-lite 87.0/73.1%,
+`terminal-claude-opus-5` 83.9/82.3%, `terminal-claude-haiku-4-5` 61.2/53.5%. Draft 1 (する after a
+kanji noun, particle-like words 迄/丈/位/見たい…): sonnet-5 93.0/88.8%, luna 90.0/89.2%, gemini
+88.4/83.8%. Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
