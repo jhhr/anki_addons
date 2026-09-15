@@ -283,6 +283,7 @@ def main() -> int:
     parser.add_argument("-n", type=int, default=0, help="stop after COUNT rows")
     parser.add_argument("--out", type=Path, default=OUTPUT / "kanjify_audit_report.txt")
     parser.add_argument("--fixes", type=Path, default=OUTPUT / "kanjify_audit_fixes.jsonl")
+    parser.add_argument("--tasks", type=Path, default=OUTPUT / "kanjify_audit_tasks.jsonl")
     args = parser.parse_args()
     rows, source = read_rows(args.rows)
     rows = rows[: args.n or None]
@@ -367,6 +368,23 @@ def main() -> int:
                 f"      source {rows[i].sentence}",
                 f"      label  {rows[i].label}",
             ]
+
+    def item(t: Tok) -> dict:
+        return {"nids": rows[t.row].nids, "row": t.row, "context": t.context}
+
+    with open(args.tasks, "w", encoding="utf-8") as f:
+        for key in left:
+            spelled = Counter(t.kanji for t in kanjified[key])
+            task = {"class": "left-kana", "word": key[0], "pos": key[1]}
+            task["kanjified"] = dict(spelled.most_common())
+            task["items"] = [item(t) for t in kana[key]]
+            f.write(json.dumps(task, ensure_ascii=False) + "\n")
+        for key, spelled, ts in meaning:
+            task = {"class": "meaning", "word": key[0], "pos": key[1]}
+            task["kanjified"] = dict(spelled.most_common())
+            task["items"] = [{**item(t), "kanji": t.kanji} for t in ts]
+            f.write(json.dumps(task, ensure_ascii=False) + "\n")
+    summary.append(f"hand-fix tasks: {len(left) + len(meaning)} words -> {args.tasks.name}")
 
     fixed = 0
     with open(args.fixes, "w", encoding="utf-8") as f:
