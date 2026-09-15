@@ -284,7 +284,8 @@ kanji noun, particle-like words 迄/丈/位/見たい…): sonnet-5 93.0/88.8%, 
 88.4/83.8%. Draft 2 (loanwords stay katakana, 無い after は/しか, kana part of a kanji word, 斯う/然う/如何,
 在る/有る, 良い/好い, 只): sonnet-5 94.4/91.6%, luna 90.9/90.9%, gemini 89.9/86.3%. Draft 3 (為る in every form and after と, 成る in なければならない/くなる, 儘, final
 する/なる check): sonnet-5 94.3/91.9%, luna 91.0/92.6%, gemini 88.9/84.1% (reverse check fails 73→116);
-tuning stopped (sonnet gained <1 point). Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
+tuning stopped (sonnet gained <1 point). Draft 3 on the terminal models: `terminal-claude-opus-5` 89.1/90.3%,
+`terminal-claude-haiku-4-5` 69.1/61.5% (reverse check fails 129), both ~29 calls/min at 8 workers. Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
