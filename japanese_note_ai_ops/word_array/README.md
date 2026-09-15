@@ -428,6 +428,7 @@ python word_array/research/sub_readings.py      # parents whose sub-words' readi
 python word_array/research/judge_eval.py build  # the judge's eval set, from the checked export
 python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it
 py -3.10 word_array/research/kanjify_eval.py --model M  # kanjify prompt vs the checked labels
+py -3.10 word_array/research/vocab_dupes.py --fetch  # vocab notes that are the same word
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 
