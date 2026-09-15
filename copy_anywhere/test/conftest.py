@@ -174,3 +174,35 @@ def _no_stale_modules():
 
 def pytest_report_header(config):
     return f"copy_anywhere backend suite: real anki collection, stubbed mw (python {sys.version.split()[0]})"
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """A Qt application for the editor cases, on the offscreen platform plugin.
+
+    The editor is worth testing here for the same reason the executor is: reordering
+    stages, rebuilding a scope menu and blocking a save are ordinary logic that happens to
+    live in widgets. The offscreen plugin renders to nothing, which is all these cases
+    need -- they read widget state, they do not look at pixels.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from aqt.qt import QApplication
+
+    application = QApplication.instance() or QApplication([])
+    yield application
+
+
+@pytest.fixture
+def widget_parent(qapp):
+    """A parent widget each case can hang its editors off, destroyed afterwards.
+
+    Qt deletes children with their parent, so this keeps one case's widgets from
+    outliving it and being repainted by the next one.
+    """
+    from aqt.qt import QWidget
+
+    parent = QWidget()
+    yield parent
+    parent.deleteLater()

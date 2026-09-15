@@ -352,8 +352,20 @@ def qt_offscreen() -> None:
     losing its context ("RasterDecoderImpl: Context lost during MakeCurrent"), and about one
     run in five died mid-test on a breakpoint exception in that code. Software rendering is
     all a test needs.
+
+    `--no-sandbox` is added only when the tests are running as root, which is what a CI
+    container usually does. Chromium refuses to start its zygote as root without it, and it
+    refuses in the worst possible way: the process dies with no message, no traceback and no
+    pytest summary, which reads as "this environment cannot run these tests" rather than "one
+    flag is missing". Nobody should have to find that out twice. A run as an ordinary user
+    keeps the sandbox.
     """
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-    if "--disable-gpu" not in flags.split():
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu".strip()
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").split()
+    wanted = ["--disable-gpu"]
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        wanted.append("--no-sandbox")
+    for flag in wanted:
+        if flag not in flags:
+            flags.append(flag)
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)

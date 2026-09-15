@@ -321,15 +321,17 @@ class TestANoteWithNoCards:
 
 
 class TestWhereTheWhitelistSitsAmongTheSteps:
-    def test_variables_are_still_computed_for_a_note_it_rejects(self, col, logger):
-        # Step 1 runs before Step 2, so the cost of resolving variables is paid even for
-        # notes the whitelist is about to throw away. The error is the only evidence.
+    def test_variables_are_not_computed_for_a_note_it_rejects(self, col, logger):
+        # Intentional format-2 change: trigger filtering sits outside the stage interpreter,
+        # so the whitelist is checked before any stage runs and a rejected note costs
+        # nothing. Format 1 resolved every variable first and only then looked at the deck,
+        # which is why the invalid field used to be reported here.
         note = note_in(col, "Other")
         definition = copy_note_field(only_copy_into_decks=d.quoted_list(["JP vocab"]))
         definition["field_to_variable_defs"] = [d.field_to_variable("v", "{{Nonexistent}}")]
         assert copy_for_single_trigger_note(definition, note, logger=logger) is True
         assert note["Note"] == ""
-        assert logger.has_error("Invalid fields in copy_from_text: nonexistent")
+        assert logger.errors == []
 
     def test_the_condition_query_never_runs_for_a_note_it_rejects(self, col, logger):
         # An uninterpolatable condition returns False and stops the caller's bulk loop, but

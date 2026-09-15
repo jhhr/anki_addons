@@ -35,7 +35,13 @@ would downgrade what the first step put in. `pip check` goes on reporting the py
 afterwards; that is expected. Without `pytest-anki2` every test that needs `anki_session`
 is reported as skipped, with the install command as its reason, and everything else runs.
 
-`pytest-xdist` is optional and works: `python -m pytest -n 4`.
+`pytest-xdist` is optional and works: `python -m pytest -n 4`. The plugin sends a parallel
+run to `--dist loadfile` when no `--dist` was given, so each file's tests stay on one
+worker. xdist's own default, `load`, splits the running-Anki file across workers and
+interleaves each worker's share with tests from every other file; a worker running a real
+Anki that way segfaults partway through and xdist reports `node down: Not properly
+terminated` for a suite that is green run serially. Passing `--dist` explicitly is left
+alone, `--dist load` included, which is how to see that crash.
 
 ## Running the suites
 
@@ -185,28 +191,58 @@ needs `anki_session` as skipped when pytest-anki2 is missing.
 
 ## The shutdown guard
 
-Once a real Anki has run in a process, that process crashes on the way out: PyQt's own
-`atexit` handler destroys the `QApplication`, which has had QtWebEngine inside it, and dies
-with an access violation. Every test has passed and the summary is already printed, but
-the exit status is 139. It is not any addon's doing: it is pytest-anki's application being
-torn down by PyQt, which a test process has no need for.
+Once a real Anki has run in a process, that process crashes on the way out: the
+`QApplication` has had QtWebEngine inside it, and tearing it down at interpreter exit dies
+with an access violation. Every test has passed and the summary is already printed, but the
+exit status is 139 — and the exit status is the only thing CI reads, so an unguarded run
+reports every green result as a failure.
 
-`pytest_plugin.py`, registered from the root conftest, unregisters that one handler at the
-end of any run in which a `QApplication` exists. Nothing else about exiting changes: the
-exit status is still pytest's own (1 for a failure, 2 for an interrupt or collection error,
-5 for nothing collected), pytest's temporary directories are still cleaned up, and
-`pytest.main()` callers and xdist workers are unaffected. A stub-only run creates no
-`QApplication` and is left alone entirely.
+`pytest_plugin.py`, registered from the root conftest, ends any run in which a
+`QApplication` exists by running the `atexit` handlers itself and then leaving through
+`os._exit` with the status pytest returned, so the interpreter never reaches the teardown
+that crashes. The exit status is still pytest's own (1 for a failure, 2 for an interrupt or
+collection error, 5 for nothing collected), pytest's temporary directories are still cleaned
+up, and `pytest.main()` callers are unaffected. A stub-only run creates no `QApplication`
+and is left alone entirely; so is an xdist worker, which still has results queued for the
+controller at that point. What parallel runs do need is a distribution that keeps a file on
+one worker, which is not the guard's doing and is described under installing `pytest-xdist`
+above.
 
-It does not use `os._exit`, the obvious alternative, because that would skip every other
-`atexit` handler too — including pytest's own, which remove this run's lock on its
-`pytest-of-<user>/pytest-N` directory and prune old ones, so every run would leave ~90 MB
-behind for three days. `os._exit` remains only as the fallback for a future PyQt whose
-handler it cannot find.
+The handlers are run rather than skipped because a bare `os._exit` would drop pytest's own,
+which remove this run's lock on its `pytest-of-<user>/pytest-N` directory and prune old
+ones — every run would otherwise leave ~90 MB behind for three days.
+
+They are run only once PyQt's own handler is known to be out of the registry. PyQt keeps no
+reference to `_qtcore_cleanup`, so the only way to reach it is to scan live objects for a
+builtin function of that name, and a rename or a PyQt that registers a bound method would
+defeat that scan. Running the registry with the handler still in it would invoke the
+application teardown the guard exists to avoid, at the point nothing can recover from it:
+`os._exit` is never reached and a green suite exits 139. Forcing the scan to fail against
+`anki_shared/test_anki/` reproduced that in three runs out of eight, against none with the
+scan working and four out of eight with the guard switched off — so a failed scan put the
+guard back to roughly no guard at all, intermittently, which reads in CI as a flaky test
+rather than a shutdown problem. When the scan comes back empty the hand-run is skipped and
+the process leaves immediately: that run leaves its temporary directory behind, and keeps
+the exit status the guard is for.
+
+This used to be smaller: it unregistered PyQt's `_qtcore_cleanup` handler and let the
+interpreter shut down normally. That stopped being enough at PyQt6 6.11 / QtWebEngine 6.11,
+where the process segfaults on the way through QtWebEngine's own teardown even with that
+handler gone ("Release of profile requested but WebEnginePage still not deleted"). The
+handler is still unregistered — running it by hand would destroy the very application being
+protected — but it is now one step inside the guard rather than the whole of it.
 
 `ANKI_TEST_SHUTDOWN_GUARD=0` switches the guard off, to see the crash or debug Qt's own
-shutdown; `ANKI_TEST_SHUTDOWN_GUARD=exit` forces the `os._exit` fallback.
+shutdown. There is no `=exit` mode any more: leaving through `os._exit` is what the guard
+does in every case, because unregistering PyQt's `atexit` handler stopped being enough at
+PyQt6 6.11 -- the crash moved into QtWebEngine's own teardown.
 
-Separately, `real_anki.qt_offscreen()` adds `--disable-gpu` to
-`QTWEBENGINE_CHROMIUM_FLAGS`. Offscreen, QtWebEngine's GPU process kept losing its context,
-and about one run in five died mid-test on it.
+Separately, `real_anki.qt_offscreen()` sets `QTWEBENGINE_CHROMIUM_FLAGS`. It adds
+`--disable-gpu` always: offscreen, QtWebEngine's GPU process kept losing its context, and
+about one run in five died mid-test on it. It adds `--no-sandbox` when the tests run as
+root, which a CI container usually does — Chromium will not start its zygote as root
+without it, and it refuses by dying with no message, no traceback and no pytest summary.
+That reads as "this environment cannot run these tests" rather than "one flag is missing",
+which is exactly the wrong conclusion to hand someone. A run as an ordinary user keeps the
+sandbox. Both flags are appended to whatever is already in the variable, so setting it
+yourself does not lose them.

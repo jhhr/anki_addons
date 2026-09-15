@@ -17,6 +17,7 @@ from aqt.qt import (
     QDoubleSpinBox,
     QLineEdit,
     QTimer,
+    pyqtSignal,
     qtmajor,
 )
 
@@ -37,7 +38,7 @@ from ..configuration import (
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
-from .edit_state import EditState
+from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
 
@@ -84,15 +85,26 @@ class CardActionsEditor(QWidget):
     and inline editors for each CardAction property (change_deck, set_flag, suspend, bury).
     """
 
+    #: Something the user changed here would change the stored card actions.
+    changed = pyqtSignal()
+
     def __init__(
         self,
         parent,
-        state: EditState,
+        state: StageEditState,
         copy_definition: Optional[CopyDefinition],
+        single_card_mode: bool = False,
     ):
+        """
+        :param single_card_mode: edit actions that apply to one already-chosen card rather
+            than to a note's cards of a given type. A format-2 `edit_card` stage names the
+            card itself (§5.12), so there is no card type to pick and the actions are keyed
+            by their own guid instead of by a card type name.
+        """
         super().__init__(parent)
         self.state = state
         self.copy_definition = copy_definition
+        self.single_card_mode = single_card_mode
         self.initialized = False
         self._loading_initial_actions = False
         self._building_initial_actions = False
@@ -125,7 +137,8 @@ class CardActionsEditor(QWidget):
         self.add_action_button.clicked.connect(self.add_new_action)
 
         add_action_layout = QHBoxLayout()
-        add_action_layout.addWidget(QLabel("<h3>Card Type:</h3>"))
+        self.card_type_label = QLabel("<h3>Card Type:</h3>")
+        add_action_layout.addWidget(self.card_type_label)
         add_action_layout.addWidget(self.card_type_selector)
         add_action_layout.addWidget(self.add_action_button)
         add_action_layout.addStretch()
@@ -141,9 +154,26 @@ class CardActionsEditor(QWidget):
         # Load existing card actions from copy_definition
         if copy_definition and copy_definition.get("card_actions"):
             for action in copy_definition["card_actions"]:
+                if single_card_mode:
+                    key = action.get("guid") or str(uuid.uuid4())
+                    action["guid"] = key
+                    self.card_actions[key] = action
+                    continue
                 card_type_name = action.get("card_type_name", "")
                 if card_type_name:
                     self.card_actions[card_type_name] = action
+
+        if single_card_mode:
+            # Nothing to pick: the stage already named the card these actions apply to.
+            self.card_type_selector.hide()
+            self.card_type_label.hide()
+            self.add_action_button.setText("Add Card Action")
+
+    def _on_changed(self, *_args) -> None:
+        if self._building_initial_actions or self._loading_initial_actions:
+            # Building the rows a definition arrived with is not the user editing them.
+            return
+        self.changed.emit()
 
     def enable_callbacks(self):
         """Enable callbacks when the widget becomes visible"""
@@ -155,6 +185,9 @@ class CardActionsEditor(QWidget):
 
     def set_description(self):
         """Update the description label based on the current copy mode and direction"""
+        if self.single_card_mode:
+            self.description_label.setText("")
+            return
         if self.state.copy_mode == COPY_MODE_ACROSS_NOTES:
             if self.state.copy_direction == DIRECTION_SOURCE_TO_DESTINATIONS:
                 description = source_to_destinations_description
@@ -218,6 +251,15 @@ class CardActionsEditor(QWidget):
             self.loading_indicator = None
         self._building_initial_actions = False
         self._loading_initial_actions = False
+        if self.single_card_mode:
+            # `update_card_type_options` returns early in this mode -- there is no card type
+            # to pick -- and the re-enable lives after that line, so it would never run. A
+            # stage that arrived with an action would be stuck with a greyed-out Add button
+            # for the life of the dialog, while one with no actions never takes the loading
+            # path and can always add its first.
+            self.card_type_selector.setDisabled(False)
+            self.add_action_button.setDisabled(False)
+            return
         self.update_card_type_options()
 
     def finish_loading_initial_actions(self):
@@ -235,6 +277,8 @@ class CardActionsEditor(QWidget):
         selected note types or all note types in the collection.
         Only shows card types that haven't been added yet.
         """
+        if self.single_card_mode:
+            return
         current_text = self.card_type_selector.currentText()
         self.card_type_selector.blockSignals(True)
         self.card_type_selector.clear()
@@ -337,6 +381,9 @@ class CardActionsEditor(QWidget):
     def add_new_action(self):
         """Called when the Add Card Action button is clicked"""
         self.finish_loading_initial_actions()
+        if self.single_card_mode:
+            self._add_single_card_action()
+            return
         card_type_name = self.card_type_selector.currentText()
 
         if not card_type_name:
@@ -363,10 +410,29 @@ class CardActionsEditor(QWidget):
 
         # Create and display the action editor
         self.create_action_editor(card_type_name, new_action)
+        self._on_changed()
 
         # Clear the selector and refresh dropdown to remove the added card type
         self.card_type_selector.setCurrentIndex(-1)
         self.update_card_type_options()
+
+    def _add_single_card_action(self):
+        """Add one more action to the card the stage already named."""
+        key = str(uuid.uuid4())
+        new_action: CardAction = {
+            "guid": key,
+            "card_type_name": "",
+            "change_deck": None,
+            "set_flag": None,
+            "suspend": None,
+            "bury": None,
+            "set_desired_retention": None,
+            "use_code": False,
+            "action_code": "",
+        }
+        self.card_actions[key] = new_action
+        self.create_action_editor(key, new_action)
+        self._on_changed()
 
     def create_action_editor(self, card_type_name: str, action: CardAction):
         """Create the UI for editing a single CardAction and add it inline"""
@@ -383,7 +449,9 @@ class CardActionsEditor(QWidget):
 
         # Header
         header = QLabel(
-            f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
+            "<h3>Card action</h3>"
+            if self.single_card_mode
+            else f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
             frame,
         )
         frame_layout.addWidget(header)
@@ -562,6 +630,18 @@ class CardActionsEditor(QWidget):
         delete_button.clicked.connect(lambda: self.delete_action(card_type_name))
         frame_layout.addWidget(delete_button)
 
+        # Every control that can change what `get_card_actions()` returns reports it, so the
+        # stage editor above can fold this panel back into the definition and mark the
+        # preview's trace stale. Without it an edit here stayed in the widget: the preview
+        # re-ran the definition as it was before the change and presented that as current.
+        deck_combo.currentIndexChanged.connect(self._on_changed)
+        for group in (flag_group, suspend_group, bury_group):
+            group.buttonToggled.connect(self._on_changed)
+        dr_number_input.valueChanged.connect(self._on_changed)
+        dr_string_input.textChanged.connect(self._on_changed)
+        use_code_toggle.toggled.connect(self._on_changed)
+        code_editor.text_edit.textChanged.connect(self._on_changed)
+
         # Store UI components for later retrieval
         self.action_ui_components[card_type_name] = {
             "frame": frame,
@@ -618,7 +698,9 @@ class CardActionsEditor(QWidget):
         existing = self.card_actions.get(card_type_name, {})
         self.card_actions[card_type_name] = {
             "guid": existing.get("guid", str(uuid.uuid4())),
-            "card_type_name": card_type_name,
+            # In single-card mode the key is the action's own guid, not a card type, and
+            # the stage's target says which card it applies to.
+            "card_type_name": "" if self.single_card_mode else card_type_name,
             "change_deck": change_deck,
             "set_flag": set_flag,
             "suspend": suspend,
@@ -644,6 +726,7 @@ class CardActionsEditor(QWidget):
 
         # Refresh dropdown to show the deleted card type as available again
         self.update_card_type_options()
+        self._on_changed()
 
     def get_card_actions(self) -> list[CardAction]:
         """Return the list of card actions"""

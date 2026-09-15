@@ -1,8 +1,16 @@
-"""Characterization tests for `copy_into_single_note`: trigger fields, tags, files, actions.
+"""What writing one note does: trigger fields, tags, files, card actions.
 
-This is where one destination note is actually written: the field-to-field defs, then tags,
-then files, then card actions, in that order and unconditionally -- a definition whose
-field-to-field half is filtered out by `field_only` still runs its tags, files and actions.
+These started as characterization tests for `copy_into_single_note()`, the format-1 function
+that took the pieces of a definition and wrote one destination note. The rollout retired it,
+so they now run the same pieces the way a stored definition reaches the executor: as the
+within-note definition a migration builds out of them. The behaviour they pin is unchanged
+and still user-visible -- an empty `add_tags` must not mark a note modified, a file lands
+under its `_` prefix, a card action keyed by a card type reaches only that card -- which is
+why they outlived the function whose name they carried.
+
+The order is still fields, then tags, then files, then card actions, and it is still
+unconditional: a definition whose field writes are all filtered out by `field_only` runs its
+tags, files and actions regardless.
 """
 
 import json
@@ -16,11 +24,7 @@ from copy_anywhere.configuration import (
     get_field_to_field_unfocus_trigger_fields,
     split_tags,
 )
-from copy_anywhere.logic.copy_fields import (
-    CopyFailedException,
-    copy_for_single_trigger_note,
-    copy_into_single_note,
-)
+from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 
 
 @pytest.fixture
@@ -31,15 +35,60 @@ def note(col):
 
 
 def run(note, logger, **kwargs):
-    return copy_into_single_note(
-        field_to_field_defs=kwargs.pop("field_to_field_defs", []),
-        field_to_file_defs=kwargs.pop("field_to_file_defs", []),
-        card_actions=kwargs.pop("card_actions", []),
-        destination_note=note,
-        source_notes=kwargs.pop("source_notes", [note]),
+    """Run these pieces against `note` as the within-note definition they describe.
+
+    Returns what `copy_into_single_note()` used to return, minus the file flag no caller
+    reads: whether the note was written into, and the cards the card actions touched. A note
+    is "written into" exactly when the executor hands it to the caller to save, which is the
+    same thing the old boolean meant.
+    """
+    field_only = kwargs.pop("field_only", None)
+    definition = d.within_note(**kwargs)
+    copied_into_notes: list = []
+    copied_into_cards: dict = {}
+    copy_for_single_trigger_note(
+        definition,
+        note,
+        copied_into_notes=copied_into_notes,
+        copied_into_cards_dict=copied_into_cards,
+        field_only=field_only,
         logger=logger,
-        **kwargs,
     )
+    return bool(copied_into_notes), list(copied_into_cards.values())
+
+
+def run_across(note, logger, **kwargs):
+    """Run these pieces with several source notes, which the query below finds.
+
+    Format 1 took the sources as a list because one definition assigned the roles globally.
+    Format 2 has no such list: a definition that reads several notes says which query found
+    them, so "several sources into this note" is the destination-to-sources shape and the
+    sources are the notes tagged `pool`.
+    """
+    definition = d.destination_to_sources(copy_from_cards_query="tag:pool", **kwargs)
+    definition["select_card_count"] = "0"
+    copy_for_single_trigger_note(
+        definition, note, copied_into_notes=[], copied_into_cards_dict={}, logger=logger
+    )
+
+
+def run_failing(note, logger, **kwargs):
+    """Run pieces that should fail the definition, and return what it logged.
+
+    Format 1 raised `CopyFailedException` out of the write and left the caller to catch it.
+    The staged executor turns it into a stage failure, which fails the definition and is
+    reported rather than raised (§7.2); the message is the same one, which is what these
+    cases were always about.
+    """
+    succeeded = copy_for_single_trigger_note(
+        d.within_note(**kwargs),
+        note,
+        copied_into_notes=[],
+        copied_into_cards_dict={},
+        logger=logger,
+    )
+    assert succeeded is False
+    return "\n".join(logger.errors)
 
 
 class TestTriggerFieldSplitting:
@@ -60,12 +109,25 @@ class TestTriggerFieldSplitting:
         assert get_field_to_field_unfocus_trigger_fields(field_def, True) == []
 
     def test_field_only_runs_just_the_matching_def(self, note, logger):
-        modified, _, _ = run(
+        # Both defs are on for unfocus while editing, because that is the only way the hook
+        # would reach them with a `field_only` at all; what separates them here is which
+        # editor field each one watches.
+        modified, _ = run(
             note,
             logger,
             field_to_field_defs=[
-                d.field_to_field("Meaning", "{{Word}}", copy_on_unfocus_trigger_field="Word"),
-                d.field_to_field("Note", "{{Word}}", copy_on_unfocus_trigger_field="Reading"),
+                d.field_to_field(
+                    "Meaning",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Word",
+                    copy_on_unfocus_when_edit=True,
+                ),
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_trigger_field="Reading",
+                    copy_on_unfocus_when_edit=True,
+                ),
             ],
             field_only="Word",
         )
@@ -76,7 +138,7 @@ class TestTriggerFieldSplitting:
     def test_field_only_still_lets_tags_and_actions_run(self, note, logger):
         # The field_only filter is a `continue` inside the field-to-field loop only. Tags,
         # files and card actions sit after that loop and always run.
-        modified, _, _ = run(
+        modified, _ = run(
             note,
             logger,
             field_to_field_defs=[
@@ -92,24 +154,24 @@ class TestTriggerFieldSplitting:
 
 class TestTags:
     def test_tags_are_added(self, note, logger):
-        modified, _, _ = run(note, logger, add_tags='"x", "y"')
+        modified, _ = run(note, logger, add_tags='"x", "y"')
         assert note.has_tag("x") and note.has_tag("y")
         assert modified is True
 
     def test_a_tag_already_present_is_not_re_added(self, note, logger):
         note.add_tag("x")
-        modified, _, _ = run(note, logger, add_tags="x")
+        modified, _ = run(note, logger, add_tags="x")
         assert modified is False
 
     def test_tags_are_removed(self, note, logger):
         note.add_tag("x")
         note.add_tag("y")
-        modified, _, _ = run(note, logger, remove_tags='"x", "y"')
+        modified, _ = run(note, logger, remove_tags='"x", "y"')
         assert not note.has_tag("x") and not note.has_tag("y")
         assert modified is True
 
     def test_a_tag_not_present_is_not_removed(self, note, logger):
-        modified, _, _ = run(note, logger, remove_tags="absent")
+        modified, _ = run(note, logger, remove_tags="absent")
         assert modified is False
 
     def test_an_empty_add_tags_adds_nothing_and_does_not_mark_the_note_modified(
@@ -120,7 +182,7 @@ class TestTags:
         # whether or not anything was copied, inflating the processed count, the
         # copied-into-notes list and the undo entry.
         assert split_tags("") == []
-        modified, _, _ = run(note, logger, add_tags="", remove_tags="")
+        modified, _ = run(note, logger, add_tags="", remove_tags="")
         assert modified is False
         assert note.tags == []
 
@@ -166,9 +228,9 @@ class TestFiles:
         assert not (media_dir / "__out.txt").exists()
 
     def test_an_empty_filename_aborts_the_definition(self, note, logger):
-        with pytest.raises(CopyFailedException):
-            run(note, logger, field_to_file_defs=[d.field_to_file("", "{{Word}}")])
-        assert logger.has_error("No file name provided")
+        assert "No file name provided" in run_failing(
+            note, logger, field_to_file_defs=[d.field_to_file("", "{{Word}}")]
+        )
 
     def test_copy_if_empty_on_a_file_means_do_not_overwrite(self, note, logger, media_dir):
         (media_dir / "_out.txt").write_text("original", encoding="utf-8")
@@ -179,13 +241,14 @@ class TestFiles:
         )
         assert (media_dir / "_out.txt").read_text(encoding="utf-8") == "original"
 
-    def test_the_filename_sees_the_live_note_while_dest_prefix_sees_the_pre_copy_copy(
+    def test_the_filename_sees_what_the_field_write_before_it_wrote(
         self, note, logger, media_dir
     ):
-        # Genuinely surprising, and worth pinning: the filename is interpolated over
-        # `notes=[destination_note]` -- the live, already-modified note -- while `dest_note`
-        # is the copy taken before any def ran. So a field written by an earlier
-        # field-to-field def shows up in `{{Field}}` but not in `{{__Dest__Field}}`.
+        # Format 1 interpolated a file's name over the live note but `__Dest__` over a copy
+        # taken before any def ran, so one field read two different ways in one definition.
+        # A migrated definition writes the file in a stage after the one that writes the
+        # field, and a stage reads what the stages before it did (§5.3), so the two
+        # spellings now agree. One of the migration's intended changes.
         run(
             note,
             logger,
@@ -194,19 +257,18 @@ class TestFiles:
                 d.field_to_file("{{Note}}-{{__Dest__Note}}.txt", "{{Word}}")
             ],
         )
-        assert (media_dir / "_written-.txt").exists()
+        assert (media_dir / "_written-written.txt").exists()
 
     def test_the_code_path_runs_once_per_source_note_and_writes_every_tuple(
         self, col, note, logger, media_dir
     ):
-        sources = [
-            real_anki.add_note(col, VOCAB, {"Word": "a"}),
-            real_anki.add_note(col, VOCAB, {"Word": "b"}),
-        ]
-        run(
+        # Several source notes is the destination-to-sources shape: the query finds them and
+        # the file code runs once for each, which a within-note definition has no way to say.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        run_across(
             note,
             logger,
-            source_notes=sources,
             field_to_file_defs=[
                 d.field_to_file(
                     "",
@@ -225,16 +287,11 @@ class TestFiles:
     def test_the_code_path_bumps_query_note_index_only_for_several_source_notes(
         self, col, note, logger, media_dir
     ):
-        sources = [
-            real_anki.add_note(col, VOCAB, {"Word": "a"}),
-            real_anki.add_note(col, VOCAB, {"Word": "b"}),
-        ]
-        variables = {}
-        run(
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        run_across(
             note,
             logger,
-            source_notes=sources,
-            variable_values_dict=variables,
             field_to_file_defs=[
                 d.field_to_file(
                     "",
@@ -249,13 +306,14 @@ class TestFiles:
     def test_code_returning_nothing_writes_nothing_and_is_not_an_error(
         self, note, logger, media_dir
     ):
-        _, wrote, _ = run(
+        modified, _ = run(
             note,
             logger,
             field_to_file_defs=[d.field_to_file("", use_code=True, copy_as_code="return []")],
         )
-        assert wrote is False
+        assert modified is False
         assert list(media_dir.iterdir()) == []
+        assert logger.errors == []
 
     @pytest.mark.parametrize(
         "code, message",
@@ -267,12 +325,9 @@ class TestFiles:
         ],
     )
     def test_a_malformed_code_result_aborts_the_definition(self, note, logger, code, message):
-        with pytest.raises(CopyFailedException, match=message):
-            run(
-                note,
-                logger,
-                field_to_file_defs=[d.field_to_file("", use_code=True, copy_as_code=code)],
-            )
+        assert message in run_failing(
+            note, logger, field_to_file_defs=[d.field_to_file("", use_code=True, copy_as_code=code)]
+        )
 
 
 def card_named(cards, template_name):
@@ -290,7 +345,7 @@ class TestCardActions:
     ):
         malformed = d.card_action(VOCAB, "Recognition", set_flag=1)
         malformed["card_type_name"] = "no separator here"
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[malformed, d.card_action(VOCAB, "Recall", set_flag=2)],
@@ -300,14 +355,14 @@ class TestCardActions:
         assert card_named(cards, "Recognition").user_flag() == 0
 
     def test_an_action_for_another_note_type_is_skipped(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action("Some Other Type", "Recognition", set_flag=1)]
         )
         assert card_named(cards, "Recognition").user_flag() == 0
 
     def test_two_actions_for_one_template_leave_only_the_later_one(self, note, logger):
         # They are collected into a dict keyed by template name, so the second overwrites.
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[
@@ -319,11 +374,11 @@ class TestCardActions:
 
     def test_change_deck_by_name_and_by_id(self, col, note, logger):
         deck_id = col.decks.id_for_name("Other")
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", change_deck="Other")]
         )
         assert card_named(cards, "Recognition").did == deck_id
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recall", change_deck=deck_id)]
         )
         assert card_named(cards, "Recall").did == deck_id
@@ -331,7 +386,7 @@ class TestCardActions:
     @pytest.mark.parametrize("value", [None, "-", 0])
     def test_change_deck_no_ops(self, col, note, logger, value):
         before = note.cards()[0].did
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", change_deck=value)]
         )
         assert card_named(cards, "Recognition").did == before
@@ -341,7 +396,7 @@ class TestCardActions:
         self, note, logger
     ):
         before = note.cards()[0].did
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", change_deck="No Such Deck")],
@@ -356,7 +411,7 @@ class TestCardActions:
         card.did = col.decks.id("Filtered")
         col.update_card(card)
         target = col.decks.id_for_name("Other")
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", change_deck="Other")]
         )
         moved = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -365,12 +420,12 @@ class TestCardActions:
         assert moved.did != original_did
 
     def test_suspend_and_unsuspend(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", suspend=True)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
         assert card.queue == -1
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", suspend=False)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -380,7 +435,7 @@ class TestCardActions:
         card = card_named(note.cards(), "Recognition")
         card.queue = -1
         col.update_card(card)
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", bury=True)]
         )
         buried = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -388,7 +443,7 @@ class TestCardActions:
         assert not hasattr(buried, "edited")
 
     def test_burying_an_unsuspended_card_works(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", bury=True)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -396,7 +451,7 @@ class TestCardActions:
 
     @pytest.mark.parametrize("flag", [0, 1, 2, 3, 4, 5, 6, 7])
     def test_every_valid_flag_is_set(self, note, logger, flag):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=flag)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -404,7 +459,7 @@ class TestCardActions:
 
     @pytest.mark.parametrize("flag", [8, -1])
     def test_an_out_of_range_flag_is_ignored(self, note, logger, flag):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=flag)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -414,7 +469,7 @@ class TestCardActions:
     def test_set_flag_true_is_accepted_as_flag_one(self, note, logger):
         # `isinstance(True, int)` is True and the guard does not exclude bool, unlike
         # set_desired_retention's, which does. Pinned so the inconsistency is visible.
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=True)]
         )
         card = next(c for c in cards if c.template()["name"] == "Recognition")
@@ -426,7 +481,7 @@ class TestDesiredRetention:
         return card_named(cards, name)
 
     def test_a_float_between_zero_and_one_is_set_as_is(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention=0.85)],
@@ -434,7 +489,7 @@ class TestDesiredRetention:
         assert self._card(cards).desired_retention == pytest.approx(0.85)
 
     def test_an_int_is_read_as_a_percentage(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention=90)],
@@ -444,7 +499,7 @@ class TestDesiredRetention:
     def test_a_string_is_looked_up_in_the_cards_custom_data(self, col, note, logger):
         real_anki.set_custom_data(col, self._card(note.cards()).id, json.dumps({"dr": 88}))
         note = col.get_note(note.id)
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention="dr")],
@@ -454,7 +509,7 @@ class TestDesiredRetention:
     def test_a_missing_custom_data_key_sets_nothing(self, col, note, logger):
         real_anki.set_custom_data(col, self._card(note.cards()).id, json.dumps({"other": 1}))
         note = col.get_note(note.id)
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention="dr")],
@@ -462,7 +517,7 @@ class TestDesiredRetention:
         assert self._card(cards).desired_retention is None
 
     def test_empty_custom_data_sets_nothing(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention="dr")],
@@ -472,7 +527,7 @@ class TestDesiredRetention:
     @pytest.mark.parametrize("value", [0, 1.0, True])
     def test_out_of_range_and_boolean_values_are_ignored(self, note, logger, value):
         # True is excluded explicitly here -- unlike set_flag, which accepts it.
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention=value)],
@@ -482,7 +537,7 @@ class TestDesiredRetention:
 
 class TestCardActionCode:
     def test_code_returning_none_skips_every_action_for_that_card_type(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[
@@ -495,7 +550,7 @@ class TestCardActionCode:
         assert card.user_flag() == 0
 
     def test_code_returning_a_dict_replaces_the_configured_action(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note,
             logger,
             card_actions=[
@@ -523,26 +578,201 @@ class TestCardActionCode:
         ],
     )
     def test_a_malformed_code_result_aborts_the_definition(self, note, logger, code, message):
-        with pytest.raises(CopyFailedException, match=message):
-            run(
-                note,
-                logger,
-                card_actions=[
-                    d.card_action(VOCAB, "Recognition", use_code=True, action_code=code)
-                ],
-            )
+        assert message in run_failing(
+            note,
+            logger,
+            card_actions=[d.card_action(VOCAB, "Recognition", use_code=True, action_code=code)],
+        )
 
 
 class TestEditedFlag:
     def test_an_untouched_card_gets_no_edited_attribute(self, note, logger):
         # The dynamic `edited` attribute is what drives the progress counts and the filter
         # that decides which cards are handed to update_cards, so its absence matters.
-        _, _, cards = run(note, logger, card_actions=[])
+        _, cards = run(note, logger, card_actions=[])
         assert all(not hasattr(card, "edited") for card in cards)
 
     def test_a_touched_card_is_marked_edited(self, note, logger):
-        _, _, cards = run(
+        _, cards = run(
             note, logger, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=1)]
         )
         edited = [card for card in cards if getattr(card, "edited", False)]
         assert [card.template()["name"] for card in edited] == ["Recognition"]
+
+
+class TestWhichNoteAFileWriteReadsAcrossNotes:
+    """Which note stands in as source and which as destination when a file write is migrated.
+
+    Format 1 assigned the two roles once, for the whole definition, and every file write in
+    `copy_into_single_note` used them: the filename was interpolated over
+    `notes=[destination_note]` with `dest_note=destination_note`, and the code path ran with
+    `source_note=` each source note and `dest_note=destination_note`. Format 2 has no such
+    global assignment -- a stage says which note it reads -- so the migrator has to write the
+    roles onto each stage as `legacy_source` and `legacy_destination`. A missing
+    `legacy_destination` is not "no destination": `run_write_file` falls back to the source
+    note, so the two roles silently collapse onto one note.
+    """
+
+    def test_each_destination_gets_its_own_file(self, col, note, logger, media_dir):
+        # Source to destinations: the trigger is the source and each found note is the
+        # destination, so a filename built from the destination's own fields names N files.
+        # Collapsing the roles makes every iteration interpolate the trigger note instead,
+        # so the N writes agree on one name and overwrite each other down to the last.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        definition = d.source_to_destinations(
+            copy_from_cards_query="tag:pool",
+            field_to_file_defs=[d.field_to_file("{{Word}}.txt", "x")],
+            select_card_count="0",
+        )
+        copy_for_single_trigger_note(
+            definition, note, copied_into_notes=[], copied_into_cards_dict={}, logger=logger
+        )
+
+        assert sorted(p.name for p in media_dir.iterdir()) == ["_a.txt", "_b.txt"]
+
+    def test_the_dest_prefix_in_a_file_name_reads_the_destination(
+        self, col, note, logger, media_dir
+    ):
+        # The same collapse seen from the other side, and the sharper half: `__Dest__` is the
+        # spelling that exists *because* the two roles differ. Reading it off the trigger note
+        # makes it a second, slower way of saying `{{Word}}`.
+        real_anki.add_note(col, VOCAB, {"Word": "a", "Note": "mine"}, tags=["pool"])
+        definition = d.source_to_destinations(
+            copy_from_cards_query="tag:pool",
+            field_to_file_defs=[d.field_to_file("{{__Dest__Note}}.txt", "x")],
+            select_card_count="0",
+        )
+        copy_for_single_trigger_note(
+            definition, note, copied_into_notes=[], copied_into_cards_dict={}, logger=logger
+        )
+
+        assert (media_dir / "_mine.txt").exists(), sorted(p.name for p in media_dir.iterdir())
+
+    def test_the_dest_prefix_in_file_code_reads_the_trigger_note(
+        self, col, note, logger, media_dir
+    ):
+        # Destination to sources, the mirror image: the trigger is the destination and the
+        # query found the sources, so file code sees `note` as each source and `__Dest__` as
+        # the trigger. The migrator's own join stage gets this pair right -- it writes both
+        # `legacy_source` (the loop item) and `legacy_destination` (the trigger) -- which is
+        # what makes the file stage beside it, carrying only the first, the odd one out.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        run_across(
+            note,
+            logger,
+            field_to_file_defs=[
+                d.field_to_file(
+                    "",
+                    use_code=True,
+                    copy_as_code="return [(note['Word'] + '.txt', '{{__Dest__Word}}')]",
+                )
+            ],
+        )
+
+        assert (media_dir / "_a.txt").read_text(encoding="utf-8") == "neko"
+        assert (media_dir / "_b.txt").read_text(encoding="utf-8") == "neko"
+
+
+class TestAnUnfocusRunOfAMigratedJoin:
+    """What a Destination-to-sources unfocus run evaluates, and what it should.
+
+    Format 1 read the query's notes once and then walked `field_to_field_defs`, asking of
+    each one whether the field that just lost focus triggers it -- so a write the unfocus did
+    not trigger cost nothing, and could not fail the run.
+
+    Migrating that shape moves the per-source read out of the write and in front of it: each
+    write becomes a list, a loop that stores one value per source note, and a reduce that
+    joins them, and the write itself is left reading `{{legacy_joined_N}}`. Only the write
+    carries `unfocus_trigger_fields`, and only `run_edit_note` consults it, so the three
+    stages that feed it run unconditionally -- including the loop body that evaluates the
+    right-hand side the write was going to use.
+    """
+
+    @pytest.fixture
+    def source(self, col):
+        return real_anki.add_note(col, VOCAB, {"Word": "src", "Meaning": "M"}, tags=["pool"])
+
+    def test_a_write_the_unfocus_did_not_trigger_is_not_evaluated(
+        self, col, note, source, media_dir, logger
+    ):
+        # The visible cost: the untriggered write's code runs once per source note on every
+        # unfocus of an unrelated field. Here it is a marker file, so the test can see it at
+        # all; in the definitions this shape came from it is a network fetch or a subprocess.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="tag:pool",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Word",
+                ),
+                d.field_to_field(
+                    "Reading",
+                    use_code=True,
+                    copy_as_code=(
+                        "import pathlib, aqt;"
+                        " pathlib.Path(aqt.mw.pm.media_folder(), 'ran.txt').write_text('x');"
+                        " return 'value'"
+                    ),
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Reading",
+                ),
+            ],
+            select_card_count="0",
+        )
+
+        copy_for_single_trigger_note(
+            definition,
+            note,
+            copied_into_notes=[],
+            copied_into_cards_dict={},
+            field_only="Word",
+            logger=logger,
+        )
+
+        assert note["Note"] == "src"
+        assert not (media_dir / "ran.txt").exists()
+
+    def test_an_untriggered_write_that_raises_does_not_lose_the_triggered_one(
+        self, col, note, source, logger
+    ):
+        # The same evaluation, now fatal. The write that did trigger is correct and complete,
+        # and the one that failed was never going to be applied -- but the failure is a stage
+        # error, so the definition fails and the triggered write is discarded with it. Typing
+        # in one field of the editor silently stops a definition that has nothing wrong with
+        # the part of it that field drives.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="tag:pool",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Word",
+                ),
+                d.field_to_field(
+                    "Reading",
+                    use_code=True,
+                    copy_as_code="raise ValueError('not this field')",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Reading",
+                ),
+            ],
+            select_card_count="0",
+        )
+
+        copied: list = []
+        ok = copy_for_single_trigger_note(
+            definition,
+            note,
+            copied_into_notes=copied,
+            copied_into_cards_dict={},
+            field_only="Word",
+            logger=logger,
+        )
+
+        assert ok is True, logger.errors
+        assert [n["Note"] for n in copied] == ["src"]
