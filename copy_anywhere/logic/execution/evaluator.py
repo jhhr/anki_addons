@@ -78,6 +78,14 @@ def execute_stage(
     session = frame.session
     event = session.start_event(stage, frame.loop_path, parent_event, env)
     stage_type = stage.get("type")
+    if session.field_only is not None and not actions.runs_on_unfocus(stage, session):
+        # A migrated stage that feeds one field write, on an unfocus that write does not
+        # answer to. Skipping it is the point: it is where the per-source read happens, so
+        # running it costs the same work the write would have cost and can fail the whole
+        # definition on behalf of a write that was never going to be applied. Recorded as a
+        # skipped event rather than dropped, so the preview still shows it was considered.
+        session.finish_event(event, "skipped")
+        return
     # Actions record what they planned against whichever stage is running, so the trace can
     # say which stage caused a change without every handler taking a trace parameter.
     outer_event = session.current_event
@@ -244,9 +252,21 @@ def _run_condition(
     matched = actions.evaluate_predicate(stage, env, frame)
     if event is not None:
         event.details["matched"] = matched
-    if not matched and stage.get("predicate_kind") == "note_query" and not stage.get("else"):
+    if not matched and stage.get("unmatched_skips_trigger"):
         # A migrated copy condition that does not match is not a branch that took the other
-        # path: format 1 skipped the trigger note entirely and reported it as skipped.
+        # path: format 1 skipped the trigger note entirely and reported it as skipped, which
+        # is what `TriggerSkipped` means here -- nothing is committed and the note is counted
+        # as skipped rather than copied into.
+        #
+        # It is a marker on the stage rather than something inferred from the predicate kind,
+        # because the two are not the same question and the inference got it wrong wherever
+        # the condition was not the outermost stage. The migrator only ever builds one shape:
+        # the condition wraps the whole definition, so nothing has run yet and there is
+        # nothing to lose. A condition authored in the editor -- which offers "Match it as an
+        # Anki search" -- can sit anywhere, and there the skip reached out of the block it
+        # was in, past stages that had already written, and threw their work away, while the
+        # run reported success. Everywhere else it is an ordinary branch that took an empty
+        # `else`.
         raise TriggerSkipped()
     branch = stage.get("then") if matched else stage.get("else")
     # Branch-local results do not escape, so the branch runs against a copy of the scope.

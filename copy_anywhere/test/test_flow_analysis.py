@@ -360,3 +360,81 @@ class TestStructuralValidation:
         assert "M" not in result.scopes[after["guid"]]
         # Its own scope is still recorded, so the editor can show it where it sits.
         assert disabled["guid"] in result.scopes
+
+
+class TestASearchConditionCanEndTheBlockToo:
+    """A migrated copy condition is a third way the rest of the root block may not run.
+
+    `analyze_exports` refuses an export a skip before it can leave unset, and knows about two
+    stages that can skip: a query with `if_empty: skip_block` and a read with
+    `if_missing: skip_block`. There is a third. A condition carrying
+    `unmatched_skips_trigger` -- the marker the migrator writes for format 1's copy
+    condition -- does not fall through when it fails to match: the executor raises
+    `TriggerSkipped`, and `execute_definition` swallows that for a called definition and goes
+    straight to collecting exports.
+
+    So the result a later stage would have declared is simply absent from the exports, and
+    the caller's `call_definition` stage, finding nothing under the name it asked for, fails
+    the whole run with "exports no 'X'". The analyser is the thing meant to catch that at
+    edit time -- that is what §5.9 is for -- and it said nothing, because a condition never
+    registered as a stage that can skip. Reachable because a migrated definition can be given
+    exports in the editor afterwards, which is the only way it gets any.
+    """
+
+    def child(self, producer_first: bool):
+        producer = d.variable("H1", d.text("x"))
+        gate = d.condition(
+            d.text("tag:wanted"),
+            [],
+            predicate_kind="note_query",
+            predicate_target={"binding": "trigger"},
+            unmatched_skips_trigger=True,
+        )
+        stages = [producer, gate] if producer_first else [gate, producer]
+        return d.staged("child", guid="child-guid", stages=stages, exports=[d.export("H1", producer)])
+
+    def test_exporting_a_result_it_can_leave_unset_is_refused(self):
+        result = analyze_definition(self.child(producer_first=False))
+
+        assert "cannot be guaranteed" in messages(result)
+
+    def test_exporting_a_result_produced_before_it_is_still_allowed(self):
+        # The same positional rule the other two skipping stages get: a result already set by
+        # the time the condition runs survives it, so refusing that export would refuse
+        # something that cannot happen.
+        result = analyze_definition(self.child(producer_first=True))
+
+        assert messages(result) == ""
+        assert result.export_types["H1"] == T_TEXT
+
+    def test_an_unmarked_search_condition_does_not_skip(self):
+        # A condition authored in the editor is an ordinary branch however its predicate is
+        # matched: it takes an empty `else` and the definition carries on, so nothing after
+        # it is left unset and the export is guaranteed.
+        producer = d.variable("H1", d.text("x"))
+        gate = d.condition(
+            d.text("tag:wanted"),
+            [],
+            predicate_kind="note_query",
+            predicate_target={"binding": "trigger"},
+        )
+        child = d.staged(
+            "child", guid="child-guid", stages=[gate, producer], exports=[d.export("H1", producer)]
+        )
+
+        result = analyze_definition(child)
+
+        assert messages(result) == ""
+
+    def test_an_ordinary_predicate_does_not_skip(self):
+        # Only the search kind raises; a plain text or code predicate with no `else` just
+        # runs nothing and carries on.
+        producer = d.variable("H1", d.text("x"))
+        gate = d.condition(d.code("return False"), [])
+        child = d.staged(
+            "child", guid="child-guid", stages=[gate, producer], exports=[d.export("H1", producer)]
+        )
+
+        result = analyze_definition(child)
+
+        assert messages(result) == ""

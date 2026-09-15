@@ -436,6 +436,13 @@ class _Analyzer:
             if stage.get("predicate_kind") == "note_query":
                 effects["queries_collection"] = True
                 self.resolve(scope, stage.get("predicate_target"), stage, "predicate target")
+            if at_root and stage.get("unmatched_skips_trigger"):
+                # The third way the rest of the root block may not run, beside the two
+                # `skip_block` policies. A condition marked this way ends the definition when
+                # it does not match, and `execute_definition` swallows that for a called
+                # definition and goes straight to collecting exports -- so a result declared
+                # after it is simply absent and the caller fails with "exports no 'X'".
+                self.note_skipping_root_stage(stage)
             # Branch-local results do not escape, so both branches analyse against the same
             # incoming scope and neither one's outgoing scope is kept (§5.8).
             self.analyze_block(stage.get("then", []) or [], scope)

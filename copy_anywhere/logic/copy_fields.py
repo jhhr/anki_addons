@@ -703,7 +703,11 @@ def copy_for_single_trigger_note(
         logger.error(str(error))
         return False
 
-    triggers = staged_definition.get("triggers", {})
+    # `or {}` rather than a default: the key can be present and null in a hand-edited or
+    # half-written config, and every other reader of `triggers` in the addon already spells
+    # it this way. Without it the next line raises out of the `CollectionOp`, which Anki
+    # shows as an error dialog and which stops the bulk run over every remaining note.
+    triggers = staged_definition.get("triggers") or {}
     if not note_passes_deck_whitelist(
         deck_names=triggers.get("deck_names") or [],
         include_subdecks=bool(triggers.get("include_subdecks", False)),

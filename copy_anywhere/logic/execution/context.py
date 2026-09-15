@@ -504,7 +504,7 @@ class DefinitionFrame:
         # Multi-note-type definitions omit the card type name from card values, because a
         # definition spanning several note types cannot name one template for all of them.
         self.multiple_note_types = (
-            len(definition.get("triggers", {}).get("note_types", []) or []) > 1
+            len((definition.get("triggers") or {}).get("note_types") or []) > 1
         )
         #: Values format-1 expressions expect to find among the variables, filled in by the
         #: stages a migration synthesized: the query's size and the current loop index.

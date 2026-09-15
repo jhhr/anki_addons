@@ -158,6 +158,15 @@ def _field_writes(definition: dict, modifies_other_notes: bool) -> list[dict]:
     return writes
 
 
+#: The keys that say which unfocus a migrated field write answers to, copied onto the
+#: stages that only exist to feed one write.
+UNFOCUS_GATE_KEYS = ("unfocus_trigger_fields", "unfocus_when_edit", "unfocus_when_add")
+
+
+def _unfocus_gate(field_write: dict) -> dict:
+    return {key: field_write[key] for key in UNFOCUS_GATE_KEYS if key in field_write}
+
+
 def _tag_writes(definition: dict) -> dict:
     return {
         "add": _split_quoted_list(definition.get("add_tags")),
@@ -340,7 +349,20 @@ def _note_query_stage(definition: dict, definition_guid: str, warnings: list[str
     return stage
 
 
-def _write_file_stages(definition: dict, source_binding: Optional[str]) -> list[Stage]:
+def _write_file_stages(
+    definition: dict,
+    source_binding: Optional[str],
+    destination_binding: Optional[str] = None,
+) -> list[Stage]:
+    """Format 1's `field_to_file_defs`, as one `write_file` stage each.
+
+    Both roles have to be written out. `copy_into_single_note` interpolated a filename over
+    `notes=[destination_note]` with `dest_note=destination_note`, and ran file code with
+    `source_note=` each source note and `dest_note=destination_note` -- so which note stands
+    in for each role is a property of the copy mode, not of the file definition, and format 2
+    has nowhere to record a mode. `run_write_file` falls back to the source note when there
+    is no `legacy_destination`, which is right only when the two really are the same note.
+    """
     stages: list[Stage] = []
     for file_def in definition.get("field_to_file_defs") or []:
         use_code = bool(file_def.get("use_code", False))
@@ -364,6 +386,8 @@ def _write_file_stages(definition: dict, source_binding: Optional[str]) -> list[
         }
         if source_binding:
             stage["legacy_source"] = {"binding": source_binding}
+        if destination_binding:
+            stage["legacy_destination"] = {"binding": destination_binding}
         stages.append(stage)
     return stages
 
@@ -397,13 +421,22 @@ def _join_stages(
     index: int,
     expression: dict,
     separator: str,
+    unfocus_gate: Optional[dict] = None,
 ) -> tuple[list[Stage], str]:
     """The list/loop/store/reduce that stands in for format 1's implicit many-notes join.
 
     Returns the stages and the name of the result holding the joined text.
+
+    `unfocus_gate` carries the unfocus keys of the write these stages feed. Format 1 read the
+    sources once and then asked, per field write, whether the field that just lost focus
+    triggers it, so an untriggered write cost nothing and could not fail the run. Here the
+    per-source read has moved in front of the write, so without the gate an unfocus of one
+    field evaluates every other write's right-hand side once per source note -- and a raising
+    one fails the definition, discarding the write that was actually triggered.
     """
     list_name = f"legacy_join_{index}"
     joined_name = f"legacy_joined_{index}"
+    gate = dict(unfocus_gate or {})
     stages: list[Stage] = [
         {
             "guid": _child_guid(definition_guid, f"join-list-{index}"),
@@ -412,6 +445,7 @@ def _join_stages(
             "enabled": True,
             "result": list_name,
             "item_type": TEXT,
+            **gate,
         },
         {
             "guid": _child_guid(definition_guid, f"join-loop-{index}"),
@@ -420,6 +454,7 @@ def _join_stages(
             "enabled": True,
             "input": {"binding": LEGACY_QUERY_RESULT},
             "item_binding": LEGACY_ITEM_BINDING,
+            **gate,
             "body": [
                 {
                     "guid": _child_guid(definition_guid, f"join-store-{index}"),
@@ -448,6 +483,7 @@ def _join_stages(
             "item_binding": "item",
             "accumulator_binding": "accumulator",
             "value": value_expression(text=""),
+            **gate,
         },
     ]
     return stages, joined_name
@@ -483,7 +519,15 @@ def _source_to_destinations_stages(
             field_writes=_field_writes(definition, modifies_other_notes=True),
         )
     ]
-    body.extend(_write_file_stages(definition, source_binding="trigger"))
+    # The loop note is the destination here, so it names the file and answers `__Dest__`;
+    # the trigger is the source the content is read from.
+    body.extend(
+        _write_file_stages(
+            definition,
+            source_binding="trigger",
+            destination_binding=LEGACY_ITEM_BINDING,
+        )
+    )
     return [
         _note_query_stage(definition, definition_guid, warnings),
         {
@@ -516,7 +560,11 @@ def _destination_to_sources_stages(
         process_chain = list(write["value"].get("process_chain") or [])
         per_note_value = dict(write["value"], process_chain=[])
         join_stages, joined_name = _join_stages(
-            definition_guid, join_index, per_note_value, separator
+            definition_guid,
+            join_index,
+            per_note_value,
+            separator,
+            unfocus_gate=_unfocus_gate(write),
         )
         stages.extend(join_stages)
         write["value"] = value_expression(
@@ -545,7 +593,16 @@ def _destination_to_sources_stages(
                 "enabled": True,
                 "input": {"binding": LEGACY_QUERY_RESULT},
                 "item_binding": LEGACY_ITEM_BINDING,
-                "body": [dict(file_stage, legacy_source={"binding": LEGACY_ITEM_BINDING})],
+                "body": [
+                    dict(
+                        file_stage,
+                        # The same pair the join's `store` stage above carries, for the same
+                        # reason: the value is read from the loop note and the trigger note
+                        # stands in as the destination, as format 1's `__Dest__` prefix did.
+                        legacy_source={"binding": LEGACY_ITEM_BINDING},
+                        legacy_destination={"binding": "trigger"},
+                    )
+                ],
             })
             continue
         join_index += 1
@@ -662,6 +719,10 @@ def migrate_definition_v1_to_v2(
             # format 1 ran it: `f"{query} nid:{trigger.id}"`.
             "predicate_kind": "note_query",
             "predicate_target": {"binding": "trigger"},
+            # Format 1 skipped the whole trigger note when the condition did not match,
+            # rather than carrying on with the stages after it. This stage wraps the entire
+            # definition, so there is nothing before it to discard.
+            "unmatched_skips_trigger": True,
             "only_on_sync": bool(definition.get("condition_only_on_sync", False)),
             "then": body,
             "else": [],
@@ -705,11 +766,37 @@ def migrate_definitions(
     """
     migrated: list[CopyDefinitionV2] = []
     problems: list[str] = []
-    for definition in definitions or []:
+    for index, definition in enumerate(definitions or []):
+        if not isinstance(definition, dict):
+            problems.append(
+                f"copy definition {index + 1} is a {type(definition).__name__},"
+                " not a definition, and was left out"
+            )
+            continue
         try:
             result = migrate_definition_v1_to_v2(definition, new_guid=new_guid)
         except MigrationError as error:
             problems.append(f"'{definition.get('definition_name', '')}': {error}")
+            continue
+        except Exception as error:  # noqa: BLE001 -- see below
+            # `MigrationError` is what the migrator raises on purpose, for the two things
+            # format 1 also refused. Everything else reaching here means the stored entry is
+            # not shaped like a definition at all -- a list-shaped key holding a dict, a
+            # field write that is a bare string -- which `.get` and `deepcopy` report as
+            # `AttributeError` or `TypeError`.
+            #
+            # Letting those through would not be a tidier traceback but a dead addon:
+            # `migrate_config()` runs at import time from `__init__.py`, so the exception
+            # escapes into Anki's addon loader and nothing loads -- no browser action, no
+            # hooks, and no editor left to repair the entry with. The config is
+            # hand-editable JSON and is written by older versions of this addon, so a
+            # malformed entry is reachable without anything else going wrong, and every
+            # later start hits it again. Reporting it keeps the promise this function is
+            # here to make: one broken definition does not stop the rest of the config.
+            problems.append(
+                f"'{definition.get('definition_name', '')}' could not be read"
+                f" ({type(error).__name__}: {error}) and was left out"
+            )
             continue
         problems.extend(result.get("migration_warnings", []))  # type: ignore[arg-type]
         migrated.append(result)

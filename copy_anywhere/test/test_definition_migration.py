@@ -448,6 +448,60 @@ class TestRefusals:
         assert any("broken" in problem for problem in problems)
 
 
+class TestAConfigEntryThatIsNotADefinition:
+    """What `migrate_definitions` does with a `copy_definitions` entry it cannot read at all.
+
+    The contract the function states, and the reason it returns problems rather than raising,
+    is that one broken definition does not stop the rest of the config from being usable. It
+    keeps that promise for exactly one kind of broken: `MigrationError`, which the migrator
+    raises deliberately for a missing copy mode or across-note direction. Anything else --
+    an entry that is not a dict, or a list-shaped key holding something that is not a list --
+    comes out of `deepcopy` and `.get` as a `TypeError` or `AttributeError` and is not caught.
+
+    Where that lands is what makes it worth more than a tidier traceback. `migrate_config()`
+    runs at import time from `__init__.py`, so the exception escapes into Anki's addon
+    loader and the addon does not load: no browser action, no hooks, and no editor to repair
+    the entry with. The config is hand-editable JSON and is written by older versions of this
+    addon and by the user, so a malformed entry is reachable without anything else going
+    wrong -- and once it is there, every subsequent start hits it again.
+    """
+
+    def good(self):
+        return d.within_note(definition_name="fine")
+
+    @pytest.mark.parametrize(
+        "entry, description",
+        [
+            (None, "a null left where a definition was removed"),
+            ("copy_definitions", "a bare string"),
+            ([], "a list"),
+        ],
+    )
+    def test_an_entry_that_is_not_a_dict_is_reported_not_raised(self, entry, description):
+        migrated, problems = migrate_definitions([entry, self.good()])
+
+        assert [definition["definition_name"] for definition in migrated] == ["fine"], description
+        assert len(problems) == 1
+
+    def test_a_list_key_holding_something_else_is_reported_not_raised(self):
+        broken = d.within_note(definition_name="broken")
+        broken["field_to_field_defs"] = {"Note": "{{Word}}"}
+
+        migrated, problems = migrate_definitions([broken, self.good()])
+
+        assert [definition["definition_name"] for definition in migrated] == ["fine"]
+        assert any("broken" in problem for problem in problems)
+
+    def test_a_field_write_that_is_not_a_dict_is_reported_not_raised(self):
+        broken = d.within_note(definition_name="broken")
+        broken["field_to_field_defs"] = ["Note"]
+
+        migrated, problems = migrate_definitions([broken, self.good()])
+
+        assert [definition["definition_name"] for definition in migrated] == ["fine"]
+        assert any("broken" in problem for problem in problems)
+
+
 class TestAProcessChainThatReadEveryNote:
     """`use_all_notes` on a regex process, which format 2 has nowhere to put.
 

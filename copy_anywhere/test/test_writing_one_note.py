@@ -598,3 +598,181 @@ class TestEditedFlag:
         )
         edited = [card for card in cards if getattr(card, "edited", False)]
         assert [card.template()["name"] for card in edited] == ["Recognition"]
+
+
+class TestWhichNoteAFileWriteReadsAcrossNotes:
+    """Which note stands in as source and which as destination when a file write is migrated.
+
+    Format 1 assigned the two roles once, for the whole definition, and every file write in
+    `copy_into_single_note` used them: the filename was interpolated over
+    `notes=[destination_note]` with `dest_note=destination_note`, and the code path ran with
+    `source_note=` each source note and `dest_note=destination_note`. Format 2 has no such
+    global assignment -- a stage says which note it reads -- so the migrator has to write the
+    roles onto each stage as `legacy_source` and `legacy_destination`. A missing
+    `legacy_destination` is not "no destination": `run_write_file` falls back to the source
+    note, so the two roles silently collapse onto one note.
+    """
+
+    def test_each_destination_gets_its_own_file(self, col, note, logger, media_dir):
+        # Source to destinations: the trigger is the source and each found note is the
+        # destination, so a filename built from the destination's own fields names N files.
+        # Collapsing the roles makes every iteration interpolate the trigger note instead,
+        # so the N writes agree on one name and overwrite each other down to the last.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        definition = d.source_to_destinations(
+            copy_from_cards_query="tag:pool",
+            field_to_file_defs=[d.field_to_file("{{Word}}.txt", "x")],
+            select_card_count="0",
+        )
+        copy_for_single_trigger_note(
+            definition, note, copied_into_notes=[], copied_into_cards_dict={}, logger=logger
+        )
+
+        assert sorted(p.name for p in media_dir.iterdir()) == ["_a.txt", "_b.txt"]
+
+    def test_the_dest_prefix_in_a_file_name_reads_the_destination(
+        self, col, note, logger, media_dir
+    ):
+        # The same collapse seen from the other side, and the sharper half: `__Dest__` is the
+        # spelling that exists *because* the two roles differ. Reading it off the trigger note
+        # makes it a second, slower way of saying `{{Word}}`.
+        real_anki.add_note(col, VOCAB, {"Word": "a", "Note": "mine"}, tags=["pool"])
+        definition = d.source_to_destinations(
+            copy_from_cards_query="tag:pool",
+            field_to_file_defs=[d.field_to_file("{{__Dest__Note}}.txt", "x")],
+            select_card_count="0",
+        )
+        copy_for_single_trigger_note(
+            definition, note, copied_into_notes=[], copied_into_cards_dict={}, logger=logger
+        )
+
+        assert (media_dir / "_mine.txt").exists(), sorted(p.name for p in media_dir.iterdir())
+
+    def test_the_dest_prefix_in_file_code_reads_the_trigger_note(
+        self, col, note, logger, media_dir
+    ):
+        # Destination to sources, the mirror image: the trigger is the destination and the
+        # query found the sources, so file code sees `note` as each source and `__Dest__` as
+        # the trigger. The migrator's own join stage gets this pair right -- it writes both
+        # `legacy_source` (the loop item) and `legacy_destination` (the trigger) -- which is
+        # what makes the file stage beside it, carrying only the first, the odd one out.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        run_across(
+            note,
+            logger,
+            field_to_file_defs=[
+                d.field_to_file(
+                    "",
+                    use_code=True,
+                    copy_as_code="return [(note['Word'] + '.txt', '{{__Dest__Word}}')]",
+                )
+            ],
+        )
+
+        assert (media_dir / "_a.txt").read_text(encoding="utf-8") == "neko"
+        assert (media_dir / "_b.txt").read_text(encoding="utf-8") == "neko"
+
+
+class TestAnUnfocusRunOfAMigratedJoin:
+    """What a Destination-to-sources unfocus run evaluates, and what it should.
+
+    Format 1 read the query's notes once and then walked `field_to_field_defs`, asking of
+    each one whether the field that just lost focus triggers it -- so a write the unfocus did
+    not trigger cost nothing, and could not fail the run.
+
+    Migrating that shape moves the per-source read out of the write and in front of it: each
+    write becomes a list, a loop that stores one value per source note, and a reduce that
+    joins them, and the write itself is left reading `{{legacy_joined_N}}`. Only the write
+    carries `unfocus_trigger_fields`, and only `run_edit_note` consults it, so the three
+    stages that feed it run unconditionally -- including the loop body that evaluates the
+    right-hand side the write was going to use.
+    """
+
+    @pytest.fixture
+    def source(self, col):
+        return real_anki.add_note(col, VOCAB, {"Word": "src", "Meaning": "M"}, tags=["pool"])
+
+    def test_a_write_the_unfocus_did_not_trigger_is_not_evaluated(
+        self, col, note, source, media_dir, logger
+    ):
+        # The visible cost: the untriggered write's code runs once per source note on every
+        # unfocus of an unrelated field. Here it is a marker file, so the test can see it at
+        # all; in the definitions this shape came from it is a network fetch or a subprocess.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="tag:pool",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Word",
+                ),
+                d.field_to_field(
+                    "Reading",
+                    use_code=True,
+                    copy_as_code=(
+                        "import pathlib, aqt;"
+                        " pathlib.Path(aqt.mw.pm.media_folder(), 'ran.txt').write_text('x');"
+                        " return 'value'"
+                    ),
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Reading",
+                ),
+            ],
+            select_card_count="0",
+        )
+
+        copy_for_single_trigger_note(
+            definition,
+            note,
+            copied_into_notes=[],
+            copied_into_cards_dict={},
+            field_only="Word",
+            logger=logger,
+        )
+
+        assert note["Note"] == "src"
+        assert not (media_dir / "ran.txt").exists()
+
+    def test_an_untriggered_write_that_raises_does_not_lose_the_triggered_one(
+        self, col, note, source, logger
+    ):
+        # The same evaluation, now fatal. The write that did trigger is correct and complete,
+        # and the one that failed was never going to be applied -- but the failure is a stage
+        # error, so the definition fails and the triggered write is discarded with it. Typing
+        # in one field of the editor silently stops a definition that has nothing wrong with
+        # the part of it that field drives.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="tag:pool",
+            field_to_field_defs=[
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Word",
+                ),
+                d.field_to_field(
+                    "Reading",
+                    use_code=True,
+                    copy_as_code="raise ValueError('not this field')",
+                    copy_on_unfocus_when_edit=True,
+                    copy_on_unfocus_trigger_field="Reading",
+                ),
+            ],
+            select_card_count="0",
+        )
+
+        copied: list = []
+        ok = copy_for_single_trigger_note(
+            definition,
+            note,
+            copied_into_notes=copied,
+            copied_into_cards_dict={},
+            field_only="Word",
+            logger=logger,
+        )
+
+        assert ok is True, logger.errors
+        assert [n["Note"] for n in copied] == ["src"]

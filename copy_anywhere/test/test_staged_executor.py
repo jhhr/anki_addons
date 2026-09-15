@@ -395,6 +395,82 @@ class TestConditions:
         assert note["Note"] == ""
 
 
+class TestASearchConditionThatDoesNotMatch:
+    """Where a non-matching search condition stops, once it is not the outermost stage.
+
+    A condition whose predicate is an Anki search carries `predicate_kind: note_query`, and a
+    non-match there does not take the `else` branch: it raises `TriggerSkipped`, which
+    discards everything queued for this trigger note and reports the note as skipped. That is
+    right for the one shape the migrator builds -- format 1 evaluated the copy condition
+    before anything ran, so the migrated stage wraps the entire definition and there is
+    nothing queued yet to lose.
+
+    It is not right anywhere else, and anywhere else is now authorable: the condition editor
+    offers "Match it as an Anki search", so the same marker can sit after other stages or
+    inside a loop body. There the skip reaches out of the block it is in, past stages that
+    already wrote, and throws their work away -- which no other stage in format 2 can do, and
+    which the definition reports as a success.
+    """
+
+    def test_a_write_before_it_is_not_thrown_away(self, col, note, logger):
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("written"))]),
+            d.condition(
+                d.text("tag:nothing-has-this"),
+                [d.edit_note("trigger", [d.write("Meaning", d.text("matched"))])],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            ),
+        ])
+        ok, copied = run(definition, note, logger)
+
+        assert ok is True, logger.errors
+        # The branch did not run...
+        assert note["Meaning"] == "cat"
+        # ...but the stage before the condition did, and a stage that ran is committed.
+        assert note["Note"] == "written"
+        assert [n.id for n in copied] == [note.id]
+
+    def test_it_ends_its_block_rather_than_the_definition(self, note, logger):
+        definition = d.staged(stages=[
+            d.condition(
+                d.text("tag:nothing-has-this"),
+                [d.edit_note("trigger", [d.write("Meaning", d.text("matched"))])],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            ),
+            d.edit_note("trigger", [d.write("Note", d.text("after"))]),
+        ])
+        ok, _ = run(definition, note, logger)
+
+        assert ok is True, logger.errors
+        assert note["Meaning"] == "cat"
+        assert note["Note"] == "after"
+
+    def test_inside_a_loop_it_stops_at_the_iteration(self, col, note, logger):
+        # The sharpest case: one non-matching note out of two silently discards the write the
+        # other one earned, so the definition writes nothing at all and reports no problem.
+        keep = real_anki.add_note(col, VOCAB, {"Word": "keep"}, tags=["pool", "wanted"])
+        drop = real_anki.add_note(col, VOCAB, {"Word": "drop"}, tags=["pool"])
+        definition = d.staged(stages=[
+            d.note_query("found", "tag:pool"),
+            d.for_each_note("found", [
+                d.condition(
+                    d.text("tag:wanted"),
+                    [d.edit_note("note", [d.write("Note", d.text("kept"))])],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "note"},
+                ),
+            ]),
+        ])
+        ok, copied = run(definition, note, logger)
+
+        assert ok is True, logger.errors
+        assert [n["Note"] for n in copied] == ["kept"]
+        assert [n.id for n in copied] == [keep.id]
+        assert col.get_note(drop.id)["Note"] == ""
+
+
 class TestCardsAndCardStages:
     def test_a_card_query_and_card_loop_move_each_card_on_its_own(self, col, note, logger):
         definition = d.staged(stages=[
@@ -832,6 +908,46 @@ class TestCalls:
         assert logger.has_error("call cycle")
 
 
+
+    def test_a_callee_skipped_by_its_copy_condition_fails_its_caller(
+        self, col, note, logger
+    ):
+        # Not a defect on its own -- it is the runtime consequence the analyser is there to
+        # predict, and it is pinned here so the analyser test beside it
+        # (`TestASearchConditionCanEndTheBlockToo`) is about something real: a callee whose
+        # migrated copy condition does not match hands back no exports, and the caller fails
+        # on the one it asked for.
+        producer = d.variable("H1", d.text("x"))
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[
+                d.condition(
+                    d.text("tag:nothing-has-this"),
+                    [],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                    unmatched_skips_trigger=True,
+                ),
+                producer,
+            ],
+            exports=[d.export("H1", producer)],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition("child-guid", outputs=[{"export": "H1", "result": "got"}]),
+                d.edit_note("trigger", [d.write("Note", d.text("{{got}}"))]),
+            ],
+        )
+
+        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+
+        assert ok is False
+        assert logger.has_error("exports no 'H1'")
+
+
 class TestFacades:
     def test_code_cannot_write_through_a_facade(self, note, logger):
         definition = d.staged(stages=[
@@ -1122,3 +1238,115 @@ class TestRunningForOneEditorField:
         )
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
+
+
+class TestADefinitionWhoseTriggersKeyIsNull:
+    """A stored `triggers: null`, which every reader but one already tolerates.
+
+    `triggers` is optional in the sense that matters here: the config is hand-editable JSON,
+    a definition written by a half-finished edit or an older build can carry the key as
+    `null`, and nine readers across `configuration.py`, `preview.py` and `stage_document.py`
+    spell it `(definition.get("triggers") or {})` for exactly that reason -- a null is read as
+    "no triggers configured", which is a definition that runs against whatever it is given.
+
+    `copy_for_single_trigger_note` is the tenth, and spells it `.get("triggers", {})`. The
+    default only applies when the key is absent, so a present null comes back as `None` and
+    the next line calls `.get` on it. That is not a definition failure -- it is an
+    `AttributeError` escaping the `CollectionOp`, which Anki shows as its error dialog with a
+    traceback, and which stops the bulk run over every remaining note.
+    """
+
+    def definition(self):
+        staged = d.staged(stages=[d.edit_note("trigger", [d.write("Note", d.text("ran"))])])
+        staged["triggers"] = None
+        return staged
+
+    def test_it_runs_rather_than_raising(self, note, logger):
+        ok, copied = run(self.definition(), note, logger)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "ran"
+        assert [n.id for n in copied] == [note.id]
+
+    def test_a_null_is_read_as_no_deck_whitelist(self, col, note, logger):
+        # The line that dereferences it is the deck whitelist check, and "no whitelist" is
+        # what every other reader concludes from the same null.
+        deck_id = col.decks.id("Somewhere Else")
+        ok, _copied = run(self.definition(), note, logger, deck_id=deck_id)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "ran"
+
+
+class TestWideningTheUnfocusListOfAMigratedDefinition:
+    """Two unfocus gates, only one of which the editor used to be able to reach.
+
+    Format 2 watches editor fields for the definition as a whole: `triggers.on_unfocus` names
+    them, the trigger editor is where they are chosen, and passing that test is what starts a
+    run. A migrated write carries a second, older gate -- `unfocus_trigger_fields`, the
+    per-write list format 1 asked separately -- and `run_edit_note` consults it for every
+    write that has the key.
+
+    Nothing in the editor showed or wrote that key, so it was the one thing about a write
+    that could not be changed: `FieldWriteRow` had a field picker, a "write if" combo and a
+    value, and `apply()` wrote those three. Adding a field to the definition's unfocus list
+    therefore widened the first gate and not the second -- the definition ran on that field
+    and every migrated write in it was skipped.
+
+    What made that silent rather than merely ineffective is that the gate is per write and
+    nothing else in the stage has one: tags and card actions in the same `edit_note` apply
+    unconditionally, so the note really was modified, saved and reported as copied into, with
+    the tag added and the field it was meant to fill still empty. That last part is format
+    1's own behaviour, pinned deliberately in `test_writing_one_note.py`, so it is the gate
+    that has to become reachable, not the tags that have to stop.
+    """
+
+    @pytest.fixture
+    def note(self, col):
+        return real_anki.add_note(
+            col, VOCAB, {"Word": "neko", "Reading": "ne-ko", "Meaning": ""}
+        )
+
+    def migrated(self, watched_fields, write_watches="Word"):
+        from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
+
+        definition = migrate_definition_v1_to_v2(
+            d.within_note(
+                field_to_field_defs=[
+                    d.field_to_field(
+                        "Meaning",
+                        "{{Word}}",
+                        copy_on_unfocus_when_edit=True,
+                        copy_on_unfocus_trigger_field=write_watches,
+                    )
+                ],
+                add_tags=d.quoted_list(["ran"]),
+                copy_on_unfocus_when_edit=True,
+            )
+        )
+        definition["triggers"]["on_unfocus"]["edit_fields"] = list(watched_fields)
+        return definition
+
+    def test_the_write_still_runs_for_the_field_it_was_migrated_with(self, note, logger):
+        ok, _copied = run(self.migrated(["Word"]), note, logger, field_only="Word")
+
+        assert ok is True, logger.errors
+        assert note["Meaning"] == "neko"
+
+    def test_widening_the_writes_own_list_is_what_makes_it_run_for_another(
+        self, note, logger
+    ):
+        # What the row's "only when leaving" box now writes. Widening the definition's list
+        # alone still does not reach this gate -- the two are separate questions, and format
+        # 1 asked both -- but the gate is no longer invisible, so the answer can be changed.
+        definition = self.migrated(["Word", "Reading"], write_watches='"Word", "Reading"')
+
+        ok, _copied = run(definition, note, logger, field_only="Reading")
+
+        assert ok is True, logger.errors
+        assert note["Meaning"] == "neko"
+
+    def test_a_field_neither_gate_claims_still_writes_nothing(self, note, logger):
+        _ok, _copied = run(self.migrated(["Word"]), note, logger, field_only="Meaning")
+
+        assert note["Meaning"] == ""
