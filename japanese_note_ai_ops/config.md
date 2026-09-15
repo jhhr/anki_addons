@@ -184,7 +184,9 @@ notes an Anki search query finds (written to the addon's `output/` folder). An e
 that export.
 
 - `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
-- `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify fine-tuning data"
+- `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
+  (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
+  kanjified sentence fields, one row per distinct sentence)
 - `extract_words_fine_tuning_data_query`: notes for "Export extract-words fine-tuning data"
 
 ## optipnal specification

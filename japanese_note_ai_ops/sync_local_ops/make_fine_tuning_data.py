@@ -13,10 +13,6 @@ from ..async_api_ops.extract_words import (
     get_extract_words_prompt,
     normalize_word_tuple_for_test_comparison,
 )
-from ..async_api_ops.kanjify_sentence import (
-    KANJIFIED_SENTENCE_RETURN_FIELD,
-    get_kanjify_sentence_prompt,
-)
 from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
@@ -95,22 +91,35 @@ def _write_split_fine_tuning_files(output_path: str, entries: list[str]) -> tupl
     return len(training_entries), len(validation_entries)
 
 
+def _build_sentence_rows(
+    notes: Sequence[tuple[NoteId, str, str]], value_key: str
+) -> tuple[list[str], int]:
+    rows: dict[str, dict] = {}
+    duplicates = 0
+    for nid, sentence, value in notes:
+        row = rows.get(sentence)
+        if row is None:
+            rows[sentence] = {"sentence": sentence, value_key: value, "nids": [nid]}
+        else:
+            duplicates += 1
+            row["nids"].append(nid)
+    return [json.dumps(row, ensure_ascii=False) for row in rows.values()], duplicates
+
+
 def build_migration_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[str], int]:
     """One jsonl row per distinct sentence, holding the sentence and its word list exactly as
     the fields have them: unparsed, so that invalid production data reaches the migration test
     as it is. `notes` are (note id, sentence, word list). A row's `nids` are every note with
     that sentence, so that a tool editing the sentence reaches them all. Returns the rows and
     how many duplicate sentences were folded in, the first note's word list winning."""
-    rows: dict[str, dict] = {}
-    duplicates = 0
-    for nid, sentence, word_list in notes:
-        row = rows.get(sentence)
-        if row is None:
-            rows[sentence] = {"sentence": sentence, "word_list": word_list, "nids": [nid]}
-        else:
-            duplicates += 1
-            row["nids"].append(nid)
-    return [json.dumps(row, ensure_ascii=False) for row in rows.values()], duplicates
+    return _build_sentence_rows(notes, "word_list")
+
+
+def build_kanjify_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[str], int]:
+    """Rows like `build_migration_rows`, holding the furigana sentence and its kanjified
+    version as the fields have them. No prompt is baked in, so a fine-tuning or eval format
+    can be built from the rows with whatever prompt is current."""
+    return _build_sentence_rows(notes, "kanjified")
 
 
 def _run_with_config(write: Callable[[dict, Sequence[NoteId]], str], nids: Sequence[NoteId]):
@@ -125,8 +134,8 @@ def make_extract_words_migration_data(nids: Sequence[NoteId], parent: Any = None
     _run_with_config(_write_extract_words_migration_data, nids)
 
 
-def make_kanjify_sentence_fine_tuning_data(nids: Sequence[NoteId], parent: Any = None) -> None:
-    _run_with_config(_write_kanjify_sentence_fine_tuning_data, nids)
+def make_kanjify_sentence_data(nids: Sequence[NoteId], parent: Any = None) -> None:
+    _run_with_config(_write_kanjify_sentence_data, nids)
 
 
 def make_extract_words_fine_tuning_data(nids: Sequence[NoteId], parent: Any = None) -> None:
@@ -177,52 +186,40 @@ def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) ->
     )
 
 
-def _write_kanjify_sentence_fine_tuning_data(config: dict, nids: Sequence[NoteId]) -> str:
-    entries: list[str] = []
+def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
+    """Export furigana sentences with their kanjified versions, one row per sentence, for
+    evaluating and fine-tuning `kanjify_sentence`."""
+    notes: list[tuple[NoteId, str, str]] = []
     skipped = 0
 
     os.makedirs(_OUTPUT_DIR, exist_ok=True)
-    output_path = os.path.join(_OUTPUT_DIR, "kanjify_sentence_fine_tuning.jsonl")
+    output_path = os.path.join(_OUTPUT_DIR, "kanjify_sentence_data.jsonl")
 
     for nid in nids:
-        log_prefix = f"Make kanjify fine-tuning data--nid:{nid}--"
         note = mw.col.get_note(nid)
         note_type = note.note_type()
-        furigana_field = get_field_config(config, "furigana_sentence_field", note_type)
-        kanjified_field = get_field_config(config, "kanjified_sentence_field", note_type)
-
-        sentence = note[furigana_field].strip() if furigana_field else ""
-        kanjified = note[kanjified_field].strip() if kanjified_field else ""
-
-        if not sentence or not kanjified:
-            logger.debug(f"{log_prefix}Skipping: missing sentence or kanjified field.")
+        try:
+            furigana_field = get_field_config(config, "furigana_sentence_field", note_type)
+            kanjified_field = get_field_config(config, "kanjified_sentence_field", note_type)
+        except Exception:
+            skipped += 1
+            continue
+        if furigana_field not in note or kanjified_field not in note:
             skipped += 1
             continue
 
-        prompt_text = get_kanjify_sentence_prompt(sentence)
-        assistant_json = json.dumps(
-            {KANJIFIED_SENTENCE_RETURN_FIELD: kanjified}, ensure_ascii=False
-        )
-        entries.append(
-            json.dumps(
-                {
-                    "messages": [
-                        {"role": "system", "content": DEFAULT_SYSTEM_INSTRUCTION},
-                        {"role": "user", "content": prompt_text},
-                        {"role": "assistant", "content": assistant_json},
-                    ]
-                },
-                ensure_ascii=False,
-            )
-        )
+        sentence = note[furigana_field].strip()
+        kanjified = note[kanjified_field].strip()
+        if not sentence or not kanjified:
+            skipped += 1
+            continue
+        notes.append((nid, sentence, kanjified))
 
-    training_written, validation_written = _write_split_fine_tuning_files(output_path, entries)
-    validation_output_path = _get_validation_output_path(output_path)
+    rows, duplicates = build_kanjify_rows(notes)
+    _write_jsonl_entries(output_path, rows)
     return (
-        "Wrote "
-        f"{training_written} kanjify training examples to {output_path} and "
-        f"{validation_written} validation examples to {validation_output_path}. "
-        f"Skipped {skipped} notes."
+        f"Wrote {len(rows)} kanjify sentences to {output_path}. Skipped {duplicates} duplicate"
+        f" sentences and {skipped} notes missing a sentence or kanjified sentence."
     )
 
 
@@ -288,7 +285,7 @@ def _write_extract_words_fine_tuning_data(config: dict, nids: Sequence[NoteId]) 
 # Config key holding the search query for each export, in the order they run.
 TEST_DATA_EXPORTS: list[tuple[str, Callable[[dict, Sequence[NoteId]], str]]] = [
     ("extract_words_migration_data_query", _write_extract_words_migration_data),
-    ("kanji_sentence_fine_tuning_data_query", _write_kanjify_sentence_fine_tuning_data),
+    ("kanji_sentence_fine_tuning_data_query", _write_kanjify_sentence_data),
     ("extract_words_fine_tuning_data_query", _write_extract_words_fine_tuning_data),
 ]
 

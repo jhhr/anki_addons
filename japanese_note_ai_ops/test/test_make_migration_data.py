@@ -35,6 +35,18 @@ class BuildMigrationRowsTests(unittest.TestCase):
         )
 
 
+class BuildKanjifyRowsTests(unittest.TestCase):
+    def test_a_row_holds_both_sentences_and_every_note_id(self):
+        rows, duplicates = make_fine_tuning_data.build_kanjify_rows(
+            [(1, "ねこ", "<k>猫[ねこ]</k>"), (2, "ねこ", "猫")]
+        )
+        self.assertEqual(duplicates, 1)
+        self.assertEqual(
+            [json.loads(r) for r in rows],
+            [{"sentence": "ねこ", "kanjified": "<k>猫[ねこ]</k>", "nids": [1, 2]}],
+        )
+
+
 class RunTestDataExportsTests(unittest.TestCase):
     def test_each_export_gets_the_notes_its_query_finds(self):
         calls = []

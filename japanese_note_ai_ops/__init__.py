@@ -89,7 +89,7 @@ from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
     deduplicate_existing_meaning_notes_selected_notes,
 )
 from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
-    make_kanjify_sentence_fine_tuning_data,
+    make_kanjify_sentence_data,
     make_extract_words_fine_tuning_data,
     make_extract_words_migration_data,
     make_all_test_data,
@@ -141,7 +141,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     migrate_word_arrays_action = QAction("Migrate word lists to word arrays", mw)
     build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
-    export_kanjify_ft_action = QAction("Export kanjify fine-tuning data", mw)
+    export_kanjify_ft_action = QAction("Export kanjify test data", mw)
     export_extract_words_ft_action = QAction("Export extract-words fine-tuning data", mw)
     export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
@@ -256,7 +256,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     )
     qconnect(
         export_kanjify_ft_action.triggered,
-        lambda: make_kanjify_sentence_fine_tuning_data(selected_nids, parent=browser),
+        lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
     )
     qconnect(
         export_extract_words_ft_action.triggered,
