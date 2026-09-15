@@ -132,6 +132,25 @@ outer list plus `store` is how a loop reports anything back.
   can invalidate an export -- and only from the skipping stage on. Its own result counts as
   maybe-unset too, since a stage that skips never declared one; a result produced before it
   is set whichever way the skip goes and stays exportable.
+* **Only a migrated copy condition skips the trigger note.** Format 1 evaluated its copy
+  condition before anything else and skipped the whole note when it did not match, so the
+  migrator marks that stage `unmatched_skips_trigger` and the executor honours it: nothing
+  is committed and the note is counted as skipped rather than copied into. A condition
+  authored here is an ordinary branch however its predicate is matched -- a non-match takes
+  the `else`, empty or not, and the definition carries on. The marker rather than the
+  predicate kind, because the two are different questions: inferring it from "it is a search
+  and has no `else`" made a condition anywhere but the outermost position reach out of its
+  block and discard what earlier stages had already written, while reporting success. At the
+  root the marked stage is a third way the rest of the block may not run, so it invalidates
+  exports from itself on, exactly as the two `skip_block` policies do.
+* **A stage that only feeds one migrated field write shares its unfocus gate.** Migrating
+  Destination-to-sources moves each write's per-source read in front of it, into a list, a
+  loop and a reduce, and that is where the work is -- the code or the process chain runs once
+  per source note there. So the migrator copies the write's `unfocus_trigger_fields` and its
+  two `unfocus_when_*` flags onto those stages and the executor skips them the same way.
+  Without it an unfocus of one field evaluated every other write's right-hand side once per
+  source note, and a raising one failed the definition, discarding the write that had
+  actually been triggered.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
   note but the trigger, or to any card, cannot run against a note that has not been added
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
@@ -231,8 +250,25 @@ run, then the exports.
 * A condition says which of its two forms it is. *Match it as an Anki search against a note*
   is what a migrated copy condition is -- a search, run against the note the row names -- and
   it has no code form; turning it off leaves the ordinary expression a condition authored
-  here holds. *Only check it during a sync* is format 1's `condition_only_on_sync`: outside
-  a sync the condition is not checked and the branch runs.
+  here holds, and drops the copy-condition marker with it, since a stage that is not a search
+  is not format 1's condition either. *Only check it during a sync* is format 1's
+  `condition_only_on_sync`: outside a sync the condition is not checked and the branch runs.
+* A reduce says which of its two forms it is, and shows only the controls that form reads.
+  *Join them into one text* is what every migrated reduce is, and its separator is format 1's
+  `select_card_separator`; *fold them with an expression* is the one that runs the starting
+  value and the per-item expression. Showing both at once meant a migrated join offered two
+  expression editors the executor ignores and no way to see the separator at all.
+* A migrated field write says which editor fields trigger it, beside its *write if* combo.
+  Format 1 asked that per write and the executor still honours the answer, so leaving it off
+  the row made it the one thing about a write that could not be changed -- and since tags and
+  card actions in the same stage are not gated, a write skipped by it left the note tagged
+  and saved with the field still empty. A write authored here has no such list: format 2
+  watches fields for the definition as a whole.
+* Deleting a stage takes its export with it, and a call stage whose callee is missing keeps
+  the results it binds. Both are the same rule the marked rows above follow: the panel is
+  rebuilt from the definition, so anything it cannot currently offer has to be preserved
+  rather than written back as "not wanted" -- otherwise the choice disappears on the way past
+  instead of when the user makes it.
 * **Save** is disabled while the analyser has a complaint, and the complaints are listed
   under the stage list with the path of the stage each one belongs to. Warnings (several
   trigger note types, file writes outside undo) do not block a save.
