@@ -111,6 +111,7 @@ Policy on edge cases (not be considered an exhaustive list, but can be used as a
 The basic test: kanjify a word when it carries a meaning of its own; leave it in kana when it only does grammar. Whether the word conjugates is not the test.
 
 Do not kanjify:
+- Loanwords (gairaigo) in katakana, even when an ateji kanji spelling exists: コーヒー not 珈琲, ズボン not 洋袴, ラーメン, カレー, ダイヤモンド, ガラス, プラチナ all stay katakana. Native Japanese or Sino-Japanese words that happen to be written in katakana are kanjified with the katakana kept in the furigana (リンゴ becomes 林檎[リンゴ], ゴミ 塵[ゴミ], ヤツ 奴[ヤツ], ダメ 駄目[ダメ]).
 - あげる when meant as "to give". あげる is written in hiragana specifically to indicate that it is different from 揚げる, 上げる or 挙げる. This is an exception to the basic test.
 - The copula である in all its forms: である, であった, であり, であって, であれば, であろう. It is the copula like だ and です, not で + 有る.
 - ない in negations: the auxiliary in negated verbs (食べない), ではない / じゃない / ではなかった after nouns and na-adjectives, and くない / くなかった after i-adjectives (高くない). This ない is not 無い written in hiragana, but a grammatical auxiliary.
@@ -124,15 +125,17 @@ Do not kanjify:
 ― Gikun-type, reading-as-meaning conversions. Only perform kanjification, if there is some evidence of usage in dictionaries.
 
 Do kanjify:
-- ない when used as a standalone word, including conjugated forms like なかった, なくて. 無い is even currently used in modern text, but is simply often written in hiragana.
+- ない when used as a standalone word, including conjugated forms like なかった, なくて, なく. 無い is even currently used in modern text, but is simply often written in hiragana. After a noun and は, が, も or しか it is this standalone 無い, not the negation of the copula: "ことはなかった" becomes "<k> 事[こと]</k>は<k> 無[な]かった</k>", "一 膳[ぜん]しかない" becomes "一 膳[ぜん]しか<k> 無[な]い</k>". Also inside set phrases and after kanji: "絶[た]え 間[ま]なく" becomes "絶[た]え 間[ま]<k> 無[な]く</k>". Only では / じゃ + ない stays kana.
 - いる and いく when is used as a standalone verb, for example 彼は家にいる, あっちにいく
 - ある when used as a standalone verb of existence or possession, for example 机の上に本がある (not the copula である).
-- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification. This includes every する after a noun already in kanji, which is easy to overlook: "遅刻[ちこく]している" becomes "遅刻[ちこく]<k> 為[し]ている</k>", "に 関[かん]して" becomes "に 関[かん]<k> 為[し]て</k>", "支給[しきゅう]される" becomes "支給[しきゅう]<k> 為[さ]れる</k>".
+- する, even in suru-verbs. Historically, suru-verbs were written with 為る so this is a valid kanjification. This includes every する after a noun already in kanji, which is easy to overlook: "遅刻[ちこく]している" becomes "遅刻[ちこく]<k> 為[し]ている</k>", "に 関[かん]して" becomes "に 関[かん]<k> 為[し]て</k>", "支給[しきゅう]される" becomes "支給[しきゅう]<k> 為[さ]れる</k>". The same after a noun with the honorific お or ご, and after kana words such as onomatopoeia: "お 願[ねが]いした" becomes "<k> 御[お]</k> 願[ねが]い<k> 為[し]た</k>", "にこにこしています" becomes "にこにこ<k> 為[し]ています</k>".
+- The kana part of a word that is already partly written in kanji, when that part has a kanji spelling: "引[ひ]っかけて" becomes "引[ひ]っ<k> 掛[か]けて</k>", "近[ちか]づいている" becomes "近[ちか]<k> 付[づ]いている</k>".
+- The demonstrative adverbs こう 斯う, そう 然う, どう 如何 (also in どうも, どうして, どうにも), and いう after them as 言う: "そういう" becomes "<k> 然[そ]う 言[い]う</k>", "どうもどうも" becomes "<k> 如何[どう]</k>も<k> 如何[どう]</k>も". その / それ stay 其の / 其れ, この / これ 此の / 此れ.
 - Particle-like words and set phrases that have a kanji spelling, even though they are mostly written in kana: まで 迄, だけ 丈, くらい / ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, など 等, たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いや 否, ああ 嗚呼, いつ 何時, どれ / どの 何れ / 何の, まるで 丸で, ちかづく 近付く. For example "これだけは" becomes "<k> 此[こ]れ 丈[だけ]</k>は", "どれくらい" becomes "<k> 何[ど]れ 位[くらい]</k>", "きちがいみたいに" becomes "<k> 気違[きちが]い 見[み]たい</k>に".
 - なる as 成る in all its uses, including ようになる, ことになる and くなる.
 - The formal nouns こと, もの, ため, よう, ところ as 事, 物, 為, 様, 所 in all their uses, including grammatical ones like ことができる, ものだ, ために, ようだ, ところだ.
 - によって, により, による, によれば, によると as に依る or に因る, chosen by meaning: 因る when it gives a cause or reason (事故[じこ]に因って 壊[こわ]れた), 依る when it means "by means of", "depending on" or "according to" (人[ひと]に依って 違[ちが]う, 天気予報[てんきよほう]に依ると).
-- Any word with several possible kanji spellings (よる: 依る, 因る, 拠る, 寄る; はかる: 図る, 計る, 測る, 量る; とる: 取る, 採る, 撮る, 執る): choose the kanji by the meaning in this sentence.
+- Any word with several possible kanji spellings (よる: 依る, 因る, 拠る, 寄る; はかる: 図る, 計る, 測る, 量る; とる: 取る, 採る, 撮る, 執る): choose the kanji by the meaning in this sentence. In particular: ある is 在る when something is located somewhere (谷[たに]に 在[あ]る, 向[む]こうに 在[あ]る) and 有る for possession, events and abstract existence (自信[じしん]が 有[あ]る, 祭[まつ]りが 有[あ]る); いい is 良い, except 好い in いい加減; ただ and たった meaning "only, just" are 只 (只[ただ] 今[いま], 只[たった] 一回[いっかい]).
 - なんか when it is clearly a contraction of なにか its removal would change the questioning meaning of a phrase, for example なんか食べたい
 - やすい as used in verbs like 食べやすい, 書きやすい, etc. This is a a form of 易い
 - the honorific prefix お
@@ -152,7 +155,7 @@ Example sentence 2: ナツキ 殿[どの]ですよね？ 兄[あに]から 聞[�
 Kanjified example 2: ナツキ 殿[どの]ですよね？ 兄[あに]から 聞[き]いています。<k> 其[そ]</k>の 数々[かずかず]の<k> 噂[うわさ]</k>も<b><k> 兼々[かねがね]</k></b>。
 
 Example sentence 3: ズボンのすそを<b>まくって</b> 作業[さぎょう]をした。
-Kanjified example 3: <k> 洋袴[ズボン]</k>の<k> 裾[すそ]</k>を<b><k> 捲[まく]って</k></b> 作業[さぎょう]を<k> 為[し]た</k>。
+Kanjified example 3: ズボンの<k> 裾[すそ]</k>を<b><k> 捲[まく]って</k></b> 作業[さぎょう]を<k> 為[し]た</k>。
 
 Example sentence 4: おかげで　この 守銭奴[しゅせんど]の 性[しょう] 悪天使[あくてんし]に ぼったくられたぜ。
 Kanjified example 4: <k> 御蔭[おかげ]</k>で<k> 此[この]</k> 守銭奴[しゅせんど]の 性[しょう] 悪天使[あくてんし]にぼっ<k> 手繰[たく]られた</k>ぜ。
@@ -173,7 +176,7 @@ Example sentence 9: しかもけっして 食欲[しょくよく]がないから
 Kanjified example 9: <k> 然[しか]も</k><k> 決[け]っして</k> 食欲[しょくよく]が<k> 無[な]い</k>からではなかったのだ。<k> 又[また]</k>、 彼[かれ]の 口[くち]にもっと<k> 合[あ]う</k><k> 様[よう]な</k><k> 別[べつ]</k>な<k> 食[た]べ物[もの]</k>を<k> 持[も]ってくる</k>のだろうか。 妹[いもうと]が 自分[じぶん]で<k> 然[そ]う</k><k> 為[し]てくれない</k>だろうか。
 
 Example sentence 10: 私[わたし]は 毎朝[まいあさ]<b>コーヒー</b>を 飲[の]みます。
-Kanjified example 10: 私[わたし]は 毎朝[まいあさ]<b><k> 珈琲[コーヒー]</k></b>を 飲[の]みます。
+Kanjified example 10: 私[わたし]は 毎朝[まいあさ]<b>コーヒー</b>を 飲[の]みます。
 
 Example sentence 11: <b> 上司[じょうし]</b>に 相談[そうだん]してみます。
 Kanjified example 11: <b> 上司[じょうし]</b>に 相談[そうだん]<k> 為[し]てみます</k>。

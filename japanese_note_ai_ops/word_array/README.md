@@ -281,7 +281,8 @@ furigana groups placed by their kana and scored right / wrong kanji / missed / e
 before draft 1: claude-sonnet-5 92.4/77.2%, gpt-5.6-luna 89.3/79.7%, gemini-3.5-flash-lite 87.0/73.1%,
 `terminal-claude-opus-5` 83.9/82.3%, `terminal-claude-haiku-4-5` 61.2/53.5%. Draft 1 (する after a
 kanji noun, particle-like words 迄/丈/位/見たい…): sonnet-5 93.0/88.8%, luna 90.0/89.2%, gemini
-88.4/83.8%. Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
+88.4/83.8%. Draft 2 (loanwords stay katakana, 無い after は/しか, kana part of a kanji word, 斯う/然う/如何,
+在る/有る, 良い/好い, 只): sonnet-5 94.4/91.6%, luna 90.9/90.9%, gemini 89.9/86.3%. Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.
