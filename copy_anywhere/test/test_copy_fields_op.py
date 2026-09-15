@@ -405,9 +405,7 @@ class TestNoteIdsPerDefinition:
         assert results.changes == OpChanges()
         assert "Got 1 note id lists for 2 definitions" in capsys.readouterr().out
 
-    def test_a_list_longer_than_the_definitions_is_rejected_too(
-        self, col, run_copy_fields, capsys
-    ):
+    def test_a_list_longer_than_the_definitions_is_rejected_too(self, col, run_copy_fields, capsys):
         # A surplus list would never be indexed, but it means the caller's lists and
         # definitions have drifted apart, so which list belongs to which is unknowable.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})

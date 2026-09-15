@@ -360,7 +360,7 @@ Example results 2:
 }}
 
 This example includes する verb handling and adverbial adjective handling:
-Example sentence 2: <k> 彼[あ]の</k> 飛行機[ひこうき]は<b> 間[ま]も<k> 無[な]く</k></b> 着陸[ちゃくりく]<k> 為[し]ます</k>ね。
+Example sentence 3: <k> 彼[あ]の</k> 飛行機[ひこうき]は<b> 間[ま]も<k> 無[な]く</k></b> 着陸[ちゃくりく]<k> 為[し]ます</k>ね。
 Example results 3:
 {{
   "nouns": [["飛行機","ひこうき"],["各陸","ちゃくりく"],["間","ま"]],
@@ -384,7 +384,7 @@ Example results 3:
 }}
 
 This example includes long expression handling with all its individual components added:
-Example sentence 3:  <k> 此[こ]れ</k>は 正[まさ]に 天高[てんたか]く 馬肥[うまこ]ゆる 秋[あき]と 言[い]った<k> 物[も]ん</k>だな。
+Example sentence 4:  <k> 此[こ]れ</k>は 正[まさ]に 天高[てんたか]く 馬肥[うまこ]ゆる 秋[あき]と 言[い]った<k> 物[も]ん</k>だな。
 Example result 4:
 {{
   "nouns": [["天","てん"],["馬","うま"],["秋","あき"],["物","もの"]],
@@ -403,12 +403,12 @@ Example result 4:
   "pronouns": [["此れ","これ"]],
   "suffixes": [],
   "prefixes": [],
-  "expressions": [["天高く馬肥ゆる秋","てんたかくうまこゆるあき"]],
+  "expressions": [["天高く馬肥ゆる秋","てんたかくうまこゆるあき"],["と言う","という"]],
   "yojijukugo": [],
 }}
 
 This example includes yojijukugo handling:
-Example sentence 4: 昭和[しょうわ]10 年[ねん](1935 年[ねん]) 頃[ごろ]から、<b>八紘一宇[はっこういちう]</b><k> 等[など]</k>のスローガンが 掲[かか]げられる<k> 様[よう]に</k><k> 成[な]った</k>。
+Example sentence 5: 昭和[しょうわ]10 年[ねん](1935 年[ねん]) 頃[ごろ]から、<b>八紘一宇[はっこういちう]</b><k> 等[など]</k>のスローガンが 掲[かか]げられる<k> 様[よう]に</k><k> 成[な]った</k>。
 Example result 5:
 {{
   "nouns": [["昭和","しょうわ"],["年","ねん"],["スローガン","すろーがん"],["様","よう"]],
@@ -432,7 +432,7 @@ Example result 5:
 }}
 
 This example includes proper noun handling:
-Example sentence 5: <b> 不甲斐[ふがい]ない</b> 里樹[りしゅ]<k> 様[さま]</k>の 侍女[じじょ]<k> 達[たち]</k>を 阿多[ああでぅお]<k> 様[さま]</k>の 侍女[じじょ]<k> 達[たち]</k>が<k> 諫[いさ]めていた</k>。
+Example sentence 6: <b> 不甲斐[ふがい]ない</b> 里樹[りしゅ]<k> 様[さま]</k>の 侍女[じじょ]<k> 達[たち]</k>を 阿多[ああでぅお]<k> 様[さま]</k>の 侍女[じじょ]<k> 達[たち]</k>が<k> 諫[いさ]めていた</k>。
 Example result 6:
 {{
   "nouns": [["侍女","じじょ"]],
@@ -456,7 +456,7 @@ Example result 6:
 }}
 
 This example includes prefix handling:
-Example sentence 6: <k> 危[あや]うく</k><b>某[ぼう]</b> 業者[ぎょうしゃ]の 甘言[かんげん]に 騙[だま]され、 大損[おおそん]<k> 為[す]る</k><k> 所[ところ]</k>でした。
+Example sentence 7: <k> 危[あや]うく</k><b>某[ぼう]</b> 業者[ぎょうしゃ]の 甘言[かんげん]に 騙[だま]され、 大損[おおそん]<k> 為[す]る</k><k> 所[ところ]</k>でした。
 Example result 7:
 {{
   "nouns": [["業者","ぎょうしゃ"],["甘言","かんげん"],["大損","おおそん"],["所","ところ"]],
@@ -480,7 +480,7 @@ Example result 7:
 }}
 
 This example includes suffix handling:
-Example sentence 7: <k> 一[ひと]つ</k>の 仕事[しごと]に<b> 於[お]いて</b> 困難[こんなん] 性[せい]の 尺度[しゃくど]で、 仕事[しごと]の 遂行[すいこう] 能力[のうりょく]が、<k> 其[そ]の</k> 頂上[ちょうじょう]を 越[こ]えない 場合[ばあい]は、 何時[いつ]まで 待[ま]っても 解決[かいけつ]<k> 為[し]ない</k>。
+Example sentence 8: <k> 一[ひと]つ</k>の 仕事[しごと]に<b> 於[お]いて</b> 困難[こんなん] 性[せい]の 尺度[しゃくど]で、 仕事[しごと]の 遂行[すいこう] 能力[のうりょく]が、<k> 其[そ]の</k> 頂上[ちょうじょう]を 越[こ]えない 場合[ばあい]は、 何時[いつ]まで 待[ま]っても 解決[かいけつ]<k> 為[し]ない</k>。
 Example results 8:
 {{
   "nouns": [["仕事","しごと"],["困難","こんなん"],["性","せい"],["尺度","しゃくど"],["遂行","すいこう"],["能力","のうりょく"],["頂上","ちょうじょう"],["場合","ばあい"],["解決","かいけつ"]],
@@ -504,7 +504,7 @@ Example results 8:
 }}
 
 This example includes counter and number handling:
-Example sentence 8: 二<b>隻[せき]</b>の 船[ふね]が 同時[どうじ]に 沈[しず]んだ。
+Example sentence 9: 二<b>隻[せき]</b>の 船[ふね]が 同時[どうじ]に 沈[しず]んだ。
 Example result 9:
 {{
   "nouns": [["船","ふね"],["同時","どうじ"]],
@@ -527,7 +527,7 @@ Example result 9:
 }}
 
 This example includes homonym handling whent the word (行く) is used twice times with different meanings:
-Example sentence 9: 最近[さいきん] 行[い]ったデート、どのベースまで 行[い]けた？
+Example sentence 10: 最近[さいきん] 行[い]ったデート、どのベースまで 行[い]けた？
 Example result 10:
 {{
   "nouns": [["デート","でーと"],["ベース","ベーす"]],
@@ -549,7 +549,7 @@ Example result 10:
   "yojijukugo": []
 }}
 
-This example includes honomym handling when the word's (言う) occurrence is the same meaning:
+This example includes homonym handling when the word's (言う) occurrence is the same meaning:
 Example sentence 11: そう 言[い]えば、 昨日[きのう]なにいった？
 Example results 11:
 {{
@@ -1093,8 +1093,6 @@ def bulk_extract_from_notes_op(
     if not config:
         showWarning("Missing addon configuration")
         return
-    model = config.get("extract_words_model", "")
-    rate_limit = config.get("rate_limits", {}).get(model, None)
     message = "Extracting words"
     op = extract_words_in_note
     return bulk_notes_op(
@@ -1107,7 +1105,6 @@ def bulk_extract_from_notes_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
-        rate_limit=rate_limit,
     )
 
 
@@ -1132,11 +1129,6 @@ def bulk_extract_words_test_compare_from_notes_op(
         return
     model = config.get("extract_words_model", "")
     logger.debug(f"Model for extract words test compare: {model}")
-    if model.startswith("/"):
-        # If the model is a custom endpoint, apply together rate_limit
-        rate_limit = config.get("rate_limits", {}).get("together", None)
-    else:
-        rate_limit = config.get("rate_limits", {}).get(model, None)
     message = "Testing extract words prompt"
     op = extract_words_test_compare_in_note
     return bulk_notes_op(
@@ -1149,7 +1141,6 @@ def bulk_extract_words_test_compare_from_notes_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
-        rate_limit=rate_limit,
     )
 
 
