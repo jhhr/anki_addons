@@ -28,7 +28,8 @@ def _wait_for(anki_session, web, expr: str) -> Any:
 
 
 def _close_dialog(anki_session, dialog) -> None:
-    dialog.reject()
+    if dialog.web is not None:
+        dialog.reject()
     dialog.deleteLater()
     anki_session.qtbot.wait(50)
 
@@ -100,5 +101,4 @@ def test_browser_and_reviewer_current_card_views_stay_populated_with_the_addon(
             )
             assert "88%" in updated_row
         finally:
-            manager.close()
             _close_dialog(anki_session, dialog)
