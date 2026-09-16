@@ -346,10 +346,10 @@ def kanjify_sentence_in_note(
                 if not reverses:
                     note.add_tag("kanjify_sentence_mismatch")
                     # try again until MAX_ATTEMPTS is reached
-                    print(f"Reversed sentence does not match original:\n{sentence}")
+                    logger.debug(f"Reversed sentence does not match original:\n{sentence}")
                     if attempt < MAX_ATTEMPTS:
                         logger.debug(
-                            "Reversed sentence does not match original. Attempt %d of %d",
+                            "Attempting re-kanjify %d of %d",
                             attempt,
                             MAX_ATTEMPTS,
                         )
