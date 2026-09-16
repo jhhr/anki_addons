@@ -29,9 +29,11 @@ def _wait_for(anki_session, web, expr: str) -> Any:
 
 def _close_dialog(anki_session, dialog) -> None:
     if dialog.web is not None:
-        dialog.reject()
-    dialog.deleteLater()
-    anki_session.qtbot.wait(50)
+        page = dialog.web.page()
+        with anki_session.qtbot.waitSignal(page.destroyed, timeout=WAIT):
+            dialog.reject()
+    with anki_session.qtbot.waitSignal(dialog.destroyed, timeout=WAIT):
+        dialog.deleteLater()
 
 
 def _make_card(mw, front: str, desired_retention: float | None = None):
