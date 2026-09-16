@@ -124,7 +124,7 @@ def collect(rows: list) -> list:
         raise anki_connect.AnkiConnectError(
             "The dump has no %s; re-run vocab_dupes with --fetch." % vocab_unlink.ARRAY_FIELD
         )
-    totals, where = vocab_unlink.links_in(rows)
+    totals, where, depths = vocab_unlink.links_in(rows)
     owners = vocab_unlink.owners_by_word(rows)
     by_nid = {row["nid"]: row for row in rows}
     cases = []
@@ -137,7 +137,9 @@ def collect(rows: list) -> list:
         kana = to_hiragana(reading)
         for link, count in by_link.most_common():
             link_kana = to_hiragana(link.reading)
-            family = vocab_morphology.family(spelling, kana, link.form, link_kana)
+            family = vocab_morphology.family(
+                spelling, kana, link.form, link_kana, depths[note_id].get(link, 0)
+            )
             if family not in JUDGEABLE:
                 continue
             others = owners.get((link.form, link_kana), set()) - {note_id}

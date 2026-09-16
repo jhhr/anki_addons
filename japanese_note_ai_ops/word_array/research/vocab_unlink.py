@@ -92,6 +92,12 @@ UNLINK_FAMILIES = {
 UNJUDGE_FAMILIES = {vocab_morphology.PHRASE_AROUND}
 # Families whose action is a standing decision rather than a rule, held until it is made.
 AWAITING_A_DECISION = {
+    # Not a decision so much as nothing to decide, but it belongs here rather than falling
+    # through: the checks below ask whether another note owns the link's word, and for a link
+    # whose reading slot is damaged the answer is yes for the wrong reason. DVD[DVD] is "owned"
+    # by a note that reads DVD as "DVD", so falling through would unlink the element from the
+    # note that has it right and hand it to the matcher, which would give it to the damaged one.
+    vocab_morphology.NOT_A_QUESTION: vocab_morphology.NOT_A_QUESTION,
     vocab_morphology.KU_ADVERB: "the adverbial く-forms are being decided one by one",
     vocab_morphology.SURU_COMPOUND: "the する-compounds are being decided one by one",
     vocab_morphology.ZURU_JIRU: "the ずる / じる pairs are being decided one by one",
@@ -141,15 +147,23 @@ def owners_by_word(rows: list) -> dict:
 
 
 def links_in(rows: list) -> tuple:
-    """`{note id: {Link: total}}` and `{note id: {Link: {sentence id: count}}}`, over every word
-    element of every array, sub-words included."""
+    """`{note id: {Link: total}}`, `{note id: {Link: {sentence id: count}}}` and
+    `{note id: {Link: shallowest depth}}`, over every word element of every array, sub-words
+    included.
+
+    The depth is what tells a word the sentence holds on its own from a piece of a compound,
+    and `vocab_morphology.family` needs it: rendaku inside a compound is not a disagreement
+    about how the word is read alone. The *shallowest* occurrence is the one kept, so a link
+    that appears as a free-standing word anywhere is still judged as one.
+    """
     totals: dict = defaultdict(Counter)
     where: dict = defaultdict(lambda: defaultdict(Counter))
+    depths: dict = defaultdict(dict)
     for row in rows:
         array = match_flags.decode_word_array(row.get(ARRAY_FIELD) or "")
         if not array:
             continue
-        for _, element in match_flags.iter_words(array):
+        for depth, element in match_flags.iter_words(array):
             if len(element) < 6:
                 continue
             note_id = match_flags.matched_note_id(element)
@@ -158,7 +172,9 @@ def links_in(rows: list) -> tuple:
             link = Link(element[2], element[3])
             totals[note_id][link] += 1
             where[note_id][link][row["nid"]] += 1
-    return totals, where
+            seen = depths[note_id].get(link)
+            depths[note_id][link] = depth if seen is None else min(seen, depth)
+    return totals, where, depths
 
 
 # --- deciding what to do ------------------------------------------------------------------
@@ -200,7 +216,7 @@ def decide(link: Link, anchor: str, kana: str, others: set) -> tuple:
     return RESPELL, "no note owns %s, so it is %s spelled another way" % (link.form, anchor)
 
 
-def decide_without_anchor(row: dict, link: Link, others: set) -> tuple:
+def decide_without_anchor(row: dict, link: Link, others: set, depth: int = 0) -> tuple:
     """`(action, why)` for a link on a note no element both spells and reads like.
 
     `(None, why)` when the difference is not this script's to settle, and `why` is then the
@@ -211,6 +227,7 @@ def decide_without_anchor(row: dict, link: Link, others: set) -> tuple:
         to_hiragana((row.get("vocab-kana") or "").strip()),
         link.form,
         to_hiragana(link.reading),
+        depth,
     )
     if name in AWAITING_A_DECISION:
         return None, AWAITING_A_DECISION[name]
@@ -237,7 +254,7 @@ def orphaned_notes(edits: list, rows: list) -> list:
     a duplicate for `vocab_dupes` to merge rather than a word the sentences never use. It is
     marked so, since unlinking leaves it dangling either way.
     """
-    totals, _ = links_in(rows)
+    totals, _, _ = links_in(rows)
     by_nid = {row["nid"]: row for row in rows}
     losing: dict = Counter()
     reads_alike: dict = defaultdict(list)
@@ -271,7 +288,7 @@ def plan(rows: list) -> tuple:
     """The edits to make, and the notes held back with the reason for each."""
     if rows and ARRAY_FIELD not in rows[0]:
         raise anki_connect.AnkiConnectError("The dump has no %s; re-run with --fetch." % ARRAY_FIELD)
-    totals, where = links_in(rows)
+    totals, where, depths = links_in(rows)
     owners = owners_by_word(rows)
     by_nid = {row["nid"]: row for row in rows}
     held: dict = defaultdict(list)
@@ -298,7 +315,9 @@ def plan(rows: list) -> tuple:
             # Each link is judged on its own by what kind of word it is.
             for link, count in by_link.most_common():
                 others = owners.get((link.form, to_hiragana(link.reading)), set()) - {note_id}
-                action, why = decide_without_anchor(row, link, others)
+                action, why = decide_without_anchor(
+                    row, link, others, depths[note_id].get(link, 0)
+                )
                 if action is None:
                     held[why].append(note)
                     continue

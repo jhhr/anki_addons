@@ -125,7 +125,7 @@ def plan(rows: list) -> tuple:
         raise anki_connect.AnkiConnectError(
             "The dump has no %s; re-run with --fetch." % vocab_unlink.ARRAY_FIELD
         )
-    totals, _ = vocab_unlink.links_in(rows)
+    totals, _, depths = vocab_unlink.links_in(rows)
     owners = vocab_unlink.owners_by_word(rows)
     by_nid = {row["nid"]: row for row in rows}
     held: dict = defaultdict(list)
@@ -140,7 +140,9 @@ def plan(rows: list) -> tuple:
         kana = to_hiragana(reading)
         for link, count in by_link.most_common():
             link_kana = to_hiragana(link.reading)
-            family = vocab_morphology.family(spelling, kana, link.form, link_kana)
+            family = vocab_morphology.family(
+                spelling, kana, link.form, link_kana, depths[note_id].get(link, 0)
+            )
             if family not in REPAIRABLE:
                 continue
             note = "%d %s: has [%s], linked by %s [%s] x%d" % (
