@@ -25,7 +25,7 @@ from ..async_api_ops.base_ops import (
     bulk_notes_op,
     selected_notes_op,
 )
-from ..async_api_ops.extract_words import word_lists_str_format
+from ..async_api_ops.word_list_format import word_lists_str_format
 from ..async_api_ops.match_words_to_notes import WORD_LISTS, decode_word_list_field
 from ..word_array.match_flags import decode_word_array
 from ..word_array.match_targets import unlink_missing_notes

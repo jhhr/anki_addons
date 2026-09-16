@@ -33,7 +33,6 @@
     "expressions": true,
     "yojijukugo": true
   },
-  "ignore_current_word_lists": false,
   "replace_existing_matched_words": false,
   "max_concurrent_requests": 0,
   "memory_limit": 0,
@@ -46,7 +45,6 @@
   "mdx_pick_dictionary": "all",
   "extract_words_migration_data_query": "",
   "kanji_sentence_fine_tuning_data_query": "",
-  "extract_words_fine_tuning_data_query": "",
   "log_level": "ERROR",
   "log_to_console": true
 }

@@ -70,7 +70,7 @@ from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
 from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
-from .extract_words import word_lists_str_format
+from .word_list_format import word_lists_str_format
 from .make_all_meanings import (
     make_all_meanings_for_word,
     make_meaning_dict_key,

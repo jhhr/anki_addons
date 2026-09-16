@@ -80,7 +80,6 @@ class RunTestDataExportsTests(unittest.TestCase):
             [
                 "extract_words_migration_data_query",
                 "kanji_sentence_fine_tuning_data_query",
-                "extract_words_fine_tuning_data_query",
             ],
         )
 

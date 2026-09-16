@@ -30,6 +30,7 @@ STARTUP_MODULES = [
     "note_cache",
     "diagnostics",
     "base_ops",
+    "word_list_format",
     "clean_meaning",
     "make_all_meanings",
     "match_words_to_notes",

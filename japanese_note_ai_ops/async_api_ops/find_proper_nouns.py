@@ -38,8 +38,40 @@ def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:
         return generator.name_rest_word(word, rest_raw)
 
 
+def generate_word_array(sentence: str, name_lexicon: Optional[dict]) -> list:
+    """`generator.generate`, one call at a time, for the same reason as `_name_rest_word`."""
+    with _generator_lock:
+        return generator.generate(sentence, name_lexicon)
+
+
 def proper_nouns_model(config: dict) -> str:
     return config.get("proper_nouns_model") or config.get("extract_words_model", "")
+
+
+def add_proper_nouns(config: dict, arr: list, log_prefix: str) -> list[str]:
+    """Ask the model for the sentence's proper nouns and fix `arr` in place, returning the
+    names that are one proper noun word now and were not before. Empty when the call failed
+    or named nothing the array did not already have."""
+    response = get_response(
+        proper_nouns_model(config),
+        proper_noun_llm.prompt(arr),
+        response_schema=proper_noun_llm.RESPONSE_SCHEMA,
+    )
+    if response is None:
+        logger.error(f"{log_prefix}No response from the model")
+        return []
+    try:
+        names = proper_noun_llm.names_from_response(response)
+    except ValueError as e:
+        logger.error(f"{log_prefix}{e}")
+        return []
+    fix = proper_noun_llm.fix_array(arr, names, _name_rest_word)
+    logger.debug(f"{log_prefix}names {names}, changed {fix.changed}")
+    if fix.unaligned:
+        logger.info(f"{log_prefix}names not on word boundaries: {fix.unaligned}")
+    for note_id in fix.unlinked:
+        logger.warning(f"{log_prefix}unlinked note {note_id} merging a proper noun")
+    return fix.changed
 
 
 def find_proper_nouns_in_note(
@@ -63,26 +95,7 @@ def find_proper_nouns_in_note(
         logger.debug(f"{log_prefix}The word list field holds no word array")
         return False
 
-    response = get_response(
-        proper_nouns_model(config),
-        proper_noun_llm.prompt(arr),
-        response_schema=proper_noun_llm.RESPONSE_SCHEMA,
-    )
-    if response is None:
-        logger.error(f"{log_prefix}No response from the model")
-        return False
-    try:
-        names = proper_noun_llm.names_from_response(response)
-    except ValueError as e:
-        logger.error(f"{log_prefix}{e}")
-        return False
-    fix = proper_noun_llm.fix_array(arr, names, _name_rest_word)
-    logger.debug(f"{log_prefix}names {names}, changed {fix.changed}")
-    if fix.unaligned:
-        logger.info(f"{log_prefix}names not on word boundaries: {fix.unaligned}")
-    for note_id in fix.unlinked:
-        logger.warning(f"{log_prefix}unlinked note {note_id} merging a proper noun")
-    if fix.changed:
+    if add_proper_nouns(config, arr, log_prefix):
         current_note = notes_to_update_dict.get(note.id, note)
         current_note[word_list_field] = json.dumps(arr, ensure_ascii=False)
         if current_note.id > 0:
@@ -90,7 +103,7 @@ def find_proper_nouns_in_note(
     return True
 
 
-def bulk_find_proper_nouns_op(
+async def bulk_find_proper_nouns_op(
     col: Collection,
     notes: Sequence[Note],
     edited_nids: list[NoteId],
@@ -102,7 +115,7 @@ def bulk_find_proper_nouns_op(
     if not config:
         showWarning("Missing addon configuration")
         return
-    return bulk_notes_op(
+    return await bulk_notes_op(
         "Finding proper nouns",
         config,
         find_proper_nouns_in_note,

@@ -31,9 +31,11 @@ Define which model to use for each task
 - `kanji_story_model`
 - `translate_sentence_model`
 - `kanjify_sentence_model`
-- `extract_words_model`
+- `extract_words_model`: no op of its own any more - "Extract words" builds the word array
+  locally and its one call is the proper noun one. It is the fallback for the two below.
 - `word_matching_judge_model` (falls back to `extract_words_model`)
-- `proper_nouns_model` (falls back to `extract_words_model`)
+- `proper_nouns_model` (falls back to `extract_words_model`), so also the model "Extract words"
+  uses
 - `match_words_model`
 
 ### temperature
@@ -179,7 +181,7 @@ You need to define
 
 ## test data exports
 
-Tools > "AI ops: generate test data" runs the three browser-menu exports at once, each on the
+Tools > "AI ops: generate test data" runs both browser-menu exports at once, each on the
 notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
 that export.
 
@@ -187,13 +189,8 @@ that export.
 - `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
   (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
   kanjified sentence fields, one row per distinct sentence)
-- `extract_words_fine_tuning_data_query`: notes for "Export extract-words fine-tuning data"
 
 ## optipnal specification
-
-### `extract_words` operatation
-
-- `ignore_current_word_lists`: (default: false) don't pass the current field to the prompt, making the model recreate the result from scratch
 
 ### `match_words_model` operation
 

@@ -46,9 +46,9 @@ from .async_api_ops.kanjify_sentence import (  # noqa: E402
     kanjify_selected_notes,
 )
 from .async_api_ops.extract_words import (  # noqa: E402
+    extract_words_and_judge_from_selected_notes,
     extract_words_from_selected_notes,
-    extract_words_in_note,
-    extract_words_test_compare_from_selected_notes,
+    extract_words_op,
 )
 from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
     migrate_compound_verbs_from_selected_notes,
@@ -90,7 +90,6 @@ from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
 )
 from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
     make_kanjify_sentence_data,
-    make_extract_words_fine_tuning_data,
     make_extract_words_migration_data,
     make_all_test_data,
 )
@@ -122,7 +121,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     kanji_story_action = QAction("Generate kanji story", mw)
     component_words_action = QAction("Kanjify sentence", mw)
     extract_words_action = QAction("Extract words", mw)
-    extract_words_test_compare_action = QAction("Test extract words prompt", mw)
+    extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
     migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
     find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
     judge_words_action = QAction("Judge words matchability", mw)
@@ -142,7 +141,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
     export_kanjify_ft_action = QAction("Export kanjify test data", mw)
-    export_extract_words_ft_action = QAction("Export extract-words fine-tuning data", mw)
     export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
     merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
@@ -171,8 +169,8 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: extract_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
-        extract_words_test_compare_action.triggered,
-        lambda: extract_words_test_compare_from_selected_notes(selected_nids, parent=browser),
+        extract_words_and_judge_action.triggered,
+        lambda: extract_words_and_judge_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         migrate_compound_verbs_action.triggered,
@@ -259,10 +257,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
     )
     qconnect(
-        export_extract_words_ft_action.triggered,
-        lambda: make_extract_words_fine_tuning_data(selected_nids, parent=browser),
-    )
-    qconnect(
         export_migration_data_action.triggered,
         lambda: make_extract_words_migration_data(selected_nids, parent=browser),
     )
@@ -279,7 +273,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(kanji_story_action)
     ai_menu.addAction(component_words_action)
     ai_menu.addAction(extract_words_action)
-    ai_menu.addAction(extract_words_test_compare_action)
+    ai_menu.addAction(extract_words_and_judge_action)
     ai_menu.addAction(migrate_compound_verbs_action)
     ai_menu.addAction(find_proper_nouns_action)
     ai_menu.addAction(judge_words_action)
@@ -300,7 +294,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(migrate_word_arrays_action)
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
-    ai_menu.addAction(export_extract_words_ft_action)
     ai_menu.addAction(export_migration_data_action)
 
 
@@ -366,7 +359,9 @@ def run_op_on_add_note(note: Note):
         notes_to_update_dict: dict[NoteId, Note] = {}
         try:
             clean_meaning_in_note(config, note, {}, notes_to_update_dict)
-            extract_words_in_note(config, note, {}, notes_to_update_dict)
+            # The lexicon is read here rather than cached: the user rebuilds it from the
+            # collection now and then, and one added note is one small json read.
+            extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True

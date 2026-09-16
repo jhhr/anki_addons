@@ -6,7 +6,10 @@ sub_words]`, with tags and punctuation as single-element arrays. Concatenating t
 `raw_text` values gives back the sentence (minus `<b>` tags), so any word can be wrapped in
 `<b>` without inflection matching.
 
-Status: phase 1 prototype, not wired into any op yet.
+Status: in use. `async_api_ops/extract_words.py` ("Extract words") generates the array for a
+note's sentence and asks the proper noun model about it; the word matching judge then decides
+which words are worth a note, and match_words_to_notes and clean_meaning read the array. The
+collection was migrated on 2026-09-16.
 
 ## Dependencies
 
@@ -195,7 +198,8 @@ top-level word boundaries one proper noun without sub-words (a name inside a wor
 changes nothing). Op `async_api_ops/find_proper_nouns.py`, one request per note, browser entry "Find
 proper nouns in word arrays", model `proper_nouns_model` (default gpt-5.6-luna, the most precise
 below). It is its own step of the migration: build the name lexicon, migrate, find proper nouns,
-then judge.
+then judge. "Extract words" makes the same call inline (`add_proper_nouns`, sharing the tokenizer
+lock), so a freshly generated array has been through it already.
 `research/proper_noun_eval.py` scores models on 300 export sentences with old proper nouns and 300
 without: names precision/recall against the old lists (noisy: 彼女 is listed 16 times), and old proper
 nouns labelled a top-level proper noun before and after the fix, 194 of 375 without it:
@@ -218,6 +222,26 @@ Sub-words the cut runs between keep their links; `research/name_boundaries.py` l
 over the export with the old lists' proper nouns as the names. A JMdict
 common noun isn't refused for now: JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n`
 too, so such a guard would drop about 40% of the fixes.
+
+## Generating a note's array
+
+`async_api_ops/extract_words.py` ("Extract words") is what gives a note its array: `generate()`
+on the sentence with its `<i>` context stripped (`html_stripping.strip_context_sentences`, the
+way the old op took it) and the collection's name lexicon, then the proper noun call on the
+result. One `bulk_notes_op` request per note, one Sudachi tokenizer at a time
+(`find_proper_nouns.generate_word_array`), and the first run asks about the dictionary downloads
+before touching a note (`with_generator_resources`). The words come out unjudged, `[]`.
+
+A note whose field already holds an array is skipped, so re-running over a selection is free; a
+note still holding an old extract_words word list is skipped too, because generating over it
+would throw away the note ids of its matched words - that is the migration's job to carry over.
+
+The judge cannot be a step inside that op: `bulk_nested_notes_op` fixes every note's task count
+before it starts, and the words only exist once the array has been generated. So it is a phase of
+its own (`base_ops.OpPhase`, `run_op_phases`): "Extract words + Judge matchability" is the two ops
+over one selection as one operation, and "Run all ops for new notes" ends with the same judge
+phase. The prompt the old op asked the whole word list under is gone, and with it "Test extract
+words prompt" and the extract-words fine-tuning export.
 
 ## match_data states
 
