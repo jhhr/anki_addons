@@ -65,6 +65,13 @@ class AnkiConnect:
     def update_note_fields(self, nid: int, fields: dict[str, str]) -> None:
         self.invoke("updateNoteFields", note={"id": nid, "fields": fields})
 
+    def add_tags(self, nids, tags: str) -> None:
+        """Adds the space separated `tags` to every note; a tag a note already has is left be."""
+        self.invoke("addTags", notes=list(nids), tags=tags)
+
+    def remove_tags(self, nids, tags: str) -> None:
+        self.invoke("removeTags", notes=list(nids), tags=tags)
+
     def gui_browse(self, query: str) -> list[int]:
         """Opens Anki's browser on `query`; the ids of the cards it found."""
         return self.invoke("guiBrowse", query=query)

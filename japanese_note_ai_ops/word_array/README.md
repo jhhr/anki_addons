@@ -316,6 +316,27 @@ of the notes linking to it) go through `example_sentence()` too: a note holding 
 its sentence with the occurrence linked to the word note in `<b>` (a new note, the first of its
 word), so the meaning is cleaned for the occurrence meant when a sentence uses the word twice.
 
+## Deduplicating the vocab notes
+
+One learnable word can own several notes, the old `match_words_to_notes` having made one per
+spelling it met. `research/vocab_dupes.py --fetch` dumps every vocab note over AnkiConnect and
+groups them by canonical key: `canonical_form()` over the sort field minus its `(mN)`/`(kun)`/`(rN)`
+markers, with the kanjify policy's helper verbs and copula back in kana (`unkanjified`), read with
+the note's reading. 25452 notes make 21656 keys; 219 keys are spelled several ways (559 notes, 256
+off-key, 60 studied, 439 word-list links), 2271 keys hold several `(mN)` meanings, and 102 sort
+field values sit on two notes.
+
+`research/vocab_rekey.py` re-keys and tags those groups; it never deletes. Every note of a group
+takes one prefix — the canonical key plus the markers its canonically spelled notes carry — and an
+`(mN)`, numbered so the note meant to survive holds the lowest (studied first, oldest first within
+that), keeping its own number where that is free and outside numbers untouched; a respelled note
+drops its reading markers, and the holes those leave in a spelling's `(rN)` series are listed for
+`update_note_reading_markers`. Everything touched is tagged `word-array-duplicate`, a variant also
+`word-array-keeper::<nid>`. `--apply` writes only notes still spelled as the dump says, recording
+the old values in `output/vocab_dedupe_undo.jsonl` for `--revert`. "Clean dictionary meaning" and
+"Deduplicate existing meaning notes" on the tag then collapse the meanings and repoint the links.
+A key that spells a word wrong (まだ → 未だ) goes in `generator.CANONICAL_EXCEPTIONS`.
+
 ## Migrating the old word lists
 
 `migrate.migrate(word_lists, arr)` fits a stored extract_words word list into a generated
@@ -429,6 +450,7 @@ python word_array/research/judge_eval.py build  # the judge's eval set, from the
 python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it
 py -3.10 word_array/research/kanjify_eval.py --model M  # kanjify prompt vs the checked labels
 py -3.10 word_array/research/vocab_dupes.py --fetch  # vocab notes that are the same word
+py -3.10 word_array/research/vocab_rekey.py          # re-key them to one sort field, --apply
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

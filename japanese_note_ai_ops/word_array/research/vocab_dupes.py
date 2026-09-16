@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from _bootstrap import ADDON_ROOT, load
 from anki_connect import AnkiConnect, load_config
 
-generator = load("generator")
+generator = None
 
 DUMP = ADDON_ROOT / "output" / "vocab_notes.jsonl"
 REPORT = ADDON_ROOT / "output" / "vocab_dupes_report.txt"
@@ -110,8 +110,16 @@ def unkanjified(form: str) -> str:
     return form
 
 
+def _generator():
+    """Loaded on demand: the key helpers above work without Sudachi and JMdict."""
+    global generator
+    if generator is None:
+        generator = load("generator")
+    return generator
+
+
 def canonical_key(key: str, reading: str) -> str:
-    return unkanjified(generator.canonical_form(base_form(key), reading))
+    return unkanjified(_generator().canonical_form(base_form(key), reading))
 
 
 def survey(rows: list) -> dict:

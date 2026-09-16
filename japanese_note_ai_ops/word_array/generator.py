@@ -717,6 +717,11 @@ ENTRENCHED_EXPRESSIONS = {
 # Adverbial く-forms of a 無い expression, like LEXICAL_KU_ADVERBS: 間も無く "soon", 余儀無く
 NEGATIVE_ADVERB_ENDINGS = ("無く", "なく")
 
+# Spellings `canonical_form` leaves alone although JMdict spells their entry with more kanji: the
+# kanji spelling is not the one a learner should meet (task 26's re-key list is where they surface,
+# e.g. まだ over 未だ). Hand-kept; empty until the list has been checked.
+CANONICAL_EXCEPTIONS: set[str] = set()
+
 
 def _entrenched(form: str, hits: list) -> bool:
     spellings = {form} | {k for kebs, _, _ in hits for k in kebs}
@@ -1361,6 +1366,8 @@ def canonical_form(form: str, reading: str) -> str:
     outdated and search-only kanji (爲に -> 為に) count as the same word. Other kanji stay a word of
     their own (聴く, not 聞く; 体, not 身体), and so does a word with several kanji choices, which
     depend on meaning (よる: 依る, 因る, 拠る, 由る), or several entries that spell it apart."""
+    if form in CANONICAL_EXCEPTIONS:
+        return form
     found = {s[0] if len(s) == 1 else form for s in entry_spellings(form, reading)}
     return found.pop() if len(found) == 1 else form
 
