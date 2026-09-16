@@ -12,9 +12,15 @@ WAIT = 15000
 
 
 def _js(anki_session, web, expr: str) -> Any:
-    result: list[Any] = []
-    web.evalWithCallback(expr, lambda value: result.append(value))
-    anki_session.qtbot.waitUntil(lambda: bool(result), timeout=WAIT)
+    done: list[bool] = []
+    result = [None]
+
+    def on_result(value: Any) -> None:
+        result[0] = value
+        done.append(True)
+
+    web.evalWithCallback(expr, on_result)
+    anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
     return result[0]
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -13,14 +14,23 @@ from anki_shared.testing import real_anki, running_anki
 REBOUND_PACKAGES = ["anki_shared"]
 NOTE_TYPE = "DR Basic"
 ADDON_MODULE_PATH = Path(__file__).resolve().parents[1] / "__init__.py"
+ADDON_MODULE_NAME = "desired_retention_runtime_test"
 
 
 def load_addon() -> object:
+    from aqt.browser.card_info import CardInfoDialog
+
+    if (
+        CardInfoDialog._setup_ui.__module__ == ADDON_MODULE_NAME
+        and CardInfoDialog.update_card.__module__ == ADDON_MODULE_NAME
+    ):
+        return sys.modules[ADDON_MODULE_NAME]
     spec = importlib.util.spec_from_file_location(
-        "desired_retention_runtime_test", ADDON_MODULE_PATH
+        ADDON_MODULE_NAME, ADDON_MODULE_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[ADDON_MODULE_NAME] = module
     spec.loader.exec_module(module)
     return module
 
