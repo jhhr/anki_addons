@@ -93,6 +93,58 @@ class WordSpellingTests(LookupTestCase):
             [],
         )
 
+    def test_a_zuru_verb_finds_its_jiru_note(self):
+        # 奉ずる and 奉じる are one verb and the collection spells it じる, so the ずる element
+        # asks for the じる note. The reading differs too, which the reading filter allows.
+        self.assertEqual(
+            self.lookup(
+                "奉ずる", "ほうずる", vocab_row(1, "奉じる", "奉じる", "ほうじる", "奉じる")
+            ),
+            [1],
+        )
+
+    def test_a_zuru_verb_still_finds_a_zuru_note(self):
+        # Where no じる note exists the ずる one still answers: nothing is taken away.
+        self.assertEqual(
+            self.lookup(
+                "奉ずる", "ほうずる", vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる")
+            ),
+            [1],
+        )
+
+    def test_a_jiru_verb_does_not_reach_a_zuru_note(self):
+        # One direction only. Everything points at じる, and a ずる note left over is a
+        # duplicate for the dedup op rather than one to keep feeding.
+        self.assertEqual(
+            self.lookup(
+                "奉じる", "ほうじる", vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる")
+            ),
+            [],
+        )
+
+    def test_both_notes_come_back_when_both_exist(self):
+        # Choosing between a word's two notes is not the matcher's call to make.
+        self.assertEqual(
+            sorted(
+                self.lookup(
+                    "奉ずる",
+                    "ほうずる",
+                    vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる"),
+                    vocab_row(2, "奉じる", "奉じる", "ほうじる", "奉じる"),
+                )
+            ),
+            [1, 2],
+        )
+
+    def test_a_reading_that_does_not_end_in_zuru_is_left_alone(self):
+        # 論ずる spelled so but read another way is not silently turned into a じる verb.
+        self.assertEqual(
+            self.lookup(
+                "捻ずる", "ねじる", vocab_row(1, "捻じる", "捻じる", "ねじじる", "捻じる")
+            ),
+            [],
+        )
+
     def test_an_honorific_written_with_kanji_finds_the_kana_spelling(self):
         # 御茶/お茶 are the same entry, and which one a note uses is not knowable up front
         self.assertEqual(

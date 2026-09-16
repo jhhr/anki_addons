@@ -76,6 +76,25 @@ class WordArrayTests(unittest.TestCase):
                 with self.subTest(example=num, word=e[0]):
                     self.assertTrue(balanced(self.tag_cleaning.apply_tag_fixes(html)), html)
 
+    def test_a_zuru_verb_is_emitted_as_jiru(self):
+        # 奉ずる and 奉じる are one verb in two conjugations, so the arrays carry one of them.
+        self.assertEqual(self.generator.jiru_form("奉ずる", "ほうずる"), ("奉じる", "ほうじる"))
+        self.assertEqual(self.generator.jiru_form("通ずる", "つうずる"), ("通じる", "つうじる"))
+
+    def test_a_zuru_inside_a_phrase_moves_too(self):
+        self.assertEqual(
+            self.generator.jiru_form("肝に銘ずる", "きもにめいずる"),
+            ("肝に銘じる", "きもにめいじる"),
+        )
+
+    def test_a_verb_that_is_not_zuru_is_left_alone(self):
+        self.assertEqual(self.generator.jiru_form("見る", "みる"), ("見る", "みる"))
+        self.assertEqual(self.generator.jiru_form("信じる", "しんじる"), ("信じる", "しんじる"))
+
+    def test_a_zuru_with_no_jiru_in_jmdict_keeps_its_spelling(self):
+        # Only a じる JMdict knows is used, so nothing invents a word that does not exist.
+        self.assertEqual(self.generator.jiru_form("噓ずる", "うそずる"), ("噓ずる", "うそずる"))
+
     def test_lexicon_names_are_one_proper_noun(self):
         # 山田 is a 普通名詞 to Sudachi, with 山 + 田 as sub-words
         names = load_ops_module("names", subdir="word_array")

@@ -1369,6 +1369,22 @@ def canonical_form(form: str, reading: str) -> str:
     return found.pop() if len(found) == 1 else form
 
 
+def jiru_form(form: str, reading: str) -> tuple[str, str]:
+    """じる over ずる, which are one verb in two conjugations rather than two words.
+
+    Unlike `canonical_form` this moves the reading as well (つうずる -> つうじる), so it is its
+    own step. Only a じる JMdict knows is used, so a ずる verb with no じる counterpart keeps
+    the spelling it came with rather than being turned into a word that does not exist.
+    """
+    kana = to_hiragana(reading)
+    if not (form.endswith("ずる") and kana.endswith("ずる")):
+        return form, reading
+    jiru, jiru_kana = form[:-2] + "じる", kana[:-2] + "じる"
+    if not entry_spellings(jiru, jiru_kana):
+        return form, reading
+    return jiru, jiru_kana
+
+
 def _dict_form(tm: TextMap, w: Word) -> str:
     if w.kind == "expression":
         # In the note's spelling, whichever spelling JMdict matched (様に成る, not ようになる)
@@ -1795,6 +1811,7 @@ def _emit(
                 form, reading = dict_form(tm, w), dict_reading(tm, w)
                 pos = pos_label(tm, w, prev, reading, nested)
                 form = canonical_form(form, reading)
+                form, reading = jiru_form(form, reading)
             match_data = match_flags.default_match_data(pos, form, subs)
             out.append([raw_text, pos, form, reading, match_data, subs])
         cursor = re_ext

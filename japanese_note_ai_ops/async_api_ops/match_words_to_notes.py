@@ -1373,6 +1373,19 @@ async def get_matching_notes_for_word_and_reading(
             go_word = "ご" + word[1:]
             kanjified_values.append(go_word)
             normal_values.append(go_word)
+    # じる and ずる are one verb with two conjugations, and the collection settled on じる:
+    # 173 of its 206 such elements spell it that way, and 13 ずる elements sit unmatched
+    # beside a じる note that is plainly theirs (免ずる, 存ずる, 準ずる, 肝に銘ずる). So a ずる
+    # word asks for the じる note too, reading included, since the reading differs as well.
+    # The ずる spelling stays in the lookup: where only a ずる note exists it still answers,
+    # and where both do the duplicate is for the dedup op to merge, not for this to choose.
+    readings = [reading]
+    if word.endswith("ずる") and to_hiragana(reading).endswith("ずる"):
+        jiru = word[:-2] + "じる"
+        kanjified_values.append(jiru)
+        normal_values.append(jiru)
+        readings.append(to_hiragana(reading)[:-2] + "じる")
+
     # If word contains no kanji, we can find a match using only its reading
     if not re.search(r"[一-龯]", word):
         normal_values.append(reading)
@@ -1386,14 +1399,14 @@ async def get_matching_notes_for_word_and_reading(
     # check for a reading where some parts are in katakana. The index knows every note's
     # reading, so this happens before anything is fetched rather than after - it discards
     # most of the hits, so that is most of the fetching saved.
-    hiragana_reading = to_hiragana(reading)
+    hiragana_readings = [to_hiragana(r) for r in readings]
     matching_ids: list[NoteId] = []
     for note_id in note_ids:
         note_reading = word_note_index.reading(note_id)
         # None means the notetype has no reading field at all, so the note cannot match
         if note_reading is None:
             continue
-        if compare_readings(note_reading, hiragana_reading, log_prefix):
+        if any(compare_readings(note_reading, r, log_prefix) for r in hiragana_readings):
             matching_ids.append(note_id)
 
     # One turn with the collection for the ones the run has not already fetched, rather than
