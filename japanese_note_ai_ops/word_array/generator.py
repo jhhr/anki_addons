@@ -47,10 +47,7 @@ UNREAD_RE = re.compile(r"[一-龯㐀-䶿々0-9０-９]")
 def _tokenizer():
     dictionary = resources.sudachi_dictionary()
     if dictionary is None:
-        raise resources.ResourcesMissing(
-            "No Sudachi dictionary; resources.ensure() downloads one"
-            " (from a script: word_array/research/setup_resources.py)"
-        )
+        raise resources.ResourcesMissing("No Sudachi dictionary; resources.ensure() downloads one")
     return Dictionary(dict=dictionary).create()
 
 

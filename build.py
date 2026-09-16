@@ -12,9 +12,10 @@ Layout this assumes:
       related_card_disperse/
       custom_schedule_helper/
 
-Each addon declares in build.json which shared packages it uses. Both commands
-below materialise those at <addon>/shared/<pkg>, so the import path is identical
-in development and in the released zip:
+Each addon declares in build.json which shared packages it uses, and in `exclude`
+any file or directory of its own that is development-only and must stay out of the
+zip. Both commands below materialise the shared packages at <addon>/shared/<pkg>,
+so the import path is identical in development and in the released zip:
 
     from .shared.interpolate.interpolate_fields import interpolate_from_text
 
@@ -52,6 +53,7 @@ EXCLUDE_DIRS = {
     ".idea",
     ".vscode",
     ".pytest_cache",
+    ".mypy_cache",
     "test",
     "tests",
     "test_anki",
@@ -72,6 +74,7 @@ EXCLUDE_FILES = {
     ".gitmodules",
     ".gitattributes",
     "pytest.ini",
+    "mypy.ini",
     "build.json",
     "manifest.json",
     # The pinned requirements.txt compiled from this does ship - the runtime rebuild reads
@@ -214,6 +217,12 @@ def cmd_install(addons: list[Addon], addons_dir: Path) -> None:
         print(f"installed {addons_dir / addon.dev_dir_name} -> {addon.path}")
 
 
+def excluded_by_meta(rel: Path, addon: Addon) -> bool:
+    """build.json's `exclude`: an exact file path, or a directory whose whole tree goes."""
+    posix = rel.as_posix()
+    return any(posix == e or posix.startswith(f"{e}/") for e in addon.extra_excludes)
+
+
 def excluded(rel: Path, addon: Addon) -> bool:
     parts = rel.parts
     if any(p in EXCLUDE_DIRS for p in parts):
@@ -223,14 +232,19 @@ def excluded(rel: Path, addon: Addon) -> bool:
         return True
     if any(pat.match(name) for pat in EXCLUDE_PATTERNS):
         return True
-    return str(rel).replace("\\", "/") in addon.extra_excludes
+    return excluded_by_meta(rel, addon)
 
 
 def walk_files(base: Path, addon: Addon, prefix: Path = Path(".")):
     """Yield (absolute_path, arcname) pairs, following links, applying excludes."""
     for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         here = Path(dirpath)
+        rel_dir = Path(os.path.normpath(prefix / here.relative_to(base)))
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in EXCLUDE_DIRS and not excluded_by_meta(rel_dir / d, addon)
+        ]
         for fn in filenames:
             abs_path = here / fn
             rel = Path(os.path.normpath(prefix / abs_path.relative_to(base)))

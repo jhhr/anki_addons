@@ -111,10 +111,7 @@ def _data() -> tuple[dict[str, list[Entry]], dict[tuple, Spellings]]:
     if data is not None:
         return data
     if not JMDICT_GZ.exists():
-        raise FileNotFoundError(
-            f"JMdict not found at {JMDICT_GZ}; resources.ensure() downloads it"
-            " (from a script: word_array/research/setup_resources.py)"
-        )
+        raise FileNotFoundError(f"JMdict not found at {JMDICT_GZ}; resources.ensure() downloads it")
     spellings: dict[tuple, Spellings] = {}
     idx = build(JMDICT_GZ, spellings)
     INDEX_PICKLE.write_bytes(

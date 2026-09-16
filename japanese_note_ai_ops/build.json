@@ -8,7 +8,9 @@
     "jp_text_processing",
     "utils"
   ],
-  "exclude": [],
+  "exclude": [
+    "word_array/research"
+  ],
   "vendor_keep": [
     "mdict_query"
   ],
