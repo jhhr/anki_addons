@@ -7,8 +7,12 @@ same word in two shapes, and which shape is which is regular enough to name.
 
 A family is only ever a description of *how* the readings differ. What to do about it is
 `vocab_unlink`'s decision, because the same family means different things there - a deverbal
-noun against its verb is a different word and the link should go back to the matcher, while a
-rendaku reading against the plain one is a damaged note reading for `vocab_respell` to repair.
+noun against its verb is a different word and the link should go back to the matcher, while
+two readings that differ only by voicing mean one of the two is wrong without saying which.
+
+A family never says which side is right. Voicing in particular runs both ways: the note holds
+the rendaku in 狡賢い[ずるがしこい] and 三つ子[みつご], the array holds it in 砂埃[すなぼこり],
+and only evidence outside the pair can settle it.
 
 Readings are compared in hiragana; the caller converts.
 """
@@ -55,7 +59,7 @@ SURU_COMPOUND = "a する-compound against its noun"
 ZURU_JIRU = "a ずる / じる verb pair"
 PHRASE_AROUND = "a longer phrase built around the word"
 WORD_INSIDE = "the word inside the note's longer phrase"
-RENDAKU = "the note holds a rendaku reading, the array the plain one"
+RENDAKU = "the readings differ only by voicing"
 TYPO = "the readings differ by one kana"
 WHITESPACE = "the same reading, with stray whitespace"
 WIDTH = "the same word in full-width and half-width"
@@ -119,8 +123,10 @@ def inflections(verb: str) -> set:
     return forms
 
 
-def _same_spelling(note_reading: str, link_reading: str) -> str:
+def _same_spelling(note_reading: str, link_reading: str):
     """The families for a link that spells like the note but reads differently."""
+    if note_reading == link_reading:
+        return None  # nothing differs, so there is nothing to explain
     if SPACES.sub("", note_reading) == SPACES.sub("", link_reading):
         return WHITESPACE
     if devoice(note_reading) == devoice(link_reading):
@@ -134,7 +140,9 @@ def family(note_form: str, note_reading: str, link_form: str, link_reading: str)
     """The family that explains the two readings, or None when nothing does.
 
     `note_form` is the note's spelling and `link_form` the array element's `dict_form`; both
-    readings are hiragana.
+    readings are hiragana. A link that already agrees with its note has no family: callers
+    pass the ones that disagree, and one that does not is told so rather than being given an
+    explanation for a difference that is not there.
     """
     if note_form and note_form == link_form:
         return _same_spelling(note_reading, link_reading)

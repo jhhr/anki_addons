@@ -97,8 +97,10 @@ AWAITING_A_DECISION = {
     vocab_morphology.ZURU_JIRU: "the ずる / じる pairs are being decided one by one",
     vocab_morphology.TWO_READINGS: "the spelling agrees and both readings are real",
 }
-# Families where the note's own reading is the damaged side, for the reading repair to fix.
-A_DAMAGED_NOTE_READING = {
+# Families where one of the two readings is wrong without the family saying which, so the
+# link is evidence about the reading rather than a word to unlink. The reading repair decides
+# them, where it can find evidence; it cannot be assumed that the note is the damaged side.
+A_DAMAGED_READING = {
     vocab_morphology.RENDAKU,
     vocab_morphology.TYPO,
     vocab_morphology.WHITESPACE,
@@ -212,9 +214,9 @@ def decide_without_anchor(row: dict, link: Link, others: set) -> tuple:
     )
     if name in AWAITING_A_DECISION:
         return None, AWAITING_A_DECISION[name]
-    if name in A_DAMAGED_NOTE_READING and not others:
-        # The note's reading is the side that is wrong. Unlinking a sound element would throw
-        # away the very link that shows what the reading should be.
+    if name in A_DAMAGED_READING and not others:
+        # One of the two readings is wrong and this cannot tell which. Unlinking would throw
+        # away the element that is the evidence either way, so the reading repair gets it.
         return None, name
     if others:
         # The same rule as with an anchor: the matcher would have found that note, so this one

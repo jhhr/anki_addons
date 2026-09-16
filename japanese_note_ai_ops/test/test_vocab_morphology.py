@@ -81,8 +81,14 @@ class TestFamiliesAwaitingADecision(unittest.TestCase):
 
 
 class TestFamiliesOfADamagedReading(unittest.TestCase):
-    def test_a_rendaku_reading_against_the_plain_one(self):
+    def test_readings_that_differ_only_by_voicing(self):
         self.assertEqual(m.family("会社", "がいしゃ", "会社", "かいしゃ"), m.RENDAKU)
+
+    def test_voicing_is_named_whichever_side_holds_it(self):
+        # 狡賢い keeps its rendaku on the note, 砂埃 on the array: the family says they differ
+        # by voicing and nothing about which one is right.
+        self.assertEqual(m.family("狡賢い", "ずるがしこい", "狡賢い", "ずるかしこい"), m.RENDAKU)
+        self.assertEqual(m.family("砂埃", "すなほこり", "砂埃", "すなぼこり"), m.RENDAKU)
 
     def test_rendaku_is_named_before_the_typo_it_also_looks_like(self):
         # がいしゃ is one kana from かいしゃ as well; the voicing is the better explanation.
@@ -102,6 +108,11 @@ class TestFamiliesOfADamagedReading(unittest.TestCase):
 
 
 class TestNoFamily(unittest.TestCase):
+    def test_a_link_that_already_agrees_has_no_family(self):
+        # Stripping spaces from two equal readings trivially matches, which once made this
+        # look like stray whitespace and would have driven a repair of nothing.
+        self.assertIsNone(m.family("此れ", "これ", "此れ", "これ"))
+
     def test_two_unrelated_words_have_none(self):
         self.assertIsNone(m.family("犬", "いぬ", "猫", "ねこ"))
 

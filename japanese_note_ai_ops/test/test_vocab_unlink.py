@@ -320,11 +320,11 @@ class TestTheDecisionsStillToBeMade(unittest.TestCase):
         self.assertEqual(edits, [])
         self.assertIn("ずる / じる", " | ".join(held))
 
-    def test_a_damaged_note_reading_is_left_for_the_reading_repair(self):
+    def test_a_damaged_reading_is_left_for_the_reading_repair(self):
         rows = [note(1, "会社", "がいしゃ"), sentence(9, word("会社", "会社", "かいしゃ", [1]))]
         edits, held = vocab_unlink.plan(rows)
         self.assertEqual(edits, [])
-        self.assertIn("rendaku", " | ".join(held))
+        self.assertIn("voicing", " | ".join(held))
 
     def test_but_a_damaged_reading_another_note_owns_is_unlinked(self):
         rows = [
