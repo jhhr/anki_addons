@@ -15,7 +15,11 @@ Three corpora of the old format can be measured:
 
 Prints the input problems and crashes, the share of note ids carried over by the step that found
 the element, the words dropped and added, and then the leftovers grouped by category and word,
-worst first.
+worst first. That report is spent - the migration was run on the collection on 2026-09-16 - but
+this module is also the corpus loader every other research script goes through: `CORPORA`,
+`read_export` and `export_name_lexicon` are what `hand_judge`, `judge_eval`, `proper_noun_eval`,
+`sub_readings`, `okurigana_decomp`, `name_lexicon`, `canonical_forms` and `unbalanced_tags` read
+their sentences with.
 """
 
 import argparse

@@ -187,8 +187,7 @@ def with_generator_resources(parent: Any, then: Callable[[], Any]) -> None:
 
 def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
     """Replace the selected notes' word lists with generated word arrays, asking first - the
-    old list is overwritten, and the ops that read that field have not been taught the new
-    format yet - and then for the downloads the generator needs on its first use."""
+    old list is overwritten - and then for the downloads the generator needs on its first use."""
     lexicon_size = len(names.load_lexicon(resources.NAME_LEXICON))
     lexicon_text = (
         f"The name lexicon has {lexicon_size} names."
@@ -202,10 +201,7 @@ def migrate_word_arrays_from_selected(nids: Sequence[NoteId], parent: Any):
         f"Replace the word list of {len(nids)} note(s) with a generated word array?\n\n"
         "The old list is overwritten in place. Only the note ids of words already matched are"
         " carried over; a note that loses one is tagged"
-        f" {LEFTOVERS_TAG}, and every note migrated is tagged {MIGRATED_TAG}.\n\n"
-        f"{lexicon_text}\n\n"
-        "match_words_to_notes and clean_meaning still read the old format from this field, so"
-        " migrated notes will not work with them until they are updated.",
+        f" {LEFTOVERS_TAG}, and every note migrated is tagged {MIGRATED_TAG}.\n\n" + lexicon_text,
         parent=parent,
         title="Migrate word lists to word arrays",
         defaultno=True,

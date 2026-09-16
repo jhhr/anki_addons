@@ -121,9 +121,9 @@ text at all:
   だけの事は有って still matches だけの事はある;
 - found only through its kana where the text writes kanji, and JMdict spells the entry otherwise:
   `<k>成[な]ると</k>` read as 鳴門 (なると), 事に as 殊に. A kanji run of the text agrees with a
-  spelling whose kanji it has (如何為て is 如何して). Of 1995 such matches in the export 519 are
-  refused (`research/kana_matches.py`); links carried 76061 -> 76044, the losses being old lists
-  that linked a homophone or a variant spelling (余りに, 其れら).
+  spelling whose kanji it has (如何為て is 如何して). Of 1995 such matches in the export 519 were
+  refused; links carried 76061 -> 76044, the losses being old lists that linked a homophone or a
+  variant spelling (余りに, 其れら).
 
 A match inside another nests in it (様に成る -> 様に + 成る, 様に -> 様 + に). Of two that cross,
 the longer wins, then the one found by its kanji spelling, then the earlier (一つ over つの).
@@ -190,7 +190,6 @@ doesn't have is a proper noun (フェザーン); and a Sudachi proper noun the f
 JMdict entry takes that entry's label (亜人[あじん], not Sudachi's name つぐと; 日本[にほん] stays, one
 entry with にっぽん). A compound JMdict labels a noun (江戸時代, 日本文学) stays a noun. Over the
 export, old proper nouns labelled one 997→1084 of ~2170, links carried unchanged.
-`research/proper_noun_rules.py` counts what each rule would touch.
 
 What rules and lexicon still miss, a language model catches: `proper_noun_llm.py` asks only which
 proper nouns the sentence has (a JSON list), and `fix_array` makes every name that starts and ends on
@@ -218,10 +217,9 @@ boundaries is nearly always part of a word on purpose (スペイン語, 新宿�
 the generator cut across a name, `generator.name_rest_word` lets `fix_array` split the word first:
 when what is left is a particle (凛と -> 凛 + と), or a JMdict word and the cut word is neither a
 JMdict entry nor a proper noun (少年京太郎 -> 少年 + 京太郎; 江戸時代, ドイツ語, 新宿駅 stay whole).
-Sub-words the cut runs between keep their links; `research/name_boundaries.py` lists every cut
-over the export with the old lists' proper nouns as the names. A JMdict
-common noun isn't refused for now: JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n`
-too, so such a guard would drop about 40% of the fixes.
+Sub-words the cut runs between keep their links. A JMdict common noun isn't refused for now:
+JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n` too, so such a guard would drop about
+40% of the fixes.
 
 ## Generating a note's array
 
@@ -342,13 +340,16 @@ word), so the meaning is cleaned for the occurrence meant when a sentence uses t
 
 ## Deduplicating the vocab notes
 
-One learnable word can own several notes, the old `match_words_to_notes` having made one per
-spelling it met. `research/vocab_dupes.py --fetch` dumps every vocab note over AnkiConnect and
+One learnable word could own several notes, the old `match_words_to_notes` having made one per
+spelling it met. **This was done on the collection on 2026-09-16**; the scripts stay re-runnable,
+and the counts below are what that run saw.
+
+`research/vocab_dupes.py --fetch` dumps every vocab note over AnkiConnect and
 groups them by canonical key: `canonical_form()` over the sort field minus its `(mN)`/`(kun)`/`(rN)`
 markers, with the kanjify policy's helper verbs and copula back in kana (`unkanjified`), read with
-the note's reading. 25452 notes make 21656 keys; 219 keys are spelled several ways (559 notes, 256
-off-key, 60 studied, 439 word-list links), 2271 keys hold several `(mN)` meanings, and 102 sort
-field values sit on two notes.
+the note's reading. 25452 notes made 21656 keys; 219 keys were spelled several ways (559 notes, 256
+off-key, 60 studied, 439 word-list links), 2271 keys held several `(mN)` meanings, and 102 sort
+field values sat on two notes.
 
 `research/vocab_rekey.py` re-keys and tags those groups; it never deletes. Every note of a group
 takes one prefix — the canonical key plus the markers its canonically spelled notes carry — and an
@@ -358,10 +359,13 @@ drops its reading markers, and the holes those leave in a spelling's `(rN)` seri
 `update_note_reading_markers`. Everything touched is tagged `word-array-duplicate`, a variant also
 `word-array-keeper::<nid>`. `--apply` writes only notes still spelled as the dump says, recording
 the old values in `output/vocab_dedupe_undo.jsonl` for `--revert`. "Clean dictionary meaning" and
-"Deduplicate existing meaning notes" on the tag then collapse the meanings and repoint the links.
+"Deduplicate existing meaning notes" on the tag then collapsed the meanings and repointed the links.
 A key that spells a word wrong (まだ → 未だ) goes in `generator.CANONICAL_EXCEPTIONS`.
 
 ## Migrating the old word lists
+
+**The migration was run on the collection on 2026-09-16** (name lexicon, migrate, find proper
+nouns, judge), so no note should hold an old word list any more; what follows is what it did.
 
 `migrate.migrate(word_lists, arr)` fits a stored extract_words word list into a generated
 array, writing `match_data` in place. The array is taken as correct, so the only thing carried
@@ -468,13 +472,22 @@ python word_array/research/setup_resources.py   # the first-use downloads, into 
 python word_array/research/evaluate.py          # accuracy against the gold, -q for the summary
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
-python word_array/research/migrate_fit.py       # what the migration carries over, and loses
+python word_array/research/migrate_fit.py       # the corpus loader; its own report is spent
 python word_array/research/sub_readings.py      # parents whose sub-words' readings don't add up
+python word_array/research/okurigana_decomp.py  # what the okurigana rules split, and don't
+python word_array/research/name_lexicon.py      # what the name lexicon holds and misses
 python word_array/research/judge_eval.py build  # the judge's eval set, from the checked export
 python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it
+python word_array/research/proper_noun_eval.py  # score models on the proper noun op
+py -3.10 word_array/research/hand_judge.py      # the hand-judging GUI (localhost)
 py -3.10 word_array/research/kanjify_eval.py --model M  # kanjify prompt vs the checked labels
+py -3.10 word_array/research/kanjify_survey.py       # collection-wide kanjification survey
+py -3.10 word_array/research/kanjify_rekanjify.py    # re-kanjify the survey's sentences
+py -3.10 word_array/research/kanjify_fix.py          # apply the fix list, --apply / --revert
 py -3.10 word_array/research/vocab_dupes.py --fetch  # vocab notes that are the same word
 py -3.10 word_array/research/vocab_rekey.py          # re-key them to one sort field, --apply
+py -3.10 word_array/research/unbalanced_tags.py      # array words whose html doesn't balance
+py -3.10 word_array/research/canonical_forms.py      # what one spelling per entry changes
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 
