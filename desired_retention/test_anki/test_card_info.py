@@ -72,42 +72,49 @@ def test_plain_current_card_view_is_not_empty_in_anki_26_9_2(real_mw, anki_sessi
         _close_dialog(anki_session, dialog)
 
 
-def test_browser_and_reviewer_current_card_views_stay_populated_with_the_addon(
-    real_mw, anki_session
-):
-    from aqt.browser.card_info import BrowserCardInfo, ReviewerCardInfo
-
+def _assert_manager_current_card_view(real_mw, anki_session, manager_cls) -> None:
     load_addon()
-    for manager_cls in (BrowserCardInfo, ReviewerCardInfo):
-        manager = manager_cls(real_mw)
-        first = _make_card(real_mw, "first", desired_retention=0.91)
-        second = _make_card(real_mw, "second", desired_retention=0.88)
-        manager.set_card(first)
-        manager.show()
-        dialog = manager._dialog
-        assert dialog is not None
-        try:
-            _assert_current_card_view(anki_session, dialog, first.id)
-            row = _wait_for(
-                anki_session,
-                dialog.web,
-                "document.getElementById('anki-dr-row')?.innerText",
-            )
-            assert "Desired Retention" in row
-            assert "91%" in row
+    manager = manager_cls(real_mw)
+    first = _make_card(real_mw, "first", desired_retention=0.91)
+    second = _make_card(real_mw, "second", desired_retention=0.88)
+    manager.set_card(first)
+    manager.show()
+    dialog = manager._dialog
+    assert dialog is not None
+    try:
+        _assert_current_card_view(anki_session, dialog, first.id)
+        row = _wait_for(
+            anki_session,
+            dialog.web,
+            "document.getElementById('anki-dr-row')?.innerText",
+        )
+        assert "Desired Retention" in row
+        assert "91%" in row
 
-            manager.set_card(second)
-            _wait_for(
-                anki_session,
-                dialog.web,
-                f"document.body.innerText.includes('{second.id}')",
-            )
-            _assert_current_card_view(anki_session, dialog, second.id)
-            updated_row = _wait_for(
-                anki_session,
-                dialog.web,
-                "document.getElementById('anki-dr-row')?.innerText.includes('88%')",
-            )
-            assert updated_row is True
-        finally:
-            _close_dialog(anki_session, dialog)
+        manager.set_card(second)
+        _wait_for(
+            anki_session,
+            dialog.web,
+            f"document.body.innerText.includes('{second.id}')",
+        )
+        _assert_current_card_view(anki_session, dialog, second.id)
+        updated_row = _wait_for(
+            anki_session,
+            dialog.web,
+            "document.getElementById('anki-dr-row')?.innerText.includes('88%')",
+        )
+        assert updated_row is True
+    finally:
+        _close_dialog(anki_session, dialog)
+
+
+def test_browser_current_card_view_stays_populated_with_the_addon(real_mw, anki_session):
+    from aqt.browser.card_info import BrowserCardInfo
+
+    _assert_manager_current_card_view(real_mw, anki_session, BrowserCardInfo)
+
+
+def test_reviewer_current_card_view_stays_populated_with_the_addon(real_mw, anki_session):
+    from aqt.browser.card_info import ReviewerCardInfo
+
+    _assert_manager_current_card_view(real_mw, anki_session, ReviewerCardInfo)
