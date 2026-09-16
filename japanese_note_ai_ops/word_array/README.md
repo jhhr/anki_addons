@@ -6,6 +6,13 @@ sub_words]`, with tags and punctuation as single-element arrays. Concatenating t
 `raw_text` values gives back the sentence (minus `<b>` tags), so any word can be wrapped in
 `<b>` without inflection matching.
 
+Every op writes the field through `match_flags.format_word_array`: a row per top-level word,
+sub-words indented under their parent, `", "` between a word's own values. One line of JSON is
+513 characters for the median sentence in the collection and 4160 for the longest, which is
+neither readable in the note editor nor legible in a diff — the old word list field was stored
+a row per word for the same reason. `decode_word_array` reads it back, and undoes what Anki's
+editor makes of those rows (`<br>`, `&nbsp;`) when a field fails to parse as it stands.
+
 Status: in use. `async_api_ops/extract_words.py` ("Extract words") generates the array for a
 note's sentence and asks the proper noun model about it; the word matching judge then decides
 which words are worth a note, and match_words_to_notes and clean_meaning read the array. The

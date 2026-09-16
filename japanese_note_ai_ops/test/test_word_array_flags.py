@@ -172,6 +172,85 @@ class DecodeWordArrayTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(match_flags.decode_word_array(value))
 
+    def test_a_field_the_editor_turned_into_html_is_read_anyway(self):
+        # What Anki's editor makes of the rows format_word_array writes, once anyone edits
+        # the note by hand. Without this the note looks to every op like it holds no array.
+        arr = [word("本", form="本", reading="ほん", match_data=["match"]), word("。")]
+        mangled = (
+            match_flags.format_word_array(arr).replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+        )
+        self.assertEqual(match_flags.decode_word_array(mangled), arr)
+
+    def test_an_entity_inside_a_raw_text_is_left_alone(self):
+        # The repair only runs on a field that did not parse as it stands, so a raw text
+        # that holds `&nbsp;` itself keeps it.
+        arr = [word("&nbsp;", form="本", reading="ほん")]
+        self.assertEqual(match_flags.decode_word_array(json.dumps(arr)), arr)
+
+
+class FormatWordArrayTests(unittest.TestCase):
+    def test_one_top_level_word_per_row_with_sub_words_indented(self):
+        arr = [
+            ["<k>"],
+            word(
+                " 一[ひと]つ",
+                pos="adverb",
+                form="一つ",
+                reading="ひとつ",
+                match_data=["match"],
+                subs=[
+                    word(" 一[ひと]", pos="number", form="一", reading="ひと", match_data=["dontmatch"]),
+                    word("つ", pos="counter", form="つ", reading="つ", match_data=[1674931277303, 4]),
+                ],
+            ),
+            ["。"],
+        ]
+        self.assertEqual(
+            match_flags.format_word_array(arr),
+            "[\n"
+            '  ["<k>"],\n'
+            '  [" 一[ひと]つ", "adverb", "一つ", "ひとつ", ["match"], [\n'
+            '    [" 一[ひと]", "number", "一", "ひと", ["dontmatch"], []],\n'
+            '    ["つ", "counter", "つ", "つ", [1674931277303, 4], []]\n'
+            "  ]],\n"
+            '  ["。"]\n'
+            "]",
+        )
+
+    def test_an_empty_array_is_one_pair_of_brackets(self):
+        self.assertEqual(match_flags.format_word_array([]), "[]")
+
+    def test_it_round_trips_through_decode(self):
+        arr = [
+            word("本", form="本", reading="ほん", match_data=[1674931277303]),
+            word("を", pos="particle", form="を", reading="を", match_data=["dontmatch"]),
+            word(
+                " 読[よ]む",
+                pos="verb",
+                form="読む",
+                reading="よむ",
+                subs=[word("読", form="読", reading="よ", subs=[word("読")])],
+            ),
+        ]
+        self.assertEqual(match_flags.decode_word_array(match_flags.format_word_array(arr)), arr)
+
+    def test_the_search_regexes_still_find_a_word_in_the_rows(self):
+        # The separators within a word stay ", ", which is the whole of what
+        # word_array_query_regex assumes; only the rows between words are new.
+        arr = [
+            word(
+                "本を",
+                pos="expression",
+                form="本を",
+                reading="ほんを",
+                match_data=["dontmatch"],
+                subs=[word("本", form="本", reading="ほん", match_data=["match"])],
+            )
+        ]
+        text = match_flags.format_word_array(arr)
+        regex = match_flags.word_array_query_regex("本", "ほん", [State.MATCH])
+        self.assertIsNotNone(re.search(regex, text))
+
 
 class WordArrayQueryRegexTests(unittest.TestCase):
     def search(self, arr, states, form="本", reading="ほん"):

@@ -70,7 +70,8 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         self.assertTrue(changed)
         generate.assert_called_once()
         proper_nouns.assert_called_once()
-        self.assertEqual(note["words"], '[["本"], ["を"]]')
+        # Written through match_flags.format_word_array: a row per top-level word.
+        self.assertEqual(note["words"], '[\n  ["本"],\n  ["を"]\n]')
         self.assertEqual(updates, {note.id: note})
 
     def test_the_context_sentences_are_stripped_before_generating(self):
@@ -144,7 +145,7 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         changed, _generate, _proper_nouns = run(note, updates, array=[["本"]])
 
         self.assertTrue(changed)
-        self.assertEqual(note["words"], '[["本"]]')
+        self.assertEqual(note["words"], '[\n  ["本"]\n]')
         self.assertEqual(updates, {})
 
 

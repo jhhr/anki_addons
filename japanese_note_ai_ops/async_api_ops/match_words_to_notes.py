@@ -50,7 +50,12 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback
 from ..word_array import match_flags, match_targets
-from ..word_array.match_flags import MatchState, decode_word_array, word_array_query_regex
+from ..word_array.match_flags import (
+    MatchState,
+    decode_word_array,
+    format_word_array,
+    word_array_query_regex,
+)
 from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
@@ -2581,7 +2586,7 @@ def plan_word_array_matching(
 
     def save_note():
         current_note = notes_to_update_dict.get(note.id, note)
-        current_note[fields["word_list_field"]] = json.dumps(arr, ensure_ascii=False)
+        current_note[fields["word_list_field"]] = format_word_array(arr)
         notes_to_update_dict[current_note.id] = current_note
         if current_note.id not in edited_nids:
             edited_nids.append(current_note.id)

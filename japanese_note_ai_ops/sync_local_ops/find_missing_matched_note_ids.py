@@ -1,4 +1,3 @@
-import json
 import logging
 
 from typing import Union, Sequence, Any
@@ -27,7 +26,7 @@ from ..async_api_ops.base_ops import (
 )
 from ..async_api_ops.word_list_format import word_lists_str_format
 from ..async_api_ops.match_words_to_notes import WORD_LISTS, decode_word_list_field
-from ..word_array.match_flags import decode_word_array
+from ..word_array.match_flags import decode_word_array, format_word_array
 from ..word_array.match_targets import unlink_missing_notes
 
 logger = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ def find_missing_matched_note_ids_for_note(
         unlinked = unlink_missing_notes(arr, lambda nid: bool(mw.col.find_notes(f"nid:{nid}")))
         if unlinked:
             logger.debug(f"{log_prefix}No notes found for {unlinked}, words set to be rematched")
-            note[word_list_field] = json.dumps(arr, ensure_ascii=False)
+            note[word_list_field] = format_word_array(arr)
             if note.id > 0 and note.id not in notes_to_update_dict:
                 notes_to_update_dict[note.id] = note
         return True

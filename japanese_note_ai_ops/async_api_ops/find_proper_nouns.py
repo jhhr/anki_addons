@@ -7,7 +7,6 @@ and note ids a merge dropped are logged, so a link lost to a bad call can be put
 before the word matching judge: a merged name is left with the match_data of its first word.
 """
 
-import json
 import logging
 import threading
 from collections.abc import Sequence
@@ -22,7 +21,7 @@ from aqt.utils import showWarning
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config
 from ..word_array import generator, proper_noun_llm
-from ..word_array.match_flags import decode_word_array
+from ..word_array.match_flags import decode_word_array, format_word_array
 from .base_ops import AsyncTaskProgressUpdater, bulk_notes_op, get_response, selected_notes_op
 
 logger = logging.getLogger(__name__)
@@ -97,7 +96,7 @@ def find_proper_nouns_in_note(
 
     if add_proper_nouns(config, arr, log_prefix):
         current_note = notes_to_update_dict.get(note.id, note)
-        current_note[word_list_field] = json.dumps(arr, ensure_ascii=False)
+        current_note[word_list_field] = format_word_array(arr)
         if current_note.id > 0:
             notes_to_update_dict[current_note.id] = current_note
     return True

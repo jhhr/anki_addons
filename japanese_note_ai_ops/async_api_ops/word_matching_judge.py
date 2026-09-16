@@ -17,7 +17,6 @@ stays as it was for the next run.
 """
 
 import asyncio
-import json
 import logging
 from collections.abc import Sequence
 from functools import partial
@@ -37,6 +36,7 @@ from ..word_array.match_flags import (
     REJUDGE_MATCHED,
     MatchState,
     decode_word_array,
+    format_word_array,
 )
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -107,7 +107,7 @@ def plan_word_matching_judge(
 
     def save_note():
         current_note = notes_to_update_dict.get(note.id, note)
-        current_note[word_list_field] = json.dumps(arr, ensure_ascii=False)
+        current_note[word_list_field] = format_word_array(arr)
         if current_note.id > 0:
             notes_to_update_dict[current_note.id] = current_note
             edited_nids.append(current_note.id)

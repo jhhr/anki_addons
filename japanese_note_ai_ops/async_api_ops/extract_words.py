@@ -22,7 +22,6 @@ is simply left as it is.
 The only model is `proper_nouns_model`, falling back to `extract_words_model`.
 """
 
-import json
 import logging
 from collections.abc import Sequence
 from functools import partial
@@ -38,7 +37,7 @@ from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import names, resources
-from ..word_array.match_flags import JUDGE_NEW, decode_word_array
+from ..word_array.match_flags import JUDGE_NEW, decode_word_array, format_word_array
 from .base_ops import (
     AsyncTaskProgressUpdater,
     OpPhase,
@@ -102,7 +101,7 @@ def extract_words_in_note(
 
     add_proper_nouns(config, arr, log_prefix)
 
-    note[word_list_field] = json.dumps(arr, ensure_ascii=False)
+    note[word_list_field] = format_word_array(arr)
     if note.id > 0 and note.id not in notes_to_update_dict:
         notes_to_update_dict[note.id] = note
     return True
