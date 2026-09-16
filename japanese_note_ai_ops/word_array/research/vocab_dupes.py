@@ -30,6 +30,10 @@ FIELDS = [
     "vocab-kanjified",
     "vocab-kana",
     "vocab-furigana",
+    # vocab_respell.py rewrites the processed furigana with the furigana, and skips a note that
+    # opts out of a kanjified form.
+    "vocab-processed-furigana",
+    "ignore-kanjified-form",
     "part-of-speech",
     "vocab-id",
     "meaning-jp",
