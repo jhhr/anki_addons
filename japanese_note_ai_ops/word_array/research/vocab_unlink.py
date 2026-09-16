@@ -22,9 +22,22 @@ things, told apart by whether any *other* vocab note owns that `(spelling, readi
   to the note's spelling and the link is kept. `raw_text` is left alone: it is the word as the
   sentence writes it, not the lexical entry.
 
-Nothing is guessed. A note whose own spelling appears in none of the arrays is held back, as is
-one linked by two of its own spellings, since both of those are a judgement call about which
-spelling is right rather than about which word the element is.
+A note linked by two of its own spellings is held back, since which of them a word array
+should use is a judgement call about spelling rather than about which word the element is.
+
+When *no* link both spells and reads like the note there is no anchor to believe, but the links
+can still be judged one at a time on what they are. `vocab_morphology` names how the two
+readings differ, and only the families that mean "a different word" are acted on: a deverbal
+noun against its verb (行き on the 行く note), an inflected form against its plain one (空いた on
+空く), a phrase built around the word. A family that is a damaged note reading (会社[がいしゃ]
+for かいしゃ) belongs to the reading repair, not here, and one that is still being decided by
+hand - the adverbial く-forms, the する-compounds, the ずる / じる pairs, a spelling with two
+real readings - is held back until that decision is made. Nothing is guessed: a difference no
+family explains is held back too.
+
+Taking a note's only link away leaves nothing linking it. That is usually right, since the
+arrays really do not contain the word, but it is listed separately in the report so it can be
+seen before anything is written.
 
     py -3.10 word_array/research/vocab_unlink.py [--fetch]   # list the edits, write nothing
     py -3.10 word_array/research/vocab_unlink.py --apply
@@ -50,6 +63,7 @@ from _bootstrap import ADDON_ROOT, load, load_shared
 
 import anki_connect
 import vocab_dupes
+import vocab_morphology
 
 match_flags = load("match_flags")
 to_hiragana = load_shared("jp_text_processing.mecab_controller.kana_conv").to_hiragana
@@ -66,6 +80,30 @@ KANJI_RE = re.compile(r"[一-龯々〆ヶ]")
 UNLINK = "unlink"  # back to ["match"], for match_words_to_notes
 UNJUDGE = "unjudge"  # back to [], for the judge
 RESPELL = "respell"  # keep the link, write the note's spelling as the element's dict_form
+
+# What each family of `vocab_morphology` means for a link with no anchor to judge it by.
+UNLINK_FAMILIES = {
+    vocab_morphology.DEVERBAL,
+    vocab_morphology.VERB_OF_DEVERBAL,
+    vocab_morphology.INFLECTED,
+    vocab_morphology.PLAIN_OF_INFLECTED,
+    vocab_morphology.WORD_INSIDE,
+}
+UNJUDGE_FAMILIES = {vocab_morphology.PHRASE_AROUND}
+# Families whose action is a standing decision rather than a rule, held until it is made.
+AWAITING_A_DECISION = {
+    vocab_morphology.KU_ADVERB: "the adverbial く-forms are being decided one by one",
+    vocab_morphology.SURU_COMPOUND: "the する-compounds are being decided one by one",
+    vocab_morphology.ZURU_JIRU: "the ずる / じる pairs are being decided one by one",
+    vocab_morphology.TWO_READINGS: "the spelling agrees and both readings are real",
+}
+# Families where the note's own reading is the damaged side, for the reading repair to fix.
+A_DAMAGED_NOTE_READING = {
+    vocab_morphology.RENDAKU,
+    vocab_morphology.TYPO,
+    vocab_morphology.WHITESPACE,
+    vocab_morphology.WIDTH,
+}
 
 
 # --- reading the arrays -------------------------------------------------------------------
@@ -160,6 +198,73 @@ def decide(link: Link, anchor: str, kana: str, others: set) -> tuple:
     return RESPELL, "no note owns %s, so it is %s spelled another way" % (link.form, anchor)
 
 
+def decide_without_anchor(row: dict, link: Link, others: set) -> tuple:
+    """`(action, why)` for a link on a note no element both spells and reads like.
+
+    `(None, why)` when the difference is not this script's to settle, and `why` is then the
+    reason the note is held back.
+    """
+    name = vocab_morphology.family(
+        (row.get(KANJIFIED_FIELD) or "").strip(),
+        to_hiragana((row.get("vocab-kana") or "").strip()),
+        link.form,
+        to_hiragana(link.reading),
+    )
+    if name in AWAITING_A_DECISION:
+        return None, AWAITING_A_DECISION[name]
+    if name in A_DAMAGED_NOTE_READING and not others:
+        # The note's reading is the side that is wrong. Unlinking a sound element would throw
+        # away the very link that shows what the reading should be.
+        return None, name
+    if others:
+        # The same rule as with an anchor: the matcher would have found that note, so this one
+        # is not the word's owner.
+        return UNLINK, "%s [%s] is note %d's own word" % (link.form, link.reading, min(others))
+    if name in UNJUDGE_FAMILIES:
+        return UNJUDGE, "%s, and no note owns it" % name
+    if name in UNLINK_FAMILIES:
+        return UNLINK, name
+    return None, "no family explains the two readings"
+
+
+def orphaned_notes(edits: list, rows: list) -> list:
+    """The notes every one of whose links is taken away, so nothing will link them after.
+
+    A note losing links that read exactly like it is a different case from one losing links to
+    another word: every element it had was its own word under another spelling, which makes it
+    a duplicate for `vocab_dupes` to merge rather than a word the sentences never use. It is
+    marked so, since unlinking leaves it dangling either way.
+    """
+    totals, _ = links_in(rows)
+    by_nid = {row["nid"]: row for row in rows}
+    losing: dict = Counter()
+    reads_alike: dict = defaultdict(list)
+    for edit in edits:
+        if edit.action == RESPELL:
+            continue
+        losing[edit.note_id] += edit.links
+        row = by_nid.get(edit.note_id) or {}
+        kana = to_hiragana((row.get("vocab-kana") or "").strip())
+        reads_alike[edit.note_id].append(to_hiragana(edit.reading) == kana)
+    out = []
+    for note_id, lost in losing.items():
+        if lost < sum(totals[note_id].values()):
+            continue
+        row = by_nid.get(note_id) or {}
+        out.append(
+            "%d %s [%s]%s"
+            % (
+                note_id,
+                (row.get("vocab-key") or "").strip(),
+                (row.get("vocab-kana") or "").strip(),
+                "  <- reads like every link it lost: likely a duplicate note"
+                if all(reads_alike[note_id])
+                else "",
+            )
+        )
+    return sorted(out)
+
+
 def plan(rows: list) -> tuple:
     """The edits to make, and the notes held back with the reason for each."""
     if rows and ARRAY_FIELD not in rows[0]:
@@ -172,7 +277,7 @@ def plan(rows: list) -> tuple:
 
     for note_id, by_link in totals.items():
         row = by_nid.get(note_id)
-        if row is None or len(by_link) < 2:
+        if row is None:
             continue
         kana = to_hiragana((row.get("vocab-kana") or "").strip())
         mine = note_spellings(row)
@@ -187,10 +292,27 @@ def plan(rows: list) -> tuple:
 
         anchors = {w.form for w in by_link if to_hiragana(w.reading) == kana and w.form in mine}
         if not anchors:
-            # Every link disagrees with the note, so there is no element to believe: the note's
-            # own spelling would have to be chosen over the arrays', which is not this script's
-            # call to make.
-            held["no link both reads and spells like the note"].append(note)
+            # No element both spells and reads like the note, so there is no anchor to believe.
+            # Each link is judged on its own by what kind of word it is.
+            for link, count in by_link.most_common():
+                others = owners.get((link.form, to_hiragana(link.reading)), set()) - {note_id}
+                action, why = decide_without_anchor(row, link, others)
+                if action is None:
+                    held[why].append(note)
+                    continue
+                edits.append(
+                    Edit(
+                        note_id=note_id,
+                        key=key,
+                        form=link.form,
+                        reading=link.reading,
+                        action=action,
+                        spelling="",
+                        why=why,
+                        links=count,
+                        sentences=dict(where[note_id][link]),
+                    )
+                )
             continue
         if len(anchors) > 1:
             # The note's kanjified form and its `vocab` are both linked, e.g. 珈琲 and コーヒー.
@@ -221,7 +343,7 @@ def plan(rows: list) -> tuple:
     return edits, held
 
 
-def report(edits: list, held: dict) -> list:
+def report(edits: list, held: dict, orphans=()) -> list:
     links = Counter()
     for edit in edits:
         links[edit.action] += edit.links
@@ -250,6 +372,18 @@ def report(edits: list, held: dict) -> list:
             "%-9s %-7d %-16s %-14s %-16s %s"
             % (edit.action, edit.links, edit.form, edit.reading, edit.key, edit.why)
         )
+
+    if orphans:
+        lines += [
+            "",
+            "--- %d notes will have no array link left ---" % len(orphans),
+            "The arrays hold no occurrence of these notes, which is what the unmatched-words",
+            "query will now show. A note marked as a likely duplicate lost its links to another",
+            "spelling of itself instead, and wants merging rather than rematching.",
+        ]
+        lines += ["    %s" % note for note in orphans[:60]]
+        if len(orphans) > 60:
+            lines.append("    ... and %d more" % (len(orphans) - 60))
 
     lines += ["", "--- held back, no array touched for these ---"]
     for reason in sorted(held, key=lambda r: -len(held[r])):
@@ -398,8 +532,9 @@ def main() -> int:
             return 0
         if args.fetch:
             print("%d notes -> %s" % (vocab_dupes.fetch(), vocab_dupes.DUMP))
-        edits, held = plan(vocab_dupes.read_dump())
-        lines = report(edits, held)
+        rows = vocab_dupes.read_dump()
+        edits, held = plan(rows)
+        lines = report(edits, held, orphaned_notes(edits, rows))
         REPORT.parent.mkdir(parents=True, exist_ok=True)
         REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
         with open(EDITS, "w", encoding="utf-8") as out:

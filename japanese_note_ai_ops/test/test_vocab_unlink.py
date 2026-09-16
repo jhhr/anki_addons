@@ -79,14 +79,17 @@ class TestFindingTheAnchor(unittest.TestCase):
 
     def test_a_note_no_link_spells_is_held_back(self):
         # 良く linked only by 良い [よい] and 浴 [よく]: 浴 reads right but is another word, and
-        # picking it would go on to respell the note 良く -> 浴.
+        # picking it as the anchor would go on to respell the note 良く -> 浴. With no anchor
+        # each link is held for its own reason and the note keeps its spelling either way.
         rows = [
             note(1, "良く", "よく"),
             sentence(9, word("良い", "良い", "よい", [1]), word("浴", "浴", "よく", [1])),
         ]
         edits, held = vocab_unlink.plan(rows)
         self.assertEqual(edits, [])
-        self.assertIn("no link both reads and spells", " | ".join(held))
+        reasons = " | ".join(held)
+        self.assertIn("く-forms", reasons)  # 良い, waiting to be marked keep or deinflect
+        self.assertIn("no family explains", reasons)  # 浴, which is simply a different word
 
     def test_a_note_linked_by_two_of_its_own_spellings_is_held_back(self):
         rows = [
@@ -252,6 +255,125 @@ class TestWriting(unittest.TestCase):
         self.assertEqual(written, 0)
         self.assertIn("no longer there as the dump saw them", refused[0])
         self.assertEqual(self.anki.fields[9]["sentence-vocab-list"], before)
+
+
+class TestANoteNoLinkAnchors(unittest.TestCase):
+    """A note no element both spells and reads like: each link judged on what kind of word it is."""
+
+    def test_a_deverbal_noun_is_unlinked(self):
+        rows = [note(1, "行き", "ゆき"), sentence(9, word("行く", "行く", "ゆく", [1]))]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual((actions(edits), dict(held)), ([("unlink", "行く", "ゆく")], {}))
+        self.assertIn("deverbal noun", edits[0].why)
+
+    def test_an_inflected_form_is_unlinked(self):
+        rows = [note(1, "空いた", "あいた"), sentence(9, word("空く", "空く", "あく", [1]))]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(actions(edits), [("unlink", "空く", "あく")])
+
+    def test_a_word_another_note_owns_is_unlinked_with_no_family_needed(self):
+        rows = [
+            note(1, "犬", "いぬ"),
+            note(2, "猫", "ねこ"),
+            sentence(9, word("猫", "猫", "ねこ", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(actions(edits), [("unlink", "猫", "ねこ")])
+        self.assertIn("note 2's own word", edits[0].why)
+
+    def test_a_phrase_no_note_owns_goes_back_to_the_judge(self):
+        rows = [
+            note(1, "陵", "みささぎ"),
+            sentence(9, word("嵯峨山上陵", "嵯峨山上陵", "さがのみささぎ", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(actions(edits), [("unjudge", "嵯峨山上陵", "さがのみささぎ")])
+
+    def test_a_difference_no_family_explains_is_held_back(self):
+        rows = [note(1, "犬", "いぬ"), sentence(9, word("猫", "猫", "ねこ", [1]))]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual(edits, [])
+        self.assertIn("no family explains", " | ".join(held))
+
+
+class TestTheDecisionsStillToBeMade(unittest.TestCase):
+    def test_a_ku_adverb_is_held_even_though_another_note_owns_it(self):
+        # The く-forms are being marked keep-or-deinflect by hand; ownership must not pre-empt it.
+        rows = [
+            note(1, "多く", "おおく"),
+            note(2, "多い", "おおい"),
+            sentence(9, word("多い", "多い", "おおい", [1])),
+        ]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual(edits, [])
+        self.assertIn("く-forms", " | ".join(held))
+
+    def test_a_suru_compound_is_held(self):
+        rows = [note(1, "期する", "きする"), sentence(9, word("期", "期", "き", [1]))]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual(edits, [])
+        self.assertIn("する-compounds", " | ".join(held))
+
+    def test_a_zuru_jiru_pair_is_held(self):
+        rows = [note(1, "通ずる", "つうずる"), sentence(9, word("通じる", "通じる", "つうじる", [1]))]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual(edits, [])
+        self.assertIn("ずる / じる", " | ".join(held))
+
+    def test_a_damaged_note_reading_is_left_for_the_reading_repair(self):
+        rows = [note(1, "会社", "がいしゃ"), sentence(9, word("会社", "会社", "かいしゃ", [1]))]
+        edits, held = vocab_unlink.plan(rows)
+        self.assertEqual(edits, [])
+        self.assertIn("rendaku", " | ".join(held))
+
+    def test_but_a_damaged_reading_another_note_owns_is_unlinked(self):
+        rows = [
+            note(1, "会社", "がいしゃ"),
+            note(2, "会社", "かいしゃ"),
+            sentence(9, word("会社", "会社", "かいしゃ", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(actions(edits), [("unlink", "会社", "かいしゃ")])
+
+
+class TestNotesLeftWithNothing(unittest.TestCase):
+    def test_a_note_losing_its_only_link_is_listed(self):
+        rows = [note(1, "行き", "ゆき"), sentence(9, word("行く", "行く", "ゆく", [1]))]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(vocab_unlink.orphaned_notes(edits, rows), ["1 行き [ゆき]"])
+
+    def test_a_note_that_keeps_a_link_is_not_listed(self):
+        rows = [
+            note(1, "人", "ひと"),
+            sentence(9, word("人", "人", "ひと", [1]), word("人", "人", "にん", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(vocab_unlink.orphaned_notes(edits, rows), [])
+
+    def test_a_note_losing_only_links_that_read_like_it_is_marked_a_duplicate(self):
+        # つける loses 付ける [つける]: every element it had was itself under another spelling.
+        rows = [
+            note(1, "つける", "つける"),
+            note(2, "付ける", "つける"),
+            sentence(9, word("付ける", "付ける", "つける", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        listed = vocab_unlink.orphaned_notes(edits, rows)
+        self.assertEqual(len(listed), 1)
+        self.assertIn("likely a duplicate", listed[0])
+
+    def test_a_note_losing_a_different_word_is_not_marked_a_duplicate(self):
+        rows = [note(1, "行き", "ゆき"), sentence(9, word("行く", "行く", "ゆく", [1]))]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertNotIn("duplicate", vocab_unlink.orphaned_notes(edits, rows)[0])
+
+    def test_a_respell_does_not_orphan_a_note(self):
+        rows = [
+            note(1, "どうぞ", "どうぞ"),
+            sentence(9, word("どうぞ", "どうぞ", "どうぞ", [1]), word("如何ぞ", "如何ぞ", "どうぞ", [1])),
+        ]
+        edits, _ = vocab_unlink.plan(rows)
+        self.assertEqual(vocab_unlink.orphaned_notes(edits, rows), [])
 
 
 if __name__ == "__main__":
