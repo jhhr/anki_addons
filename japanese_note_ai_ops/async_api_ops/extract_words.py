@@ -15,8 +15,9 @@ prompt; the word array is built by rules instead (see `word_array/README.md`).
 
 A note whose word list field already holds an array is skipped, so re-running over a selection
 costs nothing. A note still holding an **old** extract_words word list is skipped too:
-overwriting it would throw away the note ids of the words already matched, which is
-`sync_local_ops/migrate_word_arrays.py`'s job to carry over.
+overwriting it would throw away the note ids of the words already matched. The migration op
+that carried those over has been removed now that the collection is migrated, so such a note
+is simply left as it is.
 
 The only model is `proper_nouns_model`, falling back to `extract_words_model`.
 """
@@ -34,7 +35,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 
 from ..html_stripping import strip_context_sentences
-from ..sync_local_ops.migrate_word_arrays import with_generator_resources
+from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import names, resources
 from ..word_array.match_flags import JUDGE_NEW, decode_word_array

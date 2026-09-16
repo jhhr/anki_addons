@@ -50,7 +50,11 @@ STARTUP_SYNC_MODULES = [
     "tag_notes_matched_status",
     "deduplicate_existing_meaning_notes",
     "make_fine_tuning_data",
-    "migrate_word_arrays",
+]
+
+# Top-level modules that reach for aqt
+STARTUP_ROOT_MODULES = [
+    "generator_resources",
 ]
 
 
@@ -64,6 +68,11 @@ class StartupImportTests(unittest.TestCase):
         for name in STARTUP_SYNC_MODULES:
             with self.subTest(module=name):
                 self.assertIsNotNone(load_ops_module(name, subdir="sync_local_ops"))
+
+    def test_every_startup_root_module_imports(self):
+        for name in STARTUP_ROOT_MODULES:
+            with self.subTest(module=name):
+                self.assertIsNotNone(load_ops_module(name, subdir=""))
 
 
 if __name__ == "__main__":

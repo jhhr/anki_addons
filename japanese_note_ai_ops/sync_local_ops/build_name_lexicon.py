@@ -19,7 +19,7 @@ from aqt.utils import showInfo, showWarning
 from ..html_stripping import strip_context_sentences
 from ..utils import get_field_config
 from ..word_array import generator, names, resources
-from .migrate_word_arrays import with_generator_resources
+from ..generator_resources import with_generator_resources
 
 logger = logging.getLogger(__name__)
 

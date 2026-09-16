@@ -79,9 +79,6 @@ from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
 from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
     tag_notes_matched_status_from_selected,
 )
-from .sync_local_ops.migrate_word_arrays import (  # noqa: E402
-    migrate_word_arrays_from_selected,
-)
 from .sync_local_ops.build_name_lexicon import (  # noqa: E402
     build_name_lexicon_from_selected,
 )
@@ -137,7 +134,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         "Find missing matched note ids for selected notes", mw
     )
     tag_notes_matched_status_action = QAction("Tag notes matched status", mw)
-    migrate_word_arrays_action = QAction("Migrate word lists to word arrays", mw)
     build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
     export_kanjify_ft_action = QAction("Export kanjify test data", mw)
@@ -241,10 +237,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: tag_notes_matched_status_from_selected(selected_nids, parent=browser),
     )
     qconnect(
-        migrate_word_arrays_action.triggered,
-        lambda: migrate_word_arrays_from_selected(selected_nids, parent=browser),
-    )
-    qconnect(
         build_name_lexicon_action.triggered,
         lambda: build_name_lexicon_from_selected(selected_nids, parent=browser),
     )
@@ -291,7 +283,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(find_missing_matched_note_ids_action)
     ai_menu.addAction(tag_notes_matched_status_action)
     ai_menu.addAction(build_name_lexicon_action)
-    ai_menu.addAction(migrate_word_arrays_action)
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
     ai_menu.addAction(export_migration_data_action)

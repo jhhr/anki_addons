@@ -9,7 +9,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 
 from ..configuration import GeneratedMeaningsDictType
-from ..sync_local_ops.migrate_word_arrays import with_generator_resources
+from ..generator_resources import with_generator_resources
 from ..word_array.match_flags import JUDGE_NEW
 from .base_ops import AsyncTaskProgressUpdater, OpPhase, bulk_notes_op, selected_notes_op
 from .clean_meaning import clean_meaning_in_note

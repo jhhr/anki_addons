@@ -19,7 +19,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
-from ..sync_local_ops.migrate_word_arrays import with_generator_resources
+from ..generator_resources import with_generator_resources
 from ..utils import get_field_config
 from ..word_array import generator, proper_noun_llm
 from ..word_array.match_flags import decode_word_array
