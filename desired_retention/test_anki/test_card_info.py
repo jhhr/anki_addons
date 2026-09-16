@@ -106,8 +106,8 @@ def test_browser_and_reviewer_current_card_views_stay_populated_with_the_addon(
             updated_row = _wait_for(
                 anki_session,
                 dialog.web,
-                "document.getElementById('anki-dr-row')?.innerText",
+                "document.getElementById('anki-dr-row')?.innerText.includes('88%')",
             )
-            assert "88%" in updated_row
+            assert updated_row is True
         finally:
             _close_dialog(anki_session, dialog)
