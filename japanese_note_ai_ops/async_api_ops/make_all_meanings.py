@@ -259,7 +259,7 @@ Rules:
 - Do not invent meanings that are not already supported by the existing list.
 - Keep the final list aligned as useful learning categories, not a fine-grained dictionary of every nuance.
 
-Return only a JSON array of meaning objects. The response must begin with `[` and end with `]`. Do not wrap the array in an object. Each object must contain `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys.
+Return a JSON object with one `meanings` field containing an array of objects. Each object must contain `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys.
 
 WORD OR PHRASE (READING):
 {word} ({reading})
@@ -270,13 +270,18 @@ EXISTING MEANINGS:
     logger.debug("Prompt for merging existing meanings: %s", prompt)
 
     model = config.get("make_meanings_model", "")
+    response_schema = {
+        "type": "object",
+        "properties": {"meanings": get_meanings_array_response_schema()},
+        "required": ["meanings"],
+        "additionalProperties": False,
+    }
     result = get_response(
         model,
         prompt,
-        response_schema=get_meanings_array_response_schema(),
-        json_result_corrector=correct_meanings_array_json_result,
+        response_schema=response_schema,
     )
-    merged_meanings = validate_meanings_list(result, "merged meanings response")
+    merged_meanings = validate_meanings_result_object(result, "merging meanings")
     if merged_meanings is None:
         return MakeMeaningsResult.ERROR
 
