@@ -46,7 +46,7 @@ from .base_ops import (
     selected_notes_op,
 )
 from .find_proper_nouns import add_proper_nouns, generate_word_array
-from .word_matching_judgev2 import make_bulk_op as make_judge_bulk_op
+from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ to take, the pieces of a yojijukugo.
 5. `[note_id, match_quality]` - fully matched.
 
 Numbers other than the base numerals start out judged `dontmatch` (numbers.py). Everything else
-is the judge's (`judge_v2`), which asks about the words in the states it is given, each shown in
+is the judge's (`judge`), which asks about the words in the states it is given, each shown in
 its sentence by iter_highlighted(). By default the judge sees only unjudged words; the re-judging
 modes let it take a link away.
 """

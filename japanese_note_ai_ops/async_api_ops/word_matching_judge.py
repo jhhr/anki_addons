@@ -1,4 +1,4 @@
-"""Word matching judge v2: the words of a note's word array judged one request each.
+"""Word matching judge: the words of a note's word array judged one request each.
 
 The judge decides which words of a word array get a note, in `match_data` (see
 `word_array.match_flags`). Which words are asked about is the mode, a set of `MatchState`s:
@@ -7,7 +7,7 @@ The judge decides which words of a word array get a note, in `match_data` (see
 - `REJUDGE_MATCHED` - words with a note id, `[id]` and `[id, quality]`. A dontmatch unlinks it.
 - `REJUDGE_ALL` - every judged word, states 2-5.
 
-Every word is asked about alone, under the rules for its part of speech (`word_array.judge_v2`),
+Every word is asked about alone, under the rules for its part of speech (`word_array.judge`),
 so a note fans out into as many requests as it has words and runs through `bulk_nested_notes_op`.
 A note whose field still holds an old extract_words word list is skipped, and note ids a re-judge
 unlinked are logged, so a link lost to a bad call can be put back. Particles and the
@@ -30,7 +30,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 
 from ..utils import get_field_config, print_error_traceback
-from ..word_array import judge_v2
+from ..word_array import judge
 from ..word_array.match_flags import (
     JUDGE_NEW,
     REJUDGE_ALL,
@@ -62,7 +62,7 @@ def judge_model(config: dict) -> str:
     return config.get("word_matching_judge_model") or config.get("extract_words_model", "")
 
 
-def plan_word_matching_judge_v2(
+def plan_word_matching_judge(
     config: dict,
     note: Note,
     edited_nids: list[NoteId],
@@ -76,7 +76,7 @@ def plan_word_matching_judge_v2(
     """Plan judging the words of a note's word array in `states`, a task per word that needs a
     request. Returns None, with the note counted done, when no request is needed; a note whose
     only judgements were made while planning is saved right away."""
-    log_prefix = f"Word matching judge v2--nid:{note.id}--"
+    log_prefix = f"Word matching judge--nid:{note.id}--"
     plan = None
     word_list_field = None
     note_type = note.note_type()
@@ -94,7 +94,7 @@ def plan_word_matching_judge_v2(
         logger.debug(f"{log_prefix}The word list field holds no word array")
     else:
         try:
-            plan = judge_v2.plan_judgements(arr, states)
+            plan = judge.plan_judgements(arr, states)
         except ValueError as e:
             # match_state on match_data it doesn't know: leave the note for a look
             logger.error(f"{log_prefix}{e}")
@@ -102,7 +102,7 @@ def plan_word_matching_judge_v2(
         progress_updater.increment_counts(notes_done=1)
         return None
 
-    for note_id in judge_v2.set_auto(plan):
+    for note_id in judge.set_auto(plan):
         logger.warning(f"{log_prefix}unlinked note {note_id} from a particle or copula")
 
     def save_note():
@@ -131,19 +131,19 @@ def plan_word_matching_judge_v2(
             model,
             ask.prompt,
             cancel_state=cancel_state,
-            response_schema=judge_v2.RESPONSE_SCHEMA,
+            response_schema=judge.RESPONSE_SCHEMA,
         )
         if response is None:
             logger.error(f"{log_prefix}No response from the judge for {ask.elem[2]}")
             return False
-        note_id = judge_v2.apply_word_response(ask.elem, response)
+        note_id = judge.apply_word_response(ask.elem, response)
         logger.debug(f"{log_prefix}{ask.elem[2]}/{ask.elem[3]} ({ask.group}): {response}")
         if note_id is not None:
             logger.warning(f"{log_prefix}unlinked note {note_id} from {ask.elem[2]}")
         judged[ask_index] = True
         return True
 
-    def make_error_handler(ask: judge_v2.WordAsk):
+    def make_error_handler(ask: judge.WordAsk):
         def handle_op_error(e: Exception):
             logger.error(f"{log_prefix}Error judging word {ask.elem[2]}/{ask.elem[3]}: {e}")
             print_error_traceback(e, logger)
@@ -184,7 +184,7 @@ def plan_word_matching_judge_v2(
 
 
 def make_bulk_op(states: frozenset[MatchState]):
-    async def bulk_word_matching_judge_v2_op(
+    async def bulk_word_matching_judge_op(
         col: Collection,
         notes: Sequence[Note],
         edited_nids: list[NoteId],
@@ -199,7 +199,7 @@ def make_bulk_op(states: frozenset[MatchState]):
         return await bulk_nested_notes_op(
             message=MODE_NAMES[states],
             config=config,
-            bulk_inner_op=partial(plan_word_matching_judge_v2, states=states),
+            bulk_inner_op=partial(plan_word_matching_judge, states=states),
             col=col,
             notes=notes,
             edited_nids=edited_nids,
@@ -209,10 +209,10 @@ def make_bulk_op(states: frozenset[MatchState]):
             model=judge_model(config),
         )
 
-    return bulk_word_matching_judge_v2_op
+    return bulk_word_matching_judge_op
 
 
-def word_matching_judge_v2_from_selected_notes(
+def word_matching_judge_from_selected_notes(
     nids: Sequence[NoteId], parent: Browser, states: frozenset[MatchState] = JUDGE_NEW
 ):
     progress_updater = AsyncTaskProgressUpdater(title=f"Async AI op: {MODE_NAMES[states]}")

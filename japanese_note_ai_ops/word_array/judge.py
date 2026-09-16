@@ -1,4 +1,4 @@
-"""Word matching judge v2: every word judged in a request of its own, under its part of speech's rules.
+"""Word matching judge: every word judged in a request of its own, under its part of speech's rules.
 
 v1, since removed, asked about all the words of a sentence at once, under one set of rules for
 every kind of word. Here each word gets its own prompt, so the rules can go into detail for just

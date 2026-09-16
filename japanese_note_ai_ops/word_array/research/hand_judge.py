@@ -43,7 +43,7 @@ import migrate_fit
 import note_edits
 from _bootstrap import load
 
-judge_v2 = load("judge_v2")
+judge_rules = load("judge")
 match_flags = load("match_flags")
 
 DEFAULT_GROUPS = (
@@ -55,7 +55,7 @@ DEFAULT_GROUPS = (
     "suffix",
     "counter",
 )
-GROUPS = [g for g in judge_v2.POS_RULES]
+GROUPS = [g for g in judge_rules.POS_RULES]
 MORE_SENTENCES = 500  # generated per request at most, looking for a word to offer
 
 TAG_RE = re.compile(r"<[^>]+>")
@@ -219,11 +219,11 @@ class Session:
         out = []
         for placed in hand_labels.placed_words(arr):
             elem = placed.elem
-            if elem[1] in judge_v2.AUTO_DONT_MATCH_POS:
+            if elem[1] in judge_rules.AUTO_DONT_MATCH_POS:
                 continue
             if match_flags.match_state(elem) != match_flags.MatchState.UNJUDGED:
                 continue
-            group = judge_v2.rule_group(elem, placed.parents)
+            group = judge_rules.rule_group(elem, placed.parents)
             out.append(Candidate(sentence, arr, placed, group))
             self.placements[word_key(group, placed.path, elem[3])] += 1
         return out
@@ -436,7 +436,7 @@ class Session:
                 "group": cand.group,
                 "part_of": [describe(parent) for parent in reversed(p.parents)],
                 "made_of": " + ".join(f"{s[2]} [{s[3]}]" for s in subs),
-                "rules": judge_v2.POS_RULES[cand.group],
+                "rules": judge_rules.POS_RULES[cand.group],
                 "notes": len(self.nids.get(cand.sentence, [])),
                 "kspans": note_edits.changes(cand.sentence),
                 "no_notes": NO_NIDS,

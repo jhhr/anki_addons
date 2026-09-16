@@ -137,9 +137,9 @@ def load_judge():
     if meta.exists():
         config.update(json.loads(meta.read_text(encoding="utf-8")).get("config", {}))
     mw.addonManager = SimpleNamespace(getConfig=lambda _name: config)
-    judge = load_ops_module("word_matching_judgev2")
+    judge = load_ops_module("word_matching_judge")
     match_flags = load_ops_module("match_flags", subdir="word_array")
-    return judge, match_flags, load_ops_module("judge_v2", subdir="word_array"), config
+    return judge, match_flags, load_ops_module("judge", subdir="word_array"), config
 
 
 def prompt_key(model: str, prompt: str) -> str:
@@ -178,31 +178,31 @@ def scored_asks(row: dict, arr: list, plan, match_flags) -> list:
     return [ask for ask in plan.asks if expected[id(ask.elem)] is not None]
 
 
-def row_requests(rows: list, model: str, judge_v2, match_flags) -> list[list[tuple[str, str]]]:
+def row_requests(rows: list, model: str, judge_rules, match_flags) -> list[list[tuple[str, str]]]:
     """(key, prompt) of every request each row needs: one per scored word not auto-judged."""
     out = []
     for row in rows:
         arr = copy.deepcopy(row["array"])
-        asks = scored_asks(row, arr, judge_v2.plan_judgements(arr), match_flags)
+        asks = scored_asks(row, arr, judge_rules.plan_judgements(arr), match_flags)
         out.append([(prompt_key(model, ask.prompt), ask.prompt) for ask in asks])
     return out
 
 
-def apply_row(row: dict, keys: list[str], cached: dict, judge_v2, match_flags) -> Judged:
+def apply_row(row: dict, keys: list[str], cached: dict, judge_rules, match_flags) -> Judged:
     """The row judged; a word whose request has no usable response stays unjudged."""
     arr = copy.deepcopy(row["array"])
-    plan = judge_v2.plan_judgements(arr)
-    judge_v2.set_auto(plan)
+    plan = judge_rules.plan_judgements(arr)
+    judge_rules.set_auto(plan)
     asked, reasons = set(), {}
     groups = {id(ask.elem): ask.group for ask in plan.asks}
     for ask, key in zip(scored_asks(row, arr, plan, match_flags), keys):
         response = cached.get(key, {}).get("response")
         try:
-            judge_v2.apply_word_response(ask.elem, response)
+            judge_rules.apply_word_response(ask.elem, response)
         except ValueError:
             continue
         asked.add(id(ask.elem))
-        reasons[id(ask.elem)] = str(response.get(judge_v2.REASON_FIELD, ""))
+        reasons[id(ask.elem)] = str(response.get(judge_rules.REASON_FIELD, ""))
     return Judged(row, arr, asked, reasons, groups)
 
 
@@ -210,13 +210,13 @@ def run(args) -> int:
     if not EVAL_SET.exists():
         print(f"No {EVAL_SET.name}: run `build` first")
         return 1
-    judge, match_flags, judge_v2, config = load_judge()
+    judge, match_flags, judge_rules, config = load_judge()
     model = args.model or judge.judge_model(config)
     rows = [json.loads(line) for line in EVAL_SET.read_text(encoding="utf-8").splitlines() if line]
     if args.n:
         rows = rows[: args.n]
 
-    requests = row_requests(rows, model, judge_v2, match_flags)
+    requests = row_requests(rows, model, judge_rules, match_flags)
     cached = read_results()
     todo = sorted({k: p for reqs in requests for k, p in reqs if k not in cached}.items())
     if args.score_only:
@@ -230,7 +230,7 @@ def run(args) -> int:
 
     def ask(item):
         key, prompt = item
-        return key, judge.get_response(model, prompt, response_schema=judge_v2.RESPONSE_SCHEMA)
+        return key, judge.get_response(model, prompt, response_schema=judge_rules.RESPONSE_SCHEMA)
 
     started = time.monotonic()
     failed = 0
@@ -255,10 +255,10 @@ def run(args) -> int:
             file=sys.stderr,
         )
     judged = [
-        apply_row(row, [k for k, _ in reqs], cached, judge_v2, match_flags)
+        apply_row(row, [k for k, _ in reqs], cached, judge_rules, match_flags)
         for row, reqs in zip(rows, requests)
     ]
-    return score(judged, match_flags, judge_v2, args)
+    return score(judged, match_flags, judge_rules, args)
 
 
 def _rates(c: Counter) -> str:
@@ -275,7 +275,7 @@ def _rates(c: Counter) -> str:
     )
 
 
-def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
+def score(judged: list[Judged], match_flags, judge_rules, args) -> int:
     counts: Counter[str] = Counter()
     wrong_picks: Counter[tuple[str, str, str]] = Counter()
     missed: Counter[tuple[str, str, str]] = Counter()
@@ -298,7 +298,7 @@ def score(judged: list[Judged], match_flags, judge_v2, args) -> int:
                 if id(elem) in item.asked and got == match_flags.DONT_MATCH:
                     unexpected_picks[elem[1]] += 1
                 continue
-            if elem[1] in judge_v2.AUTO_DONT_MATCH_POS:
+            if elem[1] in judge_rules.AUTO_DONT_MATCH_POS:
                 # The judge decides these by rule (the user's call), so they aren't scored
                 counts[f"particle/copula expected {expected}, unscored"] += 1
                 continue

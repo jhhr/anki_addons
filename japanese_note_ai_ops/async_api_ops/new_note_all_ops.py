@@ -20,7 +20,7 @@ from .make_all_meanings import (
     make_meanings_in_note,
     write_meanings_dict_to_file,
 )
-from .word_matching_judgev2 import make_bulk_op as make_judge_bulk_op
+from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
 

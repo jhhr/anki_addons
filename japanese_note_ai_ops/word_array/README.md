@@ -256,7 +256,7 @@ built on one (二十八日, 十一時): numbers have been a steady source of jun
 else is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
 `REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away.
 
-The judge (`judge_v2.py`, op `async_api_ops/word_matching_judgev2.py`, one browser menu entry per
+The judge (`judge.py`, op `async_api_ops/word_matching_judge.py`, one browser menu entry per
 mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
 `word_matching_judge_model`) asks about each word alone: its prompt has the rules for its group
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
