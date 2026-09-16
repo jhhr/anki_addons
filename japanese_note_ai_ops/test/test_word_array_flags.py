@@ -69,9 +69,17 @@ class DefaultFlagTests(unittest.TestCase):
                 match_flags.default_match_data("number", form, []), ["dontmatch"], form
             )
 
-    def test_a_word_built_on_a_flagged_number_is_flagged_too(self):
+    def test_a_word_built_on_a_flagged_number_still_goes_to_the_judge(self):
+        # 二十八日 is a word whatever 二十八 is. Flagging it here put the decision where no
+        # prompt could reach it, and it took 一年, 三月 and 十日 with it - notes exist for those.
         subs = [word(form="二十八", pos="number", match_data=["dontmatch"]), word(form="日")]
-        self.assertEqual(match_flags.default_match_data("noun", "二十八日", subs), ["dontmatch"])
+        self.assertEqual(match_flags.default_match_data("noun", "二十八日", subs), [])
+
+    def test_a_number_not_written_out_of_numerals_goes_to_the_judge(self):
+        # The generator labels these numbers, but none is written out of numerals, and the
+        # collection holds a note for each.
+        for form in ["何", "数", "幾つ", "ゼロ", "2人"]:
+            self.assertEqual(match_flags.default_match_data("number", form, []), [], form)
 
     def test_a_word_built_on_a_matched_number_is_not(self):
         subs = [word(form="三", pos="number"), word(form="月")]

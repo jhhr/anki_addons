@@ -17,6 +17,14 @@ DIGITS = "〇一二三四五六七八九"
 SMALL_UNITS = {"十": 10, "百": 100, "千": 1000}
 LARGE_UNITS = {"万": 10**4, "億": 10**8, "兆": 10**12}
 MATCHED_NUMERALS = frozenset(DIGITS) | {"零", "十", "二十", "百", "千", "万", "億", "兆"}
+# What a number written out of numerals can be made of, after NFKC folds the wide digits
+NUMERAL_CHARS = (
+    frozenset(DIGITS)
+    | {"零"}
+    | frozenset(SMALL_UNITS)
+    | frozenset(LARGE_UNITS)
+    | frozenset("0123456789.")
+)
 
 DIGIT_READINGS = ["", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう"]
 SMALL_READINGS = (
@@ -98,3 +106,12 @@ def _reading_below_10000(n: int) -> str:
 
 def is_matched_numeral(dict_form: str) -> bool:
     return dict_form in MATCHED_NUMERALS
+
+
+def is_plain_numeral(dict_form: str) -> bool:
+    """Whether the form is written out of nothing but numerals: 二十八, 千九百三十五, 0.5.
+
+    A word the generator labels a number without it being written that way is not one -
+    何, 数, 幾, ゼロ, 2人 - and is the judge's to decide like any other word."""
+    text = unicodedata.normalize("NFKC", dict_form)
+    return bool(text) and all(ch in NUMERAL_CHARS for ch in text)

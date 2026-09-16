@@ -201,12 +201,18 @@ def elements_to_rate(arr: list) -> list[list]:
 
 
 def default_match_data(part_of_speech: str, dict_form: str, sub_words: list) -> list:
-    """match_data for a newly generated word: judged `dontmatch` if it is a number that isn't a
-    word of its own (二十八, 千九百三十五), or is built on one (二十八日); otherwise unjudged."""
-    if part_of_speech == "number":
+    """match_data for a newly generated word: judged `dontmatch` only if it is a number
+    written out of numerals and not a word of its own (二十八, 千九百三十五, 0.5).
+
+    Nothing else is decided here. A word merely built on such a number - 二十八日, 一年,
+    三月, 十日 - and a word labelled a number without being written out of numerals - 何,
+    数, 幾, ゼロ, 2人 - go to the judge like any other word. Pre-empting those put the
+    decision where no prompt could reach it and no judgement was recorded, and it was
+    the wrong one often enough to matter: 763 of the elements it flagged had a note.
+
+    `sub_words` is kept in the signature for the callers that pass the whole element."""
+    if part_of_speech == "number" and numbers.is_plain_numeral(dict_form):
         return [] if numbers.is_matched_numeral(dict_form) else [DONT_MATCH]
-    if any(s[1] == "number" and is_flagged(s) for s in sub_words if len(s) > 1):
-        return [DONT_MATCH]
     return []
 
 

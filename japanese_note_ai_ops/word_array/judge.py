@@ -77,7 +77,8 @@ POS_RULES = {
 - dontmatch a word that is only 御 plus a word: 御寺, 御姉さん, 御話. The word and 御 keep their notes. But 御前 (you) is a word of its own: match it.
 - dontmatch a pronoun that is only a pronoun plus a plural suffix (彼等, 私達, 奴等, 此奴等): the pronoun keeps the note.
 - match a proper noun as a whole, and a four-kanji idiom (yojijukugo).
-- match a number standing alone (百, 二十) and a number plus a counter (三つ, 一人, 二人); dontmatch a date or length of time (七月, 一週間, 一年間, 一ヶ月).""",
+- match a number standing alone (百, 二十) and a number plus a counter (三つ, 一人, 二人).
+- match a date or length of time whose reading has to be learned rather than read off its parts: 三日 (みっか), 十日 (とおか), 一日 (ついたち), 二十日 (はつか), 一昨日 (おととい). dontmatch one whose reading follows from its parts: 七月, 一週間, 一年間, 一ヶ月, 三年.""",
     "noun-phrase": """Rules for nouns, pronouns, proper nouns and numbers that are a component of a phrase or word made with a particle ("Part of" names it; that phrase is judged separately):
 - match a noun of an idiom or set phrase: 羽目 in 羽目を外す, 根 in 根に持つ, 迷惑 in 迷惑を掛ける, 気 in 気に為る, 意表 in 意表を突く, 希望 and 光 in 希望の光. The phrase and its nouns can all have notes.
 - match a noun where the phrase is only this noun plus the particle it happens to take here, its meaning unchanged: 其れ in 其れは or 其れ迄, 此れ in 此れで or 此れ程, 其処 in 其処迄, 誰 in 誰も, 自分 in 自分で, 物 in 物を, 一度 in 一度も, 何 in 何を.
@@ -92,7 +93,8 @@ POS_RULES = {
 - dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 此等, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it also inside a larger word.
 - dontmatch the components of a proper noun and of a four-kanji idiom (yojijukugo): the whole keeps the note.
 - dontmatch a component that is not a word of its own in this sentence, like 合 in 場合 or 供 in 子供.
-- dontmatch a number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月); match a date or length of time only as a component of an expression, like 一日 in 一日中.""",
+- match the number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月, 一 in 一日, 十 in 十年): a numeral is a word of its own wherever it counts, and the counter and the whole are judged separately.
+- match a date or length of time inside a larger word (一日 in 一日中) by the same reading test as a date standing alone: 三日 and 十日 have readings to learn, 七月 and 一週間 do not.""",
     "verb": """Rules for verbs (given in their dictionary form, whatever form the sentence has):
 - match an ordinary verb, however common or easy, 為る (する) included, also where it only makes the noun before it a verb (勉強為る).
 - match a verb used as an auxiliary after a て-form: 見る in て見る, 呉れる, 貰う, 置く, 行く, 来る, 下さい.
