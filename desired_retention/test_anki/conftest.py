@@ -41,10 +41,12 @@ def restore_stub_mw() -> Iterator[Any]:
 
     original_setup_ui = CardInfoDialog._setup_ui
     original_update_card = CardInfoDialog.update_card
-    with running_anki.stub_mw_restored(REBOUND_PACKAGES, []) as stub:
-        yield stub
-    CardInfoDialog._setup_ui = original_setup_ui
-    CardInfoDialog.update_card = original_update_card
+    try:
+        with running_anki.stub_mw_restored(REBOUND_PACKAGES, []) as stub:
+            yield stub
+    finally:
+        CardInfoDialog._setup_ui = original_setup_ui
+        CardInfoDialog.update_card = original_update_card
 
 
 @pytest.fixture
