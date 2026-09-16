@@ -58,7 +58,9 @@ to_hiragana = load_shared("jp_text_processing.mecab_controller.kana_conv").to_hi
 REPORT = ADDON_ROOT / "output" / "number_rejudge_report.txt"
 EDITS = ADDON_ROOT / "output" / "number_rejudge_edits.jsonl"
 UNDO = ADDON_ROOT / "output" / "number_rejudge_undo.jsonl"
-# Only the notes with an element going back to the judge; the rest need no run at all.
+# Every rewritten array, since every one of them has something for match_words_to_notes.
+# The judge only ever looks at unjudged words, so running it over the same tag asks
+# nothing about the arrays whose elements all went straight back to ["match"].
 TAG = "word-array-rejudge"
 
 ARRAY_FIELD = "sentence-vocab-list"
@@ -195,9 +197,11 @@ def report(edits: list, held: dict) -> list:
         "%d words over %d word arrays, covering %d flagged elements."
         % (len(edits), len(sentences), sum(e.links for e in edits)),
         "",
-        "%d of those arrays need a judge run and are tagged %s; the other %d are done once"
-        % (len(for_the_judge), TAG, len(sentences) - len(for_the_judge)),
-        "match_words_to_notes next runs, since every word they reopen has a note already.",
+        "Every rewritten array is tagged %s. Run match_words_to_notes over that tag: all %d"
+        % (TAG, len(sentences)),
+        "have a word waiting for it. Run the judge over the same tag as well - it has",
+        "something to decide on %d of them, and nothing to ask about the other %d."
+        % (len(for_the_judge), len(sentences) - len(for_the_judge)),
         "",
         "%s:   back to [\"match\"], linked by match_words_to_notes to the note already there"
         "  - %d elements" % (MATCH, links[MATCH]),
@@ -317,11 +321,11 @@ def apply(client, edits: list, undo: Path) -> tuple:
         with open(undo, "a", encoding="utf-8") as out:
             out.write(json.dumps(write._asdict(), ensure_ascii=False) + "\n")
         client.update_note_fields(write.nid, {ARRAY_FIELD: write.after})
-    written = {write.nid for write in writes}
-    tagged = [nid for nid in notes_for_the_judge(edits) if nid in written]
+    tagged = sorted({write.nid for write in writes})
     if tagged:
         client.add_tags(tagged, TAG)
-    return len(writes), len(tagged), refused
+    for_the_judge = set(notes_for_the_judge(edits)) & set(tagged)
+    return len(writes), len(for_the_judge), refused
 
 
 def revert(client, undo: Path) -> tuple:
@@ -381,7 +385,8 @@ def main() -> int:
         written, tagged, refused = apply(client, edits, args.undo)
         print("\n".join(refused))
         print("rewrote %d word arrays, refused %d" % (written, len(refused)))
-        print("tagged %d of them %s, the ones with something for the judge" % (tagged, TAG))
+        print("tagged them %s; run the matcher over tag:%s, and the judge too - it has" % (TAG, TAG))
+        print("something to decide on %d of them and nothing to ask about the rest" % tagged)
         print("old field text in %s (--revert puts it back)" % args.undo)
         return 0
     except anki_connect.AnkiConnectError as e:

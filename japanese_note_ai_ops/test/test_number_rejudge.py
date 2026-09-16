@@ -184,15 +184,28 @@ class TestWriting(unittest.TestCase):
         self.edits, _ = number_rejudge.plan(self.rows)
         self.anki = FakeAnki({9: {"sentence-vocab-list": self.rows[-1]["sentence-vocab-list"]}})
 
-    def test_apply_writes_the_array_and_tags_what_the_judge_must_see(self):
+    def test_apply_writes_the_array_and_tags_it(self):
         with tempfile.TemporaryDirectory() as tmp:
-            written, tagged, refused = number_rejudge.apply(
+            written, for_the_judge, refused = number_rejudge.apply(
                 self.anki, self.edits, Path(tmp) / "undo.jsonl"
             )
-        self.assertEqual((written, tagged, refused), (1, 1, []))
+        self.assertEqual((written, for_the_judge, refused), (1, 1, []))
         field = self.anki.fields[9]["sentence-vocab-list"]
         self.assertEqual([w[4] for w in json.loads(field)], [["match"], []])
         self.assertEqual(self.anki.tags, [([9], number_rejudge.TAG)])
+
+    def test_an_array_with_nothing_for_the_judge_is_tagged_all_the_same(self):
+        # Its 一 is back to ["match"] and still needs match_words_to_notes, so the tag has to
+        # select it too; the judge simply finds nothing to ask about it.
+        rows = [note(1, "一", "いち"), sentence(9, word("number", "一", "いち"))]
+        edits, _ = number_rejudge.plan(rows)
+        anki = FakeAnki({9: {"sentence-vocab-list": rows[-1]["sentence-vocab-list"]}})
+        with tempfile.TemporaryDirectory() as tmp:
+            written, for_the_judge, refused = number_rejudge.apply(
+                anki, edits, Path(tmp) / "undo.jsonl"
+            )
+        self.assertEqual((written, for_the_judge, refused), (1, 0, []))
+        self.assertEqual(anki.tags, [([9], number_rejudge.TAG)])
 
     def test_revert_puts_the_field_back_and_removes_the_tag(self):
         with tempfile.TemporaryDirectory() as tmp:
