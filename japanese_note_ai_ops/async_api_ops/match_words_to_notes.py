@@ -1327,18 +1327,13 @@ def create_new_note_from_matched_note(
     return True
 
 
-def compare_readings(
-    note_reading: str,
-    hiragana_reading: str,
-    hiragana_reading_suru: str,
-    log_prefix: str,
-) -> bool:
+def compare_readings(note_reading: str, hiragana_reading: str, log_prefix: str) -> bool:
+    """Whether the note is read the way the word is, exactly."""
     note_hiragana_reading = to_hiragana(note_reading)
     logger.debug(
-        f"{log_prefix}Comparing note reading: {note_hiragana_reading} with"
-        f" {hiragana_reading} and {hiragana_reading_suru}"
+        f"{log_prefix}Comparing note reading: {note_hiragana_reading} with {hiragana_reading}"
     )
-    return note_hiragana_reading in [hiragana_reading, hiragana_reading_suru]
+    return note_hiragana_reading == hiragana_reading
 
 
 async def get_matching_notes_for_word_and_reading(
@@ -1358,10 +1353,17 @@ async def get_matching_notes_for_word_and_reading(
     of notes each. word_index.py has why one pass over the notes table can stand in for all
     of them.
     """
+    # A word is the note's word or it is not. Adding `word + する` here, together with
+    # stripping する off the word before the lookup, let a bare noun match the する verb's
+    # note: する never bridged the way it was meant to - no する element in the collection
+    # needed it, every note spells and reads する in a field the index covers - and all it
+    # did was pull 期[き] onto 期する and 愛[あい] onto 愛する even where a 愛 note existed.
+    # Whether Xする is a word of its own is recorded by there being a note for it, and
+    # whether an element deserves one at all is the judge's call (match_flags).
+    kanjified_values = [word]
+    normal_values = [word]
     # Entries for words starting with the honorific prefix may use the kanji or hiragana so
     # look for both
-    kanjified_values = [word, f"{word}する"]
-    normal_values = [word, f"{word}する"]
     if word.startswith("御"):
         if reading[0] == "お":
             o_word = "お" + word[1:]
@@ -1385,19 +1387,13 @@ async def get_matching_notes_for_word_and_reading(
     # reading, so this happens before anything is fetched rather than after - it discards
     # most of the hits, so that is most of the fetching saved.
     hiragana_reading = to_hiragana(reading)
-    hiragana_reading_suru = to_hiragana(reading + "する")
     matching_ids: list[NoteId] = []
     for note_id in note_ids:
         note_reading = word_note_index.reading(note_id)
         # None means the notetype has no reading field at all, so the note cannot match
         if note_reading is None:
             continue
-        if compare_readings(
-            note_reading,
-            hiragana_reading,
-            hiragana_reading_suru,
-            log_prefix,
-        ):
+        if compare_readings(note_reading, hiragana_reading, log_prefix):
             matching_ids.append(note_id)
 
     # One turn with the collection for the ones the run has not already fetched, rather than
@@ -1482,10 +1478,6 @@ async def match_single_word_in_word_tuple(
             " Japanese characters"
         )
         processed_word_tuples[word_index] = None
-    # Check for existing suru verbs words including する in either field, remove する in the word
-    if word.endswith("する") and reading.endswith("する") and not re.match(r"(?:に|が)する$", word):
-        word = word[:-2]
-        reading = reading[:-2]
 
     # Get or create a lock for this specific word to prevent race conditions
     async with word_lock:
@@ -1568,15 +1560,9 @@ async def match_single_word_in_word_tuple(
         matching_new_notes = []
 
         hiragana_reading = to_hiragana(reading)
-        hiragana_reading_suru = to_hiragana(reading + "する")
         for new_note in unfiltered_matching_new_notes:
             if word_reading_field in new_note:
-                if compare_readings(
-                    new_note[word_reading_field],
-                    hiragana_reading,
-                    hiragana_reading_suru,
-                    log_prefix,
-                ):
+                if compare_readings(new_note[word_reading_field], hiragana_reading, log_prefix):
                     matching_new_notes.append(new_note)
 
         # Create a new note if there are no existing matches in DB AND no pending notes to add

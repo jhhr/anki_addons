@@ -69,14 +69,28 @@ class WordSpellingTests(LookupTestCase):
     def test_a_word_with_a_matching_reading_is_found(self):
         self.assertEqual(self.lookup("私", "わたし", vocab_row(1, "私", "私", "わたし", "私")), [1])
 
-    def test_the_suru_form_of_the_word_is_looked_up_too(self):
+    def test_a_suru_verb_is_found_by_its_own_spelling(self):
+        # The element carries する, so it matches exactly; nothing adds it or takes it off.
+        self.assertEqual(
+            self.lookup(
+                "勉強する",
+                "べんきょうする",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
+            ),
+            [1],
+        )
+
+    def test_a_bare_noun_does_not_reach_the_suru_verb(self):
+        # 期[き] used to land on 期する this way. Whether Xする is a word of its own is
+        # recorded by there being a note for it, so the bare noun stays unmatched until
+        # one exists and the judge decides whether it deserves one.
         self.assertEqual(
             self.lookup(
                 "勉強",
                 "べんきょう",
                 vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
-            [1],
+            [],
         )
 
     def test_an_honorific_written_with_kanji_finds_the_kana_spelling(self):
@@ -122,14 +136,16 @@ class ReadingFilterTests(LookupTestCase):
             self.lookup("珈琲", "コーヒー", vocab_row(1, "珈琲", "珈琲", "こーひー", "珈琲")), [1]
         )
 
-    def test_the_suru_reading_matches_the_plain_one(self):
+    def test_a_suru_reading_is_not_matched_by_the_plain_one(self):
+        # The spelling is found, so this is the reading filter's call alone: べんきょう is
+        # not べんきょうする, and する is no longer bridged on either side of the comparison.
         self.assertEqual(
             self.lookup(
-                "勉強",
+                "勉強する",
                 "べんきょう",
                 vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
-            [1],
+            [],
         )
 
     def test_a_note_marked_x_never_reaches_the_reading_filter(self):
