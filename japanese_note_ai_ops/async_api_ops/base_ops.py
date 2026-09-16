@@ -175,6 +175,7 @@ def get_response(
     max_output_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     json_result_corrector: Optional[Callable[[str], str]] = None,
+    effort: Optional[str] = None,
 ) -> Union[dict, None]:
     """Get a response from the appropriate model based on the configuration.
 
@@ -232,6 +233,7 @@ def get_response(
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             json_result_corrector=json_result_corrector,
+            effort=effort,
         )
     elif "/" in model:
         return get_response_from_together(
@@ -680,6 +682,7 @@ def get_response_from_anthropic(
     max_output_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     json_result_corrector: Optional[Callable[[str], str]] = None,
+    effort: Optional[str] = None,
 ) -> Union[dict, None]:
     """Get a response from Anthropic's Claude API.
 
@@ -734,6 +737,16 @@ def get_response_from_anthropic(
         logger.debug(
             "Using response schema %s", json.dumps(response_schema, ensure_ascii=False, indent=2)
         )
+
+    if effort:
+        # Extended thinking, as the Gemini call already asks for, but these models size the
+        # budget themselves and take an effort level instead of a token count. It shares
+        # output_config with the schema, so this runs after that is built rather than before.
+        # A custom temperature is not accepted alongside thinking, so it is removed.
+        data["thinking"] = {"type": "adaptive"}
+        data.setdefault("output_config", {})["effort"] = effort
+        data.pop("temperature", None)
+        logger.debug("Using adaptive thinking at %s effort", effort)
 
     config = mw.addonManager.getConfig(__name__)
     if config is None:

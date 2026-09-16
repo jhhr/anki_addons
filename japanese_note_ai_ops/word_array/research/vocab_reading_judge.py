@@ -220,7 +220,7 @@ def load_ops():
     return load_ops_module("base_ops")
 
 
-def ask(cases: list, model: str, workers: int) -> dict:
+def ask(cases: list, model: str, workers: int, effort: str = "") -> dict:
     """Ask for every case not already answered, appending each answer as it lands."""
     cached = read_results()
     todo = [c for c in cases if key_for(model, prompt(c)) not in cached]
@@ -231,7 +231,11 @@ def ask(cases: list, model: str, workers: int) -> dict:
     def one(case):
         text = prompt(case)
         return key_for(model, text), case, ops.get_response(
-            model, text, instructions=INSTRUCTIONS, response_schema=RESPONSE_SCHEMA
+            model,
+            text,
+            instructions=INSTRUCTIONS,
+            response_schema=RESPONSE_SCHEMA,
+            effort=effort or None,
         )
 
     RESULTS.parent.mkdir(parents=True, exist_ok=True)
@@ -243,6 +247,7 @@ def ask(cases: list, model: str, workers: int) -> dict:
                 entry = {
                     "key": key,
                     "model": model,
+                    "effort": effort,
                     "nid": case.note_id,
                     "spelling": case.spelling,
                     "response": response,
@@ -340,6 +345,12 @@ def main() -> int:
     parser.add_argument("--revert", action="store_true", help="put the old readings back")
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--effort",
+        default="",
+        choices=["", "low", "medium", "high"],
+        help="how hard the model should think; empty leaves thinking off",
+    )
     parser.add_argument("--undo", type=Path, default=UNDO)
     parser.add_argument("--anki-connect", default=None)
     args = parser.parse_args()
@@ -351,7 +362,11 @@ def main() -> int:
             print("\n".join(refused + ["reverted %d notes" % reverted]))
             return 0
         cases = collect(vocab_dupes.read_dump())
-        cached = ask(cases, args.model, args.workers) if args.ask else read_results()
+        cached = (
+            ask(cases, args.model, args.workers, args.effort)
+            if args.ask
+            else read_results()
+        )
         judged = verdicts(cases, args.model, cached)
         fixes, refused = repairs(judged)
         lines = report(judged, fixes, refused, args.model)
