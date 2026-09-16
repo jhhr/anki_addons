@@ -1080,7 +1080,34 @@ class AsyncTaskProgressUpdater:
         self.total_tasks = total_tasks
 
     def set_title(self, title: str):
+        """Set the dialog's title, and keep it as the base a phase title is built on."""
+        self.title = title
+        self._show_title(title)
+
+    def _show_title(self, title: str) -> None:
         mw.taskman.run_on_main(lambda: mw.progress.set_title(title))
+
+    def begin_phase(self, index: int, total: int, name: str = "") -> None:
+        """Start one phase of a multi-phase op: title it, and reset the per-run counters.
+
+        Each phase is a whole bulk op of its own but they all share one updater, so without
+        this a later phase would start with the earlier ones' figures. Both halves of the
+        estimate are ratios over the whole run - the ETA is elapsed time over tasks done, the
+        average is cumulative task time over the same - so a phase of quick local work after
+        one of slow API calls would show an ETA of hours for a run of seconds, and the task
+        bar would start part-filled with work that is already over.
+        """
+        with self._counts_lock:
+            self.total_tasks = 0
+            self.tasks_done = 0
+            self.tasks_in_progress = 0
+            self.notes_done = 0
+            self.cumulative_task_time = 0.0
+            self.max_task_time = 0.0
+            self.start_time = time.time()
+        phase_title = f"{self.title} (Phase {index}/{total}"
+        phase_title += f": {name})" if name else ")"
+        self._show_title(phase_title)
 
     def _push(self, label: str, value: int, maximum: int, force: bool = False) -> None:
         """Queue a dialog redraw, collapsing bursts into a single update.
@@ -1737,7 +1764,10 @@ def sync_bulk_notes_op(
     if on_end:
         on_end()
 
-    mw.taskman.run_on_main(lambda: mw.progress.finish())
+    # The dialog is not closed here: on_bulk_success does it once the whole operation is over.
+    # Closing it at the end of this op left the note-adding phase of the cleanup drawing
+    # progress into a window that was already gone, and as a phase of a multi-phase op it
+    # would have taken the cancel button away from every phase after this one.
 
     return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
 
@@ -1905,6 +1935,91 @@ async def bulk_notes_op(
     return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
 
 
+class OpPhase(NamedTuple):
+    """One phase of a multi-phase op: a whole bulk op run over the whole selection.
+
+    `bulk_op` is exactly what `selected_notes_op` takes on its own - a coroutine function
+    wrapping `bulk_notes_op` or `bulk_nested_notes_op` - so an op that already has a menu
+    entry of its own becomes a phase without changing anything about it. `name` is what the
+    progress dialog shows beside "Phase 1/2".
+    """
+
+    name: str
+    bulk_op: Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]]
+
+
+async def run_op_phases(
+    phases: Sequence[OpPhase],
+    col: Collection,
+    notes: Sequence[Note],
+    edited_nids: list[NoteId],
+    progress_updater: AsyncTaskProgressUpdater,
+    notes_to_add_dict: dict[str, list[Note]],
+    notes_to_update_dict: dict[NoteId, Note],
+    label: str = "",
+) -> BulkOpResult:
+    """Run every phase over the same notes, one after another, as a single operation.
+
+    The same thing as running the phases' menu entries by hand, in one click. A phase has to
+    be a whole bulk op rather than another step inside one, because a nested phase cannot be
+    planned until the earlier phase's API calls are done: `bulk_nested_notes_op` fixes every
+    note's `NotePlan.task_count` before it starts anything, and the judge's words only exist
+    once the word array has been generated.
+
+    What the phases share is `selected_notes_op`'s run: one list of notes, so a later phase
+    reads the earlier phases' writes straight from memory and each note is still written to
+    the collection once, in cleanup; one pair of add/update dicts; and one undo entry, since
+    cleanup merges everything into the first phase's `pos`.
+
+    What they do not share is added notes. A note a phase adds only gets an id in cleanup,
+    after every phase has run, so a phase cannot work on notes an earlier phase created -
+    that still needs the ops to be run one after another from the menu.
+
+    Cancelling is checked between phases as well as inside them: a cancelled phase returns
+    what it managed to do, and the run then stops rather than starting the next one.
+    """
+    pos: Optional[int] = None
+    notes_to_remove: list[NoteId] = []
+    total = len(phases)
+    for index, phase in enumerate(phases):
+        if index > 0 and (mw.progress.want_cancel() or run_cancelled()):
+            logger.debug("Multi-phase op cancelled before phase %d/%d", index + 1, total)
+            break
+        if total > 1:
+            progress_updater.begin_phase(index + 1, total, phase.name)
+        started = time.monotonic()
+        result = await phase.bulk_op(
+            col,
+            notes=notes,
+            edited_nids=edited_nids,
+            progress_updater=progress_updater,
+            notes_to_add_dict=notes_to_add_dict,
+            notes_to_update_dict=notes_to_update_dict,
+        )
+        log_phase(f"phase {index + 1}/{total}: {phase.name}", started)
+        if result is None:
+            # An op that bailed out before starting, such as one that found no config
+            logger.error("Phase %s returned no result, continuing with the next", phase.name)
+            continue
+        phase_pos, phase_add_dict, phase_update_dict, phase_notes_to_remove = result
+        if pos is None:
+            pos = phase_pos
+        # A phase is handed the shared dicts and normally returns those same objects, but it
+        # is free to build its own, so fold anything new in rather than assuming identity.
+        if phase_add_dict is not notes_to_add_dict:
+            for note_type_name, added in phase_add_dict.items():
+                notes_to_add_dict.setdefault(note_type_name, []).extend(added)
+        if phase_update_dict is not notes_to_update_dict:
+            notes_to_update_dict.update(phase_update_dict)
+        if phase_notes_to_remove:
+            notes_to_remove.extend(phase_notes_to_remove)
+    if pos is None:
+        # Every phase bailed out. There is nothing to merge, but the cleanup still needs an
+        # undo entry to merge its own writes into.
+        pos = col.add_custom_undo_entry(label or "Multi-phase op")
+    return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
+
+
 def on_bulk_success(
     out,
     done_text: str,
@@ -1965,7 +2080,7 @@ FilterNewNotesOp = Callable[
 
 def selected_notes_op(
     done_text: str,
-    bulk_op: Callable[..., Coroutine[Any, Any, BulkOpResult]],
+    bulk_op: Union[Callable[..., Coroutine[Any, Any, BulkOpResult]], Sequence[OpPhase]],
     nids: Sequence[NoteId],
     parent: Browser,
     progress_updater: AsyncTaskProgressUpdater,
@@ -1973,6 +2088,12 @@ def selected_notes_op(
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
     on_success: Optional[Callable] = None,
 ):
+    """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
+
+    A list of phases runs them in order over the same notes and finishes with the same
+    cleanup as a single op - see `run_op_phases` for what they share and what they do not.
+    """
+    phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
     edited_nids: list[NoteId] = []
     edited_other_nids: list[NoteId] = []
     notes_to_add_dict: dict[str, list[Note]] = {}
@@ -1998,13 +2119,18 @@ def selected_notes_op(
 
         async def async_wrapper():
             nonlocal edited_nids, edited_other_nids
-            result = await bulk_op(
+            # Loaded once and handed to every phase, so a later phase sees the earlier
+            # ones' writes and each note is written back to the collection only in cleanup
+            notes = [mw.col.get_note(nid) for nid in nids]
+            result = await run_op_phases(
+                phases,
                 col,
-                notes=[mw.col.get_note(nid) for nid in nids],
+                notes=notes,
                 edited_nids=edited_nids,
                 progress_updater=progress_updater,
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
+                label=done_text,
             )
             cleanup_started = time.monotonic()
             logger.debug("[phase] bulk op returned, starting cleanup")
@@ -2273,9 +2399,7 @@ def selected_notes_op(
             return OpChanges()
         finally:
             teardown_started = time.monotonic()
-            logger.debug(
-                "[phase] teardown starting, %d threads alive", threading.active_count()
-            )
+            logger.debug("[phase] teardown starting, %d threads alive", threading.active_count())
             # This thread goes back to Anki's pool and will run other operations, so its
             # exemption must not outlive this one
             end_cleanup_phase()
