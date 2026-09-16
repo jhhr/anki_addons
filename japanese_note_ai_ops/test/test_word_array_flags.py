@@ -287,6 +287,22 @@ class WordArrayQueryRegexTests(unittest.TestCase):
         arr = [word("本", pos="ほん", form="別", reading="べつ", match_data=["match"])]
         self.assertFalse(self.search(arr, [State.MATCH]))
 
+    def test_every_quote_is_escaped_for_ankis_search_parser(self):
+        # The regex goes into a quoted term, `"<field>:re:<regex>"`. Anki ends the term at
+        # the first bare quote and parses what follows as search syntax, which fails on the
+        # `\s` of this very regex: Invalid search: the escape sequence `\s` is not defined.
+        for states in (
+            [State.UNJUDGED],
+            [State.DONT_MATCH],
+            [State.MATCH],
+            [State.LINKED],
+            [State.RATED],
+            list(State),
+        ):
+            with self.subTest(states=states):
+                regex = match_flags.word_array_query_regex("本", "ほん", states)
+                self.assertNotIn('"', regex.replace('\\"', ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -110,10 +110,13 @@ def _format_word(word: list, indent: int) -> str:
 
 # What follows a word's reading in the field text, by state. A word's own values are always
 # separated by ", " (format_word_array only breaks the line between words).
+# Every double quote is written `\"`: Anki's search parser ends a quoted term at the first
+# bare quote, so an unescaped one here would cut the search short and leave the rest of the
+# regex to be parsed as search syntax. The regex engines read `\"` as a literal quote.
 _STATE_REGEX = {
     MatchState.UNJUDGED: r"\]",
-    MatchState.DONT_MATCH: rf'"{DONT_MATCH}"\]',
-    MatchState.MATCH: rf'"{MATCH}"\]',
+    MatchState.DONT_MATCH: rf'\"{DONT_MATCH}\"\]',
+    MatchState.MATCH: rf'\"{MATCH}\"\]',
     MatchState.LINKED: r"-?\d+\]",
     MatchState.RATED: r"-?\d+,\s*\d+\]",
 }
@@ -127,7 +130,7 @@ def word_array_query_regex(word: str, reading: str, states: Iterable[MatchState]
     Only the dict_form and reading strings of an element are followed by `match_data`, so the
     raw text and part of speech never pass for them."""
     ends = "|".join(_STATE_REGEX[state] for state in sorted(set(states)))
-    return rf',\s*"{re.escape(word)}",\s*"{re.escape(reading)}",\s*\[\s*({ends})'
+    return rf',\s*\"{re.escape(word)}\",\s*\"{re.escape(reading)}\",\s*\[\s*({ends})'
 
 
 def iter_words(arr: list, depth: int = 0) -> Iterator[tuple[int, list]]:
