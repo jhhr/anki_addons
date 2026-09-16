@@ -33,7 +33,7 @@ from pathlib import Path
 from _bootstrap import ADDON_ROOT, load, load_root
 
 generator = load("generator")
-migrate = load("migrate")
+migrate = load("research.migrate")
 html_stripping = load_root("html_stripping")
 
 try:

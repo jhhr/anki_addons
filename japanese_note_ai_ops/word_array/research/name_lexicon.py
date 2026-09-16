@@ -13,7 +13,7 @@ from migrate_fit import CORPORA, read_export
 
 generator = load("generator")
 names = load("names")
-migrate = load("migrate")
+migrate = load("research.migrate")
 jmdict = load("jmdict_index")
 html_stripping = load_root("html_stripping")
 

@@ -14,7 +14,7 @@ from _bootstrap import ADDON_ROOT, load, load_root
 from migrate_fit import CORPORA, read_export
 
 generator = load("generator")
-migrate = load("migrate")
+migrate = load("research.migrate")
 match_flags = load("match_flags")
 html_stripping = load_root("html_stripping")
 

@@ -29,14 +29,18 @@ the sentence, with `<b>` marking which occurrence it is, and that is more reliab
 toss here. The exception is several occurrences of one word, where the link goes on all of them
 (`_spreads`): the old list naming it once gave it one note.
 Only a lost note id is worth the caller's attention - see `lost_note_ids`.
+
+The migration op that called this is gone (the collection was migrated on 2026-09-16), so
+the module lives here now: `migrate_fit.py` measures the fit with it and `judge_eval.py` /
+`proper_nouns.py` label their corpora through `_find`. Nothing the add-on ships imports it.
 """
 
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ..kana_conv import is_kana_str, to_hiragana
-from . import match_flags
+from ...kana_conv import is_kana_str, to_hiragana
+from .. import match_flags
 
 KANA_RE = re.compile(r"[ぁ-んァ-ヶーゝゞヽヾ]")
 

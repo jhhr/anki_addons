@@ -9,7 +9,7 @@ import unittest
 
 from addon_modules import load_ops_module
 
-migrate = load_ops_module("migrate", subdir="word_array")
+migrate = load_ops_module("migrate", subdir="word_array/research")
 
 
 def word(form="X", reading="x", pos="noun", raw="", match_data=None, subs=None):

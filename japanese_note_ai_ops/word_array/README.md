@@ -367,12 +367,13 @@ A key that spells a word wrong (まだ → 未だ) goes in `generator.CANONICAL_
 **The migration was run on the collection on 2026-09-16** (name lexicon, migrate, find proper
 nouns, judge), so no note should hold an old word list any more; what follows is what it did.
 
-`migrate.migrate(word_lists, arr)` fits a stored extract_words word list into a generated
-array, writing `match_data` in place. The array is taken as correct, so the only thing carried
-over is the one thing the generator cannot produce: the note id of a word already matched. The
-meaning index goes (a word's position in the array is what tells two occurrences apart now) and
-so does the sort field value, which the note itself has; an entry with no note id therefore
-carries nothing and is counted, not reported.
+`research/migrate.py`'s `migrate(word_lists, arr)` fits a stored extract_words word list into a
+generated array, writing `match_data` in place. It sits under `research/` because the op that
+called it is gone; `migrate_fit.py`, `judge_eval.py` and `proper_nouns.py` still use it. The
+array is taken as correct, so the only thing carried over is the one thing the generator cannot
+produce: the note id of a word already matched. The meaning index goes (a word's position in the
+array is what tells two occurrences apart now) and so does the sort field value, which the note
+itself has; an entry with no note id therefore carries nothing and is counted, not reported.
 
 An entry finds its element in steps, each needing exactly one element to fit, and the step also
 ranks the claim, so that of two entries wanting one word the better-founded one keeps it
