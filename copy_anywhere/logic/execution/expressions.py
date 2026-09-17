@@ -31,6 +31,7 @@ from ...shared.interpolate.interpolate_fields import (
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
     extract_cloze_patterns,
+    get_card_value,
     interpolate_from_text,
 )
 from ..copy_primitives import (
@@ -189,9 +190,17 @@ def _card_reference(card: Card, rest: str, ctx: ExpressionContext) -> str:
     if rest in CARD_PROPERTY_NAMES:
         return str(getattr(facade, rest))
     if rest.startswith("__"):
-        # A format-1 card-value key, which is keyed by card type name on the note.
+        # A card-value key, read from the card this binding names. Format 1 had no card
+        # binding -- it had a note -- so it keyed these by card template name and found them
+        # through `get_from_note_fields`. Going back through that path meant discarding the
+        # card in hand to re-derive it from its note, which cannot name one cloze card (they
+        # share a template) and which a definition spanning several note types refuses
+        # outright (the prefix is not allowed there). Neither question arises here.
         note = ctx.session.note_by_id(card.nid)
-        return _note_reference(note, f"{facade.template_name}{rest}", ctx)
+        value = get_card_value(card, note, rest)
+        if value is None:
+            raise ctx.error(f"'{rest}' is not a card value")
+        return str(value)
     raise ctx.error(f"'{rest}' is not a card property")
 
 

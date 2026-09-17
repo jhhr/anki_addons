@@ -13,7 +13,7 @@ import pytest
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from conftest import CLOZE, KANJI, VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.execution.commit import PreviewCommitter
 from copy_anywhere.logic.execution.context import ExecutionSession
@@ -518,6 +518,126 @@ class TestCardsAndCardStages:
         ])
         assert run(definition, note)[0] is True, logger.errors
         assert note["Note"] in ("Recognition", "Recall")
+
+
+class TestACardValueReadThroughACardBinding:
+    """`{{card.__Card_Due}}` and friends, which name a card value through the card binding.
+
+    Format 1 had no card binding. It had a note, so a card value was keyed by card template
+    name on that note -- `{{Recognition__Card_Due}}` -- and `get_from_note_fields` looks it
+    up in a per-note dict keyed that way. `_card_reference` reused that path by throwing away
+    the card it was handed and rebuilding the key from `card.template_name`, which answers a
+    question format 2 no longer has to ask: the binding already names one card.
+
+    Two things fall out of the indirection, and the editor's own interpolation menu offers
+    the spelling that hits both (`test_stage_editor_context` pins that it does).
+
+    A definition listing more than one trigger note type switches `interpolate_from_text` to
+    the spelling that forbids a template-name prefix, so the prefixed key matches nothing and
+    the definition fails per note with "is not a field or value of that note".
+
+    A cloze note keys its card values `"Cloze 1"`, `"Cloze 2"` -- all cloze cards share one
+    template, so the name alone cannot tell them apart -- while `template_name` is the bare
+    `"Cloze"`. That misses, and a miss returns the type-appropriate default rather than
+    erroring, so every card in a loop silently reported the same 0.
+    """
+
+    def test_it_resolves_when_the_definition_has_several_trigger_note_types(self, col):
+        note = real_anki.add_note(col, KANJI, {"Kanji": "a", "Keyword": ""})
+        card = note.cards()[0]
+        definition = d.staged(
+            stages=[
+                d.card_query("cards", f"nid:{note.id}"),
+                d.for_each_card(
+                    "cards",
+                    [d.edit_note("note", [d.write("Keyword", d.text("{{card.__Card_ID}}"))])],
+                ),
+            ],
+            note_types=[KANJI, VOCAB],
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert [n["Keyword"] for n in copied] == [str(card.id)]
+
+    def test_each_cloze_card_reports_its_own_value(self, col):
+        note = real_anki.add_note(
+            col, CLOZE, {"Text": "{{c1::one}} and {{c2::two}}", "Extra": ""}
+        )
+        assert len(note.cards()) == 2
+        # Collected through a field rather than a list: a list declared inside a loop body
+        # is rebuilt per iteration, so the field is what accumulates across the two cards.
+        definition = d.staged(
+            stages=[
+                d.card_query("cards", f"nid:{note.id}"),
+                d.for_each_card(
+                    "cards",
+                    [
+                        d.edit_note(
+                            "note",
+                            [d.write("Extra", d.text("{{note.Extra}}[{{card.__Card_ID}}]"))],
+                        )
+                    ],
+                ),
+            ],
+            note_types=[CLOZE],
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        written = copied[0]["Extra"]
+        for card in note.cards():
+            assert f"[{card.id}]" in written, written
+
+    def test_a_key_that_is_not_a_card_value_is_still_refused(self, col, note):
+        definition = d.staged(stages=[
+            d.card_query("cards", f"nid:{note.id}", strategy="first", count=1),
+            d.for_each_card(
+                "cards",
+                [d.edit_note("note", [d.write("Note", d.text("{{card.__Not_A_Value}}"))])],
+            ),
+        ])
+
+        ok, _copied = run(definition, note)
+
+        assert ok is False
+
+    def test_an_argument_still_reaches_the_value_that_takes_one(self, col, note):
+        card = note.cards()[0]
+        card.custom_data = '{"v": "kept"}'
+        col.update_card(card)
+        definition = d.staged(stages=[
+            d.card_query("cards", f"cid:{card.id}"),
+            d.for_each_card(
+                "cards",
+                [
+                    d.edit_note(
+                        "note",
+                        [d.write("Note", d.text("{{card.__Card_Custom_Data_Prop==v}}"))],
+                    )
+                ],
+            ),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert copied[0]["Note"] == "kept"
+
+    def test_the_format_1_spelling_on_the_note_still_works(self, col, note):
+        # The path this does not touch: a migrated definition names a card value by template
+        # on the note, and `get_from_note_fields` is still what answers it.
+        card = [c for c in note.cards() if c.template()["name"] == "Recognition"][0]
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "{{Recognition__Card_ID}}")]
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert copied[0]["Note"] == str(card.id)
 
 
 class TestFiles:

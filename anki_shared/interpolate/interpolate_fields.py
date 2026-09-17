@@ -558,6 +558,41 @@ def get_card_values_dict_for_note(
     return card_values
 
 
+def get_card_value(
+    card: Card,
+    note: Note,
+    reference: str,
+) -> Optional[JSONSerializableValue]:
+    """One card value, read from the card itself rather than found by template name.
+
+    `get_from_note_fields` exists for a caller that has only a note, so it keys card values
+    by card template name and takes the name as a prefix on the reference. That indirection
+    cannot express two things a caller holding the card does not need it to:
+
+    * a cloze note's cards all share one template, so the dict keys them `"Cloze 1"`,
+      `"Cloze 2"` and a bare template name picks none of them -- and a miss there returns a
+      type-appropriate default rather than reporting anything;
+    * a definition spanning several note types drops the prefix entirely
+      (`MULTI_CARD_VALUE_RE`), so a prefixed reference matches nothing at all.
+
+    :param card: the card the value is read from
+    :param note: that card's note, which some values are relative to
+    :param reference: the card value key, with its argument if it takes one --
+        `__Card_Due`, or `__Card_Custom_Data_Prop==name`
+    :return: the value, or None when `reference` does not name a card value
+    """
+    key, separator, arg = reference.partition(ARG_SEPARATOR)
+    # The key constants carry the separator when the value takes an argument, which is how
+    # the regexes above capture them too.
+    key += separator
+    if key not in CARD_VALUES_DICT:
+        return None
+    value_or_partial = get_value_for_card(card, note).get(key)
+    if isinstance(value_or_partial, partial):
+        return cast(JSONSerializableValue, value_or_partial(arg))
+    return cast(JSONSerializableValue, value_or_partial)
+
+
 NOTE_VALUE_RE = re.compile(
     rf"""
 ^ # must start with __ or this is not a note value
