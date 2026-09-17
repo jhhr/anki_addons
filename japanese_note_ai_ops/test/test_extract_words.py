@@ -4,8 +4,13 @@ The guards are the whole of what it decides on its own, and both of them protect
 already holds something: an array means the op has run (a re-run is free), and an old
 extract_words word list means the note ids of its matched words would be thrown away, which
 only the migration is allowed to carry over.
+
+"Regenerate words" (`overwrite=True`) is the way past the first guard and not the second, and
+what it writes is the merge of the two arrays (`word_array/merge.py`, tested on its own in
+test_word_array_merge.py); the cases here are about which of the two paths a field takes.
 """
 
+import json
 import sys
 import unittest
 from types import ModuleType
@@ -43,7 +48,7 @@ class FakeNote:
         self.fields[field] = value
 
 
-def run(note, updates, array=None):
+def run(note, updates, array=None, overwrite=False):
     """The op with the generator and the proper noun call stubbed out."""
     with (
         mock.patch.object(
@@ -56,7 +61,7 @@ def run(note, updates, array=None):
         ) as generate,
         mock.patch.object(extract_words, "add_proper_nouns", return_value=True) as proper_nouns,
     ):
-        changed = extract_words.extract_words_in_note({}, note, {}, updates)
+        changed = extract_words.extract_words_in_note({}, note, {}, updates, overwrite=overwrite)
     return changed, generate, proper_nouns
 
 
@@ -147,6 +152,75 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(note["words"], '[\n  ["本"]\n]')
         self.assertEqual(updates, {})
+
+
+class RegenerateWordsTests(unittest.TestCase):
+    def word(self, text, form, reading, match_data=None):
+        return [text, "noun", form, reading, match_data if match_data is not None else [], []]
+
+    def test_only_the_rows_the_correction_reached_are_replaced(self):
+        held = [self.word("A", "甲", "こう", ["match"]), self.word("B", "乙", "おつ")]
+        note = FakeNote({"sentence": "AB", "words": json.dumps(held, ensure_ascii=False)})
+        updates: dict = {}
+        regenerated = [self.word("A", "甲", "こう"), self.word("C", "乙", "おつ")]
+
+        changed, generate, proper_nouns = run(note, updates, array=regenerated, overwrite=True)
+
+        self.assertTrue(changed)
+        generate.assert_called_once()
+        # The whole sentence goes to both steps: the correction changes how the words around
+        # it are read, and a name can appear in what it changed.
+        proper_nouns.assert_called_once()
+        written = json.loads(note["words"])
+        self.assertEqual([elem[0] for elem in written], ["A", "C"])
+        self.assertEqual(written[0][4], ["match"])
+        self.assertEqual(updates, {note.id: note})
+
+    def test_an_old_word_list_is_left_for_the_migration_even_with_overwrite(self):
+        old_list = '{"nouns": [["本", "ほん", "本", 1378555077520]]}'
+        note = FakeNote({"sentence": "本を読む。", "words": old_list})
+        updates: dict = {}
+
+        changed, generate, proper_nouns = run(note, updates, overwrite=True)
+
+        self.assertFalse(changed)
+        generate.assert_not_called()
+        proper_nouns.assert_not_called()
+        self.assertEqual(note["words"], old_list)
+        self.assertEqual(updates, {})
+
+    def test_a_regeneration_that_changes_nothing_writes_nothing(self):
+        held = [self.word("A", "甲", "こう", ["match"])]
+        text = extract_words.format_word_array(held)
+        note = FakeNote({"sentence": "A", "words": text})
+        updates: dict = {}
+
+        changed, _generate, _proper_nouns = run(note, updates, array=held, overwrite=True)
+
+        self.assertFalse(changed)
+        self.assertEqual(note["words"], text)
+        self.assertEqual(updates, {})
+
+    def test_a_field_the_editor_mangled_is_written_back_clean(self):
+        # Anki's editor turns the rows into <br> and &nbsp; as soon as anyone edits the note
+        # by hand, which is exactly what a correction is.
+        held = [self.word("A", "甲", "こう", ["match"])]
+        text = extract_words.format_word_array(held)
+        mangled = text.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+        note = FakeNote({"sentence": "A", "words": mangled})
+
+        changed, _generate, _proper_nouns = run(note, {}, array=held, overwrite=True)
+
+        self.assertTrue(changed)
+        self.assertEqual(note["words"], text)
+
+    def test_without_overwrite_an_array_is_still_left_alone(self):
+        note = FakeNote({"sentence": "本を読む。", "words": '[["本"]]'})
+
+        changed, generate, _proper_nouns = run(note, {}, array=[["本"], ["を"]])
+
+        self.assertFalse(changed)
+        generate.assert_not_called()
 
 
 class ExtractWordsPhasesTests(unittest.TestCase):

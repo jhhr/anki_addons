@@ -19,6 +19,18 @@ overwriting it would throw away the note ids of the words already matched. The m
 that carried those over has been removed now that the collection is migrated, so such a note
 is simply left as it is.
 
+"Regenerate words" (`overwrite=True`) is the way past the first of those two guards, for the
+note whose sentence had a mistake in it: it generates over the array the note holds and merges
+the two, so that only the rows the correction reached are replaced and every other row keeps
+its judgement and its note id (`word_array/merge.py`). The old word list guard stands either
+way - the migration that could read those is gone. Both steps above run first, on the whole
+sentence: the correction can change how the words around it are read, and a name can appear in
+what it changed.
+
+The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
+is what follows it, and then "Match extracted words to notes" for the ones it judged worth a
+note.
+
 The only model is `proper_nouns_model`, falling back to `extract_words_model`.
 """
 
@@ -36,7 +48,7 @@ from aqt.utils import showWarning
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
-from ..word_array import names, resources
+from ..word_array import merge, names, resources
 from ..word_array.match_flags import JUDGE_NEW, decode_word_array, format_word_array
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -56,9 +68,12 @@ def extract_words_in_note(
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
     name_lexicon: Optional[dict] = None,
+    overwrite: bool = False,
 ) -> bool:
     """Generate the word array for one note's sentence and write it into the word list field.
-    False when the note has nothing to extract, or the generator could not run."""
+    With `overwrite`, an array the note already holds is regenerated and merged rather than
+    left alone. False when the note has nothing to extract, the generator could not run, or
+    the regeneration changed nothing."""
     log_prefix = f"Extract words--nid:{note.id}--"
     note_type = note.note_type()
     if not note_type:
@@ -75,14 +90,16 @@ def extract_words_in_note(
         return False
 
     current = note[word_list_field].strip()
-    if current:
-        if decode_word_array(current) is not None:
-            logger.debug(f"{log_prefix}The note already holds a word array")
-        else:
-            # Generating over it would drop the note ids of its matched words
-            logger.info(
-                f"{log_prefix}Left alone: the field holds an old word list, migrate it instead"
-            )
+    existing = decode_word_array(current) if current else None
+    if current and existing is None:
+        # Generating over it would drop the note ids of its matched words, and only the
+        # migration could carry those over
+        logger.info(
+            f"{log_prefix}Left alone: the field holds an old word list, migrate it instead"
+        )
+        return False
+    if existing is not None and not overwrite:
+        logger.debug(f"{log_prefix}The note already holds a word array")
         return False
 
     # The sentence without its <i> context, so that the array covers the words the note is
@@ -101,42 +118,71 @@ def extract_words_in_note(
 
     add_proper_nouns(config, arr, log_prefix)
 
-    note[word_list_field] = format_word_array(arr)
+    if existing is not None:
+        try:
+            merged = merge.merge_arrays(existing, arr)
+        except ValueError as e:
+            logger.error(f"{log_prefix}Could not merge the regenerated array: {e}")
+            return False
+        arr = merged.array
+        logger.info(
+            f"{log_prefix}Regenerated: {merged.changed} words replaced, {merged.kept} kept,"
+            f" {merged.carried} judgements carried over"
+        )
+        for note_id in merged.lost:
+            logger.warning(f"{log_prefix}The link to note {note_id} is gone with its word")
+
+    text = format_word_array(arr)
+    if existing is not None and text == current:
+        logger.debug(f"{log_prefix}Regenerating changed nothing")
+        return False
+
+    note[word_list_field] = text
     if note.id > 0 and note.id not in notes_to_update_dict:
         notes_to_update_dict[note.id] = note
     return True
 
 
-def extract_words_op(name_lexicon: Optional[dict] = None):
+def extract_words_op(name_lexicon: Optional[dict] = None, overwrite: bool = False):
     """The per-note op with the name lexicon bound, loaded once for a whole run."""
     if name_lexicon is None:
         name_lexicon = names.load_lexicon(resources.NAME_LEXICON)
-    return partial(extract_words_in_note, name_lexicon=name_lexicon)
+    return partial(extract_words_in_note, name_lexicon=name_lexicon, overwrite=overwrite)
 
 
-async def bulk_extract_from_notes_op(
-    col: Collection,
-    notes: Sequence[Note],
-    edited_nids: list[NoteId],
-    progress_updater: AsyncTaskProgressUpdater,
-    notes_to_add_dict: dict[str, list[Note]],
-    notes_to_update_dict: dict[NoteId, Note],
-):
-    config = mw.addonManager.getConfig(__name__)
-    if not config:
-        showWarning("Missing addon configuration")
-        return
-    return await bulk_notes_op(
-        "Extracting words",
-        config,
-        extract_words_op(),
-        col,
-        notes,
-        edited_nids,
-        progress_updater,
-        notes_to_add_dict,
-        notes_to_update_dict,
-    )
+def make_bulk_op(overwrite: bool = False):
+    """The bulk op for one phase of a run, extracting or regenerating."""
+    phase_name = "Regenerating word arrays" if overwrite else "Extracting words"
+
+    async def bulk_op(
+        col: Collection,
+        notes: Sequence[Note],
+        edited_nids: list[NoteId],
+        progress_updater: AsyncTaskProgressUpdater,
+        notes_to_add_dict: dict[str, list[Note]],
+        notes_to_update_dict: dict[NoteId, Note],
+    ):
+        config = mw.addonManager.getConfig(__name__)
+        if not config:
+            showWarning("Missing addon configuration")
+            return
+        return await bulk_notes_op(
+            phase_name,
+            config,
+            extract_words_op(overwrite=overwrite),
+            col,
+            notes,
+            edited_nids,
+            progress_updater,
+            notes_to_add_dict,
+            notes_to_update_dict,
+        )
+
+    return bulk_op
+
+
+bulk_extract_from_notes_op = make_bulk_op()
+bulk_regenerate_from_notes_op = make_bulk_op(overwrite=True)
 
 
 def extract_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
@@ -146,6 +192,17 @@ def extract_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Extracting words")
         done_text = "Extracted words"
         selected_notes_op(done_text, bulk_extract_from_notes_op, nids, parent, progress_updater)
+
+    with_generator_resources(parent, run)
+
+
+def regenerate_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+    """Extract words over the array a note already holds, for a sentence that was corrected."""
+
+    def run():
+        progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Regenerating word arrays")
+        done_text = "Regenerated word arrays"
+        selected_notes_op(done_text, bulk_regenerate_from_notes_op, nids, parent, progress_updater)
 
     with_generator_resources(parent, run)
 

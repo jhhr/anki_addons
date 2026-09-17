@@ -241,6 +241,38 @@ A note whose field already holds an array is skipped, so re-running over a selec
 note still holding an old extract_words word list is skipped too, because generating over it
 would throw away the note ids of its matched words - that is the migration's job to carry over.
 
+### Regenerating over an array
+
+"Regenerate words over the current array" is the same op with `overwrite=True`, for the note
+whose sentence turned out to have a mistake in it: the field says ` 小[しょう] 枝[えだ]` and the
+word is 小枝[こえだ], the furigana is corrected in the sentence field, and the array has to
+follow. Hand-editing the rows the correction touches is tedious and easy to get wrong, and until
+this op there was nothing else - the first guard refuses the note, and clearing the field would
+throw away every judgement in it, not just the ones the correction is about.
+
+Both steps above run again, on the whole corrected sentence: it can change how the words around
+the correction are read, and a name can appear in what it changed. `merge.py` then merges the
+result into what the field holds. Both arrays are this generator's output over nearly the same
+sentence, so everything the correction did not reach comes back identical and a diff of the two
+says exactly which rows it did reach: an unchanged row keeps the old element whole, `match_data`
+and sub-words and all, and a changed one is taken from the new array. A row counts as unchanged
+only if everything the generator decides about it is the same - raw text, part of speech,
+dictionary form, reading, and the same again for each sub-word - so a word the correction made
+the generator read differently is a changed word and the new reading wins.
+
+Within a changed region `match_data` is carried over by dictionary form and reading, and then by
+dictionary form alone, which is what recognises the word the old array misread (小枝 read
+しょうえだ). Each step carries only where exactly one old and one new element of the region
+still holds the key; two candidates is what `research/migrate.py` decided not to guess at, and
+the op logs the note id of every link it could not carry. The second guard still stands: an old
+extract_words word list is left alone either way, since the migration that could read one is
+gone.
+
+The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
+is what follows it and then "Match extracted words to notes". A regeneration that changes
+nothing writes nothing, except that it tidies a field Anki's editor has turned into `<br>` and
+`&nbsp;` - which is the state hand-correcting a note leaves it in.
+
 The judge cannot be a step inside that op: `bulk_nested_notes_op` fixes every note's task count
 before it starts, and the words only exist once the array has been generated. So it is a phase of
 its own (`base_ops.OpPhase`, `run_op_phases`): "Extract words + Judge matchability" is the two ops

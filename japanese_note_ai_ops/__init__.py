@@ -49,6 +49,7 @@ from .async_api_ops.extract_words import (  # noqa: E402
     extract_words_and_judge_from_selected_notes,
     extract_words_from_selected_notes,
     extract_words_op,
+    regenerate_words_from_selected_notes,
 )
 from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
     migrate_compound_verbs_from_selected_notes,
@@ -119,6 +120,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     component_words_action = QAction("Kanjify sentence", mw)
     extract_words_action = QAction("Extract words", mw)
     extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
+    regenerate_words_action = QAction("Regenerate words over the current array", mw)
     migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
     find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
     judge_words_action = QAction("Judge words matchability", mw)
@@ -167,6 +169,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     qconnect(
         extract_words_and_judge_action.triggered,
         lambda: extract_words_and_judge_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        regenerate_words_action.triggered,
+        lambda: regenerate_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         migrate_compound_verbs_action.triggered,
@@ -266,6 +272,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(component_words_action)
     ai_menu.addAction(extract_words_action)
     ai_menu.addAction(extract_words_and_judge_action)
+    ai_menu.addAction(regenerate_words_action)
     ai_menu.addAction(migrate_compound_verbs_action)
     ai_menu.addAction(find_proper_nouns_action)
     ai_menu.addAction(judge_words_action)
