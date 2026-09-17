@@ -174,7 +174,7 @@ class ReadOnlyCard:
 
     __slots__ = ("_card", "_card_time_values", "_is_cloze")
 
-    def __init__(self, card: Card, note_type: NotetypeDict) -> None:
+    def __init__(self, card: Card, note_type: Optional[NotetypeDict]) -> None:
         object.__setattr__(self, "_card", card)
         object.__setattr__(self, "_card_time_values", None)
         object.__setattr__(

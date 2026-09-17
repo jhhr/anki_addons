@@ -2,20 +2,26 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Mapping
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
+
+if TYPE_CHECKING:
+    # Only for the annotations, which `from __future__ import annotations` keeps
+    # as strings: this module is the addon's Anki-free half and must stay
+    # importable without the `anki` package.
+    from anki.cards import CardId
 
 
-def normalize_card_id_result(result: Any) -> list[int]:
+def normalize_card_id_result(result: Any) -> list[CardId]:
     if result is None:
         return []
     if isinstance(result, int):
-        return [result]
+        return [cast("CardId", result)]
     if isinstance(result, str):
         stripped = result.strip()
         if not stripped:
             return []
         if stripped.isdigit():
-            return [int(stripped)]
+            return [cast("CardId", int(stripped))]
         raise ValueError("code result string must be a query or numeric card id")
     if isinstance(result, Iterable):
         out: list[int] = []
@@ -29,13 +35,15 @@ def normalize_card_id_result(result: Any) -> list[int]:
                 out.append(int(item.strip()))
                 continue
             raise ValueError("card-id list must contain only integers")
-        return out
+        # The ints came out of the rule's own code, so calling them card ids is
+        # the caller's claim, not something the type system can check.
+        return cast("list[CardId]", out)
     raise ValueError("code result must be query string, int, or iterable of ints")
 
 
-def dedupe_preserve_order(values: list[int]) -> list[int]:
-    seen: set[int] = set()
-    out: list[int] = []
+def dedupe_preserve_order(values: list[CardId]) -> list[CardId]:
+    seen: set[CardId] = set()
+    out: list[CardId] = []
     for v in values:
         if v in seen:
             continue
@@ -92,10 +100,10 @@ def reviewed_card_variables(card_type_name: str, card_ord: int) -> dict[str, obj
 
 
 def cap_card_ids(
-    card_ids: list[int],
+    card_ids: list[CardId],
     cap: int,
-    due_by_id: Optional[dict[int, int]] = None,
-) -> tuple[list[int], int]:
+    due_by_id: Optional[dict[CardId, int]] = None,
+) -> tuple[list[CardId], int]:
     """Trim ``card_ids`` to ``cap`` entries, returning ``(kept, dropped_count)``.
 
     Without ``due_by_id`` the caller's ordering decides who survives. With it --
@@ -118,10 +126,10 @@ def cap_card_ids(
 
 
 def remaining_note_cards(
-    remaining: list[int],
-    anchor_card_id: int,
-    covered_card_ids: Iterable[int],
-) -> list[int]:
+    remaining: list[CardId],
+    anchor_card_id: CardId,
+    covered_card_ids: Iterable[CardId],
+) -> list[CardId]:
     """The note's cards still needing a run of their own after one anchor ran.
 
     A rule run anchored on one card of a note usually finds the note's other
@@ -138,15 +146,15 @@ def remaining_note_cards(
     return [cid for cid in remaining if cid not in covered]
 
 
-def group_overlapping_sets(groups: list[set[int]]) -> list[set[int]]:
+def group_overlapping_sets(groups: list[set[CardId]]) -> list[set[CardId]]:
     pending = deque(set(g) for g in groups if g)
-    merged: list[set[int]] = []
+    merged: list[set[CardId]] = []
     while pending:
         current = pending.popleft()
         changed = True
         while changed:
             changed = False
-            next_pending: list[set[int]] = []
+            next_pending: list[set[CardId]] = []
             for maybe in pending:
                 if current & maybe:
                     current |= maybe
@@ -204,10 +212,10 @@ def review_order_uses_due(review_order: int) -> bool:
 
 
 def select_cards_to_bury(
-    order: list[int],
-    neighbours: dict[int, set[int]],
+    order: list[CardId],
+    neighbours: dict[CardId, set[CardId]],
     min_gap: int = 0,
-) -> tuple[list[int], list[int]]:
+) -> tuple[list[CardId], list[CardId]]:
     """Split a session into the cards to keep and the cards to bury.
 
     ``order`` is the session in the order the deck will show it, and
@@ -222,9 +230,9 @@ def select_cards_to_bury(
     is buried only when a related card sits within the last ten cards that
     survived. A gap of 0 means the whole session, i.e. one card per group.
     """
-    kept: list[int] = []
-    kept_index: dict[int, int] = {}
-    buried: list[int] = []
+    kept: list[CardId] = []
+    kept_index: dict[CardId, int] = {}
+    buried: list[CardId] = []
     for cid in order:
         collides = False
         for other in neighbours.get(cid, ()):
@@ -267,9 +275,9 @@ def describe_rule_errors(rule_errors: dict[str, tuple[str, int]]) -> str:
 
 
 def order_session_blocks(
-    blocks: list[tuple[str, list[int]]],
+    blocks: list[tuple[str, list[CardId]]],
     anchor_deck: str,
-) -> list[int]:
+) -> list[CardId]:
     """One session order out of several decks' sessions.
 
     There is no true global order across decks -- the user decides which deck to
@@ -291,8 +299,8 @@ def order_session_blocks(
     lead = [(name, ids) for name, ids in ordered if name == anchor_deck]
     rest = [(name, ids) for name, ids in ordered if name != anchor_deck]
 
-    session: list[int] = []
-    seen: set[int] = set()
+    session: list[CardId] = []
+    seen: set[CardId] = set()
     for _, ids in lead + rest:
         for cid in ids:
             if cid in seen:
@@ -322,10 +330,10 @@ def merge_rule_error(
 
 
 def select_backlog_cards_to_bury(
-    past_due: list[int],
-    anchor_id: Optional[int] = None,
+    past_due: list[CardId],
+    anchor_id: Optional[CardId] = None,
     slot_taken: bool = False,
-) -> list[int]:
+) -> list[CardId]:
     """Which of one group's past-due cards to bury, keeping at most one.
 
     ``past_due`` holds the group's cards that are already in today's pool --

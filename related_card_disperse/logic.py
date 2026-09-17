@@ -4,9 +4,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from anki.cards import Card
+from anki.cards import Card, CardId
 from anki.consts import CARD_TYPE_REV
 from anki.errors import NotFoundError
+from anki.notes import NoteId
 from anki.stats import REVLOG_CRAM
 from anki.stats_pb2 import CardStatsResponse
 from anki.utils import ids2str
@@ -39,31 +40,31 @@ class QueryResolution:
     raw_count: int
     filtered_count: int
     capped_count: int
-    card_ids: list[int]
-    due_by_id: dict[int, int]
+    card_ids: list[CardId]
+    due_by_id: dict[CardId, int]
     # Every id the query returned, before the review-state filter and the cap
     # narrowed it to what is worth rescheduling. A browser run reads this to
     # tell which of a note's cards a rule has already accounted for: a card the
     # query found but the filter dropped would find the very same group again.
-    raw_ids: list[int] = field(default_factory=list)
+    raw_ids: list[CardId] = field(default_factory=list)
     error: Optional[str] = None
 
 
 @dataclass
 class DispersePlan:
-    card_ids: list[int]
-    due_ranges: dict[int, tuple[int, int]]
-    current_dues: dict[int, int]
-    last_reviews: dict[int, int]
-    best_due_dates: dict[int, int]
+    card_ids: list[CardId]
+    due_ranges: dict[CardId, tuple[int, int]]
+    current_dues: dict[CardId, int]
+    last_reviews: dict[CardId, int]
+    best_due_dates: dict[CardId, int]
     min_gap: int
     # Cards pinned at their current due date because they are already late.
     # They still anchor the group; their dates just cannot be part of the
     # answer, which is what ``to_bury`` is for.
-    backlogged: set[int] = field(default_factory=set)
+    backlogged: set[CardId] = field(default_factory=set)
     # The backlogged cards to take out of today's session, all but the one that
     # keeps the group's slot for the day.
-    to_bury: list[int] = field(default_factory=list)
+    to_bury: list[CardId] = field(default_factory=list)
 
 
 @dataclass
@@ -82,12 +83,12 @@ class RuleOutcome:
     updated: int
     # The rule's raw query result, as QueryResolution.raw_ids; empty when the
     # rule never got as far as resolving one.
-    covered_ids: list[int] = field(default_factory=list)
+    covered_ids: list[CardId] = field(default_factory=list)
     # How many cards the run buried, by the name of the deck each one lives in.
     buried_by_deck: dict[str, int] = field(default_factory=dict)
 
 
-StatsCache = dict[int, CardStatsResponse]
+StatsCache = dict[CardId, CardStatsResponse]
 
 # (label, value, max) -> whether the user asked to cancel.
 ProgressReporter = Callable[[str, int, int], bool]
@@ -115,7 +116,7 @@ def card_type_name_for(card: Card) -> str:
         template = card.template()
     except Exception:
         return ""
-    return template.get("name", "") if template else ""
+    return str(template.get("name", "")) if template else ""
 
 
 def get_applicable_rules(
@@ -155,7 +156,7 @@ def get_applicable_rules(
 def _as_query_or_ids(
     rule: RelatedRule,
     reviewed_card: Card,
-) -> tuple[Optional[str], list[int], Optional[str]]:
+) -> tuple[Optional[str], list[CardId], Optional[str]]:
     note = reviewed_card.note()
     # Which card was reviewed is not something note-level interpolation can
     # reach, and a query gated to one card type usually wants to name it.
@@ -209,9 +210,9 @@ def _as_query_or_ids(
 
 
 def _post_filter_review_cards(
-    card_ids: list[int],
+    card_ids: list[CardId],
     require_review_state: bool = True,
-) -> tuple[list[int], dict[int, int]]:
+) -> tuple[list[CardId], dict[CardId, int]]:
     """Keep the live review cards among ``card_ids``, preserving the given order.
 
     The due day comes back from the same row, so callers get it for free: that
@@ -225,6 +226,7 @@ def _post_filter_review_cards(
     """
     if not card_ids:
         return [], {}
+    assert mw.col.db is not None
     rows = mw.col.db.all(f"""
         SELECT id, type, queue, CASE WHEN odid == 0 THEN due ELSE odue END
         FROM cards
@@ -295,7 +297,7 @@ def _filter_revlogs(
     return [x for x in revlogs if x.review_kind != REVLOG_CRAM or x.ease != 0]
 
 
-def _get_stats(card_id: int, stats_cache: StatsCache) -> CardStatsResponse:
+def _get_stats(card_id: CardId, stats_cache: StatsCache) -> CardStatsResponse:
     cached = stats_cache.get(card_id)
     if cached is not None:
         return cached
@@ -318,7 +320,7 @@ def _last_review_date(card: Card, revlogs: list[CardStatsResponse.StatsRevlogEnt
 OUT_OF_SESSION_QUEUES = frozenset({-1, -2, -3})
 
 
-def _reviewed_today(card_id: int, stats_cache: StatsCache) -> bool:
+def _reviewed_today(card_id: CardId, stats_cache: StatsCache) -> bool:
     """Whether this card has already been answered today.
 
     A related group gets one card a day, and a card answered today has spent
@@ -338,7 +340,7 @@ def _reviewed_today(card_id: int, stats_cache: StatsCache) -> bool:
     return False
 
 
-def count_buried_by_deck(card_ids: list[int]) -> dict[str, int]:
+def count_buried_by_deck(card_ids: list[CardId]) -> dict[str, int]:
     """How many of these cards live in each deck, by deck name.
 
     The home deck, not the current one: a card sitting in a filtered deck goes
@@ -453,9 +455,9 @@ def _get_due_range(
 
 
 def build_disperse_plan(
-    card_ids: list[int],
+    card_ids: list[CardId],
     stats_cache: StatsCache,
-    anchor_id: Optional[int] = None,
+    anchor_id: Optional[CardId] = None,
 ) -> DispersePlan:
     """Plan a group's dispersal: dates for its future, buries for its past.
 
@@ -465,11 +467,11 @@ def build_disperse_plan(
     just triggered, but it is still the reason the group's slot for today is
     gone.
     """
-    due_ranges: dict[int, tuple[int, int]] = {}
-    current_dues: dict[int, int] = {}
-    last_reviews: dict[int, int] = {}
-    backlogged: set[int] = set()
-    live_past_due: list[int] = []
+    due_ranges: dict[CardId, tuple[int, int]] = {}
+    current_dues: dict[CardId, int] = {}
+    last_reviews: dict[CardId, int] = {}
+    backlogged: set[CardId] = set()
+    live_past_due: list[CardId] = []
     slot_taken = anchor_id is not None and _reviewed_today(anchor_id, stats_cache)
 
     for cid in card_ids:
@@ -596,7 +598,7 @@ def run_rule_for_reviewed_card(
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
 ) -> RuleOutcome:
     pair_key = (rule["guid"], reviewed_card.id)
     if pair_key in processed_rule_card_pairs:
@@ -675,7 +677,7 @@ def run_rule_for_reviewed_card(
 
 
 def run_sync_grouped(
-    reviewed_card_ids: list[int],
+    reviewed_card_ids: list[CardId],
     config: Config,
     report: Optional[ProgressReporter] = None,
 ) -> list[str]:
@@ -740,17 +742,19 @@ def run_sync_grouped(
             by_rule[rule_guid]["sets"].append(set(resolution.card_ids))
             by_rule[rule_guid]["dues"].update(resolution.due_by_id)
 
-    planned: list[tuple[RelatedRule, list[int], dict[int, int]]] = []
+    planned: list[tuple[RelatedRule, list[CardId], dict[CardId, int]]] = []
     for entry in by_rule.values():
-        rule: RelatedRule = entry["rule"]
-        sets: list[set[int]] = entry["sets"]
-        due_by_id: dict[int, int] = entry["dues"]
+        # Not `rule`: the collecting loop above binds that name, and a second
+        # annotation of it is a redefinition rather than a new variable.
+        entry_rule: RelatedRule = entry["rule"]
+        sets: list[set[CardId]] = entry["sets"]
+        due_by_id: dict[CardId, int] = entry["dues"]
         if not sets:
             continue
         grouped = group_overlapping_sets(sets) if config.dedupe_sync_groups else sets
         for group in grouped:
             planned.append(
-                (rule, sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid)), due_by_id)
+                (entry_rule, sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid)), due_by_id)
             )
 
     total_groups = len(planned)
@@ -813,7 +817,7 @@ def run_sync_grouped(
 
 
 def run_sync_disperse_in_background(
-    reviewed_card_ids: list[int],
+    reviewed_card_ids: list[CardId],
     config: Config,
     on_done: Callable[[list[str]], None],
 ) -> None:
@@ -850,7 +854,7 @@ class NoteRuleRun:
     """One rule's share of a note: which of its cards to anchor a run on."""
 
     rule: RelatedRule
-    card_ids: list[int]
+    card_ids: list[CardId]
     # True when the rule names card types, and so gets a run per eligible card.
     # False when it applies to the whole note, and one run may cover the rest.
     per_card: bool
@@ -872,8 +876,8 @@ class BrowserRunResult:
 def plan_note_rule_runs(
     rules: list[RelatedRule],
     note_type_name: str,
-    card_type_names: dict[int, str],
-    ordered_card_ids: list[int],
+    card_type_names: dict[CardId, str],
+    ordered_card_ids: list[CardId],
 ) -> list[NoteRuleRun]:
     """Split one note's cards among the rules that apply to it.
 
@@ -919,7 +923,7 @@ def _disperse_browser_card(
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
     result: BrowserRunResult,
 ) -> None:
     note_type = card.note().note_type()
@@ -941,15 +945,15 @@ def _disperse_browser_card(
 
 
 def _disperse_browser_note(
-    note_id: int,
+    note_id: NoteId,
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
     result: BrowserRunResult,
 ) -> None:
-    cards: dict[int, Card] = {}
-    ordered: list[int] = []
+    cards: dict[CardId, Card] = {}
+    ordered: list[CardId] = []
     for cid in mw.col.card_ids_of_note(note_id):
         try:
             cards[cid] = mw.col.get_card(cid)
@@ -1005,8 +1009,8 @@ def _disperse_browser_note(
 def run_browser_disperse(
     config: Config,
     *,
-    note_ids: Optional[list[int]] = None,
-    card_ids: Optional[list[int]] = None,
+    note_ids: Optional[list[NoteId]] = None,
+    card_ids: Optional[list[CardId]] = None,
     report: Optional[ProgressReporter] = None,
 ) -> BrowserRunResult:
     """Disperse a browser selection on demand, with no review to trigger it.
@@ -1027,7 +1031,7 @@ def run_browser_disperse(
     """
     result = BrowserRunResult()
     stats_cache: StatsCache = {}
-    processed_rule_card_pairs: set[tuple[str, int]] = set()
+    processed_rule_card_pairs: set[tuple[str, CardId]] = set()
     undo_entry = mw.col.add_custom_undo_entry("Disperse related cards")
 
     if note_ids:
@@ -1061,8 +1065,8 @@ def run_browser_disperse_in_background(
     config: Config,
     on_done: Callable[[BrowserRunResult], None],
     *,
-    note_ids: Optional[list[int]] = None,
-    card_ids: Optional[list[int]] = None,
+    note_ids: Optional[list[NoteId]] = None,
+    card_ids: Optional[list[CardId]] = None,
     parent: Optional[Any] = None,
 ) -> None:
     """Run a browser selection's dispersal off the UI thread, as sync does.
@@ -1094,7 +1098,7 @@ def run_browser_disperse_in_background(
     mw.taskman.run_in_background(task, done)
 
 
-def maximize_due_gap(points_dict: Dict[int, Tuple[int, int]]) -> tuple[int, dict[int, int]]:
+def maximize_due_gap(points_dict: Dict[CardId, Tuple[int, int]]) -> tuple[int, dict[CardId, int]]:
     """Return the maximum minimum gap and the assigned due date per card id."""
     if not points_dict:
         return 0, {}
