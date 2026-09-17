@@ -17,7 +17,6 @@ Rows without note ids (the old fine-tuning files) are listed but never written.
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -64,7 +63,7 @@ def change_list(rows: list[dict]) -> list[str]:
 
 def _current(infos: list[dict], config: dict) -> dict[int, tuple[Optional[str], str]]:
     """Per note id: (its field name, the field's value), or (None, why it can't be read)."""
-    out = {}
+    out: dict[int, tuple[Optional[str], str]] = {}
     for info in infos:
         if not info:
             continue
@@ -138,7 +137,6 @@ def revert(client, config: dict, undo: Path) -> tuple[int, list[str]]:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixes", type=Path, default=FIXES)
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows")

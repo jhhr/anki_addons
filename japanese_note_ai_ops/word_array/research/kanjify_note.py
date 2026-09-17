@@ -21,7 +21,6 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -83,7 +82,6 @@ def set_field(client, config: dict, nid: int, base: str, value: str, undo: Path)
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--anki-connect", default=anki_connect.URL)
     parser.add_argument("--undo", type=Path, default=UNDO)

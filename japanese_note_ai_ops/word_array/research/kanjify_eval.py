@@ -25,6 +25,8 @@ Scores per model:
 Report `output/kanjify_eval_report_<model>.txt` per model, models side by side on stdout.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -37,9 +39,14 @@ from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 from _bootstrap import ADDON_ROOT, load
+
+if TYPE_CHECKING:
+    # `load()` gives a module object, so what comes out of it is untyped; the real class is
+    # named for type checking only (the runtime import is what _bootstrap avoids).
+    from japanese_note_ai_ops.word_array.text_map import TextMap
 
 text_map = load("text_map")
 
@@ -71,7 +78,7 @@ class KanaText(NamedTuple):
     kana: str  # every furigana group as its reading, tags and whitespace dropped
     owners: list[int]  # text map segment of each kana char
     groups: list[Group]  # furigana groups inside <k>
-    tm: object
+    tm: TextMap
 
 
 def kana_text(text: str, sentence: str) -> KanaText:
@@ -141,7 +148,7 @@ def score_row(
     """The spans of one answer against its label, and how many label groups couldn't be placed
     in the answer's text."""
     lab, out = kana_text(label, sentence), kana_text(output, sentence)
-    to_label = {}
+    to_label: dict[int, int] = {}
     for a, b, size in SequenceMatcher(
         None, out.kana, lab.kana, autojunk=False
     ).get_matching_blocks():

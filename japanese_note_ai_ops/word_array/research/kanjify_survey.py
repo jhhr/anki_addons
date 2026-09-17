@@ -188,7 +188,8 @@ def main() -> int:
             ]
 
     # per word, policy uses aside
-    kanjified, kana, kanji = defaultdict(list), defaultdict(list), Counter()
+    kanjified, kana = defaultdict(list), defaultdict(list)
+    kanji: Counter = Counter()
     for t in flat:
         if t.policy:
             continue
@@ -286,15 +287,23 @@ def main() -> int:
 
     with open(args.tasks, "w", encoding="utf-8") as f:
         for key in left:
-            task = {"class": "left-kana", "word": key[0], "pos": key[1]}
-            task["kanjified"] = dict(Counter(t.kanji for t in kanjified[key]).most_common())
-            task["items"] = [item(t) for t in kana[key]]
-            task["kanjified_items"] = [{**item(t), "kanji": t.kanji} for t in kanjified[key]]
+            task = {
+                "class": "left-kana",
+                "word": key[0],
+                "pos": key[1],
+                "kanjified": dict(Counter(t.kanji for t in kanjified[key]).most_common()),
+                "items": [item(t) for t in kana[key]],
+                "kanjified_items": [{**item(t), "kanji": t.kanji} for t in kanjified[key]],
+            }
             f.write(json.dumps(task, ensure_ascii=False) + "\n")
         for key, spelled, ts in meaning:
-            task = {"class": "meaning", "word": key[0], "pos": key[1]}
-            task["kanjified"] = dict(spelled.most_common())
-            task["items"] = [{**item(t), "kanji": t.kanji} for t in ts]
+            task = {
+                "class": "meaning",
+                "word": key[0],
+                "pos": key[1],
+                "kanjified": dict(spelled.most_common()),
+                "items": [{**item(t), "kanji": t.kanji} for t in ts],
+            }
             f.write(json.dumps(task, ensure_ascii=False) + "\n")
     summary.append(f"tasks: {len(left) + len(meaning)} words -> {args.tasks.name}")
 
