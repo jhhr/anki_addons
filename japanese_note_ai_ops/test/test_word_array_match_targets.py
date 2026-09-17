@@ -500,6 +500,36 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         saved = json.loads(referencing["word_list_field"])
         self.assertEqual([saved[0][4], saved[1][4]], [[99, 3], [1674931277303, 4]])
         self.assertEqual(set(updated), {2, 99})
+        # and the note is left holding its own id, which is what the card reads to know
+        # which word of a sentence is its own
+        self.assertEqual(new_note["new_note_id_field"], "99")
+
+    def test_a_new_note_nothing_refers_to_still_gets_its_own_id(self):
+        """It used to keep its placeholder for good: the id was only written where a
+        reference had been rewritten, and nothing had referred to this note."""
+        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "-7654321"}, 42)
+        with (
+            mock.patch.object(self.mwtn, "col_find_notes", lambda _: []),
+            mock.patch.object(self.mwtn, "col_get_notes", lambda _: []),
+        ):
+            updated = self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
+        self.assertEqual(new_note["new_note_id_field"], "42")
+        self.assertEqual(set(updated), {42})
+
+    def test_a_note_already_holding_its_own_id_is_not_searched_for(self):
+        """The field means 'this is me' once it is not a placeholder, so there is nothing to
+        rewrite and no reason to go looking."""
+        searched = []
+        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "42"}, 42)
+        with (
+            mock.patch.object(
+                self.mwtn, "col_find_notes", lambda query: searched.append(query) or []
+            ),
+            mock.patch.object(self.mwtn, "col_get_notes", lambda _: []),
+        ):
+            self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
+        self.assertEqual(searched, [])
+        self.assertEqual(new_note["new_note_id_field"], "42")
 
 
 if __name__ == "__main__":

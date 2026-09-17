@@ -341,6 +341,11 @@ def update_fake_note_ids(
     """
     Update the fake note IDs in the notes to be the actual note IDs.
 
+    The placeholder sits in `new_note_id_field` until the note is saved and every array
+    pointing at it has been rewritten; then the field is left holding the note's own id
+    rather than emptied. That id is what the card and its popovers read to know which word
+    of a sentence belongs to the note under review -- the reviewer has no other way to ask.
+
     paran: new_notes (Sequence[Note]): The notes to update.
     paran: config (dict): The addon configuration.
     paran: progress_updater (AsyncTaskProgressUpdater): Progress reporter.
@@ -367,13 +372,15 @@ def update_fake_note_ids(
             logger.error("Error: Missing required fields in config")
             return notes_to_update_dict
         if new_note_id_field in new_note and word_list_field in new_note:
-            # Find other notes whose word_list_field contains the fake note ID
+            # Find other notes whose word_list_field contains the fake note ID. Only a
+            # placeholder is worth searching for: once this has run the field holds the note's
+            # own id, and an id the note already has needs no rewriting anywhere.
             fake_note_id = new_note[new_note_id_field]
-            if not fake_note_id:
-                continue
-            referencing_note_ids = col_find_notes(f'"{word_list_field}:*{fake_note_id}*"')
-            if not referencing_note_ids:
-                continue
+            referencing_note_ids = (
+                col_find_notes(f'"{word_list_field}:*{fake_note_id}*"')
+                if fake_note_id.startswith("-")
+                else []
+            )
             referencing_notes = []
             # First get any notes already added to update_notes_dict matching any referencing IDs
             previous_nids = []
@@ -395,18 +402,21 @@ def update_fake_note_ids(
                     if referencing_note.id not in notes_to_update_dict:
                         # Note was updated, add it to the updated notes dict, if not already there
                         notes_to_update_dict[referencing_note.id] = referencing_note
-            # Empty fake note ID to indicate we've finished updating the references for this note
-            new_note[new_note_id_field] = ""
+            # The note's own id says the references have been updated, where a placeholder says
+            # they have not. Written even when nothing referenced the note, which is how a new
+            # note no other sentence linked used to be left holding its placeholder for good.
+            if new_note.id:
+                new_note[new_note_id_field] = str(new_note.id)
             progress_updater.update_new_note_processing_progress(
                 total_notes=total_notes,
                 new_notes_processed=index + 1,
             )
 
-    # For every new note that emptied its fake note ID, we can now add it to the updated notes dict
+    # Every new note now holding its own id is done being rewritten, so it can be saved
     for new_note in new_notes:
         if (
             new_note_id_field in new_note
-            and not new_note[new_note_id_field]
+            and new_note[new_note_id_field] == str(new_note.id)
             and new_note.id != 0
             and new_note.id not in notes_to_update_dict
         ):
