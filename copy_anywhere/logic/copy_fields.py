@@ -392,7 +392,7 @@ def copy_fields(
 
     def on_failure(exception):
         mw.progress.finish()
-        logger.error(f"Copying failed: {exception}")
+        logger.error("Copying failed: %s", exception)
         finish_logging_and_show()
         if on_done is not None:
             on_done()
@@ -410,15 +410,16 @@ def copy_fields(
         if note_ids_per_definition is not None:
             if len(note_ids_per_definition) != len(copy_definitions):
                 logger.error(
-                    "Error in copy fields: Got"
-                    f" {len(note_ids_per_definition)} note id lists for"
-                    f" {len(copy_definitions)} definitions"
+                    "Error in copy fields: Got %s note id lists for %s definitions",
+                    len(note_ids_per_definition),
+                    len(copy_definitions),
                 )
                 return CacheResults(result_text="", changes=OpChanges())
             for i, ids in enumerate(note_ids_per_definition):
                 if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
                     logger.error(
-                        f"Error in copy fields: Note ids for definition {i + 1} are not a list"
+                        "Error in copy fields: Note ids for definition %s are not a list",
+                        i + 1,
                     )
                     return CacheResults(result_text="", changes=OpChanges())
 
@@ -545,8 +546,9 @@ def copy_fields_in_background(
 
     if copy_into_note_types is None:
         logger.error(
-            f"""Error in copy fields: Note type for copy_into_note_types '{copy_into_note_types}'
+            """Error in copy fields: Note type for copy_into_note_types '%s'
             not found, check your spelling""",
+            copy_into_note_types,
         )
         return results
 
@@ -595,7 +597,8 @@ def copy_fields_in_background(
     if not is_sync and len(notes) == 0:
         # When syncing, it's normal to get zero results if no cards have been reviewed
         logger.error(
-            f"Error in copy fields: Did not find any notes of note type(s) {copy_into_note_types}"
+            "Error in copy fields: Did not find any notes of note type(s) %s",
+            copy_into_note_types,
         )
         return results
 
@@ -761,7 +764,7 @@ def apply_process_chain(
         except FatalProcessError as e:
             # If some process fails in a way that will always fail, we stop the whole op
             # so the user can fix the issue without needing to wait for the whole op to finish
-            logger.error(f"Error in {process['name']} process: {e}")
+            logger.error("Error in %s process: %s", process["name"], e)
             return None
     return text
 
@@ -865,15 +868,16 @@ def copy_for_single_trigger_note(
             for card in trigger_note.cards():
                 deck_ids_of_cards.append(card.odid or card.did)
         logger.debug(
-            f"copy_for_single_trigger_note: deck_ids={deck_ids_of_cards},"
-            f" unique_whitelist_dids={unique_whitelist_dids}"
+            "copy_for_single_trigger_note: deck_ids=%s, unique_whitelist_dids=%s",
+            deck_ids_of_cards,
+            unique_whitelist_dids,
         )
         if deck_ids_of_cards and not any(
             deck_id in unique_whitelist_dids for deck_id in deck_ids_of_cards
         ):
             logger.debug(
-                "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note"
-                f" {trigger_note.id}"
+                "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note %s",
+                trigger_note.id,
             )
             # Deck not in whitelist, so skip this note, things are ok, so return True
             if progress_updater is not None:
@@ -895,9 +899,10 @@ def copy_for_single_trigger_note(
             note_ids = mw.col.find_notes(f"{interpolated_condition_query} nid:{trigger_note.id}")
             if (note_ids is None) or (len(note_ids) == 0):
                 logger.debug(
-                    "copy_for_single_trigger_note: "
-                    f"Condition query '{interpolated_condition_query}' did not match for note "
-                    f"id {trigger_note.id}"
+                    "copy_for_single_trigger_note: Condition query '%s' did not match for note id"
+                    " %s",
+                    interpolated_condition_query,
+                    trigger_note.id,
                 )
                 # Condition did not match, so skip this note, things are ok, so return True
                 if progress_updater is not None:
@@ -905,9 +910,11 @@ def copy_for_single_trigger_note(
                 return True
         else:
             logger.error(
-                f"Error in copy fields: Condition query '{copy_condition_query}' "
-                f"could not be interpolated for note id {trigger_note.id} "
-                f"due to missing fields: {', '.join(invalid_fields)}"
+                "Error in copy fields: Condition query '%s' could not be interpolated for note id"
+                " %s due to missing fields: %s",
+                copy_condition_query,
+                trigger_note.id,
+                ", ".join(invalid_fields),
             )
             return False
 
@@ -1050,7 +1057,7 @@ def copy_into_single_note(
         try:
             cur_field_value = destination_note[copy_into_note_field]
         except KeyError:
-            logger.error(f"Error in copy fields: Field '{copy_into_note_field}' not found in note")
+            logger.error("Error in copy fields: Field '%s' not found in note", copy_into_note_field)
             # Rest of defs are not processed
             raise CopyFailedException
 
@@ -1081,7 +1088,8 @@ def copy_into_single_note(
             # result_val should always be at least "", None indicates an error
             if processed_val is None:
                 logger.error(
-                    f"Error in copy fields: Process chain failed for field {copy_into_note_field}"
+                    "Error in copy fields: Process chain failed for field %s",
+                    copy_into_note_field,
                 )
                 raise CopyFailedException
             result_val = processed_val
@@ -1127,8 +1135,8 @@ def copy_into_single_note(
                 )
                 if invalid_fields:
                     logger.error(
-                        "Error in copy fields: Invalid fields in copy_as_code:"
-                        f" {', '.join(invalid_fields)}"
+                        "Error in copy fields: Invalid fields in copy_as_code: %s",
+                        ", ".join(invalid_fields),
                     )
                 file_tuples, code_error = execute_code_for_files(interpolated_code, note)
                 if code_error:
@@ -1147,7 +1155,7 @@ def copy_into_single_note(
                     write_to_media_folder(fname, fcontent)
                     wrote_to_file = True
                 except Exception as e:
-                    logger.error(f"Error in writing to file: {e}")
+                    logger.error("Error in writing to file: %s", e)
                     raise CopyFailedException
         else:
             # Non-code path: single file written to a pre-determined filename.
@@ -1192,7 +1200,8 @@ def copy_into_single_note(
                 # result_val should always be at least "", None indicates an error
                 if processed_val is None:
                     logger.error(
-                        f"Error in copy fields: Process chain failed for file {copy_into_filename}"
+                        "Error in copy fields: Process chain failed for file %s",
+                        copy_into_filename,
                     )
                     raise CopyFailedException
                 result_val = processed_val
@@ -1202,7 +1211,7 @@ def copy_into_single_note(
                 write_to_media_folder(copy_into_filename, result_val)
                 wrote_to_file = True
             except Exception as e:
-                logger.error(f"Error in writing to file: {e}")
+                logger.error("Error in writing to file: %s", e)
                 raise CopyFailedException
 
     card_actions_by_template_name = {}
@@ -1212,7 +1221,8 @@ def copy_into_single_note(
         note_type_and_card_type = card_action.get("card_type_name", "")
         if CARD_TYPE_SEPARATOR not in note_type_and_card_type:
             logger.error(
-                f"Error in copy fields: Invalid card type name '{note_type_and_card_type}'"
+                "Error in copy fields: Invalid card type name '%s'",
+                note_type_and_card_type,
             )
             # Skip this card action
             continue
@@ -1315,8 +1325,8 @@ def get_variable_values_for_note(
         )
         if len(invalid_fields) > 0:
             logger.error(
-                "Error getting variable values: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error getting variable values: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         # Step 1b: Execute as code if requested
@@ -1393,9 +1403,13 @@ def get_across_target_notes(
     :return: A list of notes to copy from
     """
     logger.debug(
-        f"get_across_target_notes: copy_from_cards_query='{copy_from_cards_query}',"
-        f" select_card_by='{select_card_by}', deck_id={deck_id},"
-        f" select_card_count='{select_card_count}', include_subdecks={include_subdecks}"
+        "get_across_target_notes: copy_from_cards_query='%s', select_card_by='%s', deck_id=%s,"
+        " select_card_count='%s', include_subdecks=%s",
+        copy_from_cards_query,
+        select_card_by,
+        deck_id,
+        select_card_count,
+        include_subdecks,
     )
 
     if not select_card_by:
@@ -1404,8 +1418,10 @@ def get_across_target_notes(
 
     if select_card_by not in SELECT_CARD_BY_VALUES:
         logger.error(
-            f"""Error in copy fields: incorrect 'select_card_by' value '{select_card_by}'.
-            It must be one of {SELECT_CARD_BY_VALUES}""",
+            """Error in copy fields: incorrect 'select_card_by' value '%s'.
+            It must be one of %s""",
+            select_card_by,
+            SELECT_CARD_BY_VALUES,
         )
         return []
 
@@ -1419,8 +1435,9 @@ def get_across_target_notes(
             # bound, so reporting that would fail with UnboundLocalError inside the handler
             # meant to report the problem.
             logger.error(
-                "Error in copy fields: Incorrect 'select_card_count' value"
-                f" '{select_card_count}'. Value must be a positive integer or 0"
+                "Error in copy fields: Incorrect 'select_card_count' value '%s'. Value must be a"
+                " positive integer or 0",
+                select_card_count,
             )
             return []
     else:
@@ -1432,8 +1449,9 @@ def get_across_target_notes(
         variable_values_dict=variable_values_dict,
     )
     logger.debug(
-        f"get_across_target_notes: interpolated_cards_query='{interpolated_cards_query}',"
-        f" invalid_fields={invalid_fields}"
+        "get_across_target_notes: interpolated_cards_query='%s', invalid_fields=%s",
+        interpolated_cards_query,
+        invalid_fields,
     )
     if not interpolated_cards_query:
         logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
@@ -1449,18 +1467,20 @@ def get_across_target_notes(
 
     if len(invalid_fields) > 0:
         logger.error(
-            "Error in copy fields: Invalid fields in copy_from_cards_query:"
-            f" {', '.join(invalid_fields)}"
+            "Error in copy fields: Invalid fields in copy_from_cards_query: %s",
+            ", ".join(invalid_fields),
         )
 
     if len(card_ids) == 0:
         if copy_definition.get("show_error_if_none_found", False):
             logger.error(
-                "Error in copy fields: Did not find any cards with"
-                f" copy_from_cards_query='{interpolated_cards_query}'"
+                "Error in copy fields: Did not find any cards with copy_from_cards_query='%s'",
+                interpolated_cards_query,
             )
         else:
-            logger.debug(f'No cards found with copy_from_cards_query="{interpolated_cards_query}",')
+            logger.debug(
+                'No cards found with copy_from_cards_query="%s",', interpolated_cards_query
+            )
         return []
 
     has_sort_by_field = sort_by_field and sort_by_field != "-"
@@ -1587,13 +1607,13 @@ def get_field_values_from_notes(
                 multiple_note_types=multiple_note_types,
             )
         except ValueError as e:
-            logger.error(f"Error in text interpolation: {e}")
+            logger.error("Error in text interpolation: %s", e)
             break
 
         if len(invalid_fields) > 0:
             logger.error(
-                "Error in copy fields: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error in copy fields: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         if use_code:

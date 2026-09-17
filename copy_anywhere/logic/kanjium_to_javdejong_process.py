@@ -44,7 +44,7 @@ def kanjium_to_javdejong_process(
 
     javdejong_descriptions = []
     for pitch_accent_description in text.split("・"):
-        logger.debug(f"pitch_accent_description: {pitch_accent_description}")
+        logger.debug("pitch_accent_description: %s", pitch_accent_description)
         morae = [
             (
                 HTML_TAG_RE.sub("", match["chars"]),
@@ -53,7 +53,7 @@ def kanjium_to_javdejong_process(
             )
             for match in KANJIUM_MORA_RE.finditer(pitch_accent_description)
         ]
-        logger.debug(f"morae: {morae}")
+        logger.debug("morae: %s", morae)
         javdejong_descriptions.append(morae_to_javdejong(morae))
 
     return delimiter.join(javdejong_descriptions)

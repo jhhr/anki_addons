@@ -28,8 +28,8 @@ def word_highlight_process(
                 if word_to_highlight:
                     break
         if not word_to_highlight:
-            logger.error(f"Error in word_highlight: word_field '{word_field}' not found in note.")
-    logger.debug(f"word_to_highlight: {word_to_highlight}, text: {text}")
+            logger.error("Error in word_highlight: word_field '%s' not found in note.", word_field)
+    logger.debug("word_to_highlight: %s, text: %s", word_to_highlight, text)
     result = word_highlight(text, word_to_highlight)
-    logger.debug(f"word_highlight result: {result}")
+    logger.debug("word_highlight result: %s", result)
     return result

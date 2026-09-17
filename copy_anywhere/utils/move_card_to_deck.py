@@ -25,7 +25,7 @@ def move_card_to_deck(
     if deck_id is None and deck_name is not None:
         deck_id = dm.id_for_name(deck_name)
         if not deck_id:
-            logger.error(f"Deck '{deck_name}' not found. Cannot move card.")
+            logger.error("Deck '%s' not found. Cannot move card.", deck_name)
             return
     elif deck_id is None:
         logger.error("Deck ID and name not provided. Cannot move card.")

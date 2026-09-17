@@ -37,11 +37,17 @@ def kana_highlight_process(
                 if kanji_to_highlight:
                     break
         if not kanji_to_highlight:
-            logger.error(f"Error in kana_highlight: kanji_field '{kanji_field}' not found in note.")
+            logger.error(
+                "Error in kana_highlight: kanji_field '%s' not found in note.",
+                kanji_field,
+            )
     logger.debug(
-        f"kanji_to_highlight: {kanji_to_highlight}, text: {text}, return_type: {return_type},"
-        f" with_tags_def: {with_tags_def}"
+        "kanji_to_highlight: %s, text: %s, return_type: %s, with_tags_def: %s",
+        kanji_to_highlight,
+        text,
+        return_type,
+        with_tags_def,
     )
     result = kana_highlight(kanji_to_highlight, text, return_type, with_tags_def)
-    logger.debug(f"kanji_to_highlight result: {result}")
+    logger.debug("kanji_to_highlight result: %s", result)
     return result

@@ -217,8 +217,9 @@ def run_copy_fields_on_review(card: Card):
                 # The answer is already committed, so raising would only throw the error at the
                 # reviewer from inside Anki's hook dispatch and stop every later definition too
                 logger.error(
-                    f"Copy definition '{copy_definition.get('definition_name')}' has"
-                    f" copy_into_note_types that is not a string: {copy_into_note_types!r}"
+                    "Copy definition '%s' has copy_into_note_types that is not a string: %r",
+                    copy_definition.get("definition_name"),
+                    copy_into_note_types,
                 )
                 continue
             note_type_names = copy_into_note_types.strip('""').split('", "')
@@ -270,7 +271,7 @@ def run_copy_fields_on_review(card: Card):
             # The copies are already written and merged, so raising here would only throw the
             # error at the reviewer from inside Anki's hook dispatch. Without the flag the note
             # stays queued for the sync sweep, which is the safe side to fail on.
-            logger.error(f"Could not set the fc flag on card {card.id}: {e}")
+            logger.error("Could not set the fc flag on card %s: %s", card.id, e)
         # Still write the card, as merge_cards may have put copied changes on it
         mw.col.update_card(card)
         # All updates are now merged into the Answer card undo entry

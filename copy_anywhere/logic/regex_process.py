@@ -36,15 +36,20 @@ def regex_process(
             piped_flags |= f
 
     logger.debug(
-        f"Running regex:\n---\nregex:\n{regex}\n---\nreplacement: {replacement}\n---\ntext:\n"
-        f" {text}"
+        "Running regex:\n---\nregex:\n%s\n---\nreplacement: %s\n---\ntext:\n %s",
+        regex,
+        replacement,
+        text,
     )
     try:
         compiled_regex = re.compile(regex, piped_flags)
     except re.error as e:
         logger.error(
-            f"Error in basic_regex_process: {e}\n---\ntext:"
-            f" {text}\n---\nregex:\n{regex}\n---\nreplacement: {replacement}"
+            "Error in basic_regex_process: %s\n---\ntext: %s\n---\nregex:\n%s\n---\nreplacement: %s",
+            e,
+            text,
+            regex,
+            replacement,
         )
         return text
 
@@ -52,8 +57,11 @@ def regex_process(
         return compiled_regex.sub(replacement, text)
     except re.error as e:
         logger.error(
-            f"Error in basic_regex_process: {e}\n---\ntext:"
-            f" {text}\n---\nregex:\n{regex}\n---\nreplacement: {replacement}"
+            "Error in basic_regex_process: %s\n---\ntext: %s\n---\nregex:\n%s\n---\nreplacement: %s",
+            e,
+            text,
+            regex,
+            replacement,
         )
         return text
 
