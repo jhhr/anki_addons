@@ -11,9 +11,13 @@ Three rules this follows, in the order they matter:
 * **Ask first.** Nothing downloads or installs without a dialog naming the reason, the size
   and the wait. An addon that fetches and executes code silently is also the thing AnkiWeb
   review objects to, and rightly.
-* **Never hard-fail.** Every dependency here degrades on its own - psutil missing falls back
-  to a static concurrency limit, rapidfuzz has a complete Python implementation - so a machine
-  that cannot rebuild (offline, old Anki, a proxy pip cannot use) must still run the addon.
+* **Never hard-fail.** A machine that cannot rebuild - offline, or with no installer on it at
+  all - must still run the addon. Not every dependency degrades on its own, though, and these
+  dialogs must not pretend otherwise: psutil missing falls back to a static concurrency limit
+  and rapidfuzz has a complete Python implementation, but sudachipy is what a word array is
+  generated with and nothing stands in for it. The addon loads either way, thanks to the
+  guarded imports in its `__init__`; an *operation* can still be gone, and `missing` is how the
+  offer says so rather than claiming the add-on merely runs more slowly.
 * **Do not nag.** A refusal or a failure is recorded against the Python and addon version it
   was for, and the question does not come back until one of those changes. The menu action
   stays available in the meantime, and is worth having even on a healthy install: a local
@@ -50,15 +54,28 @@ logger.addHandler(logging.NullHandler())
 _PROGRESS_LABEL = "Rebuilding helper packages..."
 
 
-def install_rebuild_ui(addon_dir: str, addon_name: str, health: Optional[str]) -> None:
+def install_rebuild_ui(
+    addon_dir: str,
+    addon_name: str,
+    health: Optional[str],
+    missing: Optional[str] = None,
+) -> None:
     """Wire up the on-demand menu action, and the startup offer when `health` is a reason.
 
     `health` is whatever `vendor_path.vendor_health` returned at import time - None when the
     vendored tree fits this machine.
+
+    `missing` is the package one of the addon's own modules actually failed to import, when one
+    did. It is the addon's to report rather than something to infer from `health`, because
+    whether an absence costs a feature or only some speed is addon knowledge and not vendoring
+    knowledge: the same "package is not in the tree" reason means a slower matcher for rapidfuzz
+    and no word array at all for sudachipy. Only the addon knows which of its dependencies it
+    cannot do without, so only the addon can say whether the offer below is an optimisation or
+    a repair.
     """
 
     def on_main_window_did_init() -> None:
-        _add_menu_action(addon_dir, addon_name)
+        _add_menu_action(addon_dir, addon_name, missing)
         if health is None:
             return
         logger.warning("vendored lib does not fit this machine: %s", health)
@@ -72,7 +89,9 @@ def install_rebuild_ui(addon_dir: str, addon_name: str, health: Optional[str]) -
             logger.warning("cannot rebuild here: %s", blocked)
             record_attempt(addon_dir, f"unavailable: {blocked}")
             return
-        if not askUser(_offer_text(addon_name, health), title=addon_name, defaultno=False):
+        if not askUser(
+            _offer_text(addon_name, health, missing), title=addon_name, defaultno=False
+        ):
             record_attempt(addon_dir, "declined")
             return
         _run_rebuild(addon_dir, addon_name)
@@ -80,9 +99,9 @@ def install_rebuild_ui(addon_dir: str, addon_name: str, health: Optional[str]) -
     gui_hooks.main_window_did_init.append(on_main_window_did_init)
 
 
-def _add_menu_action(addon_dir: str, addon_name: str) -> None:
+def _add_menu_action(addon_dir: str, addon_name: str, missing: Optional[str] = None) -> None:
     action = QAction(f"Rebuild {addon_name} helper packages...", mw)
-    qconnect(action.triggered, lambda: _rebuild_on_demand(addon_dir, addon_name))
+    qconnect(action.triggered, lambda: _rebuild_on_demand(addon_dir, addon_name, missing))
     menu = getattr(getattr(mw, "form", None), "menuTools", None)
     if menu is None:
         logger.warning("no Tools menu to add the rebuild action to")
@@ -90,23 +109,43 @@ def _add_menu_action(addon_dir: str, addon_name: str) -> None:
     menu.addAction(action)
 
 
-def _rebuild_on_demand(addon_dir: str, addon_name: str) -> None:
+def _rebuild_on_demand(addon_dir: str, addon_name: str, missing: Optional[str] = None) -> None:
     """The menu action. The user asked, so an obstacle is worth saying out loud."""
     blocked = can_rebuild()
     if blocked:
+        # Plain text, no markup: Qt switches a message box to rich text as soon as it sees a
+        # tag, and the blank lines this is laid out with would collapse if it did.
+        if missing:
+            consequence = (
+                f"The operations that need {missing} stay unavailable until it can be"
+                " installed. The rest of the add-on is unaffected."
+            )
+        else:
+            consequence = "The add-on will keep working with the packages it shipped with."
         showWarning(
             f"{addon_name} cannot rebuild its helper packages here, because {blocked}.\n\n"
-            "The add-on will keep working with the packages it shipped with.",
+            f"{consequence}",
             title=addon_name,
         )
         return
-    if not askUser(_offer_text(addon_name, None), title=addon_name, defaultno=False):
+    if not askUser(_offer_text(addon_name, None, missing), title=addon_name, defaultno=False):
         return
     _run_rebuild(addon_dir, addon_name)
 
 
-def _offer_text(addon_name: str, health: Optional[str]) -> str:
-    if health:
+def _offer_text(addon_name: str, health: Optional[str], missing: Optional[str] = None) -> str:
+    """The offer, which says what is actually at stake rather than one hopeful sentence.
+
+    Three cases, because they are three different questions to put to someone. A package the
+    addon could not import is a repair and costs an operation; a tree that does not fit this
+    Anki is a slower add-on; a healthy tree being rebuilt by hand is an optimisation.
+    """
+    if missing:
+        opening = (
+            f"<b>{addon_name}</b> is missing one of the packages it needs:"
+            f" <code>{missing}</code>. It can install it for this machine now."
+        )
+    elif health:
         opening = (
             f"<b>{addon_name}</b> ships pre-built helper packages, and the ones it shipped do"
             f" not fit this copy of Anki: {health}.<br><br>"
@@ -119,15 +158,23 @@ def _offer_text(addon_name: str, health: Optional[str]) -> str:
             " their compiled half; a rebuild here does not have to, and word matching gets"
             " noticeably faster."
         )
+    if missing:
+        closing = (
+            f"The add-on has loaded <b>without the operations that need"
+            f" <code>{missing}</code></b>. They come back once this has run and Anki has been"
+            " restarted."
+        )
+    else:
+        closing = "The add-on works either way - just more slowly without this."
     return (
         f"{opening}<br><br>"
         "This downloads around 10 MB from PyPI, at the exact versions listed in the add-on's"
         " <code>requirements.txt</code>, and installs them inside the add-on's"
         " <code>user_files</code> folder. Nothing else on the system is touched. It usually"
         " takes well under a minute, Anki cannot be used while it runs, and it needs a restart"
-        " afterwards.<br><br>"
-        "The add-on works either way - just more slowly without this.<br><br>"
-        "Rebuild now?"
+        f" afterwards.<br><br>{closing}<br><br>"
+        # It is not a rebuild when the package was never there to begin with.
+        + ("Install now?" if missing else "Rebuild now?")
     )
 
 
