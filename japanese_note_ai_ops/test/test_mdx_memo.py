@@ -20,7 +20,7 @@ called and under which pick, which is the only thing the memo controls.
 import threading
 import unittest
 
-from addon_modules import load_addon_module  # type: ignore
+from addon_modules import load_addon_module
 
 memo_mod = load_addon_module("mdx_memo", subdir="sync_local_ops")
 

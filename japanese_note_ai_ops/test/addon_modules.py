@@ -33,9 +33,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from anki_shared.testing import anki_stubs  # noqa: E402
 from anki_shared.testing.anki_stubs import mw  # noqa: E402
-
-sys.path.insert(0, str(REPO_ROOT / "anki_shared" / "utils"))
-from vendor_path import add_vendor_paths  # noqa: E402
+from anki_shared.utils.vendor_path import add_vendor_paths  # noqa: E402
 
 add_vendor_paths(str(ADDON_ROOT))
 

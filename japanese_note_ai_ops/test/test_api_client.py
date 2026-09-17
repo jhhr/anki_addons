@@ -15,14 +15,21 @@ import socket
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import requests
 from requests.structures import CaseInsensitiveDict
 
-from addon_modules import FakeClock, load_addon_module  # type: ignore
+from addon_modules import FakeClock, load_addon_module
 
 api = load_addon_module("api_client")
+
+if TYPE_CHECKING:
+    # The real class, so SpyTracker below subclasses a type rather than an Any attribute of
+    # the module load_addon_module handed back
+    from japanese_note_ai_ops.async_api_ops.api_client import RateLimitTracker
+else:
+    RateLimitTracker = api.RateLimitTracker
 
 URL = "https://example.invalid/v1/messages"
 
@@ -87,7 +94,7 @@ class FakeCancelState:
         return self.cancelled
 
 
-class SpyTracker(api.RateLimitTracker):
+class SpyTracker(RateLimitTracker):
     """The real tracker, with a record of what the retry loop asked of it.
 
     Whether a cooldown is *installed* is the thing worth asserting on: by the time a call

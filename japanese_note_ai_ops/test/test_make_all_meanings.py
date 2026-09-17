@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from addon_modules import load_ops_module  # type: ignore
+from addon_modules import load_ops_module
 
 meanings = load_ops_module("make_all_meanings")
 

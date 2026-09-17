@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from addon_modules import FakeClock, load_ops_module  # type: ignore
+from addon_modules import FakeClock, load_ops_module
 
 tc = load_ops_module("terminal_client")
 api = load_ops_module("api_client")

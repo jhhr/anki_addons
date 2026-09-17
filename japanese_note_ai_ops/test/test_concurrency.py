@@ -24,7 +24,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from addon_modules import load_addon_module  # type: ignore
+from addon_modules import load_addon_module
 
 conc = load_addon_module("concurrency")
 
@@ -117,21 +117,21 @@ REAL_SAVE_PER_TASK_ESTIMATE = conc.save_per_task_estimate
 
 
 def install_memory_stubs(memory: StubMemory) -> None:
-    conc.system_memory = memory.system_memory
-    conc.process_memory = memory.process_memory
+    setattr(conc, "system_memory", memory.system_memory)
+    setattr(conc, "process_memory", memory.process_memory)
     # Never read the real user_files estimates: they differ per machine and per run
-    conc.load_per_task_estimates = lambda: {}
+    setattr(conc, "load_per_task_estimates", lambda: {})
     # ...and never write them. The gate persists a measurement as soon as it has one rather
     # than only from finish(), so without this every gate test that measures anything leaves
     # a "test op" entry in the add-on's own user_files.
-    conc.save_per_task_estimate = lambda op_key, value, baseline=None: None
+    setattr(conc, "save_per_task_estimate", lambda op_key, value, baseline=None: None)
 
 
 def restore_memory_probes() -> None:
-    conc.system_memory = REAL_SYSTEM_MEMORY
-    conc.process_memory = REAL_PROCESS_MEMORY
-    conc.load_per_task_estimates = REAL_LOAD_PER_TASK_ESTIMATES
-    conc.save_per_task_estimate = REAL_SAVE_PER_TASK_ESTIMATE
+    setattr(conc, "system_memory", REAL_SYSTEM_MEMORY)
+    setattr(conc, "process_memory", REAL_PROCESS_MEMORY)
+    setattr(conc, "load_per_task_estimates", REAL_LOAD_PER_TASK_ESTIMATES)
+    setattr(conc, "save_per_task_estimate", REAL_SAVE_PER_TASK_ESTIMATE)
 
 
 class MemoryStubs:
@@ -148,14 +148,14 @@ class MemoryStubs:
         self.clock = StubClock()
         self._real_tracemalloc = conc.tracemalloc
         self._real_time = conc.time
-        conc.tracemalloc = self.tracing
-        conc.time = self.clock
+        setattr(conc, "tracemalloc", self.tracing)
+        setattr(conc, "time", self.clock)
         # Its window opened on the real clock at import; reopen it on the stub one
         conc.collection_pressure.reset()
 
     def remove_stubs(self) -> None:
-        conc.tracemalloc = self._real_tracemalloc
-        conc.time = self._real_time
+        setattr(conc, "tracemalloc", self._real_tracemalloc)
+        setattr(conc, "time", self._real_time)
         restore_memory_probes()
 
 

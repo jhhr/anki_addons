@@ -4,6 +4,11 @@ import sys
 import unittest
 from collections import Counter
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # What the real jmdict_index.spellings returns, which `spellings` below stands in for
+    from japanese_note_ai_ops.word_array.jmdict_index import Spellings
 
 from addon_modules import ADDON_ROOT
 
@@ -17,7 +22,9 @@ YORU = [
     (("因る", "由る", "依る", "拠る"), ("よる",), frozenset({"v5r", "vi"})),
     ((), ("よる",), frozenset({"prt"})),
 ]
-SPELLINGS = {(("因る", "由る", "依る", "拠る"), ("よる",)): ({"拠る": frozenset({"oK"})}, {}, True)}
+SPELLINGS: dict[tuple[tuple[str, ...], tuple[str, ...]], "Spellings"] = {
+    (("因る", "由る", "依る", "拠る"), ("よる",)): ({"拠る": frozenset({"oK"})}, {}, True)
+}
 
 
 def lookup(kana):
