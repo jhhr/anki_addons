@@ -11,6 +11,7 @@ failed and the bulk loop must stop so the user can see why.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from anki.notes import Note
@@ -20,6 +21,8 @@ from ..definition_migration import MigrationError, migrate_definition_v1_to_v2
 from .commit import CollectionCommitter
 from .context import DefinitionFrame, ExecutionSession, StageError, TriggerSkipped
 from .evaluator import Cancelled, execute_definition
+
+logger = logging.getLogger(__name__)
 
 
 def as_format_2(definition: dict) -> dict:
@@ -44,7 +47,6 @@ def run_definition_for_trigger_note(
 ) -> bool:
     """Evaluate `definition` for one trigger note and commit what it produced."""
     committer = committer or CollectionCommitter()
-    logger = session.logger
     try:
         staged = as_format_2(definition)
     except MigrationError as error:
@@ -68,7 +70,7 @@ def run_definition_for_trigger_note(
         logger.error(error.message)
         context = error.context_description()
         if context:
-            logger.debug(f"copy_for_single_trigger_note: failed at {context}")
+            logger.debug("copy_for_single_trigger_note: failed at %s", context)
         session.discard()
         return False
 
@@ -77,9 +79,9 @@ def run_definition_for_trigger_note(
         other_notes = [key for key in session.modified_notes if key != trigger_key]
         if other_notes or session.edited_cards:
             logger.error(
-                "Error in copy fields: definition"
-                f" '{staged.get('definition_name', '')}' is marked add-note compatible but"
-                " queued changes to another note or card; nothing was written"
+                "Error in copy fields: definition '%s' is marked add-note compatible but"
+                " queued changes to another note or card; nothing was written",
+                staged.get("definition_name", ""),
             )
             session.discard()
             return False

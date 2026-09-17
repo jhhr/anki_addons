@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from anki.cards import Card
+from anki.cards import Card, CardId
 from aqt import mw
 from aqt.gui_hooks import reviewer_did_answer_card
 from aqt.utils import tooltip
 
 from .configuration import Config
 from .logic import (
+    StatsCache,
     card_type_name_for,
     describe_buried_decks,
     get_applicable_rules,
@@ -39,8 +40,8 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
         return
 
     answer_undo_entry = mw.col.undo_status().last_step
-    stats_cache = {}
-    processed_rule_card_pairs: set[tuple[str, int]] = set()
+    stats_cache: StatsCache = {}
+    processed_rule_card_pairs: set[tuple[str, CardId]] = set()
 
     outcomes = []
     for rule in rules:

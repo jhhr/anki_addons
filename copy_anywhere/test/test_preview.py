@@ -41,7 +41,7 @@ class TestPreviewRun:
         assert col.get_note(note.id)["Note"] == ""
         assert note["Note"] == ""
 
-    def test_a_preview_computes_what_a_real_run_writes(self, col, note, logger):
+    def test_a_preview_computes_what_a_real_run_writes(self, col, note):
         definition = d.staged(stages=[
             d.note_query("found", "Word:neko"),
             d.for_each_note(
@@ -50,7 +50,7 @@ class TestPreviewRun:
             ),
         ])
         previewed = run_preview(definition, preview_note(note.id))
-        assert copy_for_single_trigger_note(definition, note, logger=logger) is True
+        assert copy_for_single_trigger_note(definition, note) is True
 
         assert [planned["fields"]["Note"] for planned in previewed.notes] == [note["Note"]]
 

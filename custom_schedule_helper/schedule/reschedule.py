@@ -43,7 +43,7 @@ LOG = False
 
 class Scheduler:
     max_ivl: int
-    days_upper: bool
+    days_upper: int
     enable_load_balance: bool
     free_days: List[int]
     due_cnt_perday_from_first_day: Dict[int, int]

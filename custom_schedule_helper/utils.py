@@ -5,7 +5,8 @@ import re
 from collections import OrderedDict
 from typing import List, Literal
 
-from anki.cards import Card
+from anki.cards import Card, CardId
+from anki.dbproxy import DBProxy
 from anki.stats import (
     REVLOG_LRN,
     REVLOG_REV,
@@ -24,6 +25,12 @@ DAYS_UPPER_PARAM = "daysUpper"
 MIN_AGAIN_MULT_PARAM = "minAgainMult"
 
 ALL_PARAMS = [DAYS_UPPER_PARAM, MIN_AGAIN_MULT_PARAM]
+
+
+def col_db() -> DBProxy:
+    """The open collection's database. Only valid while a collection is loaded."""
+    assert mw.col.db is not None
+    return mw.col.db
 
 
 def get_version(custom_scheduler):
@@ -199,7 +206,7 @@ def RepresentsInt(s):
         return None
 
 
-def reset_ivl_and_due(cid: int, revlogs: List[CardStatsResponse.StatsRevlogEntry]):
+def reset_ivl_and_due(cid: CardId, revlogs: List[CardStatsResponse.StatsRevlogEntry]):
     card = mw.col.get_card(cid)
     card.ivl = int(revlogs[0].interval / 86400)
     due = (

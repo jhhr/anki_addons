@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from anki.cards import CardId
+from anki.notes import NoteId
 from aqt import mw
 from aqt.browser import Browser
 from aqt.gui_hooks import browser_will_show_context_menu
@@ -53,8 +55,8 @@ def run_disperse_on_browser_selection(browser: Browser) -> None:
     config = Config()
     config.load()
 
-    note_ids: list[int] = []
-    card_ids: list[int] = []
+    note_ids: list[NoteId] = []
+    card_ids: list[CardId] = []
     notes_mode = browser.table.is_notes_mode()
     if notes_mode:
         note_ids = list(browser.selected_notes())

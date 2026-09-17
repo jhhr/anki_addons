@@ -74,3 +74,49 @@ class TestExtraGlobals:
         )
         assert error is None
         assert result == "21"
+
+
+class TestJapaneseGlobals:
+    """The reading processor and the word array codecs, for definition code that has to
+    render a sentence the way the rest of the pipeline wrote it."""
+
+    SENTENCE = " 猫[ねこ]が 屋根[やね]に 上[のぼ]る"
+
+    def test_kana_highlight_runs_on_a_field(self):
+        result, error = execute_code_core(
+            'return kana_highlight(None, note["Sentence"], "furigana")',
+            FakeNote({"Sentence": self.SENTENCE}),
+        )
+        assert error is None
+        assert result == (
+            "<kun> 猫[ねこ]</kun>が<kun> 屋根[やね]</kun>に"
+            "<kun> 上[のぼ]</kun><oku>る</oku>"
+        )
+
+    def test_the_kana_highlight_step_s_settings_are_the_arguments(self):
+        """Named as the step names them, so code that has to match a field the step wrote
+        can be written from looking at the step. Off, a compound's reading is split over
+        its kanji, which is how the sentence fields in this collection are written."""
+        result, error = execute_code_core(
+            "return kana_highlight("
+            '    None, note["Sentence"], "furigana", merge_consecutive_tags=False)',
+            FakeNote({"Sentence": self.SENTENCE}),
+        )
+        assert error is None
+        assert "<kun> 屋[や]</kun><kun> 根[ね]</kun>" in result
+
+    def test_a_hand_edited_word_array_field_still_decodes(self):
+        """json.loads would not: Anki's editor turns the rows into <br> and &nbsp;."""
+        mangled = '[<br>&nbsp; ["猫", "noun", "猫", "ねこ", [], []]<br>]'
+        result, error = execute_code_core(
+            'return decode_word_array(note["Words"])', FakeNote({"Words": mangled})
+        )
+        assert error is None
+        assert result == [["猫", "noun", "猫", "ねこ", [], []]]
+
+    def test_format_word_array_writes_one_word_per_row(self):
+        result, error = execute_code_core(
+            'return format_word_array([["猫"], ["が"]])', FakeNote({})
+        )
+        assert error is None
+        assert result == '[\n  ["猫"],\n  ["が"]\n]'

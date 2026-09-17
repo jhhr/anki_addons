@@ -50,13 +50,13 @@ def selected(query_stage, trigger, logger, field="Word"):
         d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
     ])
     succeeded = copy_for_single_trigger_note(
-        definition, trigger, copied_into_notes=[], logger=logger
+        definition, trigger, copied_into_notes=[]
     )
     assert succeeded is True, logger.errors
     return [value for value in trigger["Note"].split(SEPARATOR) if value]
 
 
-def run_legacy(trigger, logger, **definition_kwargs):
+def run_legacy(trigger, **definition_kwargs):
     """Run a migrated across-note definition, for the cases about migrated markers.
 
     The guards below -- an unusable `select_card_by`, the empty-result flag -- are format-1
@@ -65,7 +65,7 @@ def run_legacy(trigger, logger, **definition_kwargs):
     """
     definition = d.destination_to_sources(**definition_kwargs)
     return copy_for_single_trigger_note(
-        definition, trigger, copied_into_notes=[], logger=logger
+        definition, trigger, copied_into_notes=[]
     )
 
 
@@ -184,10 +184,10 @@ class TestAnEmptyResult:
         assert found == []
         assert logger.errors == []
 
-    def test_if_empty_error_fails_the_definition(self, col, trigger, logger):
+    def test_if_empty_error_fails_the_definition(self, col, trigger):
         definition = d.staged(stages=[d.note_query("found", "tag:nothing", if_empty="error")])
 
-        succeeded = copy_for_single_trigger_note(definition, trigger, logger=logger)
+        succeeded = copy_for_single_trigger_note(definition, trigger)
 
         assert succeeded is False
 
@@ -196,7 +196,6 @@ class TestAnEmptyResult:
         # failing the definition -- exactly what the checkbox did.
         run_legacy(
             trigger,
-            logger,
             copy_from_cards_query="tag:nothing",
             show_error_if_none_found=True,
         )
@@ -206,7 +205,7 @@ class TestAnEmptyResult:
 
 class TestGuardsCarriedOverFromFormat1:
     def test_a_query_that_interpolates_to_nothing_is_reported(self, col, trigger, logger):
-        run_legacy(trigger, logger, copy_from_cards_query="{{Note}}")
+        run_legacy(trigger, copy_from_cards_query="{{Note}}")
 
         assert logger.has_error("Could not interpolate copy_from_cards_query")
 
@@ -223,7 +222,7 @@ class TestGuardsCarriedOverFromFormat1:
         # The migrator cannot turn these into a strategy, so it records the complaint on the
         # stage and the query stage reports it instead of guessing.
         run_legacy(
-            trigger, logger, copy_from_cards_query="tag:pool", select_card_by=select_card_by
+            trigger, copy_from_cards_query="tag:pool", select_card_by=select_card_by
         )
 
         assert logger.has_error(message)
@@ -233,14 +232,14 @@ class TestGuardsCarriedOverFromFormat1:
         self, col, trigger, targets, logger, count
     ):
         run_legacy(
-            trigger, logger, copy_from_cards_query="tag:pool", select_card_count=count
+            trigger, copy_from_cards_query="tag:pool", select_card_count=count
         )
 
         assert logger.has_error(f"Incorrect 'select_card_count' value '{count}'")
 
 
 class TestTheQueryCache:
-    def test_the_same_query_run_twice_searches_once(self, col, trigger, targets, logger):
+    def test_the_same_query_run_twice_searches_once(self, col, trigger, targets):
         # Two stages, one search. The session caches by the interpolated query text, which is
         # what keeps a definition that asks the same thing twice from paying for it twice.
         searches = []
@@ -251,13 +250,13 @@ class TestTheQueryCache:
                 d.note_query("first", "tag:pool"),
                 d.note_query("second", "tag:pool"),
             ])
-            copy_for_single_trigger_note(definition, trigger, logger=logger)
+            copy_for_single_trigger_note(definition, trigger)
         finally:
             col.find_notes = original
 
         assert searches == ["tag:pool"]
 
-    def test_a_different_query_searches_again(self, col, trigger, targets, logger):
+    def test_a_different_query_searches_again(self, col, trigger, targets):
         searches = []
         original = col.find_notes
         col.find_notes = lambda query: (searches.append(query), original(query))[1]
@@ -266,7 +265,7 @@ class TestTheQueryCache:
                 d.note_query("first", "tag:pool"),
                 d.note_query("second", "Word:w1"),
             ])
-            copy_for_single_trigger_note(definition, trigger, logger=logger)
+            copy_for_single_trigger_note(definition, trigger)
         finally:
             col.find_notes = original
 
@@ -290,11 +289,10 @@ class TestARefusedQueryDoesNotWipeTheDestination:
         return trigger
 
     def test_an_unusable_select_card_by_writes_nothing(
-        self, col, trigger_with_a_note, targets, logger
+        self, col, trigger_with_a_note, targets
     ):
         run_legacy(
             trigger_with_a_note,
-            logger,
             copy_from_cards_query="tag:pool",
             select_card_by=None,
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
@@ -303,11 +301,10 @@ class TestARefusedQueryDoesNotWipeTheDestination:
         assert trigger_with_a_note["Note"] == "kept"
 
     def test_an_unusable_select_card_count_writes_nothing(
-        self, col, trigger_with_a_note, targets, logger
+        self, col, trigger_with_a_note, targets
     ):
         run_legacy(
             trigger_with_a_note,
-            logger,
             copy_from_cards_query="tag:pool",
             select_card_count="abc",
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
@@ -316,11 +313,10 @@ class TestARefusedQueryDoesNotWipeTheDestination:
         assert trigger_with_a_note["Note"] == "kept"
 
     def test_a_query_that_interpolates_to_nothing_writes_nothing(
-        self, col, trigger_with_a_note, logger
+        self, col, trigger_with_a_note
     ):
         run_legacy(
             trigger_with_a_note,
-            logger,
             copy_from_cards_query="{{Nonexistent}}",
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
         )
@@ -328,13 +324,12 @@ class TestARefusedQueryDoesNotWipeTheDestination:
         assert trigger_with_a_note["Note"] == "kept"
 
     def test_the_empty_result_flag_still_lets_the_write_through(
-        self, col, trigger_with_a_note, logger
+        self, col, trigger_with_a_note
     ):
         # `run_also_if_no_sources_found` is what format 1 offered for the opposite case, and
         # it has to keep working: there the empty write is what the user asked for.
         run_legacy(
             trigger_with_a_note,
-            logger,
             copy_from_cards_query="tag:nothing",
             run_also_if_no_sources_found=True,
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],

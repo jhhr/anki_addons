@@ -11,7 +11,7 @@ Prompts:
 - `translate_field`: Translate a field from Japanese to English. Used rarely, since I mostly mine from anime and get the translation from the english subs.
 - `make_kanji_story`: Write a mnemonic story for the components a kanji is written with, in Japanese. Used daily on new kanji drawing practice notes. Expects a JSON file `_kanji_story_component_words.json` to exist and be a simple dict of component phrases.
 - `kanjify_sentence`: Take a furigana format sentence and kanjify each hiragana/katakana word if there's some valid kanji form for it. The kanjified words are wrapped with `<k>` tags
-- `extract_words`: Extract individual words from the kanjified sentence, grouped by their part of speech. Writes a json object with arrays of words into the note.
+- `extract_words`: Partition the kanjified sentence into its dictionary words and write the word array into the note (`word_array/README.md`). Built by rules from SudachiPy and JMdict, so the only API call is the proper noun one (`proper_nouns_model`); the words are left unjudged. "Extract words + Judge matchability" runs the word matching judge over the new words as a second phase.
 - `match_words_to_notes`: Match the extracted words in the list to an existing word note, using the word's meaning. If matching isn't possible, creates a new word note and comes up with a meaning that matches the usage of the word in the sentence.
 
 ## Installing dependencies
@@ -51,3 +51,25 @@ Then install other dependencies:
 ```bash
 pip3 install --upgrade -t lib --no-cache-dir --python-version 3.9 --only-binary=:all: -r requirements.txt
 ```
+
+## Running the tests
+
+`test/` covers the two modules that carry the tricky concurrent behaviour - the rate-limit
+and retry handling in `async_api_ops/api_client.py`, and the memory-aware gate in
+`async_api_ops/concurrency.py`. Both are deliberately free of `aqt`/`anki` imports, so the
+suite loads them straight from their files and runs outside Anki, with no network and no
+waiting: a fake session supplies responses, a fake clock makes backoffs pass instantly, and
+the memory probes are stubbed.
+
+```bash
+pytest test              # from the add-on root
+python -m unittest discover -s test -t test     # same tests, no pytest needed
+```
+
+Run it as `pytest test`, not bare `pytest`: the add-on directory is itself a package whose
+`__init__.py` imports `aqt`, and pytest imports the `__init__.py` of any package directory in
+the collection tree. `test/pytest.ini` keeps the rootdir below that.
+
+Tests are plain `unittest.TestCase` classes so both runners work. Anything that needs a real
+collection, `mw`, or a running Anki belongs in a manual check instead - `base_ops.py` and the
+ops themselves are not covered here.

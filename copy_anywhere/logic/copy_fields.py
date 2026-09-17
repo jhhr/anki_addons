@@ -1,5 +1,5 @@
 import html
-import re
+import logging
 import time
 from typing import Any, Callable, Optional, Sequence, Union
 
@@ -9,13 +9,7 @@ from anki.notes import Note, NoteId
 from anki.utils import ids2str
 from aqt import mw
 from aqt.operations import CollectionOp
-from aqt.qt import (
-    QDialog,
-    QGuiApplication,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from aqt.qt import QDesktopServices, QUrl
 from aqt.utils import tooltip
 
 from ..configuration import (
@@ -27,9 +21,13 @@ from ..configuration import (
     definition_note_types_label,
     definition_trigger_flag,
 )
+from ..logging_setup import (
+    finish_operation_log,
+    set_log_definition,
+    set_log_nid,
+    start_operation_log,
+)
 from ..shared.anki.write_custom_data import write_custom_data
-from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
-from ..shared.utils.logger import Logger
 from .copy_primitives import (
     CopyFailedException,
     ProgressUpdateDef,
@@ -55,7 +53,6 @@ __all__ = [
     "CopyFailedException",
     "ProgressUpdateDef",
     "ProgressUpdater",
-    "ScrollMessageBox",
     "apply_card_action_to_card",
     "apply_card_actions_by_template",
     "apply_process_chain",
@@ -71,49 +68,29 @@ __all__ = [
     "sort_by_field_value",
 ]
 
-CONSOLE_COLOR_RE = r"\x1b\[[0-9;]*m"
+logger = logging.getLogger(__name__)
 
 
-class ScrollMessageBox(QDialog):
+def operation_log_name(copy_definitions: Sequence[CopyDefinition]) -> str:
+    """What to call this run's log file, so a folder of them can be read at a glance.
+
+    One definition is named; a picker run over several is counted, because a filename holding
+    four definition names is no longer a filename.
     """
-    A simple class to show a scrollable message box to display debug messages
+    if len(copy_definitions) == 1:
+        return f"copy_fields_{copy_definitions[0].get('definition_name') or 'definition'}"
+    return f"copy_fields_{len(copy_definitions)}_definitions"
 
-    :param message_list: A list of messages to display
-    :param title: The title of the message box
-    :param parent: The parent widget
+
+def open_log_file(path: str) -> None:
+    """Show the user the log this operation just wrote, in whatever opens .log files here.
+
+    This replaces the scrollable message box the debug messages used to be collected into.
+    The box only ever held the lines of the run that built it, could not be kept, and had
+    to strip the console colour codes back out of them; a file holds the same lines, plus
+    `jp_text_processing`'s, and is still there tomorrow.
     """
-
-    def __init__(self, message_list, title, parent=None, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.setWindowTitle(title)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        self.content = QWidget()
-        scroll.setWidget(self.content)
-        lay = QVBoxLayout(self.content)
-        textbox = AutoResizingTextEdit(self, readOnly=True)
-        # remove console colors as they can't be displayed in the text box
-        message_list = [
-            re.sub(CONSOLE_COLOR_RE, "", line) if isinstance(line, str) else str(line)
-            for line in message_list
-        ]
-        textbox.setPlainText("\n".join(message_list))
-        lay.addWidget(textbox)
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.addWidget(scroll)
-        self.setModal(False)
-        # resize horizontally to a percentage of screen width or sizeHint, whichever is larger
-        # but allow vertical resizing to follow sizeHint
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geometry = screen.availableGeometry()
-            self.resize(
-                max(self.sizeHint().height(), int(geometry.width() * 0.35)),
-                self.sizeHint().height(),
-            )
-        else:
-            self.resize(self.sizeHint())
-        self.show()
+    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 class CacheResults:
@@ -226,17 +203,21 @@ def copy_fields(
     :param progress_title: Optional title for the progress dialog
     """
     start_time = time.time()
-    debug_texts = []
     is_sync = update_sync_result is not None
     config = Config()
     config.load()
 
-    def log(message: str):
-        nonlocal debug_texts
-        debug_texts.append(message)
-        print(message)
+    # Opened here rather than inside `op`: the operation runs on a worker thread, and the
+    # callbacks that end it run on the main one, so the file has to outlive both. Released in
+    # `on_success`/`on_failure`, which is where `CollectionOp` ends whichever way it goes.
+    start_operation_log(operation_log_name(copy_definitions), config.log_level)
 
-    logger = Logger(config.log_level, log=log)
+    def finish_logging_and_show() -> None:
+        log_path = finish_operation_log()
+        # A sync runs unattended and never showed the debug window either; anything it has to
+        # report is in the file for afterwards.
+        if log_path is not None and not is_sync:
+            open_log_file(log_path)
 
     def on_success(copy_results: CacheResults):
         mw.progress.finish()
@@ -259,16 +240,14 @@ def copy_fields(
                     period=5000 + len(copy_definitions) * 1000,
                     y_offset=100,
                 )
-        if not is_sync and len(debug_texts) > 0:
-            ScrollMessageBox(debug_texts, title="Copy fields debug Messages", parent=parent)
+        finish_logging_and_show()
         if on_done is not None:
             on_done()
 
     def on_failure(exception):
         mw.progress.finish()
-        logger.error(f"Copying failed: {exception}")
-        if not is_sync and len(debug_texts) > 0:
-            ScrollMessageBox(debug_texts, title="Copy Fields debug Messages", parent=parent)
+        logger.error("Copying failed: %s", exception)
+        finish_logging_and_show()
         if on_done is not None:
             on_done()
         # Need to raise the exception to get the traceback to the cause in the console
@@ -285,15 +264,16 @@ def copy_fields(
         if note_ids_per_definition is not None:
             if len(note_ids_per_definition) != len(copy_definitions):
                 logger.error(
-                    "Error in copy fields: Got"
-                    f" {len(note_ids_per_definition)} note id lists for"
-                    f" {len(copy_definitions)} definitions"
+                    "Error in copy fields: Got %s note id lists for %s definitions",
+                    len(note_ids_per_definition),
+                    len(copy_definitions),
                 )
                 return CacheResults(result_text="", changes=OpChanges())
             for i, ids in enumerate(note_ids_per_definition):
                 if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
                     logger.error(
-                        f"Error in copy fields: Note ids for definition {i + 1} are not a list"
+                        "Error in copy fields: Note ids for definition %s are not a list",
+                        i + 1,
                     )
                     return CacheResults(result_text="", changes=OpChanges())
 
@@ -319,15 +299,13 @@ def copy_fields(
         )
 
         for i, copy_definition in enumerate(copy_definitions):
-            logger.reset_prefix()
-            logger.copy_definition_name = copy_definition.get("definition_name", None)
+            set_log_definition(copy_definition.get("definition_name", None))
             results = copy_fields_in_background(
                 copy_definition=copy_definition,
                 note_ids=(
                     note_ids_per_definition[i] if note_ids_per_definition is not None else note_ids
                 ),
                 trigger_notes=trigger_notes,
-                logger=logger,
                 is_sync=is_sync,
                 copied_into_cards_dict=copied_into_cards_dict,
                 copied_into_notes=copied_into_notes,
@@ -437,7 +415,6 @@ def copy_fields_in_background(
     trigger_notes: Optional[Sequence[Note]] = None,
     field_only: Optional[str] = None,
     unfocus_is_add: bool = False,
-    logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
     definitions_for_calls: Optional[Sequence[dict]] = None,
 ) -> CacheResults:
@@ -455,7 +432,6 @@ def copy_fields_in_background(
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
     :param unfocus_is_add: whether that unfocus is happening in the Add dialog
-    :param logger: Logger to use for errors and debug messages
     :param is_sync: Whether this is a sync operation or not
     :param progress_title: Optional title for the progress dialog
     :return: the CacheResults object passed as results
@@ -469,8 +445,9 @@ def copy_fields_in_background(
 
     if copy_into_note_types is None:
         logger.error(
-            f"""Error in copy fields: Note type for copy_into_note_types '{copy_into_note_types}'
+            """Error in copy fields: Note type for copy_into_note_types '%s'
             not found, check your spelling""",
+            copy_into_note_types,
         )
         return results
 
@@ -518,7 +495,8 @@ def copy_fields_in_background(
     if not is_sync and len(notes) == 0:
         # When syncing, it's normal to get zero results if no cards have been reviewed
         logger.error(
-            f"Error in copy fields: Did not find any notes of note type(s) {copy_into_note_types}"
+            "Error in copy fields: Did not find any notes of note type(s) %s",
+            copy_into_note_types,
         )
         return results
 
@@ -557,7 +535,6 @@ def copy_fields_in_background(
             copied_into_cards_dict=copied_into_cards_dict,
             field_only=field_only,
             unfocus_is_add=unfocus_is_add,
-            logger=logger,
             file_cache=file_cache,
             progress_updater=progress_updater,
             definitions_for_calls=definitions_for_calls,
@@ -607,7 +584,6 @@ def note_passes_deck_whitelist(
     include_subdecks: bool,
     trigger_note: Note,
     deck_id: Optional[int] = None,
-    logger: Logger = Logger("error"),
 ) -> bool:
     """Whether the definition's deck whitelist lets this trigger note through.
 
@@ -638,15 +614,16 @@ def note_passes_deck_whitelist(
         for card in trigger_note.cards():
             deck_ids_of_cards.append(card.odid or card.did)
     logger.debug(
-        f"copy_for_single_trigger_note: deck_ids={deck_ids_of_cards},"
-        f" unique_whitelist_dids={unique_whitelist_dids}"
+        "copy_for_single_trigger_note: deck_ids=%s, unique_whitelist_dids=%s",
+        deck_ids_of_cards,
+        unique_whitelist_dids,
     )
     if deck_ids_of_cards and not any(
         card_deck_id in unique_whitelist_dids for card_deck_id in deck_ids_of_cards
     ):
         logger.debug(
-            "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note"
-            f" {trigger_note.id}"
+            "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note %s",
+            trigger_note.id,
         )
         return False
     return True
@@ -661,7 +638,6 @@ def copy_for_single_trigger_note(
     field_only: Optional[str] = None,
     unfocus_is_add: bool = False,
     deck_id: Optional[int] = None,
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
     definitions_for_calls: Optional[Sequence[dict]] = None,
@@ -684,7 +660,6 @@ def copy_for_single_trigger_note(
     :param field_only: limits field writes to those the named editor field triggers
     :param unfocus_is_add: whether that unfocus is happening in the Add dialog
     :param deck_id: the deck a not-yet-added note's cards will go into, since it has none
-    :param logger: logger for errors and debug messages
     :param file_cache: a dictionary caching opened files' content for process chains
     :param progress_updater: optional object to update the progress bar
     :param definitions_for_calls: the definitions a `call_definition` stage may reach
@@ -695,7 +670,7 @@ def copy_for_single_trigger_note(
     :return: True when the note is done -- written into or benignly skipped -- and False
         when the definition failed and the caller's bulk loop should stop
     """
-    logger.nid = trigger_note.id
+    set_log_nid(trigger_note.id)
 
     try:
         staged_definition = as_format_2(copy_definition)
@@ -713,7 +688,6 @@ def copy_for_single_trigger_note(
         include_subdecks=bool(triggers.get("include_subdecks", False)),
         trigger_note=trigger_note,
         deck_id=deck_id,
-        logger=logger,
     ):
         # Deck not in whitelist, so skip this note; things are ok, so return True
         if progress_updater is not None:
@@ -726,7 +700,6 @@ def copy_for_single_trigger_note(
         lookup = make_definition_lookup(reachable) if reachable else None
 
     session = ExecutionSession(
-        logger=logger,
         is_sync=bool(is_sync),
         field_only=field_only,
         unfocus_is_add=unfocus_is_add,

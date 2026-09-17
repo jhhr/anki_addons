@@ -14,24 +14,56 @@ worse than no preview at all.
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Optional, Sequence
+from contextlib import contextmanager
+from typing import Iterator, Optional, Sequence
 
 from anki.notes import Note, NoteId
 from aqt import mw
 
-from ..shared.utils.logger import Logger
+from ..logging_setup import ADDON_MODULE, SHARED_LOGGER_NAME
 from .definition_migration import MigrationError
 from .definition_schema import CopyDefinitionV2
 from .execution.commit import PreviewCommitter
 from .execution.context import ExecutionSession, TraceEvent
 
-#: The logger colours its output for the console; the preview pane shows the text.
-ANSI = re.compile(r"\033\[[0-9;]*m")
-
 #: How many notes the trigger-note browser offers at once. The list is there to pick one
 #: note out of, not to be a second card browser.
 TRIGGER_NOTE_LIMIT = 50
+
+
+class _MessageCollector(logging.Handler):
+    """Keeps the errors a previewed run reports, for the pane to show under its summary.
+
+    Only errors, as the debug-level chatter of a run is the trace's job here: the pane shows
+    what each stage did, and a message is for what went wrong.
+    """
+
+    def __init__(self, messages: list[str]) -> None:
+        super().__init__(level=logging.ERROR)
+        self.messages = messages
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@contextmanager
+def _collecting_messages(messages: list[str]) -> Iterator[None]:
+    """Route what the addon and `jp_text_processing` log during the block into `messages`.
+
+    The same two loggers an operation's file is attached to, for the same reason: a furigana
+    process complaining about a reading is part of what the previewed definition did.
+    """
+    handler = _MessageCollector(messages)
+    loggers = [logging.getLogger(ADDON_MODULE), logging.getLogger(SHARED_LOGGER_NAME)]
+    for target in loggers:
+        target.addHandler(handler)
+    try:
+        yield
+    finally:
+        for target in loggers:
+            target.removeHandler(handler)
 
 
 class PreviewRun:
@@ -88,6 +120,21 @@ def run_preview(
     deck_id: Optional[int] = None,
 ) -> PreviewRun:
     """Evaluate `definition` against `trigger_note` and record what it would have done."""
+    run = PreviewRun()
+    run.trigger_id = trigger_note.id or None
+    with _collecting_messages(run.messages):
+        _preview_into(run, definition, trigger_note, definitions_for_calls, is_sync, deck_id)
+    return run
+
+
+def _preview_into(
+    run: PreviewRun,
+    definition: dict,
+    trigger_note: Note,
+    definitions_for_calls: Optional[Sequence[dict]],
+    is_sync: bool,
+    deck_id: Optional[int],
+) -> None:
     # Imported here rather than at module level: `copy_fields` is the operation boundary and
     # already imports the executor, so importing it from a module the executor's own package
     # can reach would close a cycle.
@@ -98,16 +145,12 @@ def run_preview(
     )
     from .execution.runner import as_format_2, run_definition_for_trigger_note
 
-    run = PreviewRun()
-    run.trigger_id = trigger_note.id or None
-    logger = Logger("error", log=lambda line: run.messages.append(ANSI.sub("", line)))
-
     try:
         staged = as_format_2(definition)
     except MigrationError as error:
         run.succeeded = False
         run.messages.append(str(error))
-        return run
+        return
 
     triggers = staged.get("triggers", {}) or {}
     if not note_passes_deck_whitelist(
@@ -115,18 +158,16 @@ def run_preview(
         include_subdecks=bool(triggers.get("include_subdecks", False)),
         trigger_note=trigger_note,
         deck_id=deck_id,
-        logger=logger,
     ):
         run.messages.append(
             "This note is not in a deck the definition's trigger settings allow, so nothing"
             " would run for it."
         )
-        return run
+        return
 
     reachable = definitions_a_call_may_reach(staged, definitions_for_calls)
     committer = PreviewCommitter()
     session = ExecutionSession(
-        logger=logger,
         is_sync=is_sync,
         deck_id=deck_id,
         definition_lookup=make_definition_lookup(reachable) if reachable else None,
@@ -142,7 +183,6 @@ def run_preview(
     run.notes = committer.planned_notes
     run.cards = committer.planned_cards
     run.files = committer.planned_files
-    return run
 
 
 def preview_note(note_id: int) -> Note:

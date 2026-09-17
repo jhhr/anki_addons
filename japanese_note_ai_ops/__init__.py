@@ -1,7 +1,5 @@
 import os
-import sys
 import logging
-from datetime import datetime
 
 from anki import hooks
 from anki.notes import Note, NoteId
@@ -10,14 +8,26 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.qt import QAction, qconnect, QMenu
 
-# Add the 'lib' directory to sys.path for module imports, modules will import from there
-# so this needs to be done before any other imports
-lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
-if lib_path not in sys.path:
-    sys.path.append(lib_path)
+# Put the vendored 'lib' on sys.path - the locally rebuilt tree if there is one, then the
+# shipped halves - before anything that imports from it. Nothing below may move above this line.
+from .shared.utils.vendor_path import add_vendor_paths, vendor_health  # noqa: E402
+
+ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
+ADDON_NAME = "Simple Anki AI Prompts"
+
+add_vendor_paths(ADDON_DIR)
+
+# Two string comparisons and a small JSON read, so it runs at every startup - and it has to,
+# because Anki's launcher updates Anki's Python independently of any addon, and a lib built for
+# the previous one degrades silently rather than raising. It also has to run here, while
+# sys.path is as add_vendor_paths just left it and before anything has imported from it.
+# Acting on the verdict needs a main window, so that waits for main_window_did_init.
+VENDOR_HEALTH = vendor_health(ADDON_DIR)
 
 # E402 - module level import not at top of file
+from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 from .utils import get_field_config  # noqa: E402
+from .call_logging import in_bulk_op, start_call_log  # noqa: E402
 
 
 from .async_api_ops.clean_meaning import (  # noqa: E402
@@ -36,9 +46,10 @@ from .async_api_ops.kanjify_sentence import (  # noqa: E402
     kanjify_selected_notes,
 )
 from .async_api_ops.extract_words import (  # noqa: E402
+    extract_words_and_judge_from_selected_notes,
     extract_words_from_selected_notes,
-    extract_words_in_note,
-    extract_words_test_compare_from_selected_notes,
+    extract_words_op,
+    regenerate_words_from_selected_notes,
 )
 from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
     migrate_compound_verbs_from_selected_notes,
@@ -46,6 +57,14 @@ from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
 from .async_api_ops.match_words_to_notes import (  # noqa: E402
     match_words_to_notes_from_selected,
     match_single_word_to_notes_from_selected,
+)
+
+from .async_api_ops.word_matching_judge import (  # noqa: E402
+    word_matching_judge_from_selected_notes,
+)
+from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
+from .async_api_ops.find_proper_nouns import (  # noqa: E402
+    find_proper_nouns_from_selected_notes,
 )
 
 from .async_api_ops.make_all_meanings import (  # noqa: E402
@@ -61,12 +80,16 @@ from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
 from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
     tag_notes_matched_status_from_selected,
 )
+from .sync_local_ops.build_name_lexicon import (  # noqa: E402
+    build_name_lexicon_from_selected,
+)
 from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
     deduplicate_existing_meaning_notes_selected_notes,
 )
 from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
-    make_kanjify_sentence_fine_tuning_data,
-    make_extract_words_fine_tuning_data,
+    make_kanjify_sentence_data,
+    make_extract_words_migration_data,
+    make_all_test_data,
 )
 
 
@@ -85,54 +108,10 @@ def setup_addon_logging():
 setup_addon_logging()
 
 
-def create_call_log_handler(function_name: str) -> logging.Handler:
-    """Create a new file handler for a specific function call"""
-    config = mw.addonManager.getConfig(__name__) or {}
-
-    # Get log level from config
-    log_level_str = config.get("log_level", "ERROR")
-    log_level = getattr(logging, log_level_str.upper(), logging.ERROR)
-
-    # Update the root addon logger's level to match config
-    addon_logger = logging.getLogger(__name__.split(".")[0])
-    addon_logger.setLevel(log_level)
-
-    # Check if console logging is enabled
-    log_to_console = config.get("log_to_console", False)
-
-    if log_to_console:
-        # Create console handler
-        handler: logging.Handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(log_level)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        return handler
-
-    # Create logs directory
-    addon_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(addon_dir, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
-    # Create unique log file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"{function_name}_{timestamp}.log")
-
-    # Create handler
-    handler = logging.FileHandler(log_file, encoding="utf-8")
-    handler.setLevel(log_level)
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-
-    return handler
-
-
 # Function to be executed when the browser menus are initialized
 def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
-    handler = create_call_log_handler("add_note")
     logger = logging.getLogger(__name__)
-
-    if handler:
-        logger.addHandler(handler)
+    start_call_log("add_note")
 
     # Create a new action for the context menu
     meaning_action = QAction("Clean dictionary meaning", mw)
@@ -140,8 +119,13 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     kanji_story_action = QAction("Generate kanji story", mw)
     component_words_action = QAction("Kanjify sentence", mw)
     extract_words_action = QAction("Extract words", mw)
-    extract_words_test_compare_action = QAction("Test extract words prompt", mw)
+    extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
+    regenerate_words_action = QAction("Regenerate words over the current array", mw)
     migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
+    find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
+    judge_words_action = QAction("Judge words matchability", mw)
+    rejudge_matched_words_action = QAction("Re-judge matched words", mw)
+    rejudge_all_words_action = QAction("Re-judge matched/judged words", mw)
     match_words_action = QAction("Match extracted words to notes", mw)
     rematch_single_word_action = QAction("Rematch all single word to notes", mw)
     rematch_processed_single_word_action = QAction("Rematch processed single words to notes", mw)
@@ -152,9 +136,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         "Find missing matched note ids for selected notes", mw
     )
     tag_notes_matched_status_action = QAction("Tag notes matched status", mw)
+    build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
-    export_kanjify_ft_action = QAction("Export kanjify fine-tuning data", mw)
-    export_extract_words_ft_action = QAction("Export extract-words fine-tuning data", mw)
+    export_kanjify_ft_action = QAction("Export kanjify test data", mw)
+    export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
     merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
     new_note_all_ops_action = QAction("Run all ops for new notes", mw)
@@ -182,12 +167,38 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: extract_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
-        extract_words_test_compare_action.triggered,
-        lambda: extract_words_test_compare_from_selected_notes(selected_nids, parent=browser),
+        extract_words_and_judge_action.triggered,
+        lambda: extract_words_and_judge_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        regenerate_words_action.triggered,
+        lambda: regenerate_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         migrate_compound_verbs_action.triggered,
         lambda: migrate_compound_verbs_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        find_proper_nouns_action.triggered,
+        lambda: find_proper_nouns_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        judge_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=JUDGE_NEW
+        ),
+    )
+    qconnect(
+        rejudge_matched_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=REJUDGE_MATCHED
+        ),
+    )
+    qconnect(
+        rejudge_all_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=REJUDGE_ALL
+        ),
     )
     qconnect(
         match_words_action.triggered,
@@ -232,16 +243,20 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: tag_notes_matched_status_from_selected(selected_nids, parent=browser),
     )
     qconnect(
+        build_name_lexicon_action.triggered,
+        lambda: build_name_lexicon_from_selected(selected_nids, parent=browser),
+    )
+    qconnect(
         deduplicate_existing_meaning_notes_action.triggered,
         lambda: deduplicate_existing_meaning_notes_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         export_kanjify_ft_action.triggered,
-        lambda: make_kanjify_sentence_fine_tuning_data(selected_nids, parent=browser),
+        lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
     )
     qconnect(
-        export_extract_words_ft_action.triggered,
-        lambda: make_extract_words_fine_tuning_data(selected_nids, parent=browser),
+        export_migration_data_action.triggered,
+        lambda: make_extract_words_migration_data(selected_nids, parent=browser),
     )
 
     ai_menu = menu.addMenu("AI helper")
@@ -256,8 +271,13 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(kanji_story_action)
     ai_menu.addAction(component_words_action)
     ai_menu.addAction(extract_words_action)
-    ai_menu.addAction(extract_words_test_compare_action)
+    ai_menu.addAction(extract_words_and_judge_action)
+    ai_menu.addAction(regenerate_words_action)
     ai_menu.addAction(migrate_compound_verbs_action)
+    ai_menu.addAction(find_proper_nouns_action)
+    ai_menu.addAction(judge_words_action)
+    ai_menu.addAction(rejudge_matched_words_action)
+    ai_menu.addAction(rejudge_all_words_action)
     ai_menu.addAction(match_words_action)
     ai_menu.addAction(rematch_single_word_action)
     ai_menu.addAction(rematch_processed_single_word_action)
@@ -269,17 +289,18 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     # Sync ops
     ai_menu.addAction(find_missing_matched_note_ids_action)
     ai_menu.addAction(tag_notes_matched_status_action)
+    ai_menu.addAction(build_name_lexicon_action)
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
-    ai_menu.addAction(export_extract_words_ft_action)
+    ai_menu.addAction(export_migration_data_action)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
-    handler = create_call_log_handler("add_note")
     logger = logging.getLogger(__name__)
-
-    if handler:
-        logger.addHandler(handler)
+    # A hook the user drives one field at a time, so the call really is the unit of work and a
+    # log file per call is the right granularity - unlike note_will_be_added, which a bulk run
+    # fires a thousand times in a row.
+    start_call_log("add_note")
 
     note_type = note.note_type()
     if not note_type:
@@ -305,11 +326,23 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
 
 
 def run_op_on_add_note(note: Note):
-    handler = create_call_log_handler("add_note")
-    logger = logging.getLogger(__name__)
+    # The tag check comes before everything else, and that ordering is the whole cost of this
+    # hook on a bulk run. `match_words_to_notes` sets this tag on every note it creates, so
+    # these are exactly the notes the hook has nothing to do for - and it used to decide that
+    # last, after building a log file, closing the previous one, reading the note type and
+    # reading the config twice. Measured over one run: 1,512 notes x ~1.0s = 25.8 minutes,
+    # 98.9% of the note-adding phase, to conclude there was nothing to do. Nothing above this
+    # line may need the note type or the config.
+    if note.has_tag("new_matched_jp_word"):
+        # Happening within match_words_to_notes, which causes some problems
+        return
 
-    if handler:
-        logger.addHandler(handler)
+    logger = logging.getLogger(__name__)
+    if not in_bulk_op():
+        # A note added by hand, which is the case a log file per call was made for. Inside a
+        # bulk op the run owns the handler and the phase it belongs to has already installed
+        # one; replacing it per note is what produced 1,453 log files for a single run.
+        start_call_log("add_note")
 
     note_type = note.note_type()
     if not note_type:
@@ -321,15 +354,12 @@ def run_op_on_add_note(note: Note):
         return
 
     if note_type_name == "Japanese vocab note":
-        if note.has_tag("new_matched_jp_word"):
-            # If the note has the tag, don't run the ops as this is happening within the
-            # match_words_to_notes and causes some problems
-            logger.info("Skipping ops for note with 'new_matched_jp_word' tag")
-            return
         notes_to_update_dict: dict[NoteId, Note] = {}
         try:
             clean_meaning_in_note(config, note, {}, notes_to_update_dict)
-            extract_words_in_note(config, note, {}, notes_to_update_dict)
+            # The lexicon is read here rather than cached: the user rebuilds it from the
+            # collection now and then, and one added note is one small json read.
+            extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True
@@ -353,3 +383,17 @@ gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_men
 
 # Register to field unfocus hook
 gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
+
+
+def add_tools_menu_actions():
+    action = QAction("AI ops: generate test data", mw)
+    qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
+    mw.form.menuTools.addAction(action)
+
+
+gui_hooks.main_window_did_init.append(add_tools_menu_actions)
+
+# Offer to rebuild the vendored packages when they do not fit this machine, and put the same
+# rebuild in the Tools menu for anyone who wants rapidfuzz's compiled half - which the shipped
+# lib/ leaves out, because five platforms of it is ~30 MB.
+install_rebuild_ui(ADDON_DIR, ADDON_NAME, VENDOR_HEALTH)

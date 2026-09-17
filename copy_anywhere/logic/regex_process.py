@@ -1,11 +1,9 @@
+import logging
 import re
 import sys
 from typing import Optional
 
-try:
-    from ..shared.utils.logger import Logger
-except ImportError:
-    from shared.utils.logger import Logger
+logger = logging.getLogger(__name__)
 
 
 def regex_process(
@@ -13,7 +11,6 @@ def regex_process(
     regex: Optional[str],
     replacement: Optional[str],
     flags: Optional[str],
-    logger: Logger = Logger("error"),
 ) -> str:
     """
     Basic regex processing step that replaces the text that matches the regex with the replacement.
@@ -39,15 +36,20 @@ def regex_process(
             piped_flags |= f
 
     logger.debug(
-        f"Running regex:\n---\nregex:\n{regex}\n---\nreplacement: {replacement}\n---\ntext:\n"
-        f" {text}"
+        "Running regex:\n---\nregex:\n%s\n---\nreplacement: %s\n---\ntext:\n %s",
+        regex,
+        replacement,
+        text,
     )
     try:
         compiled_regex = re.compile(regex, piped_flags)
     except re.error as e:
         logger.error(
-            f"Error in basic_regex_process: {e}\n---\ntext:"
-            f" {text}\n---\nregex:\n{regex}\n---\nreplacement: {replacement}"
+            "Error in basic_regex_process: %s\n---\ntext: %s\n---\nregex:\n%s\n---\nreplacement: %s",
+            e,
+            text,
+            regex,
+            replacement,
         )
         return text
 
@@ -55,8 +57,11 @@ def regex_process(
         return compiled_regex.sub(replacement, text)
     except re.error as e:
         logger.error(
-            f"Error in basic_regex_process: {e}\n---\ntext:"
-            f" {text}\n---\nregex:\n{regex}\n---\nreplacement: {replacement}"
+            "Error in basic_regex_process: %s\n---\ntext: %s\n---\nregex:\n%s\n---\nreplacement: %s",
+            e,
+            text,
+            regex,
+            replacement,
         )
         return text
 
@@ -74,7 +79,14 @@ def test(
         assert result == expected
     except AssertionError:
         # Re-run with logging enabled to see what went wrong
-        regex_process(text, regex, replacement, flags, logger=Logger("debug"))
+        handler = logging.StreamHandler()
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        try:
+            regex_process(text, regex, replacement, flags)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(logging.NOTSET)
         print(f"""\033[91m{test_name}
 \033[93mExpected: {expected}
 \033[92mGot:      {result}

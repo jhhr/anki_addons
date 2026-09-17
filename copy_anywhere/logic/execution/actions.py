@@ -12,6 +12,7 @@ removes and a characterization test then fails on.
 from __future__ import annotations
 
 import random
+import logging
 from typing import Any, Optional
 
 from anki.cards import Card
@@ -35,6 +36,8 @@ from ..definition_schema import expression_is_code
 from ..execute_code_wrappers import execute_code_for_files
 from .context import SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
+
+logger = logging.getLogger(__name__)
 
 
 def describe_card(card: Card) -> str:
@@ -247,11 +250,9 @@ def _apply_if_empty(stage: dict, frame, message: str) -> list:
 
 def _empty_result(stage: dict, frame, query: str, kind: str) -> list:
     if stage.get("error_if_empty"):
-        frame.session.logger.error(
-            f"Error in copy fields: Did not find any {kind} with query='{query}'"
-        )
+        logger.error("Error in copy fields: Did not find any %s with query='%s'", kind, query)
     else:
-        frame.session.logger.debug(f'No {kind} found with query="{query}"')
+        logger.debug('No %s found with query="%s"', kind, query)
     return _apply_if_empty(stage, frame, f"Query '{query}' matched no {kind}")
 
 
@@ -265,13 +266,13 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
         # complaint is the log line, so `error_if_empty` -- which is about a query that ran
         # -- is not repeated here; what `if_empty` decides is whether the rest of the block
         # still runs over nothing.
-        session.logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
+        logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
         return _apply_if_empty(stage, frame, f"Query for {kind} could not be interpolated")
 
     selection = stage.get("selection") or {}
     selection_error = selection.get("selection_error")
     if selection_error:
-        session.logger.error(selection_error)
+        logger.error(selection_error)
         return _apply_if_empty(stage, frame, selection_error)
 
     session.check_cancel()
@@ -382,7 +383,7 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     if card_actions:
         try:
             apply_card_actions_by_template(
-                card_actions, target, cards, session.logger, session.progress_updater
+                card_actions, target, cards, session.progress_updater
             )
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
@@ -403,7 +404,7 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
             continue
         try:
             # No card type selector here: the action applies to exactly this card (§5.12).
-            edited = apply_card_action_to_card(card_action, card, note, logger=session.logger)
+            edited = apply_card_action_to_card(card_action, card, note)
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
         if edited:
@@ -502,9 +503,8 @@ def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, fram
             multiple_note_types=ctx.multiple_note_types,
         )
         if invalid:
-            ctx.logger.error(
-                "Error in copy fields: Invalid fields in copy_as_code:"
-                f" {', '.join(invalid)}"
+            logger.error(
+                "Error in copy fields: Invalid fields in copy_as_code: %s", ", ".join(invalid)
             )
     else:
         interpolated = resolve_references(source, ctx)
@@ -567,10 +567,10 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
             )
         note_ids = mw.col.find_notes(f"{interpolated} nid:{target.id}")
         if not note_ids:
-            session.logger.debug(
-                "copy_for_single_trigger_note: "
-                f"Condition query '{interpolated}' did not match for note "
-                f"id {target.id}"
+            logger.debug(
+                "copy_for_single_trigger_note: Condition query '%s' did not match for note id %s",
+                interpolated,
+                target.id,
             )
             return False
         return True

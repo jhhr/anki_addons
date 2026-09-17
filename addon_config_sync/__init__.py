@@ -13,7 +13,7 @@ from .sync_actions import (
 from .utils import get_main_config
 
 
-def build_action(fun: Callable[[], None], text: str, shortcut: Optional[str] = None) -> QAction:
+def build_action(fun: Callable[[], object], text: str, shortcut: Optional[str] = None) -> QAction:
     """fun -- without argument
     text -- the text in the menu
     """
@@ -32,12 +32,12 @@ manageAction = build_action(
 mw.form.menuTools.addAction(manageAction)
 
 
-sync_saved_addons = []
-sync_disabled_addons = []
-sync_skipped_addons = []
+sync_saved_addons: list[str] = []
+sync_disabled_addons: list[str] = []
+sync_skipped_addons: list[str] = []
 
-sync_loaded_addons = []
-sync_missing_addons = []
+sync_loaded_addons: list[str] = []
+sync_missing_addons: list[str] = []
 
 
 def sync_on_save() -> None:

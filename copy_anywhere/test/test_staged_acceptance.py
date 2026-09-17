@@ -161,7 +161,6 @@ class TestAcceptanceScenario:
             trigger,
             copied_into_notes=copied,
             copied_into_cards_dict=cards,
-            logger=logger,
             definitions_for_calls=[parent, child],
         )
         assert ok is True, logger.errors
@@ -212,7 +211,6 @@ class TestAcceptanceScenario:
             parent,
             trigger,
             copied_into_notes=copied,
-            logger=logger,
             definitions_for_calls=[parent, child],
         )
         assert ok is False

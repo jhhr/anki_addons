@@ -21,8 +21,9 @@ further down. All three run in one process, in one command.
 
 ## Installing what the tests need
 
-Into the interpreter the tests run on — the system Python that `.vscode/settings.json`,
-`mypy.ini` and `pyrightconfig.json` point at, not the repo's `.venv`:
+Into the interpreter the tests run on — the system Python that `.vscode/settings.json`
+and `pyrightconfig.json` point at, and the one to run `python -m mypy` with; not the
+repo's `.venv`:
 
 ```bash
 python -m pip install -r requirements-dev.txt

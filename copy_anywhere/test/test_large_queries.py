@@ -72,7 +72,7 @@ class Counter:
 def run(definition, trigger, logger):
     copied: list = []
     succeeded = copy_for_single_trigger_note(
-        definition, trigger, copied_into_notes=copied, logger=logger
+        definition, trigger, copied_into_notes=copied
     )
     assert succeeded is True, logger.errors
     return copied

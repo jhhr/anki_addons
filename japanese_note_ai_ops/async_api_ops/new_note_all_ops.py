@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Sequence
+from typing import Callable
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -8,15 +9,18 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 
 from ..configuration import GeneratedMeaningsDictType
-from .base_ops import AsyncTaskProgressUpdater, bulk_notes_op, selected_notes_op
+from ..generator_resources import with_generator_resources
+from ..word_array.match_flags import JUDGE_NEW
+from .base_ops import AsyncTaskProgressUpdater, OpPhase, bulk_notes_op, selected_notes_op
 from .clean_meaning import clean_meaning_in_note
-from .extract_words import extract_words_in_note
+from .extract_words import extract_words_op
 from .kanjify_sentence import kanjify_sentence_in_note
 from .make_all_meanings import (
     load_meanings_dict_from_file,
     make_meanings_in_note,
     write_meanings_dict_to_file,
 )
+from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,7 @@ def new_note_all_ops_in_note(
     notes_to_update_dict: dict[NoteId, Note],
     processed_words_set: set[str],
     all_generated_meanings_dict: GeneratedMeaningsDictType,
+    extract_words: Callable[..., bool],
 ) -> bool:
     changed = False
 
@@ -56,7 +61,7 @@ def new_note_all_ops_in_note(
         notes_to_update_dict,
     )
 
-    changed |= extract_words_in_note(
+    changed |= extract_words(
         config,
         note,
         notes_to_add_dict,
@@ -66,7 +71,7 @@ def new_note_all_ops_in_note(
     return changed
 
 
-def bulk_new_note_all_ops(
+async def bulk_new_note_all_ops(
     col: Collection,
     notes: Sequence[Note],
     edited_nids: list[NoteId],
@@ -80,20 +85,9 @@ def bulk_new_note_all_ops(
         return
 
     message = "Running new note all ops"
-    rate_limits = config.get("rate_limits", {})
-    op_model_keys = [
-        "make_meanings_model",
-        "word_meaning_model",
-        "kanjify_sentence_model",
-        "extract_words_model",
-    ]
-    op_rate_limits = [
-        rate_limits.get(config.get(k, ""), None) for k in op_model_keys if config.get(k)
-    ]
-    valid_rate_limits = [rl for rl in op_rate_limits if rl is not None and rl > 0]
-    rate_limit = min(valid_rate_limits) if valid_rate_limits else None
     processed_words_set: set[str] = set()
     all_generated_meanings_dict = load_meanings_dict_from_file()
+    extract_words = extract_words_op()
 
     def op(
         config: dict,
@@ -109,13 +103,14 @@ def bulk_new_note_all_ops(
             notes_to_update_dict,
             processed_words_set,
             all_generated_meanings_dict,
+            extract_words,
         )
 
     def on_end():
         nonlocal all_generated_meanings_dict
         write_meanings_dict_to_file(all_generated_meanings_dict)
 
-    return bulk_notes_op(
+    return await bulk_notes_op(
         message,
         config,
         op,
@@ -125,13 +120,27 @@ def bulk_new_note_all_ops(
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
-        rate_limit=rate_limit,
         on_end=on_end,
     )
 
 
 def new_note_all_ops_selected_notes(nids: Sequence[NoteId], parent: Browser):
-    progress_updater = AsyncTaskProgressUpdater(title="Async AI op: New note all ops")
-    done_text = "Ran new note all ops"
-    bulk_op = bulk_new_note_all_ops
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    """Every op a new note needs, then the judge over the words the word array just got. The
+    judge is a phase of its own because its requests cannot be planned before the words exist.
+    Needs the generator's resources, asked about before any note is touched."""
+
+    def run():
+        progress_updater = AsyncTaskProgressUpdater(title="Async AI op: New note all ops")
+        done_text = "Ran new note all ops"
+        selected_notes_op(
+            done_text,
+            [
+                OpPhase("New note ops", bulk_new_note_all_ops),
+                OpPhase("Judging words matchability", make_judge_bulk_op(JUDGE_NEW)),
+            ],
+            nids,
+            parent,
+            progress_updater,
+        )
+
+    with_generator_resources(parent, run)

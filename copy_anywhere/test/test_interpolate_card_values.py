@@ -9,6 +9,7 @@ that is invisible to a stub.
 import pytest
 
 from anki_shared.testing import real_anki
+from anki_shared.interpolate.execute_code import ReadOnlyCard
 from anki_shared.interpolate.interpolate_fields import interpolate_from_text
 from conftest import CLOZE, KANJI, ODD_TEMPLATE, SENTENCE, VOCAB
 
@@ -86,6 +87,28 @@ class TestCardValues:
 
     def test_custom_data_of_a_card_that_has_none(self, note):
         assert interpolate_from_text("{{Recognition__Card_Custom_Data}}", note) == ("{}", [])
+
+
+class TestReadOnlyCardReviewTimes:
+    """The same four values through the `card` proxy code execution sees.
+
+    `ReadOnlyCard` fetches them once and caches the tuple, so an unreviewed card must read
+    as dashes both times rather than going back to `revlog` on every attribute.
+    """
+
+    def test_review_times_of_an_unreviewed_card_are_dashes(self, note, recognition_card):
+        card = ReadOnlyCard(recognition_card, note.note_type())
+        assert card.first_review_time == "-"
+        assert card.latest_review_time == "-"
+        assert card.average_review_time == "-"
+        assert card.total_review_time == "-"
+
+    def test_the_time_values_are_fetched_once(self, note, recognition_card):
+        # The cached tuple is what `revlog` answers, which for a card with no reviews is a
+        # count of 0 beside three NULLs -- not four Nones.
+        card = ReadOnlyCard(recognition_card, note.note_type())
+        assert card.first_review_time == "-"
+        assert object.__getattribute__(card, "_card_time_values") == (None, None, 0, None)
 
 
 class TestCustomDataProp:

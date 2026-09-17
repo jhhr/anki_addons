@@ -19,6 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from anki.cards import CardId
+from anki.decks import DeckId
 from anki.errors import NotFoundError
 from anki.utils import ids2str
 from aqt import mw
@@ -68,7 +70,7 @@ REVIEW_ORDER_NAMES = {
 class SessionOrder:
     """The cards a deck will show today, in the order it will show them."""
 
-    card_ids: list[int]
+    card_ids: list[CardId]
     ordering: str
     # True when the daily limit cut the pool down, i.e. the deck holds more due
     # cards than this session will reach.
@@ -142,7 +144,7 @@ def _review_order_clause(review_order: int, fsrs: bool) -> str:
     return f"{head}, fnvhash(id, mod)" if head else "fnvhash(id, mod)"
 
 
-def _filtered_session_order(deck_id: int) -> SessionOrder:
+def _filtered_session_order(deck_id: DeckId) -> SessionOrder:
     """A filtered deck's session, which it already wrote down for us.
 
     Filling a filtered deck rewrites each card's ``due`` with its row number in
@@ -152,6 +154,7 @@ def _filtered_session_order(deck_id: int) -> SessionOrder:
     now that row number. So the position column is the session order, whichever
     "cards selected by" setting built the deck, and there is nothing to model.
     """
+    assert mw.col.db is not None
     card_ids = mw.col.db.list(
         f"SELECT id FROM cards WHERE did = ? AND queue IN {ids2str(SESSION_QUEUES)}"
         " ORDER BY due, id",
@@ -164,13 +167,13 @@ def _filtered_session_order(deck_id: int) -> SessionOrder:
     )
 
 
-def _is_filtered(deck_id: int) -> bool:
+def _is_filtered(deck_id: DeckId) -> bool:
     deck = mw.col.decks.get(deck_id, default=False)
     return bool(deck and deck.get("dyn"))
 
 
 # Deck id -> (review count, learning count) for today.
-DeckLimits = dict[int, tuple[int, int]]
+DeckLimits = dict[DeckId, tuple[int, int]]
 
 
 def _node_counts(node: Any) -> tuple[int, int]:
@@ -188,7 +191,7 @@ def deck_limit_map() -> DeckLimits:
     counts: DeckLimits = {}
 
     def walk(node: Any) -> None:
-        counts[int(node.deck_id)] = _node_counts(node)
+        counts[DeckId(int(node.deck_id))] = _node_counts(node)
         for child in node.children:
             walk(child)
 
@@ -201,7 +204,7 @@ def deck_limit_map() -> DeckLimits:
     return counts
 
 
-def _normal_session_order(deck_id: int, limits: Optional[DeckLimits] = None) -> SessionOrder:
+def _normal_session_order(deck_id: DeckId, limits: Optional[DeckLimits] = None) -> SessionOrder:
     # Filtered children are dropped: a card in one has its queue position in
     # ``due`` and its real due date in ``odue``, so leaving it here would sort a
     # row number against its neighbours' due days. Each filtered deck
@@ -225,7 +228,8 @@ def _normal_session_order(deck_id: int, limits: Optional[DeckLimits] = None) -> 
     )
     learning_first = f"CASE WHEN queue == {QUEUE_TYPE_LRN} THEN 0 ELSE 1 END"
 
-    def query(clause: str) -> list[int]:
+    def query(clause: str) -> list[CardId]:
+        assert mw.col.db is not None
         return mw.col.db.list(
             f"SELECT id FROM cards WHERE {where} ORDER BY {learning_first}, {clause}",
             mw.col.sched.today,
@@ -263,7 +267,7 @@ def _normal_session_order(deck_id: int, limits: Optional[DeckLimits] = None) -> 
     )
 
 
-def _block_name_for(deck_id: int) -> str:
+def _block_name_for(deck_id: DeckId) -> str:
     """The block a deck's cards belong to: itself if filtered, else its root.
 
     A normal subdeck is dealt as part of its top-level tree -- that is the unit
@@ -277,7 +281,7 @@ def _block_name_for(deck_id: int) -> str:
     return name if deck.get("dyn") else name.split("::")[0]
 
 
-def collection_session_order(anchor_deck_id: int) -> SessionOrder:
+def collection_session_order(anchor_deck_id: DeckId) -> SessionOrder:
     """Every deck's session today, concatenated into one order.
 
     Not "the collection's due cards": each deck still contributes its own pool,
@@ -289,19 +293,21 @@ def collection_session_order(anchor_deck_id: int) -> SessionOrder:
     """
     anchor_name = _block_name_for(anchor_deck_id)
     limits = deck_limit_map()
-    blocks: list[tuple[str, list[int]]] = []
+    blocks: list[tuple[str, list[CardId]]] = []
     described: list[tuple[str, str, int]] = []
     pool_size = 0
     limited = False
 
     for entry in mw.col.decks.all_names_and_ids(skip_empty_default=True, include_filtered=True):
-        if _is_filtered(entry.id):
-            order = _filtered_session_order(entry.id)
+        # The listing is a protobuf message, so its id arrives as a plain int.
+        entry_id = DeckId(entry.id)
+        if _is_filtered(entry_id):
+            order = _filtered_session_order(entry_id)
         elif "::" in entry.name:
             # A normal subdeck is already inside its root's block.
             continue
         else:
-            order = _normal_session_order(entry.id, limits)
+            order = _normal_session_order(entry_id, limits)
         if not order.card_ids:
             continue
         blocks.append((entry.name, order.card_ids))
@@ -321,7 +327,7 @@ def collection_session_order(anchor_deck_id: int) -> SessionOrder:
     )
 
 
-def session_order_for_deck(deck_id: int, across_decks: bool = True) -> SessionOrder:
+def session_order_for_deck(deck_id: DeckId, across_decks: bool = True) -> SessionOrder:
     if across_decks:
         return collection_session_order(deck_id)
     deck = mw.col.decks.get(deck_id, default=False)
@@ -333,10 +339,10 @@ def session_order_for_deck(deck_id: int, across_decks: bool = True) -> SessionOr
 
 
 def session_relations(
-    session_ids: list[int],
+    session_ids: list[CardId],
     config: Config,
     report: Optional[ProgressReporter] = None,
-) -> tuple[dict[int, set[int]], int, bool, dict[str, tuple[str, int]]]:
+) -> tuple[dict[CardId, set[CardId]], int, bool, dict[str, tuple[str, int]]]:
     """Which cards of a session the rules relate to which others.
 
     Relations are symmetrised: a rule query is written from one card's point of
@@ -353,7 +359,7 @@ def session_relations(
     a rule that raises does so on every card it is asked about.
     """
     session = set(session_ids)
-    neighbours: dict[int, set[int]] = {}
+    neighbours: dict[CardId, set[CardId]] = {}
     rule_errors: dict[str, tuple[str, int]] = {}
     rule_runs = 0
     total = len(session_ids)
@@ -398,7 +404,7 @@ def session_relations(
 
 
 def run_deck_bury_disperse(
-    deck_id: int,
+    deck_id: DeckId,
     config: Config,
     report: Optional[ProgressReporter] = None,
     across_decks: bool = True,
@@ -446,7 +452,7 @@ def run_deck_bury_disperse(
 
 
 def run_deck_bury_disperse_in_background(
-    deck_id: int,
+    deck_id: DeckId,
     config: Config,
     on_done: Callable[[BuryRunResult], None],
     parent: Optional[Any] = None,

@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,8 +20,14 @@ from ..configuration import (
     MakeMeaningsResult,
     WordAndSentences,
 )
-from ..sync_local_ops.mdx_dictionary import mdx_helper
+from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
+from .api_client import run_cancelled
+from .collection_access import (
+    find_notes as col_find_notes,
+    get_notes as col_get_notes,
+)
+from .diagnostics import StageTimer, log_stage
 from .base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -154,16 +161,28 @@ def make_all_meanings_for_word(
             async operations and to avoid doing file reading in every op.
     :return: True when meanings were successfully made, False otherwise.
     """
+    timer = StageTimer(f"make_all_meanings {word}")
     mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
+    timer.step("mdx_load")
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # A dictionary that could not answer is not a word that is not in it. ERROR rather
+        # than NO_DICTIONARY_ENTRY because the caller tags the note and its whole meaning
+        # group on NO_DICTIONARY_ENTRY, and that tag is terminal - see MDXLookupError.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        timer.report(logger, "dictionary lookup failed")
+        return MakeMeaningsResult.ERROR
+    timer.step("dictionary_lookup")
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
+        timer.report(logger, "no dictionary entry")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
 
     prompt = f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. Your task is to compress this information into a comprehensive list of distinct meanings expressed in these. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
@@ -202,13 +221,17 @@ Dictionary entry:
     }
 
     model = config.get("make_meanings_model", "")
+    timer.step("prompt_built")
     result = get_response(model, prompt, response_schema=response_schema)
+    timer.step("get_response")
     all_meanings = validate_meanings_result_object(result, "making all meanings")
     if all_meanings is None:
+        timer.report(logger, "failed", cancelled=run_cancelled())
         return MakeMeaningsResult.ERROR
 
     all_meanings_dict[f"{word}_{reading}"] = all_meanings
 
+    timer.report(logger, "succeeded")
     return MakeMeaningsResult.SUCCESS
 
 
@@ -236,7 +259,7 @@ Rules:
 - Do not invent meanings that are not already supported by the existing list.
 - Keep the final list aligned as useful learning categories, not a fine-grained dictionary of every nuance.
 
-Return only a JSON array of meaning objects. The response must begin with `[` and end with `]`. Do not wrap the array in an object. Each object must contain `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys.
+Return a JSON object with one `meanings` field containing an array of objects. Each object must contain `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys.
 
 WORD OR PHRASE (READING):
 {word} ({reading})
@@ -247,13 +270,18 @@ EXISTING MEANINGS:
     logger.debug("Prompt for merging existing meanings: %s", prompt)
 
     model = config.get("make_meanings_model", "")
+    response_schema = {
+        "type": "object",
+        "properties": {"meanings": get_meanings_array_response_schema()},
+        "required": ["meanings"],
+        "additionalProperties": False,
+    }
     result = get_response(
         model,
         prompt,
-        response_schema=get_meanings_array_response_schema(),
-        json_result_corrector=correct_meanings_array_json_result,
+        response_schema=response_schema,
     )
-    merged_meanings = validate_meanings_list(result, "merged meanings response")
+    merged_meanings = validate_meanings_result_object(result, "merging meanings")
     if merged_meanings is None:
         return MakeMeaningsResult.ERROR
 
@@ -302,12 +330,17 @@ UNMATCHED USAGE {i + 1}:
     word_key = make_meaning_dict_key(word, reading)
     existing_meanings = all_meanings_dict.get(word_key, [])
 
-    dict_meaning_for_word = mdx_helper.get_definition_text(
-        word=word,
-        reading=reading,
-        # use all dictionaries to get the most comprehensive entry possible
-        pick_dictionary="all",
-    )
+    try:
+        dict_meaning_for_word = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            # use all dictionaries to get the most comprehensive entry possible
+            pick_dictionary="all",
+        )
+    except MDXLookupError as e:
+        # See make_all_meanings_for_word: an outage must not be reported as an absence.
+        logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
+        return MakeMeaningsResult.ERROR
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
@@ -418,8 +451,15 @@ def make_meanings_in_note(
             f' ("{word_normal_field}:{note[word_normal_field]}" OR'
             f' "{word_field}:{note[word_field]}")'
         )
-        other_meaning_note_ids = mw.col.find_notes(meaning_notes_query)
-        other_meaning_notes = [mw.col.get_note(onid) for onid in other_meaning_note_ids]
+        search_started = time.monotonic()
+        other_meaning_note_ids = col_find_notes(meaning_notes_query)
+        other_meaning_notes = col_get_notes(other_meaning_note_ids)
+        log_stage(
+            logger,
+            "other-meaning-notes search",
+            seconds=round(time.monotonic() - search_started, 2),
+            found=len(other_meaning_notes),
+        )
         logger.debug(
             f"Other meaning notes count: {len(other_meaning_notes)}, query: {meaning_notes_query}"
         )
@@ -520,8 +560,6 @@ def bulk_make_meanings_op(
     if not config:
         showWarning("Missing addon configuration")
         return
-    model = config.get("make_meanings_model", "")
-    rate_limit = config.get("rate_limits", {}).get(model, None)
     message = "Making meanings"
     processed_words_set: set[str] = set()
 
@@ -555,7 +593,6 @@ def bulk_make_meanings_op(
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
-        rate_limit=rate_limit,
         on_end=on_end,
     )
 
@@ -579,8 +616,6 @@ def bulk_merge_meanings_op(
     if not config:
         showWarning("Missing addon configuration")
         return
-    model = config.get("make_meanings_model", "")
-    rate_limit = config.get("rate_limits", {}).get(model, None)
     message = "Merging meanings"
     processed_words_set: set[str] = set()
 
@@ -611,7 +646,6 @@ def bulk_merge_meanings_op(
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
-        rate_limit=rate_limit,
         on_end=on_end,
     )
 

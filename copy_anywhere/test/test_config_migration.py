@@ -236,14 +236,16 @@ class TestWhenSomethingCannotBeMigrated:
         assert stored(stub_mw)["version"] == "0.2.0"
         assert stored(stub_mw)["copy_definitions"][0]["guid"]
 
-    def test_the_reason_is_reported_rather_than_swallowed(self, config, stub_mw, broken, capsys):
+    def test_the_reason_is_reported_rather_than_swallowed(self, config, stub_mw, broken, logger):
         config["copy_definitions"] = [broken]
 
         migrate_config()
 
-        printed = capsys.readouterr().out
-        assert "broken" in printed
-        assert "could not" in printed
+        # Logged through the addon's logger, where the `logger` fixture's handler is; at
+        # startup the migration opens an operation log of its own for it to land in.
+        reported = "\n".join(logger.errors)
+        assert "broken" in reported
+        assert "could not" in reported
 
 
 class TestAnEmptyConfig:

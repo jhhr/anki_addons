@@ -32,47 +32,45 @@ class TestGetFieldValuesFromNotes:
     def test_none_copy_from_text_logs_and_returns_empty(self, notes, logger):
         assert (
             get_field_values_from_notes(
-                copy_from_text=None, notes=notes, dest_note=None, logger=logger
+                copy_from_text=None, notes=notes, dest_note=None
             )
             == ""
         )
         assert logger.has_error("'copy_from_text' was missing")
 
-    def test_no_notes_returns_empty(self, logger):
+    def test_no_notes_returns_empty(self):
         # The wipe path: an empty result is what clears a target field when a definition is
         # allowed to run with no sources found.
         assert (
             get_field_values_from_notes(
-                copy_from_text="{{Word}}", notes=[], dest_note=None, logger=logger
+                copy_from_text="{{Word}}", notes=[], dest_note=None
             )
             == ""
         )
 
-    def test_values_are_joined_with_the_separator(self, notes, logger):
+    def test_values_are_joined_with_the_separator(self, notes):
         assert (
             get_field_values_from_notes(
                 copy_from_text="{{Word}}",
                 notes=notes,
                 dest_note=None,
                 select_card_separator=" | ",
-                logger=logger,
             )
             == "one | two | three"
         )
 
-    def test_a_none_separator_defaults_to_comma_space(self, notes, logger):
+    def test_a_none_separator_defaults_to_comma_space(self, notes):
         assert (
             get_field_values_from_notes(
                 copy_from_text="{{Word}}",
                 notes=notes,
                 dest_note=None,
                 select_card_separator=None,
-                logger=logger,
             )
             == "one, two, three"
         )
 
-    def test_an_empty_separator_stays_empty(self, notes, logger):
+    def test_an_empty_separator_stays_empty(self, notes):
         # Only None is defaulted. "" is a separator someone chose, and the difference is
         # invisible without a test.
         assert (
@@ -81,24 +79,22 @@ class TestGetFieldValuesFromNotes:
                 notes=notes,
                 dest_note=None,
                 select_card_separator="",
-                logger=logger,
             )
             == "onetwothree"
         )
 
-    def test_the_separator_never_leads(self, notes, logger):
+    def test_the_separator_never_leads(self, notes):
         assert (
             get_field_values_from_notes(
                 copy_from_text="{{Word}}",
                 notes=notes[:1],
                 dest_note=None,
                 select_card_separator=", ",
-                logger=logger,
             )
             == "one"
         )
 
-    def test_query_note_index_increments_across_several_notes(self, notes, logger):
+    def test_query_note_index_increments_across_several_notes(self, notes):
         variables = {}
         assert (
             get_field_values_from_notes(
@@ -107,13 +103,12 @@ class TestGetFieldValuesFromNotes:
                 dest_note=None,
                 variable_values_dict=variables,
                 select_card_separator="-",
-                logger=logger,
             )
             == "1-2-3"
         )
         assert variables[QUERY_NOTE_INDEX] == 3
 
-    def test_query_note_index_is_left_alone_for_a_single_note(self, notes, logger):
+    def test_query_note_index_is_left_alone_for_a_single_note(self, notes):
         # The guard is `len(notes) > 1`, so with exactly one source note the index keeps
         # whatever the outer destination loop put there. That is what makes
         # Source-to-destinations able to number its destinations.
@@ -124,13 +119,12 @@ class TestGetFieldValuesFromNotes:
                 notes=notes[:1],
                 dest_note=None,
                 variable_values_dict=variables,
-                logger=logger,
             )
             == "7"
         )
         assert variables[QUERY_NOTE_INDEX] == 7
 
-    def test_code_returning_nothing_drops_the_value_and_its_separator(self, notes, logger):
+    def test_code_returning_nothing_drops_the_value_and_its_separator(self, notes):
         # execute_code_for_field returns None when the code has no return, and the append is
         # guarded on `interpolated_value is not None`, so the separator that would have gone
         # in front of it is dropped too -- the gap between the surviving values doubles.
@@ -142,12 +136,11 @@ class TestGetFieldValuesFromNotes:
                 dest_note=None,
                 use_code=True,
                 select_card_separator="-",
-                logger=logger,
             )
             == "one-three"
         )
 
-    def test_a_code_error_aborts_the_whole_definition(self, notes, logger):
+    def test_a_code_error_aborts_the_whole_definition(self, notes):
         # Not just this field: CopyFailedException unwinds to copy_for_single_trigger_note,
         # which returns False and stops the bulk loop.
         with pytest.raises(CopyFailedException):
@@ -156,7 +149,6 @@ class TestGetFieldValuesFromNotes:
                 notes=notes,
                 dest_note=None,
                 use_code=True,
-                logger=logger,
             )
 
     def test_the_multi_note_type_value_error_breaks_and_returns_a_partial_string(
@@ -176,7 +168,6 @@ class TestGetFieldValuesFromNotes:
             dest_note=None,
             multiple_note_types=True,
             select_card_separator="-",
-            logger=logger,
         )
         assert result == "New"
         assert logger.has_error("Error in text interpolation")
@@ -186,10 +177,10 @@ class TestGetVariableValuesForNote:
     def _variable(self, name, text, **extra):
         return {"copy_into_variable": name, "copy_from_text": text, **extra}
 
-    def test_a_variable_is_interpolated_from_the_note(self, col, logger):
+    def test_a_variable_is_interpolated_from_the_note(self, col):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
         assert get_variable_values_for_note(
-            [self._variable("MyVar", "{{Word}}!")], note, logger=logger
+            [self._variable("MyVar", "{{Word}}!")], note
         ) == {"MyVar": "neko!"}
 
     def test_one_variable_cannot_reference_another(self, col, logger):
@@ -200,7 +191,6 @@ class TestGetVariableValuesForNote:
         values = get_variable_values_for_note(
             [self._variable("First", "{{Word}}"), self._variable("Second", "{{First}}")],
             note,
-            logger=logger,
         )
         assert values == {"First": "neko", "Second": ""}
         assert logger.has_error("Invalid fields in copy_from_text: first")
@@ -208,12 +198,12 @@ class TestGetVariableValuesForNote:
     def test_an_invalid_field_logs_but_keeps_the_partial_value(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
         values = get_variable_values_for_note(
-            [self._variable("MyVar", "{{Word}}-{{Missing}}")], note, logger=logger
+            [self._variable("MyVar", "{{Word}}-{{Missing}}")], note
         )
         assert values == {"MyVar": "neko-"}
         assert logger.has_error("Invalid fields in copy_from_text: missing")
 
-    def test_a_code_variable_runs(self, col, logger):
+    def test_a_code_variable_runs(self, col):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
         values = get_variable_values_for_note(
             [
@@ -222,20 +212,18 @@ class TestGetVariableValuesForNote:
                 )
             ],
             note,
-            logger=logger,
         )
         assert values == {"MyVar": "NEKO"}
 
-    def test_a_code_error_raises_copy_failed(self, col, logger):
+    def test_a_code_error_raises_copy_failed(self, col):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
         with pytest.raises(CopyFailedException, match="MyVar"):
             get_variable_values_for_note(
                 [self._variable("MyVar", "", copy_as_code="return 1 / 0", use_code=True)],
                 note,
-                logger=logger,
             )
 
-    def test_a_process_chain_runs_on_a_variable(self, col, logger):
+    def test_a_process_chain_runs_on_a_variable(self, col):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
         values = get_variable_values_for_note(
             [
@@ -248,11 +236,10 @@ class TestGetVariableValuesForNote:
                 )
             ],
             note,
-            logger=logger,
         )
         assert values == {"MyVar": "n3ko"}
 
-    def test_a_failing_process_chain_discards_every_variable(self, col, logger):
+    def test_a_failing_process_chain_discards_every_variable(self, col):
         # The early `return {}` throws away the variables that already resolved, not just the
         # one whose chain failed. It looks like an accident; pinned so that changing it is a
         # deliberate act with a visible diff.
@@ -275,6 +262,5 @@ class TestGetVariableValuesForNote:
                 self._variable("AlsoGood", "{{Meaning}}"),
             ],
             note,
-            logger=logger,
         )
         assert values == {}

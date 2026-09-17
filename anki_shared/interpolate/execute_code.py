@@ -15,7 +15,9 @@ against *accidental* misuse, not a cryptographic boundary.
 What IS restricted: ``__import__``, ``open``, ``exec``, ``eval``,
 ``compile``, ``breakpoint``, ``os``, ``sys``, network access.
 What IS allowed: the explicit allowlist below (``re``, ``json``, ``html``,
-``print``, ``find_cards``, ``find_notes``, ``note``) plus a curated set of built-ins.
+``print``, ``find_cards``, ``find_notes``, ``note``) plus a curated set of built-ins,
+and, where the add-on ships the packages, ``kana_highlight``, ``decode_word_array``
+and ``format_word_array``.
 
 Public API
 ----------
@@ -49,6 +51,7 @@ from anki.models import NotetypeDict
 from aqt import mw
 
 from .interpolate_fields import (
+    CardTimeValues,
     get_card_last_reps,
     get_card_type_as_string,
     get_formatted_card_created_time,
@@ -172,7 +175,9 @@ class ReadOnlyCard:
 
     __slots__ = ("_card", "_card_time_values", "_is_cloze")
 
-    def __init__(self, card: Card, note_type: NotetypeDict) -> None:
+    _card_time_values: Optional[CardTimeValues]
+
+    def __init__(self, card: Card, note_type: Optional[NotetypeDict]) -> None:
         object.__setattr__(self, "_card", card)
         object.__setattr__(self, "_card_time_values", None)
         object.__setattr__(
@@ -202,14 +207,15 @@ class ReadOnlyCard:
             "total_review_time",
         ):
             # init _card_time_values on first access to avoid unnecessary computation for cards that aren't reviewed
-            if self._card_time_values is None:
+            time_values = self._card_time_values
+            if time_values is None:
                 card_id = getattr(object.__getattribute__(self, "_card"), "id", None)
-                if card_id:
-                    object.__setattr__(self, "_card_time_values", get_card_time_values(card_id))
-                else:
-                    # Init to tuple so we don't keep trying to fetch time values again
-                    object.__setattr__(self, "_card_time_values", (None, None, None, None))
-            first_ms, latest_ms, review_count, total_ms = self._card_time_values
+                # Init to a tuple either way so we don't keep trying to fetch time values again
+                time_values = (
+                    get_card_time_values(card_id) if card_id else (None, None, None, None)
+                )
+                object.__setattr__(self, "_card_time_values", time_values)
+            first_ms, latest_ms, review_count, total_ms = time_values
             if name == "first_review_time":
                 return get_formatted_first_review_time(first_ms)
             elif name == "latest_review_time":
@@ -222,9 +228,8 @@ class ReadOnlyCard:
             template = getattr(object.__getattribute__(self, "_card"), "template", None)
             tmpl_name = template()["name"] if template else "-"
             if self._is_cloze:
-                return (
-                    f'{tmpl_name} {getattr(object.__getattribute__(self, "_card"), "ord", "?") + 1}'
-                )
+                card_ord = getattr(object.__getattribute__(self, "_card"), "ord", None)
+                return f"{tmpl_name} {card_ord + 1 if card_ord is not None else '?'}"
             return tmpl_name
         # id, nid, due, ivl, reps, lapses, factor, desired_retention returned as-is
         return getattr(object.__getattribute__(self, "_card"), name)
@@ -238,6 +243,69 @@ class ReadOnlyCard:
     def __repr__(self) -> str:
         card_id = getattr(object.__getattribute__(self, "_card"), "id", "?")
         return f"<ReadOnlyCard id={card_id}>"
+
+
+def _japanese_globals() -> dict:
+    """`kana_highlight` and the word array codecs, for the add-ons that ship them.
+
+    Imported here rather than at the top because `interpolate` is used by add-ons that do not
+    declare `jp_text_processing` or `word_array` in their build.json, and `build.py check`
+    does not look inside a shared package for its own imports. A missing package has to be a
+    name the code cannot use, not an ImportError when the add-on loads.
+    """
+    names: dict = {}
+
+    try:
+        from ..jp_text_processing.all_types.main_types import WithTagsDef
+        from ..jp_text_processing.kana.construct_wrapped_furi_word import FuriReconstruct
+        from ..jp_text_processing.kana.kana_highlight import kana_highlight as _kana_highlight
+    except ImportError:
+        pass
+    else:
+
+        def kana_highlight(
+            kanji_to_highlight: Optional[str],
+            text: str,
+            return_type: FuriReconstruct = "kana_only",
+            wrap_readings_in_tags: bool = True,
+            merge_consecutive_tags: bool = True,
+            onyomi_to_katakana: bool = False,
+        ) -> str:
+            """The reading processor the Kana Highlight step runs, callable directly.
+
+            The arguments after `return_type` are that step's own settings under their own
+            names, so code that has to match a field the step wrote can be written from
+            looking at the step. (The sentence fields in this collection are built with
+            `merge_consecutive_tags=False`.)
+            """
+            return _kana_highlight(
+                kanji_to_highlight,
+                text,
+                return_type,
+                WithTagsDef(
+                    wrap_readings_in_tags,
+                    merge_consecutive_tags,
+                    onyomi_to_katakana,
+                    False,  # include_suru_okuri, as the step also fixes it
+                ),
+            )
+
+        names["kana_highlight"] = kana_highlight
+
+    try:
+        from ..word_array.field_text import decode_word_array, format_word_array
+    except ImportError:
+        pass
+    else:
+        # json.loads reads the field too, until someone has edited the note by hand and the
+        # editor has turned the rows into `<br>` and `&nbsp;`. decode_word_array knows that.
+        names["decode_word_array"] = decode_word_array
+        names["format_word_array"] = format_word_array
+
+    return names
+
+
+_JAPANESE_GLOBALS = _japanese_globals()
 
 
 def execute_code_core(
@@ -287,6 +355,7 @@ def execute_code_core(
         "note": ReadOnlyNote(note),
         "cards": [ReadOnlyCard(c, note_type) for c in note_cards],
         "get_card_last_reps": get_card_last_reps,
+        **_JAPANESE_GLOBALS,
     }
     if extra_globals:
         exec_globals.update(extra_globals)

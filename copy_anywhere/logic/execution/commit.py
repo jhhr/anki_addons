@@ -12,6 +12,7 @@ The commit result says whether any were written so the caller can say so too.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from anki.cards import Card
@@ -19,6 +20,8 @@ from anki.notes import Note
 
 from ...utils.media_files import write_media_file
 from .context import ExecutionSession
+
+logger = logging.getLogger(__name__)
 
 
 class CommitResult:
@@ -71,7 +74,7 @@ class CollectionCommitter:
                 # The collection changes are already committed and file writes are outside
                 # undo, so a failure here is reported rather than unwinding anything.
                 result.file_error = f"Error in writing to file: {error}"
-                session.logger.error(result.file_error)
+                logger.error(result.file_error)
                 return
         session.file_overlay.clear()
 

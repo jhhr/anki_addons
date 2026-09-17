@@ -27,16 +27,16 @@ def note(col):
     )
 
 
-def run(definition, note, logger, **kwargs):
+def run(definition, note, **kwargs):
     copied: list = []
     ok = copy_for_single_trigger_note(
-        definition, note, copied_into_notes=copied, logger=logger, **kwargs
+        definition, note, copied_into_notes=copied, **kwargs
     )
     return ok, copied
 
 
 class TestVariables:
-    def test_a_later_variable_can_consume_an_earlier_one(self, note, logger):
+    def test_a_later_variable_can_consume_an_earlier_one(self, note):
         # The whole point of stages: format 1 evaluated every variable against the trigger
         # note alone, so this was impossible to write.
         definition = d.staged(stages=[
@@ -44,16 +44,16 @@ class TestVariables:
             d.variable("second", d.text("<{{first}}>")),
             d.edit_note("trigger", [d.write("Note", d.text("{{second}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == "<neko>"
 
-    def test_a_code_variable_receives_the_earlier_bindings(self, note, logger):
+    def test_a_code_variable_receives_the_earlier_bindings(self, note):
         definition = d.staged(stages=[
             d.variable("first", d.text("abc")),
             d.variable("second", d.code("return first.upper()")),
             d.edit_note("trigger", [d.write("Note", d.text("{{second}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == "ABC"
 
 
@@ -81,11 +81,11 @@ class TestQueries:
                 "second", [d.edit_note("note", [d.write("Note", d.text("second pass"))])]
             ),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
         assert ok is True, logger.errors
         assert [n["Word"] for n in copied] == ["a"]
 
-    def test_selection_first_takes_them_in_search_order(self, col, note, others, logger):
+    def test_selection_first_takes_them_in_search_order(self, col, note, others):
         definition = d.staged(stages=[
             d.note_query("found", '"Word:a" OR "Word:b"', strategy="first", count=1),
             d.list_variable("words"),
@@ -93,11 +93,11 @@ class TestQueries:
             d.join("words", "joined", "+"),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] in ("a", "b")
         assert "+" not in note["Note"]
 
-    def test_a_sort_field_orders_the_result(self, col, note, others, logger):
+    def test_a_sort_field_orders_the_result(self, col, note, others):
         definition = d.staged(stages=[
             d.note_query(
                 "found",
@@ -115,11 +115,11 @@ class TestQueries:
             d.join("words", "joined", "+"),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "b+a"
 
     def test_query_membership_ignores_edits_that_have_not_been_saved(
-        self, col, note, others, logger
+        self, col, note, others
     ):
         # The search reads the persisted collection, so a value a stage has only written in
         # memory cannot change which notes come back. Without that rule, whether a query
@@ -132,21 +132,21 @@ class TestQueries:
             d.join("ids", "joined", "+"),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Word"] == "a"
         assert note["Note"] == "A"
 
 
 class TestPendingEditsAreVisible:
-    def test_a_later_stage_reads_what_an_earlier_one_wrote(self, note, logger):
+    def test_a_later_stage_reads_what_an_earlier_one_wrote(self, note):
         definition = d.staged(stages=[
             d.edit_note("trigger", [d.write("Note", d.text("first"))]),
             d.edit_note("trigger", [d.write("Meaning", d.text("{{trigger.Note}} second"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Meaning"] == "first second"
 
-    def test_one_stage_still_reads_its_own_entry_snapshot_so_a_swap_works(self, note, logger):
+    def test_one_stage_still_reads_its_own_entry_snapshot_so_a_swap_works(self, note):
         definition = d.staged(stages=[
             d.edit_note(
                 "trigger",
@@ -156,10 +156,10 @@ class TestPendingEditsAreVisible:
                 ],
             )
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert (note["Word"], note["Meaning"]) == ("cat", "neko")
 
-    def test_the_trigger_can_be_edited_before_and_after_a_loop(self, col, note, logger):
+    def test_the_trigger_can_be_edited_before_and_after_a_loop(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
         definition = d.staged(stages=[
             d.edit_note("trigger", [d.write("Note", d.text("before"))]),
@@ -169,7 +169,7 @@ class TestPendingEditsAreVisible:
             d.join("seen", "joined"),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}/after"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "before/after"
 
     def test_the_trigger_and_the_queried_notes_can_be_edited_in_one_definition(
@@ -185,7 +185,7 @@ class TestPendingEditsAreVisible:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("edited too"))]),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
         assert ok is True, logger.errors
         assert note["Note"] == "edited too"
         assert other["Note"] == ""  # nothing is written to the database here
@@ -204,7 +204,7 @@ class TestPendingEditsAreVisible:
                 [d.edit_note("note", [d.write("Reading", d.text("{{note.Note}} two"))])],
             ),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
         assert ok is True, logger.errors
         assert {n.id for n in copied} == {other.id}
         # The second loop read what the first wrote, so both edits landed on one object.
@@ -220,7 +220,7 @@ class TestListsAndReductions:
             for i in range(1, 4)
         ]
 
-    def test_appends_keep_the_loop_order(self, note, three, logger):
+    def test_appends_keep_the_loop_order(self, note, three):
         definition = d.staged(stages=[
             d.note_query(
                 "found",
@@ -238,10 +238,10 @@ class TestListsAndReductions:
             d.join("words", "joined", "-"),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "w1-w2-w3"
 
-    def test_the_loop_index_and_count_are_available(self, note, three, logger):
+    def test_the_loop_index_and_count_are_available(self, note, three):
         definition = d.staged(stages=[
             d.note_query("found", "Word:w*"),
             d.list_variable("marks"),
@@ -249,19 +249,19 @@ class TestListsAndReductions:
             d.join("marks", "joined", " "),
             d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "1/3 2/3 3/3"
 
-    def test_an_empty_list_reduces_to_the_initial_value(self, note, logger):
+    def test_an_empty_list_reduces_to_the_initial_value(self, note):
         definition = d.staged(stages=[
             d.list_variable("empty"),
             d.reduce("empty", "total", d.code("return accumulator + item"), initial=d.text("0")),
             d.edit_note("trigger", [d.write("Note", d.text("{{total}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "0"
 
-    def test_a_code_reducer_folds_in_order(self, note, three, logger):
+    def test_a_code_reducer_folds_in_order(self, note, three):
         definition = d.staged(stages=[
             d.note_query(
                 "found",
@@ -279,11 +279,11 @@ class TestListsAndReductions:
             d.reduce("words", "folded", d.code("return accumulator + item[-1]")),
             d.edit_note("trigger", [d.write("Note", d.text("{{folded}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "123"
 
     def test_a_reducer_that_cannot_add_its_accumulator_fails_the_definition(
-        self, note, three, logger
+        self, note, three
     ):
         definition = d.staged(stages=[
             d.note_query("found", "Word:w*"),
@@ -292,24 +292,24 @@ class TestListsAndReductions:
             d.reduce("words", "folded", d.code("return accumulator + 1")),
             d.edit_note("trigger", [d.write("Note", d.text("{{folded}}"))]),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
         assert ok is False
         assert copied == []
 
-    def test_a_loop_local_variable_does_not_escape(self, note, three, logger):
+    def test_a_loop_local_variable_does_not_escape(self, note, three):
         definition = d.staged(stages=[
             d.note_query("found", "Word:w*"),
             d.for_each_note("found", [d.variable("inner", d.text("{{note.Word}}"))]),
             d.edit_note("trigger", [d.write("Note", d.text("{{inner}}"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         # `inner` is not a binding out here, so the reference falls through and resolves to
         # nothing rather than to the last iteration's value.
         assert note["Note"] == ""
 
 
 class TestConditions:
-    def test_the_then_branch_runs_when_the_predicate_is_true(self, note, logger):
+    def test_the_then_branch_runs_when_the_predicate_is_true(self, note):
         definition = d.staged(stages=[
             d.condition(
                 d.code("return True"),
@@ -317,10 +317,10 @@ class TestConditions:
                 [d.edit_note("trigger", [d.write("Note", d.text("no"))])],
             )
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "yes"
 
-    def test_the_else_branch_runs_when_it_is_false(self, note, logger):
+    def test_the_else_branch_runs_when_it_is_false(self, note):
         definition = d.staged(stages=[
             d.condition(
                 d.code("return False"),
@@ -328,10 +328,10 @@ class TestConditions:
                 [d.edit_note("trigger", [d.write("Note", d.text("no"))])],
             )
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "no"
 
-    def test_a_skip_inside_a_branch_ends_the_branch_and_nothing_more(self, note, logger):
+    def test_a_skip_inside_a_branch_ends_the_branch_and_nothing_more(self, note):
         # "Stop running the rest of this block" is what the editor calls this policy, and
         # the block a stage is in is its branch. It used to leave the branch, leave the root
         # block and end the definition, so every stage after the condition was skipped
@@ -346,14 +346,14 @@ class TestConditions:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("after"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         # The rest of the branch is skipped...
         assert note["Meaning"] == "cat"
         # ...and the definition carries on from the stage after the condition, which is what
         # the analyser assumes when it accepts an export of a result declared there (§5.9).
         assert note["Note"] == "after"
 
-    def test_a_skip_in_the_else_branch_behaves_the_same_way(self, note, logger):
+    def test_a_skip_in_the_else_branch_behaves_the_same_way(self, note):
         definition = d.staged(stages=[
             d.condition(
                 d.code("return False"),
@@ -362,28 +362,28 @@ class TestConditions:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("after"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == "after"
 
-    def test_a_skip_at_the_root_still_ends_the_definition(self, note, logger):
+    def test_a_skip_at_the_root_still_ends_the_definition(self, note):
         definition = d.staged(stages=[
             d.note_query("none", "tag:nothing-has-this", if_empty="skip_block"),
             d.edit_note("trigger", [d.write("Note", d.text("after"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == ""
 
-    def test_a_text_predicate_is_true_when_it_produced_something(self, note, logger):
+    def test_a_text_predicate_is_true_when_it_produced_something(self, note):
         definition = d.staged(stages=[
             d.condition(
                 d.text("{{trigger.Freq}}"),
                 [d.edit_note("trigger", [d.write("Note", d.text("has freq"))])],
             )
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "has freq"
 
-    def test_an_empty_text_predicate_is_false(self, note, logger):
+    def test_an_empty_text_predicate_is_false(self, note):
         note["Freq"] = ""
         definition = d.staged(stages=[
             d.condition(
@@ -391,7 +391,7 @@ class TestConditions:
                 [d.edit_note("trigger", [d.write("Note", d.text("has freq"))])],
             )
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == ""
 
 
@@ -422,7 +422,7 @@ class TestASearchConditionThatDoesNotMatch:
                 predicate_target={"binding": "trigger"},
             ),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
 
         assert ok is True, logger.errors
         # The branch did not run...
@@ -441,7 +441,7 @@ class TestASearchConditionThatDoesNotMatch:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("after"))]),
         ])
-        ok, _ = run(definition, note, logger)
+        ok, _ = run(definition, note)
 
         assert ok is True, logger.errors
         assert note["Meaning"] == "cat"
@@ -463,7 +463,7 @@ class TestASearchConditionThatDoesNotMatch:
                 ),
             ]),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
 
         assert ok is True, logger.errors
         assert [n["Note"] for n in copied] == ["kept"]
@@ -499,7 +499,7 @@ class TestCardsAndCardStages:
         ])
         cards: dict = {}
         ok = copy_for_single_trigger_note(
-            definition, note, copied_into_cards_dict=cards, logger=logger
+            definition, note, copied_into_cards_dict=cards
         )
         assert ok is True, logger.errors
         # No card type selector: the action applied to exactly the card in hand, and both of
@@ -516,7 +516,7 @@ class TestCardsAndCardStages:
                 [d.edit_note("note", [d.write("Note", d.text("{{card.template_name}}"))])],
             ),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert note["Note"] in ("Recognition", "Recall")
 
 
@@ -527,7 +527,7 @@ class TestFiles:
             d.read_file("back", "log.txt"),
             d.edit_note("trigger", [d.write("Note", d.text("{{back}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert note["Note"] == "first line"
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first line"
 
@@ -537,38 +537,38 @@ class TestFiles:
             d.read_file("current", "log.txt"),
             d.write_file("log.txt", d.text("{{current}}b\n")),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         # Byte-exact: the newline that went in is the newline that comes back.
         assert (media_dir / "_log.txt").read_bytes() == b"a\nb\n"
 
-    def test_a_missing_file_reads_as_empty_by_default(self, col, note, media_dir, logger):
+    def test_a_missing_file_reads_as_empty_by_default(self, col, note, media_dir):
         definition = d.staged(stages=[
             d.read_file("current", "nope.txt"),
             d.edit_note("trigger", [d.write("Note", d.text("[{{current}}]"))]),
         ])
-        run(definition, note, logger)
+        run(definition, note)
         assert note["Note"] == "[]"
 
-    def test_if_missing_error_fails_the_definition(self, col, note, media_dir, logger):
+    def test_if_missing_error_fails_the_definition(self, col, note, media_dir):
         definition = d.staged(stages=[
             d.read_file("current", "nope.txt", if_missing="error"),
             d.edit_note("trigger", [d.write("Note", d.text("x"))]),
         ])
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         assert note["Note"] == ""
 
-    def test_if_missing_skip_block_stops_the_rest_benignly(self, col, note, media_dir, logger):
+    def test_if_missing_skip_block_stops_the_rest_benignly(self, col, note, media_dir):
         definition = d.staged(stages=[
             d.read_file("current", "nope.txt", if_missing="skip_block"),
             d.edit_note("trigger", [d.write("Note", d.text("x"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == ""
 
-    def test_overwrite_false_refuses_an_existing_file(self, col, note, media_dir, logger):
+    def test_overwrite_false_refuses_an_existing_file(self, col, note, media_dir):
         (media_dir / "_log.txt").write_text("keep", encoding="utf-8")
         definition = d.staged(stages=[d.write_file("log.txt", d.text("new"), overwrite=False)])
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
 
     def test_skip_if_exists_leaves_an_existing_file_alone(self, col, note, media_dir, logger):
@@ -577,7 +577,7 @@ class TestFiles:
             d.write_file("log.txt", d.text("new"), overwrite=False, skip_if_exists=True)
         ])
 
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
 
     def test_skip_if_exists_counts_a_file_this_run_has_already_written(
@@ -592,11 +592,11 @@ class TestFiles:
             d.write_file("log.txt", d.text("second"), overwrite=False, skip_if_exists=True),
         ])
 
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first"
 
     def test_overwrite_false_refuses_a_file_this_run_has_already_written(
-        self, col, note, media_dir, logger
+        self, col, note, media_dir
     ):
         # The sibling of the `skip_if_exists` case above, and the reason it is worth its own
         # test: checking only the disk made the answer depend on whether a previous run had
@@ -607,7 +607,7 @@ class TestFiles:
             d.write_file("log.txt", d.text("second"), overwrite=False),
         ])
 
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         # Nothing lands at all, the first write included: the refusal is a stage error and a
         # failed definition discards its queued files. That is what `overwrite: false` has
         # always done to a file already on disk, and now the same two stages behave the same
@@ -624,7 +624,7 @@ class TestFiles:
             d.write_file("log.txt", d.text("second"), overwrite=False),
         ])
 
-        run(definition, note, logger)
+        run(definition, note)
         assert logger.has_error("already written earlier in this run")
 
     def test_overwrite_false_still_writes_a_name_nothing_else_has_taken(
@@ -635,7 +635,7 @@ class TestFiles:
             d.write_file("second.txt", d.text("two"), overwrite=False),
         ])
 
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_second.txt").read_text(encoding="utf-8") == "two"
 
     def test_skip_if_exists_still_writes_when_nothing_is_there(
@@ -645,28 +645,28 @@ class TestFiles:
             d.write_file("log.txt", d.text("new"), overwrite=False, skip_if_exists=True)
         ])
 
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "new"
 
     def test_a_filename_with_a_path_separator_is_refused(self, col, note, media_dir, logger):
         definition = d.staged(stages=[d.write_file("../escape.txt", d.text("x"))])
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         assert logger.has_error("path separator") or logger.has_error("'..'")
 
-    def test_a_failed_definition_writes_no_file_at_all(self, col, note, media_dir, logger):
+    def test_a_failed_definition_writes_no_file_at_all(self, col, note, media_dir):
         # File writes are queued during evaluation and applied only once the definition has
         # validated, so a later failure leaves the media folder alone.
         definition = d.staged(stages=[
             d.write_file("log.txt", d.text("x")),
             d.edit_note("trigger", [d.write("Nonexistent", d.text("y"))]),
         ])
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         assert not (media_dir / "_log.txt").exists()
 
     def test_invalid_utf8_fails_the_read(self, col, note, media_dir, logger):
         (media_dir / "_log.txt").write_bytes(b"\xff\xfe not utf 8")
         definition = d.staged(stages=[d.read_file("current", "log.txt")])
-        assert run(definition, note, logger)[0] is False
+        assert run(definition, note)[0] is False
         assert logger.has_error("not valid UTF-8")
 
 
@@ -695,7 +695,7 @@ class TestCalls:
                 d.edit_note("trigger", [d.write("Note", d.text("{{from_child}}"))]),
             ],
         )
-        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
         assert ok is True, logger.errors
         assert note["Note"] == "from neko"
 
@@ -721,7 +721,7 @@ class TestCalls:
             ],
         )
         ok, _copied = run(
-            parent, note, logger, definitions_for_calls=[child, middle, parent]
+            parent, note, definitions_for_calls=[child, middle, parent]
         )
         assert ok is True, logger.errors
         assert note["Note"] == "from neko"
@@ -759,7 +759,7 @@ class TestCalls:
             ],
         )
         ok, _copied = run(
-            parent, note, logger, definitions_for_calls=[child, middle, parent]
+            parent, note, definitions_for_calls=[child, middle, parent]
         )
         assert ok is True, logger.errors
         assert note["Note"] == "one/two"
@@ -783,12 +783,12 @@ class TestCalls:
             ],
         )
         stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [child, parent]
-        ok, _copied = run(parent, note, logger)
+        ok, _copied = run(parent, note)
         assert ok is True, logger.errors
         assert note["Note"] == "from neko"
 
     def test_a_definition_that_calls_nothing_does_not_read_the_config(
-        self, col, note, logger, stub_mw
+        self, col, note, stub_mw
     ):
         # An unreadable definition sitting in the config is no reason for one that does not
         # call it to fail.
@@ -798,7 +798,7 @@ class TestCalls:
         definition = d.staged(stages=[
             d.edit_note("trigger", [d.write("Note", d.text("fine"))]),
         ])
-        assert run(definition, note, logger)[0] is True
+        assert run(definition, note)[0] is True
         assert note["Note"] == "fine"
 
     def test_the_callee_sees_note_edits_but_not_the_callers_variables(self, col, note, logger):
@@ -822,7 +822,7 @@ class TestCalls:
                 d.call_definition("child-guid"),
             ],
         )
-        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
         assert ok is True, logger.errors
         assert note["Note"] == "[][edited first]"
 
@@ -842,7 +842,7 @@ class TestCalls:
                 d.for_each_note("found", [d.call_definition("child-guid", trigger="note")]),
             ],
         )
-        ok, copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, copied = run(parent, note, definitions_for_calls=[child, parent])
         assert ok is True, logger.errors
         assert sorted(n["Word"] for n in copied) == ["a", "b"]
         assert all(n["Note"] == "visited" for n in copied)
@@ -866,13 +866,13 @@ class TestCalls:
             ],
         )
 
-        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
 
         assert ok is False
         assert logger.has_error("missing copy mode value")
         assert note["Note"] == ""
 
-    def test_a_failing_callee_stops_the_parent_committing_anything(self, col, note, logger):
+    def test_a_failing_callee_stops_the_parent_committing_anything(self, col, note):
         child = d.staged(
             "child",
             guid="child-guid",
@@ -886,7 +886,7 @@ class TestCalls:
                 d.call_definition("child-guid"),
             ],
         )
-        ok, copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, copied = run(parent, note, definitions_for_calls=[child, parent])
         assert ok is False
         assert copied == []
 
@@ -895,7 +895,7 @@ class TestCalls:
         # active guid stack as well.
         a = d.staged("a", guid="a", stages=[d.call_definition("b")])
         b = d.staged("b", guid="b", stages=[d.call_definition("a")])
-        ok, _copied = run(a, note, logger, definitions_for_calls=[a, b])
+        ok, _copied = run(a, note, definitions_for_calls=[a, b])
         assert ok is False
         assert logger.has_error("call cycle")
 
@@ -903,7 +903,7 @@ class TestCalls:
         a = d.staged("a", guid="a", stages=[d.call_definition("b")])
         b = d.staged("b", guid="b", stages=[d.call_definition("c")])
         c = d.staged("c", guid="c", stages=[d.call_definition("a")])
-        ok, _copied = run(a, note, logger, definitions_for_calls=[a, b, c])
+        ok, _copied = run(a, note, definitions_for_calls=[a, b, c])
         assert ok is False
         assert logger.has_error("call cycle")
 
@@ -942,18 +942,18 @@ class TestCalls:
             ],
         )
 
-        ok, _copied = run(parent, note, logger, definitions_for_calls=[child, parent])
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
 
         assert ok is False
         assert logger.has_error("exports no 'H1'")
 
 
 class TestFacades:
-    def test_code_cannot_write_through_a_facade(self, note, logger):
+    def test_code_cannot_write_through_a_facade(self, note):
         definition = d.staged(stages=[
             d.variable("x", d.code("note['Note'] = 'nope'\nreturn 'ok'")),
         ])
-        ok, _copied = run(definition, note, logger)
+        ok, _copied = run(definition, note)
         assert ok is False
         assert note["Note"] == ""
 
@@ -963,7 +963,7 @@ class TestFacades:
             d.variable("seen", d.code("return trigger['Note']")),
             d.edit_note("trigger", [d.write("Meaning", d.text("{{seen}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert note["Meaning"] == "pending"
 
     def test_a_note_list_facade_is_iterable_indexable_and_sliceable(self, col, note, logger):
@@ -980,7 +980,7 @@ class TestFacades:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("{{report}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert note["Note"] == "2:True:1"
 
     def test_find_notes_returns_ids_and_get_note_returns_a_facade(self, col, note, logger):
@@ -995,7 +995,7 @@ class TestFacades:
             ),
             d.edit_note("trigger", [d.write("Note", d.text("{{found}}"))]),
         ])
-        assert run(definition, note, logger)[0] is True, logger.errors
+        assert run(definition, note)[0] is True, logger.errors
         assert note["Note"] == "True:A"
 
     def test_code_can_return_a_filtered_note_list_for_a_loop_to_walk(self, col, note, logger):
@@ -1008,7 +1008,7 @@ class TestFacades:
                 "kept", [d.edit_note("note", [d.write("Note", d.text("chosen"))])]
             ),
         ])
-        ok, copied = run(definition, note, logger)
+        ok, copied = run(definition, note)
         assert ok is True, logger.errors
         assert [n["Word"] for n in copied] == ["a"]
 
@@ -1026,7 +1026,7 @@ class TestPreview:
             d.write_file("preview.txt", d.text("{{trigger.Word}}")),
         ])
         committer = PreviewCommitter()
-        session = ExecutionSession(logger=logger, collect_trace=True)
+        session = ExecutionSession(collect_trace=True)
         copied: list = []
         ok = run_definition_for_trigger_note(
             definition, note, session, committer=committer, copied_into_notes=copied
@@ -1039,12 +1039,12 @@ class TestPreview:
         assert [planned["filename"] for planned in committer.planned_files] == ["_preview.txt"]
         assert col.get_note(other.id)["Note"] == ""
 
-    def test_every_stage_leaves_a_trace_event(self, col, note, logger):
+    def test_every_stage_leaves_a_trace_event(self, col, note):
         definition = d.staged(stages=[
             d.variable("M", d.text("x")),
             d.edit_note("trigger", [d.write("Note", d.text("{{M}}"))]),
         ])
-        session = ExecutionSession(logger=logger, collect_trace=True)
+        session = ExecutionSession(collect_trace=True)
         run_definition_for_trigger_note(definition, note, session, committer=PreviewCommitter())
         assert [event.stage_type for event in session.trace] == ["variable", "edit_note"]
         assert all(event.status == "ok" for event in session.trace)
@@ -1052,7 +1052,7 @@ class TestPreview:
 
 
 class TestCancellation:
-    def test_a_cancel_between_loop_iterations_commits_nothing(self, col, note, logger):
+    def test_a_cancel_between_loop_iterations_commits_nothing(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
         real_anki.add_note(col, VOCAB, {"Word": "b", "Meaning": "B"})
         definition = d.staged(stages=[
@@ -1061,7 +1061,7 @@ class TestCancellation:
                 "found", [d.edit_note("note", [d.write("Note", d.text("touched"))])]
             ),
         ])
-        session = ExecutionSession(logger=logger, want_cancel=lambda: True)
+        session = ExecutionSession(want_cancel=lambda: True)
         copied: list = []
         # A cancelled run is not a failure: the caller stops, and the half-evaluated frame
         # is dropped rather than committed.
@@ -1076,7 +1076,7 @@ class TestCancellation:
 
 class TestAddNoteCompatibility:
     def test_an_incompatible_definition_cannot_commit_under_the_add_backstop(
-        self, col, logger
+        self, col
     ):
         other = real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
         new_note = col.new_note(col.models.by_name(VOCAB))
@@ -1093,7 +1093,6 @@ class TestAddNoteCompatibility:
             definition,
             new_note,
             copied_into_notes=copied,
-            logger=logger,
             add_note_compatible_only=True,
         )
         assert ok is False
@@ -1113,7 +1112,7 @@ class TestAddNoteCompatibility:
         ])
         assert definition["effects"]["add_note_compatible"] is True
         ok = copy_for_single_trigger_note(
-            definition, new_note, logger=logger, add_note_compatible_only=True
+            definition, new_note, add_note_compatible_only=True
         )
         assert ok is True, logger.errors
         assert new_note["Meaning"] == "猫"
@@ -1147,19 +1146,19 @@ class TestRunningForOneEditorField:
             ]),
         ])
 
-    def test_a_natively_authored_write_runs(self, note, other, logger):
+    def test_a_natively_authored_write_runs(self, note, other):
         # The regression this guards: every write in a definition built in the new editor
         # was skipped on unfocus, while its tags still applied, so the definition looked
         # like it had run and only the field writes were missing.
-        ok, copied = run(self.definition(), note, logger, field_only="Word")
+        ok, copied = run(self.definition(), note, field_only="Word")
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
 
     def test_a_migrated_write_is_still_limited_to_its_own_trigger_fields(
-        self, note, other, logger
+        self, note, other
     ):
         ok, copied = run(
-            self.definition(unfocus_trigger_fields=["Reading"]), note, logger, field_only="Word"
+            self.definition(unfocus_trigger_fields=["Reading"]), note, field_only="Word"
         )
         assert ok is True
         # The tag in the same stage is not gated, so the note is still touched -- which is
@@ -1167,29 +1166,29 @@ class TestRunningForOneEditorField:
         assert [n["Note"] for n in copied] == [""]
         assert copied[0].has_tag("ran")
 
-    def test_a_migrated_write_whose_trigger_field_matches_runs(self, note, other, logger):
+    def test_a_migrated_write_whose_trigger_field_matches_runs(self, note, other):
         ok, copied = run(
-            self.definition(unfocus_trigger_fields=["Word"]), note, logger, field_only="Word"
+            self.definition(unfocus_trigger_fields=["Word"]), note, field_only="Word"
         )
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
 
-    def test_a_migrated_write_that_watches_nothing_never_runs(self, note, other, logger):
+    def test_a_migrated_write_that_watches_nothing_never_runs(self, note, other):
         # An empty list is format 1 saying this write has no editor field to trigger it,
         # which is not the same as a write that was never migrated at all.
         ok, copied = run(
-            self.definition(unfocus_trigger_fields=[]), note, logger, field_only="Word"
+            self.definition(unfocus_trigger_fields=[]), note, field_only="Word"
         )
         assert ok is True
         assert [n["Note"] for n in copied] == [""]
 
-    def test_a_run_that_is_not_an_unfocus_gates_nothing(self, note, other, logger):
-        ok, copied = run(self.definition(unfocus_trigger_fields=["Reading"]), note, logger)
+    def test_a_run_that_is_not_an_unfocus_gates_nothing(self, note, other):
+        ok, copied = run(self.definition(unfocus_trigger_fields=["Reading"]), note)
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
 
     def test_a_write_turned_off_for_editing_does_not_run_while_editing(
-        self, note, other, logger
+        self, note, other
     ):
         # Format 1's `copy_on_unfocus_when_edit`, which is how a slow write -- downloading
         # audio, say -- was kept for the bulk action instead of running on every keystroke
@@ -1197,44 +1196,41 @@ class TestRunningForOneEditorField:
         ok, copied = run(
             self.definition(unfocus_trigger_fields=["Word"], unfocus_when_edit=False),
             note,
-            logger,
             field_only="Word",
         )
         assert ok is True
         assert [n["Note"] for n in copied] == [""]
 
     def test_that_same_write_runs_while_adding_if_it_is_on_for_adding(
-        self, note, other, logger
+        self, note, other
     ):
         ok, copied = run(
             self.definition(
                 unfocus_trigger_fields=["Word"], unfocus_when_edit=False, unfocus_when_add=True
             ),
             note,
-            logger,
             field_only="Word",
             unfocus_is_add=True,
         )
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
 
-    def test_a_write_on_for_editing_only_does_not_run_while_adding(self, note, other, logger):
+    def test_a_write_on_for_editing_only_does_not_run_while_adding(self, note, other):
         ok, copied = run(
             self.definition(
                 unfocus_trigger_fields=["Word"], unfocus_when_edit=True, unfocus_when_add=False
             ),
             note,
-            logger,
             field_only="Word",
             unfocus_is_add=True,
         )
         assert ok is True
         assert [n["Note"] for n in copied] == [""]
 
-    def test_the_flags_do_not_reach_a_run_that_is_not_an_unfocus(self, note, other, logger):
+    def test_the_flags_do_not_reach_a_run_that_is_not_an_unfocus(self, note, other):
         # The bulk action the slow write was being saved for.
         ok, copied = run(
-            self.definition(unfocus_when_edit=False, unfocus_when_add=False), note, logger
+            self.definition(unfocus_when_edit=False, unfocus_when_add=False), note
         )
         assert ok is True
         assert [n["Note"] for n in copied] == ["neko"]
@@ -1262,7 +1258,7 @@ class TestADefinitionWhoseTriggersKeyIsNull:
         return staged
 
     def test_it_runs_rather_than_raising(self, note, logger):
-        ok, copied = run(self.definition(), note, logger)
+        ok, copied = run(self.definition(), note)
 
         assert ok is True, logger.errors
         assert note["Note"] == "ran"
@@ -1272,7 +1268,7 @@ class TestADefinitionWhoseTriggersKeyIsNull:
         # The line that dereferences it is the deck whitelist check, and "no whitelist" is
         # what every other reader concludes from the same null.
         deck_id = col.decks.id("Somewhere Else")
-        ok, _copied = run(self.definition(), note, logger, deck_id=deck_id)
+        ok, _copied = run(self.definition(), note, deck_id=deck_id)
 
         assert ok is True, logger.errors
         assert note["Note"] == "ran"
@@ -1328,7 +1324,7 @@ class TestWideningTheUnfocusListOfAMigratedDefinition:
         return definition
 
     def test_the_write_still_runs_for_the_field_it_was_migrated_with(self, note, logger):
-        ok, _copied = run(self.migrated(["Word"]), note, logger, field_only="Word")
+        ok, _copied = run(self.migrated(["Word"]), note, field_only="Word")
 
         assert ok is True, logger.errors
         assert note["Meaning"] == "neko"
@@ -1341,12 +1337,12 @@ class TestWideningTheUnfocusListOfAMigratedDefinition:
         # 1 asked both -- but the gate is no longer invisible, so the answer can be changed.
         definition = self.migrated(["Word", "Reading"], write_watches='"Word", "Reading"')
 
-        ok, _copied = run(definition, note, logger, field_only="Reading")
+        ok, _copied = run(definition, note, field_only="Reading")
 
         assert ok is True, logger.errors
         assert note["Meaning"] == "neko"
 
-    def test_a_field_neither_gate_claims_still_writes_nothing(self, note, logger):
-        _ok, _copied = run(self.migrated(["Word"]), note, logger, field_only="Meaning")
+    def test_a_field_neither_gate_claims_still_writes_nothing(self, note):
+        _ok, _copied = run(self.migrated(["Word"]), note, field_only="Meaning")
 
         assert note["Meaning"] == ""

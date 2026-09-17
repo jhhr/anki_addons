@@ -31,7 +31,11 @@ Define which model to use for each task
 - `kanji_story_model`
 - `translate_sentence_model`
 - `kanjify_sentence_model`
-- `extract_words_model`
+- `extract_words_model`: no op of its own any more - "Extract words" builds the word array
+  locally and its one call is the proper noun one. It is the fallback for the two below.
+- `word_matching_judge_model` (falls back to `extract_words_model`)
+- `proper_nouns_model` (falls back to `extract_words_model`), so also the model "Extract words"
+  uses
 - `match_words_model`
 
 ### temperature
@@ -39,16 +43,81 @@ Define which model to use for each task
 - `kanjify_sentence_temperature`: Default is `0.1`. Passed through to provider temperature controls for kanjification requests only.
   Use a low value to reduce variation in kanji choice while still allowing the model a small amount of flexibility. `0.0` is supported by the major providers here, but is not guaranteed to be fully deterministic and can sometimes be more brittle than a very low non-zero setting.
 
-### model rate limits
+### rate limits
 
-Must be defined for each model. Default are set very low. Check the respective API docs
-for what rate limits you may be able to / want to use for each model.
+Nothing to configure. Requests go out as fast as the concurrency limit allows; when a provider
+rejects one for exceeding its rate limit, that model is put on a short cooldown and the request
+is retried automatically. The wait comes from the provider's own response — Anthropic's
+`retry-after` header, OpenAI's `Retry-After`, Gemini's `RetryInfo.retryDelay` — falling back to
+exponential backoff when none is given.
 
-RPM=request per minure, TPM=tokenn per minute
+Errors that retrying can't fix are not retried: an exhausted OpenAI billing quota
+(`insufficient_quota`) or a used-up Gemini per-day quota fails immediately and is logged.
 
-- Free tier gemini 2.5-flash 10RPM
-- Paid tier 1 gemini 2.5-flash 1000RPM
-- gpt4o 450000TPM / 5000RPM
+- `max_request_retries`: Default `5`. How many times to retry a request that failed for a
+  retryable reason (rate limit, provider overload, timeout, connection error).
+- `max_retry_wait_seconds`: Default `120`. If a provider asks to wait longer than this, the
+  request is abandoned rather than stalling the whole run. Raise it if you regularly hit long
+  token-per-minute cooldowns and would rather wait them out.
+
+### memory use and concurrency
+
+How many notes/words are processed at once is what determines memory use, and it is sized
+automatically: available RAM divided by what one task of that op actually costs. A tablet gets a
+lower limit than a desktop, and a heavy op gets a lower limit than a light one, with no
+configuration. While a run is going, the limit is lowered if free memory gets low and raised
+again when it recovers. The progress dialog shows the current value.
+
+The per-task cost is measured, not guessed, while the run is going. What changes as a run
+proceeds is how many of the op's tasks are alive at once, and the addon fits Python's traced
+allocation total against that count as it moves — so what comes out is what one more live task
+adds, and everything allocated before the run started is left out of it. Nothing has to be
+paused or emptied for that: the count rises and falls by itself as tasks start and finish, and
+the traced total follows it down as well as up. The largest fit in a run wins, since what has to
+fit in RAM is the peak. The result is remembered per op in `user_files/memory_estimates.json` and
+blended with the previous value, so the first run of an op learns what it costs and later runs
+start out sized correctly. Deleting that file just means the ops get measured again from the
+default guess.
+
+While nothing is configured there is also a backstop of 256 concurrent tasks, which only exists to
+stop a very cheap op on a very empty machine from opening an absurd number of connections at once.
+Memory is meant to be what limits concurrency in practice: with a couple of GB of budget, ops
+costing more than about 8 MB per task are limited by memory rather than by the backstop.
+
+- `max_concurrent_requests`: Default `0` (automatic). Any value above `0` takes the place of that
+  backstop, whether it is below 256 or above it, but does **not** turn off the memory-based
+  adjustment — the limit still drops under memory pressure, and what memory allows still caps it
+  if that is lower than your value. So a large value raises what a run *may* grow to rather than
+  what it will get, and a small one holds a device below what its free RAM would otherwise permit.
+  Where free memory cannot be probed at all there is nothing to adapt against, and your value is
+  used exactly as given (the default there is a static 8).
+- `memory_limit`: Default `0` (disabled). Set a number for MB (for example `900`) or a percent
+  string of total RAM (for example `"15%"`). Once the Anki process RSS passes that cap, the addon
+  starts backing off concurrency. A value of `0` leaves this hard cap off.
+
+The progress dialog shows the current limit, free memory, and the measured cost per task once
+enough of the run has been measured to fit one.
+
+### request_timeout
+
+Default `180`. Seconds to wait for a single API response before giving up on that attempt.
+Timeouts are retried, subject to `max_request_retries`.
+
+### terminal- models (claude CLI)
+
+Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
+subscription instead of the HTTP API, e.g. `"word_matching_judge_model": "terminal-claude-haiku-4-5"`.
+Each request starts one `claude -p` process (thinking off, no tools), so it is far slower than the
+API: about 70 requests a minute on a 4-core PC. Put the API model back in the config to switch
+back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
+and `max_retry_wait_seconds` apply as for the API. When the subscription's usage limit is hit, the
+run stops (the remaining notes are left as they were) and the end message says when the limit
+resets; switch the model to an API one and rerun to finish.
+
+- `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
+  takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
+- `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
+  `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
 
 ## config fields per note type name
 
@@ -110,11 +179,18 @@ You need to define
   10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
       file will simply not specify the deck
 
+## test data exports
+
+Tools > "AI ops: generate test data" runs both browser-menu exports at once, each on the
+notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
+that export.
+
+- `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
+- `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
+  (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
+  kanjified sentence fields, one row per distinct sentence)
+
 ## optipnal specification
-
-### `extract_words` operatation
-
-- `ignore_current_word_lists`: (default: false) don't pass the current field to the prompt, making the model recreate the result from scratch
 
 ### `match_words_model` operation
 

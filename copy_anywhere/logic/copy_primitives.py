@@ -12,6 +12,7 @@ that imports it.
 
 import html
 import json
+import logging
 import time
 from typing import Any, Optional, Sequence, Tuple, Union
 
@@ -33,7 +34,6 @@ from ..configuration import (
     is_regex_process,
     is_word_highlight_process,
 )
-from ..shared.utils.logger import Logger
 from ..shared.interpolate.execute_code import execute_code_for_field
 from ..shared.interpolate.interpolate_fields import (
     QUERY_NOTE_INDEX,
@@ -47,6 +47,8 @@ from .kana_highlight_process import WithTagsDef, kana_highlight_process
 from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
 from .regex_process import regex_process
 from .word_highlight_process import word_highlight_process
+
+logger = logging.getLogger(__name__)
 
 
 class ProgressUpdateDef:
@@ -219,7 +221,6 @@ def apply_process_chain(
     variable_values_dict: Optional[dict] = None,
     multiple_note_types: bool = False,
     progress_updater: Optional[ProgressUpdater] = None,
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
 ) -> Union[str, None]:
     """
@@ -231,7 +232,6 @@ def apply_process_chain(
     :param variable_values_dict: A dictionary of variable values to use for interpolation
     :param multiple_note_types: Whether the copy is across multiple note types
     :param progress_updater: Optional object to update the progress bar
-    :param logger: Logger to use for errors and debug messages
     :param file_cache: A dictionary to cache opened files' content
     :return: The text after the processes have been applied or None if there was an error
     """
@@ -250,14 +250,12 @@ def apply_process_chain(
                         False,  # include_suru_okuri always false
                     ),
                     note=dest_note,
-                    logger=logger,
                 )
             elif is_word_highlight_process(process):
                 text = word_highlight_process(
                     text=text,
                     word_field=process.get("word_field", ""),
                     note=dest_note,
-                    logger=logger,
                 )
             elif is_regex_process(process):
                 use_all_notes = process.get("use_all_notes", False)
@@ -268,7 +266,6 @@ def apply_process_chain(
                     variable_values_dict=variable_values_dict,
                     select_card_separator=process.get("regex_separator", ""),
                     multiple_note_types=multiple_note_types,
-                    logger=logger,
                     progress_updater=progress_updater,
                 )
 
@@ -279,7 +276,6 @@ def apply_process_chain(
                     variable_values_dict=variable_values_dict,
                     select_card_separator=process.get("replacement_separator", ""),
                     multiple_note_types=multiple_note_types,
-                    logger=logger,
                     progress_updater=progress_updater,
                 )
                 text = regex_process(
@@ -287,7 +283,6 @@ def apply_process_chain(
                     regex=interpolated_regex,
                     replacement=interpolated_replacement,
                     flags=process.get("flags", None),
-                    logger=logger,
                 )
 
             elif is_fonts_check_process(process):
@@ -296,7 +291,6 @@ def apply_process_chain(
                     fonts_dict_file=process.get("fonts_dict_file", ""),
                     limit_to_fonts=process.get("limit_to_fonts", None),
                     character_limit_regex=process.get("character_limit_regex", None),
-                    logger=logger,
                     file_cache=file_cache,
                 )
 
@@ -304,12 +298,11 @@ def apply_process_chain(
                 text = kanjium_to_javdejong_process(
                     text=text,
                     delimiter=process.get("delimiter", ""),
-                    logger=logger,
                 )
         except FatalProcessError as e:
             # If some process fails in a way that will always fail, we stop the whole op
             # so the user can fix the issue without needing to wait for the whole op to finish
-            logger.error(f"Error in {process['name']} process: {e}")
+            logger.error("Error in %s process: %s", process["name"], e)
             return None
     return text
 
@@ -317,14 +310,12 @@ def get_variable_values_for_note(
     field_to_variable_defs: list[CopyFieldToVariable],
     note: Note,
     file_cache: Optional[dict] = None,
-    logger: Logger = Logger("error"),
 ) -> dict:
     """
     Get the values for the variables from the note
     :param field_to_variable_defs: The definitions of the variables to get
     :param note: The note to get the values from
     :param file_cache: A dictionary to cache opened files' content for process chains
-    :param logger: Logger to use for errors and debug messages
     :return: A dictionary of the values for the variables or None if there was an error
     """
 
@@ -344,8 +335,8 @@ def get_variable_values_for_note(
         )
         if len(invalid_fields) > 0:
             logger.error(
-                "Error getting variable values: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error getting variable values: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         # Step 1b: Execute as code if requested
@@ -364,7 +355,6 @@ def get_variable_values_for_note(
                 dest_note=note,
                 notes=[note],
                 multiple_note_types=False,
-                logger=logger,
                 file_cache=file_cache,
             )
             if interpolated_value is None:
@@ -397,7 +387,6 @@ def get_field_values_from_notes(
     variable_values_dict: Optional[dict] = None,
     select_card_separator: Optional[str] = ", ",
     use_code: bool = False,
-    logger: Logger = Logger("error"),
     progress_updater: Optional[ProgressUpdater] = None,
 ) -> str:
     """
@@ -414,8 +403,6 @@ def get_field_values_from_notes(
         Irrelevant if there is only one note
     :param use_code: When True, the interpolated text is executed as Python code and the return
         value of that code is used as the result instead of the interpolated text itself.
-    :param logger: Logger to use for errors and debug messages, used for storing all messages
-        until the end of the whole operation to show them in a GUI element at the end
     :param progress_updater: An object to update the progress bar with
     :return: String with the values from the field in the notes
     """
@@ -447,13 +434,13 @@ def get_field_values_from_notes(
                 multiple_note_types=multiple_note_types,
             )
         except ValueError as e:
-            logger.error(f"Error in text interpolation: {e}")
+            logger.error("Error in text interpolation: %s", e)
             break
 
         if len(invalid_fields) > 0:
             logger.error(
-                "Error in copy fields: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error in copy fields: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         if use_code:
@@ -472,7 +459,6 @@ def get_field_values_from_notes(
 def card_actions_by_template_name(
     card_actions: Sequence[CardAction],
     note: Note,
-    logger: Logger = Logger("error"),
 ) -> dict:
     """Index note-level card actions by the template name they apply to.
 
@@ -485,7 +471,7 @@ def card_actions_by_template_name(
         note_type_and_card_type = card_action.get("card_type_name", "")
         if CARD_TYPE_SEPARATOR not in note_type_and_card_type:
             logger.error(
-                f"Error in copy fields: Invalid card type name '{note_type_and_card_type}'"
+                "Error in copy fields: Invalid card type name '%s'", note_type_and_card_type
             )
             continue
         note_type_name, card_type_name = note_type_and_card_type.split(CARD_TYPE_SEPARATOR, 1)
@@ -499,7 +485,6 @@ def apply_card_action_to_card(
     card_action: CardAction,
     card: Card,
     note: Note,
-    logger: Logger = Logger("error"),
 ) -> bool:
     """Apply one card action to one card, in memory. Returns whether the card changed.
 
@@ -523,7 +508,7 @@ def apply_card_action_to_card(
     edited = False
 
     if change_deck not in [None, "-", 0]:
-        move_card_to_deck(card, change_deck, logger=logger)
+        move_card_to_deck(card, change_deck)
         edited = True
     if suspend_card in [True, False]:
         # see pylib/anki/cards.py for queue values
@@ -563,7 +548,6 @@ def apply_card_actions_by_template(
     card_actions: Sequence[CardAction],
     note: Note,
     cards: Sequence[Card],
-    logger: Logger = Logger("error"),
     progress_updater: Any = None,
 ) -> list[Card]:
     """Apply note-level card actions to the note's cards, matching by card type name.
@@ -571,14 +555,14 @@ def apply_card_actions_by_template(
     Returns the cards this call changed. Cards with no matching action are left alone, and a
     card type named by an action the note has no card for is simply not reached.
     """
-    by_template_name = card_actions_by_template_name(card_actions, note, logger=logger)
+    by_template_name = card_actions_by_template_name(card_actions, note)
     edited: list[Card] = []
     for card in cards:
         template = card.template()
         card_action = by_template_name.get(template["name"] if template else "", None)
         if card_action is None:
             continue
-        if apply_card_action_to_card(card_action, card, note, logger=logger):
+        if apply_card_action_to_card(card_action, card, note):
             edited.append(card)
             if progress_updater is not None:
                 progress_updater.update_counts(processed_cards_inc=1)

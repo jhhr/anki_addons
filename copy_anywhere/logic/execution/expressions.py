@@ -19,6 +19,7 @@ Both then run the expression's process chain, which is unchanged from format 1.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional
 
@@ -32,12 +33,12 @@ from ...shared.interpolate.interpolate_fields import (
     extract_cloze_patterns,
     interpolate_from_text,
 )
-from ...shared.utils.logger import Logger
 from ..copy_primitives import (
     CopyFailedException,
     apply_process_chain,
     get_field_values_from_notes,
 )
+
 from ..definition_schema import (
     ValueExpression,
     expression_is_code,
@@ -53,6 +54,8 @@ from .facades import (
     from_facade,
     to_facade,
 )
+
+logger = logging.getLogger(__name__)
 
 INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
 
@@ -139,10 +142,6 @@ class ExpressionContext:
         # for the messages that are about the thing rather than about the stage. A stage can
         # hold many writes, so naming the stage is not enough to find the one that failed.
         self.purpose = purpose
-
-    @property
-    def logger(self) -> Logger:
-        return self.session.logger
 
     def variables(self) -> Optional[dict]:
         """The bindings a format-1 expression can reach as `{{Name}}`.
@@ -239,8 +238,8 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
             multiple_note_types=ctx.multiple_note_types,
         )
         if invalid:
-            ctx.logger.error(
-                f"Error in copy fields: Invalid fields in copy_from_text: {', '.join(invalid)}"
+            logger.error(
+                "Error in copy fields: Invalid fields in copy_from_text: %s", ", ".join(invalid)
             )
         return resolved or ""
 
@@ -295,7 +294,6 @@ def evaluate_raw(expression: Optional[ValueExpression], ctx: ExpressionContext) 
                 variable_values_dict=ctx.variables(),
                 select_card_separator=ctx.separator,
                 use_code=is_code,
-                logger=ctx.logger,
                 progress_updater=ctx.session.progress_updater,
             )
         except CopyFailedException as error:
@@ -324,7 +322,6 @@ def run_process_chain(value: str, expression: ValueExpression, ctx: ExpressionCo
         multiple_note_types=ctx.multiple_note_types,
         variable_values_dict=ctx.variables(),
         progress_updater=ctx.session.progress_updater,
-        logger=ctx.logger,
         file_cache=ctx.session.file_cache,
     )
     if processed is None:

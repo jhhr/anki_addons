@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -6,7 +7,8 @@ from typing import Optional
 from aqt import mw
 
 from .FatalProcessError import FatalProcessError
-from ..shared.utils.logger import Logger
+
+logger = logging.getLogger(__name__)
 
 
 def fonts_check_process(
@@ -14,7 +16,6 @@ def fonts_check_process(
     fonts_dict_file: str,
     limit_to_fonts: Optional[list[str]],
     character_limit_regex: Optional[str],
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
 ) -> str:
     """
@@ -28,7 +29,6 @@ def fonts_check_process(
     :param fonts_dict_file: The path to the json file with the fonts dictionary
     :param limit_to_fonts: A list of font file names to limit the output to
     :param character_limit_regex: A regex to limit the characters to check
-    :param logger: A logger instance to log errors and debug messages
     :param file_cache: A dictionary to cache the open JSON file contents, to avoid opening the file
         multiple times
 
@@ -104,7 +104,7 @@ def fonts_check_process(
 
     if not some_chars_found:
         if all_chars_excluded_by_regex:
-            logger.error(f"{text} - All characters excluded by regex")
+            logger.error("%s - All characters excluded by regex", text)
         else:
             logger.error(
                 f"{text} - No characters had a match in the fonts dictionary, check that your "
@@ -122,7 +122,7 @@ def fonts_check_process(
         if all_fonts is not None:
             return f'["{join_str.join(all_fonts)}"]'
 
-        logger.error(f"Dictionary '{fonts_dict_file}' does not contain an 'all_fonts' key")
+        logger.error("Dictionary '%s' does not contain an 'all_fonts' key", fonts_dict_file)
         return ""
 
     if valid_fonts is None:
@@ -130,11 +130,11 @@ def fonts_check_process(
 
     if len(valid_fonts) == 0:
         if (len(text)) == 1:
-            logger.error(f"{text} - No fonts were valid for this character")
+            logger.error("%s - No fonts were valid for this character", text)
         else:
             logger.error(
-                f"{text} - Some characters had valid fonts but no fonts were valid for every"
-                " character"
+                "%s - Some characters had valid fonts but no fonts were valid for every character",
+                text,
             )
         return ""
 

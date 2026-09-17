@@ -1,6 +1,8 @@
+import logging
 import re
 from typing import Optional
-from ..shared.utils.logger import Logger
+
+logger = logging.getLogger(__name__)
 
 # One mora of the pitch HTML Yomitan (and Yomichan before it) writes for {pitch-accents}:
 # an inline-block span holding a span per character -- a contracted sound like きょ has
@@ -24,7 +26,6 @@ JAVDEJONG_DOWNSTEP = "</span>&#42780;"
 def kanjium_to_javdejong_process(
     text: str,
     delimiter: Optional[str],
-    logger: Logger = Logger("error"),
 ):
     """
     Convert a pitch accent html string that is in Kanjium format to Javdejong format.
@@ -32,7 +33,6 @@ def kanjium_to_javdejong_process(
         it will be returned as is.
     :param delimiter: The delimiter to use when joining the converted pitch accent descriptions.
         Default is '・'.
-    :param logger: A logger instance to log errors and debug messages.
     :return: The converted pitch accent html string in Javdejong format.
     """
     is_kanjium_pitch = re.search(r"currentColor", text)
@@ -44,7 +44,7 @@ def kanjium_to_javdejong_process(
 
     javdejong_descriptions = []
     for pitch_accent_description in text.split("・"):
-        logger.debug(f"pitch_accent_description: {pitch_accent_description}")
+        logger.debug("pitch_accent_description: %s", pitch_accent_description)
         morae = [
             (
                 HTML_TAG_RE.sub("", match["chars"]),
@@ -53,7 +53,7 @@ def kanjium_to_javdejong_process(
             )
             for match in KANJIUM_MORA_RE.finditer(pitch_accent_description)
         ]
-        logger.debug(f"morae: {morae}")
+        logger.debug("morae: %s", morae)
         javdejong_descriptions.append(morae_to_javdejong(morae))
 
     return delimiter.join(javdejong_descriptions)

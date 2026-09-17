@@ -40,6 +40,7 @@ from aqt.gui_hooks import (
 )
 
 from anki_shared.testing import real_anki, running_anki
+from copy_anywhere import logging_setup
 
 ADDON_PACKAGE = "copy_anywhere"
 
@@ -68,6 +69,21 @@ BASE_CONFIG: dict[str, Any] = {
     "copy_fields_shortcut": "Ctrl+Shift+C",
     "copy_definitions": [],
 }
+
+
+@pytest.fixture(autouse=True)
+def operation_logs(tmp_path, monkeypatch):
+    """The directory this test's operation logs are written to, out of the addon's own.
+
+    Autouse: every path through `copy_fields` and the note hooks opens a real file, and a
+    test run must not add to the user's logs.
+    """
+    directory = tmp_path / "logs"
+    monkeypatch.setattr(logging_setup, "logs_dir", lambda: str(directory))
+    yield directory
+    # Several tests drive `copy_fields`'s op without the callback that would release its
+    # log file; left standing, that handler would collect the next test's records.
+    logging_setup.reset_operation_log()
 
 
 @pytest.fixture(autouse=True)

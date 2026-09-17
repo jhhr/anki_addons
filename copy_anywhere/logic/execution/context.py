@@ -24,7 +24,6 @@ from anki.cards import Card
 from anki.notes import Note
 from aqt import mw
 
-from ...shared.utils.logger import Logger
 from ...utils.media_files import (
     MediaFileError,
     media_file_exists,
@@ -201,7 +200,6 @@ class ExecutionSession:
 
     def __init__(
         self,
-        logger: Logger = Logger("error"),
         is_sync: bool = False,
         field_only: Optional[str] = None,
         unfocus_is_add: bool = False,
@@ -213,7 +211,6 @@ class ExecutionSession:
         collect_trace: bool = False,
         add_note_compatible_only: bool = False,
     ) -> None:
-        self.logger = logger
         self.is_sync = is_sync
         self.field_only = field_only
         #: Which of format 1's two unfocus flags a migrated field write is judged by. Only

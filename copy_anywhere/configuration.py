@@ -1,4 +1,5 @@
 import html
+import logging
 import uuid
 from copy import deepcopy
 from typing import Literal, Optional, Sequence, TypedDict, Union
@@ -13,7 +14,10 @@ from .shared.interpolate.interpolate_fields import (
 )
 from .logic.definition_schema import Effects, is_format_2, read_effects
 from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
-from .shared.utils.logger import LogLevel, Logger
+from .logging_setup import operation_logging
+from .shared.utils.logger import LogLevel
+
+logger = logging.getLogger(__name__)
 
 tag = mw.addonManager.addonFromModule(__name__)
 
@@ -409,7 +413,7 @@ def fill_in_missing_guids(definitions: Sequence[dict]) -> list[dict]:
     return updated_definitions
 
 
-def stage_copy_definitions(config: "Config", logger: Logger) -> bool:
+def stage_copy_definitions(config: "Config") -> bool:
     """The 0.3.0 migration: convert every stored definition to format 2 (§11).
 
     All or nothing, and it says so by returning whether it succeeded. `stage_definitions`
@@ -424,7 +428,7 @@ def stage_copy_definitions(config: "Config", logger: Logger) -> bool:
     stored = list(config.data.get("copy_definitions") or [])
     staged, problems = stage_definitions(stored)
     for problem in problems:
-        logger.error(f"Copy definition migration: {problem}")
+        logger.error("Copy definition migration: %s", problem)
     if len(staged) != len(stored):
         logger.error(
             "Copy definitions were left in their old format because some of them could not"
@@ -446,7 +450,6 @@ def migrate_config():
     """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed."""
     config = Config()
     config.load()
-    logger = Logger(config.log_level)
     # What the config has actually been brought up to, which is not always what was asked
     # for: a migration that fails leaves this behind so the next start runs it again rather
     # than recording a version the stored data never reached.
@@ -454,8 +457,14 @@ def migrate_config():
     if compare_versions(reached, "0.2.0") < 0:
         config.data["copy_definitions"] = fill_in_missing_guids(config.copy_definitions)
         reached = "0.2.0"
-    if compare_versions(reached, "0.3.0") < 0 and stage_copy_definitions(config, logger):
-        reached = "0.3.0"
+    if compare_versions(reached, "0.3.0") < 0:
+        # A migration that leaves definitions behind is something the user has to hear
+        # about, and at startup there is no operation whose file could carry the message:
+        # this opens one of its own, which -- `delay=True` -- only exists if something went
+        # wrong.
+        with operation_logging("config_migration", config.log_level):
+            if stage_copy_definitions(config):
+                reached = "0.3.0"
     config.data["version"] = reached
     config.save()
 
