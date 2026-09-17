@@ -29,7 +29,6 @@ Report `output/vocab_apply_report.txt`.
 
 import argparse
 import json
-import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
@@ -271,7 +270,8 @@ def live_fields(client, nids: list) -> dict:
 
 def apply(client, writes: list, undo: Path) -> tuple:
     """Write each note, its old field values recorded first. `(written, refused)`."""
-    written, refused = 0, []
+    written = 0
+    refused: list[str] = []
     undo.parent.mkdir(parents=True, exist_ok=True)
     with undo.open("a", encoding="utf-8") as log:
         for write in writes:
@@ -342,7 +342,6 @@ def report(writes: list, refused: list, skipped: dict) -> list:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("changes", type=Path, nargs="?", default=vocab_changes.CHANGES)
     parser.add_argument("--only", default="", help="write only this kind of operation")

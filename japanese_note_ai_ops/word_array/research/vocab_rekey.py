@@ -38,7 +38,6 @@ import argparse
 import itertools
 import json
 import re
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple, Optional, Sequence
@@ -130,7 +129,8 @@ def group_prefix(group: list) -> tuple:
 def find_groups(rows: list, data: dict) -> list:
     """`(label, base, marks, notes)` per group to re-key: first the keys spelled several ways,
     then the sort field values that sit on several notes outside those."""
-    groups, picked = [], set()
+    groups: list = []
+    picked: set[int] = set()
     for (canon, reading), group in data["spelling"].items():
         base, marks = group_prefix(group)
         groups.append(("%s [%s]" % (canon, reading), base, marks, group))
@@ -251,7 +251,7 @@ def read_jsonl(path: Path) -> list:
 
 def _current(infos: list, config: dict) -> dict:
     """Per note id: (its sort field's name, the field's value), or (None, why it can't be read)."""
-    out = {}
+    out: dict[int, tuple[Optional[str], str]] = {}
     for info in infos:
         if not info:
             continue
@@ -327,7 +327,6 @@ def revert(client, config: dict, undo: Path) -> tuple:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true", help="re-dump the notes over AnkiConnect")
     parser.add_argument("--undo", type=Path, default=UNDO)

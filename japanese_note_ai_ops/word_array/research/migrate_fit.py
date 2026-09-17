@@ -110,7 +110,7 @@ def decode_word_list(text: str, invalid: Counter):
 
 def read_export(path: Path, invalid: Counter) -> list[tuple[str, dict]]:
     """(sentence, word list dict) for every row the migration op would migrate."""
-    out = []
+    out: list[tuple[str, dict]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue

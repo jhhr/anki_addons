@@ -20,7 +20,7 @@ HAND_LABELS = ADDON_ROOT / "output" / "word_matching_judge_hand_labels.jsonl"
 
 
 class Placed(NamedTuple):
-    index: int  # in iter_words order
+    order: int  # position in iter_words order
     parents: list[list]  # outermost first
     elem: list
     path: tuple[str, ...]
@@ -117,7 +117,8 @@ def rewrite_rows(path: Path, new_raw: dict[int, str], renamed: dict[str, str]) -
     changed."""
     if not path.exists():
         return 0
-    rows, changed = [], 0
+    rows: list[dict] = []
+    changed = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -154,7 +155,7 @@ def apply_labels(arr: list, expected: list, labels: list[dict]) -> tuple[list[in
     """Write `labels` (all of one sentence) into `expected`, which is in `iter_words` order.
     Returns the indices labelled by hand, how many of them changed a label that was there,
     and how many labels found no word."""
-    by_key = {(p.path, p.occurrence, p.elem[3]): p.index for p in placed_words(arr)}
+    by_key = {(p.path, p.occurrence, p.elem[3]): p.order for p in placed_words(arr)}
     hand, changed, stale = [], 0, 0
     for row in labels:
         index = by_key.get((tuple(row["path"]), row["occurrence"], row["reading"]))

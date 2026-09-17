@@ -33,7 +33,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from typing import NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 import hand_labels
 from _bootstrap import ADDON_ROOT
@@ -53,7 +53,7 @@ def label_array(word_lists: dict, arr: list, migrate, match_flags) -> list:
         if entry.word and entry.reading:
             hits, _ = migrate._find(entry, elements)
             found.update(id(elem) for elem in hits)
-    expected = []
+    expected: list = []
     for elem in elements:
         if match_flags.match_state(elem) != match_flags.MatchState.UNJUDGED:
             expected.append(None)
@@ -74,8 +74,8 @@ def build(args) -> int:
     corpus = migrate_fit.read_export(migrate_fit.CORPORA["checked"], invalid)
     lexicon = migrate_fit.export_name_lexicon()
     hand_by_sentence: dict[str, list[dict]] = {}
-    for label in hand_labels.read_labels():
-        hand_by_sentence.setdefault(label["sentence"], []).append(label)
+    for hand_label in hand_labels.read_labels():
+        hand_by_sentence.setdefault(hand_label["sentence"], []).append(hand_label)
     hand: Counter[str] = Counter()
     labels: Counter[tuple[str, str]] = Counter()
     rows = []
@@ -282,7 +282,8 @@ def score(judged: list[Judged], match_flags, judge_rules, args) -> int:
     by_group: dict[str, Counter] = {}
     by_pos: dict[str, Counter] = {}
     unexpected_picks: Counter[str] = Counter()
-    reasons: dict[tuple[str, str, str], list[str]] = {}
+    # Keyed by (the judge's verdict, the word); a match_flags constant has no type here.
+    reasons: dict[tuple[Any, tuple[str, str, str]], list[str]] = {}
     for item in judged:
         if item.arr is None:
             counts["sentences without a usable response"] += 1

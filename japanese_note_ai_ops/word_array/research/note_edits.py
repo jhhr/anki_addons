@@ -57,10 +57,11 @@ def shown(text: str) -> str:
 def changes(sentence: str) -> list[Optional[tuple[str, str]]]:
     """For each span, what it reads now and after un-kanjifying, as the page's confirmation
     shows it; None for a span that can't be edited."""
-    out = []
+    out: list[Optional[tuple[str, str]]] = []
     for span in k_spans(sentence):
-        kana = as_kana(span.content)
-        out.append(None if kana is None else (shown(span.content), shown(kana)))
+        content = span.content
+        kana = as_kana(content)
+        out.append(None if content is None or kana is None else (shown(content), shown(kana)))
     return out
 
 

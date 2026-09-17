@@ -35,7 +35,6 @@ import sys
 import threading
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
-from pathlib import Path
 from typing import NamedTuple, Optional
 
 from _bootstrap import ADDON_ROOT

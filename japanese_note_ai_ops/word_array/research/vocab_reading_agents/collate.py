@@ -11,11 +11,18 @@ somewhere neither model reached. Those are the ones worth reading first.
 """
 
 import argparse
+import io
 import json
 import re
 import sys
 from collections import Counter
 from pathlib import Path
+
+# Japanese output on a Windows console. This script imports no module under research/, so it
+# can't take _bootstrap's utf-8 stdout; the check is what makes it safe when stdout is not a
+# console.
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 HERE = Path(__file__).parent
 ADDON_ROOT = HERE.parents[2]
@@ -42,7 +49,6 @@ def main() -> int:
     parser.add_argument("--cases", type=Path, default=AGENTS / "cases.jsonl")
     parser.add_argument("--out", type=Path, default=ADDON_ROOT / "output" / "vocab_reading_plans.md")
     args = parser.parse_args()
-    sys.stdout.reconfigure(encoding="utf-8")
 
     cases = {}
     for line in args.cases.read_text(encoding="utf-8").splitlines():
