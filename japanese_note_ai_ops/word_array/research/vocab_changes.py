@@ -201,9 +201,12 @@ def check_op(op: dict, by_nid: dict) -> str:
         return "sentence note %s is not in the dump" % op["sentence"]
 
     if kind == "set_sentence_furigana":
-        held = clean(row.get(SENTENCE_FIELD) or "")
-        if clean(op["from"]) not in held:
-            return "the sentence does not contain %r" % op["from"]
+        # Literally, not as `clean()` would see it. The field interleaves `<b>` and `<k>` with
+        # the furigana - `<b> 滑[ぬめり]</b>りも` - so a run that reads as contiguous text can
+        # still have a tag through the middle of it, and applying the edit is a replacement in
+        # the raw field. Checking the cleaned text instead would pass a change the apply refuses.
+        if op["from"] not in (row.get(SENTENCE_FIELD) or ""):
+            return "the sentence field does not contain %r literally" % op["from"]
         return ""
 
     elements = elements_in(row, op["dict_form"])
@@ -327,14 +330,6 @@ def one_line(op: dict) -> str:
     if kind == "create_note":
         return "create %s [%s]: %s" % (op["spelling"], op["reading"], op.get("why", ""))
     return json.dumps(op, ensure_ascii=False)
-    lines.append("%d the collection does not agree with:" % len(problems))
-    lines.append("")
-    for note_id, key, index, op, why in problems:
-        lines.append("  %d %s  op[%d] %s" % (note_id, key, index, op.get("op")))
-        lines.append("    %s" % why)
-        lines.append("    %s" % json.dumps(op, ensure_ascii=False))
-        lines.append("")
-    return lines
 
 
 def write(path: Path, rows: list) -> None:
