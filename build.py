@@ -85,6 +85,8 @@ EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".ankiaddon"}
 EXCLUDE_PATTERNS = (re.compile(r".*_tests\.py$"),)
 
 SHARED_IMPORT_RE = re.compile(r"from\s+\.{1,3}shared\.(\w+)")
+# Inside anki_shared a package imports its siblings by their own name, `from ..word_array`.
+SHARED_SIBLING_RE = re.compile(r"from\s+\.\.(\w+)")
 
 
 # --------------------------------------------------------------------------
@@ -774,6 +776,31 @@ def cmd_dist(addons: list[Addon]) -> None:
             print("  ! large - check AnkiWeb's current upload limit before uploading")
 
 
+def shared_siblings(pkg: str, seen: Optional[set[str]] = None) -> set[str]:
+    """The shared packages a shared package imports, recursively.
+
+    They are not required: a package that reaches for a sibling does it in a try/except, so
+    that an addon which declares neither still loads and the feature is simply a name its
+    code does not have. Declaring one is therefore a choice made for the shared package's
+    sake rather than for the addon's own imports, and `check` should not call it unused.
+    """
+    seen = seen if seen is not None else set()
+    if pkg in seen:
+        return set()
+    seen.add(pkg)
+    found: set[str] = set()
+    src = SHARED_ROOT / pkg
+    if not src.is_dir():
+        return found
+    for path in src.rglob("*.py"):
+        for name in SHARED_SIBLING_RE.findall(path.read_text("utf-8", errors="replace")):
+            if name != pkg and (SHARED_ROOT / name).is_dir():
+                found.add(name)
+    for name in list(found):
+        found |= shared_siblings(name, seen)
+    return found
+
+
 def cmd_check(addons: list[Addon]) -> int:
     """Catch shared packages that are imported but not declared in build.json."""
     failures = 0
@@ -785,7 +812,10 @@ def cmd_check(addons: list[Addon]) -> int:
                 continue
             used |= set(SHARED_IMPORT_RE.findall(path.read_text("utf-8", errors="replace")))
         undeclared = used - set(addon.shared)
-        unused = set(addon.shared) - used
+        optional: set[str] = set()
+        for pkg in addon.shared:
+            optional |= shared_siblings(pkg)
+        unused = set(addon.shared) - used - optional
         if undeclared:
             print(
                 f"FAIL {addon.path.name}: imports undeclared shared pkg(s): "

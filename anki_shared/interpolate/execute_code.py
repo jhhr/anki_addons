@@ -15,7 +15,9 @@ against *accidental* misuse, not a cryptographic boundary.
 What IS restricted: ``__import__``, ``open``, ``exec``, ``eval``,
 ``compile``, ``breakpoint``, ``os``, ``sys``, network access.
 What IS allowed: the explicit allowlist below (``re``, ``json``, ``html``,
-``print``, ``find_cards``, ``find_notes``, ``note``) plus a curated set of built-ins.
+``print``, ``find_cards``, ``find_notes``, ``note``) plus a curated set of built-ins,
+and, where the add-on ships the packages, ``kana_highlight``, ``decode_word_array``
+and ``format_word_array``.
 
 Public API
 ----------
@@ -240,6 +242,68 @@ class ReadOnlyCard:
         return f"<ReadOnlyCard id={card_id}>"
 
 
+def _japanese_globals() -> dict:
+    """`kana_highlight` and the word array codecs, for the add-ons that ship them.
+
+    Imported here rather than at the top because `interpolate` is used by add-ons that do not
+    declare `jp_text_processing` or `word_array` in their build.json, and `build.py check`
+    does not look inside a shared package for its own imports. A missing package has to be a
+    name the code cannot use, not an ImportError when the add-on loads.
+    """
+    names: dict = {}
+
+    try:
+        from ..jp_text_processing.all_types.main_types import WithTagsDef
+        from ..jp_text_processing.kana.kana_highlight import kana_highlight as _kana_highlight
+    except ImportError:
+        pass
+    else:
+
+        def kana_highlight(
+            kanji_to_highlight: Optional[str],
+            text: str,
+            return_type: str = "kana_only",
+            wrap_readings_in_tags: bool = True,
+            merge_consecutive_tags: bool = True,
+            onyomi_to_katakana: bool = False,
+        ) -> str:
+            """The reading processor the Kana Highlight step runs, callable directly.
+
+            The arguments after `return_type` are that step's own settings under their own
+            names, so code that has to match a field the step wrote can be written from
+            looking at the step. (The sentence fields in this collection are built with
+            `merge_consecutive_tags=False`.)
+            """
+            return _kana_highlight(
+                kanji_to_highlight,
+                text,
+                return_type,  # type: ignore[arg-type]  (a FuriReconstruct literal)
+                WithTagsDef(
+                    wrap_readings_in_tags,
+                    merge_consecutive_tags,
+                    onyomi_to_katakana,
+                    False,  # include_suru_okuri, as the step also fixes it
+                ),
+            )
+
+        names["kana_highlight"] = kana_highlight
+
+    try:
+        from ..word_array.field_text import decode_word_array, format_word_array
+    except ImportError:
+        pass
+    else:
+        # json.loads reads the field too, until someone has edited the note by hand and the
+        # editor has turned the rows into `<br>` and `&nbsp;`. decode_word_array knows that.
+        names["decode_word_array"] = decode_word_array
+        names["format_word_array"] = format_word_array
+
+    return names
+
+
+_JAPANESE_GLOBALS = _japanese_globals()
+
+
 def execute_code_core(
     code: str, note: Note, extra_globals: Optional[dict] = None
 ) -> Tuple[Any, Optional[str]]:
@@ -287,6 +351,7 @@ def execute_code_core(
         "note": ReadOnlyNote(note),
         "cards": [ReadOnlyCard(c, note_type) for c in note_cards],
         "get_card_last_reps": get_card_last_reps,
+        **_JAPANESE_GLOBALS,
     }
     if extra_globals:
         exec_globals.update(extra_globals)
