@@ -40,8 +40,13 @@ def write_manifest(lib, **overrides):
 
 @pytest.fixture
 def addon(tmp_path, monkeypatch):
-    """An addon directory whose smoke import always passes, so only manifests are under test."""
-    monkeypatch.setattr(vendor_path, "_smoke_test", lambda: None)
+    """An addon whose packages all arrived, so only manifests are under test.
+
+    The import-based half of health has its own class at the bottom of this file; stubbing it
+    here is what keeps every manifest case above from depending on what happens to be
+    installed in whatever environment runs the suite.
+    """
+    monkeypatch.setattr(vendor_path, "_missing_packages", lambda _addon_dir: None)
     return tmp_path
 
 
@@ -187,11 +192,79 @@ class TestVendorHealth:
         write_manifest(shipped(addon))
         assert vendor_path.vendor_health(str(addon)) is None
 
-    def test_the_smoke_import_is_only_a_backstop(self, addon, monkeypatch):
+    def test_the_import_check_is_only_a_backstop(self, addon, monkeypatch):
         """A matching manifest still fails health when the tree it describes is not there."""
-        monkeypatch.setattr(vendor_path, "_smoke_test", lambda: "psutil is not in it")
+        monkeypatch.setattr(vendor_path, "_missing_packages", lambda _d: "psutil is not in it")
         write_manifest(shipped(addon))
         assert vendor_path.vendor_health(str(addon)) == "psutil is not in it"
+
+
+class TestMissingPackages:
+    """The half of health the manifests cannot answer: did every requirement arrive?
+
+    A tree built before a requirement was added describes its interpreter perfectly, and a
+    gitignored `lib/` that never arrived has no manifest to compare at all. Both end in
+    ModuleNotFoundError at addon import, which - unlike a package silently falling back to pure
+    Python - is not something the addon can carry on through.
+    """
+
+    def requirements(self, addon, *lines):
+        (addon / "requirements.txt").write_text("\n".join(lines) + "\n", "utf-8")
+
+    def dist_info(self, lib, name):
+        lib.mkdir(parents=True, exist_ok=True)
+        (lib / f"{name}.dist-info").mkdir()
+
+    def test_a_requirement_that_never_arrived_is_named(self, tmp_path):
+        self.requirements(tmp_path, "nonexistent-vendored-pkg==1.0")
+        reason = vendor_path._missing_packages(str(tmp_path)) or ""
+        assert "nonexistent-vendored-pkg" in reason
+
+    def test_metadata_in_a_live_tree_is_enough(self, tmp_path):
+        """What a rebuild would install, installed. Nothing to ask about."""
+        self.requirements(tmp_path, "nonexistent-vendored-pkg==1.0")
+        self.dist_info(tmp_path / "lib", "nonexistent_vendored_pkg-1.0")
+        assert vendor_path._missing_packages(str(tmp_path)) is None
+
+    def test_an_importable_package_is_not_missing_though_it_was_never_vendored(self, tmp_path):
+        """Anki ships some of these itself, and a rebuild has nothing to add for those."""
+        self.requirements(tmp_path, "json==1.0")
+        assert vendor_path._missing_packages(str(tmp_path)) is None
+
+    def test_the_metadata_name_is_matched_however_it_is_spelled(self, tmp_path):
+        """`pillow` installs `PIL`: a name mismatch must not read as an absence, or the offer
+        would come back at every startup, a successful rebuild never satisfying it."""
+        self.requirements(tmp_path, "Json-Repair==0.63.4")
+        self.dist_info(tmp_path / "lib", "json_repair-0.63.4")
+        assert vendor_path._missing_packages(str(tmp_path)) is None
+
+    def test_a_tree_that_is_on_sys_path_at_all_counts(self, tmp_path):
+        """Even demoted, the rebuilt tree is appended rather than dropped, so imports find it."""
+        self.requirements(tmp_path, "nonexistent-vendored-pkg==1.0")
+        write_manifest(
+            tmp_path / "user_files" / "lib",
+            python_version=other_python_version(),
+            rebuilt_locally=True,
+        )
+        self.dist_info(tmp_path / "user_files" / "lib", "nonexistent_vendored_pkg-1.0")
+        assert vendor_path._missing_packages(str(tmp_path)) is None
+
+    def test_no_requirements_falls_back_to_the_one_module_backstop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vendor_path, "_smoke_test", lambda: "psutil is not in it")
+        assert vendor_path._missing_packages(str(tmp_path)) == "psutil is not in it"
+
+    def test_comments_flags_and_markers_are_not_requirements(self, tmp_path):
+        """uv writes all three, and two markered lines for one distribution are one name."""
+        self.requirements(
+            tmp_path,
+            "# Compiled from requirements.in by build.py vendor",
+            "-r other.txt",
+            "",
+            "json-repair==0.44.1 ; python_full_version < '3.10'",
+            "    # via -r requirements.in",
+            "json-repair==0.63.4 ; python_full_version >= '3.10'",
+        )
+        assert vendor_path.requirement_names(str(tmp_path)) == ["json-repair"]
 
 
 class TestAddVendorPaths:
