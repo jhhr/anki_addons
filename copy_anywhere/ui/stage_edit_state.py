@@ -29,9 +29,11 @@ class CallbackEntry:
     """A callback and whether the widget that registered it is on screen.
 
     The reused editors register these to hear about a changed note type or variable list.
-    Nothing in format 2 fires them -- a stage's scope is fixed while its editor is open, and
-    a change that moves it rebuilds the tree -- but the widgets register them regardless, so
-    the registries have to exist and hold something callable.
+    Format 2 fires one of them: `set_target_is_trigger`, because the note a stage edits is
+    chosen in that stage's own row and the card types on offer follow it. The rest are
+    registered and never fired -- a stage's scope is otherwise fixed while its editor is
+    open, and a change that moves it rebuilds the tree -- but the widgets register them
+    regardless, so the registries have to exist and hold something callable.
     """
 
     callback: Callable
@@ -95,6 +97,22 @@ class StageEditState:
 
     def set_context(self, context: StageEditorContext) -> None:
         self.context = context
+
+    def set_target_is_trigger(self, target_is_trigger: bool) -> None:
+        """Change which note the stage edits, and tell everything that lists by note type.
+
+        The target is a combo at the top of the stage's own row, so this is an ordinary edit
+        rather than something fixed when the row was built: a stage retargeted from the
+        trigger to a queried note has to stop offering the trigger note type's card types
+        and start offering all of them, or an action added from the stale list names a card
+        type the queried note will not have and matches nothing at run time.
+        """
+        copy_mode = COPY_MODE_WITHIN_NOTE if target_is_trigger else COPY_MODE_ACROSS_NOTES
+        if copy_mode == self.copy_mode:
+            return
+        self.copy_mode = copy_mode
+        for entry in self.selected_model_callbacks:
+            entry.callback()
 
     # -- callback registries -------------------------------------------------------------
 

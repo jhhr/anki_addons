@@ -587,7 +587,7 @@ class EditNoteStageEditor(StageEditor):
         self.target = binding_combo(
             self, context.note_bindings, target, "Which note to edit"
         )
-        self.target.currentTextChanged.connect(self.notify)
+        self.target.currentTextChanged.connect(self._on_target_changed)
         self.add_row("Edit", self.target)
 
         self.fields_container = QWidget(self)
@@ -624,6 +624,13 @@ class EditNoteStageEditor(StageEditor):
         self.card_actions.initialize_ui_state()
         self.card_actions.changed.connect(self.changed)
         self.form.addRow(self.card_actions)
+
+    def _on_target_changed(self, name: str) -> None:
+        # The card types on offer are the trigger note type's or every note type's, and
+        # which of those depends on the note this stage now edits. The field pickers follow
+        # the same change through `set_context`, which the refresh below reaches.
+        self.state.set_target_is_trigger(name == "trigger")
+        self.notify()
 
     def _add_field_row(self, field_write: dict) -> FieldWriteRow:
         row = FieldWriteRow(self, field_write)

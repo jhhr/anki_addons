@@ -179,4 +179,13 @@ class ValueExpressionEditor(QWidget):
             self.code_layout.update_options(context.options_dict, context.validate_dict)
 
     def set_label(self, label: str) -> None:
-        self.text_layout.text_edit.setToolTip(label)
+        """Say what belongs in the box, on both modes' captions.
+
+        The condition stage relabels this when its kind changes -- an Anki search wants one
+        thing, an expression another -- so it has to reach the caption the user reads. It
+        used to set a tooltip, which said the right thing to anyone who hovered and left the
+        caption saying whatever it was built with.
+        """
+        self.text_layout.set_label(label)
+        if self.code_layout is not None:
+            self.code_layout.set_label(label)

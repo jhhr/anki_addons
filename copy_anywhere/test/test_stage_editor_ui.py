@@ -40,6 +40,8 @@ from copy_anywhere.ui.stage_editors import (
 from copy_anywhere.ui.stage_list import StageTreeWidget
 from copy_anywhere.ui.stage_triggers_editor import selected_names
 
+from copy_anywhere.configuration import CARD_TYPE_SEPARATOR
+
 from conftest import KANJI, VOCAB
 
 
@@ -1472,3 +1474,105 @@ class TestTheCopyConditionMarkerOnAConditionStage:
         saved = tree.document.stage("c")
         assert "predicate_kind" not in saved
         assert "unmatched_skips_trigger" not in saved
+
+
+class TestWhichCardTypesAnEditNoteStageOffers:
+    """The card types on offer follow the note the stage edits, which can change.
+
+    `StageEditState.copy_mode` is what `CardActionsEditor.update_card_type_options` reads to
+    decide between two lists: a stage editing the trigger offers that note type's own card
+    types, and a stage editing a note some query found cannot know its note type, so it
+    offers every one in the collection. The stage editor computes it once, from the target
+    binding as it stood when the row was built.
+
+    Changing the target afterwards is an ordinary edit -- it is the first control in the row
+    -- and nothing rebuilt the list. So a stage retargeted from the trigger to a queried note
+    went on offering only the trigger note type's card types, and an action added from that
+    list names a card type the queried note will not have, so it silently matches nothing at
+    run time.
+    """
+
+    def editor_for(self, col, target):
+        query = default_stage(STAGE_NOTE_QUERY, "q")
+        query["result"] = "found"
+        query["query"] = value_expression(text="deck:Default")
+        loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+        loop["input"] = {"binding": "found"}
+        edit = default_stage(STAGE_EDIT_NOTE, "e")
+        edit["target"] = {"binding": target}
+        loop["body"] = [edit]
+        tree = tree_for(col, query, loop)
+        return tree, tree.rows["e"].editor
+
+    def offered_note_types(self, editor):
+        box = editor.card_actions.card_type_selector
+        return {
+            box.itemText(index).split(CARD_TYPE_SEPARATOR)[0].strip()
+            for index in range(box.count())
+            if CARD_TYPE_SEPARATOR in box.itemText(index)
+        }
+
+    def test_a_stage_editing_the_trigger_offers_its_own_note_type(self, col, qapp):
+        _tree, editor = self.editor_for(col, "trigger")
+
+        assert self.offered_note_types(editor) == {VOCAB}
+
+    def test_a_stage_editing_a_queried_note_offers_them_all(self, col, qapp):
+        _tree, editor = self.editor_for(col, "note")
+
+        assert KANJI in self.offered_note_types(editor)
+
+    def test_retargeting_the_stage_relists_them(self, col, qapp):
+        _tree, editor = self.editor_for(col, "trigger")
+        assert self.offered_note_types(editor) == {VOCAB}
+
+        editor.target.setCurrentText("note")
+
+        assert KANJI in self.offered_note_types(editor)
+
+    def test_retargeting_back_narrows_them_again(self, col, qapp):
+        _tree, editor = self.editor_for(col, "note")
+
+        editor.target.setCurrentText("trigger")
+
+        assert self.offered_note_types(editor) == {VOCAB}
+
+
+class TestTheConditionEditorsCaption:
+    """The caption over the predicate box, which says what is expected in it.
+
+    A condition matched as an Anki search wants a search; one matched any other way wants an
+    expression. `ConditionStageEditor._apply_kind` relabels the box to say which, and
+    `ValueExpressionEditor.set_label` set a tooltip instead of the caption -- so the caption
+    kept saying whatever it was built with, and the only thing that changed was text the
+    user has to hover to find.
+    """
+
+    def condition_editor(self, col):
+        stage = default_stage(STAGE_CONDITION, "c")
+        stage["predicate"] = value_expression(text="tag:wanted")
+        tree = tree_for(col, stage)
+        return tree, tree.rows["c"].editor
+
+    def caption(self, editor):
+        return editor.predicate.text_layout.main_label.text()
+
+    def test_it_says_expression_for_an_ordinary_predicate(self, col, qapp):
+        _tree, editor = self.condition_editor(col)
+
+        assert "search" not in self.caption(editor).lower()
+
+    def test_it_says_search_once_the_search_form_is_chosen(self, col, qapp):
+        _tree, editor = self.condition_editor(col)
+
+        editor.match_as_search.setChecked(True)
+
+        assert "search" in self.caption(editor).lower()
+
+    def test_it_goes_back_when_the_search_form_is_turned_off(self, col, qapp):
+        _tree, editor = self.condition_editor(col)
+        editor.match_as_search.setChecked(True)
+
+        editor.match_as_search.setChecked(False)
+
+        assert "search" not in self.caption(editor).lower()
