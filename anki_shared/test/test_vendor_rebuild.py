@@ -15,26 +15,37 @@ import pytest
 from anki_shared.utils import vendor_path, vendor_rebuild
 
 
+@pytest.fixture
+def no_uv(monkeypatch):
+    """No uv anywhere, so the pip path is what is under test.
+
+    Not optional: the machine running this suite is a machine with Anki on it, and Anki ships
+    uv beside its own executable. Without this, every pip case below would pass for the wrong
+    reason - can_rebuild would be answering yes about a uv it found on the developer's disk.
+    """
+    monkeypatch.setattr(vendor_rebuild, "_find_uv", lambda: None)
+
+
 class TestCanRebuild:
-    def test_refuses_when_the_executable_is_not_a_python(self, monkeypatch):
-        """PyInstaller-packaged Anki reports anki.exe here, and `-m pip` would start Anki."""
+    def test_refuses_when_the_executable_is_not_a_python(self, monkeypatch, no_uv):
+        """Packaged Anki reports anki.exe here, and `-m pip` would start a second Anki."""
         monkeypatch.setattr(sys, "executable", r"C:\Program Files\Anki\anki.exe")
         reason = vendor_rebuild.can_rebuild() or ""
         assert "anki.exe" in reason
 
-    def test_refuses_when_there_is_no_executable_at_all(self, monkeypatch):
+    def test_refuses_when_there_is_no_executable_at_all(self, monkeypatch, no_uv):
         monkeypatch.setattr(sys, "executable", "")
         assert vendor_rebuild.can_rebuild() is not None
 
-    def test_refuses_when_pip_is_missing(self, monkeypatch):
+    def test_refuses_when_pip_is_missing(self, monkeypatch, no_uv):
         monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
         monkeypatch.setattr(
             vendor_rebuild, "_run",
             lambda *a, **k: subprocess.CompletedProcess([], 1, "", "No module named pip"),
         )
-        assert vendor_rebuild.can_rebuild() == "this Anki's Python has no working pip"
+        assert "no working pip" in (vendor_rebuild.can_rebuild() or "")
 
-    def test_refuses_rather_than_raising_when_the_probe_will_not_run(self, monkeypatch):
+    def test_refuses_rather_than_raising_when_the_probe_will_not_run(self, monkeypatch, no_uv):
         monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
 
         def explode(*_a, **_k):
@@ -43,13 +54,77 @@ class TestCanRebuild:
         monkeypatch.setattr(vendor_rebuild, "_run", explode)
         assert "could not run pip" in (vendor_rebuild.can_rebuild() or "")
 
-    def test_allows_a_real_python_with_pip(self, monkeypatch):
+    def test_allows_a_real_python_with_pip(self, monkeypatch, no_uv):
         monkeypatch.setattr(sys, "executable", "/usr/bin/python3.13")
         monkeypatch.setattr(
             vendor_rebuild, "_run",
             lambda *a, **k: subprocess.CompletedProcess([], 0, "pip 25.1.1", ""),
         )
         assert vendor_rebuild.can_rebuild() is None
+
+    def test_allows_a_packaged_anki_through_the_uv_it_ships(self, monkeypatch):
+        """The case the pip path can never serve, and the default Anki install.
+
+        That Anki runs an embeddable CPython: no python.exe, no pip, and sys.executable is
+        anki.exe. Refusing it left the add-on loading but unrepairable except from a terminal.
+        """
+        monkeypatch.setattr(sys, "executable", r"C:\Program Files\Anki\anki.exe")
+        monkeypatch.setattr(vendor_rebuild, "_find_uv", lambda: r"C:\Program Files\Anki\uv.exe")
+        assert vendor_rebuild.can_rebuild() is None
+
+    def test_uv_is_not_probed_by_running_it(self, monkeypatch):
+        """Presence is the whole check: a probe would be a subprocess at every refusal."""
+        monkeypatch.setattr(sys, "executable", r"C:\Program Files\Anki\anki.exe")
+        monkeypatch.setattr(vendor_rebuild, "_find_uv", lambda: "/anki/uv")
+
+        def explode(*_a, **_k):
+            raise AssertionError("can_rebuild must not run a subprocess once uv is found")
+
+        monkeypatch.setattr(vendor_rebuild, "_run", explode)
+        assert vendor_rebuild.can_rebuild() is None
+
+
+class TestFindUv:
+    def test_ankis_own_copy_beats_one_on_the_path(self, tmp_path, monkeypatch):
+        """The copy beside sys.executable belongs to the Anki that is asking."""
+        beside = tmp_path / ("uv.exe" if sys.platform == "win32" else "uv")
+        beside.write_text("", "utf-8")
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "anki.exe"))
+        monkeypatch.setattr(vendor_rebuild.shutil, "which", lambda _n: "/elsewhere/uv")
+        assert vendor_rebuild._find_uv() == str(beside)
+
+    def test_the_path_is_the_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(vendor_rebuild.shutil, "which", lambda _n: "/elsewhere/uv")
+        assert vendor_rebuild._find_uv() == "/elsewhere/uv"
+
+    def test_none_when_there_is_no_uv_at_all(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(vendor_rebuild.shutil, "which", lambda _n: None)
+        assert vendor_rebuild._find_uv() is None
+
+
+class TestInstallCommand:
+    def test_uv_is_pinned_to_the_running_python_and_may_not_fetch_one(self, monkeypatch):
+        monkeypatch.setattr(vendor_rebuild, "_find_uv", lambda: "/anki/uv")
+        command = vendor_rebuild._install_command("/staging", "/addon/requirements.txt")
+        assert command[:3] == ["/anki/uv", "pip", "install"]
+        assert command[command.index("--target") + 1] == "/staging"
+        assert command[command.index("--requirement") + 1] == "/addon/requirements.txt"
+        version = command[command.index("--python-version") + 1]
+        assert version == vendor_path.runtime_python_version()
+        # An addon has no business downloading an interpreter behind the user's back
+        assert "--no-python-downloads" in command
+
+    def test_pip_is_the_fallback_and_stays_out_of_ankis_environment(self, monkeypatch, no_uv):
+        monkeypatch.setattr(sys, "executable", "/usr/bin/python3.13")
+        command = vendor_rebuild._install_command("/staging", "/addon/requirements.txt")
+        assert command[:4] == ["/usr/bin/python3.13", "-m", "pip", "install"]
+        assert command[command.index("--target") + 1] == "/staging"
+        # Anki pins requests and its chain; moving them would break Anki, not fix the addon
+        assert "--upgrade" not in command
 
 
 class TestRebuildLibs:
@@ -116,7 +191,7 @@ class TestRebuildLibs:
         assert manifest["flat"] == ["psutil"]
         assert manifest["requirements_sha256"] == vendor_path.requirements_digest(str(tmp_path))
         # The manifest it just wrote is the one vendor_health reads
-        monkeypatch.setattr(vendor_path, "_smoke_test", lambda: None)
+        monkeypatch.setattr(vendor_path, "_missing_packages", lambda _d: None)
         assert vendor_path.vendor_health(str(tmp_path)) is None
 
 

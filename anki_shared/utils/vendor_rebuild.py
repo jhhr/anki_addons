@@ -16,6 +16,13 @@ It is also an *upgrade* rather than only a repair. build.json's `vendor_no_binar
 rapidfuzz's ~6 MB of extensions out of the shipped tree - five platforms of them is more than
 the package can afford - but build.json is not in the zip, so a rebuild on one machine
 installs the C extensions for that one platform and gets the real matching speed.
+
+What does the installing is uv where Anki has one and pip where it does not. Packaged Anki -
+which is the default install - runs an embeddable CPython with no python.exe and no pip at all,
+so the pip path refused there and the feature came to nothing on exactly the builds most people
+run: it avoided the crash and then offered no way out of it but a terminal. Anki ships uv beside
+its own executable to manage its own Python, and uv installs a `--target` tree needing neither a
+pip nor a virtualenv.
 """
 
 from __future__ import annotations
@@ -58,29 +65,96 @@ _MESSAGE_LINES = 5
 _MESSAGE_LINE_CHARS = 200
 
 
-def can_rebuild() -> Optional[str]:
-    """None if pip can be driven here, else a short reason it cannot.
+def _find_uv() -> Optional[str]:
+    """Anki's own uv, or one on PATH. None if there is neither.
 
-    The guard is not paranoia. On PyInstaller-packaged Anki (24.x and earlier) sys.executable
-    is `anki.exe`, and `[sys.executable, "-m", "pip", ...]` would **launch a second Anki**
-    rather than install anything. Refuse rather than guess: this whole feature is optional and
-    the addon runs, more slowly, without it.
+    Beside sys.executable first, because that is the copy belonging to the Anki that is asking.
+    The install locations come next, for an Anki whose sys.executable is somewhere else, and
+    PATH last for a dev checkout. Only the file's presence is checked here; whether it actually
+    runs is answered by the install itself, whose output the failure dialog shows.
     """
+    directories = [os.path.dirname(sys.executable)] if sys.executable else []
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            directories.append(os.path.join(local, "Programs", "Anki"))
+    elif sys.platform == "darwin":
+        directories.append("/Applications/Anki.app/Contents/MacOS")
+    for directory in directories:
+        for name in ("uv.exe", "uv"):
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return shutil.which("uv")
+
+
+def _install_command(staging: str, requirements: str) -> list[str]:
+    """The installer to run: uv where Anki has one, pip where it does not.
+
+    Both install into `--target`, and neither may reach Anki's own environment - Anki pins
+    requests and its chain, and a rebuild that moved them would break Anki rather than repair
+    the addon.
+
+    uv is told the version of the Python that is *running*, rather than left to infer one from
+    whichever interpreter it happens to find, so the wheels it picks are the ones this Anki can
+    load. And it is forbidden from downloading an interpreter of its own: it needs none to
+    resolve wheels, and an addon has no business starting a silent Python download.
+    """
+    uv = _find_uv()
+    if uv:
+        return [
+            uv, "pip", "install",
+            "--target", staging,
+            "--requirement", requirements,
+            "--python-version", runtime_python_version(),
+            "--no-python-downloads",
+            "--quiet",
+        ]
+    return [
+        sys.executable, "-m", "pip", "install",
+        # --target only. Never --upgrade, and nothing that could reach Anki's own venv:
+        # Anki pins requests and its chain, and this must not move them.
+        "--target", staging,
+        "--requirement", requirements,
+        "--disable-pip-version-check",
+        # There is no console attached to ask on.
+        "--no-input",
+        "--quiet",
+    ]
+
+
+def can_rebuild() -> Optional[str]:
+    """None if some installer can be driven here, else a short reason none can.
+
+    uv is asked for first because Anki ships one, it needs no pip, and on a packaged Anki it is
+    the only thing on the machine that can install a wheel at all. That is not an edge case: it
+    is the default install, and refusing it is what reduced this feature to crash avoidance -
+    the dialog said there was no pip and left the user with a terminal as the only way out.
+
+    The pip path stays for an Anki running from a real Python: the pip-installed `(ao)` builds,
+    and dev checkouts. Its guard is not paranoia either. On packaged Anki sys.executable is
+    `anki.exe`, and `[sys.executable, "-m", "pip", ...]` would **launch a second Anki** rather
+    than install anything. Refuse rather than guess: the feature is optional, and the addon
+    runs - more slowly, or short of one operation - without it.
+    """
+    if _find_uv():
+        return None
     executable = sys.executable
     if not executable:
-        return "Anki did not report which Python it is running"
+        return "Anki did not report which Python it is running, and uv is not installed"
     stem = os.path.splitext(os.path.basename(executable))[0].lower()
     if not stem.startswith("python"):
         return (
             f"this Anki runs from {os.path.basename(executable)} rather than a Python"
-            " executable, so there is no pip to install with"
+            " executable, and Anki's own uv is not beside it, so there is nothing here to"
+            " install with"
         )
     try:
         probe = _run([executable, "-m", "pip", "--version"], timeout=60)
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not run pip: {error}"
     if probe.returncode != 0:
-        return "this Anki's Python has no working pip"
+        return "this Anki's Python has no working pip, and uv is not installed"
     return None
 
 
@@ -100,24 +174,11 @@ def rebuild_libs(addon_dir: str, on_progress: Callable[[str], None] = lambda _: 
     staging = tempfile.mkdtemp(prefix="lib.building-", dir=os.path.dirname(target))
     try:
         on_progress("Downloading and installing packages...")
-        result = _run(
-            [
-                sys.executable, "-m", "pip", "install",
-                # --target only. Never --upgrade, and nothing that could reach Anki's own venv:
-                # Anki pins requests and its chain, and this must not move them.
-                "--target", staging,
-                "--requirement", requirements,
-                "--disable-pip-version-check",
-                # There is no console attached to ask on.
-                "--no-input",
-                "--quiet",
-            ],
-            timeout=_TIMEOUT_SECONDS,
-        )
+        result = _run(_install_command(staging, requirements), timeout=_TIMEOUT_SECONDS)
         if result.returncode != 0:
-            # pip warns on stderr that these versions do not match anki-release's own pins.
-            # That is expected and harmless - --target never touches the venv - so only the
-            # exit code decides.
+            # Both installers warn on stderr that these versions do not match anki-release's
+            # own pins. That is expected and harmless - --target never touches the venv - so
+            # only the exit code decides.
             raise RuntimeError(_failure_message(result))
 
         on_progress("Tidying up...")
@@ -214,13 +275,15 @@ def _run(command: list[str], timeout: int) -> "subprocess.CompletedProcess[str]"
 
 
 def _failure_message(result: "subprocess.CompletedProcess[str]") -> str:
-    """The tail of pip's output, trimmed to something a message box can show."""
+    """The tail of the installer's output, trimmed to something a message box can show."""
     lines = (result.stderr or result.stdout or "").strip().splitlines()
     tail = [
         line if len(line) <= _MESSAGE_LINE_CHARS else line[:_MESSAGE_LINE_CHARS] + "..."
         for line in lines[-_MESSAGE_LINES:]
     ]
-    return f"pip exited with {result.returncode}:\n" + ("\n".join(tail) or "no output")
+    return f"the installer exited with {result.returncode}:\n" + (
+        "\n".join(tail) or "no output"
+    )
 
 
 def _prune(tree: str) -> None:
