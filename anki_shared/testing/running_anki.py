@@ -115,13 +115,15 @@ def media_servers_waited_for(timeout: float = MEDIA_SERVER_START_TIMEOUT) -> Ite
             )
         return int(self.server.effective_port)
 
-    server_class.__init__ = __init__
-    server_class.getPort = getPort
+    # setattr, not assignment: mypy refuses a method assignment, which is exactly what a
+    # monkeypatch is.
+    setattr(server_class, "__init__", __init__)
+    setattr(server_class, "getPort", getPort)
     try:
         yield
     finally:
-        server_class.__init__ = original_init
-        server_class.getPort = original_get_port
+        setattr(server_class, "__init__", original_init)
+        setattr(server_class, "getPort", original_get_port)
 
 
 @contextmanager
@@ -179,9 +181,10 @@ def main_window(
     # profile load, so this goes on before the profile opens.
     deck_browser_class = type(mw.deckBrowser)
     original_refresh = deck_browser_class.refresh
-    original_render = deck_browser_class._DeckBrowser__renderPage
-    deck_browser_class.refresh = lambda self: None
-    deck_browser_class._DeckBrowser__renderPage = lambda self, *args, **kwargs: None
+    # `__renderPage` is name-mangled, so it is not on `DeckBrowser` under a name mypy knows.
+    original_render = getattr(deck_browser_class, "_DeckBrowser__renderPage")
+    setattr(deck_browser_class, "refresh", lambda self: None)
+    setattr(deck_browser_class, "_DeckBrowser__renderPage", lambda self, *args, **kwargs: None)
 
     # Loading a profile starts an mpv process for audio and unloading it stops that again,
     # whether or not anything ever plays. Under test the start sometimes times out ("mpv
@@ -191,8 +194,8 @@ def main_window(
     main_window_class = type(mw)
     original_setup_sound = main_window_class.setup_sound
     original_cleanup_sound = main_window_class.cleanup_sound
-    main_window_class.setup_sound = lambda self: None
-    main_window_class.cleanup_sound = lambda self: None
+    setattr(main_window_class, "setup_sound", lambda self: None)
+    setattr(main_window_class, "cleanup_sound", lambda self: None)
 
     real_anki.rebind_mw(mw, list(packages))
     try:
@@ -206,10 +209,10 @@ def main_window(
                 lambda: mw._background_op_count == 0, timeout=drain_timeout
             )
     finally:
-        deck_browser_class.refresh = original_refresh
-        deck_browser_class._DeckBrowser__renderPage = original_render
-        main_window_class.setup_sound = original_setup_sound
-        main_window_class.cleanup_sound = original_cleanup_sound
+        setattr(deck_browser_class, "refresh", original_refresh)
+        setattr(deck_browser_class, "_DeckBrowser__renderPage", original_render)
+        setattr(main_window_class, "setup_sound", original_setup_sound)
+        setattr(main_window_class, "cleanup_sound", original_cleanup_sound)
         # Anki keeps a repeating two-second timer on `mw` that re-applies the theme by
         # reading `aqt.mw.pm.theme()`. It can fire once more after this session is gone, by
         # which point `aqt.mw` is the stub again -- and `StubProfileManager` has no

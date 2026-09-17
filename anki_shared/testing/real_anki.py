@@ -31,7 +31,7 @@ binding in the pytest ini or `PyQt6.QtCore` fails to load its DLLs.
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 from unittest.mock import MagicMock
 
 # Resolve the circular import before anything else can trip over it. Every other `anki`
@@ -40,6 +40,9 @@ import anki.collection  # noqa: F401  isort:skip
 
 from anki.collection import Collection
 from anki.notes import Note
+
+if TYPE_CHECKING:
+    from aqt.main import AnkiQt
 
 
 def is_available() -> bool:
@@ -182,12 +185,16 @@ def install(configs: Optional[dict[str, dict]] = None) -> StubMainWindow:
         return existing
 
     stub = StubMainWindow(configs=configs)
-    aqt.mw = stub
+    # `aqt.mw` is declared as the real `AnkiQt`; installing a stand-in is the whole point.
+    setattr(aqt, "mw", stub)
     return stub
 
 
-def rebind_mw(stub: "StubMainWindow", package_names: list[str]) -> None:
+def rebind_mw(stub: Union["StubMainWindow", "AnkiQt"], package_names: list[str]) -> None:
     """Point every already-imported module of these packages at `stub`.
+
+    `stub` is the stub main window outside a real-Anki test and the running `AnkiQt` inside
+    one -- `running_anki.main_window` rebinds the real thing through here.
 
     Addon modules do `from aqt import mw`, which binds the object that was on `aqt` at
     import time. Anything that replaces `mw` afterwards -- a new collection, a new Anki
@@ -198,7 +205,7 @@ def rebind_mw(stub: "StubMainWindow", package_names: list[str]) -> None:
         if name.split(".")[0] not in package_names:
             continue
         if getattr(module, "mw", None) is not None:
-            module.mw = stub
+            setattr(module, "mw", stub)
 
 
 def open_collection(path: Union[str, Path]) -> Collection:

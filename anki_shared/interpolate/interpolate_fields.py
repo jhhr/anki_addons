@@ -412,7 +412,7 @@ def get_card_custom_data_prop(custom_data_str: str, prop: str) -> Any:
         return
 
 
-def get_card_type_as_string(card_type: int) -> str:
+def get_card_type_as_string(card_type: Optional[int]) -> str:
     return (
         "Review"
         if card_type == CARD_TYPE_REV
@@ -428,12 +428,15 @@ def get_card_type_as_string(card_type: int) -> str:
     )
 
 
-def get_card_time_values(
-    card_id: CardId,
-) -> Union[Tuple[float, float, float, float], Tuple[None, None, None, None]]:
+# Any of the four can be None on its own: for a card with no reviews the aggregate row is
+# still returned, with count() at 0 and min/max/sum at NULL.
+CardTimeValues = Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]
+
+
+def get_card_time_values(card_id: CardId) -> CardTimeValues:
     """
     Get the first, latest, count, and total time of reviews for a card.
-    Returns None for all values if no reviews are found.
+    An unreviewed card reads as (None, None, 0, None); the formatters render those as "-".
     """
 
     assert mw.col.db is not None
@@ -447,25 +450,27 @@ def get_card_time_values(
         return None, None, None, None
 
 
-def get_formatted_first_review_time(first_review_time: float) -> str:
+def get_formatted_first_review_time(first_review_time: Optional[float]) -> str:
     if first_review_time is None:
         return "-"
     return format_timestamp(first_review_time / 1000)
 
 
-def get_formatted_latest_review_time(latest_review_time: float) -> str:
+def get_formatted_latest_review_time(latest_review_time: Optional[float]) -> str:
     if latest_review_time is None:
         return "-"
     return format_timestamp(latest_review_time / 1000)
 
 
-def get_formatted_average_time(total_time: float, review_count: float) -> str:
-    if review_count is None or review_count == 0:
+def get_formatted_average_time(
+    total_time: Optional[float], review_count: Optional[float]
+) -> str:
+    if total_time is None or not review_count:
         return "-"
     return timespan(total_time / review_count)
 
 
-def get_formatted_total_time(total_time: float) -> str:
+def get_formatted_total_time(total_time: Optional[float]) -> str:
     if total_time is None:
         return "-"
     return timespan(total_time)

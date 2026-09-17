@@ -26,7 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .vendor_path import (
     REQUIREMENTS,
@@ -198,7 +198,7 @@ def _addon_version(addon_dir: str) -> str:
 
 def _run(command: list[str], timeout: int) -> "subprocess.CompletedProcess[str]":
     """Run a child process without flashing a console window over Anki."""
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         # Anki is a GUI process, so a child that wants a console gets a window of its own.
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)

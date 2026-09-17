@@ -51,6 +51,7 @@ from anki.models import NotetypeDict
 from aqt import mw
 
 from .interpolate_fields import (
+    CardTimeValues,
     get_card_last_reps,
     get_card_type_as_string,
     get_formatted_card_created_time,
@@ -174,6 +175,8 @@ class ReadOnlyCard:
 
     __slots__ = ("_card", "_card_time_values", "_is_cloze")
 
+    _card_time_values: Optional[CardTimeValues]
+
     def __init__(self, card: Card, note_type: Optional[NotetypeDict]) -> None:
         object.__setattr__(self, "_card", card)
         object.__setattr__(self, "_card_time_values", None)
@@ -204,14 +207,15 @@ class ReadOnlyCard:
             "total_review_time",
         ):
             # init _card_time_values on first access to avoid unnecessary computation for cards that aren't reviewed
-            if self._card_time_values is None:
+            time_values = self._card_time_values
+            if time_values is None:
                 card_id = getattr(object.__getattribute__(self, "_card"), "id", None)
-                if card_id:
-                    object.__setattr__(self, "_card_time_values", get_card_time_values(card_id))
-                else:
-                    # Init to tuple so we don't keep trying to fetch time values again
-                    object.__setattr__(self, "_card_time_values", (None, None, None, None))
-            first_ms, latest_ms, review_count, total_ms = self._card_time_values
+                # Init to a tuple either way so we don't keep trying to fetch time values again
+                time_values = (
+                    get_card_time_values(card_id) if card_id else (None, None, None, None)
+                )
+                object.__setattr__(self, "_card_time_values", time_values)
+            first_ms, latest_ms, review_count, total_ms = time_values
             if name == "first_review_time":
                 return get_formatted_first_review_time(first_ms)
             elif name == "latest_review_time":
@@ -224,9 +228,8 @@ class ReadOnlyCard:
             template = getattr(object.__getattribute__(self, "_card"), "template", None)
             tmpl_name = template()["name"] if template else "-"
             if self._is_cloze:
-                return (
-                    f'{tmpl_name} {getattr(object.__getattribute__(self, "_card"), "ord", "?") + 1}'
-                )
+                card_ord = getattr(object.__getattribute__(self, "_card"), "ord", None)
+                return f"{tmpl_name} {card_ord + 1 if card_ord is not None else '?'}"
             return tmpl_name
         # id, nid, due, ivl, reps, lapses, factor, desired_retention returned as-is
         return getattr(object.__getattribute__(self, "_card"), name)
@@ -254,6 +257,7 @@ def _japanese_globals() -> dict:
 
     try:
         from ..jp_text_processing.all_types.main_types import WithTagsDef
+        from ..jp_text_processing.kana.construct_wrapped_furi_word import FuriReconstruct
         from ..jp_text_processing.kana.kana_highlight import kana_highlight as _kana_highlight
     except ImportError:
         pass
@@ -262,7 +266,7 @@ def _japanese_globals() -> dict:
         def kana_highlight(
             kanji_to_highlight: Optional[str],
             text: str,
-            return_type: str = "kana_only",
+            return_type: FuriReconstruct = "kana_only",
             wrap_readings_in_tags: bool = True,
             merge_consecutive_tags: bool = True,
             onyomi_to_katakana: bool = False,
@@ -277,7 +281,7 @@ def _japanese_globals() -> dict:
             return _kana_highlight(
                 kanji_to_highlight,
                 text,
-                return_type,  # type: ignore[arg-type]  (a FuriReconstruct literal)
+                return_type,
                 WithTagsDef(
                     wrap_readings_in_tags,
                     merge_consecutive_tags,
