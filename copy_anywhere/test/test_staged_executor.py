@@ -471,6 +471,114 @@ class TestASearchConditionThatDoesNotMatch:
         assert col.get_note(drop.id)["Note"] == ""
 
 
+class TestASearchConditionsPredicate:
+    """Which interpolation resolves a predicate matched as an Anki search.
+
+    Every other expression in the executor goes through `evaluate_raw`, whose one job is to
+    ask `expression_is_legacy_syntax` and send a migrated expression to
+    `get_field_values_from_notes` and an editor-authored one to `resolve_references`. The
+    search predicate did not ask: it called format-1 `interpolate_from_text` outright.
+
+    So a reference the editor itself offers -- the stage's interpolation menu is built from
+    its recorded input scope, and the analyser validates what it produces -- was not a field
+    name format 1 knew, and was dropped. Three different outcomes, none of them the one the
+    definition asked for: a predicate narrowed by a reference silently matched nothing, a
+    broad predicate narrowed by one silently matched everything the broad half did, and a
+    predicate that was only a reference failed with "missing fields: trigger.note", which
+    blames the note for lacking a field by that name rather than naming the real cause.
+
+    The middle case is the one that writes: the branch runs for notes the condition was
+    written to exclude.
+    """
+
+    def gate(self, predicate_text, **extra):
+        return d.condition(
+            d.text(predicate_text),
+            [d.edit_note("trigger", [d.write("Note", d.text("matched"))])],
+            predicate_kind="note_query",
+            predicate_target={"binding": "trigger"},
+            **extra,
+        )
+
+    def test_a_reference_narrowing_the_search_is_resolved(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("Word:{{trigger.Word}}")]), note)
+
+        assert ok is True
+        assert note["Note"] == "matched"
+
+    def test_a_reference_the_search_narrows_by_is_not_dropped(self, col):
+        # `-tag:skip` alone matches this note; the reference is the half that must exclude
+        # it. Dropping the reference is what turns "do not run" into a write.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "tag:special"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("-tag:skip {{trigger.Note}}")]), note)
+
+        assert ok is True
+        assert note["Note"] == "tag:special"
+
+    def test_a_reference_that_is_the_whole_search_is_resolved(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "Word:neko"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
+
+        assert ok is True
+        assert note["Note"] == "matched"
+
+    def test_a_reference_to_nothing_in_scope_says_so(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("Word:{{nowhere.Word}}")]), note)
+
+        assert ok is False
+        assert logger.has_error("nowhere")
+
+    def test_a_predicate_that_resolves_to_nothing_is_refused(self, col):
+        # The guard that must survive any rewrite: an empty query reaches
+        # `find_notes(" nid:<id>")`, which matches the trigger whatever it says, so every
+        # condition would read as true.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": ""})
+
+        ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
+
+        assert ok is False
+        assert note["Note"] == ""
+
+    def test_whitespace_is_as_empty_as_nothing(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "   "})
+
+        ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
+
+        assert ok is False
+
+    def test_a_migrated_predicate_still_reads_the_note_the_old_way(self, col):
+        # The path this must not disturb: a migrated copy condition carries
+        # `syntax_version: 1` and spells its reference `{{Word}}`, with no binding.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "ran")],
+            copy_condition_query="Word:{{Word}}",
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert [n["Note"] for n in copied] == ["ran"]
+
+    def test_a_migrated_predicate_that_does_not_match_still_skips(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "ran")],
+            copy_condition_query="Word:not-this-one",
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert copied == []
+
+
 class TestCardsAndCardStages:
     def test_a_card_query_and_card_loop_move_each_card_on_its_own(self, col, note, logger):
         definition = d.staged(stages=[

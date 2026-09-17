@@ -32,7 +32,7 @@ from ..copy_primitives import (
     int_sort_by_field_value,
     sort_by_field_value,
 )
-from ..definition_schema import expression_is_code
+from ..definition_schema import expression_is_code, expression_is_legacy_syntax
 from ..execute_code_wrappers import execute_code_for_files
 from .context import SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
@@ -551,20 +551,53 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
                 env, stage["predicate_target"], frame, stage, "predicate target"
             )
         expression = stage.get("predicate") or {}
+        if expression_is_code(expression):
+            # There is no code form of a search, which is why the editor hides the toggle
+            # once this kind is chosen; only hand-edited JSON reaches here. Saying so beats
+            # running the code and searching on whatever it returned.
+            raise frame.error(
+                "a condition matched as an Anki search cannot be code", stage
+            )
         ctx = make_context(frame, env, stage, target, target)
         raw_query = expression.get("text", "") or ""
-        interpolated, invalid = interpolate_from_text(
-            raw_query,
-            source_note=target,
-            variable_values_dict=ctx.variables(),
-        )
-        if not interpolated:
-            raise frame.error(
-                f"Error in copy fields: Condition query '{raw_query}' could not be"
-                f" interpolated for note id {target.id} due to missing fields:"
-                f" {', '.join(invalid)}",
-                stage,
+        if expression_is_legacy_syntax(expression):
+            # A migrated copy condition, kept on format 1's own interpolation rather than
+            # routed through `evaluate_text`. The dispatcher's legacy branch calls
+            # `get_field_values_from_notes`, which is a different function with different
+            # diagnostics -- it reports an unknown field that this has always dropped
+            # silently, and resolves a `__Dest__` reference this has always left invalid.
+            # Both are arguably improvements and neither is this fix's to make: the
+            # characterization suite pins what a migrated definition does, warts included.
+            interpolated, invalid = interpolate_from_text(
+                raw_query,
+                source_note=target,
+                variable_values_dict=ctx.variables(),
             )
+            if not interpolated:
+                raise frame.error(
+                    f"Error in copy fields: Condition query '{raw_query}' could not be"
+                    f" interpolated for note id {target.id} due to missing fields:"
+                    f" {', '.join(invalid)}",
+                    stage,
+                )
+        else:
+            # What `run_query` does with a query stage's search, and what every other
+            # expression in the executor gets: the resolution the expression's own syntax
+            # asks for. Calling format-1 interpolation here read an editor-authored
+            # `{{trigger.Word}}` -- which the stage's interpolation menu offers and the
+            # analyser accepts -- as a field no note has, and dropped it. A predicate
+            # narrowed by a reference then matched nothing, and a broad predicate narrowed by
+            # one matched everything its broad half did, running the branch for the notes it
+            # was written to exclude.
+            interpolated = evaluate_text(expression, ctx).strip()
+            if not interpolated:
+                # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
+                # trigger whatever the condition says, so every one of them would read true.
+                raise frame.error(
+                    f"Error in copy fields: Condition query '{raw_query}' resolved to"
+                    f" nothing for note id {target.id}",
+                    stage,
+                )
         note_ids = mw.col.find_notes(f"{interpolated} nid:{target.id}")
         if not note_ids:
             logger.debug(
