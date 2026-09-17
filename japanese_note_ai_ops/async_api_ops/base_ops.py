@@ -1289,7 +1289,7 @@ class AsyncTaskProgressUpdater:
 
 def make_inner_bulk_op(
     config: dict,
-    op: Callable[..., bool],
+    op: Callable[..., Union[bool, Coroutine[Any, Any, bool]]],
     gate: ConcurrencyGate,
     progress_updater: AsyncTaskProgressUpdater,
     handle_op_error: Callable[[Exception], None],
@@ -1363,15 +1363,16 @@ def make_inner_bulk_op(
                     # in the thread pool so the event loop is not blocked by HTTP requests.
                     # to_thread uses the loop's default executor, which selected_notes_op has
                     # pointed at the run's shared, bounded pool.
+                    called: Union[bool, Coroutine[Any, Any, bool]]
                     if asyncio.iscoroutinefunction(op):
-                        op_result = await op(
+                        called = op(
                             config,
                             notes_to_add_dict=notes_to_add_dict,
                             notes_to_update_dict=notes_to_update_dict,
                             **op_args,
                         )
                     else:
-                        op_result = await asyncio.to_thread(
+                        called = await asyncio.to_thread(
                             op,
                             config,
                             notes_to_add_dict=notes_to_add_dict,
@@ -1379,8 +1380,9 @@ def make_inner_bulk_op(
                             **op_args,
                         )
 
-                    if asyncio.iscoroutine(op_result):
-                        op_result = await op_result
+                    # A sync op that hands back a coroutine - a wrapper around an async
+                    # op, which iscoroutinefunction does not see through - is awaited here.
+                    op_result = await called if asyncio.iscoroutine(called) else called
 
                 except RunCancelled as e:
                     # The op asked the collection for something after the run was cancelled.
@@ -2093,7 +2095,9 @@ FilterNewNotesOp = Callable[
 
 def selected_notes_op(
     done_text: str,
-    bulk_op: Union[Callable[..., Coroutine[Any, Any, BulkOpResult]], Sequence[OpPhase]],
+    bulk_op: Union[
+        Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]], Sequence[OpPhase]
+    ],
     nids: Sequence[NoteId],
     parent: Browser,
     progress_updater: AsyncTaskProgressUpdater,

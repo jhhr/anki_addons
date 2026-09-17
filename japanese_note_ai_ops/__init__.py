@@ -68,8 +68,10 @@ from .async_api_ops.find_proper_nouns import (  # noqa: E402
 )
 
 from .async_api_ops.make_all_meanings import (  # noqa: E402
+    load_meanings_dict_from_file,
     make_meanings_selected_notes,
     merge_meanings_selected_notes,
+    write_meanings_dict_to_file,
 )
 from .async_api_ops.new_note_all_ops import (  # noqa: E402
     new_note_all_ops_selected_notes,
@@ -355,8 +357,15 @@ def run_op_on_add_note(note: Note):
 
     if note_type_name == "Japanese vocab note":
         notes_to_update_dict: dict[NoteId, Note] = {}
+        # The generated meanings are what clean_meaning_in_note maps a note's meaning
+        # against, and it revises them in place when none of them fit, so the one added
+        # note reads the file and writes it back - the bulk ops do the same around a run.
+        all_generated_meanings_dict = load_meanings_dict_from_file()
         try:
-            clean_meaning_in_note(config, note, {}, notes_to_update_dict)
+            clean_meaning_in_note(
+                config, note, {}, notes_to_update_dict, all_generated_meanings_dict
+            )
+            write_meanings_dict_to_file(all_generated_meanings_dict)
             # The lexicon is read here rather than cached: the user rebuilds it from the
             # collection now and then, and one added note is one small json read.
             extract_words_op()(config, note, {}, notes_to_update_dict)

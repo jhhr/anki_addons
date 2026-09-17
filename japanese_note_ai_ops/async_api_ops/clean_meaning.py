@@ -2,7 +2,7 @@ import logging
 import json
 import re
 from pathlib import Path
-from typing import Optional, Union, Sequence
+from typing import Mapping, Optional, Union, Sequence
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -49,8 +49,11 @@ logger = logging.getLogger(__name__)
 
 def _field_value(config: dict[str, str], note: Note, field_key: str) -> str:
     """The note's value of an optional configured field, empty when unconfigured or absent."""
+    note_type = note.note_type()
+    if note_type is None:
+        return ""
     try:
-        field = get_field_config(config, field_key, note.note_type())
+        field = get_field_config(config, field_key, note_type)
     except Exception:
         return ""
     return note[field] if field in note else ""
@@ -470,7 +473,7 @@ def match_meanings_to_generated_meanings(
     meanings_dict_items = list(existing_note_meanings_dict.items())
     meanings_dict_items.sort(key=lambda x: x[0])
     meaning_index_to_note_id = {}
-    ws_meanings_by_en_meaning: dict[str, NoteId] = {}
+    ws_meanings_by_en_meaning: dict[str, WordAndSentences] = {}
     some_meanings_already_mapped = False
     for i, (note_id, ws) in enumerate(meanings_dict_items):
         ws_meanings_by_en_meaning[ws["en_meaning"]] = ws
@@ -570,7 +573,7 @@ CURRENT MEANINGS AND SENTENCES:
     if result is None:
         # Return nothing if the call failed
         return {}
-    updated_meanings: dict[NoteId, tuple[str, str]] = {}
+    updated_meanings: MatchMeaningsResultType = {}
     if not isinstance(result, dict):
         logger.warning("Updated meanings result was not a dictionary")
         return updated_meanings
@@ -629,8 +632,8 @@ CURRENT MEANINGS AND SENTENCES:
                     f" {meaning_obj}"
                 )
                 continue
-            meaning_note_id: NoteId = meaning_index_to_note_id.get(meaning_index)
-            possible_meaning_obj = possible_meanings_index_to_obj.get(possible_meaning_index)
+            meaning_note_id = meaning_index_to_note_id[meaning_index]
+            possible_meaning_obj = possible_meanings_index_to_obj[possible_meaning_index]
             updated_meanings[meaning_note_id] = (
                 possible_meaning_obj["jp_meaning"],
                 possible_meaning_obj["en_meaning"],
@@ -763,7 +766,7 @@ def get_new_meaning_from_model(
     config: dict[str, str],
     word: str,
     reading: str,
-    sentences: list[str],
+    sentences: list[EnAndJPSentence],
     prev_en_meaning: str = "",
 ) -> tuple[str, str]:
     logger.debug(f"Getting new meaning with {len(sentences)} sentences")
@@ -772,9 +775,9 @@ def get_new_meaning_from_model(
     sentences_formatted = ""
     if len(sentences) > 1:
         for sen in sentences:
-            sentences_formatted += f"- {sen}\n"
+            sentences_formatted += f"- {sen['jp_sentence']}\n"
     else:
-        sentences_formatted = sentences[0]
+        sentences_formatted = sentences[0]["jp_sentence"]
     prompt = f"""Below {'is a sentence' if len(sentences) == 1 else 'are sentences each'} containing a certain word or phrase. Your task is to generate a short monolingual dictionary style definition of the general meaning used in the sentence by the word or phrase.
 
 - Generally aim to for the definition to be a single sentence. If it is necessary to explain more, the maximum length should be 3 sentences.
@@ -826,8 +829,8 @@ def clean_meaning_in_note(
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
     all_generated_meanings_dict: GeneratedMeaningsDictType,
-    allow_update_all_meanings: Optional[bool] = True,
-    allow_reupdate_existing: Optional[bool] = False,
+    allow_update_all_meanings: bool = True,
+    allow_reupdate_existing: bool = False,
     other_meaning_notes: Optional[Sequence[Note]] = None,
     word_note_index: Optional[WordIndex] = None,
     sentence_cache: Optional[SentenceCache] = None,
@@ -932,8 +935,12 @@ def clean_meaning_in_note(
             )
             all_meaning_notes = other_meaning_notes + [note]
 
+        def meaning_note_key(n: Note) -> NoteId:
+            """The note's id, or the placeholder id it carries until it has been added."""
+            return n.id if n.id != 0 else NoteId(int(n[new_note_id_field]))
+
         meaning_sentences_dict = {
-            (n.id if n.id != 0 else int(n[new_note_id_field])): WordAndSentences(
+            meaning_note_key(n): WordAndSentences(
                 jp_meaning=n[meaning_field],
                 en_meaning=n[english_meaning_field],
                 sentences=get_sentences_for_note(
@@ -944,19 +951,16 @@ def clean_meaning_in_note(
         }
 
         def update_all_meanings_from_result_dict(
-            update_dict: Union[UpdateAllMeaningsResultType, MatchMeaningsResultType],
+            update_dict: Mapping[NoteId, Union[tuple[str, str], tuple[str, str, int]]],
         ) -> bool:
             any_changed_inner = False
             for n in all_meaning_notes:
-                note_key = n.id if n.id != 0 else int(n[new_note_id_field])
+                note_key = meaning_note_key(n)
                 if note_key in update_dict:
-                    mapping_score = None
-                    # MatchMeaningsResultType
-                    if len(update_dict[note_key]) == 3:
-                        new_jp_meaning, new_en_meaning, mapping_score = update_dict[note_key]
-                    else:
-                        # UpdateAllMeaningsResultType
-                        new_jp_meaning, new_en_meaning = update_dict[note_key]
+                    # A MatchMeaningsResultType entry carries the mapping score as a third
+                    # value; an UpdateAllMeaningsResultType one is just the two meanings.
+                    new_jp_meaning, new_en_meaning, *scored = update_dict[note_key]
+                    mapping_score = scored[0] if scored else None
                     prev_en_meaning = n[english_meaning_field]
                     prev_jp_meaning = n[meaning_field]
                     n[meaning_field] = new_jp_meaning
@@ -1028,14 +1032,14 @@ def clean_meaning_in_note(
                 )
                 return False
 
-            updated_meanings_dict = match_meanings_to_generated_meanings(
+            matched_meanings_dict = match_meanings_to_generated_meanings(
                 config,
                 note[word_field],
                 note[word_reading_field],
                 meaning_sentences_dict,
                 all_generated_meanings_dict,
             )
-            any_changed = update_all_meanings_from_result_dict(updated_meanings_dict)
+            any_changed = update_all_meanings_from_result_dict(matched_meanings_dict)
             return any_changed
 
         prev_en_meaning = note[english_meaning_field]
