@@ -2,7 +2,8 @@
 # full run was last verified against; bump them together and rerun `python -m pytest`.
 #
 # Install into the interpreter the tests run on -- the system Python 3.10 here, the same one
-# .vscode/settings.json, mypy.ini and pyrightconfig.json point at. The repo's .venv is a
+# .vscode/settings.json and pyrightconfig.json point at, and the one to run `python -m mypy`
+# with: mypy reads anki/aqt out of whichever interpreter it runs on. The repo's .venv is a
 # different interpreter holding japanese_note_ai_ops' runtime libraries and has no Anki.
 #
 #   python -m pip install -r requirements-dev.txt
