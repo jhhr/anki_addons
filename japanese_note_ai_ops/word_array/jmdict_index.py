@@ -50,23 +50,27 @@ def _load_pickle():
 
 
 def _kanji_info(el: ET.Element) -> dict[str, frozenset[str]]:
-    info = {}
+    info: dict[str, frozenset[str]] = {}
     for k in el.iter("k_ele"):
-        codes = {i.text for i in k.iter("ke_inf")} | (
+        keb = k.findtext("keb")
+        codes = {i.text for i in k.iter("ke_inf") if i.text} | (
             {COMMON} if k.find("ke_pri") is not None else set()
         )
-        if codes:
-            info[k.findtext("keb")] = frozenset(codes)
+        if keb and codes:
+            info[keb] = frozenset(codes)
     return info
 
 
 def _reading_restrictions(el: ET.Element) -> dict[str, tuple[str, ...]]:
-    restr = {}
+    restr: dict[str, tuple[str, ...]] = {}
     for r in el.iter("r_ele"):
+        reb = r.findtext("reb")
+        if not reb:
+            continue
         if r.find("re_nokanji") is not None:
-            restr[r.findtext("reb")] = ()
+            restr[reb] = ()
         elif r.find("re_restr") is not None:
-            restr[r.findtext("reb")] = tuple(x.text for x in r.iter("re_restr"))
+            restr[reb] = tuple(x.text for x in r.iter("re_restr") if x.text)
     return restr
 
 

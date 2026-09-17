@@ -734,7 +734,7 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
             if words[j - 1].kind == "punct":
                 break
             parts = [to_hiragana(tm.surface_reading(w.start, w.end)) for w in words[i:j]]
-            found = []
+            found: list[tuple[str, str, bool, list[jmdict.Entry]]] = []
             for form, written, surface in _forms(tm, words[i:j]):
                 hits = jmdict.lookup(form)
                 if surface and not UNREAD_RE.search("".join(parts)):
@@ -1341,8 +1341,8 @@ def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str
         )
         for i, k in enumerate(kebs)
     }
-    firsts = [min((k for k in fits if _kanji_set(k) == s), key=order.get) for s in widest]
-    return sorted(firsts, key=order.get)
+    firsts = [min((k for k in fits if _kanji_set(k) == s), key=lambda k: order[k]) for s in widest]
+    return sorted(firsts, key=lambda k: order[k])
 
 
 def entry_spellings(form: str, reading: str) -> list[list[str]]:
@@ -1561,7 +1561,7 @@ def dict_reading(tm: TextMap, w: Word) -> str:
             return reading
         prefix = "".join(_surface_reading(tm, s) for s in w.subs[:-1])
         last = dict_reading(tm, w.subs[-1])
-        known = {to_hiragana(r) for r in w.jm_readings}
+        known = [to_hiragana(r) for r in w.jm_readings]
         if prefix + last not in known and prefix + voiced(last) in known:
             # The last word keeps the compound's rendaku, which its own dictionary reading
             # doesn't have: 義務[ぎむ] 付[づ]けられる is ぎむづける, though 付ける is つける
@@ -1578,7 +1578,7 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         if not KANJI_RE.search(tm.surface_reading(w.start, w.end)):
             furi = _own_share(tm, w, furi)
         if KANJI_RE.search(written) and unvoiced(furi) != furi:
-            known = {to_hiragana(r) for r in jmdict.readings(written)}
+            known = [to_hiragana(r) for r in jmdict.readings(written)]
             if furi not in known and unvoiced(furi) in known:
                 return unvoiced(furi)
         return furi
@@ -1748,15 +1748,15 @@ def pos_label(
     if verb and dict_form(tm, w) == verb:
         return "verb"  # a stem listed as its verb: 買い of 買い物, 手抜き's 抜き
     if h.pos[0] == "接尾辞" and len(w.morphs) == 1:
-        label = _not_suffix_label(dict_form(tm, w), reading)
+        suffix_label = _not_suffix_label(dict_form(tm, w), reading)
         # Inside a compound Sudachi's suffix is a bound piece JMdict may tag only as a noun (官 of
         # 警察官); only a verb stem there is relabelled, being a verb by its dict_form already
-        if label and (not nested or label == "verb"):
-            return label
+        if suffix_label and (not nested or suffix_label == "verb"):
+            return suffix_label
     if len(w.morphs) == 1:
-        label = _proper_noun_label(tm, w, reading)
-        if label:
-            return label
+        noun_label = _proper_noun_label(tm, w, reading)
+        if noun_label:
+            return noun_label
     for key, label in POS_MAP:
         if h.pos[: len(key)] == key:
             return label

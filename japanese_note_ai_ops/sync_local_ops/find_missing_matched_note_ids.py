@@ -5,7 +5,6 @@ from typing import Union, Sequence, Any
 from aqt import mw
 
 from anki.notes import Note, NoteId
-from anki.models import NotetypeDict
 from aqt.utils import showWarning
 
 from anki.collection import Collection
@@ -38,8 +37,11 @@ def find_missing_matched_note_ids_for_note(
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
 ) -> bool:
-    note_type: NotetypeDict = note.note_type()
+    note_type = note.note_type()
     log_prefix = f"Find missing matched note ids--nid:{note.id}--"
+    if note_type is None:
+        logger.error(f"{log_prefix}Error: Note has no note type")
+        return False
     word_list_field = get_field_config(config, "word_list_field", note_type)
     # Checked before decode_word_list_field, which tags anything but a dict as invalid
     arr = decode_word_array(note[word_list_field]) if word_list_field in note else None
@@ -119,9 +121,9 @@ def find_missing_matched_note_ids_for_note(
                             f" matched_note_id='{matched_note_id}'"
                         )
                         if multimeaning_index is not None:
-                            updated_word_tuples[i] = [word, reading, multimeaning_index]
+                            updated_word_tuples[i] = (word, reading, multimeaning_index)
                         else:
-                            updated_word_tuples[i] = [word, reading]
+                            updated_word_tuples[i] = (word, reading)
                         word_tuples_changed = True
             if word_tuples_changed:
                 logger.debug(
@@ -132,9 +134,11 @@ def find_missing_matched_note_ids_for_note(
                 word_list_changed = True
         if word_list_changed:
             logger.debug(f"{log_prefix}Updating note with new word list data: {word_list_dict}")
-            note[word_list_field] = word_lists_str_format(word_list_dict)
-            if note.id > 0 and note.id not in notes_to_update_dict:
-                notes_to_update_dict[note.id] = note
+            new_word_list = word_lists_str_format(word_list_dict)
+            if new_word_list is not None:
+                note[word_list_field] = new_word_list
+                if note.id > 0 and note.id not in notes_to_update_dict:
+                    notes_to_update_dict[note.id] = note
     return True
 
 

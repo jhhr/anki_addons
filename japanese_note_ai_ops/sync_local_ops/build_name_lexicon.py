@@ -30,6 +30,8 @@ def collect_sentences(col: Collection, config: dict, nids: Sequence[NoteId]) -> 
     for nid in nids:
         note = col.get_note(nid)
         note_type = note.note_type()
+        if note_type is None:
+            continue
         try:
             field = get_field_config(config, "word_extraction_sentence_field", note_type)
         except Exception:

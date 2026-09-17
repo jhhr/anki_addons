@@ -82,6 +82,9 @@ def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) ->
     for nid in nids:
         note = mw.col.get_note(nid)
         note_type = note.note_type()
+        if note_type is None:
+            skipped += 1
+            continue
         try:
             sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)
             word_list_field = get_field_config(config, "word_list_field", note_type)
@@ -123,6 +126,9 @@ def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
     for nid in nids:
         note = mw.col.get_note(nid)
         note_type = note.note_type()
+        if note_type is None:
+            skipped += 1
+            continue
         try:
             furigana_field = get_field_config(config, "furigana_sentence_field", note_type)
             kanjified_field = get_field_config(config, "kanjified_sentence_field", note_type)
