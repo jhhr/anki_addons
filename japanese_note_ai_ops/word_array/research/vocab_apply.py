@@ -146,10 +146,16 @@ def apply_to_fields(op: dict, fields: dict) -> str:
         return ""
 
     if kind == "set_sentence_furigana":
-        held = fields.get(SENTENCE_FIELD) or ""
+        # `sentence-kanjified-furigana` is generated from `sentence-furigana` by the kanjify op,
+        # so a repair made only in the generated field is undone the next time it is generated.
+        # Which field an edit belongs in is the plan's to say, and it is usually both.
+        field = op.get("field", SENTENCE_FIELD)
+        held = fields.get(field) or ""
         if op["from"] not in held:
-            return "the sentence field does not contain %r literally" % op["from"]
-        fields[SENTENCE_FIELD] = held.replace(op["from"], op["to"])
+            return "%s does not contain %r literally" % (field, op["from"])
+        if held.count(op["from"]) > 1:
+            return "%s holds %r %d times" % (field, op["from"], held.count(op["from"]))
+        fields[field] = held.replace(op["from"], op["to"])
         return ""
 
     array = match_flags.decode_word_array(fields.get(ARRAY_FIELD) or "")

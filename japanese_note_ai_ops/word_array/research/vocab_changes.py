@@ -201,12 +201,20 @@ def check_op(op: dict, by_nid: dict) -> str:
         return "sentence note %s is not in the dump" % op["sentence"]
 
     if kind == "set_sentence_furigana":
+        field = op.get("field", SENTENCE_FIELD)
+        if field not in vocab_dupes.FIELDS:
+            return "%s is not a field the dump holds" % field
         # Literally, not as `clean()` would see it. The field interleaves `<b>` and `<k>` with
         # the furigana - `<b> 滑[ぬめり]</b>りも` - so a run that reads as contiguous text can
         # still have a tag through the middle of it, and applying the edit is a replacement in
         # the raw field. Checking the cleaned text instead would pass a change the apply refuses.
-        if op["from"] not in (row.get(SENTENCE_FIELD) or ""):
-            return "the sentence field does not contain %r literally" % op["from"]
+        held = row.get(field) or ""
+        if op["from"] not in held:
+            return "%s does not contain %r literally" % (field, op["from"])
+        if held.count(op["from"]) > 1:
+            return "%s holds %r %d times; the edit would change them all" % (
+                field, op["from"], held.count(op["from"])
+            )
         return ""
 
     elements = elements_in(row, op["dict_form"])
@@ -316,7 +324,9 @@ def one_line(op: dict) -> str:
             op["sentence"], op["dict_form"], op["from"], op["to"]
         )
     if kind == "set_sentence_furigana":
-        return "sentence %s  furigana  %s -> %s" % (op["sentence"], op["from"], op["to"])
+        return "sentence %s  %s  %s -> %s" % (
+            op["sentence"], op.get("field", SENTENCE_FIELD), op["from"], op["to"]
+        )
     if kind == "repoint_element":
         return "sentence %s  element %s  link %s -> %s" % (
             op["sentence"], op["dict_form"], op["from_nid"], op["to_nid"]

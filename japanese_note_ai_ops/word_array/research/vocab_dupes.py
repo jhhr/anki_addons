@@ -39,6 +39,9 @@ FIELDS = [
     "meaning-jp",
     "vocab-translation",
     "sentence-kanjified-furigana",
+    # The field the kanjified one is generated from. A repair belongs here, not downstream of
+    # it, so a change list has to be able to name it and the check has to be able to read it.
+    "sentence-furigana",
     "sentence-vocab-list",
 ]
 MARKERS_RE = re.compile(r"(\s*\([^)]*\))+$")
