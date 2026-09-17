@@ -1,4 +1,8 @@
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..configuration import Config
 
 
 def moving_average(value_list, weight, init=None) -> float:
@@ -30,7 +34,7 @@ def get_success_rate(review_list, weight, init) -> float:
 
 
 def calculate_ease(
-    config: dict, deck_starting_ease: int, card_settings: dict, leashed: bool = True
+    config: "Config", deck_starting_ease: int, card_settings: dict, leashed: bool = True
 ) -> tuple[int, float]:
     """Return next ease factor based on config and card performance."""
     leash = config.leash
@@ -103,18 +107,3 @@ def calculate_ease(
 
     # return int(round(suggested_factor + factor_offset)), success_rate
     return min(max(int(round(suggested_factor)), min_ease), max_ease), success_rate
-
-
-def calculate_all(config_settings, card_settings) -> dict:
-    """Recalculate all ease factors based on config and answers."""
-    new_factor_list = [config_settings["starting_ease_factor"]]
-    print(new_factor_list)
-    for count in range(1, 1 + len(card_settings["review_list"])):
-        tmp_review_list = card_settings["review_list"][:count]
-        tmp_card_settings = {
-            "review_list": tmp_review_list,
-            "factor_list": new_factor_list,
-        }
-        new_factor_list.append(calculate_ease(config_settings, tmp_card_settings)[0])
-    card_settings["factor_list"] = new_factor_list
-    return card_settings

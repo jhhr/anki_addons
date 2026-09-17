@@ -9,6 +9,8 @@
   "kanjify_sentence_model": "gemini-3.5-flash-lite",
   "kanjify_sentence_temperature": 0.1,
   "extract_words_model": "gemini-3.5-flash-lite",
+  "word_matching_judge_model": "gemini-3.5-flash-lite",
+  "proper_nouns_model": "gpt-5.6-luna",
   "match_words_model": "gemini-3.5-flash-lite",
   "migrate_compound_verbs_model": "gemini-3.5-flash-lite",
   "word_lists_to_process": {
@@ -31,15 +33,18 @@
     "expressions": true,
     "yojijukugo": true
   },
-  "ignore_current_word_lists": false,
   "replace_existing_matched_words": false,
   "max_concurrent_requests": 0,
   "memory_limit": 0,
   "max_request_retries": 5,
   "max_retry_wait_seconds": 120,
   "request_timeout": 180,
+  "terminal_max_concurrent_requests": 16,
+  "claude_cli_path": "",
   "mdx_filenames": [],
   "mdx_pick_dictionary": "all",
+  "extract_words_migration_data_query": "",
+  "kanji_sentence_fine_tuning_data_query": "",
   "log_level": "ERROR",
   "log_to_console": true
 }

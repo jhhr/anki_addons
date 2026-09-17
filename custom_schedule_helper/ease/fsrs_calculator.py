@@ -21,7 +21,7 @@ class StepResults(TypedDict):
 
     revlog_id: int
     card_id: int
-    state: str
+    state: int
     stability: float | None
     rating: int
     interval: float
@@ -60,7 +60,7 @@ DEFAULT_PARAMETERS = [
 
 
 def migrateParameters(
-    parameters: list[float] = None,
+    parameters: list[float] | None = None,
 ) -> list[float]:
     """Migrate parameters to the latest FSRS-6 format."""
     if parameters is None:
@@ -95,8 +95,8 @@ class FsrsCalculator:
         desired_retention: float = 0.9,
         enable_fuzzing: bool = False,
         maximum_interval: int = 3650,
-        learning_steps: list[int] | None = [],
-        relearning_steps: list[int] | None = [],
+        learning_steps: list[timedelta] | None = None,
+        relearning_steps: list[timedelta] | None = None,
     ):
         """Initialize the calculator with parameters."""
         self.parameters = migrateParameters(parameters)
@@ -163,7 +163,7 @@ class FsrsCalculator:
             due=datetime.now(timezone.utc),
             last_review=None,
         )
-        results = []
+        results: list[StepResults] = []
 
         scheduler = Scheduler(
             parameters=self.parameters,
@@ -212,22 +212,26 @@ class FsrsCalculator:
                 if prev_last_review
                 else 0.0
             )
+            stability = fsrs_card.stability
+            difficulty = fsrs_card.difficulty
             if LOG:
                 print(
                     f"Card {card_id}: disp D: {round(display_difficulty, 3)}, R:"
                     f" {round(retrievability, 3)}, I: {round(interval, 3)}, F: {round(factor, 3)},"
-                    f" T: {round(time_since_last_review, 3)}, S: {round(fsrs_card.stability, 3)},"
-                    f" raw D: {round(fsrs_card.difficulty, 3)}, last_review:"
+                    f" T: {round(time_since_last_review, 3)},"
+                    f" S: {round(stability, 3) if stability is not None else None},"
+                    f" raw D: {round(difficulty, 3) if difficulty is not None else None},"
+                    " last_review:"
                     f" {prev_last_review.isoformat() if prev_last_review else 'None'}"
                 )
 
             # Create result object
-            result = {
+            result: StepResults = {
                 "revlog_id": int(review.revlog_id),
                 "card_id": fsrs_card.card_id,
                 "state": fsrs_card.state.value,
-                "stability": fsrs_card.stability,
-                "difficulty": fsrs_card.difficulty,
+                "stability": stability,
+                "difficulty": difficulty,
                 "rating": rating.value,
                 "interval": interval,
                 "factor": factor,
@@ -254,10 +258,10 @@ if __name__ == "__main__":
     third_review_time = second_review_time + timedelta(days=3)
     fourth_review_time = third_review_time + timedelta(days=7)
     reviews = [
-        Review(Rating.Good, first_review_time, State.Learning),
-        Review(Rating.Good, second_review_time, State.Learning),
-        Review(Rating.Good, third_review_time, State.Review),
-        Review(Rating.Good, fourth_review_time, State.Review),
+        Review(Rating.Good, int(first_review_time.timestamp() * 1000), State.Learning),
+        Review(Rating.Good, int(second_review_time.timestamp() * 1000), State.Learning),
+        Review(Rating.Good, int(third_review_time.timestamp() * 1000), State.Review),
+        Review(Rating.Good, int(fourth_review_time.timestamp() * 1000), State.Review),
     ]
 
     calculator = FsrsCalculator()

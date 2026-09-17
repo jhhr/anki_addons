@@ -12,9 +12,10 @@ Layout this assumes:
       related_card_disperse/
       custom_schedule_helper/
 
-Each addon declares in build.json which shared packages it uses. Both commands
-below materialise those at <addon>/shared/<pkg>, so the import path is identical
-in development and in the released zip:
+Each addon declares in build.json which shared packages it uses, and in `exclude`
+any file or directory of its own that is development-only and must stay out of the
+zip. Both commands below materialise the shared packages at <addon>/shared/<pkg>,
+so the import path is identical in development and in the released zip:
 
     from .shared.interpolate.interpolate_fields import interpolate_from_text
 
@@ -52,6 +53,7 @@ EXCLUDE_DIRS = {
     ".idea",
     ".vscode",
     ".pytest_cache",
+    ".mypy_cache",
     "test",
     "tests",
     "test_anki",
@@ -72,6 +74,7 @@ EXCLUDE_FILES = {
     ".gitmodules",
     ".gitattributes",
     "pytest.ini",
+    "mypy.ini",
     "build.json",
     "manifest.json",
     # The pinned requirements.txt compiled from this does ship - the runtime rebuild reads
@@ -82,6 +85,8 @@ EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".ankiaddon"}
 EXCLUDE_PATTERNS = (re.compile(r".*_tests\.py$"),)
 
 SHARED_IMPORT_RE = re.compile(r"from\s+\.{1,3}shared\.(\w+)")
+# Inside anki_shared a package imports its siblings by their own name, `from ..word_array`.
+SHARED_SIBLING_RE = re.compile(r"from\s+\.\.(\w+)")
 
 
 # --------------------------------------------------------------------------
@@ -214,6 +219,12 @@ def cmd_install(addons: list[Addon], addons_dir: Path) -> None:
         print(f"installed {addons_dir / addon.dev_dir_name} -> {addon.path}")
 
 
+def excluded_by_meta(rel: Path, addon: Addon) -> bool:
+    """build.json's `exclude`: an exact file path, or a directory whose whole tree goes."""
+    posix = rel.as_posix()
+    return any(posix == e or posix.startswith(f"{e}/") for e in addon.extra_excludes)
+
+
 def excluded(rel: Path, addon: Addon) -> bool:
     parts = rel.parts
     if any(p in EXCLUDE_DIRS for p in parts):
@@ -223,14 +234,19 @@ def excluded(rel: Path, addon: Addon) -> bool:
         return True
     if any(pat.match(name) for pat in EXCLUDE_PATTERNS):
         return True
-    return str(rel).replace("\\", "/") in addon.extra_excludes
+    return excluded_by_meta(rel, addon)
 
 
 def walk_files(base: Path, addon: Addon, prefix: Path = Path(".")):
     """Yield (absolute_path, arcname) pairs, following links, applying excludes."""
     for dirpath, dirnames, filenames in os.walk(base, followlinks=True):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         here = Path(dirpath)
+        rel_dir = Path(os.path.normpath(prefix / here.relative_to(base)))
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in EXCLUDE_DIRS and not excluded_by_meta(rel_dir / d, addon)
+        ]
         for fn in filenames:
             abs_path = here / fn
             rel = Path(os.path.normpath(prefix / abs_path.relative_to(base)))
@@ -760,6 +776,31 @@ def cmd_dist(addons: list[Addon]) -> None:
             print("  ! large - check AnkiWeb's current upload limit before uploading")
 
 
+def shared_siblings(pkg: str, seen: Optional[set[str]] = None) -> set[str]:
+    """The shared packages a shared package imports, recursively.
+
+    They are not required: a package that reaches for a sibling does it in a try/except, so
+    that an addon which declares neither still loads and the feature is simply a name its
+    code does not have. Declaring one is therefore a choice made for the shared package's
+    sake rather than for the addon's own imports, and `check` should not call it unused.
+    """
+    seen = seen if seen is not None else set()
+    if pkg in seen:
+        return set()
+    seen.add(pkg)
+    found: set[str] = set()
+    src = SHARED_ROOT / pkg
+    if not src.is_dir():
+        return found
+    for path in src.rglob("*.py"):
+        for name in SHARED_SIBLING_RE.findall(path.read_text("utf-8", errors="replace")):
+            if name != pkg and (SHARED_ROOT / name).is_dir():
+                found.add(name)
+    for name in list(found):
+        found |= shared_siblings(name, seen)
+    return found
+
+
 def cmd_check(addons: list[Addon]) -> int:
     """Catch shared packages that are imported but not declared in build.json."""
     failures = 0
@@ -771,7 +812,10 @@ def cmd_check(addons: list[Addon]) -> int:
                 continue
             used |= set(SHARED_IMPORT_RE.findall(path.read_text("utf-8", errors="replace")))
         undeclared = used - set(addon.shared)
-        unused = set(addon.shared) - used
+        optional: set[str] = set()
+        for pkg in addon.shared:
+            optional |= shared_siblings(pkg)
+        unused = set(addon.shared) - used - optional
         if undeclared:
             print(
                 f"FAIL {addon.path.name}: imports undeclared shared pkg(s): "

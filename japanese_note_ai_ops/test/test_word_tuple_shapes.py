@@ -6,6 +6,7 @@ two of the shapes that turn up in practice and - the part that mattered - silent
 third. The cases here are the ones taken off real run logs; see `normalize_word_tuple`.
 """
 
+import json
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
@@ -13,6 +14,30 @@ from addon_modules import load_ops_module
 
 mwtn = load_ops_module("match_words_to_notes")
 normalize = mwtn.normalize_word_tuple
+
+
+class FakeNote:
+    def __init__(self, field_value):
+        self.id = 1
+        self.field_value = field_value
+        self.tags = []
+
+    def __getitem__(self, _field):
+        return self.field_value
+
+    def add_tag(self, tag):
+        self.tags.append(tag)
+
+
+class DecodeWordListFieldTests(unittest.TestCase):
+    def test_a_word_array_is_not_tagged_as_invalid_legacy_json(self):
+        arr = [["本", "noun", "本", "ほん", [], []]]
+        note = FakeNote(json.dumps(arr, ensure_ascii=False))
+        updates = {}
+
+        self.assertIsNone(mwtn.decode_word_list_field(note, "words", updates))
+        self.assertEqual(note.tags, [])
+        self.assertEqual(updates, {})
 
 
 class WellFormedEntriesTests(unittest.TestCase):

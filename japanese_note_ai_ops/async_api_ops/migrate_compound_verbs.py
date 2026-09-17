@@ -16,7 +16,7 @@ from .base_ops import (
     AsyncTaskProgressUpdater,
 )
 from ..utils import get_field_config
-from .extract_words import format_word_list_dict
+from .word_list_format import format_word_list_dict
 
 logger = logging.getLogger(__name__)
 

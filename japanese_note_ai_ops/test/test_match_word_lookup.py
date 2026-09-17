@@ -67,16 +67,82 @@ class LookupTestCase(unittest.TestCase):
 
 class WordSpellingTests(LookupTestCase):
     def test_a_word_with_a_matching_reading_is_found(self):
-        self.assertEqual(
-            self.lookup("私", "わたし", vocab_row(1, "私", "私", "わたし", "私")), [1]
-        )
+        self.assertEqual(self.lookup("私", "わたし", vocab_row(1, "私", "私", "わたし", "私")), [1])
 
-    def test_the_suru_form_of_the_word_is_looked_up_too(self):
+    def test_a_suru_verb_is_found_by_its_own_spelling(self):
+        # The element carries する, so it matches exactly; nothing adds it or takes it off.
         self.assertEqual(
             self.lookup(
-                "勉強", "べんきょう", vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する")
+                "勉強する",
+                "べんきょうする",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
             [1],
+        )
+
+    def test_a_bare_noun_does_not_reach_the_suru_verb(self):
+        # 期[き] used to land on 期する this way. Whether Xする is a word of its own is
+        # recorded by there being a note for it, so the bare noun stays unmatched until
+        # one exists and the judge decides whether it deserves one.
+        self.assertEqual(
+            self.lookup(
+                "勉強",
+                "べんきょう",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
+            ),
+            [],
+        )
+
+    def test_a_zuru_verb_finds_its_jiru_note(self):
+        # 奉ずる and 奉じる are one verb and the collection spells it じる, so the ずる element
+        # asks for the じる note. The reading differs too, which the reading filter allows.
+        self.assertEqual(
+            self.lookup(
+                "奉ずる", "ほうずる", vocab_row(1, "奉じる", "奉じる", "ほうじる", "奉じる")
+            ),
+            [1],
+        )
+
+    def test_a_zuru_verb_still_finds_a_zuru_note(self):
+        # Where no じる note exists the ずる one still answers: nothing is taken away.
+        self.assertEqual(
+            self.lookup(
+                "奉ずる", "ほうずる", vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる")
+            ),
+            [1],
+        )
+
+    def test_a_jiru_verb_does_not_reach_a_zuru_note(self):
+        # One direction only. Everything points at じる, and a ずる note left over is a
+        # duplicate for the dedup op rather than one to keep feeding.
+        self.assertEqual(
+            self.lookup(
+                "奉じる", "ほうじる", vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる")
+            ),
+            [],
+        )
+
+    def test_both_notes_come_back_when_both_exist(self):
+        # Choosing between a word's two notes is not the matcher's call to make.
+        self.assertEqual(
+            sorted(
+                self.lookup(
+                    "奉ずる",
+                    "ほうずる",
+                    vocab_row(1, "奉ずる", "奉ずる", "ほうずる", "奉ずる"),
+                    vocab_row(2, "奉じる", "奉じる", "ほうじる", "奉じる"),
+                )
+            ),
+            [1, 2],
+        )
+
+    def test_a_reading_that_does_not_end_in_zuru_is_left_alone(self):
+        # 論ずる spelled so but read another way is not silently turned into a じる verb.
+        self.assertEqual(
+            self.lookup(
+                "捻ずる", "ねじる", vocab_row(1, "捻じる", "捻じる", "ねじじる", "捻じる")
+            ),
+            [],
         )
 
     def test_an_honorific_written_with_kanji_finds_the_kana_spelling(self):
@@ -97,7 +163,9 @@ class WordSpellingTests(LookupTestCase):
     def test_a_kana_only_word_is_found_by_its_reading_alone(self):
         # No kanji to match on, so the reading in the plain word field identifies it
         self.assertEqual(
-            self.lookup("ください", "ください", vocab_row(1, "", "ください", "ください", "ください")),
+            self.lookup(
+                "ください", "ください", vocab_row(1, "", "ください", "ください", "ください")
+            ),
             [1],
         )
 
@@ -120,12 +188,16 @@ class ReadingFilterTests(LookupTestCase):
             self.lookup("珈琲", "コーヒー", vocab_row(1, "珈琲", "珈琲", "こーひー", "珈琲")), [1]
         )
 
-    def test_the_suru_reading_matches_the_plain_one(self):
+    def test_a_suru_reading_is_not_matched_by_the_plain_one(self):
+        # The spelling is found, so this is the reading filter's call alone: べんきょう is
+        # not べんきょうする, and する is no longer bridged on either side of the comparison.
         self.assertEqual(
             self.lookup(
-                "勉強", "べんきょう", vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する")
+                "勉強する",
+                "べんきょう",
+                vocab_row(1, "勉強する", "勉強する", "べんきょうする", "勉強する"),
             ),
-            [1],
+            [],
         )
 
     def test_a_note_marked_x_never_reaches_the_reading_filter(self):
@@ -147,7 +219,9 @@ class FetchingTests(LookupTestCase):
         self.assertEqual(self.fetched, [[1, 3]])
 
     def test_nothing_is_fetched_when_no_note_matches(self):
-        self.assertEqual(self.lookup("彼女", "かのじょ", vocab_row(1, "私", "私", "わたし", "私")), [])
+        self.assertEqual(
+            self.lookup("彼女", "かのじょ", vocab_row(1, "私", "私", "わたし", "私")), []
+        )
         # The collection is not asked at all, not even for an empty list of ids
         self.assertEqual(self.fetched, [])
 
@@ -192,9 +266,7 @@ class FetchingTests(LookupTestCase):
                 reading="わたし",
                 notes_to_update_dict={1: edited},
                 log_prefix="test--",
-                word_note_index=wi.WordIndex.from_rows(
-                    FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows
-                ),
+                word_note_index=wi.WordIndex.from_rows(FIELDS, {VOCAB_MID: VOCAB_ORDS}, rows),
                 note_cache=self.note_cache,
             )
         )

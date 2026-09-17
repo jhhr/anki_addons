@@ -2,6 +2,7 @@
 import math
 import time
 
+from anki.cards import Card
 from anki.consts import (
     REVLOG_LRN,
     REVLOG_REV,
@@ -20,6 +21,7 @@ from aqt import reviewer
 from aqt.utils import tooltip
 
 from ..configuration import Config
+from ..utils import col_db
 from ..shared.anki.write_custom_data import write_custom_data
 
 LOG = True
@@ -29,7 +31,7 @@ from .ease_calculator import calculate_ease, get_success_rate, moving_average
 
 
 def get_all_reps(card=mw.reviewer.card) -> list[int]:
-    return mw.col.db.list(f"""
+    return col_db().list(f"""
         select ease
         from revlog
         where cid = {card.id}
@@ -38,16 +40,17 @@ def get_all_reps(card=mw.reviewer.card) -> list[int]:
 
 
 def get_all_reps_with_ids(card=mw.reviewer.card) -> list[tuple[int, int]]:
-    return mw.col.db.all(f"""
+    rows = col_db().all(f"""
         select id, ease
         from revlog
         where cid = {card.id}
         and type IN ({REVLOG_LRN}, {REVLOG_REV}, {REVLOG_RELRN}, {REVLOG_CRAM})
         """)
+    return [(row[0], row[1]) for row in rows]
 
 
-def get_reviews_only(card=mw.reviewer.card, rids: list[int] = None) -> list[int]:
-    return mw.col.db.list(f"""
+def get_reviews_only(card=mw.reviewer.card, rids: list[int] | None = None) -> list[int]:
+    return col_db().list(f"""
         select ease
         from revlog
         where type = {REVLOG_REV}
@@ -57,7 +60,7 @@ def get_reviews_only(card=mw.reviewer.card, rids: list[int] = None) -> list[int]
 
 
 def get_ease_factors(card=mw.reviewer.card) -> list[int]:
-    return mw.col.db.list(f"""
+    return col_db().list(f"""
         select factor
         from revlog
         where cid = {card.id}
@@ -107,7 +110,7 @@ def suggested_factor(
             )
             new_factor, _ = calculate_ease(config, deck_starting_ease, card_settings, leashed)
             # This breaks undo history, so no undoing is possible when doing deck adjustment
-            mw.col.db.execute("update revlog set factor = ? where id = ?", new_factor, rep_id)
+            col_db().execute("update revlog set factor = ? where id = ?", new_factor, rep_id)
             card_settings["factor_list"].append(new_factor)
     if config.reviews_only:
         card_settings["review_list"] = get_reviews_only(card)
@@ -246,7 +249,7 @@ def adjust_factor_when_review(ease_tuple, reviewer=reviewer.Reviewer, card=mw.re
     return ease_tuple
 
 
-def adjust_factor_after_review(reviewer: reviewer.Reviewer, card: mw.reviewer.card, ease: int):
+def adjust_factor_after_review(reviewer: reviewer.Reviewer, card: Card | None, ease: int):
     config = Config()
     config.load()
 
@@ -293,7 +296,7 @@ def adjust_ease_factors_background(
     if marked_only:
         marked_query = "AND json_extract(json_extract(data, '$.cd'), '$.e') = 0"
 
-    card_ids = mw.col.db.list(f"""
+    card_ids = col_db().list(f"""
         SELECT
             id
         FROM cards

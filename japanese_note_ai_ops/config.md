@@ -31,7 +31,11 @@ Define which model to use for each task
 - `kanji_story_model`
 - `translate_sentence_model`
 - `kanjify_sentence_model`
-- `extract_words_model`
+- `extract_words_model`: no op of its own any more - "Extract words" builds the word array
+  locally and its one call is the proper noun one. It is the fallback for the two below.
+- `word_matching_judge_model` (falls back to `extract_words_model`)
+- `proper_nouns_model` (falls back to `extract_words_model`), so also the model "Extract words"
+  uses
 - `match_words_model`
 
 ### temperature
@@ -99,6 +103,22 @@ enough of the run has been measured to fit one.
 Default `180`. Seconds to wait for a single API response before giving up on that attempt.
 Timeouts are retried, subject to `max_request_retries`.
 
+### terminal- models (claude CLI)
+
+Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
+subscription instead of the HTTP API, e.g. `"word_matching_judge_model": "terminal-claude-haiku-4-5"`.
+Each request starts one `claude -p` process (thinking off, no tools), so it is far slower than the
+API: about 70 requests a minute on a 4-core PC. Put the API model back in the config to switch
+back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
+and `max_retry_wait_seconds` apply as for the API. When the subscription's usage limit is hit, the
+run stops (the remaining notes are left as they were) and the end message says when the limit
+resets; switch the model to an API one and rerun to finish.
+
+- `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
+  takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
+- `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
+  `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
+
 ## config fields per note type name
 
 Add the fields by note type like this. You can set multiple different note types. You can't set
@@ -159,11 +179,18 @@ You need to define
   10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
       file will simply not specify the deck
 
+## test data exports
+
+Tools > "AI ops: generate test data" runs both browser-menu exports at once, each on the
+notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
+that export.
+
+- `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
+- `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
+  (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
+  kanjified sentence fields, one row per distinct sentence)
+
 ## optipnal specification
-
-### `extract_words` operatation
-
-- `ignore_current_word_lists`: (default: false) don't pass the current field to the prompt, making the model recreate the result from scratch
 
 ### `match_words_model` operation
 

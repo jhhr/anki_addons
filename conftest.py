@@ -63,7 +63,9 @@ ADDON_PACKAGES = [
 for _entry in ADDON_PACKAGES:
     _addon = _register(_entry, os.path.join(ROOT, _entry))
     if not os.path.isdir(os.path.join(ROOT, _entry, "shared")):
-        _addon.shared = _register(f"{_entry}.shared", SHARED_ROOT)
+        # setattr, not `_addon.shared = ...`: the parent is a ModuleType built here,
+        # so the submodule is an attribute only the import system would normally add.
+        setattr(_addon, "shared", _register(f"{_entry}.shared", SHARED_ROOT))
 
 
 def _install_anki() -> bool:

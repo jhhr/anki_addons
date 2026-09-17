@@ -181,8 +181,8 @@ class WordIndex:
     ) -> "list[NoteId]":
         """The notes a word query would have found, minus the ones its (xN) term excludes.
 
-        The values are the alternatives the query ORed together per field: the word itself, its
-        する form, the honorific spelled with kana, and for a kana-only word its reading.
+        The values are the alternatives the query ORed together per field: the word itself, the
+        honorific spelled with kana, and for a kana-only word its reading.
 
         Returned in id order, which is the order a table scan produced them in.
         """

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict, cast
 
 from aqt import mw
 
@@ -52,12 +52,19 @@ class ConfigData(TypedDict):
     rules: list[RelatedRule]
 
 
-def load_config() -> ConfigData:
-    return mw.addonManager.getConfig(tag)
+def load_config() -> dict[str, Any]:
+    """The stored config as Anki holds it, before ``migrate_data`` shapes it.
+
+    An addon that has never been configured has no config at all, which is the
+    same starting point as an empty one.
+    """
+    return mw.addonManager.getConfig(tag) or {}
 
 
 def save_config(data: ConfigData) -> None:
-    mw.addonManager.writeConfig(tag, data)
+    # A TypedDict is a dict at runtime; only the invariance of dict's value type
+    # stops it being passed to an API that takes a plain one.
+    mw.addonManager.writeConfig(tag, cast("dict[Any, Any]", data))
 
 
 def _normalize_name_list(value: object) -> str:

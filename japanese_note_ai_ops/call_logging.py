@@ -152,9 +152,11 @@ def create_call_log_handler(function_name: str) -> logging.Handler:
         setattr(handler, _ADDON_HANDLER_FLAG, True)
         return handler
 
-    # Create logs directory
+    # Create logs directory. Under user_files because that is the only directory Anki carries
+    # across an addon update; everything else is sent to the trash and re-extracted, which
+    # took every log with it exactly when a user was being asked for one.
     addon_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(addon_dir, "logs")
+    logs_dir = os.path.join(addon_dir, "user_files", "logs")
     os.makedirs(logs_dir, exist_ok=True)
 
     # Create unique log file

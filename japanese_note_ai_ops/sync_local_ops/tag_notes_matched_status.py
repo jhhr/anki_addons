@@ -14,6 +14,7 @@ from ..async_api_ops.match_words_to_notes import (
     get_note_word_match_query,
     get_word_list_query_regex_for_word_and_reading,
 )
+from ..word_array.match_flags import MatchState, word_array_query_regex
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +44,24 @@ def tag_notes_matched_status_for_note(
         return False
     target_word, target_reading, word_list_field = note_word_info
 
-    matched_regex = get_word_list_query_regex_for_word_and_reading(
+    # Old word lists and word arrays alike: a note's field holds one or the other. In an array
+    # a word is matched once it has a note id, and unmatched when judged worth one.
+    old_matched_regex = get_word_list_query_regex_for_word_and_reading(
         word=target_word,
         reading=target_reading,
         with_processed="only_processed",
     )
-    unmatched_regex = get_word_list_query_regex_for_word_and_reading(
+    old_unmatched_regex = get_word_list_query_regex_for_word_and_reading(
         word=target_word,
         reading=target_reading,
         with_processed="only_unprocessed",
     )
+    array_matched_regex = word_array_query_regex(
+        target_word, target_reading, [MatchState.LINKED, MatchState.RATED]
+    )
+    array_unmatched_regex = word_array_query_regex(target_word, target_reading, [MatchState.MATCH])
+    matched_regex = f"({old_matched_regex}|{array_matched_regex})"
+    unmatched_regex = f"({old_unmatched_regex}|{array_unmatched_regex})"
     note_type_name = note_type["name"]
     matched_query = f'"note:{note_type_name}" "{word_list_field}:re:{matched_regex}"'
     unmatched_query = f'"note:{note_type_name}" "{word_list_field}:re:{unmatched_regex}"'

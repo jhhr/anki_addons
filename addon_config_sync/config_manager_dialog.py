@@ -44,6 +44,7 @@ from .utils import (
     is_addon_ignored,
     json_files_deep_equal,
     set_addon_ignored,
+    standard_icon,
     write_main_config,
 )
 
@@ -96,9 +97,7 @@ class AddonConfigManagerDialog(QDialog):
         top_controls.addWidget(self.selected_count_label)
 
         self.bulk_save_btn = QPushButton("Save to local media")
-        self.bulk_save_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
-        )
+        self.bulk_save_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_DialogSaveButton))
         self.bulk_save_btn.setToolTip(
             "Copy selected addon configs from addon folders to local media"
         )
@@ -107,7 +106,7 @@ class AddonConfigManagerDialog(QDialog):
 
         self.bulk_overwrite_btn = QPushButton("Overwrite from local media")
         self.bulk_overwrite_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+            standard_icon(self, QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.bulk_overwrite_btn.setToolTip(
             "Copy selected addon configs from local media to addon folders"
@@ -116,13 +115,13 @@ class AddonConfigManagerDialog(QDialog):
         top_controls.addWidget(self.bulk_overwrite_btn)
 
         self.bulk_remove_btn = QPushButton("Remove from local media")
-        self.bulk_remove_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.bulk_remove_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_TrashIcon))
         self.bulk_remove_btn.setToolTip("Delete selected addon config files from local media")
         self.bulk_remove_btn.clicked.connect(lambda: self.run_bulk_action("remove_media"))
         top_controls.addWidget(self.bulk_remove_btn)
 
         self.bulk_install_btn = QPushButton("Install addon")
-        self.bulk_install_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        self.bulk_install_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_ArrowDown))
         self.bulk_install_btn.setToolTip("Install selected missing addons")
         self.bulk_install_btn.clicked.connect(lambda: self.run_bulk_action("install"))
         top_controls.addWidget(self.bulk_install_btn)
@@ -185,18 +184,18 @@ class AddonConfigManagerDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Addon", "Status", "Actions", "Ignore"])
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.table.horizontalHeader().setSectionsClickable(True)
-        self.table.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
-        self.table.horizontalHeader().setSortIndicatorShown(False)
+        vertical_header = self.table.verticalHeader()
+        assert vertical_header is not None
+        vertical_header.setVisible(False)
+        header = self.table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(self.on_header_clicked)
+        header.setSortIndicatorShown(False)
         layout.addWidget(self.table)
         layout.setStretchFactor(self.table, 1)
 
@@ -224,7 +223,7 @@ class AddonConfigManagerDialog(QDialog):
         sync_now_column = QVBoxLayout()
         sync_now_column.setContentsMargins(8, 0, 0, 0)
         self.sync_now_btn = QPushButton("Sync media only now")
-        self.sync_now_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.sync_now_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_BrowserReload))
         self.sync_now_btn.setMinimumWidth(180)
         self.sync_now_btn.setMinimumHeight(52)
         self.sync_now_btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -427,8 +426,10 @@ class AddonConfigManagerDialog(QDialog):
             self.filter_count_label.hide()
 
     def apply_sorting(self) -> None:
+        header = self.table.horizontalHeader()
+        assert header is not None
         if self.sort_column is None or self.sort_direction == "none":
-            self.table.horizontalHeader().setSortIndicatorShown(False)
+            header.setSortIndicatorShown(False)
             return
 
         reverse = self.sort_direction == "desc"
@@ -447,8 +448,8 @@ class AddonConfigManagerDialog(QDialog):
             if self.sort_direction == "asc"
             else Qt.SortOrder.DescendingOrder
         )
-        self.table.horizontalHeader().setSortIndicatorShown(True)
-        self.table.horizontalHeader().setSortIndicator(self.sort_column, order)
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(self.sort_column, order)
 
     def on_header_clicked(self, column: int) -> None:
         if column == 2:
@@ -527,7 +528,7 @@ class AddonConfigManagerDialog(QDialog):
             actions_layout.setContentsMargins(4, 2, 4, 2)
 
             save_btn = QPushButton("Save to local media")
-            save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+            save_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_DialogSaveButton))
             save_btn.setText("")
             save_btn.setToolTip("Save to local media")
             save_btn.setEnabled(row_data.installed and not row_data.ignored)
@@ -539,7 +540,7 @@ class AddonConfigManagerDialog(QDialog):
             actions_layout.addWidget(save_btn)
 
             overwrite_btn = QPushButton("Overwrite from local media")
-            overwrite_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+            overwrite_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_BrowserReload))
             overwrite_btn.setText("")
             overwrite_btn.setToolTip("Overwrite from local media")
             overwrite_btn.setEnabled(
@@ -553,7 +554,7 @@ class AddonConfigManagerDialog(QDialog):
             actions_layout.addWidget(overwrite_btn)
 
             remove_btn = QPushButton("Remove from local media")
-            remove_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+            remove_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_TrashIcon))
             remove_btn.setText("")
             remove_btn.setToolTip("Remove from local media")
             remove_btn.setEnabled(row_data.media_exists)
@@ -565,7 +566,7 @@ class AddonConfigManagerDialog(QDialog):
             actions_layout.addWidget(remove_btn)
 
             install_btn = QPushButton("Install addon")
-            install_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+            install_btn.setIcon(standard_icon(self, QStyle.StandardPixmap.SP_ArrowDown))
             install_btn.setText("")
             install_btn.setToolTip("Install addon")
             install_btn.setEnabled(not row_data.installed)

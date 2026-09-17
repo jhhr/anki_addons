@@ -70,22 +70,25 @@ def load_ops_module(name: str, subdir: str = DEFAULT_SUBDIR) -> ModuleType:
         root.__path__ = [str(ADDON_ROOT)]
         sys.modules[PACKAGE] = root
 
-    root = sys.modules[PACKAGE]
-    if not subdir:
-        package_name = PACKAGE
-    else:
-        package_name = f"{PACKAGE}.{subdir}"
+    # A nested subdir ("word_array/research") needs a package per level: the relative imports
+    # inside such a module count dots up through them.
+    package_name = PACKAGE
+    directory = ADDON_ROOT
+    for part in subdir.split("/") if subdir else []:
+        parent = sys.modules[package_name]
+        package_name = f"{package_name}.{part}"
+        directory = directory / part
         if package_name not in sys.modules:
             ops = ModuleType(package_name)
-            ops.__path__ = [str(ADDON_ROOT / subdir)]
+            ops.__path__ = [str(directory)]
             sys.modules[package_name] = ops
-            setattr(root, subdir, ops)
+            setattr(parent, part, ops)
 
     dotted = f"{package_name}.{name}"
     if dotted in sys.modules:
         return sys.modules[dotted]
 
-    path = (ADDON_ROOT / subdir if subdir else ADDON_ROOT) / f"{name}.py"
+    path = directory / f"{name}.py"
     spec = importlib.util.spec_from_file_location(dotted, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not build a spec for {path}")

@@ -12,9 +12,10 @@ whatever `run_in_background` returns -- `None` in a real Anki. `run_in_backgroun
 `mw` has, so the seam is the `CollectionOp` name in the module: `run_copy_fields` swaps in a
 stand-in that keeps the `op` closure, runs it inline as `op(mw.col)`, and returns its
 `CacheResults` straight out of `copy_fields`. The `success` / `failure` callbacks are
-recorded but deliberately not called -- `on_success` builds a `tooltip` and a
-`ScrollMessageBox`, both of which need a real main window -- so an exception raised inside
-`op` reaches the test directly instead of going through `on_failure`.
+recorded but deliberately not called -- `on_success` builds a `tooltip`, which needs a real
+main window -- so an exception raised inside `op` reaches the test directly instead of going
+through `on_failure`. That also leaves the run's log file open, which the `conftest` fixture
+closes again; `test_operation_logging.py` is where the callbacks are driven too.
 
 Four behaviours here are load-bearing and easy to break:
 
@@ -221,13 +222,13 @@ class TestNoDefinitions:
         assert add_calls() == 0
         assert merge_calls() == 0
 
-    def test_an_empty_definition_list_is_reported_as_an_error(self, col, run_copy_fields, capsys):
-        # `copy_fields` builds its own `Logger` from the addon config rather than taking
-        # one, and that logger's sink both appends to `debug_texts` and prints, so stdout is
-        # the only place a test can see the message from outside.
+    def test_an_empty_definition_list_is_reported_as_an_error(self, col, run_copy_fields, logger):
+        # `copy_fields` logs through the module's logger rather than taking one, so the
+        # `logger` fixture's handler -- attached to the addon's logger for the test -- is
+        # where a test sees what it reported.
         run_copy_fields(copy_definitions=[])
 
-        assert "Error in copy fields: No definitions given" in capsys.readouterr().out
+        assert logger.has_error("Error in copy fields: No definitions given")
 
 
 class TestUndoEntry:
@@ -368,7 +369,7 @@ class TestNoteIdsPerDefinition:
         assert col.get_note(second.id)["Note"] == "from-b"
 
     def test_an_empty_list_for_one_definition_makes_that_definition_a_no_op(
-        self, col, run_copy_fields, capsys
+        self, col, run_copy_fields, logger
     ):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
@@ -384,10 +385,10 @@ class TestNoteIdsPerDefinition:
         assert col.get_note(note.id)["Freq"] == ""
         # An empty id list reaches the bulk loop's "found no notes of this note type" error
         # rather than being recognised as "this definition was given nothing to do".
-        assert "Did not find any notes of note type(s)" in capsys.readouterr().out
+        assert logger.has_error("Did not find any notes of note type(s)")
 
     def test_a_list_shorter_than_the_definitions_is_rejected_before_anything_is_written(
-        self, col, run_copy_fields, capsys
+        self, col, run_copy_fields, logger
     ):
         # Checked before the loop: indexing list i per definition would otherwise raise
         # IndexError only after the earlier definitions had been written and merged.
@@ -403,9 +404,9 @@ class TestNoteIdsPerDefinition:
         assert add_calls() == 0
         assert results.get_result_text() == ""
         assert results.changes == OpChanges()
-        assert "Got 1 note id lists for 2 definitions" in capsys.readouterr().out
+        assert logger.has_error("Got 1 note id lists for 2 definitions")
 
-    def test_a_list_longer_than_the_definitions_is_rejected_too(self, col, run_copy_fields, capsys):
+    def test_a_list_longer_than_the_definitions_is_rejected_too(self, col, run_copy_fields, logger):
         # A surplus list would never be indexed, but it means the caller's lists and
         # definitions have drifted apart, so which list belongs to which is unknowable.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
@@ -417,11 +418,11 @@ class TestNoteIdsPerDefinition:
 
         assert col.get_note(note.id)["Note"] == ""
         assert results.changes == OpChanges()
-        assert "Got 2 note id lists for 1 definitions" in capsys.readouterr().out
+        assert logger.has_error("Got 2 note id lists for 1 definitions")
 
     @pytest.mark.parametrize("entry", [None, 5, "123"], ids=["none", "int", "str"])
     def test_an_entry_that_is_not_a_list_is_rejected_before_anything_is_written(
-        self, col, run_copy_fields, capsys, entry
+        self, col, run_copy_fields, logger, entry
     ):
         # A str is a Sequence, but of characters rather than note ids.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
@@ -433,7 +434,7 @@ class TestNoteIdsPerDefinition:
 
         assert col.get_note(note.id)["Note"] == ""
         assert results.changes == OpChanges()
-        assert "Note ids for definition 2 are not a list" in capsys.readouterr().out
+        assert logger.has_error("Note ids for definition 2 are not a list")
 
     def test_find_notes_results_pass_the_check_as_the_dialog_hands_them_over(
         self, col, run_copy_fields

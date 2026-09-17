@@ -6,9 +6,12 @@
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [
     "jp_text_processing",
-    "utils"
+    "utils",
+    "word_array"
   ],
-  "exclude": [],
+  "exclude": [
+    "word_array/research"
+  ],
   "vendor_keep": [
     "mdict_query"
   ],

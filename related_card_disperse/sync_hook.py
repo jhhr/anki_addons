@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
+from anki.cards import CardId
 from anki.utils import ids2str
 from aqt import mw
 from aqt.gui_hooks import sync_did_finish, sync_will_start
@@ -12,7 +13,7 @@ from .logic import run_sync_disperse_in_background
 from .shared.anki.sync_hook_base import create_comparelog, review_cid_remote
 
 
-def _existing_card_ids(card_ids: List[int]) -> List[int]:
+def _existing_card_ids(card_ids: List[int]) -> List[CardId]:
     """Drop the ids whose card no longer exists.
 
     review_cid_remote reads the revlog, and revlog rows outlive the cards they

@@ -1,8 +1,8 @@
 import base64
 import html
 import json
+import logging
 import random
-import re
 import time
 from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
@@ -13,13 +13,7 @@ from anki.notes import Note, NoteId
 from anki.utils import ids2str
 from aqt import mw
 from aqt.operations import CollectionOp
-from aqt.qt import (
-    QDialog,
-    QGuiApplication,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from aqt.qt import QDesktopServices, QUrl
 from aqt.utils import tooltip
 
 from ..configuration import (
@@ -49,12 +43,16 @@ from ..configuration import (
     is_word_highlight_process,
     split_tags,
 )
-from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..utils.duplicate_note import (
     duplicate_note,
 )
 from ..utils.file_exists_in_media_folder import file_exists_in_media_folder
-from ..shared.utils.logger import Logger
+from ..logging_setup import (
+    finish_operation_log,
+    set_log_definition,
+    set_log_nid,
+    start_operation_log,
+)
 from ..utils.move_card_to_deck import move_card_to_deck
 from ..shared.anki.write_custom_data import write_custom_data
 from ..utils.write_to_media_folder import write_to_media_folder
@@ -75,49 +73,29 @@ from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
 from .regex_process import regex_process
 from .word_highlight_process import word_highlight_process
 
-CONSOLE_COLOR_RE = r"\x1b\[[0-9;]*m"
+logger = logging.getLogger(__name__)
 
 
-class ScrollMessageBox(QDialog):
+def operation_log_name(copy_definitions: Sequence[CopyDefinition]) -> str:
+    """What to call this run's log file, so a folder of them can be read at a glance.
+
+    One definition is named; a picker run over several is counted, because a filename holding
+    four definition names is no longer a filename.
     """
-    A simple class to show a scrollable message box to display debug messages
+    if len(copy_definitions) == 1:
+        return f"copy_fields_{copy_definitions[0].get('definition_name') or 'definition'}"
+    return f"copy_fields_{len(copy_definitions)}_definitions"
 
-    :param message_list: A list of messages to display
-    :param title: The title of the message box
-    :param parent: The parent widget
+
+def open_log_file(path: str) -> None:
+    """Show the user the log this operation just wrote, in whatever opens .log files here.
+
+    This replaces the scrollable message box the debug messages used to be collected into.
+    The box only ever held the lines of the run that built it, could not be kept, and had
+    to strip the console colour codes back out of them; a file holds the same lines, plus
+    `jp_text_processing`'s, and is still there tomorrow.
     """
-
-    def __init__(self, message_list, title, parent=None, **kwargs):
-        super().__init__(parent, **kwargs)
-        self.setWindowTitle(title)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        self.content = QWidget()
-        scroll.setWidget(self.content)
-        lay = QVBoxLayout(self.content)
-        textbox = AutoResizingTextEdit(self, readOnly=True)
-        # remove console colors as they can't be displayed in the text box
-        message_list = [
-            re.sub(CONSOLE_COLOR_RE, "", line) if isinstance(line, str) else str(line)
-            for line in message_list
-        ]
-        textbox.setPlainText("\n".join(message_list))
-        lay.addWidget(textbox)
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.addWidget(scroll)
-        self.setModal(False)
-        # resize horizontally to a percentage of screen width or sizeHint, whichever is larger
-        # but allow vertical resizing to follow sizeHint
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geometry = screen.availableGeometry()
-            self.resize(
-                max(self.sizeHint().height(), int(geometry.width() * 0.35)),
-                self.sizeHint().height(),
-            )
-        else:
-            self.resize(self.sizeHint())
-        self.show()
+    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 class CacheResults:
@@ -371,17 +349,21 @@ def copy_fields(
     :param progress_title: Optional title for the progress dialog
     """
     start_time = time.time()
-    debug_texts = []
     is_sync = update_sync_result is not None
     config = Config()
     config.load()
 
-    def log(message: str):
-        nonlocal debug_texts
-        debug_texts.append(message)
-        print(message)
+    # Opened here rather than inside `op`: the operation runs on a worker thread, and the
+    # callbacks that end it run on the main one, so the file has to outlive both. Released in
+    # `on_success`/`on_failure`, which is where `CollectionOp` ends whichever way it goes.
+    start_operation_log(operation_log_name(copy_definitions), config.log_level)
 
-    logger = Logger(config.log_level, log=log)
+    def finish_logging_and_show() -> None:
+        log_path = finish_operation_log()
+        # A sync runs unattended and never showed the debug window either; anything it has to
+        # report is in the file for afterwards.
+        if log_path is not None and not is_sync:
+            open_log_file(log_path)
 
     def on_success(copy_results: CacheResults):
         mw.progress.finish()
@@ -404,16 +386,14 @@ def copy_fields(
                     period=5000 + len(copy_definitions) * 1000,
                     y_offset=100,
                 )
-        if not is_sync and len(debug_texts) > 0:
-            ScrollMessageBox(debug_texts, title="Copy fields debug Messages", parent=parent)
+        finish_logging_and_show()
         if on_done is not None:
             on_done()
 
     def on_failure(exception):
         mw.progress.finish()
-        logger.error(f"Copying failed: {exception}")
-        if not is_sync and len(debug_texts) > 0:
-            ScrollMessageBox(debug_texts, title="Copy Fields debug Messages", parent=parent)
+        logger.error("Copying failed: %s", exception)
+        finish_logging_and_show()
         if on_done is not None:
             on_done()
         # Need to raise the exception to get the traceback to the cause in the console
@@ -430,15 +410,16 @@ def copy_fields(
         if note_ids_per_definition is not None:
             if len(note_ids_per_definition) != len(copy_definitions):
                 logger.error(
-                    "Error in copy fields: Got"
-                    f" {len(note_ids_per_definition)} note id lists for"
-                    f" {len(copy_definitions)} definitions"
+                    "Error in copy fields: Got %s note id lists for %s definitions",
+                    len(note_ids_per_definition),
+                    len(copy_definitions),
                 )
                 return CacheResults(result_text="", changes=OpChanges())
             for i, ids in enumerate(note_ids_per_definition):
                 if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)):
                     logger.error(
-                        f"Error in copy fields: Note ids for definition {i + 1} are not a list"
+                        "Error in copy fields: Note ids for definition %s are not a list",
+                        i + 1,
                     )
                     return CacheResults(result_text="", changes=OpChanges())
 
@@ -464,15 +445,13 @@ def copy_fields(
         )
 
         for i, copy_definition in enumerate(copy_definitions):
-            logger.reset_prefix()
-            logger.copy_definition_name = copy_definition.get("definition_name", None)
+            set_log_definition(copy_definition.get("definition_name", None))
             results = copy_fields_in_background(
                 copy_definition=copy_definition,
                 note_ids=(
                     note_ids_per_definition[i] if note_ids_per_definition is not None else note_ids
                 ),
                 trigger_notes=trigger_notes,
-                logger=logger,
                 is_sync=is_sync,
                 copied_into_cards_dict=copied_into_cards_dict,
                 copied_into_notes=copied_into_notes,
@@ -539,7 +518,6 @@ def copy_fields_in_background(
     note_ids: Optional[Sequence[int]] = None,
     trigger_notes: Optional[Sequence[Note]] = None,
     field_only: Optional[str] = None,
-    logger: Logger = Logger("error"),
     progress_title: Optional[str] = None,
 ) -> CacheResults:
     """
@@ -555,7 +533,6 @@ def copy_fields_in_background(
         still have to pass the query, so they are only used where it selects their id
     :param field_only: Optional field to limit copying to. Used when copying is applied
       in the note editor
-    :param logger: Logger to use for errors and debug messages
     :param is_sync: Whether this is a sync operation or not
     :param progress_title: Optional title for the progress dialog
     :return: the CacheResults object passed as results
@@ -569,8 +546,9 @@ def copy_fields_in_background(
 
     if copy_into_note_types is None:
         logger.error(
-            f"""Error in copy fields: Note type for copy_into_note_types '{copy_into_note_types}'
+            """Error in copy fields: Note type for copy_into_note_types '%s'
             not found, check your spelling""",
+            copy_into_note_types,
         )
         return results
 
@@ -619,7 +597,8 @@ def copy_fields_in_background(
     if not is_sync and len(notes) == 0:
         # When syncing, it's normal to get zero results if no cards have been reviewed
         logger.error(
-            f"Error in copy fields: Did not find any notes of note type(s) {copy_into_note_types}"
+            "Error in copy fields: Did not find any notes of note type(s) %s",
+            copy_into_note_types,
         )
         return results
 
@@ -651,7 +630,6 @@ def copy_fields_in_background(
             copied_into_notes=copied_into_notes,
             copied_into_cards_dict=copied_into_cards_dict,
             field_only=field_only,
-            logger=logger,
             file_cache=file_cache,
             progress_updater=progress_updater,
         )
@@ -705,7 +683,6 @@ def apply_process_chain(
     variable_values_dict: Optional[dict] = None,
     multiple_note_types: bool = False,
     progress_updater: Optional[ProgressUpdater] = None,
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
 ) -> Union[str, None]:
     """
@@ -717,7 +694,6 @@ def apply_process_chain(
     :param variable_values_dict: A dictionary of variable values to use for interpolation
     :param multiple_note_types: Whether the copy is across multiple note types
     :param progress_updater: Optional object to update the progress bar
-    :param logger: Logger to use for errors and debug messages
     :param file_cache: A dictionary to cache opened files' content
     :return: The text after the processes have been applied or None if there was an error
     """
@@ -736,14 +712,12 @@ def apply_process_chain(
                         False,  # include_suru_okuri always false
                     ),
                     note=dest_note,
-                    logger=logger,
                 )
             elif is_word_highlight_process(process):
                 text = word_highlight_process(
                     text=text,
                     word_field=process.get("word_field", ""),
                     note=dest_note,
-                    logger=logger,
                 )
             elif is_regex_process(process):
                 use_all_notes = process.get("use_all_notes", False)
@@ -754,7 +728,6 @@ def apply_process_chain(
                     variable_values_dict=variable_values_dict,
                     select_card_separator=process.get("regex_separator", ""),
                     multiple_note_types=multiple_note_types,
-                    logger=logger,
                     progress_updater=progress_updater,
                 )
 
@@ -765,7 +738,6 @@ def apply_process_chain(
                     variable_values_dict=variable_values_dict,
                     select_card_separator=process.get("replacement_separator", ""),
                     multiple_note_types=multiple_note_types,
-                    logger=logger,
                     progress_updater=progress_updater,
                 )
                 text = regex_process(
@@ -773,7 +745,6 @@ def apply_process_chain(
                     regex=interpolated_regex,
                     replacement=interpolated_replacement,
                     flags=process.get("flags", None),
-                    logger=logger,
                 )
 
             elif is_fonts_check_process(process):
@@ -782,7 +753,6 @@ def apply_process_chain(
                     fonts_dict_file=process.get("fonts_dict_file", ""),
                     limit_to_fonts=process.get("limit_to_fonts", None),
                     character_limit_regex=process.get("character_limit_regex", None),
-                    logger=logger,
                     file_cache=file_cache,
                 )
 
@@ -790,12 +760,11 @@ def apply_process_chain(
                 text = kanjium_to_javdejong_process(
                     text=text,
                     delimiter=process.get("delimiter", ""),
-                    logger=logger,
                 )
         except FatalProcessError as e:
             # If some process fails in a way that will always fail, we stop the whole op
             # so the user can fix the issue without needing to wait for the whole op to finish
-            logger.error(f"Error in {process['name']} process: {e}")
+            logger.error("Error in %s process: %s", process["name"], e)
             return None
     return text
 
@@ -812,7 +781,6 @@ def copy_for_single_trigger_note(
     copied_into_cards_dict: Optional[dict[int, Card]] = None,
     field_only: Optional[str] = None,
     deck_id: Optional[int] = None,
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
 ) -> bool:
@@ -833,12 +801,11 @@ def copy_for_single_trigger_note(
       a note since cards don't exist yet. Otherwise, the deck_ids are checked from the cards
       of the note
     :param is_note_editor: Whether copy fields is being triggered in the note editor
-    :param logger: Logger to use for errors and debug messages
     :param file_cache: A dictionary to cache opened files' content
     :param progress_updater: Optional object to update the progress bar
     :return: bool indicating success
     """
-    logger.nid = trigger_note.id
+    set_log_nid(trigger_note.id)
 
     field_to_field_defs = copy_definition.get("field_to_field_defs", [])
     field_to_file_defs = copy_definition.get("field_to_file_defs", [])
@@ -871,7 +838,6 @@ def copy_for_single_trigger_note(
         variable_values_dict = get_variable_values_for_note(
             field_to_variable_defs=field_to_variable_defs,
             note=trigger_note,
-            logger=logger,
             file_cache=file_cache,
         )
 
@@ -902,15 +868,16 @@ def copy_for_single_trigger_note(
             for card in trigger_note.cards():
                 deck_ids_of_cards.append(card.odid or card.did)
         logger.debug(
-            f"copy_for_single_trigger_note: deck_ids={deck_ids_of_cards},"
-            f" unique_whitelist_dids={unique_whitelist_dids}"
+            "copy_for_single_trigger_note: deck_ids=%s, unique_whitelist_dids=%s",
+            deck_ids_of_cards,
+            unique_whitelist_dids,
         )
         if deck_ids_of_cards and not any(
             deck_id in unique_whitelist_dids for deck_id in deck_ids_of_cards
         ):
             logger.debug(
-                "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note"
-                f" {trigger_note.id}"
+                "copy_for_single_trigger_note: No deck id in whitelist, skipping copy for note %s",
+                trigger_note.id,
             )
             # Deck not in whitelist, so skip this note, things are ok, so return True
             if progress_updater is not None:
@@ -932,9 +899,10 @@ def copy_for_single_trigger_note(
             note_ids = mw.col.find_notes(f"{interpolated_condition_query} nid:{trigger_note.id}")
             if (note_ids is None) or (len(note_ids) == 0):
                 logger.debug(
-                    "copy_for_single_trigger_note: "
-                    f"Condition query '{interpolated_condition_query}' did not match for note "
-                    f"id {trigger_note.id}"
+                    "copy_for_single_trigger_note: Condition query '%s' did not match for note id"
+                    " %s",
+                    interpolated_condition_query,
+                    trigger_note.id,
                 )
                 # Condition did not match, so skip this note, things are ok, so return True
                 if progress_updater is not None:
@@ -942,9 +910,11 @@ def copy_for_single_trigger_note(
                 return True
         else:
             logger.error(
-                f"Error in copy fields: Condition query '{copy_condition_query}' "
-                f"could not be interpolated for note id {trigger_note.id} "
-                f"due to missing fields: {', '.join(invalid_fields)}"
+                "Error in copy fields: Condition query '%s' could not be interpolated for note id"
+                " %s due to missing fields: %s",
+                copy_condition_query,
+                trigger_note.id,
+                ", ".join(invalid_fields),
             )
             return False
 
@@ -980,7 +950,6 @@ def copy_for_single_trigger_note(
             include_subdecks=include_subdecks,
             select_card_by=select_card_by,
             select_card_count=select_card_count,
-            logger=logger,
             variable_values_dict=variable_values_dict,
         )
         variable_values_dict[TARGET_NOTES_COUNT] = len(target_notes)
@@ -1024,7 +993,6 @@ def copy_for_single_trigger_note(
                 multiple_note_types=multiple_note_types,
                 select_card_separator=select_card_separator,
                 file_cache=file_cache,
-                logger=logger,
                 progress_updater=progress_updater,
             )
             if progress_updater is not None:
@@ -1060,7 +1028,6 @@ def copy_into_single_note(
     multiple_note_types: bool = False,
     select_card_separator: Optional[str] = None,
     file_cache: Optional[dict] = None,
-    logger: Logger = Logger("error"),
     progress_updater: Optional[ProgressUpdater] = None,
 ) -> Tuple[bool, bool, list[Card]]:
 
@@ -1090,7 +1057,7 @@ def copy_into_single_note(
         try:
             cur_field_value = destination_note[copy_into_note_field]
         except KeyError:
-            logger.error(f"Error in copy fields: Field '{copy_into_note_field}' not found in note")
+            logger.error("Error in copy fields: Field '%s' not found in note", copy_into_note_field)
             # Rest of defs are not processed
             raise CopyFailedException
 
@@ -1104,7 +1071,6 @@ def copy_into_single_note(
             multiple_note_types=multiple_note_types,
             select_card_separator=select_card_separator,
             use_code=use_code,
-            logger=logger,
             variable_values_dict=variable_values_dict,
             progress_updater=progress_updater,
         )
@@ -1117,13 +1083,13 @@ def copy_into_single_note(
                 multiple_note_types=multiple_note_types,
                 variable_values_dict=variable_values_dict,
                 progress_updater=progress_updater,
-                logger=logger,
                 file_cache=file_cache,
             )
             # result_val should always be at least "", None indicates an error
             if processed_val is None:
                 logger.error(
-                    f"Error in copy fields: Process chain failed for field {copy_into_note_field}"
+                    "Error in copy fields: Process chain failed for field %s",
+                    copy_into_note_field,
                 )
                 raise CopyFailedException
             result_val = processed_val
@@ -1169,8 +1135,8 @@ def copy_into_single_note(
                 )
                 if invalid_fields:
                     logger.error(
-                        "Error in copy fields: Invalid fields in copy_as_code:"
-                        f" {', '.join(invalid_fields)}"
+                        "Error in copy fields: Invalid fields in copy_as_code: %s",
+                        ", ".join(invalid_fields),
                     )
                 file_tuples, code_error = execute_code_for_files(interpolated_code, note)
                 if code_error:
@@ -1189,7 +1155,7 @@ def copy_into_single_note(
                     write_to_media_folder(fname, fcontent)
                     wrote_to_file = True
                 except Exception as e:
-                    logger.error(f"Error in writing to file: {e}")
+                    logger.error("Error in writing to file: %s", e)
                     raise CopyFailedException
         else:
             # Non-code path: single file written to a pre-determined filename.
@@ -1204,7 +1170,6 @@ def copy_into_single_note(
                 dest_note=destination_note_copy,
                 multiple_note_types=multiple_note_types,
                 select_card_separator=select_card_separator,
-                logger=logger,
                 variable_values_dict=variable_values_dict,
                 progress_updater=progress_updater,
             )
@@ -1218,7 +1183,6 @@ def copy_into_single_note(
                 dest_note=destination_note_copy,
                 multiple_note_types=multiple_note_types,
                 select_card_separator=select_card_separator,
-                logger=logger,
                 variable_values_dict=variable_values_dict,
                 progress_updater=progress_updater,
             )
@@ -1231,13 +1195,13 @@ def copy_into_single_note(
                     multiple_note_types=multiple_note_types,
                     variable_values_dict=variable_values_dict,
                     progress_updater=progress_updater,
-                    logger=logger,
                     file_cache=file_cache,
                 )
                 # result_val should always be at least "", None indicates an error
                 if processed_val is None:
                     logger.error(
-                        f"Error in copy fields: Process chain failed for file {copy_into_filename}"
+                        "Error in copy fields: Process chain failed for file %s",
+                        copy_into_filename,
                     )
                     raise CopyFailedException
                 result_val = processed_val
@@ -1247,7 +1211,7 @@ def copy_into_single_note(
                 write_to_media_folder(copy_into_filename, result_val)
                 wrote_to_file = True
             except Exception as e:
-                logger.error(f"Error in writing to file: {e}")
+                logger.error("Error in writing to file: %s", e)
                 raise CopyFailedException
 
     card_actions_by_template_name = {}
@@ -1257,7 +1221,8 @@ def copy_into_single_note(
         note_type_and_card_type = card_action.get("card_type_name", "")
         if CARD_TYPE_SEPARATOR not in note_type_and_card_type:
             logger.error(
-                f"Error in copy fields: Invalid card type name '{note_type_and_card_type}'"
+                "Error in copy fields: Invalid card type name '%s'",
+                note_type_and_card_type,
             )
             # Skip this card action
             continue
@@ -1289,7 +1254,7 @@ def copy_into_single_note(
         set_flag = card_action.get("set_flag", None)
         set_dr = card_action.get("set_desired_retention", None)
         if change_deck not in [None, "-", 0]:
-            move_card_to_deck(card, change_deck, logger=logger)
+            move_card_to_deck(card, change_deck)
             card.edited = True
         if suspend_card in [True, False]:
             # see pylib/anki/cards.py for queue values
@@ -1335,14 +1300,12 @@ def get_variable_values_for_note(
     field_to_variable_defs: list[CopyFieldToVariable],
     note: Note,
     file_cache: Optional[dict] = None,
-    logger: Logger = Logger("error"),
 ) -> dict:
     """
     Get the values for the variables from the note
     :param field_to_variable_defs: The definitions of the variables to get
     :param note: The note to get the values from
     :param file_cache: A dictionary to cache opened files' content for process chains
-    :param logger: Logger to use for errors and debug messages
     :return: A dictionary of the values for the variables or None if there was an error
     """
 
@@ -1362,8 +1325,8 @@ def get_variable_values_for_note(
         )
         if len(invalid_fields) > 0:
             logger.error(
-                "Error getting variable values: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error getting variable values: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         # Step 1b: Execute as code if requested
@@ -1382,7 +1345,6 @@ def get_variable_values_for_note(
                 dest_note=note,
                 notes=[note],
                 multiple_note_types=False,
-                logger=logger,
                 file_cache=file_cache,
             )
             if interpolated_value is None:
@@ -1421,7 +1383,6 @@ def get_across_target_notes(
     variable_values_dict: Optional[dict] = None,
     include_subdecks: bool = False,
     select_card_count: Optional[str] = "1",
-    logger: Logger = Logger("error"),
 ) -> list[Note]:
     """
     Get the target notes based on the search value and the query. These will either be
@@ -1439,13 +1400,16 @@ def get_across_target_notes(
         from to only those in the decks in the whitelist
     :param include_subdecks: Whether to include subdecks of the whitelisted decks
     :param select_card_count: How many cards to select from the query. Default is 1
-    :param logger: Logger to use for errors and debug messages.
     :return: A list of notes to copy from
     """
     logger.debug(
-        f"get_across_target_notes: copy_from_cards_query='{copy_from_cards_query}',"
-        f" select_card_by='{select_card_by}', deck_id={deck_id},"
-        f" select_card_count='{select_card_count}', include_subdecks={include_subdecks}"
+        "get_across_target_notes: copy_from_cards_query='%s', select_card_by='%s', deck_id=%s,"
+        " select_card_count='%s', include_subdecks=%s",
+        copy_from_cards_query,
+        select_card_by,
+        deck_id,
+        select_card_count,
+        include_subdecks,
     )
 
     if not select_card_by:
@@ -1454,8 +1418,10 @@ def get_across_target_notes(
 
     if select_card_by not in SELECT_CARD_BY_VALUES:
         logger.error(
-            f"""Error in copy fields: incorrect 'select_card_by' value '{select_card_by}'.
-            It must be one of {SELECT_CARD_BY_VALUES}""",
+            """Error in copy fields: incorrect 'select_card_by' value '%s'.
+            It must be one of %s""",
+            select_card_by,
+            SELECT_CARD_BY_VALUES,
         )
         return []
 
@@ -1469,8 +1435,9 @@ def get_across_target_notes(
             # bound, so reporting that would fail with UnboundLocalError inside the handler
             # meant to report the problem.
             logger.error(
-                "Error in copy fields: Incorrect 'select_card_count' value"
-                f" '{select_card_count}'. Value must be a positive integer or 0"
+                "Error in copy fields: Incorrect 'select_card_count' value '%s'. Value must be a"
+                " positive integer or 0",
+                select_card_count,
             )
             return []
     else:
@@ -1482,8 +1449,9 @@ def get_across_target_notes(
         variable_values_dict=variable_values_dict,
     )
     logger.debug(
-        f"get_across_target_notes: interpolated_cards_query='{interpolated_cards_query}',"
-        f" invalid_fields={invalid_fields}"
+        "get_across_target_notes: interpolated_cards_query='%s', invalid_fields=%s",
+        interpolated_cards_query,
+        invalid_fields,
     )
     if not interpolated_cards_query:
         logger.error("Error in copy fields: Could not interpolate copy_from_cards_query")
@@ -1499,18 +1467,20 @@ def get_across_target_notes(
 
     if len(invalid_fields) > 0:
         logger.error(
-            "Error in copy fields: Invalid fields in copy_from_cards_query:"
-            f" {', '.join(invalid_fields)}"
+            "Error in copy fields: Invalid fields in copy_from_cards_query: %s",
+            ", ".join(invalid_fields),
         )
 
     if len(card_ids) == 0:
         if copy_definition.get("show_error_if_none_found", False):
             logger.error(
-                "Error in copy fields: Did not find any cards with"
-                f" copy_from_cards_query='{interpolated_cards_query}'"
+                "Error in copy fields: Did not find any cards with copy_from_cards_query='%s'",
+                interpolated_cards_query,
             )
         else:
-            logger.debug(f'No cards found with copy_from_cards_query="{interpolated_cards_query}",')
+            logger.debug(
+                'No cards found with copy_from_cards_query="%s",', interpolated_cards_query
+            )
         return []
 
     has_sort_by_field = sort_by_field and sort_by_field != "-"
@@ -1589,7 +1559,6 @@ def get_field_values_from_notes(
     variable_values_dict: Optional[dict] = None,
     select_card_separator: Optional[str] = ", ",
     use_code: bool = False,
-    logger: Logger = Logger("error"),
     progress_updater: Optional[ProgressUpdater] = None,
 ) -> str:
     """
@@ -1606,7 +1575,6 @@ def get_field_values_from_notes(
         Irrelevant if there is only one note
     :param use_code: When True, the interpolated text is executed as Python code and the return
         value of that code is used as the result instead of the interpolated text itself.
-    :param logger: Logger to use for errors and debug messages, used for storing all messages
         until the end of the whole operation to show them in a GUI element at the end
     :param progress_updater: An object to update the progress bar with
     :return: String with the values from the field in the notes
@@ -1639,13 +1607,13 @@ def get_field_values_from_notes(
                 multiple_note_types=multiple_note_types,
             )
         except ValueError as e:
-            logger.error(f"Error in text interpolation: {e}")
+            logger.error("Error in text interpolation: %s", e)
             break
 
         if len(invalid_fields) > 0:
             logger.error(
-                "Error in copy fields: Invalid fields in copy_from_text:"
-                f" {', '.join(invalid_fields)}"
+                "Error in copy fields: Invalid fields in copy_from_text: %s",
+                ", ".join(invalid_fields),
             )
 
         if use_code:

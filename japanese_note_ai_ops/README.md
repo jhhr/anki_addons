@@ -11,7 +11,7 @@ Prompts:
 - `translate_field`: Translate a field from Japanese to English. Used rarely, since I mostly mine from anime and get the translation from the english subs.
 - `make_kanji_story`: Write a mnemonic story for the components a kanji is written with, in Japanese. Used daily on new kanji drawing practice notes. Expects a JSON file `_kanji_story_component_words.json` to exist and be a simple dict of component phrases.
 - `kanjify_sentence`: Take a furigana format sentence and kanjify each hiragana/katakana word if there's some valid kanji form for it. The kanjified words are wrapped with `<k>` tags
-- `extract_words`: Extract individual words from the kanjified sentence, grouped by their part of speech. Writes a json object with arrays of words into the note.
+- `extract_words`: Partition the kanjified sentence into its dictionary words and write the word array into the note (`word_array/README.md`). Built by rules from SudachiPy and JMdict, so the only API call is the proper noun one (`proper_nouns_model`); the words are left unjudged. "Extract words + Judge matchability" runs the word matching judge over the new words as a second phase.
 - `match_words_to_notes`: Match the extracted words in the list to an existing word note, using the word's meaning. If matching isn't possible, creates a new word note and comes up with a meaning that matches the usage of the word in the sentence.
 
 ## Installing dependencies

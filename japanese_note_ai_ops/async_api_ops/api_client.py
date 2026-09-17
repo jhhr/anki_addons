@@ -71,6 +71,19 @@ _thread_run = threading.local()
 # not itself part of the run; the thread-local is what every check reads.
 _current_run: Optional[Run] = None
 
+# Why the last run was stopped by its own work rather than by the user, for the end-of-op
+# message. Read on the main thread after the run has ended, so it can't live on the thread-local.
+_stop_reason: Optional[str] = None
+
+# Called by cancel_run to stop work this module doesn't own, such as the claude CLI's processes.
+# Each returns how many things it stopped.
+_cancel_hooks: "list[Callable[[], int]]" = []
+
+
+def add_cancel_hook(hook: "Callable[[], int]") -> None:
+    if hook not in _cancel_hooks:
+        _cancel_hooks.append(hook)
+
 
 def begin_run() -> Run:
     """Start a bulk operation on this thread, and return its state.
@@ -78,10 +91,11 @@ def begin_run() -> Run:
     Pass the returned run to join_run in every worker thread the operation uses, so they are
     cancelled along with it.
     """
-    global _current_run
+    global _current_run, _stop_reason
     run = Run()
     _current_run = run
     _thread_run.run = run
+    _stop_reason = None
     return run
 
 
@@ -105,7 +119,7 @@ def end_run() -> None:
         _current_run = None
 
 
-def cancel_run() -> None:
+def cancel_run(reason: Optional[str] = None) -> None:
     """Cancel the bulk operation this thread is part of.
 
     No further requests are issued, and the ones already in flight are aborted rather than
@@ -115,14 +129,32 @@ def cancel_run() -> None:
     pooled and carry no run of their own. Nothing else can be holding one: Anki's progress
     dialog owns the UI while an operation runs, so no editor hook can start a request alongside
     it and there is never more than one operation in progress.
+
+    `reason` is given when the run's own work decided to stop it, and is kept for the op's end
+    message (take_stop_reason); the first reason given wins.
     """
+    global _stop_reason
     run = getattr(_thread_run, "run", None) or _current_run
     if run is None:
         logger.debug("Cancel requested with no run in progress")
     else:
         run.cancelled.set()
+    if reason and _stop_reason is None:
+        _stop_reason = reason
     aborted = abort_in_flight_requests()
+    for hook in list(_cancel_hooks):
+        try:
+            aborted += hook()
+        except Exception as e:
+            logger.error("Cancel hook %s failed: %s", hook, e)
     logger.info("Run cancelled, aborted %d in-flight request(s)", aborted)
+
+
+def take_stop_reason() -> Optional[str]:
+    """Why the last run stopped itself, if it did, cleared once read."""
+    global _stop_reason
+    reason, _stop_reason = _stop_reason, None
+    return reason
 
 
 def current_run() -> Optional[Run]:

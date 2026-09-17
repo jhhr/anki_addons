@@ -12,12 +12,15 @@ inside a running Anki. They belong in a `pytest-anki` suite, at roughly eight ti
 per test, which is why the backend cases are deliberately not written against one.
 """
 
+import logging
 import sys
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
 from anki_shared.testing import real_anki
+from copy_anywhere import logging_setup
+from copy_anywhere.logging_setup import ADDON_MODULE, SHARED_LOGGER_NAME
 
 pytest.importorskip("anki.collection", reason="the CopyAnywhere backend suite needs real anki")
 
@@ -110,38 +113,32 @@ def media_dir(col, stub_mw):
     return stub_mw.pm.media_folder()
 
 
-class RecordingLogger:
-    """A `Logger` stand-in that keeps what was logged, per level.
+class RecordingLogger(logging.Handler):
+    """A log handler that keeps what was logged, per level.
 
     Several behaviours are only visible as a message -- "did not find any cards", the
     `select_card_count` complaint, an invalid field -- and asserting on the text is the only
     way to tell "skipped, benignly" from "failed".
+
+    A handler rather than an object passed in: the addon logs through `logging` now, so
+    nothing takes a logger any more and the only way in is from the outside, on the logger
+    the module found by name.
     """
 
-    def __init__(self, level: str = "debug") -> None:
-        self.level = level
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.infos: list[str] = []
         self.debugs: list[str] = []
-        self.copy_definition_name: Optional[str] = None
-        self.nid: Optional[int] = None
 
-    def reset_prefix(self) -> None:
-        self.copy_definition_name = None
-        self.nid = None
-
-    def error(self, message: str) -> None:
-        self.errors.append(message)
-
-    def warning(self, message: str) -> None:
-        self.warnings.append(message)
-
-    def info(self, message: str) -> None:
-        self.infos.append(message)
-
-    def debug(self, message: str) -> None:
-        self.debugs.append(message)
+    def emit(self, record: logging.LogRecord) -> None:
+        {
+            logging.ERROR: self.errors,
+            logging.WARNING: self.warnings,
+            logging.INFO: self.infos,
+            logging.DEBUG: self.debugs,
+        }[record.levelno].append(record.getMessage())
 
     def has_error(self, fragment: str) -> bool:
         return any(fragment in message for message in self.errors)
@@ -152,7 +149,40 @@ class RecordingLogger:
 
 @pytest.fixture
 def logger():
-    return RecordingLogger()
+    """Everything the addon and `jp_text_processing` log during one test.
+
+    Both, because a furigana process's complaint about a reading is as much a part of what a
+    copy definition did as the addon's own lines -- which is the whole reason one operation
+    writes one file.
+    """
+    handler = RecordingLogger()
+    loggers = [logging.getLogger(name) for name in (ADDON_MODULE, SHARED_LOGGER_NAME)]
+    previous = [(log, log.level) for log in loggers]
+    for log in loggers:
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+    try:
+        yield handler
+    finally:
+        for log, level in previous:
+            log.removeHandler(handler)
+            log.setLevel(level)
+
+
+@pytest.fixture(autouse=True)
+def _operation_logs_go_to_tmp(tmp_path, monkeypatch):
+    """Keep the operation logs a run writes out of the real addon directory.
+
+    `copy_fields` and the note hooks open a real file under `user_files/logs`; a test run
+    must not add to the user's, and a test that wants to read one back needs to know where
+    it landed.
+    """
+    directory = tmp_path / "logs"
+    monkeypatch.setattr(logging_setup, "logs_dir", lambda: str(directory))
+    yield directory
+    # Several tests drive `copy_fields`'s op without the callback that would release its
+    # log file; left standing, that handler would collect the next test's records.
+    logging_setup.reset_operation_log()
 
 
 @pytest.fixture(autouse=True)

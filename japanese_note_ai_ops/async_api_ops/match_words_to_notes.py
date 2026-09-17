@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Coroutine,
     Generator,
+    Iterable,
     Literal,
     Optional,
     Sequence,
@@ -48,6 +49,13 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
     make_furigana_from_reading,
 )
 from ..utils import copy_into_new_note, get_field_config, print_error_traceback
+from ..word_array import match_flags, match_targets
+from ..word_array.match_flags import (
+    MatchState,
+    decode_word_array,
+    format_word_array,
+    word_array_query_regex,
+)
 from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
@@ -67,7 +75,7 @@ from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
 from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
-from .extract_words import word_lists_str_format
+from .word_list_format import word_lists_str_format
 from .make_all_meanings import (
     make_all_meanings_for_word,
     make_meaning_dict_key,
@@ -115,15 +123,22 @@ def decode_word_list_field(
     # of the repairs it made
     # When the json is valid, it returns just the decoded object
     if isinstance(repair_res, tuple) and len(repair_res) == 2 and isinstance(repair_res[1], list):
-        word_list_dict = repair_res[0]
+        word_list = repair_res[0]
         json_repair_log: list[dict[str, str]] = repair_res[1]
     else:
-        word_list_dict = repair_res
+        word_list = repair_res
         json_repair_log = []
-    if not isinstance(word_list_dict, dict):
+    if isinstance(word_list, list):
+        # This is probably not the old word list format, but the new word array
+        logger.warning(
+            f"{log_prefix}Word list field is a list, expected a dict. Original:"
+            f" {note[word_list_field]}\nDecoded: {json.dumps(word_list, ensure_ascii=False)}"
+        )
+        return None
+    if not isinstance(word_list, dict):
         logger.error(
             f"{log_prefix}Failed to decode valid dict from word list field, original:"
-            f" {note[word_list_field]}\ndecoded: {json.dumps(word_list_dict, ensure_ascii=False)}"
+            f" {note[word_list_field]}\ndecoded: {json.dumps(word_list, ensure_ascii=False)}"
             f"\njson_repair_log: {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
         )
         # tag note
@@ -133,10 +148,10 @@ def decode_word_list_field(
         return None
     logger.debug(
         f"{log_prefix}Decoded word list field, original: {note[word_list_field]}\ndecoded:"
-        f" {json.dumps(word_list_dict, ensure_ascii=False)}\njson_repair_log:"
+        f" {json.dumps(word_list, ensure_ascii=False)}\njson_repair_log:"
         f" {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
     )
-    return word_list_dict
+    return word_list
 
 
 def check_note_processed_furigana_field(
@@ -286,8 +301,7 @@ def drop_duplicate_word_tuples(
         word_tuples = word_list_dict.get(word_list_key, [])
         if not isinstance(word_tuples, list):
             logger.error(
-                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in"
-                " the note"
+                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in the note"
             )
             continue
         kept: list = []
@@ -327,6 +341,11 @@ def update_fake_note_ids(
     """
     Update the fake note IDs in the notes to be the actual note IDs.
 
+    The placeholder sits in `new_note_id_field` until the note is saved and every array
+    pointing at it has been rewritten; then the field is left holding the note's own id
+    rather than emptied. That id is what the card and its popovers read to know which word
+    of a sentence belongs to the note under review -- the reviewer has no other way to ask.
+
     paran: new_notes (Sequence[Note]): The notes to update.
     paran: config (dict): The addon configuration.
     paran: progress_updater (AsyncTaskProgressUpdater): Progress reporter.
@@ -353,13 +372,15 @@ def update_fake_note_ids(
             logger.error("Error: Missing required fields in config")
             return notes_to_update_dict
         if new_note_id_field in new_note and word_list_field in new_note:
-            # Find other notes whose word_list_field contains the fake note ID
+            # Find other notes whose word_list_field contains the fake note ID. Only a
+            # placeholder is worth searching for: once this has run the field holds the note's
+            # own id, and an id the note already has needs no rewriting anywhere.
             fake_note_id = new_note[new_note_id_field]
-            if not fake_note_id:
-                continue
-            referencing_note_ids = col_find_notes(f'"{word_list_field}:*{fake_note_id}*"')
-            if not referencing_note_ids:
-                continue
+            referencing_note_ids = (
+                col_find_notes(f'"{word_list_field}:*{fake_note_id}*"')
+                if fake_note_id.startswith("-")
+                else []
+            )
             referencing_notes = []
             # First get any notes already added to update_notes_dict matching any referencing IDs
             previous_nids = []
@@ -381,18 +402,21 @@ def update_fake_note_ids(
                     if referencing_note.id not in notes_to_update_dict:
                         # Note was updated, add it to the updated notes dict, if not already there
                         notes_to_update_dict[referencing_note.id] = referencing_note
-            # Empty fake note ID to indicate we've finished updating the references for this note
-            new_note[new_note_id_field] = ""
+            # The note's own id says the references have been updated, where a placeholder says
+            # they have not. Written even when nothing referenced the note, which is how a new
+            # note no other sentence linked used to be left holding its placeholder for good.
+            if new_note.id:
+                new_note[new_note_id_field] = str(new_note.id)
             progress_updater.update_new_note_processing_progress(
                 total_notes=total_notes,
                 new_notes_processed=index + 1,
             )
 
-    # For every new note that emptied its fake note ID, we can now add it to the updated notes dict
+    # Every new note now holding its own id is done being rewritten, so it can be saved
     for new_note in new_notes:
         if (
             new_note_id_field in new_note
-            and not new_note[new_note_id_field]
+            and new_note[new_note_id_field] == str(new_note.id)
             and new_note.id != 0
             and new_note.id not in notes_to_update_dict
         ):
@@ -707,11 +731,58 @@ def json_result_corrector(json_result: str) -> str:
     return json_result + "]}"
 
 
-class MatchOpArgs(TypedDict):
+# The field names MatchOpArgs carries, all read from the note type's config
+MATCH_FIELD_KEYS = (
+    "word_list_field",
+    "word_kanjified_field",
+    "word_normal_field",
+    "word_reading_field",
+    "word_furigana_field",
+    "word_processed_furigana_field",
+    "word_sort_field",
+    "meaning_field",
+    "sentence_field",
+    "sentence_audio_field",
+    "furigana_sentence_field",
+    "kanjified_sentence_field",
+    "meaning_audio_field",
+    "part_of_speech_field",
+    "english_meaning_field",
+    "new_note_id_field",
+)
+
+
+def get_match_fields(config: dict, note_type: NotetypeDict) -> Optional[dict[str, str]]:
+    """The note type's field names for MatchOpArgs, or None when any is not configured."""
+    fields = {key: get_field_config(config, key, note_type) for key in MATCH_FIELD_KEYS}
+    missing = [key for key, field_name in fields.items() if not field_name]
+    if missing:
+        logger.error(f"Error: Missing fields in config: {', '.join(missing)}")
+        return None
+    return fields
+
+
+def word_index_fields(fields: dict[str, str]) -> WordFields:
+    return WordFields(
+        kanjified=fields["word_kanjified_field"],
+        normal=fields["word_normal_field"],
+        reading=fields["word_reading_field"],
+        sort=fields["word_sort_field"],
+    )
+
+
+class _WordArrayMatchOpArgs(TypedDict, total=False):
+    # A word array's target: its sentence in plain text with the occurrence in <b>, shown to the
+    # prompt instead of `sentence`, and where its match_quality goes, keyed by word_index
+    prompt_sentence: str
+    match_qualities: dict[int, int]
+
+
+class MatchOpArgs(_WordArrayMatchOpArgs):
     current_note: Note
     note_type: NotetypeDict
     word_index: int
-    word_list_key: str
+    part_of_speech: str
     multi_meaning_index: Optional[int]
     word: str
     reading: str
@@ -786,7 +857,6 @@ def create_new_note_without_matching(
     word_note_index = match_op_args["word_note_index"]
     sentence_cache = match_op_args["sentence_cache"]
     note_cache = match_op_args["note_cache"]
-    word_list_key = match_op_args["word_list_key"]
 
     new_note = Note(col=mw.col, model=note_type)
     new_note[word_kanjified_field] = word
@@ -1043,7 +1113,7 @@ def create_new_note_without_matching(
 
     new_note[furigana_sentence_field] = sentence
     new_note[meaning_field] = ""
-    new_note[part_of_speech_field] = WORD_LIST_TO_PART_OF_SPEECH.get(word_list_key, "")
+    new_note[part_of_speech_field] = match_op_args["part_of_speech"]
     new_note[english_meaning_field] = ""
     new_note_id = make_new_note_id(new_note)
     new_note[new_note_id_field] = str(new_note_id)
@@ -1267,18 +1337,13 @@ def create_new_note_from_matched_note(
     return True
 
 
-def compare_readings(
-    note_reading: str,
-    hiragana_reading: str,
-    hiragana_reading_suru: str,
-    log_prefix: str,
-) -> bool:
+def compare_readings(note_reading: str, hiragana_reading: str, log_prefix: str) -> bool:
+    """Whether the note is read the way the word is, exactly."""
     note_hiragana_reading = to_hiragana(note_reading)
     logger.debug(
-        f"{log_prefix}Comparing note reading: {note_hiragana_reading} with"
-        f" {hiragana_reading} and {hiragana_reading_suru}"
+        f"{log_prefix}Comparing note reading: {note_hiragana_reading} with {hiragana_reading}"
     )
-    return note_hiragana_reading in [hiragana_reading, hiragana_reading_suru]
+    return note_hiragana_reading == hiragana_reading
 
 
 async def get_matching_notes_for_word_and_reading(
@@ -1298,10 +1363,17 @@ async def get_matching_notes_for_word_and_reading(
     of notes each. word_index.py has why one pass over the notes table can stand in for all
     of them.
     """
+    # A word is the note's word or it is not. Adding `word + する` here, together with
+    # stripping する off the word before the lookup, let a bare noun match the する verb's
+    # note: する never bridged the way it was meant to - no する element in the collection
+    # needed it, every note spells and reads する in a field the index covers - and all it
+    # did was pull 期[き] onto 期する and 愛[あい] onto 愛する even where a 愛 note existed.
+    # Whether Xする is a word of its own is recorded by there being a note for it, and
+    # whether an element deserves one at all is the judge's call (match_flags).
+    kanjified_values = [word]
+    normal_values = [word]
     # Entries for words starting with the honorific prefix may use the kanji or hiragana so
     # look for both
-    kanjified_values = [word, f"{word}する"]
-    normal_values = [word, f"{word}する"]
     if word.startswith("御"):
         if reading[0] == "お":
             o_word = "お" + word[1:]
@@ -1311,6 +1383,19 @@ async def get_matching_notes_for_word_and_reading(
             go_word = "ご" + word[1:]
             kanjified_values.append(go_word)
             normal_values.append(go_word)
+    # じる and ずる are one verb with two conjugations, and the collection settled on じる:
+    # 173 of its 206 such elements spell it that way, and 13 ずる elements sit unmatched
+    # beside a じる note that is plainly theirs (免ずる, 存ずる, 準ずる, 肝に銘ずる). So a ずる
+    # word asks for the じる note too, reading included, since the reading differs as well.
+    # The ずる spelling stays in the lookup: where only a ずる note exists it still answers,
+    # and where both do the duplicate is for the dedup op to merge, not for this to choose.
+    readings = [reading]
+    if word.endswith("ずる") and to_hiragana(reading).endswith("ずる"):
+        jiru = word[:-2] + "じる"
+        kanjified_values.append(jiru)
+        normal_values.append(jiru)
+        readings.append(to_hiragana(reading)[:-2] + "じる")
+
     # If word contains no kanji, we can find a match using only its reading
     if not re.search(r"[一-龯]", word):
         normal_values.append(reading)
@@ -1324,20 +1409,14 @@ async def get_matching_notes_for_word_and_reading(
     # check for a reading where some parts are in katakana. The index knows every note's
     # reading, so this happens before anything is fetched rather than after - it discards
     # most of the hits, so that is most of the fetching saved.
-    hiragana_reading = to_hiragana(reading)
-    hiragana_reading_suru = to_hiragana(reading + "する")
+    hiragana_readings = [to_hiragana(r) for r in readings]
     matching_ids: list[NoteId] = []
     for note_id in note_ids:
         note_reading = word_note_index.reading(note_id)
         # None means the notetype has no reading field at all, so the note cannot match
         if note_reading is None:
             continue
-        if compare_readings(
-            note_reading,
-            hiragana_reading,
-            hiragana_reading_suru,
-            log_prefix,
-        ):
+        if any(compare_readings(note_reading, r, log_prefix) for r in hiragana_readings):
             matching_ids.append(note_id)
 
     # One turn with the collection for the ones the run has not already fetched, rather than
@@ -1411,6 +1490,9 @@ async def match_single_word_in_word_tuple(
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     new_note_id_field = match_op_args["new_note_id_field"]
+    word_list_field = match_op_args["word_list_field"]
+    prompt_sentence = match_op_args.get("prompt_sentence") or sentence
+    match_qualities = match_op_args.get("match_qualities")
 
     # If the word contains only non-japanese characters, skip it
     if not re.search(r"[ぁ-んァ-ン一-龯]", word):
@@ -1419,10 +1501,6 @@ async def match_single_word_in_word_tuple(
             " Japanese characters"
         )
         processed_word_tuples[word_index] = None
-    # Check for existing suru verbs words including する in either field, remove する in the word
-    if word.endswith("する") and reading.endswith("する") and not re.match(r"(?:に|が)する$", word):
-        word = word[:-2]
-        reading = reading[:-2]
 
     # Get or create a lock for this specific word to prevent race conditions
     async with word_lock:
@@ -1505,15 +1583,9 @@ async def match_single_word_in_word_tuple(
         matching_new_notes = []
 
         hiragana_reading = to_hiragana(reading)
-        hiragana_reading_suru = to_hiragana(reading + "する")
         for new_note in unfiltered_matching_new_notes:
             if word_reading_field in new_note:
-                if compare_readings(
-                    new_note[word_reading_field],
-                    hiragana_reading,
-                    hiragana_reading_suru,
-                    log_prefix,
-                ):
+                if compare_readings(new_note[word_reading_field], hiragana_reading, log_prefix):
                     matching_new_notes.append(new_note)
 
         # Create a new note if there are no existing matches in DB AND no pending notes to add
@@ -1545,13 +1617,17 @@ async def match_single_word_in_word_tuple(
             )
             if meaning_field in note:
                 meaning = note[meaning_field]
-                other_sentence = (
-                    note[furigana_sentence_field] if furigana_sentence_field in note else ""
-                )
                 english_meaning = (
                     note[english_meaning_field] if english_meaning_field in note else ""
                 )
                 match_word = note[word_kanjified_field] if word_kanjified_field in note else ""
+                other_sentence = match_targets.example_sentence(
+                    note[furigana_sentence_field] if furigana_sentence_field in note else "",
+                    note[word_list_field] if word_list_field in note else "",
+                    match_word,
+                    note[word_reading_field] if word_reading_field in note else "",
+                    note.id,
+                )
                 if meaning:
                     sort_field = note[word_sort_field]
                     # Get the meaning number, if any from sort field, in the form (m1), (m2), etc.
@@ -1664,10 +1740,14 @@ async def match_single_word_in_word_tuple(
 - *example_sentence*: {example_sentence or ("(no example sentence)")}
 """
 
-        instructions = """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
+        instructions = (
+            """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
 
 **Primary Goal: Minimize creation of new meanings**
 Your main goal is to match to one of the existing meanings. If none fit, you may consider the **CREATE NEW** action.
+
+**Highlighted word**
+Where a sentence has a part in <b></b>, that is the occurrence of the word in question: in the _current sentence_ the word you are matching, in an example sentence the word of that meaning. The same word may occur elsewhere in the sentence unmarked; only the marked occurrence counts.
 
 **Your Actions**
 You will generate a JSON object. This array will describe your actions. You must provide one of the two actions.
@@ -1682,10 +1762,18 @@ You will generate a JSON object. This array will describe your actions. You must
     -   In the JSON, create a object with `"is_matched_meaning": false"` and `"meaning_number": null`.
     -   You MUST provide a new `"jp_meaning"` and `"en_meaning"`.
 
+**Match quality**
+Always rate how well the meaning you chose, or the new one you wrote, fits the word's usage in the current sentence, as `"match_quality"`, an integer from 1 to 5:
+"""
+            + match_targets.MATCH_QUALITY_SCALE
+            + """
+A low rating on a MATCH is fine and useful: prefer matching with an honest low rating over creating a near-duplicate meaning.
+
 **JSON OUTPUT RULES:**
-- The output is a single JSON object with 2-4 properties:
+- The output is a single JSON object with 3-5 properties:
 - "is_matched_meaning": A boolean indicating whether you are matching an existing meaning (true) or creating a new one (false).
 - "meaning_number": An integer (1-based index) indicating which existing meaning you are matching, or null if creating a new meaning.
+- "match_quality": An integer from 1 to 5 rating how well the meaning fits the usage in the current sentence.
 - "jp_meaning": (optional) A string with the new Japanese meaning, if creating a new one.
 - "en_meaning": (optional) A string with the new English meaning, if creating a new one.
 - **CRITICAL**: `meaning_number` must be a valid 1-based index from the provided list. Do not invent numbers.
@@ -1697,6 +1785,7 @@ The first meaning is a good match.
 {
     "is_matched_meaning": true,
     "meaning_number": 1,
+    "match_quality": 5
 }
 ```
 
@@ -1706,16 +1795,18 @@ None of the meanings fit, so you create a new one.
 {
     "is_matched_meaning": false,
     "meaning_number": null,
+    "match_quality": 5,
     "jp_meaning": "新しい日本語の定義。",
     "en_meaning": "A new English definition for the new usage."
 }
 ```"""
+        )
 
         prompt = f"""MEANINGS AND EXAMPLE SENTENCES
 {meanings_str}
 
 _Targeted word_: {word}
-_Current sentence_: {sentence}"""
+_Current sentence_: {prompt_sentence}"""
 
         # response_schema = {
         #     "type": "object",
@@ -1846,6 +1937,13 @@ _Current sentence_: {sentence}"""
         meaning_number = meaning_action.get("meaning_number", None)
         jp_meaning = meaning_action.get("jp_meaning", None)
         en_meaning = meaning_action.get("en_meaning", None)
+        match_quality = match_targets.parse_match_quality(meaning_action.get("match_quality"))
+        if match_quality is None:
+            # Not a reason to drop the match: the word is saved without one, to be rated later
+            logger.debug(f"{log_prefix}No valid match_quality in result: {meaning_action}")
+        elif match_qualities is not None:
+            # Only read for a word whose action below leaves a result
+            match_qualities[word_index] = match_quality
         # If meaning_number is too big, the AI got confused, skip this
         if meaning_number is not None and meaning_number > len(meanings):
             logger.debug(
@@ -2089,50 +2187,10 @@ def match_words_to_notes(
         logger.error(f"{log_prefix}Error: No sentence provided for matching words")
         return 0, None
 
-    # Get the field names from the config
-    word_list_field = get_field_config(config, "word_list_field", note_type)
-    word_kanjified_field = get_field_config(config, "word_kanjified_field", note_type)
-    word_normal_field = get_field_config(config, "word_normal_field", note_type)
-    word_reading_field = get_field_config(config, "word_reading_field", note_type)
-    word_furigana_field = get_field_config(config, "word_furigana_field", note_type)
-    word_processed_furigana_field = get_field_config(
-        config, "word_processed_furigana_field", note_type
-    )
-    word_sort_field = get_field_config(config, "word_sort_field", note_type)
-    meaning_field = get_field_config(config, "meaning_field", note_type)
-    sentence_field = get_field_config(config, "sentence_field", note_type)
-    sentence_audio_field = get_field_config(config, "sentence_audio_field", note_type)
-    furigana_sentence_field = get_field_config(config, "furigana_sentence_field", note_type)
-    kanjified_sentence_field = get_field_config(config, "kanjified_sentence_field", note_type)
-    meaning_audio_field = get_field_config(config, "meaning_audio_field", note_type)
-    part_of_speech_field = get_field_config(config, "part_of_speech_field", note_type)
-    english_meaning_field = get_field_config(config, "english_meaning_field", note_type)
-    new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
-
-    missing_fields = []
-    for field_name in [
-        word_list_field,
-        word_kanjified_field,
-        word_normal_field,
-        word_reading_field,
-        word_furigana_field,
-        word_processed_furigana_field,
-        word_sort_field,
-        meaning_field,
-        furigana_sentence_field,
-        kanjified_sentence_field,
-        sentence_field,
-        sentence_audio_field,
-        meaning_audio_field,
-        part_of_speech_field,
-        english_meaning_field,
-        new_note_id_field,
-    ]:
-        if not field_name:
-            missing_fields.append(field_name)
-    if missing_fields:
-        logger.error(f"Error: Missing fields in config: {', '.join(missing_fields)}")
+    fields = get_match_fields(config, note_type)
+    if fields is None:
         return 0, None
+    new_note_id_field = fields["new_note_id_field"]
 
     # Copy the word_tuples to processed_word_tuples, which will be mutated by the match_op calls
     processed_word_tuples = cast(list[ProcessedWordTuple], word_tuples.copy())
@@ -2152,25 +2210,18 @@ def match_words_to_notes(
         # Awaited outside the word lock, so the one task that ends up building it does not
         # hold up the tasks for other words while it does. Everything after this point reads
         # the index synchronously, including create_new_note_without_matching in its thread.
-        word_note_index = await word_note_index_cache.get(
-            WordFields(
-                kanjified=word_kanjified_field,
-                normal=word_normal_field,
-                reading=word_reading_field,
-                sort=word_sort_field,
-            )
-        )
+        word_note_index = await word_note_index_cache.get(word_index_fields(fields))
         return await match_single_word_in_word_tuple(
             config=config,
             word_lock=word_lock,
             word_locks_dict=word_locks_dict,
             log_prefix=log_prefix,
             match_op_args=MatchOpArgs(
-                config=config,
+                **fields,
                 current_note=current_note,
                 note_type=note_type,
                 word_index=word_index,
-                word_list_key=word_list_key,
+                part_of_speech=WORD_LIST_TO_PART_OF_SPEECH.get(word_list_key, ""),
                 multi_meaning_index=multi_meaning_index,
                 word=word,
                 reading=reading,
@@ -2183,22 +2234,6 @@ def match_words_to_notes(
                 note_cache=note_cache,
                 sentence_cache=sentence_cache,
                 cancel_state=cancel_state,
-                word_list_field=word_list_field,
-                word_kanjified_field=word_kanjified_field,
-                word_normal_field=word_normal_field,
-                word_reading_field=word_reading_field,
-                word_furigana_field=word_furigana_field,
-                word_processed_furigana_field=word_processed_furigana_field,
-                word_sort_field=word_sort_field,
-                meaning_field=meaning_field,
-                sentence_field=sentence_field,
-                sentence_audio_field=sentence_audio_field,
-                furigana_sentence_field=furigana_sentence_field,
-                kanjified_sentence_field=kanjified_sentence_field,
-                meaning_audio_field=meaning_audio_field,
-                part_of_speech_field=part_of_speech_field,
-                english_meaning_field=english_meaning_field,
-                new_note_id_field=new_note_id_field,
             ),
         )
 
@@ -2455,6 +2490,255 @@ def match_words_to_notes(
     return word_list_task_count, spawn_word_list_tasks
 
 
+async def rate_linked_word(
+    config: dict,
+    target: match_targets.MatchTarget,
+    prompt_sentence: str,
+    fields: dict[str, str],
+    notes_to_update_dict: dict[NoteId, Note],
+    note_cache: NoteCache,
+    cancel_state: CancelState,
+    log_prefix: str,
+) -> Optional[int]:
+    """Ask the secondary prompt how well the meaning of the note a word is already linked to fits
+    its occurrence, returning the match_quality, or None when there was no meaning to rate or no
+    valid rating came back."""
+    log_prefix = f"{log_prefix}rate--word:'{target.word}'--reading:'{target.reading}'--"
+    note_id = match_flags.matched_note_id(target.elem)
+    if note_id is None or note_id <= 0:
+        logger.debug(f"{log_prefix}No real note id to rate: {target.elem[4]}")
+        return None
+    note = notes_to_update_dict.get(cast(NoteId, note_id))
+    if note is None:
+        note = (await note_cache.get_notes([cast(NoteId, note_id)])).get(cast(NoteId, note_id))
+    if note is None:
+        logger.warning(f"{log_prefix}Linked note {note_id} not found, left unrated")
+        return None
+    meaning_field = fields["meaning_field"]
+    english_meaning_field = fields["english_meaning_field"]
+    jp_meaning = note[meaning_field] if meaning_field in note else ""
+    en_meaning = note[english_meaning_field] if english_meaning_field in note else ""
+    if not jp_meaning and not en_meaning:
+        logger.debug(f"{log_prefix}Linked note {note_id} has no meaning yet, left unrated")
+        return None
+    prompt = match_targets.rating_prompt(
+        target.word, target.reading, jp_meaning, en_meaning, prompt_sentence
+    )
+    raw_result = await asyncio.to_thread(
+        get_response,
+        config.get("match_words_model", ""),
+        prompt,
+        cancel_state=cancel_state,
+        instructions=match_targets.RATING_INSTRUCTIONS,
+        # Thinking counts towards the limit; the answer itself is a few tokens
+        max_output_tokens=4000,
+    )
+    quality = match_targets.rating_from_response(raw_result)
+    if quality is None:
+        logger.debug(f"{log_prefix}No valid match_quality in result: {raw_result}")
+    return quality
+
+
+def plan_word_array_matching(
+    config: dict,
+    note: Note,
+    arr: list,
+    sentence: str,
+    edited_nids: list[NoteId],
+    notes_to_add_dict: dict[str, list[Note]],
+    notes_to_update_dict: dict[NoteId, Note],
+    progress_updater: AsyncTaskProgressUpdater,
+    cancel_state: CancelState,
+    gate: ConcurrencyGate,
+    all_generated_meanings_dict: GeneratedMeaningsDictType,
+    word_locks_dict: dict[str, asyncio.Lock],
+    word_lock: asyncio.Lock,
+    word_note_index_cache: WordIndexCache,
+    note_cache: NoteCache,
+    sentence_cache: SentenceCache,
+    limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
+    log_prefix: str,
+    states: Iterable[MatchState] = (MatchState.MATCH,),
+) -> Optional[NotePlan]:
+    """Plan matching the words of a note's word array in `states`, by default the ones the
+    judge made `["match"]` (see match_targets.states_to_match).
+
+    Each occurrence is its own task, matched like an old word list's word. Its result is kept
+    by target index, and once every task is done the matched ids go into the elements'
+    `match_data` - the targets hold the elements themselves, however deeply nested - and the
+    array is written back to the field. Returns None, with the note counted done, when there
+    is nothing to match.
+
+    Words linked to a note without a match_quality, `[note_id]`, are rated by the secondary
+    prompt in the same run (rate_linked_word), unless `states` has them matched again.
+
+    A new note's placeholder id an earlier run left in the array is first swapped for the id of
+    the note that was added (see match_targets.resolve_placeholder_ids), so a rematch doesn't
+    take it for a word of its own, and the array saved.
+    """
+    rate_states = match_targets.states_to_rate(states)
+
+    def gather(
+        wanted: Iterable[MatchState],
+    ) -> list[match_targets.MatchTarget]:
+        try:
+            return match_targets.gather_targets(arr, wanted, limit=limit_words_and_readings)
+        except ValueError as e:
+            logger.error(f"{log_prefix}{e}")
+            return []
+
+    placeholders = match_targets.has_placeholder_ids(arr)
+    targets = gather(states)
+    rate_targets = gather(rate_states) if rate_states else []
+    note_type = note.note_type() if targets or rate_targets or placeholders else None
+    fields = get_match_fields(config, note_type) if note_type else None
+
+    def save_note():
+        current_note = notes_to_update_dict.get(note.id, note)
+        current_note[fields["word_list_field"]] = format_word_array(arr)
+        notes_to_update_dict[current_note.id] = current_note
+        if current_note.id not in edited_nids:
+            edited_nids.append(current_note.id)
+
+    if fields and placeholders:
+        new_note_id_field = fields["new_note_id_field"]
+
+        def notes_holding(fake_id: int) -> list[NoteId]:
+            if new_note_id_field in note and note[new_note_id_field] == str(fake_id):
+                return [note.id]
+            return list(
+                col_find_notes(f'''"note:{note_type["name"]}" "{new_note_id_field}:{fake_id}"''')
+            )
+
+        resolved = match_targets.resolve_placeholder_ids(arr, notes_holding)
+        if resolved:
+            logger.debug(f"{log_prefix}Resolved {resolved} new note placeholder ids")
+            save_note()
+            targets = gather(states)
+            rate_targets = gather(rate_states) if rate_states else []
+    if not fields or not config.get("match_words_model", ""):
+        if targets or rate_targets:
+            logger.error(f"{log_prefix}Error: Missing match words model or fields in config")
+        progress_updater.increment_counts(notes_done=1)
+        return None
+    logger.debug(
+        f"{log_prefix}Word array has {len(targets)} words to match, {len(rate_targets)} to rate"
+    )
+    # Filled by match_single_word_in_word_tuple, keyed by target index
+    results: dict[int, Optional[FinalWordTuple]] = {}
+    qualities: dict[int, int] = {}
+    # Filled by rate_op, keyed by rate target index
+    ratings: dict[int, int] = {}
+
+    async def match_op(
+        _,
+        notes_to_add_dict: dict[str, list[Note]],
+        notes_to_update_dict: dict[NoteId, Note],
+        target_index: int,
+    ) -> bool:
+        target = targets[target_index]
+        word_note_index = await word_note_index_cache.get(word_index_fields(fields))
+        return await match_single_word_in_word_tuple(
+            config=config,
+            word_lock=word_lock,
+            word_locks_dict=word_locks_dict,
+            log_prefix=log_prefix,
+            match_op_args=MatchOpArgs(
+                **fields,
+                current_note=note,
+                note_type=note_type,
+                word_index=target_index,
+                part_of_speech=target.part_of_speech,
+                multi_meaning_index=None,
+                word=target.word,
+                reading=target.reading,
+                sentence=sentence,
+                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                match_qualities=qualities,
+                processed_word_tuples=results,
+                all_generated_meanings_dict=all_generated_meanings_dict,
+                notes_to_add_dict=notes_to_add_dict,
+                notes_to_update_dict=notes_to_update_dict,
+                word_note_index=word_note_index,
+                note_cache=note_cache,
+                sentence_cache=sentence_cache,
+                cancel_state=cancel_state,
+            ),
+        )
+
+    async def rate_op(
+        _,
+        notes_to_add_dict: dict[str, list[Note]],
+        notes_to_update_dict: dict[NoteId, Note],
+        target_index: int,
+    ) -> bool:
+        target = rate_targets[target_index]
+        quality = await rate_linked_word(
+            config=config,
+            target=target,
+            prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+            fields=fields,
+            notes_to_update_dict=notes_to_update_dict,
+            note_cache=note_cache,
+            cancel_state=cancel_state,
+            log_prefix=log_prefix,
+        )
+        if quality is None:
+            return False
+        ratings[target_index] = quality
+        return True
+
+    def make_error_handler(
+        target: match_targets.MatchTarget, action: str
+    ) -> Callable[[Exception], None]:
+        def handle_op_error(e: Exception):
+            logger.error(f"{log_prefix}Error {action} word {target.word}/{target.reading}: {e}")
+            print_error_traceback(e, logger)
+
+        return handle_op_error
+
+    async def save_results(word_tasks: list[asyncio.Task]):
+        await asyncio.gather(*word_tasks)
+        saved = match_targets.save_results(targets, results, qualities)
+        rated = match_targets.save_ratings(rate_targets, ratings)
+        logger.debug(
+            f"{log_prefix}Matched {saved} of {len(targets)} and rated {rated} of"
+            f" {len(rate_targets)} words in the word array"
+        )
+        if saved or rated:
+            save_note()
+        progress_updater.increment_counts(notes_done=1)
+
+    def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
+        word_tasks: list[asyncio.Task] = []
+        for op, op_targets, action in (
+            (match_op, targets, "matching"),
+            (rate_op, rate_targets, "rating"),
+        ):
+            for target_index, target in enumerate(op_targets):
+                process_word: Callable[..., Coroutine[Any, Any, bool]] = make_inner_bulk_op(
+                    config=config,
+                    op=op,
+                    gate=gate,
+                    progress_updater=progress_updater,
+                    handle_op_error=make_error_handler(target, action),
+                    handle_op_result=lambda _: None,
+                    cancel_state=cancel_state,
+                )
+                task = asyncio.create_task(
+                    process_word(
+                        notes_to_add_dict=notes_to_add_dict,
+                        notes_to_update_dict=notes_to_update_dict,
+                        target_index=target_index,
+                    )
+                )
+                word_tasks.append(task)
+                tasks.append(task)
+        tasks.append(asyncio.create_task(save_results(word_tasks)))
+
+    return NotePlan(task_count=len(targets) + len(rate_targets), spawn=spawn_note_tasks)
+
+
 def match_words_to_notes_for_note(
     config: dict,
     note: Note,
@@ -2552,6 +2836,33 @@ def match_words_to_notes_for_note(
     log_prefix = f"Match words, note.id={note.id}--"
     # Get the word tuples from the note
     word_list_field = get_field_config(config, "word_list_field", note_type)
+    # Checked before decode_word_list_field, which tags anything but a dict as invalid
+    arr = decode_word_array(note[word_list_field]) if word_list_field in note else None
+    if arr is not None:
+        return plan_word_array_matching(
+            config=config,
+            note=note,
+            arr=arr,
+            sentence=sentence,
+            edited_nids=edited_nids,
+            notes_to_add_dict=notes_to_add_dict,
+            notes_to_update_dict=notes_to_update_dict,
+            progress_updater=progress_updater,
+            cancel_state=cancel_state,
+            gate=gate,
+            all_generated_meanings_dict=all_generated_meanings_dict,
+            word_locks_dict=word_locks_dict,
+            word_lock=word_lock,
+            word_note_index_cache=word_note_index_cache,
+            note_cache=note_cache,
+            sentence_cache=sentence_cache,
+            limit_words_and_readings=limit_words_and_readings,
+            log_prefix=log_prefix,
+            states=match_targets.states_to_match(
+                replace_existing,
+                reprocess_words if limit_words_and_readings else None,
+            ),
+        )
     if word_list_field in note:
         word_list_dict = decode_word_list_field(
             note,
@@ -3024,7 +3335,9 @@ def match_single_word_to_notes_from_selected(
             # NameError out of bulk_op, and on a later one it silently re-read and
             # deduplicated the *previous* note's word lists.
             word_list_dict: dict[str, Any] = {}
-            if word_list_field in cur_note:
+            # A word array has no word lists to deduplicate, and decode_word_list_field would
+            # tag it invalid
+            if word_list_field in cur_note and decode_word_array(cur_note[word_list_field]) is None:
                 word_list_dict = (
                     decode_word_list_field(
                         cur_note, word_list_field, notes_to_update_dict, log_prefix
@@ -3042,6 +3355,12 @@ def match_single_word_to_notes_from_selected(
                 reading=target_reading,
                 with_processed=reprocess_words,
             )
+            array_word_regex = word_array_query_regex(
+                target_word,
+                target_reading,
+                match_targets.states_to_match(reprocess=reprocess_words),
+            )
+            target_word_regex = f"({target_word_regex}|{array_word_regex})"
             logger.debug(
                 f"{log_prefix}Single-word-only mode: Querying for notes with word '{target_word}'"
                 f" and reading '{target_reading}' using regex '{target_word_regex}'"

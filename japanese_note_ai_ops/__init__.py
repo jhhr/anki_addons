@@ -46,9 +46,10 @@ from .async_api_ops.kanjify_sentence import (  # noqa: E402
     kanjify_selected_notes,
 )
 from .async_api_ops.extract_words import (  # noqa: E402
+    extract_words_and_judge_from_selected_notes,
     extract_words_from_selected_notes,
-    extract_words_in_note,
-    extract_words_test_compare_from_selected_notes,
+    extract_words_op,
+    regenerate_words_from_selected_notes,
 )
 from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
     migrate_compound_verbs_from_selected_notes,
@@ -56,6 +57,14 @@ from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
 from .async_api_ops.match_words_to_notes import (  # noqa: E402
     match_words_to_notes_from_selected,
     match_single_word_to_notes_from_selected,
+)
+
+from .async_api_ops.word_matching_judge import (  # noqa: E402
+    word_matching_judge_from_selected_notes,
+)
+from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
+from .async_api_ops.find_proper_nouns import (  # noqa: E402
+    find_proper_nouns_from_selected_notes,
 )
 
 from .async_api_ops.make_all_meanings import (  # noqa: E402
@@ -71,12 +80,16 @@ from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
 from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
     tag_notes_matched_status_from_selected,
 )
+from .sync_local_ops.build_name_lexicon import (  # noqa: E402
+    build_name_lexicon_from_selected,
+)
 from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
     deduplicate_existing_meaning_notes_selected_notes,
 )
 from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
-    make_kanjify_sentence_fine_tuning_data,
-    make_extract_words_fine_tuning_data,
+    make_kanjify_sentence_data,
+    make_extract_words_migration_data,
+    make_all_test_data,
 )
 
 
@@ -106,8 +119,13 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     kanji_story_action = QAction("Generate kanji story", mw)
     component_words_action = QAction("Kanjify sentence", mw)
     extract_words_action = QAction("Extract words", mw)
-    extract_words_test_compare_action = QAction("Test extract words prompt", mw)
+    extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
+    regenerate_words_action = QAction("Regenerate words over the current array", mw)
     migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
+    find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
+    judge_words_action = QAction("Judge words matchability", mw)
+    rejudge_matched_words_action = QAction("Re-judge matched words", mw)
+    rejudge_all_words_action = QAction("Re-judge matched/judged words", mw)
     match_words_action = QAction("Match extracted words to notes", mw)
     rematch_single_word_action = QAction("Rematch all single word to notes", mw)
     rematch_processed_single_word_action = QAction("Rematch processed single words to notes", mw)
@@ -118,9 +136,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         "Find missing matched note ids for selected notes", mw
     )
     tag_notes_matched_status_action = QAction("Tag notes matched status", mw)
+    build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
-    export_kanjify_ft_action = QAction("Export kanjify fine-tuning data", mw)
-    export_extract_words_ft_action = QAction("Export extract-words fine-tuning data", mw)
+    export_kanjify_ft_action = QAction("Export kanjify test data", mw)
+    export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
     merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
     new_note_all_ops_action = QAction("Run all ops for new notes", mw)
@@ -148,12 +167,38 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: extract_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
-        extract_words_test_compare_action.triggered,
-        lambda: extract_words_test_compare_from_selected_notes(selected_nids, parent=browser),
+        extract_words_and_judge_action.triggered,
+        lambda: extract_words_and_judge_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        regenerate_words_action.triggered,
+        lambda: regenerate_words_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         migrate_compound_verbs_action.triggered,
         lambda: migrate_compound_verbs_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        find_proper_nouns_action.triggered,
+        lambda: find_proper_nouns_from_selected_notes(selected_nids, parent=browser),
+    )
+    qconnect(
+        judge_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=JUDGE_NEW
+        ),
+    )
+    qconnect(
+        rejudge_matched_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=REJUDGE_MATCHED
+        ),
+    )
+    qconnect(
+        rejudge_all_words_action.triggered,
+        lambda: word_matching_judge_from_selected_notes(
+            selected_nids, parent=browser, states=REJUDGE_ALL
+        ),
     )
     qconnect(
         match_words_action.triggered,
@@ -198,16 +243,20 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         lambda: tag_notes_matched_status_from_selected(selected_nids, parent=browser),
     )
     qconnect(
+        build_name_lexicon_action.triggered,
+        lambda: build_name_lexicon_from_selected(selected_nids, parent=browser),
+    )
+    qconnect(
         deduplicate_existing_meaning_notes_action.triggered,
         lambda: deduplicate_existing_meaning_notes_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         export_kanjify_ft_action.triggered,
-        lambda: make_kanjify_sentence_fine_tuning_data(selected_nids, parent=browser),
+        lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
     )
     qconnect(
-        export_extract_words_ft_action.triggered,
-        lambda: make_extract_words_fine_tuning_data(selected_nids, parent=browser),
+        export_migration_data_action.triggered,
+        lambda: make_extract_words_migration_data(selected_nids, parent=browser),
     )
 
     ai_menu = menu.addMenu("AI helper")
@@ -222,8 +271,13 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(kanji_story_action)
     ai_menu.addAction(component_words_action)
     ai_menu.addAction(extract_words_action)
-    ai_menu.addAction(extract_words_test_compare_action)
+    ai_menu.addAction(extract_words_and_judge_action)
+    ai_menu.addAction(regenerate_words_action)
     ai_menu.addAction(migrate_compound_verbs_action)
+    ai_menu.addAction(find_proper_nouns_action)
+    ai_menu.addAction(judge_words_action)
+    ai_menu.addAction(rejudge_matched_words_action)
+    ai_menu.addAction(rejudge_all_words_action)
     ai_menu.addAction(match_words_action)
     ai_menu.addAction(rematch_single_word_action)
     ai_menu.addAction(rematch_processed_single_word_action)
@@ -235,9 +289,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     # Sync ops
     ai_menu.addAction(find_missing_matched_note_ids_action)
     ai_menu.addAction(tag_notes_matched_status_action)
+    ai_menu.addAction(build_name_lexicon_action)
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
-    ai_menu.addAction(export_extract_words_ft_action)
+    ai_menu.addAction(export_migration_data_action)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
@@ -302,7 +357,9 @@ def run_op_on_add_note(note: Note):
         notes_to_update_dict: dict[NoteId, Note] = {}
         try:
             clean_meaning_in_note(config, note, {}, notes_to_update_dict)
-            extract_words_in_note(config, note, {}, notes_to_update_dict)
+            # The lexicon is read here rather than cached: the user rebuilds it from the
+            # collection now and then, and one added note is one small json read.
+            extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True
@@ -326,6 +383,15 @@ gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_men
 
 # Register to field unfocus hook
 gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
+
+
+def add_tools_menu_actions():
+    action = QAction("AI ops: generate test data", mw)
+    qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
+    mw.form.menuTools.addAction(action)
+
+
+gui_hooks.main_window_did_init.append(add_tools_menu_actions)
 
 # Offer to rebuild the vendored packages when they do not fit this machine, and put the same
 # rebuild in the Tools menu for anyone who wants rapidfuzz's compiled half - which the shipped

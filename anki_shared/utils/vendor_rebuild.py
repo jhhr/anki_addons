@@ -26,16 +26,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .vendor_path import (
+    REQUIREMENTS,
     VENDOR_MANIFEST,
     platform_tag,
+    requirements_digest,
     runtime_python_version,
     user_lib,
 )
-
-REQUIREMENTS = "requirements.txt"
 
 # Not inside user_files/lib: vendor_health treats that directory existing without a manifest
 # as an interrupted rebuild, so a bare record of a *failed* attempt there would ask for the
@@ -122,7 +122,7 @@ def rebuild_libs(addon_dir: str, on_progress: Callable[[str], None] = lambda _: 
 
         on_progress("Tidying up...")
         _prune(staging)
-        _write_manifest(staging)
+        _write_manifest(staging, addon_dir)
 
         on_progress("Installing...")
         _swap_in(staging, target)
@@ -198,7 +198,7 @@ def _addon_version(addon_dir: str) -> str:
 
 def _run(command: list[str], timeout: int) -> "subprocess.CompletedProcess[str]":
     """Run a child process without flashing a console window over Anki."""
-    kwargs = {}
+    kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         # Anki is a GUI process, so a child that wants a console gets a window of its own.
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -233,11 +233,12 @@ def _prune(tree: str) -> None:
                 shutil.rmtree(os.path.join(dirpath, name), ignore_errors=True)
 
 
-def _write_manifest(tree: str) -> None:
+def _write_manifest(tree: str, addon_dir: str) -> None:
     """The same shape build.py writes, so vendor_health is one code path for both trees.
 
     Written last, after pip has succeeded and before the swap: it is the marker that says this
-    tree is complete, and vendor_health reads its absence as an interrupted rebuild.
+    tree is complete, and vendor_health reads its absence as an interrupted rebuild. The
+    requirements digest is how it later tells that an addon update has asked for more.
     """
     flat = sorted(
         name
@@ -251,6 +252,7 @@ def _write_manifest(tree: str) -> None:
         "flat": flat,
         "per_platform": [],
         "rebuilt_locally": True,
+        "requirements_sha256": requirements_digest(addon_dir),
     }
     with open(os.path.join(tree, VENDOR_MANIFEST), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

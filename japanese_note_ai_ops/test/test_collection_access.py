@@ -83,6 +83,7 @@ class CollectionAccessTestCase(unittest.TestCase):
 
     def submit_in_run(self, target):
         """A worker thread of this run, which is how ops reach the collection in a real op."""
+
         def enrolled():
             api.join_run(self.run)
             target()
@@ -102,9 +103,7 @@ class CollectionAccessTestCase(unittest.TestCase):
 
 class SerialisationTests(CollectionAccessTestCase):
     def test_only_one_caller_is_inside_the_collection_at_a_time(self):
-        threads = [
-            threading.Thread(target=lambda i=i: ca.find_notes(f"q{i}")) for i in range(20)
-        ]
+        threads = [threading.Thread(target=lambda i=i: ca.find_notes(f"q{i}")) for i in range(20)]
         for t in threads:
             t.start()
         for t in threads:

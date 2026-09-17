@@ -30,6 +30,7 @@ replacing the name in the module (`hook_logger`). The modifies-other-notes branc
 `test_copy_fields_op.py`.
 """
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Optional
 
@@ -116,19 +117,21 @@ def set_definitions(col):
 
 @pytest.fixture
 def hook_logger(logger, monkeypatch):
-    """Capture the `Logger` the handler builds for itself.
+    """Capture the level the handler opens its operation log at.
 
-    The handler constructs `Logger(config.log_level)` internally rather than taking one, so
-    the only way to see what it reported is to replace the name in the module. `copy_fields`
-    builds its own from its own module's `Logger`, so this does not reach that branch.
+    The handler reads `config.log_level` itself rather than taking a logger, so wrapping
+    `operation_logging` in the module is the only way to see what level it asked for -- and
+    replacing it keeps the test from writing a log file at all. What was logged is on the
+    `logger` fixture's handler, which is attached to the same loggers the handler uses.
     """
     levels: list[str] = []
 
-    def build(level):
+    @contextmanager
+    def record(name, level):
         levels.append(level)
-        return logger
+        yield None
 
-    monkeypatch.setattr(note_hooks, "Logger", build)
+    monkeypatch.setattr(note_hooks, "operation_logging", record)
     logger.levels = levels  # type: ignore[attr-defined]
     return logger
 
@@ -165,9 +168,6 @@ def ran(monkeypatch):
                 else [note.id for note in call["copied_into_notes"]]
                 for call in calls
             ]
-
-        def loggers(self) -> list:
-            return [call.get("logger") for call in calls]
 
     return Calls()
 
@@ -1221,15 +1221,14 @@ class TestNonModifyingDefinitionsDiscardTheirNoteList:
         assert note.tags == ["tagged"]
         assert editor.loads == 1
 
-    def test_the_handler_builds_its_logger_from_the_configured_level(
+    def test_the_handler_opens_its_operation_log_at_the_configured_level(
         self, col, set_definitions, ran, hook_logger, capsys
     ):
-        # Passed explicitly because the callee's default is a module-level `Logger("error")`
-        # shared by every caller that omits one, which would ignore `log_level` and print a
-        # failing definition's error to stdout instead of through the configured logger.
+        # The level comes from the config and reaches the file the operation writes, and
+        # nothing is printed on the way: the addon's lines go to the loggers, and only a
+        # handler decides where they land.
         set_definitions(within(field="Nonexistent"), log_level="debug")
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
         assert hook_logger.levels == ["debug"]
-        assert ran.loggers() == [hook_logger]
         assert hook_logger.has_error("not found in note")
         assert "not found in note" not in capsys.readouterr().out
