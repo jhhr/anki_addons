@@ -1,17 +1,18 @@
+import logging
+
 from anki.notes import Note
 
 from ..shared.jp_text_processing.word.word_highlight import (
     word_highlight,
 )
 
-from ..shared.utils.logger import Logger
+logger = logging.getLogger(__name__)
 
 
 def word_highlight_process(
     text: str,
     word_field: str,
     note: Note,
-    logger: Logger = Logger("error"),
 ) -> str:
     """
     Wraps the word_highlight function to be used as an extra processing step in the copy fields
@@ -29,6 +30,6 @@ def word_highlight_process(
         if not word_to_highlight:
             logger.error(f"Error in word_highlight: word_field '{word_field}' not found in note.")
     logger.debug(f"word_to_highlight: {word_to_highlight}, text: {text}")
-    result = word_highlight(text, word_to_highlight, logger)
+    result = word_highlight(text, word_to_highlight)
     logger.debug(f"word_highlight result: {result}")
     return result

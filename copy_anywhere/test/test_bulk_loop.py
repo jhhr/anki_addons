@@ -34,14 +34,13 @@ from copy_anywhere.logic.copy_fields import (
 )
 
 
-def run_bulk(definition, logger, notes=None, cards=None, results=None, **kwargs):
+def run_bulk(definition, notes=None, cards=None, results=None, **kwargs):
     """Drive the loop the way `copy_fields`'s `op` does, and hand back what it filled."""
     return copy_fields_in_background(
         copy_definition=definition,
         copied_into_cards_dict=cards if cards is not None else {},
         copied_into_notes=notes if notes is not None else [],
         results=results if results is not None else CacheResults(result_text="", changes=None),
-        logger=logger,
         **kwargs,
     )
 
@@ -104,7 +103,7 @@ class TestNoteTypeSelection:
         definition["copy_into_note_types"] = None
         copied: list = []
 
-        results = run_bulk(definition, logger, notes=copied)
+        results = run_bulk(definition, notes=copied)
 
         # The message interpolates the value itself, so it reads "... 'None' not found",
         # which is what a user sees when the key is absent rather than misspelt.
@@ -112,7 +111,7 @@ class TestNoteTypeSelection:
         assert copied == []
         assert summary(results) == ""
 
-    def test_the_stored_quoted_list_splits_into_one_id_per_name(self, col, logger, progress):
+    def test_the_stored_quoted_list_splits_into_one_id_per_name(self, col, progress):
         # Two names, two ids in the `mid IN (...)` clause, so the loop walks one note of each
         # type. The progress bar's max is the only place the fetched count is observable --
         # a two-note-type definition has no field the two share to copy into.
@@ -120,17 +119,17 @@ class TestNoteTypeSelection:
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"})
         definition = d.within_note(note_types=[VOCAB, KANJI], field_to_field_defs=[])
 
-        run_bulk(definition, logger)
+        run_bulk(definition)
 
         assert progress.updates[-1]["max"] == 2
         assert progress.updates[-1]["value"] == 2
 
-    def test_one_name_selects_only_that_note_type(self, col, logger, progress):
+    def test_one_name_selects_only_that_note_type(self, col, progress):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"})
         definition = d.within_note(note_types=[KANJI], field_to_field_defs=[])
 
-        run_bulk(definition, logger)
+        run_bulk(definition)
 
         assert progress.updates[-1]["max"] == 1
 
@@ -142,7 +141,7 @@ class TestNoteTypeSelection:
         definition["copy_into_note_types"] = d.quoted_list(["No Such Type", VOCAB])
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied)
+        run_bulk(definition, notes=copied)
 
         assert [note_.id for note_ in copied] == [note.id]
         assert logger.errors == []
@@ -154,7 +153,7 @@ class TestNoteTypeSelection:
         definition = copy_word_into_note()
         definition["copy_into_note_types"] = d.quoted_list(["Nope", "Nada"])
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         assert logger.has_error("Did not find any notes of note type(s)")
         assert summary(results) == ""
@@ -163,13 +162,13 @@ class TestNoteTypeSelection:
         definition = copy_word_into_note()
         definition["copy_into_note_types"] = d.quoted_list(["Nope", "Nada"])
 
-        run_bulk(definition, logger)
+        run_bulk(definition)
 
         # The message echoes the stored form rather than the split names, so the quoting the
         # editor wrote leaks into the user-facing text.
         assert logger.has_error('Did not find any notes of note type(s) Nope", "Nada')
 
-    def test_a_missing_copy_mode_raises_rather_than_erroring(self, col, logger):
+    def test_a_missing_copy_mode_raises_rather_than_erroring(self, col):
         # `copy_into_note_types` is read with `.get`, but `copy_mode` is read with `[]`, so a
         # definition dict missing that key takes the whole op down instead of logging.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
@@ -177,25 +176,25 @@ class TestNoteTypeSelection:
         del definition["copy_mode"]
 
         with pytest.raises(KeyError, match="copy_mode"):
-            run_bulk(definition, logger)
+            run_bulk(definition)
 
 
 class TestNoteIdFilter:
-    def test_none_means_every_note_of_the_type(self, col, logger):
+    def test_none_means_every_note_of_the_type(self, col):
         first = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         second = real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
         copied: list = []
 
-        run_bulk(copy_word_into_note(), logger, notes=copied, note_ids=None)
+        run_bulk(copy_word_into_note(), notes=copied, note_ids=None)
 
         assert {note.id for note in copied} == {first.id, second.id}
 
-    def test_a_list_narrows_the_query_to_those_ids(self, col, logger):
+    def test_a_list_narrows_the_query_to_those_ids(self, col):
         first = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
         copied: list = []
 
-        run_bulk(copy_word_into_note(), logger, notes=copied, note_ids=[first.id])
+        run_bulk(copy_word_into_note(), notes=copied, note_ids=[first.id])
 
         assert [note.id for note in copied] == [first.id]
 
@@ -203,7 +202,7 @@ class TestNoteIdFilter:
         kanji = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"})
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        results = run_bulk(copy_word_into_note(), logger, note_ids=[kanji.id])
+        results = run_bulk(copy_word_into_note(), note_ids=[kanji.id])
 
         # The two filters are ANDed, so an id list only ever narrows the note-type set and is
         # never a way to reach a note the definition does not name.
@@ -215,7 +214,7 @@ class TestNoteIdFilter:
         # caller that passes an empty selection gets an error, not a full-collection run.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        results = run_bulk(copy_word_into_note(), logger, note_ids=[])
+        results = run_bulk(copy_word_into_note(), note_ids=[])
 
         assert logger.has_error("Did not find any notes")
         assert summary(results) == ""
@@ -229,7 +228,7 @@ class TestZeroNotes:
         definition["copy_into_note_types"] = d.quoted_list(["Nope"])
         results = CacheResults(result_text="earlier definition", changes=None)
 
-        returned = run_bulk(definition, logger, results=results)
+        returned = run_bulk(definition, results=results)
 
         assert returned is results
         assert returned.get_result_text() == "earlier definition"
@@ -241,13 +240,13 @@ class TestZeroNotes:
         # error nor the result text fires.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        results = run_bulk(copy_word_into_note(), logger, is_sync=True)
+        results = run_bulk(copy_word_into_note(), is_sync=True)
 
         assert logger.errors == []
         assert summary(results) == ""
         assert results.get_count() == 0
 
-    def test_a_sync_run_whose_notes_are_all_condition_skipped_also_says_nothing(self, col, logger):
+    def test_a_sync_run_whose_notes_are_all_condition_skipped_also_says_nothing(self, col):
         # `should_report_result` is keyed on the ProgressUpdater's `note_cnt`, which counts
         # the notes that got past the condition query -- not the notes the query returned. So
         # a sync that fetched notes but did nothing with them is silent too.
@@ -255,23 +254,23 @@ class TestZeroNotes:
         flag_cards(col, note, 0)
         definition = copy_word_into_note(copy_condition_query="tag:never")
 
-        results = run_bulk(definition, logger, is_sync=True)
+        results = run_bulk(definition, is_sync=True)
 
         assert summary(results) == ""
         assert results.get_count() == 0
 
-    def test_a_manual_run_whose_notes_are_all_condition_skipped_still_reports(self, col, logger):
+    def test_a_manual_run_whose_notes_are_all_condition_skipped_still_reports(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = copy_word_into_note(copy_condition_query="tag:never")
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         assert "processed" in summary(results)
         assert results.get_count() == 1
 
 
 class TestSyncSelection:
-    def test_a_note_with_two_flagged_cards_is_processed_once(self, col, logger):
+    def test_a_note_with_two_flagged_cards_is_processed_once(self, col):
         # The sync query joins `notes` to `cards`, so without its DISTINCT a two-card note
         # would come back once per flagged card and be handed to `update_notes` twice.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
@@ -279,28 +278,28 @@ class TestSyncSelection:
         flag_cards(col, note, 0)
         copied: list = []
 
-        results = run_bulk(copy_word_into_note(), logger, notes=copied, is_sync=True)
+        results = run_bulk(copy_word_into_note(), notes=copied, is_sync=True)
 
         assert [note_.id for note_ in copied] == [note.id]
         assert "1 destinations" in summary(results)
 
-    def test_one_flagged_card_out_of_two_means_one_run(self, col, logger):
+    def test_one_flagged_card_out_of_two_means_one_run(self, col):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.set_custom_data(col, note.cards()[0].id, json.dumps({"fc": 0}))
         copied: list = []
 
-        run_bulk(copy_word_into_note(), logger, notes=copied, is_sync=True)
+        run_bulk(copy_word_into_note(), notes=copied, is_sync=True)
 
         assert [note_.id for note_ in copied] == [note.id]
 
-    def test_a_manual_run_ignores_the_flag_entirely_and_never_duplicates(self, col, logger):
+    def test_a_manual_run_ignores_the_flag_entirely_and_never_duplicates(self, col):
         # The non-sync query is `FROM notes n` alone -- no card join, so no duplication and
         # no flag to satisfy.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         flag_cards(col, note, 0)
         copied: list = []
 
-        run_bulk(copy_word_into_note(), logger, notes=copied, is_sync=False)
+        run_bulk(copy_word_into_note(), notes=copied, is_sync=False)
 
         assert [note_.id for note_ in copied] == [note.id]
 
@@ -326,68 +325,68 @@ class TestSyncFlagBranch:
             **extra,
         )
 
-    def test_sync_only_takes_both_zero_and_minus_one(self, col, logger, flagged):
+    def test_sync_only_takes_both_zero_and_minus_one(self, col, flagged):
         definition = self.kanji_definition(copy_on_sync=True, copy_on_review=False)
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied, is_sync=True)
+        run_bulk(definition, notes=copied, is_sync=True)
 
         assert {note.id for note in copied} == {flagged["zero"].id, flagged["minus"].id}
 
-    def test_review_plus_sync_narrows_to_zero_only(self, col, logger, flagged):
+    def test_review_plus_sync_narrows_to_zero_only(self, col, flagged):
         # -1 is the "changed during review" marker; a definition that already ran on review
         # has handled those, so its sync pass takes only the plain 0 rows.
         definition = self.kanji_definition(copy_on_sync=True, copy_on_review=True)
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied, is_sync=True)
+        run_bulk(definition, notes=copied, is_sync=True)
 
         assert {note.id for note in copied} == {flagged["zero"].id}
 
-    def test_neither_flag_set_also_narrows_to_zero_only(self, col, logger, flagged):
+    def test_neither_flag_set_also_narrows_to_zero_only(self, col, flagged):
         # A definition with copy_on_sync off can still be driven with is_sync=True by the
         # caller, and when it is, it gets the strict `= 0` branch.
         definition = self.kanji_definition(copy_on_sync=False, copy_on_review=False)
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied, is_sync=True)
+        run_bulk(definition, notes=copied, is_sync=True)
 
         assert {note.id for note in copied} == {flagged["zero"].id}
 
-    def test_a_card_with_no_custom_data_is_never_selected(self, col, logger, flagged):
+    def test_a_card_with_no_custom_data_is_never_selected(self, col, flagged):
         real_anki.add_note(col, KANJI, {"Kanji": "unflagged", "Keyword": "unflagged"})
         definition = self.kanji_definition(copy_on_sync=True)
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied, is_sync=True)
+        run_bulk(definition, notes=copied, is_sync=True)
 
         # `json_extract` of a missing key is NULL, and NULL matches neither `IN` nor `=`.
         assert {note.id for note in copied} == {flagged["zero"].id, flagged["minus"].id}
 
-    def test_note_ids_narrows_the_sync_selection_too(self, col, logger, flagged):
+    def test_note_ids_narrows_the_sync_selection_too(self, col, flagged):
         definition = self.kanji_definition(copy_on_sync=True)
         copied: list = []
 
-        run_bulk(definition, logger, notes=copied, is_sync=True, note_ids=[flagged["minus"].id])
+        run_bulk(definition, notes=copied, is_sync=True, note_ids=[flagged["minus"].id])
 
         assert [note.id for note in copied] == [flagged["minus"].id]
 
 
 class TestCancellation:
-    def test_cancelling_mid_loop_stops_the_walk_and_still_reports(self, col, logger, cancel_after):
+    def test_cancelling_mid_loop_stops_the_walk_and_still_reports(self, col, cancel_after):
         for i in range(4):
             real_anki.add_note(col, VOCAB, {"Word": f"w{i}", "Meaning": f"m{i}"})
         cancel_after(2)
         copied: list = []
 
-        results = run_bulk(copy_word_into_note(), logger, notes=copied)
+        results = run_bulk(copy_word_into_note(), notes=copied)
 
         assert len(copied) == 2
         assert "2 destinations" in summary(results)
         assert results.get_count() == 1
 
     def test_the_check_runs_after_the_note_so_cancelling_up_front_still_does_one(
-        self, col, logger, cancel_after
+        self, col, cancel_after
     ):
         # The order in the loop body is: process, render, ask. A user who cancels before the
         # op starts still gets exactly one note copied.
@@ -396,16 +395,16 @@ class TestCancellation:
         cancel_after(1)
         copied: list = []
 
-        run_bulk(copy_word_into_note(), logger, notes=copied)
+        run_bulk(copy_word_into_note(), notes=copied)
 
         assert len(copied) == 1
 
-    def test_the_question_is_asked_once_per_note(self, col, logger, cancel_after):
+    def test_the_question_is_asked_once_per_note(self, col, cancel_after):
         for i in range(3):
             real_anki.add_note(col, VOCAB, {"Word": f"w{i}", "Meaning": f"m{i}"})
         call_count = cancel_after(99)
 
-        run_bulk(copy_word_into_note(), logger)
+        run_bulk(copy_word_into_note())
 
         assert call_count() == 3
 
@@ -421,7 +420,7 @@ class TestCancellation:
             copy_condition_query="{{Word}}",
         )
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         assert logger.has_error("could not be interpolated")
         assert summary(results) == ""
@@ -455,25 +454,25 @@ class TestAFailingNote:
         first, second, third = three_notes
         copied: list = []
 
-        run_bulk(self.definition(), logger, notes=copied)
+        run_bulk(self.definition(), notes=copied)
 
         assert [note.id for note in copied] == [first.id]
         assert logger.has_error(f"note id {second.id}")
         assert not logger.has_error(f"note id {third.id}")
 
-    def test_the_partial_run_reports_nothing_at_all(self, col, logger, three_notes):
+    def test_the_partial_run_reports_nothing_at_all(self, col, three_notes):
         # The early `return results` skips the whole reporting block, so a run that copied
         # into one note and then died is indistinguishable from one that did nothing -- the
         # only trace is the logged error.
-        results = run_bulk(self.definition(), logger)
+        results = run_bulk(self.definition())
 
         assert summary(results) == ""
         assert results.get_count() == 0
 
-    def test_the_results_object_handed_in_is_the_one_handed_back(self, col, logger, three_notes):
+    def test_the_results_object_handed_in_is_the_one_handed_back(self, col, three_notes):
         results = CacheResults(result_text="earlier", changes=None)
 
-        returned = run_bulk(self.definition(), logger, results=results)
+        returned = run_bulk(self.definition(), results=results)
 
         assert returned is results
         assert returned.get_result_text() == "earlier"
@@ -664,15 +663,15 @@ class TestProgressUpdaterCounters:
 
 
 class TestCounterArithmeticThroughTheLoop:
-    def test_one_destination_is_counted_per_note_copied_into(self, col, logger):
+    def test_one_destination_is_counted_per_note_copied_into(self, col):
         for i in range(3):
             real_anki.add_note(col, VOCAB, {"Word": f"w{i}", "Meaning": f"m{i}"})
 
-        results = run_bulk(copy_word_into_note(), logger)
+        results = run_bulk(copy_word_into_note())
 
         assert "3 destinations" in summary(results)
 
-    def test_sources_are_counted_once_per_trigger_note_not_once_per_run(self, col, logger):
+    def test_sources_are_counted_once_per_trigger_note_not_once_per_run(self, col):
         for word in ["aaa", "bbb", "ccc"]:
             real_anki.add_note(col, VOCAB, {"Word": word, "Meaning": word}, tags=["src"])
         definition = d.destination_to_sources(
@@ -682,38 +681,38 @@ class TestCounterArithmeticThroughTheLoop:
             select_card_count="0",
         )
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         # Three trigger notes, each finding the same three sources: the counter is a running
         # total of work done, not a count of distinct notes touched.
         assert "processed with 9 sources" in summary(results)
         assert "3 destinations" in summary(results)
 
-    def test_a_written_file_is_counted_once_per_note(self, col, logger, media_dir):
+    def test_a_written_file_is_counted_once_per_note(self, col, media_dir):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
         definition = d.within_note(field_to_field_defs=[])
         definition["field_to_file_defs"] = [d.field_to_file("{{Word}}.txt", "{{Meaning}}")]
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         assert "2 files" in summary(results)
         assert "destinations" not in summary(results)
 
-    def test_only_a_card_an_action_actually_edited_is_counted(self, col, logger):
+    def test_only_a_card_an_action_actually_edited_is_counted(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = d.within_note(field_to_field_defs=[])
         definition["card_actions"] = [d.card_action(VOCAB, "Recognition", set_flag=2)]
         cards: dict = {}
 
-        results = run_bulk(definition, logger, cards=cards)
+        results = run_bulk(definition, cards=cards)
 
         # Both of the note's cards are collected for the later `update_cards`, but the counter
         # only follows the `edited` marker, so it reports the one that changed.
         assert "1 cards" in summary(results)
         assert len(cards) == 2
 
-    def test_a_note_with_no_sources_does_not_count_its_destination(self, col, logger):
+    def test_a_note_with_no_sources_does_not_count_its_destination(self, col):
         # The "no sources found" early return copies nothing, so it must not count the
         # destination either -- a destination is counted only when it was written to.
         real_anki.add_note(col, VOCAB, {"Word": "trig", "Meaning": "t"})
@@ -725,23 +724,23 @@ class TestCounterArithmeticThroughTheLoop:
         )
         copied: list = []
 
-        results = run_bulk(definition, logger, notes=copied)
+        results = run_bulk(definition, notes=copied)
 
         assert "destinations" not in summary(results)
         assert copied == []
 
 
 class TestResultText:
-    def test_a_plain_run_names_the_definition_and_says_processed(self, col, logger):
+    def test_a_plain_run_names_the_definition_and_says_processed(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        results = run_bulk(copy_word_into_note(definition_name="my copy"), logger)
+        results = run_bulk(copy_word_into_note(definition_name="my copy"))
 
         text = summary(results)
         assert "<i>my copy:</i>" in text
         assert text.endswith("processed </span>")
 
-    def test_the_across_branch_appends_the_source_count(self, col, logger):
+    def test_the_across_branch_appends_the_source_count(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "aaa", "Meaning": "a"}, tags=["src"])
         real_anki.add_note(col, VOCAB, {"Word": "trig", "Meaning": "t"}, tags=["trig"])
         definition = d.destination_to_sources(
@@ -751,26 +750,26 @@ class TestResultText:
             select_card_count="0",
         )
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         # `is_across` is decided from `copy_mode` alone, so the phrasing switches even when the
         # source count would be zero.
         assert "processed with 2 sources" in summary(results)
 
-    def test_the_definition_name_is_escaped(self, col, logger):
+    def test_the_definition_name_is_escaped(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        results = run_bulk(copy_word_into_note(definition_name="a <b> & c"), logger)
+        results = run_bulk(copy_word_into_note(definition_name="a <b> & c"))
 
         assert "<i>a &lt;b&gt; &amp; c:</i>" in summary(results)
 
-    def test_a_run_that_did_nothing_measurable_still_reports_and_counts(self, col, logger):
+    def test_a_run_that_did_nothing_measurable_still_reports_and_counts(self, col):
         # Every counter is zero, so the text is just the timing and the name -- and the count
         # still goes up, which is what makes `copy_fields` show a tooltip for it.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = d.within_note(field_to_field_defs=[])
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         text = summary(results)
         assert "destinations" not in text
@@ -778,12 +777,12 @@ class TestResultText:
         assert "cards" not in text
         assert results.get_count() == 1
 
-    def test_each_definition_appends_to_the_shared_results(self, col, logger):
+    def test_each_definition_appends_to_the_shared_results(self, col):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         results = CacheResults(result_text="", changes=None)
 
-        run_bulk(copy_word_into_note(definition_name="first"), logger, results=results)
-        run_bulk(copy_word_into_note(definition_name="second"), logger, results=results)
+        run_bulk(copy_word_into_note(definition_name="first"), results=results)
+        run_bulk(copy_word_into_note(definition_name="second"), results=results)
 
         # `copy_fields` threads one CacheResults through every definition, and this is where
         # the per-definition lines and the count come from.
@@ -793,18 +792,18 @@ class TestResultText:
 
 
 class TestTheFinalRender:
-    def test_a_full_run_renders_an_update_for_its_last_note(self, col, logger, progress):
+    def test_a_full_run_renders_an_update_for_its_last_note(self, col, progress):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
 
-        run_bulk(copy_word_into_note(), logger)
+        run_bulk(copy_word_into_note())
 
         assert progress.updates
         assert progress.updates[-1]["value"] == 2
         assert progress.updates[-1]["max"] == 2
 
     def test_a_run_whose_last_note_is_condition_skipped_still_renders_a_full_bar(
-        self, col, logger, progress
+        self, col, progress
     ):
         # `total_notes_count` is the number the SQL returned, so the "last note" check has to
         # count the condition-skipped notes as well as the copied ones, or it never matches
@@ -813,7 +812,7 @@ class TestTheFinalRender:
         real_anki.add_note(col, VOCAB, {"Word": "bbb", "Meaning": "b"})
         definition = copy_word_into_note(copy_condition_query="Word:aaa")
 
-        results = run_bulk(definition, logger)
+        results = run_bulk(definition)
 
         assert progress.updates
         assert progress.updates[-1]["value"] == 2
@@ -821,18 +820,18 @@ class TestTheFinalRender:
         assert "Copied 1/2 notes, skipped 1" in progress.updates[-1]["label"]
         assert "1 destinations" in summary(results)
 
-    def test_zero_notes_means_the_loop_never_asks_for_a_render(self, col, logger, progress):
+    def test_zero_notes_means_the_loop_never_asks_for_a_render(self, col, progress):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        run_bulk(copy_word_into_note(), logger, is_sync=True)
+        run_bulk(copy_word_into_note(), is_sync=True)
 
         assert progress.updates == []
         # The title is still set, because the ProgressUpdater is built before the loop.
         assert progress.titles == ["Copying fields"]
 
-    def test_the_progress_title_argument_reaches_the_updater(self, col, logger, progress):
+    def test_the_progress_title_argument_reaches_the_updater(self, col, progress):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
 
-        run_bulk(copy_word_into_note(), logger, progress_title="Syncing fields")
+        run_bulk(copy_word_into_note(), progress_title="Syncing fields")
 
         assert progress.titles == ["Syncing fields"]

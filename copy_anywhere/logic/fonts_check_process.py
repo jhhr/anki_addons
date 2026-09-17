@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -6,7 +7,8 @@ from typing import Optional
 from aqt import mw
 
 from .FatalProcessError import FatalProcessError
-from ..shared.utils.logger import Logger
+
+logger = logging.getLogger(__name__)
 
 
 def fonts_check_process(
@@ -14,7 +16,6 @@ def fonts_check_process(
     fonts_dict_file: str,
     limit_to_fonts: Optional[list[str]],
     character_limit_regex: Optional[str],
-    logger: Logger = Logger("error"),
     file_cache: Optional[dict] = None,
 ) -> str:
     """
@@ -28,7 +29,6 @@ def fonts_check_process(
     :param fonts_dict_file: The path to the json file with the fonts dictionary
     :param limit_to_fonts: A list of font file names to limit the output to
     :param character_limit_regex: A regex to limit the characters to check
-    :param logger: A logger instance to log errors and debug messages
     :param file_cache: A dictionary to cache the open JSON file contents, to avoid opening the file
         multiple times
 

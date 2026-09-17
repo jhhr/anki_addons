@@ -1,4 +1,5 @@
 import functools
+import logging
 from typing import Optional, Union, Tuple
 from anki.hooks import (
     wrap,
@@ -17,7 +18,7 @@ from aqt.gui_hooks import (
 )
 
 from ..shared.anki.write_custom_data import write_custom_data
-from ..shared.utils.logger import Logger
+from ..logging_setup import operation_logging
 from ..utils.merge_cards import merge_cards
 from ..configuration import (
     Config,
@@ -30,6 +31,8 @@ from ..logic.copy_fields import (
     copy_fields,
     make_copy_fields_undo_text,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
@@ -74,71 +77,68 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
     """
     config = Config()
     config.load()
-    logger = Logger(config.log_level)
+    with operation_logging("note_added", config.log_level):
+        # Copy definitions that affect other notes need an undo entry as we want to be able to undo
+        editing_other_notes_definitions: list[CopyDefinition] = []
 
-    # Copy definitions that affect other notes need an undo entry as we want to be able to undo
-    editing_other_notes_definitions: list[CopyDefinition] = []
-
-    for copy_definition in get_copy_definitions_for_add_note(note):
-        # If this definition modifies other notes, we need to defer it until the note is added
-        if definition_modifies_other_notes(copy_definition):
-            editing_other_notes_definitions.append(copy_definition)
-            continue
-        copy_for_single_trigger_note(
-            copy_definition=copy_definition,
-            trigger_note=note,
-            deck_id=deck_id,
-            logger=logger,
-        )
-
-    if not editing_other_notes_definitions:
-        return
-
-    # Run the definitions that affect other notes with an undo entry created
-    # Thus the changes on other notes can be undone while the changes on the new note
-    # will remain, as that seems more user-friendly.
-    undo_entry: Optional[int] = None
-    for copy_definition in editing_other_notes_definitions:
-        copied_into_notes: list[Note] = []
-        # Can't use copy_fields here as it'd lead to a
-        # "bug: run_in_background not called from main thread" exception
-        # TODO: non CollectionOp version of copy_fields
-        copy_for_single_trigger_note(
-            copy_definition=copy_definition,
-            trigger_note=note,
-            copied_into_notes=copied_into_notes,
-            deck_id=deck_id,
-            logger=logger,
-        )
-        # Only source to destinations definitions get here and their destinations come from a
-        # query, which can't find the unsaved note. Still, an id 0 note would make
-        # mw.col.update_notes fail, so keep it out regardless
-        copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-        if not copied_into_notes:
-            # Nothing was written into other notes (the query matched nothing or the deck
-            # whitelist rejected the note), so there's nothing to undo and an empty entry would
-            # only clutter the undo stack.
-            continue
-
-        if undo_entry is None:
-            undo_text = make_copy_fields_undo_text(
-                copy_definitions=editing_other_notes_definitions,
-                note_count=1,
-                suffix="triggered by adding note",
+        for copy_definition in get_copy_definitions_for_add_note(note):
+            # If this definition modifies other notes, we need to defer it until the note is added
+            if definition_modifies_other_notes(copy_definition):
+                editing_other_notes_definitions.append(copy_definition)
+                continue
+            copy_for_single_trigger_note(
+                copy_definition=copy_definition,
+                trigger_note=note,
+                deck_id=deck_id,
             )
-            # Unfortunately, note_will_be_added is called *before* the note is actually added so
-            # after this undo entry will come the "Add Note" undo entry. This is not ideal, but
-            # it's the most reliable thing do while a note_was_added hook doesn't exist.
-            #
-            # Other altenatives would be to add a flag to new notes and run the deferred copy
-            # definitions on syncing but that seems less user-friendly.
-            undo_entry = mw.col.add_custom_undo_entry(undo_text)
-        # Write after every definition, as the next one fetches its destinations from the
-        # database: writing once at the end would let a later definition's copy of a note,
-        # fetched without an earlier one's edit, overwrite that edit
-        mw.col.update_notes(copied_into_notes)
-        # Merge after every write, or the entry's step falls behind and can't be found
-        mw.col.merge_undo_entries(undo_entry)
+
+        if not editing_other_notes_definitions:
+            return
+
+        # Run the definitions that affect other notes with an undo entry created
+        # Thus the changes on other notes can be undone while the changes on the new note
+        # will remain, as that seems more user-friendly.
+        undo_entry: Optional[int] = None
+        for copy_definition in editing_other_notes_definitions:
+            copied_into_notes: list[Note] = []
+            # Can't use copy_fields here as it'd lead to a
+            # "bug: run_in_background not called from main thread" exception
+            # TODO: non CollectionOp version of copy_fields
+            copy_for_single_trigger_note(
+                copy_definition=copy_definition,
+                trigger_note=note,
+                copied_into_notes=copied_into_notes,
+                deck_id=deck_id,
+            )
+            # Only source to destinations definitions get here and their destinations come from a
+            # query, which can't find the unsaved note. Still, an id 0 note would make
+            # mw.col.update_notes fail, so keep it out regardless
+            copied_into_notes = [note for note in copied_into_notes if note.id != 0]
+            if not copied_into_notes:
+                # Nothing was written into other notes (the query matched nothing or the deck
+                # whitelist rejected the note), so there's nothing to undo and an empty entry would
+                # only clutter the undo stack.
+                continue
+
+            if undo_entry is None:
+                undo_text = make_copy_fields_undo_text(
+                    copy_definitions=editing_other_notes_definitions,
+                    note_count=1,
+                    suffix="triggered by adding note",
+                )
+                # Unfortunately, note_will_be_added is called *before* the note is actually added so
+                # after this undo entry will come the "Add Note" undo entry. This is not ideal, but
+                # it's the most reliable thing do while a note_was_added hook doesn't exist.
+                #
+                # Other altenatives would be to add a flag to new notes and run the deferred copy
+                # definitions on syncing but that seems less user-friendly.
+                undo_entry = mw.col.add_custom_undo_entry(undo_text)
+            # Write after every definition, as the next one fetches its destinations from the
+            # database: writing once at the end would let a later definition's copy of a note,
+            # fetched without an earlier one's edit, overwrite that edit
+            mw.col.update_notes(copied_into_notes)
+            # Merge after every write, or the entry's step falls behind and can't be found
+            mw.col.merge_undo_entries(undo_entry)
 
 
 # The card id and undo step of the latest answer, recorded by the wrapped
@@ -191,91 +191,90 @@ def run_copy_fields_on_review(card: Card):
     answer_card_undo_entry = get_answer_card_undo_step(card)
     config = Config()
     config.load()
-    logger = Logger(config.log_level)
-    note = card.note()
-    note_type = note.note_type()
-    if not note_type:
-        # Error situation, note_type should exist when reviewing card
-        return
-    note_type_name = note_type["name"]
+    with operation_logging("card_answered", config.log_level):
+        note = card.note()
+        note_type = note.note_type()
+        if not note_type:
+            # Error situation, note_type should exist when reviewing card
+            return
+        note_type_name = note_type["name"]
 
-    copy_definitions_to_run: list[CopyDefinition] = []
-    has_definitions_to_process_on_sync = False
+        copy_definitions_to_run: list[CopyDefinition] = []
+        has_definitions_to_process_on_sync = False
 
-    for copy_definition in config.copy_definitions:
-        copy_on_review = copy_definition.get("copy_on_review", False)
-        if not copy_on_review:
-            copy_on_sync = copy_definition.get("copy_on_sync", False)
-            if copy_on_sync:
-                has_definitions_to_process_on_sync = True
-            continue
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        # Split note_types by comma
-        if not copy_into_note_types:
-            continue
-        if not isinstance(copy_into_note_types, str):
-            # The answer is already committed, so raising would only throw the error at the
-            # reviewer from inside Anki's hook dispatch and stop every later definition too
-            logger.error(
-                f"Copy definition '{copy_definition.get('definition_name')}' has"
-                f" copy_into_note_types that is not a string: {copy_into_note_types!r}"
+        for copy_definition in config.copy_definitions:
+            copy_on_review = copy_definition.get("copy_on_review", False)
+            if not copy_on_review:
+                copy_on_sync = copy_definition.get("copy_on_sync", False)
+                if copy_on_sync:
+                    has_definitions_to_process_on_sync = True
+                continue
+            copy_into_note_types = copy_definition.get("copy_into_note_types", None)
+            # Split note_types by comma
+            if not copy_into_note_types:
+                continue
+            if not isinstance(copy_into_note_types, str):
+                # The answer is already committed, so raising would only throw the error at the
+                # reviewer from inside Anki's hook dispatch and stop every later definition too
+                logger.error(
+                    f"Copy definition '{copy_definition.get('definition_name')}' has"
+                    f" copy_into_note_types that is not a string: {copy_into_note_types!r}"
+                )
+                continue
+            note_type_names = copy_into_note_types.strip('""').split('", "')
+            if note_type_name not in note_type_names:
+                continue
+
+            copy_definitions_to_run.append(copy_definition)
+
+        if not copy_definitions_to_run:
+            return
+
+        copied_into_notes: list[Note] = []
+        copied_into_cards_dict: dict[int, Card] = {}
+        for copy_definition in copy_definitions_to_run:
+            copy_for_single_trigger_note(
+                copy_definition=copy_definition,
+                trigger_note=note,
+                copied_into_notes=copied_into_notes,
+                copied_into_cards_dict=copied_into_cards_dict,
             )
-            continue
-        note_type_names = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in note_type_names:
-            continue
-
-        copy_definitions_to_run.append(copy_definition)
-
-    if not copy_definitions_to_run:
-        return
-
-    copied_into_notes: list[Note] = []
-    copied_into_cards_dict: dict[int, Card] = {}
-    for copy_definition in copy_definitions_to_run:
-        copy_for_single_trigger_note(
-            copy_definition=copy_definition,
-            trigger_note=note,
-            copied_into_notes=copied_into_notes,
-            copied_into_cards_dict=copied_into_cards_dict,
-            logger=logger,
-        )
-        # After each copy_definition, update notes and cards so that subsequent copy_definitions
-        # operate on the latest data
-        # update_note adds a new undo entry Update note
-        mw.col.update_notes(copied_into_notes)
-        edited_cards = [
-            card
-            for card in copied_into_cards_dict.values()
-            if hasattr(card, "edited") and card.edited
-        ]
-        for c in edited_cards:
-            if c.id == card.id:
-                # Merge all changes to the reviewed card so that the final update_card call
-                # doesn't overwrite the changes done here
-                # Note, edited attribute is not merged as it's not a real card attribute, we don't
-                # need it after this, as edit the card regardless
-                merge_cards(card, c)
-            del c.edited
-        # update_card adds a new undo entry Update cards
-        mw.col.update_cards(edited_cards)
-        # merge all undo entries into the original Answer card undo entry. This also folds in
-        # any entry another reviewer_did_answer_card listener added after it, as Anki merges
-        # every step newer than the target
+            # After each copy_definition, update notes and cards so that subsequent copy_definitions
+            # operate on the latest data
+            # update_note adds a new undo entry Update note
+            mw.col.update_notes(copied_into_notes)
+            edited_cards = [
+                card
+                for card in copied_into_cards_dict.values()
+                if hasattr(card, "edited") and card.edited
+            ]
+            for c in edited_cards:
+                if c.id == card.id:
+                    # Merge all changes to the reviewed card so that the final update_card call
+                    # doesn't overwrite the changes done here
+                    # Note, edited attribute is not merged as it's not a real card attribute, we don't
+                    # need it after this, as edit the card regardless
+                    merge_cards(card, c)
+                del c.edited
+            # update_card adds a new undo entry Update cards
+            mw.col.update_cards(edited_cards)
+            # merge all undo entries into the original Answer card undo entry. This also folds in
+            # any entry another reviewer_did_answer_card listener added after it, as Anki merges
+            # every step newer than the target
+            mw.col.merge_undo_entries(answer_card_undo_entry)
+        # In order to not have on_sync definitions run twice, we'll set a different fc value
+        fc_value = -1 if has_definitions_to_process_on_sync else 1
+        try:
+            write_custom_data(card, key="fc", value=fc_value)
+        except ValueError as e:
+            # The copies are already written and merged, so raising here would only throw the
+            # error at the reviewer from inside Anki's hook dispatch. Without the flag the note
+            # stays queued for the sync sweep, which is the safe side to fail on.
+            logger.error(f"Could not set the fc flag on card {card.id}: {e}")
+        # Still write the card, as merge_cards may have put copied changes on it
+        mw.col.update_card(card)
+        # All updates are now merged into the Answer card undo entry
         mw.col.merge_undo_entries(answer_card_undo_entry)
-    # In order to not have on_sync definitions run twice, we'll set a different fc value
-    fc_value = -1 if has_definitions_to_process_on_sync else 1
-    try:
-        write_custom_data(card, key="fc", value=fc_value)
-    except ValueError as e:
-        # The copies are already written and merged, so raising here would only throw the
-        # error at the reviewer from inside Anki's hook dispatch. Without the flag the note
-        # stays queued for the sync sweep, which is the safe side to fail on.
-        logger.error(f"Could not set the fc flag on card {card.id}: {e}")
-    # Still write the card, as merge_cards may have put copied changes on it
-    mw.col.update_card(card)
-    # All updates are now merged into the Answer card undo entry
-    mw.col.merge_undo_entries(answer_card_undo_entry)
 
 
 editor_for_note_id: dict[EditorMode, Union[Tuple[Editor, Optional[NoteId]], None]] = {
@@ -354,97 +353,96 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
 
     config = Config()
     config.load()
-    logger = Logger(config.log_level)
-    note_type = note.note_type()
-    if not note_type:
-        # Error situation, note_type should exist when unfocusing field
-        return changed
-    note_type_name = note_type["name"]
-    field_name = note.keys()[field_idx]
-    # Make a copy because values() returns a reference
-    initial_field_values = note.values().copy()
-    # Definitions can tag the note too, and the tag bar needs the same reload to show it
-    initial_tags = note.tags.copy()
+    with operation_logging("field_unfocused", config.log_level):
+        note_type = note.note_type()
+        if not note_type:
+            # Error situation, note_type should exist when unfocusing field
+            return changed
+        note_type_name = note_type["name"]
+        field_name = note.keys()[field_idx]
+        # Make a copy because values() returns a reference
+        initial_field_values = note.values().copy()
+        # Definitions can tag the note too, and the tag bar needs the same reload to show it
+        initial_tags = note.tags.copy()
 
-    # Copy definitions that affect other notes need an undo entry as we want to be able to undo
-    editing_other_notes_definitions: list[CopyDefinition] = []
+        # Copy definitions that affect other notes need an undo entry as we want to be able to undo
+        editing_other_notes_definitions: list[CopyDefinition] = []
 
-    for copy_definition in config.copy_definitions:
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        if not copy_into_note_types:
-            continue
-        # Split note_types by comma
-        note_type_names = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in note_type_names:
-            continue
+        for copy_definition in config.copy_definitions:
+            copy_into_note_types = copy_definition.get("copy_into_note_types", None)
+            if not copy_into_note_types:
+                continue
+            # Split note_types by comma
+            note_type_names = copy_into_note_types.strip('""').split('", "')
+            if note_type_name not in note_type_names:
+                continue
 
-        # Check field-to-field defs for a match on this field
-        field_to_field_defs = copy_definition.get("field_to_field_defs")
-        if not field_to_field_defs:
-            continue
+            # Check field-to-field defs for a match on this field
+            field_to_field_defs = copy_definition.get("field_to_field_defs")
+            if not field_to_field_defs:
+                continue
 
-        modifies_other_notes = definition_modifies_other_notes(copy_definition)
+            modifies_other_notes = definition_modifies_other_notes(copy_definition)
 
-        if modifies_other_notes and is_new_note:
-            # Do not run ops that edit other notes while editing a new note. Such ops should only
-            # be run when the new note is saved.
-            continue
+            if modifies_other_notes and is_new_note:
+                # Do not run ops that edit other notes while editing a new note. Such ops should only
+                # be run when the new note is saved.
+                continue
 
-        # Each def this field triggers is gated by its own add/edit flag, so that one def
-        # with the flag off neither runs nor stops the others on the same field from running
-        unfocus_flag = "copy_on_unfocus_when_add" if is_new_note else "copy_on_unfocus_when_edit"
-        gated_field_to_field_defs = [
-            field_def
-            for field_def in get_triggered_field_to_field_defs_for_field(
-                field_to_field_defs, field_name, modifies_other_notes
-            )
-            if field_def.get(unfocus_flag)
-        ]
-        if not gated_field_to_field_defs:
-            continue
+            # Each def this field triggers is gated by its own add/edit flag, so that one def
+            # with the flag off neither runs nor stops the others on the same field from running
+            unfocus_flag = "copy_on_unfocus_when_add" if is_new_note else "copy_on_unfocus_when_edit"
+            gated_field_to_field_defs = [
+                field_def
+                for field_def in get_triggered_field_to_field_defs_for_field(
+                    field_to_field_defs, field_name, modifies_other_notes
+                )
+                if field_def.get(unfocus_flag)
+            ]
+            if not gated_field_to_field_defs:
+                continue
 
-        # field_only alone would pick every def this field triggers again, flags or not, so
-        # the definition is run with only the defs that passed the gate
-        gated_definition = copy_definition.copy()
-        gated_definition["field_to_field_defs"] = gated_field_to_field_defs
+            # field_only alone would pick every def this field triggers again, flags or not, so
+            # the definition is run with only the defs that passed the gate
+            gated_definition = copy_definition.copy()
+            gated_definition["field_to_field_defs"] = gated_field_to_field_defs
 
-        if modifies_other_notes:
-            # Run these separate with an undo entry
-            editing_other_notes_definitions.append(gated_definition)
-        else:
-            # Either within note or destination to sources, we can run these right away
-            # without an undo entry needed
-            copy_for_single_trigger_note(
-                copy_definition=gated_definition,
-                trigger_note=note,
-                copied_into_notes=[],
+            if modifies_other_notes:
+                # Run these separate with an undo entry
+                editing_other_notes_definitions.append(gated_definition)
+            else:
+                # Either within note or destination to sources, we can run these right away
+                # without an undo entry needed
+                copy_for_single_trigger_note(
+                    copy_definition=gated_definition,
+                    trigger_note=note,
+                    copied_into_notes=[],
+                    field_only=field_name,
+                    deck_id=deck_id,
+                )
+
+        if editing_other_notes_definitions:
+            # Use the CollectionOp version so we get the full report and progress dialog
+            copy_fields(
+                copy_definitions=editing_other_notes_definitions,
+                note_ids=[note.id],
+                # The editor's save runs in the background with no ordering against this, so the
+                # database may not have the value just typed yet. This note always does.
+                trigger_notes=[note],
                 field_only=field_name,
-                deck_id=deck_id,
-                logger=logger,
+                undo_text_suffix=f"triggered by unfocus field '{field_name}'",
             )
 
-    if editing_other_notes_definitions:
-        # Use the CollectionOp version so we get the full report and progress dialog
-        copy_fields(
-            copy_definitions=editing_other_notes_definitions,
-            note_ids=[note.id],
-            # The editor's save runs in the background with no ordering against this, so the
-            # database may not have the value just typed yet. This note always does.
-            trigger_notes=[note],
-            field_only=field_name,
-            undo_text_suffix=f"triggered by unfocus field '{field_name}'",
-        )
-
-    # Copy definitions may not just edit this field but any field or the tags in the current
-    # note. Check if any of them changed and reload then
-    current_field_values = note.values()
-    we_changed = initial_field_values != current_field_values or initial_tags != note.tags
-    if we_changed:
-        for editor in editors_matching_note_id:
-            # Keep the caret in the field the user is on, as aqt's own reload for a True does
-            editor.loadNoteKeepingFocus()
-    # This is a filter hook: keep an earlier handler's True, or aqt won't reload for it
-    return changed or we_changed
+        # Copy definitions may not just edit this field but any field or the tags in the current
+        # note. Check if any of them changed and reload then
+        current_field_values = note.values()
+        we_changed = initial_field_values != current_field_values or initial_tags != note.tags
+        if we_changed:
+            for editor in editors_matching_note_id:
+                # Keep the caret in the field the user is on, as aqt's own reload for a True does
+                editor.loadNoteKeepingFocus()
+        # This is a filter hook: keep an earlier handler's True, or aqt won't reload for it
+        return changed or we_changed
 
 
 def init_note_hooks():

@@ -27,6 +27,8 @@ has no cards yet. The first makes every `nid:` search vacuous and interpolates `
 `deck_id` argument exists to supply.
 """
 
+from contextlib import contextmanager
+
 import pytest
 from aqt import mw
 
@@ -57,19 +59,21 @@ def set_definitions(col):
 
 @pytest.fixture
 def hook_logger(logger, monkeypatch):
-    """Capture the `Logger` the handler builds for itself.
+    """Capture the level the handler opens its operation log at.
 
-    The handler constructs `Logger(config.log_level)` internally rather than taking one, so
-    the only way to see what it reported -- and the only way to keep a failing definition
-    from printing to the test's stdout -- is to replace the name in the module.
+    The handler reads `config.log_level` itself rather than taking a logger, so wrapping
+    `operation_logging` in the module is the only way to see what level it asked for -- and
+    replacing it keeps the test from writing a log file at all. What was logged is on the
+    `logger` fixture's handler, which is attached to the same loggers the handler uses.
     """
     levels: list[str] = []
 
-    def build(level):
+    @contextmanager
+    def record(name, level):
         levels.append(level)
-        return logger
+        yield None
 
-    monkeypatch.setattr(note_hooks, "Logger", build)
+    monkeypatch.setattr(note_hooks, "operation_logging", record)
     logger.levels = levels  # type: ignore[attr-defined]
     return logger
 
@@ -405,7 +409,7 @@ class TestAWithinNoteDefinitionOnAdd:
         assert note["Meaning"] == "neko"
         assert hook_logger.has_error("not found in note")
 
-    def test_the_handler_builds_its_logger_from_the_configured_level(
+    def test_the_handler_opens_its_operation_log_at_the_configured_level(
         self, col, set_definitions, hook_logger
     ):
         set_definitions(within(), log_level="debug")

@@ -33,6 +33,7 @@ write the pre-copy row back over it.
 """
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -138,19 +139,21 @@ def set_definitions(col):
 
 @pytest.fixture
 def hook_logger(logger, monkeypatch):
-    """Capture the `Logger` the handler builds for itself.
+    """Capture the level the handler opens its operation log at.
 
-    The handler constructs `Logger(config.log_level)` rather than taking one, so replacing
-    the name in the module is the only way to see what it reported -- and the only way to
-    keep a failing definition from printing over the test's output.
+    The handler reads `config.log_level` itself rather than taking a logger, so wrapping
+    `operation_logging` in the module is the only way to see what level it asked for -- and
+    replacing it keeps the test from writing a log file at all. What was logged is on the
+    `logger` fixture's handler, which is attached to the same loggers the handler uses.
     """
     levels: list[str] = []
 
-    def build(level):
+    @contextmanager
+    def record(name, level):
         levels.append(level)
-        return logger
+        yield None
 
-    monkeypatch.setattr(note_hooks, "Logger", build)
+    monkeypatch.setattr(note_hooks, "operation_logging", record)
     logger.levels = levels  # type: ignore[attr-defined]
     return logger
 
@@ -413,7 +416,6 @@ class TestWhichDefinitionsRun:
                 "copied_into_cards_dict",
                 "copied_into_notes",
                 "copy_definition",
-                "logger",
                 "trigger_note",
             ]
         ]
@@ -1021,7 +1023,7 @@ class TestTheRestOfTheDefinition:
         assert hook_logger.has_error("not found in note")
         assert custom_data(col, reviewed.id) == {"fc": 1}
 
-    def test_the_handler_builds_its_logger_from_the_configured_level(
+    def test_the_handler_opens_its_operation_log_at_the_configured_level(
         self, col, set_definitions, hook_logger
     ):
         _, reviewed = review(col)

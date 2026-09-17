@@ -1,11 +1,9 @@
+import logging
 import re
 import sys
 from typing import Optional
 
-try:
-    from ..shared.utils.logger import Logger
-except ImportError:
-    from shared.utils.logger import Logger
+logger = logging.getLogger(__name__)
 
 
 def regex_process(
@@ -13,7 +11,6 @@ def regex_process(
     regex: Optional[str],
     replacement: Optional[str],
     flags: Optional[str],
-    logger: Logger = Logger("error"),
 ) -> str:
     """
     Basic regex processing step that replaces the text that matches the regex with the replacement.
@@ -74,7 +71,14 @@ def test(
         assert result == expected
     except AssertionError:
         # Re-run with logging enabled to see what went wrong
-        regex_process(text, regex, replacement, flags, logger=Logger("debug"))
+        handler = logging.StreamHandler()
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
+        try:
+            regex_process(text, regex, replacement, flags)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(logging.NOTSET)
         print(f"""\033[91m{test_name}
 \033[93mExpected: {expected}
 \033[92mGot:      {result}

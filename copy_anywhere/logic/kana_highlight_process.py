@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 from anki.notes import Note
@@ -6,10 +7,10 @@ from ..shared.jp_text_processing.kana.kana_highlight import (
     kana_filter,
     kana_highlight,
 )
-from ..shared.utils.logger import Logger
-
 from ..shared.jp_text_processing.all_types.main_types import WithTagsDef
 from ..shared.jp_text_processing.kana.construct_wrapped_furi_word import FuriReconstruct
+
+logger = logging.getLogger(__name__)
 
 
 def kana_highlight_process(
@@ -18,7 +19,6 @@ def kana_highlight_process(
     return_type: FuriReconstruct,
     note: Note,
     with_tags_def: Optional[WithTagsDef] = None,
-    logger: Logger = Logger("error"),
 ) -> str:
     """
     Wraps the kana_highlight function to be used as an extra processing step in the copy fields
@@ -42,6 +42,6 @@ def kana_highlight_process(
         f"kanji_to_highlight: {kanji_to_highlight}, text: {text}, return_type: {return_type},"
         f" with_tags_def: {with_tags_def}"
     )
-    result = kana_highlight(kanji_to_highlight, text, return_type, with_tags_def, logger)
+    result = kana_highlight(kanji_to_highlight, text, return_type, with_tags_def)
     logger.debug(f"kanji_to_highlight result: {result}")
     return result

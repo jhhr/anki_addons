@@ -13,7 +13,7 @@ four things here:
 * **`copy_fields()` above the `op`.** The stub suite drives the `op` closure inline and
   deliberately never calls `on_success` / `on_failure`, because both build Qt widgets. Here
   the real `CollectionOp` runs on a real background thread and both callbacks fire, so the
-  tooltip, the `ScrollMessageBox` and the progress title are observable.
+  tooltip, the operation's log file and the progress title are observable.
 
 * **The sync hooks**, which are `gui_hooks` and so do not exist outside a running Anki.
 
@@ -28,9 +28,10 @@ Two facts worth knowing before reading the assertions:
    what `flagged_note()` does, and without it every sync assertion here would pass
    vacuously with an empty result.
 
-2. **`tooltip` and `ScrollMessageBox` are replaced with recorders.** Both are real Qt
-   windows with real timers; what is under test is whether they are built, with what text
-   and for which parent, not whether Qt can draw them.
+2. **`tooltip` and `open_log_file` are replaced with recorders.** One is a real Qt window
+   with a real timer and the other hands a path to the desktop's file associations; what is
+   under test is whether they are reached, with what text and which file, not whether Qt can
+   draw a tooltip or Windows can open a .log.
 """
 
 import sys
@@ -128,10 +129,10 @@ def flagged_note(mw, word: str = "kitsune"):
 
 @pytest.fixture
 def dialogs(monkeypatch):
-    """Records the two windows `on_success` / `on_failure` build, instead of showing them."""
+    """Records what `on_success` / `on_failure` show the user, instead of showing it."""
     from copy_anywhere.logic import copy_fields as copy_fields_module
 
-    recorded: dict[str, list] = {"tooltips": [], "boxes": []}
+    recorded: dict[str, list] = {"tooltips": [], "logs": []}
     monkeypatch.setattr(
         copy_fields_module,
         "tooltip",
@@ -139,10 +140,8 @@ def dialogs(monkeypatch):
     )
     monkeypatch.setattr(
         copy_fields_module,
-        "ScrollMessageBox",
-        lambda messages, title, parent=None, **kwargs: recorded["boxes"].append(
-            (list(messages), title, parent)
-        ),
+        "open_log_file",
+        lambda path: recorded["logs"].append(path),
     )
     return recorded
 
@@ -356,10 +355,12 @@ class TestTheCollectionOpPath:
         # `parent` is whatever the caller passed, and every hook-side caller passes nothing,
         # so the tooltip is parented on `aqt.mw.app.activeWindow()` by `aqt.utils.tooltip`.
         assert kwargs == {"parent": None, "period": 6000, "y_offset": 100}
-        assert dialogs["boxes"] == []
+        # Nothing was logged at the default `error` level, so `delay=True` meant no file was
+        # ever created and there is nothing to open.
+        assert dialogs["logs"] == []
 
-    def test_a_run_with_a_logged_message_opens_the_debug_dialog_and_no_tooltip(
-        self, anki_session, real_mw, addon_config, dialogs
+    def test_a_run_with_a_logged_message_opens_its_log_file_and_no_tooltip(
+        self, anki_session, real_mw, addon_config, dialogs, operation_logs
     ):
         from copy_anywhere.logic.copy_fields import copy_fields
 
@@ -374,17 +375,18 @@ class TestTheCollectionOpPath:
         )
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
 
-        (messages, title, parent) = dialogs["boxes"][0]
-        assert title == "Copy fields debug Messages"
-        assert parent is None
-        assert "Field 'Nope' not found in note" in messages[0]
-        # The box is driven by "was anything logged", not by "did anything fail", and the
-        # default log level is `error` -- so a run that logs one error opens a window even
+        # One file for the whole run, named after the definition that triggered it.
+        [written] = list(operation_logs.glob("*.log"))
+        assert dialogs["logs"] == [str(written)]
+        assert written.name.startswith("copy_fields_d1_")
+        assert "Field 'Nope' not found in note" in written.read_text(encoding="utf-8")
+        # Opening it is driven by "was anything logged", not by "did anything fail", and the
+        # default log level is `error` -- so a run that logs one error shows the file even
         # though the copy itself was skipped quietly.
         assert dialogs["tooltips"] == []
 
-    def test_a_sync_run_reports_through_update_sync_result_and_opens_no_dialog(
-        self, anki_session, real_mw, addon_config, dialogs
+    def test_a_sync_run_reports_through_update_sync_result_and_opens_nothing(
+        self, anki_session, real_mw, addon_config, dialogs, operation_logs
     ):
         from copy_anywhere.logic.copy_fields import copy_fields
 
@@ -401,14 +403,15 @@ class TestTheCollectionOpPath:
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
 
         # `is_sync` is "was an update_sync_result given", and it redirects the result away
-        # from the tooltip and suppresses the debug window even when there is something to
-        # show -- a sync is not a moment to open windows in front of the user.
+        # from the tooltip and opens nothing even when there is something to show -- a sync
+        # is not a moment to put windows in front of the user. The log is still written, for
+        # whoever goes looking afterwards.
         assert [count for _, count in results] == [1]
         assert dialogs["tooltips"] == []
-        assert dialogs["boxes"] == []
+        assert dialogs["logs"] == []
 
     def test_on_failure_finishes_the_progress_and_re_raises_into_ankis_error_handler(
-        self, anki_session, real_mw, addon_config, dialogs, monkeypatch
+        self, anki_session, real_mw, addon_config, dialogs, operation_logs, monkeypatch
     ):
         from copy_anywhere.logic.copy_fields import copy_fields
 
@@ -437,11 +440,11 @@ class TestTheCollectionOpPath:
         # later, which is why this waits rather than reading `busy()` straight away.
         anki_session.qtbot.waitUntil(lambda: real_mw.progress.busy() == 0, timeout=WAIT)
         # `on_done` runs before the re-raise, so a caller's cleanup is not skipped by the
-        # failure -- but note the window title here is "Copy Fields", capitalised
-        # differently from the identical window `on_success` opens.
-        (messages, title, _) = dialogs["boxes"][0]
-        assert title == "Copy Fields debug Messages"
-        assert "Copying failed: 'copy_mode'" in messages[0]
+        # failure -- and the failure itself is the last line of the same file the run had
+        # been writing to all along.
+        [written] = list(operation_logs.glob("*.log"))
+        assert dialogs["logs"] == [str(written)]
+        assert "Copying failed: 'copy_mode'" in written.read_text(encoding="utf-8")
 
 
 class TestTheSyncHooks:
