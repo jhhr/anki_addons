@@ -4,6 +4,7 @@ import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Final
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -37,8 +38,9 @@ from .base_ops import (
 
 logger = logging.getLogger(__name__)
 
-JP_MEANING_FIELD = "jp_meaning"
-EN_MEANING_FIELD = "en_meaning"
+# Final so that indexing a GeneratedMeaningType by them is a literal key, not a str
+JP_MEANING_FIELD: Final = "jp_meaning"
+EN_MEANING_FIELD: Final = "en_meaning"
 
 
 def get_meanings_array_response_schema() -> dict:
@@ -406,7 +408,7 @@ def make_meanings_in_note(
     config: dict[str, str],
     note: Note,
     processed_words_set: set[str],
-    all_meanings_dict: dict[str, list[dict]],
+    all_meanings_dict: GeneratedMeaningsDictType,
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
 ) -> bool:

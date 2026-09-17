@@ -34,7 +34,7 @@ def copy_into_new_note(note: Note) -> Note:
     return new_copy
 
 
-def print_error_traceback(e: Exception, logger_instance: Optional[logging.Logger] = None):
+def print_error_traceback(e: BaseException, logger_instance: Optional[logging.Logger] = None):
     """Print the traceback of an exception without triggering Anki to display an error dialog."""
     # format_exception returns the complete exception info including traceback
     tb_lines = traceback.format_exception(type(e), e, e.__traceback__)

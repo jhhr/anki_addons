@@ -13,7 +13,7 @@ secondary prompt that only gives their match_quality.
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from . import match_flags
 from .match_flags import MatchState
@@ -261,12 +261,12 @@ def has_placeholder_ids(arr: list) -> bool:
     )
 
 
-def resolve_placeholder_ids(arr: list, find_notes: Callable[[int], list[int]]) -> int:
+def resolve_placeholder_ids(arr: list, find_notes: Callable[[int], Sequence[int]]) -> int:
     """Swap each new note's placeholder id left in `arr` by an earlier run for the id of the note
     `find_notes` says holds it, keeping any match_quality. A placeholder no note holds was never
     added, so its word goes back to `["match"]`; one several notes hold is left as it is. Each
     placeholder is looked up once. Returns how many words changed."""
-    found: dict[int, list[int]] = {}
+    found: dict[int, Sequence[int]] = {}
     changed = 0
     for _, elem in match_flags.iter_words(arr):
         fake_id = match_flags.matched_note_id(elem)
