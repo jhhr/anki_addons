@@ -7,8 +7,8 @@ meta.json
 # platform Anki runs on. The pins are the record; the tree itself is too big to commit.
 lib/*
 # Anki's per-install state, plus the lib/ the addon rebuilds here when the shipped one does
-# not fit this machine's Python (anki_shared/utils/vendor_rebuild.py).
+# not fit this machine's Python (anki_shared/utils/vendor_rebuild.py) and the per-call logs
+# call_logging.py writes.
 user_files/*
-logs/
 output/
 .pytest_cache
