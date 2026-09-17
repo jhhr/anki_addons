@@ -39,6 +39,9 @@ def tag_notes_matched_status_for_note(
     """
     note_type = note.note_type()
     log_prefix = f"Tag notes matched status--nid:{note.id}--"
+    if note_type is None:
+        logger.error(f"{log_prefix}Error: Note has no note type")
+        return False
     note_word_info = get_note_word_match_query(config, note, note_type, log_prefix)
     if note_word_info is None:
         return False

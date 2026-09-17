@@ -40,7 +40,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from _bootstrap import ADDON_ROOT, load_shared
 
@@ -113,7 +113,8 @@ class Case(NamedTuple):
     owned_by: tuple  # other notes whose own word this reading already is
 
 
-def clean(text: str) -> str:
+def clean(text: Optional[str]) -> str:
+    # A note that has no such field at all reads as None here.
     text = TAGS.sub(" ", (text or "").replace("<br>", " ").replace("&nbsp;", " "))
     return " ".join(text.split())
 

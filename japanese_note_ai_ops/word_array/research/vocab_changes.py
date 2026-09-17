@@ -32,7 +32,6 @@ import argparse
 import io
 import json
 import re
-import sys
 from collections import Counter
 from pathlib import Path
 
@@ -123,7 +122,7 @@ def skeleton(plans: Path, dump: list) -> list:
         if not found:
             raise ValueError("%s has no `# <nid> — <key>` heading" % path.name)
         note_id = int(found.group(1))
-        row = {"note_id": note_id, "key": found.group(2).strip(), "ops": []}
+        row: dict = {"note_id": note_id, "key": found.group(2).strip(), "ops": []}
         for name, pattern in FIELD.items():
             hit = pattern.search(text)
             row[name] = " ".join(hit.group(1).split()) if hit else ""
@@ -256,7 +255,9 @@ def check(rows: list, by_nid: dict) -> tuple:
     would be applied once the decision is made, and a `from` that has gone stale is worth knowing
     about now rather than after the decision.
     """
-    problems, counts, held = [], Counter(), []
+    problems: list = []
+    counts: Counter[str] = Counter()
+    held: list = []
     for row in rows:
         if row.get("hold"):
             held.append((row["note_id"], row.get("key", ""), row["hold"]))
@@ -368,7 +369,6 @@ def main() -> int:
     p.add_argument("--fetch", action="store_true", help="re-dump the notes first")
     args = parser.parse_args()
 
-    sys.stdout.reconfigure(encoding="utf-8")
     if args.command == "skeleton":
         rows = skeleton(args.plans, vocab_dupes.read_dump())
         write(args.out, rows)

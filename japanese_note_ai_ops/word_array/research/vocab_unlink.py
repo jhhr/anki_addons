@@ -54,7 +54,6 @@ Report `output/vocab_unlink_report.txt`, edits `output/vocab_unlink_edits.jsonl`
 import argparse
 import json
 import re
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple
@@ -365,7 +364,7 @@ def plan(rows: list) -> tuple:
 
 
 def report(edits: list, held: dict, orphans=()) -> list:
-    links = Counter()
+    links: Counter[str] = Counter()
     for edit in edits:
         links[edit.action] += edit.links
     sentences = {nid for edit in edits for nid in edit.sentences}
@@ -535,7 +534,6 @@ def revert(client, undo: Path) -> tuple:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true", help="re-dump the notes over AnkiConnect")
     parser.add_argument("--undo", type=Path, default=UNDO)

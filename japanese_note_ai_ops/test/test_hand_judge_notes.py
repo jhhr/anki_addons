@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from types import ModuleType
 
 from addon_modules import ADDON_ROOT
 
@@ -221,11 +222,13 @@ class RewriteRowsTests(unittest.TestCase):
             self.assertEqual(read_jsonl(checked), [{"sentence": "<i>前</i>猫", "word_list": "a"}])
 
 
+hand_judge: ModuleType | None = None
 try:
-    import hand_judge  # noqa: E402
+    import hand_judge as _hand_judge  # noqa: E402
 except ImportError as e:  # SudachiPy-less Python: the generator module can't load
-    hand_judge = None
     HAND_JUDGE_ERROR = str(e)
+else:
+    hand_judge = _hand_judge
 
 
 class FakeAnki:

@@ -14,6 +14,9 @@ from types import ModuleType
 ADDON_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "jnaio_dev"
 
+# Japanese output on a Windows console: every script that imports this gets utf-8 stdout, so
+# none of them repeats the call. The check is what makes it safe when stdout is not a console
+# (a pipe a test replaced with StringIO has no reconfigure).
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8")
 

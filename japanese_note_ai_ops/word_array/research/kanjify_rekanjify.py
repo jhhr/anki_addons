@@ -35,7 +35,6 @@ import sys
 import threading
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
-from pathlib import Path
 from typing import NamedTuple, Optional
 
 from _bootstrap import ADDON_ROOT
@@ -65,7 +64,8 @@ class Targets(NamedTuple):
 def read_targets(tasks: list[dict]) -> Targets:
     """The rows to rerun and the words to look for in them: every kana use of a left-kana word,
     every use of a meaning word kanjified with other than its most common kanji."""
-    rows, left, top = set(), set(), {}
+    rows: set[int] = set()
+    left, top = set(), {}
     for task in tasks:
         key = (task["word"], task["pos"])
         if task["class"] == "left-kana":
@@ -101,12 +101,14 @@ class Outcome(NamedTuple):
     to: str = ""
 
 
-def _answer_piece(base: kanjify_eval.KanaText, ans: kanjify_eval.KanaText, to_ans: dict,
+def _answer_piece(base: kanjify_eval.KanaText, ans: kanjify_eval.KanaText, to_ans: dict[int, int],
                   positions: list[int]) -> Optional[tuple[str, str]]:  # fmt: skip
     """The answer's raw text reading exactly these kana of the note, and its kanji; None when
     its segments don't line up with them or a tag other than <k> runs through it."""
-    mapped = [to_ans.get(p) for p in positions]
-    if None in mapped or mapped != list(range(mapped[0], mapped[0] + len(mapped))):
+    if any(p not in to_ans for p in positions):
+        return None
+    mapped = [to_ans[p] for p in positions]
+    if mapped != list(range(mapped[0], mapped[0] + len(mapped))):
         return None
     wanted = set(mapped)
     idxs = sorted({ans.owners[q] for q in mapped})
@@ -133,7 +135,7 @@ def propose(
     """`base` with the answer's kanjification of its target words, and what came of each."""
     kb = kanjify_eval.kana_text(base, sentence)
     ka = kanjify_eval.kana_text(answer, sentence)
-    to_ans = {}
+    to_ans: dict[int, int] = {}
     for a, b, size in SequenceMatcher(None, kb.kana, ka.kana, autojunk=False).get_matching_blocks():
         to_ans.update((a + i, b + i) for i in range(size))
     to_field = audit._b_free_offsets(base)
@@ -191,7 +193,6 @@ def propose(
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", help="instead of the config's kanjify_sentence_model")
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows to rerun")

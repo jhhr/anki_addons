@@ -39,7 +39,6 @@ Report `output/vocab_respell_report.txt`, changes `output/vocab_respell_changes.
 import argparse
 import json
 import re
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -387,7 +386,6 @@ def revert(client, undo: Path) -> tuple:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true", help="re-dump the notes over AnkiConnect")
     parser.add_argument("--undo", type=Path, default=UNDO)

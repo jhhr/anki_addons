@@ -358,13 +358,14 @@ class MDXDictionary:
                 result = "\n".join(result for result in results if result)
 
             # Follow any @@@LINK= references to get actual definitions
-            result = self._follow_links(result)
+            followed = self._follow_links(result)
 
-            if not result:
+            if not followed:
                 logger.debug(
                     f"Links for '{query}' led to no content in {os.path.basename(self.mdx_path)}"
                 )
                 return None
+            result = followed
 
             if strip_html_tags:
                 result = strip_html_advanced(result, preserve_structure)

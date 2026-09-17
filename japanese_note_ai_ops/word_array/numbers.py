@@ -27,12 +27,14 @@ NUMERAL_CHARS = (
 )
 
 DIGIT_READINGS = ["", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう"]
-SMALL_READINGS = (
+# (unit value, its plain reading, the readings of the digits that change before it)
+UnitReadings = tuple[tuple[int, str, dict[int, str]], ...]
+SMALL_READINGS: UnitReadings = (
     (1000, "せん", {3: "さんぜん", 8: "はっせん"}),
     (100, "ひゃく", {3: "さんびゃく", 6: "ろっぴゃく", 8: "はっぴゃく"}),
     (10, "じゅう", {}),
 )
-LARGE_READINGS = (
+LARGE_READINGS: UnitReadings = (
     (10**12, "ちょう", {1: "いっちょう", 8: "はっちょう"}),
     (10**8, "おく", {}),
     (10**4, "まん", {}),

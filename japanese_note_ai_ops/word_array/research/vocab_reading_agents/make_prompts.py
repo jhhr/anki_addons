@@ -92,7 +92,6 @@ def main() -> int:
         help="'disagreed' keeps only the cases the two models answered differently",
     )
     args = parser.parse_args()
-    sys.stdout.reconfigure(encoding="utf-8")
 
     cases = judge.collect(vocab_dupes.read_dump())
     cached = judge.read_results()

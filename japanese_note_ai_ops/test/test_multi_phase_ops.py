@@ -10,12 +10,17 @@ the add/update dicts, and the undo entry the cleanup merges into, which is the f
 import asyncio
 import time
 import unittest
+from typing import TYPE_CHECKING
 
 from addon_modules import load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 
-OpPhase = base_ops.OpPhase
+if TYPE_CHECKING:
+    # The real class, so `OpPhase` is a type and not just a name load_ops_module handed back
+    from japanese_note_ai_ops.async_api_ops.base_ops import OpPhase
+else:
+    OpPhase = base_ops.OpPhase
 
 
 class FakeNote:

@@ -9,10 +9,16 @@ editing notes through `research/kanjify_note.py`. Agents write field values to `
 """
 
 import argparse
+import io
 import json
 import re
 import sys
 from pathlib import Path
+
+# Japanese output on a Windows console. This script is not under research/, so it can't take
+# _bootstrap's utf-8 stdout; the check is what makes it safe when stdout is not a console.
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 HERE = Path(__file__).parent
 ADDON_ROOT = HERE.parents[2]
@@ -62,7 +68,6 @@ def main() -> int:
         json.loads(l) for l in args.tasks.read_text(encoding="utf-8").splitlines() if l.strip()
     ]
     tasks.sort(key=lambda t: -(len(t["items"]) + len(t.get("kanjified_items", []))))
-    sys.stdout.reconfigure(encoding="utf-8")
     for n, t in enumerate(tasks, 1):
         title, text = task_text(t)
         word = re.sub(r"[^\w]", "", t["word"])

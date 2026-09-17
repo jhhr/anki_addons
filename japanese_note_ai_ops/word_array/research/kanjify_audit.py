@@ -26,17 +26,24 @@ Reads `output/kanjify_sentence_data.jsonl`, else the old fine-tuning files (no n
 listed but can't be written to notes).
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, Callable, NamedTuple, Optional
 
 from _bootstrap import ADDON_ROOT, load
 
 import note_edits
+
+if TYPE_CHECKING:
+    # `load()` gives a module object, so what comes out of it is untyped; the scripts here name
+    # the real classes for type checking only (the runtime import is what _bootstrap avoids).
+    from japanese_note_ai_ops.word_array.generator import Morph
 
 generator = load("generator")
 text_map = load("text_map")
@@ -118,7 +125,7 @@ def mismatch(sentence: str, label: str) -> Optional[str]:
     return "furigana" if _as_reading(text) == _as_reading(source) else "text"
 
 
-def _te_before(morphs: list, i: int, particles: set[str]) -> bool:
+def _te_before(morphs: list[Morph], i: int, particles: set[str]) -> bool:
     """morphs[i] follows a connective て/で, with one of `particles` between ("" = none)."""
     j = i - 1
     if j >= 0 and morphs[j].surface in particles and morphs[j].pos[0] == "助詞":
@@ -130,7 +137,7 @@ def _te_before(morphs: list, i: int, particles: set[str]) -> bool:
     )
 
 
-def _copula_de(morphs: list, j: int) -> bool:
+def _copula_de(morphs: list[Morph], j: int) -> bool:
     """morphs[j] is the copula で/じゃ, or は/も right after the copula で (not に of 十分に)."""
     if j >= 0 and morphs[j].surface in ("は", "も") and morphs[j].pos[0] == "助詞":
         j -= 1
@@ -142,7 +149,7 @@ def _copula_de(morphs: list, j: int) -> bool:
     )
 
 
-def policy_use(morphs: list, i: int) -> Optional[str]:
+def policy_use(morphs: list[Morph], i: int) -> Optional[str]:
     """The policy class of morphs[i] when the policy writes it in kana there, else None."""
     m = morphs[i]
     prev = morphs[i - 1] if i else None
@@ -166,7 +173,7 @@ def policy_use(morphs: list, i: int) -> Optional[str]:
 @dataclass
 class Tok:
     row: int
-    morph: object
+    morph: Morph
     kind: str  # kanjified | kanji | kana | other
     kanji: str = ""  # the kanji the label writes it with
     cut: str = ""  # its furigana text, spaces and tags dropped: 此[こ]の
@@ -180,7 +187,8 @@ class Tok:
 
 def _b_free_offsets(label: str) -> list[int]:
     """Label offset of each char of the label without <b> tags (plus the end)."""
-    out, pos = [], 0
+    out: list[int] = []
+    pos = 0
     for m in B_TAG_RE.finditer(label):
         out.extend(range(pos, m.start()))
         pos = m.end()
@@ -188,17 +196,18 @@ def _b_free_offsets(label: str) -> list[int]:
     return out
 
 
-def analyze_row(row: int, label: str, tokenize=None) -> list[Tok]:
-    tokenize = tokenize or generator.tokenize
+def analyze_row(
+    row: int, label: str, tokenize: Optional[Callable[[str], list[Morph]]] = None
+) -> list[Tok]:
     tm = text_map.build(label)
     to_label = _b_free_offsets(label)
     group_at = {}  # label offset of a group (its lead space) -> (span number, group order)
     for k, span in enumerate(note_edits.k_spans(label)):
         if span.content is not None:
             base = span.start + len("<k>")
-            for gi, m in enumerate(note_edits.GROUP_RE.finditer(span.content)):
-                group_at[base + m.start()] = (k, gi)
-    morphs = tokenize(tm.natural)
+            for gi, g in enumerate(note_edits.GROUP_RE.finditer(span.content)):
+                group_at[base + g.start()] = (k, gi)
+    morphs = (tokenize or generator.tokenize)(tm.natural)
     toks = []
     for i, m in enumerate(morphs):
         segs = tm.segs_of(m.start, m.end)
@@ -223,7 +232,7 @@ def analyze_row(row: int, label: str, tokenize=None) -> list[Tok]:
             spans = {p[0] for p in places if p is not None}
             if whole and None not in places and len(spans) == 1:
                 tok.k = spans.pop()
-                tok.groups = {p[1] for p in places}
+                tok.groups = {p[1] for p in places if p is not None}
                 start, end = to_label[segs[0].raw_start], to_label[segs[-1].raw_end - 1] + 1
                 if end - start == segs[-1].raw_end - segs[0].raw_start:
                     tok.field_range = (start, end)
@@ -270,6 +279,7 @@ def row_fix(label: str, toks: list[Tok], targets: dict) -> tuple[str, list[dict]
     out = label
     for k in sorted(by_span, reverse=True):
         span = spans[k]
+        assert span.content is not None  # a span with no content has no groups, so no fixes
         content_start = span.start + len("<k>")
         content = span.content
         for (a, b), new in sorted(by_span[k]["cuts"], reverse=True):
@@ -391,15 +401,23 @@ def main() -> int:
     with open(args.tasks, "w", encoding="utf-8") as f:
         for key in left:
             spelled = Counter(t.kanji for t in kanjified[key])
-            task = {"class": "left-kana", "word": key[0], "pos": key[1]}
-            task["kanjified"] = dict(spelled.most_common())
-            task["items"] = [item(t) for t in kana[key]]
-            task["kanjified_items"] = [{**item(t), "kanji": t.kanji} for t in kanjified[key]]
+            task = {
+                "class": "left-kana",
+                "word": key[0],
+                "pos": key[1],
+                "kanjified": dict(spelled.most_common()),
+                "items": [item(t) for t in kana[key]],
+                "kanjified_items": [{**item(t), "kanji": t.kanji} for t in kanjified[key]],
+            }
             f.write(json.dumps(task, ensure_ascii=False) + "\n")
         for key, spelled, ts in meaning:
-            task = {"class": "meaning", "word": key[0], "pos": key[1]}
-            task["kanjified"] = dict(spelled.most_common())
-            task["items"] = [{**item(t), "kanji": t.kanji} for t in ts]
+            task = {
+                "class": "meaning",
+                "word": key[0],
+                "pos": key[1],
+                "kanjified": dict(spelled.most_common()),
+                "items": [{**item(t), "kanji": t.kanji} for t in ts],
+            }
             f.write(json.dumps(task, ensure_ascii=False) + "\n")
     summary.append(f"hand-fix tasks: {len(left) + len(meaning)} words -> {args.tasks.name}")
 

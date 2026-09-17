@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 
 from anki import hooks
 from anki.notes import Note, NoteId
@@ -26,71 +27,97 @@ VENDOR_HEALTH = vendor_health(ADDON_DIR)
 
 # E402 - module level import not at top of file
 from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
-from .utils import get_field_config  # noqa: E402
-from .call_logging import in_bulk_op, start_call_log  # noqa: E402
 
+# A vendored package that is *missing* rather than merely stale raises here - a fresh checkout
+# whose gitignored lib/ never arrived, or an update that added a requirement the shipped tree
+# predates. An addon that dies at import time never reaches main_window_did_init, and that is
+# where the rebuild is offered *and* where the Tools action that repairs it by hand is added:
+# dying here takes both repairs down with it, so the one failure the vendoring exists to fix is
+# the one it could not survive. These imports degrade instead. The addon loads without its
+# operations, and the offer at the bottom of this file is what puts them back.
+#
+# Only ImportError is caught, and it is not swallowed: it sets MISSING_PACKAGE, which the health
+# verdict below then names out loud. Anything else an addon module raises is a real bug and must
+# reach Anki's error report exactly as it always did.
+try:
+    from .utils import get_field_config  # noqa: E402
+    from .call_logging import in_bulk_op, start_call_log  # noqa: E402
 
-from .async_api_ops.clean_meaning import (  # noqa: E402
-    clean_meaning_in_note,
-    clean_selected_notes,
-)
-from .async_api_ops.translate_field import (  # noqa: E402
-    translate_selected_notes,
-    translate_sentence_in_note,
-)
-from .async_api_ops.make_kanji_story import (  # noqa: E402
-    make_stories_for_selected_notes,
-    make_story_for_note,
-)
-from .async_api_ops.kanjify_sentence import (  # noqa: E402
-    kanjify_selected_notes,
-)
-from .async_api_ops.extract_words import (  # noqa: E402
-    extract_words_and_judge_from_selected_notes,
-    extract_words_from_selected_notes,
-    extract_words_op,
-    regenerate_words_from_selected_notes,
-)
-from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
-    migrate_compound_verbs_from_selected_notes,
-)
-from .async_api_ops.match_words_to_notes import (  # noqa: E402
-    match_words_to_notes_from_selected,
-    match_single_word_to_notes_from_selected,
-)
+    from .async_api_ops.clean_meaning import (  # noqa: E402
+        clean_meaning_in_note,
+        clean_selected_notes,
+    )
+    from .async_api_ops.translate_field import (  # noqa: E402
+        translate_selected_notes,
+        translate_sentence_in_note,
+    )
+    from .async_api_ops.make_kanji_story import (  # noqa: E402
+        make_stories_for_selected_notes,
+        make_story_for_note,
+    )
+    from .async_api_ops.kanjify_sentence import (  # noqa: E402
+        kanjify_selected_notes,
+    )
+    from .async_api_ops.extract_words import (  # noqa: E402
+        extract_words_and_judge_from_selected_notes,
+        extract_words_from_selected_notes,
+        extract_words_op,
+        regenerate_words_from_selected_notes,
+    )
+    from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
+        migrate_compound_verbs_from_selected_notes,
+    )
+    from .async_api_ops.match_words_to_notes import (  # noqa: E402
+        match_words_to_notes_from_selected,
+        match_single_word_to_notes_from_selected,
+    )
 
-from .async_api_ops.word_matching_judge import (  # noqa: E402
-    word_matching_judge_from_selected_notes,
-)
-from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
-from .async_api_ops.find_proper_nouns import (  # noqa: E402
-    find_proper_nouns_from_selected_notes,
-)
+    from .async_api_ops.word_matching_judge import (  # noqa: E402
+        word_matching_judge_from_selected_notes,
+    )
+    from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
+    from .async_api_ops.find_proper_nouns import (  # noqa: E402
+        find_proper_nouns_from_selected_notes,
+    )
 
-from .async_api_ops.make_all_meanings import (  # noqa: E402
-    make_meanings_selected_notes,
-    merge_meanings_selected_notes,
-)
-from .async_api_ops.new_note_all_ops import (  # noqa: E402
-    new_note_all_ops_selected_notes,
-)
-from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
-    find_missing_matched_note_ids_selected_notes,
-)
-from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
-    tag_notes_matched_status_from_selected,
-)
-from .sync_local_ops.build_name_lexicon import (  # noqa: E402
-    build_name_lexicon_from_selected,
-)
-from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
-    deduplicate_existing_meaning_notes_selected_notes,
-)
-from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
-    make_kanjify_sentence_data,
-    make_extract_words_migration_data,
-    make_all_test_data,
-)
+    from .async_api_ops.make_all_meanings import (  # noqa: E402
+        load_meanings_dict_from_file,
+        make_meanings_selected_notes,
+        merge_meanings_selected_notes,
+        write_meanings_dict_to_file,
+    )
+    from .async_api_ops.new_note_all_ops import (  # noqa: E402
+        new_note_all_ops_selected_notes,
+    )
+    from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
+        find_missing_matched_note_ids_selected_notes,
+    )
+    from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
+        tag_notes_matched_status_from_selected,
+    )
+    from .sync_local_ops.build_name_lexicon import (  # noqa: E402
+        build_name_lexicon_from_selected,
+    )
+    from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
+        deduplicate_existing_meaning_notes_selected_notes,
+    )
+    from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
+        make_kanjify_sentence_data,
+        make_extract_words_migration_data,
+        make_all_test_data,
+    )
+
+    MISSING_PACKAGE: Optional[str] = None
+except ImportError as error:
+    # `name` is the module that could not be found, or the one a name could not be taken out
+    # of; it is None only for an ImportError raised by hand, which none of the above does.
+    MISSING_PACKAGE = error.name or "a package it vendors"
+
+# VENDOR_HEALTH above compares what the vendored tree was built *for*. An import that has just
+# failed is that tree answering for what is actually *in* it, so it is the more concrete of the
+# two and names the package the rebuild has to fetch.
+if MISSING_PACKAGE:
+    VENDOR_HEALTH = f"{MISSING_PACKAGE} is missing from its vendored packages"
 
 
 # Initialize root logger for the addon at module load
@@ -355,8 +382,15 @@ def run_op_on_add_note(note: Note):
 
     if note_type_name == "Japanese vocab note":
         notes_to_update_dict: dict[NoteId, Note] = {}
+        # The generated meanings are what clean_meaning_in_note maps a note's meaning
+        # against, and it revises them in place when none of them fit, so the one added
+        # note reads the file and writes it back - the bulk ops do the same around a run.
+        all_generated_meanings_dict = load_meanings_dict_from_file()
         try:
-            clean_meaning_in_note(config, note, {}, notes_to_update_dict)
+            clean_meaning_in_note(
+                config, note, {}, notes_to_update_dict, all_generated_meanings_dict
+            )
+            write_meanings_dict_to_file(all_generated_meanings_dict)
             # The lexicon is read here rather than cached: the user rebuilds it from the
             # collection now and then, and one added note is one small json read.
             extract_words_op()(config, note, {}, notes_to_update_dict)
@@ -372,28 +406,41 @@ def run_op_on_add_note(note: Note):
             mw.col.update_notes(updated_notes)
 
 
-# Register to card adding hook
-hooks.note_will_be_added.append(lambda _col, note, _deck_id: run_op_on_add_note(note))
-
-# hooks.note_will_be_added.append(lambda _col, note, _deck_id: translate_sentence_in_note(
-# note, config=mw.addonManager.getConfig(__name__)))
-
-# Register to context menu initialization hook
-gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_menu)
-
-# Register to field unfocus hook
-gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
-
-
 def add_tools_menu_actions():
     action = QAction("AI ops: generate test data", mw)
     qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
     mw.form.menuTools.addAction(action)
 
 
-gui_hooks.main_window_did_init.append(add_tools_menu_actions)
+# Every hook below calls something the guarded imports bind, so with a package missing each
+# would raise NameError the first time Anki fired it - on adding a note, on opening a browser
+# context menu - which reads as a broken Anki rather than an addon waiting on a rebuild. Leaving
+# them unregistered is what "loads degraded" means here: the menus and the note hooks are simply
+# absent until the rebuild below has run and Anki has been restarted.
+if MISSING_PACKAGE is None:
+    # Register to card adding hook
+    hooks.note_will_be_added.append(lambda _col, note, _deck_id: run_op_on_add_note(note))
+
+    # hooks.note_will_be_added.append(lambda _col, note, _deck_id: translate_sentence_in_note(
+    # note, config=mw.addonManager.getConfig(__name__)))
+
+    # Register to context menu initialization hook
+    gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_menu)
+
+    # Register to field unfocus hook
+    gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
+
+    gui_hooks.main_window_did_init.append(add_tools_menu_actions)
+else:
+    logging.getLogger(__name__).warning(
+        "loaded without its operations: %s could not be imported", MISSING_PACKAGE
+    )
 
 # Offer to rebuild the vendored packages when they do not fit this machine, and put the same
 # rebuild in the Tools menu for anyone who wants rapidfuzz's compiled half - which the shipped
 # lib/ leaves out, because five platforms of it is ~30 MB.
-install_rebuild_ui(ADDON_DIR, ADDON_NAME, VENDOR_HEALTH)
+#
+# MISSING_PACKAGE goes too, and is the difference between an optimisation and a repair. Anki
+# cannot know that psutil only costs this addon a static concurrency limit while sudachipy
+# costs it the whole word array, so the addon is what tells the dialog which it is looking at.
+install_rebuild_ui(ADDON_DIR, ADDON_NAME, VENDOR_HEALTH, MISSING_PACKAGE)

@@ -42,11 +42,11 @@ def ui(monkeypatch):
     return calls
 
 
-def start_up(health):
+def start_up(health, missing=None):
     """Run install_rebuild_ui and fire the hook it registered."""
     hooks = []
     vendor_rebuild_ui.gui_hooks.main_window_did_init.append = hooks.append
-    vendor_rebuild_ui.install_rebuild_ui("/addon", "Test Addon", health)
+    vendor_rebuild_ui.install_rebuild_ui("/addon", "Test Addon", health, missing)
     assert len(hooks) == 1
     hooks[0]()
 
@@ -83,7 +83,54 @@ class TestStartupOffer:
         added = []
         monkeypatch.setattr(vendor_rebuild_ui, "_add_menu_action", lambda *a: added.append(a))
         start_up(None)
-        assert added == [("/addon", "Test Addon")]
+        assert added == [("/addon", "Test Addon", None)]
+
+
+class TestWhatTheOfferPromises:
+    """A required package is not a speed problem, and the dialog may not say that it is.
+
+    "The add-on works either way - just more slowly without this" is true of psutil and of
+    rapidfuzz, which both have fallbacks. Said about sudachipy it is simply false: the word
+    array cannot be generated without it, and the operations that do so are gone. Whether an
+    absence costs speed or a feature is the addon's knowledge, which is why `missing` is passed
+    in rather than guessed from the health string.
+    """
+
+    def test_a_missing_package_is_named_and_nothing_is_promised(self, ui):
+        start_up("sudachipy is missing from its vendored packages", "sudachipy")
+        text = ui["asked"][0]
+        assert "sudachipy" in text
+        assert "more slowly" not in text
+        assert "either way" not in text
+
+    def test_a_missing_package_says_the_operations_are_gone_until_a_restart(self, ui):
+        start_up("sudachipy is missing", "sudachipy")
+        text = ui["asked"][0]
+        assert "without the operations" in text and "restarted" in text
+
+    def test_a_tree_that_merely_does_not_fit_still_only_costs_speed(self, ui):
+        """The original promise, which is true in this case and must survive."""
+        start_up("built for Python 3.12")
+        assert "more slowly" in ui["asked"][0]
+
+    def test_the_menu_offer_knows_about_a_missing_package_too(self, ui):
+        vendor_rebuild_ui._rebuild_on_demand("/addon", "Test Addon", "sudachipy")
+        text = ui["asked"][0]
+        assert "sudachipy" in text and "more slowly" not in text
+
+    def test_an_obstacle_says_what_stays_broken_not_what_keeps_working(self, ui, monkeypatch):
+        monkeypatch.setattr(vendor_rebuild_ui, "can_rebuild", lambda: "there is no installer")
+        vendor_rebuild_ui._rebuild_on_demand("/addon", "Test Addon", "sudachipy")
+        warned = ui["warned"][0]
+        assert "sudachipy" in warned
+        assert "keep working with the packages it shipped with" not in warned
+
+    def test_that_warning_stays_plain_text(self, ui, monkeypatch):
+        """Qt reflows a message box as rich text the moment it sees a tag, and the blank
+        lines this message is laid out with would collapse."""
+        monkeypatch.setattr(vendor_rebuild_ui, "can_rebuild", lambda: "there is no installer")
+        vendor_rebuild_ui._rebuild_on_demand("/addon", "Test Addon", "sudachipy")
+        assert "<" not in ui["warned"][0]
 
 
 class TestLogging:

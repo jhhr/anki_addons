@@ -40,7 +40,6 @@ Report `output/number_rejudge_report.txt`, edits `output/number_rejudge_edits.js
 
 import argparse
 import json
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -188,7 +187,7 @@ def plan(rows: list) -> tuple:
 
 
 def report(edits: list, held: dict) -> list:
-    links = Counter()
+    links: Counter[str] = Counter()
     for edit in edits:
         links[edit.action] += edit.links
     sentences = {nid for edit in edits for nid in edit.sentences}
@@ -352,7 +351,6 @@ def revert(client, undo: Path) -> tuple:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true", help="re-dump the notes over AnkiConnect")
     parser.add_argument("--undo", type=Path, default=UNDO)

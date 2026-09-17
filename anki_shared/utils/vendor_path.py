@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 from typing import Optional
 
@@ -55,9 +56,13 @@ VENDOR_MANIFEST = ".vendored.json"
 # What either tree is built from. Shipped with the addon, beside lib/.
 REQUIREMENTS = "requirements.txt"
 
-# One package that is expected to be importable once either tree is on sys.path. Only a
-# backstop for a half-extracted directory - see vendor_health.
+# One package that is expected to be importable once either tree is on sys.path. Only the
+# fallback for an addon with no requirements.txt to check against - see _missing_packages.
 _SMOKE_MODULE = "psutil"
+
+# The distribution name at the start of a requirements.txt line. What follows it - the version
+# pin, an environment marker, an extras bracket - says nothing about whether it arrived.
+_REQUIREMENT_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 
 def platform_tag() -> Optional[str]:
@@ -112,6 +117,18 @@ def add_vendor_paths(addon_dir: str) -> None:
     per (Python, addon version) and says nothing at all when a rebuild is not possible, so the
     user stayed on pure-Python fallbacks with no indication why. Last, it shadows nothing.
     """
+    for path in candidate_libs(addon_dir):
+        if os.path.isdir(path) and path not in sys.path:
+            sys.path.append(path)
+
+
+def candidate_libs(addon_dir: str) -> list[str]:
+    """The vendored trees, best fit first - the order add_vendor_paths puts them on sys.path.
+
+    Shared with the missing-package check so that "live" means one thing in both places: that
+    check has to ask about the trees actually in front, not about a demoted one that shadows
+    nothing and is not what an import would find.
+    """
     lib = shipped_lib(addon_dir)
     tag = platform_tag()
     user = user_lib(addon_dir)
@@ -123,9 +140,7 @@ def add_vendor_paths(addon_dir: str) -> None:
         candidates.insert(0, user)
     else:
         candidates.append(user)
-    for path in candidates:
-        if os.path.isdir(path) and path not in sys.path:
-            sys.path.append(path)
+    return candidates
 
 
 def requirements_digest(addon_dir: str) -> Optional[str]:
@@ -218,6 +233,12 @@ def vendor_health(addon_dir: str) -> Optional[str]:
     `import charset_normalizer` succeeded there, silently falling back to pure Python. A check
     built on "does it import" passes on precisely the breakage this exists to catch.
 
+    It is not the only question, though, and `_missing_packages` asks the other one: a tree can
+    describe this machine exactly and still not contain a package requirements.txt asks for,
+    which is what a fresh checkout and a version bump that adds a dependency both produce. That
+    failure is loud rather than silent - the addon cannot import - so it is checked last, once
+    the cheap comparisons have found nothing.
+
     "Live" is decided the same way `add_vendor_paths` decides it, which is why the two read
     the same manifests. A rebuilt tree that fits is first on sys.path and is therefore the
     tree to judge; one that does not fit was demoted behind the shipped tree and shadows
@@ -233,11 +254,11 @@ def vendor_health(addon_dir: str) -> Optional[str]:
     user_reason = user_lib_mismatch(addon_dir)
     if user_reason is None and os.path.isdir(user):
         # A fitting rebuilt tree is live, but it can still predate requirements.txt
-        return _outdated(_read_manifest(user) or {}, addon_dir) or _smoke_test()
+        return _outdated(_read_manifest(user) or {}, addon_dir) or _missing_packages(addon_dir)
 
     shipped_reason = _shipped_mismatch(addon_dir)
     if shipped_reason is None:
-        return _smoke_test()
+        return _missing_packages(addon_dir)
     if user_reason is not None:
         return f"{shipped_reason}, and {user_reason}"
     return shipped_reason
@@ -275,3 +296,91 @@ def _smoke_test() -> Optional[str]:
     if not found:
         return f"the vendored lib is on sys.path but {_SMOKE_MODULE} is not in it"
     return None
+
+
+def _normalized(name: str) -> str:
+    """PEP 503 normalisation, so `json-repair` and `json_repair` are one name."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_names(addon_dir: str) -> list[str]:
+    """The distributions requirements.txt asks for, normalised, in the order it names them.
+
+    Pins, extras and `python_full_version` markers are all discarded: the question here is only
+    whether a package arrived, and two markered lines for one distribution are one answer.
+    """
+    try:
+        with open(os.path.join(addon_dir, REQUIREMENTS), encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    names: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        # `-r`/`-e` are pip's, not a distribution's, and an indented `# via` is a comment.
+        if not stripped or stripped.startswith(("#", "-")):
+            continue
+        match = _REQUIREMENT_RE.match(stripped)
+        if match:
+            name = _normalized(match.group(1))
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _installed_distributions(libs: list[str]) -> set[str]:
+    """Every distribution carrying metadata in one of these trees.
+
+    Read from `.dist-info` rather than guessed from import names, because a distribution does
+    not have to be importable under its own name - `pillow` installs `PIL`. Treating a name
+    mismatch as an absence would offer a rebuild that could never satisfy the check, and offer
+    it at every startup: a *successful* rebuild clears the record that stops the question
+    coming back, so a check that stays unsatisfied after one is an infinite loop.
+    """
+    found: set[str] = set()
+    for lib in libs:
+        try:
+            entries = os.listdir(lib)
+        except OSError:
+            continue
+        for entry in entries:
+            for suffix in (".dist-info", ".egg-info"):
+                if entry.endswith(suffix):
+                    found.add(_normalized(entry[: -len(suffix)].rsplit("-", 1)[0]))
+    return found
+
+
+def _missing_packages(addon_dir: str) -> Optional[str]:
+    """Requirements that reached neither the live vendored trees nor anywhere else importable.
+
+    The other half of health, and the half the manifest comparisons cannot answer. They ask
+    what a tree was *built for*; this asks what is *in* it. A tree built before a requirement
+    was added matches its interpreter perfectly, and a gitignored `lib/` that never arrived has
+    no manifest to compare at all - but the addon still raises ModuleNotFoundError at import,
+    which is not a degradation it can carry on through the way it carries on without psutil.
+
+    Two conditions, both required, so neither half can cry wolf. The metadata is absent from
+    every live tree, which is exact and is true of anything a rebuild would really add; *and*
+    the name cannot be imported from anywhere, because Anki ships some of these itself
+    (`requests` among them) and a package the addon can already import needs no rebuild.
+    """
+    import importlib.util
+
+    names = requirement_names(addon_dir)
+    if not names:
+        # No requirements to check against, so the one-module backstop is all there is.
+        return _smoke_test()
+    installed = _installed_distributions(candidate_libs(addon_dir))
+    missing: list[str] = []
+    for name in names:
+        if name in installed:
+            continue
+        try:
+            found = importlib.util.find_spec(name.replace("-", "_")) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(name)
+    if not missing:
+        return None
+    return f"the vendored lib is missing {', '.join(missing)}"

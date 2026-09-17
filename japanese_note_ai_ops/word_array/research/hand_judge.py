@@ -35,7 +35,7 @@ import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import NamedTuple, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import anki_connect
 import hand_labels
@@ -364,7 +364,7 @@ class Session:
     def _write(anki, edits: list[Edit], side: str) -> list[Edit]:
         """Writes each edit's `side` value; the edits written. A failure after the first write
         keeps those written, as Anki already has them."""
-        written = []
+        written: list[Edit] = []
         for e in edits:
             try:
                 anki.update_note_fields(e.nid, {e.field: getattr(e, side)})

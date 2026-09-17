@@ -13,9 +13,14 @@ maps are built from plain rows, so everything above `_read_notes` is a pure func
 
 import asyncio
 import unittest
+from typing import TYPE_CHECKING
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
 from addon_modules import load_ops_module, mw
+
+if TYPE_CHECKING:
+    # The real class behind `wi.WordIndex`, which load_ops_module can only hand back as Any
+    from japanese_note_ai_ops.async_api_ops.word_index import WordIndex
 
 wi = load_ops_module("word_index")
 # Kept because the cache tests replace it and have to put it back
@@ -40,7 +45,7 @@ def vocab_row(note_id: int, kanjified: str, normal: str, reading: str, sort: str
     return (note_id, VOCAB_MID, wi.FIELD_SEPARATOR.join(values))
 
 
-def build(*rows, ords_by_mid=None) -> "wi.WordIndex":
+def build(*rows, ords_by_mid=None) -> "WordIndex":
     return wi.WordIndex.from_rows(FIELDS, ords_by_mid or {VOCAB_MID: VOCAB_ORDS}, list(rows))
 
 

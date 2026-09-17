@@ -59,7 +59,8 @@ def load_op():
 
 def sample_rows(corpus: str, n: int) -> list[tuple[str, list]]:
     """(sentence, old proper noun entries) of up to `n` sentences with some and `n` without."""
-    with_names, without = [], []
+    with_names: list[tuple[str, list]] = []
+    without: list[tuple[str, list]] = []
     for raw, word_lists in read_export(CORPORA[corpus], Counter()):
         sentence = survey.html_stripping.strip_context_sentences(raw)
         if not sentence.strip():
@@ -159,8 +160,8 @@ def main() -> int:
     arrays = [survey.generator.generate(sentence) for sentence, _ in rows]
     cached = read_results()
     for model in args.model or MODELS:
-        todo = {prompt_key(model, llm.prompt(a)): llm.prompt(a) for a in arrays}
-        todo = [] if args.score_only else [(k, p) for k, p in todo.items() if k not in cached]
+        prompts = {prompt_key(model, llm.prompt(a)): llm.prompt(a) for a in arrays}
+        todo = [] if args.score_only else [(k, p) for k, p in prompts.items() if k not in cached]
         print(f"{model}: {len(todo)} requests", file=sys.stderr)
 
         def ask(item, model=model):

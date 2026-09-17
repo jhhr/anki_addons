@@ -245,7 +245,6 @@ def main() -> int:
         io.open(args.out, "w", encoding="utf-8", newline="\n").write(text)
         print("wrote %s (%d lines)" % (args.out, len(lines)))
     else:
-        sys.stdout.reconfigure(encoding="utf-8")
         print(text, end="")
     return 0
 
