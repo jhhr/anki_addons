@@ -320,6 +320,9 @@ class StageEditor(QWidget):
 
     def set_context(self, context: StageEditorContext) -> None:
         self.context = context
+        # The trigger note type is chosen at the top of the same dialog, and the card types
+        # a stage editing the trigger offers are that note type's own.
+        self.state.set_selected_models(list(self.environment.note_types_for("trigger") or []))
         for editor in self._expression_editors:
             editor.set_context(context)
 
@@ -626,9 +629,10 @@ class EditNoteStageEditor(StageEditor):
         self.form.addRow(self.card_actions)
 
     def _on_target_changed(self, name: str) -> None:
-        # The card types on offer are the trigger note type's or every note type's, and
-        # which of those depends on the note this stage now edits. The field pickers follow
-        # the same change through `set_context`, which the refresh below reaches.
+        # The card types on offer, the actions kept, the tag captions and the paragraph
+        # over the card actions all depend on the note this stage now edits, and the state
+        # tells each of them. The field pickers follow the same change through
+        # `set_context`, which the refresh below reaches.
         self.state.set_target_is_trigger(name == "trigger")
         self.notify()
 

@@ -112,10 +112,10 @@ class CardActionsEditor(QWidget):
         self._load_total = 0
         self.loading_indicator: Optional[LoadingIndicator] = None
 
-        # Store callback entries for controlling visibility
-        self.selected_model_callback = state.add_selected_model_callback(
-            self.update_card_type_options, is_visible=False
-        )
+        # Both fire when the note these actions reach changes; the first also when the
+        # trigger's note types do.
+        state.add_selected_model_callback(self.relist_card_types)
+        state.add_copy_direction_callback(self.set_description)
 
         self.vbox = QVBoxLayout()
         self.setLayout(self.vbox)
@@ -175,14 +175,6 @@ class CardActionsEditor(QWidget):
             return
         self.changed.emit()
 
-    def enable_callbacks(self):
-        """Enable callbacks when the widget becomes visible"""
-        self.selected_model_callback.is_visible = True
-
-    def disable_callbacks(self):
-        """Disable callbacks when the widget is not visible"""
-        self.selected_model_callback.is_visible = False
-
     def set_description(self):
         """Update the description label based on the current copy mode and direction"""
         if self.single_card_mode:
@@ -202,7 +194,6 @@ class CardActionsEditor(QWidget):
         if self.initialized:
             return
 
-        self.enable_callbacks()
         self.update_card_type_options()
         self.set_description()
 
@@ -270,6 +261,35 @@ class CardActionsEditor(QWidget):
             card_type_name, action = self._load_queue.pop(0)
             self.create_action_editor(card_type_name, action)
         self._finish_loading_initial_actions()
+
+    def relist_card_types(self):
+        """The note these actions reach changed: keep only what it can have, then relist.
+
+        A stage retargeted from a queried note to the trigger, or whose trigger note type
+        was changed at the top of the dialog, may hold an action for a card type the note
+        it now edits cannot have. Saved, that action matches nothing at run time, and no
+        later edit makes it apply again -- so it is dropped rather than kept and marked.
+        A stage editing a queried note offers every card type, and one with no trigger
+        note type chosen yet has nothing to check against, so neither drops anything.
+        """
+        offered = self._offered_card_types()
+        if offered is not None:
+            for card_type_name in list(self.card_actions):
+                if card_type_name not in offered:
+                    self._discard_action(card_type_name)
+        self.update_card_type_options()
+
+    def _offered_card_types(self) -> Optional[set[str]]:
+        """The card types the selector lists, or None when it lists every one there is."""
+        if self.single_card_mode or self.state.copy_mode == COPY_MODE_ACROSS_NOTES:
+            return None
+        if not self.state.selected_models:
+            return None
+        return {
+            f"{model['name']}{CARD_TYPE_SEPARATOR}{template.get('name', '')}"
+            for model in self.state.selected_models
+            for template in model.get("tmpls", [])
+        }
 
     def update_card_type_options(self):
         """
@@ -710,20 +730,21 @@ class CardActionsEditor(QWidget):
             "action_code": ui["code_editor"].get_text(),
         }
 
-    def delete_action(self, card_type_name: str):
-        """Delete a card action and its UI"""
-        # Remove from data
-        if card_type_name in self.card_actions:
-            del self.card_actions[card_type_name]
-
-        # Remove from UI
-        if card_type_name in self.action_ui_components:
-            ui_components = self.action_ui_components[card_type_name]
+    def _discard_action(self, card_type_name: str):
+        """Forget one action, its row, and its place in the staged load."""
+        self.card_actions.pop(card_type_name, None)
+        self._load_queue = [
+            (name, action) for name, action in self._load_queue if name != card_type_name
+        ]
+        ui_components = self.action_ui_components.pop(card_type_name, None)
+        if ui_components is not None:
             frame = ui_components["frame"]
             self.actions_layout.removeWidget(frame)
             frame.deleteLater()
-            del self.action_ui_components[card_type_name]
 
+    def delete_action(self, card_type_name: str):
+        """Delete a card action and its UI"""
+        self._discard_action(card_type_name)
         # Refresh dropdown to show the deleted card type as available again
         self.update_card_type_options()
         self._on_changed()

@@ -839,6 +839,30 @@ def tick_first(box):
     box.model().item(0).setCheckState(Qt.CheckState.Checked)
 
 
+def edit_note_editor_in_a_loop(col, target):
+    """An Edit Note stage inside a loop over a query, so `trigger` and `note` are both in scope."""
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "found"
+    query["query"] = value_expression(text="deck:Default")
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["input"] = {"binding": "found"}
+    edit = default_stage(STAGE_EDIT_NOTE, "e")
+    edit["target"] = {"binding": target}
+    loop["body"] = [edit]
+    tree = tree_for(col, query, loop)
+    return tree, tree.rows["e"].editor
+
+
+def offered_card_note_types(editor):
+    """The note types whose card types an Edit Note editor's selector currently offers."""
+    box = editor.card_actions.card_type_selector
+    return {
+        box.itemText(index).split(CARD_TYPE_SEPARATOR)[0].strip()
+        for index in range(box.count())
+        if CARD_TYPE_SEPARATOR in box.itemText(index)
+    }
+
+
 class TestClearingATriggerSelection:
     """The deck and unfocus boxes are rebuilt whenever the note types change.
 
@@ -1360,6 +1384,40 @@ class TestChangingTheTriggerNoteType:
         guid = dialog.document.root_block()[0]["guid"]
         assert dialog.document.stage(guid)["fields"][0]["field"] != "Word"
 
+    def edit_note_editor(self, dialog):
+        guid = dialog.document.root_block()[0]["guid"]
+        return dialog.stage_tree.rows[guid].editor
+
+    def test_the_card_type_picker_follows_the_new_note_type(self, col, qapp, dialog):
+        # The card type list is the other picker built from the trigger note type: a stage
+        # editing the trigger offers that note type's own card types, and
+        # `StageEditState.selected_models` was assigned once, when the row was built.
+        self.dialog_with_an_edit_stage(dialog)
+        assert offered_card_note_types(self.edit_note_editor(dialog)) == {VOCAB}
+
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
+        dialog.refresh_status()
+
+        assert offered_card_note_types(self.edit_note_editor(dialog)) == {KANJI}
+
+    def test_an_action_for_a_card_type_the_new_note_type_does_not_have_is_dropped(
+        self, col, qapp, dialog
+    ):
+        self.dialog_with_an_edit_stage(dialog)
+        actions = self.edit_note_editor(dialog).card_actions
+        vocab = f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition"
+        actions.card_type_selector.setCurrentText(vocab)
+        actions.add_new_action()
+        actions.action_ui_components[vocab]["deck_combo"].setCurrentText("Default")
+        dialog.refresh_status()
+        guid = dialog.document.root_block()[0]["guid"]
+        assert [a["card_type_name"] for a in dialog.document.stage(guid)["card_actions"]] == [vocab]
+
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
+        dialog.refresh_status()
+
+        assert dialog.document.stage(guid)["card_actions"] == []
+
 
 class TestTheUnfocusGateOnAMigratedWrite:
     """The per-write unfocus list, which used to be the one thing on a write with no control.
@@ -1492,50 +1550,105 @@ class TestWhichCardTypesAnEditNoteStageOffers:
     run time.
     """
 
-    def editor_for(self, col, target):
-        query = default_stage(STAGE_NOTE_QUERY, "q")
-        query["result"] = "found"
-        query["query"] = value_expression(text="deck:Default")
-        loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
-        loop["input"] = {"binding": "found"}
-        edit = default_stage(STAGE_EDIT_NOTE, "e")
-        edit["target"] = {"binding": target}
-        loop["body"] = [edit]
-        tree = tree_for(col, query, loop)
-        return tree, tree.rows["e"].editor
-
-    def offered_note_types(self, editor):
-        box = editor.card_actions.card_type_selector
-        return {
-            box.itemText(index).split(CARD_TYPE_SEPARATOR)[0].strip()
-            for index in range(box.count())
-            if CARD_TYPE_SEPARATOR in box.itemText(index)
-        }
-
     def test_a_stage_editing_the_trigger_offers_its_own_note_type(self, col, qapp):
-        _tree, editor = self.editor_for(col, "trigger")
+        _tree, editor = edit_note_editor_in_a_loop(col, "trigger")
 
-        assert self.offered_note_types(editor) == {VOCAB}
+        assert offered_card_note_types(editor) == {VOCAB}
 
     def test_a_stage_editing_a_queried_note_offers_them_all(self, col, qapp):
-        _tree, editor = self.editor_for(col, "note")
+        _tree, editor = edit_note_editor_in_a_loop(col, "note")
 
-        assert KANJI in self.offered_note_types(editor)
+        assert KANJI in offered_card_note_types(editor)
 
     def test_retargeting_the_stage_relists_them(self, col, qapp):
-        _tree, editor = self.editor_for(col, "trigger")
-        assert self.offered_note_types(editor) == {VOCAB}
+        _tree, editor = edit_note_editor_in_a_loop(col, "trigger")
+        assert offered_card_note_types(editor) == {VOCAB}
 
         editor.target.setCurrentText("note")
 
-        assert KANJI in self.offered_note_types(editor)
+        assert KANJI in offered_card_note_types(editor)
 
     def test_retargeting_back_narrows_them_again(self, col, qapp):
-        _tree, editor = self.editor_for(col, "note")
+        _tree, editor = edit_note_editor_in_a_loop(col, "note")
 
         editor.target.setCurrentText("trigger")
 
-        assert self.offered_note_types(editor) == {VOCAB}
+        assert offered_card_note_types(editor) == {VOCAB}
+
+
+class TestWhatElseFollowsARetarget:
+    """Everything keyed on which note an Edit Note stage edits, not only the card type list.
+
+    `StageEditState.set_target_is_trigger` was built to reach one callback -- the card type
+    relisting -- and fired only that registry. `TagEditor.update_direction_labels` and
+    `CardActionsEditor.set_description` read the same `copy_mode`, but the captions are
+    registered on the direction registry and the description is called once, from
+    `initialize_ui_state`. So after a retarget the list was right and the words around it
+    described the other note.
+
+    The relisting itself only refilled the selector. An action added for a card type while
+    the stage targeted a queried note survived a retarget to the trigger, was saved with the
+    stage, and matched nothing at run time -- the trigger note has no card of that type.
+    Such an action is dropped: unlike a stray export there is nothing to move back that
+    would make it apply again.
+    """
+
+    def action_for(self, editor, card_type):
+        actions = editor.card_actions
+        actions.card_type_selector.setCurrentText(card_type)
+        actions.add_new_action()
+        # An action that would do nothing is dropped on the way out.
+        actions.action_ui_components[card_type]["deck_combo"].setCurrentText("Default")
+
+    def test_the_tag_captions_stop_naming_the_trigger(self, col, qapp):
+        _tree, editor = edit_note_editor_in_a_loop(col, "trigger")
+        assert "trigger" in editor.tag_editor.add_tags_label.text()
+
+        editor.target.setCurrentText("note")
+
+        assert "trigger" not in editor.tag_editor.add_tags_label.text()
+        assert "trigger" not in editor.tag_editor.remove_tags_label.text()
+
+    def test_the_tag_captions_name_the_trigger_again_on_the_way_back(self, col, qapp):
+        _tree, editor = edit_note_editor_in_a_loop(col, "note")
+        assert "trigger" not in editor.tag_editor.add_tags_label.text()
+
+        editor.target.setCurrentText("trigger")
+
+        assert "trigger" in editor.tag_editor.add_tags_label.text()
+
+    def test_the_description_says_whose_cards_the_actions_reach(self, col, qapp):
+        _tree, editor = edit_note_editor_in_a_loop(col, "trigger")
+        assert "queried notes" not in editor.card_actions.description_label.text()
+
+        editor.target.setCurrentText("note")
+
+        assert "queried notes" in editor.card_actions.description_label.text()
+
+    def test_an_action_for_a_card_type_the_trigger_cannot_have_is_dropped(self, col, qapp):
+        tree, editor = edit_note_editor_in_a_loop(col, "note")
+        kanji = f"{KANJI}{CARD_TYPE_SEPARATOR}Card 1"
+        vocab = f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition"
+        self.action_for(editor, kanji)
+        self.action_for(editor, vocab)
+
+        editor.target.setCurrentText("trigger")
+        tree.apply_editors()
+
+        saved = tree.document.stage("e")["card_actions"]
+        assert [action["card_type_name"] for action in saved] == [vocab]
+        assert kanji not in editor.card_actions.action_ui_components
+
+    def test_retargeting_to_a_queried_note_keeps_every_action(self, col, qapp):
+        tree, editor = edit_note_editor_in_a_loop(col, "trigger")
+        vocab = f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition"
+        self.action_for(editor, vocab)
+
+        editor.target.setCurrentText("note")
+        tree.apply_editors()
+
+        saved = tree.document.stage("e")["card_actions"]
+        assert [action["card_type_name"] for action in saved] == [vocab]
 
 
 class TestTheConditionEditorsCaption:

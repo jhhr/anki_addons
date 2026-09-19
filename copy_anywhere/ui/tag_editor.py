@@ -54,9 +54,7 @@ class TagEditor(QWidget):
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
 
-        self.direction_callback = state.add_copy_direction_callback(
-            self.update_direction_labels, is_visible=False
-        )
+        state.add_copy_direction_callback(self.update_direction_labels)
 
         # Show two combo boxes for adding/removing tags
         self.form_layout = QFormLayout()
@@ -108,12 +106,6 @@ class TagEditor(QWidget):
         self.add_tags_label.setText(f"Tags to add {add_tag_label_clarification}")
         self.remove_tags_label.setText(f"Tags to remove {remove_tag_label_clarification}")
 
-    def enable_callbacks(self):
-        self.direction_callback.is_visible = True
-
-    def disable_callbacks(self):
-        self.direction_callback.is_visible = False
-
     def initialize_ui_state(self):
         # Items carry the quotes, because that is the form `split_tags()` reads back and
         # the form `MultiComboBox.setCurrentText` has to match item for item: it splits the
@@ -123,4 +115,3 @@ class TagEditor(QWidget):
         self._fill_tag_box(self.add_tags_combo_box, self.add_tags_str)
 
         self.update_direction_labels()
-        self.enable_callbacks()
