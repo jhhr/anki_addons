@@ -197,10 +197,13 @@ def _card_reference(card: Card, rest: str, ctx: ExpressionContext) -> str:
         # share a template) and which a definition spanning several note types refuses
         # outright (the prefix is not allowed there). Neither question arises here.
         note = ctx.session.note_by_id(card.nid)
-        value = get_card_value(card, note, rest)
-        if value is None:
-            raise ctx.error(f"'{rest}' is not a card value")
-        return str(value)
+        try:
+            value = get_card_value(card, note, rest)
+        except KeyError:
+            raise ctx.error(f"'{rest}' is not a card value") from None
+        # A getter with nothing to say answers None -- custom data another add-on left
+        # unparsable, say -- which format 1 rendered as "". The reference itself is fine.
+        return "" if value is None else str(value)
     raise ctx.error(f"'{rest}' is not a card property")
 
 

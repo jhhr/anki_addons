@@ -9,6 +9,8 @@ Everything runs against a real collection through `copy_for_single_trigger_note`
 entry point the browser, the hooks and the sync path use.
 """
 
+import json
+
 import pytest
 
 import definitions as d
@@ -781,7 +783,7 @@ class TestACardValueReadThroughACardBinding:
         for card in note.cards():
             assert f"[{card.id}]" in written, written
 
-    def test_a_key_that_is_not_a_card_value_is_still_refused(self, col, note):
+    def test_a_key_that_is_not_a_card_value_is_still_refused(self, col, note, logger):
         definition = d.staged(stages=[
             d.card_query("cards", f"nid:{note.id}", strategy="first", count=1),
             d.for_each_card(
@@ -793,6 +795,38 @@ class TestACardValueReadThroughACardBinding:
         ok, _copied = run(definition, note)
 
         assert ok is False
+        assert any("'__Not_A_Value' is not a card value" in error for error in logger.errors)
+
+    def test_malformed_custom_data_reads_as_empty_rather_than_as_a_misspelling(
+        self, col, note, logger
+    ):
+        # `get_card_custom_data_prop` answers None when the JSON does not parse -- another
+        # add-on's doing, not this reference's. Format 1 rendered a None as "", and the same
+        # reference must not be refused as "not a card value" for it: it is spelled right.
+        # `update_card` refuses malformed custom data, so it is written under it, the way
+        # something that bypassed the backend would have.
+        card = note.cards()[0]
+        col.db.execute(
+            "update cards set data = ? where id = ?", json.dumps({"cd": "{bad"}), card.id
+        )
+        assert col.get_card(card.id).custom_data == "{bad"
+        definition = d.staged(stages=[
+            d.card_query("cards", f"cid:{card.id}"),
+            d.for_each_card(
+                "cards",
+                [
+                    d.edit_note(
+                        "note",
+                        [d.write("Note", d.text("[{{card.__Card_Custom_Data_Prop==v}}]"))],
+                    )
+                ],
+            ),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert copied[0]["Note"] == "[]"
 
     def test_an_argument_still_reaches_the_value_that_takes_one(self, col, note):
         card = note.cards()[0]

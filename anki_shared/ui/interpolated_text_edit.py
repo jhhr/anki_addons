@@ -76,8 +76,8 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         self.text_edit.textChanged.connect(self.validate_text)
         # Allow providing a QLabel that the provider can then modify
         self.main_label = QLabel(label, widget_parent) if isinstance(label, str) else label
-
-        self.addWidget(self.main_label)
+        if self.main_label is not None:
+            self.addWidget(self.main_label)
 
         self.optional_description = QLabel("", widget_parent)
         self.optional_description.setWordWrap(True)

@@ -579,14 +579,16 @@ def get_card_value(
     :param note: that card's note, which some values are relative to
     :param reference: the card value key, with its argument if it takes one --
         `__Card_Due`, or `__Card_Custom_Data_Prop==name`
-    :return: the value, or None when `reference` does not name a card value
+    :return: the value, which is None when its getter has nothing to say -- custom data
+        that does not parse, for one -- and never means the key was unknown
+    :raises KeyError: when `reference` does not name a card value
     """
     key, separator, arg = reference.partition(ARG_SEPARATOR)
     # The key constants carry the separator when the value takes an argument, which is how
     # the regexes above capture them too.
     key += separator
     if key not in CARD_VALUES_DICT:
-        return None
+        raise KeyError(key)
     value_or_partial = get_value_for_card(card, note).get(key)
     if isinstance(value_or_partial, partial):
         return cast(JSONSerializableValue, value_or_partial(arg))

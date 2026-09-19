@@ -270,6 +270,8 @@ run, then the exports.
   selected and is marked in red on both rows. Nothing is silently rewritten. Moving a stage
   keeps its export for the same reason: a stage moved into a loop cannot be exported, so its
   row is marked rather than dropped, and moving it back out is all it takes to restore it.
+  Renaming a top-level result carries its export to the new name -- an export named after
+  the result is renamed with it, one you named yourself keeps that name.
 * A condition says which of its two forms it is. *Match it as an Anki search against a note*
   is what a migrated copy condition is -- a search, run against the note the row names -- and
   it has no code form; turning it off leaves the ordinary expression a condition authored

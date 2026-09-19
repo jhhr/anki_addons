@@ -55,6 +55,8 @@ class ExportsEditor(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self.rows = []
+        candidates = self.document.exportable_stages()
+        self._follow_renames(candidates)
         # Keyed by stage and result, not by stage alone: a call stage binds one result per
         # output, so each is its own row and its own export.
         exported = {
@@ -62,7 +64,6 @@ class ExportsEditor(QWidget):
             for export in self.document.exports()
             if isinstance(export, dict)
         }
-        candidates = self.document.exportable_stages()
         stray = self._stray_exports(candidates, exported)
         candidates.extend(sorted(stray))
         if not candidates:
@@ -105,6 +106,49 @@ class ExportsEditor(QWidget):
             layout.addStretch()
             self.rows_layout.addWidget(row)
             self.rows.append((guid, result_name, keep, name))
+
+    def _follow_renames(self, candidates: list[tuple[str, str]]) -> None:
+        """Carry an export whose stage renamed its result over to the new name.
+
+        Exports are keyed by stage and result, and a stage whose result was renamed is
+        still here and still at the top level; only the name it binds changed. Left keyed
+        by the old name, the export read as a stray row (below) explaining a move that
+        never happened, and named nothing the analyser could find. It is written back
+        rather than only remapped for the rows because the dialog applies, rebuilds and
+        then analyses: the definition has to hold the new key before that analysis, not
+        after the next edit. An export named after the result follows it; one the user
+        named themselves keeps its name.
+        """
+        offered = set(candidates)
+        exports = self.document.exports()
+        claimed = {
+            (export.get("stage_guid"), export.get("result") or "")
+            for export in exports
+            if isinstance(export, dict)
+        }
+        changed = False
+        for export in exports:
+            if not isinstance(export, dict):
+                continue
+            guid, old_name = export.get("stage_guid"), export.get("result") or ""
+            if not old_name or (guid, old_name) in offered:
+                continue
+            # A call stage binds several results, so the rename is only unmistakable when
+            # exactly one of the stage's results has no export of its own.
+            unclaimed = [
+                result for stage_guid, result in candidates
+                if stage_guid == guid and (stage_guid, result) not in claimed
+            ]
+            if len(unclaimed) != 1:
+                continue
+            new_name = unclaimed[0]
+            if export.get("name") == old_name:
+                export["name"] = new_name
+            export["result"] = new_name
+            claimed.add((guid, new_name))
+            changed = True
+        if changed:
+            self.document.set_exports(exports)
 
     def _stray_exports(self, candidates, exported) -> set[tuple[str, str]]:
         """Stored exports whose stage no longer offers the result they name.

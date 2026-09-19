@@ -545,6 +545,55 @@ def test_a_stray_export_stored_without_a_result_keeps_the_stages_own_name(
     ]
 
 
+def test_renaming_an_exported_result_carries_the_export_with_it(col, qapp, widget_parent):
+    # The row is keyed by the stage, and a stage at the top level whose result was renamed
+    # has not gone anywhere. Keyed by the old name alone, the export dropped out of the
+    # offered set and came back as a stray row telling the user to move a stage back out
+    # that never moved -- while the export they set up quietly stopped naming anything.
+    definition = new_definition("d", "A definition", stages=[variable("v", "H1")])
+    definition["exports"] = [{"name": "H1", "stage_guid": "v", "result": "H1"}]
+    panel, document = exports_panel(widget_parent, definition)
+
+    document.stage("v")["result"] = "H2"
+    panel.rebuild()
+
+    assert [(result, keep.isChecked()) for _guid, result, keep, _name in panel.rows] == [
+        ("H2", True)
+    ]
+    panel.apply()
+    assert document.exports() == [{"name": "H2", "stage_guid": "v", "result": "H2"}]
+    assert [problem.message for problem in document.analysis.problems] == []
+
+
+def test_an_export_given_its_own_name_keeps_it_through_a_rename(col, qapp, widget_parent):
+    # Only an export named after the result follows the rename; one the user named
+    # themselves is theirs to keep.
+    definition = new_definition("d", "A definition", stages=[variable("v", "H1")])
+    definition["exports"] = [{"name": "handed_back", "stage_guid": "v", "result": "H1"}]
+    panel, document = exports_panel(widget_parent, definition)
+
+    document.stage("v")["result"] = "H2"
+    panel.rebuild()
+
+    assert [name.text() for _guid, _result, _keep, name in panel.rows] == ["handed_back"]
+    panel.apply()
+    assert document.exports() == [{"name": "handed_back", "stage_guid": "v", "result": "H2"}]
+
+
+def test_renaming_a_result_in_the_dialog_keeps_its_export_and_the_save(dialog):
+    dialog.stage_tree.add_stage(STAGE_VARIABLE, None, None)
+    guid = dialog.document.root_block()[0]["guid"]
+    dialog.stage_tree.rows[guid].editor.result.setText("H1")
+    dialog.refresh_status()
+    dialog.exports_editor.rows[0][2].setChecked(True)
+
+    dialog.stage_tree.rows[guid].editor.result.setText("H2")
+    dialog.refresh_status()
+
+    assert dialog.document.exports() == [{"name": "H2", "stage_guid": guid, "result": "H2"}]
+    assert dialog.ok_button.isEnabled(), dialog.status_label.text()
+
+
 def test_an_export_of_a_deleted_stage_is_not_resurrected_as_a_row(col, qapp, widget_parent):
     # Deleting is the case where the stage really is gone, and `remove_stage` drops the
     # export with it; nothing should put a row back for one that was never stored.
@@ -699,6 +748,41 @@ class TestTheSelectionSurvivesASave:
         editor.keep_refusing.setChecked(True)
         editor.apply()
         assert "selection_error" not in stage["selection"]
+
+    def test_a_refusal_keeps_the_count_it_migrated_with(self, col, qapp, widget_parent):
+        # A refused selection migrates as "all" with its count and sort field still on it,
+        # for the user to get back once they fix the strategy. The count box is hidden
+        # under "all", and a save that wrote None for it threw the count away before the
+        # user ever saw it.
+        editor, stage = query_stage_editor(
+            widget_parent,
+            strategy="all",
+            count=3,
+            sort_field="Word",
+            selection_error="Error in copy fields: no such thing",
+        )
+        editor.apply()
+        assert stage["selection"]["count"] == 3
+        assert stage["selection"]["sort_field"] == "Word"
+
+    def test_saying_to_select_after_all_keeps_the_count_too(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="all", count=3, selection_error="Error in copy fields: no such thing"
+        )
+        editor.keep_refusing.setChecked(True)
+        editor.apply()
+        assert "selection_error" not in stage["selection"]
+        assert stage["selection"]["count"] == 3
+
+    def test_a_strategy_that_takes_a_count_offers_the_migrated_one(self, col, qapp, widget_parent):
+        editor, stage = query_stage_editor(
+            widget_parent, strategy="all", count=3, selection_error="Error in copy fields: no such thing"
+        )
+        editor.strategy.setCurrentIndex(editor.strategy.findData("first"))
+        assert editor.count.isVisibleTo(editor) is True
+        editor.apply()
+        assert stage["selection"]["strategy"] == "first"
+        assert stage["selection"]["count"] == 3
 
     def test_a_stage_that_never_refused_grows_no_error(self, col, qapp, widget_parent):
         editor, stage = query_stage_editor(widget_parent, strategy="first", count=2)
@@ -1649,6 +1733,11 @@ class TestWhatElseFollowsARetarget:
 
         assert "trigger" not in editor.tag_editor.add_tags_label.text()
         assert "trigger" not in editor.tag_editor.remove_tags_label.text()
+        # Format 1's wording had the prepositions the wrong way round.
+        assert editor.tag_editor.add_tags_label.text() == "Tags to add to the searched note"
+        assert (
+            editor.tag_editor.remove_tags_label.text() == "Tags to remove from the searched note"
+        )
 
     def test_the_tag_captions_name_the_trigger_again_on_the_way_back(self, col, qapp):
         _tree, editor = edit_note_editor_in_a_loop(col, "note")

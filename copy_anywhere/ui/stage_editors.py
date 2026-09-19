@@ -383,6 +383,8 @@ class QueryStageEditor(StageEditor):
         self.count = QSpinBox(self)
         self.count.setRange(1, 9999)
         self.count.setValue(selection.get("count") or 1)
+        # What the selection carried in, for a save under "all" (see `apply`).
+        self._built_count = selection.get("count")
         self.count.setSuffix(f" {what}")
         self.count.valueChanged.connect(self.notify)
         selection_row = QHBoxLayout()
@@ -460,9 +462,13 @@ class QueryStageEditor(StageEditor):
         # Updated rather than replaced: a selection carries keys this editor does not own,
         # and a save that rebuilt the dict from the four controls would drop them.
         selection = self.stage.setdefault("selection", {})
+        # "all" hides the count box, so its value is not something the user can have set;
+        # what the selection carried in is kept instead. A refused migrated selection is
+        # "all" with the count the user had on it, for when they fix the strategy -- and a
+        # save that wrote None here threw that count away before they ever saw it.
         selection.update({
             "strategy": strategy,
-            "count": None if strategy == "all" else self.count.value(),
+            "count": self._built_count if strategy == "all" else self.count.value(),
             "sort_field": self.sort_field.currentText() or None,
             "sort_order": combo_value(self.sort_order),
             "sort_numeric": self.sort_numeric.isChecked(),

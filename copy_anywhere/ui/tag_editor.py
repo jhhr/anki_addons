@@ -100,8 +100,8 @@ class TagEditor(QWidget):
             add_tag_label_clarification = "to the trigger note"
             remove_tag_label_clarification = "from the trigger note"
         else:
-            add_tag_label_clarification = "from the searched note"
-            remove_tag_label_clarification = "to the searched note"
+            add_tag_label_clarification = "to the searched note"
+            remove_tag_label_clarification = "from the searched note"
 
         self.add_tags_label.setText(f"Tags to add {add_tag_label_clarification}")
         self.remove_tags_label.setText(f"Tags to remove {remove_tag_label_clarification}")
