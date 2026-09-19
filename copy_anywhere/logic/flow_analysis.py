@@ -154,6 +154,9 @@ class _Analyzer:
         #: root result from that stage onwards may be unset; the ones before it are already
         #: produced by the time it fires, whichever way it goes.
         self.first_skipping_root_guid: Optional[str] = None
+        #: Set by a condition marked `unmatched_skips_trigger` at any depth under the root
+        #: stage being analysed, and read back once that root stage is done.
+        self.trigger_skip_below = False
         self.root_result_stage_guids: dict[str, str] = {}
 
     # -- helpers ----------------------------------------------------------------------
@@ -332,6 +335,13 @@ class _Analyzer:
                 # and its own scope is still recorded so it can be re-enabled in place.
                 continue
             self.analyze_stage(stage, scope, at_root=at_root)
+            if at_root and self.trigger_skip_below:
+                # `TriggerSkipped` is not scoped to the block it is raised in -- a loop body
+                # and a branch catch only `SkipBlock` -- so a marked condition anywhere under
+                # this stage ends the definition, and this stage is the root stage that can
+                # skip the rest of the block.
+                self.note_skipping_root_stage(stage)
+                self.trigger_skip_below = False
         return scope
 
     def analyze_stage(self, stage: Stage, scope: dict[str, Binding], at_root: bool) -> None:
@@ -466,13 +476,15 @@ class _Analyzer:
             if stage.get("predicate_kind") == "note_query":
                 effects["queries_collection"] = True
                 self.resolve(scope, stage.get("predicate_target"), stage, "predicate target")
-            if at_root and stage.get("unmatched_skips_trigger"):
+            if stage.get("unmatched_skips_trigger"):
                 # The third way the rest of the root block may not run, beside the two
                 # `skip_block` policies. A condition marked this way ends the definition when
                 # it does not match, and `execute_definition` swallows that for a called
                 # definition and goes straight to collecting exports -- so a result declared
                 # after it is simply absent and the caller fails with "exports no 'X'".
-                self.note_skipping_root_stage(stage)
+                # Unlike `skip_block` it is not scoped to its block, so it is noted from any
+                # depth and charged to the root stage it sits under (see `analyze_block`).
+                self.trigger_skip_below = True
             # Branch-local results do not escape, so both branches analyse against the same
             # incoming scope and neither one's outgoing scope is kept (§5.8).
             self.analyze_block(stage.get("then", []) or [], scope)

@@ -20,6 +20,7 @@ from copy_anywhere.logic.definition_schema import SYNTAX_VERSION_CURRENT
 from copy_anywhere.logic.execution.commit import PreviewCommitter
 from copy_anywhere.logic.execution.context import ExecutionSession
 from copy_anywhere.logic.execution.runner import run_definition_for_trigger_note
+from copy_anywhere.logic.flow_analysis import analyze_definition
 
 
 @pytest.fixture
@@ -1307,6 +1308,55 @@ class TestCalls:
 
         assert ok is False
         assert logger.has_error("exports no 'H1'")
+
+    def test_a_callee_skipped_from_inside_a_loop_fails_its_caller_the_same_way(
+        self, col, note, logger
+    ):
+        # `TriggerSkipped` is not scoped to the block it is raised in: the loop and the
+        # branch catch only `SkipBlock`, so a marked condition inside a loop body unwinds
+        # through the loop, out of the root block and ends the definition -- the export
+        # declared after the loop is never set and the caller fails exactly as above. The
+        # analyser has to predict that from any depth, not only for a root-level condition.
+        producer = d.variable("H1", d.text("x"))
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[
+                d.note_query("found", "Word:neko"),
+                d.for_each_note(
+                    "found",
+                    [
+                        d.condition(
+                            d.text("tag:nothing-has-this"),
+                            [],
+                            predicate_kind="note_query",
+                            predicate_target={"binding": "note"},
+                            unmatched_skips_trigger=True,
+                        ),
+                    ],
+                ),
+                producer,
+            ],
+            exports=[d.export("H1", producer)],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.call_definition("child-guid", outputs=[{"export": "H1", "result": "got"}]),
+                d.edit_note("trigger", [d.write("Note", d.text("{{got}}"))]),
+            ],
+        )
+
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
+
+        assert ok is False
+        assert logger.has_error("exports no 'H1'")
+        # The other half: the definition that fails at run time must not analyse clean.
+        assert any(
+            "cannot be guaranteed" in message
+            for message in analyze_definition(child).problem_messages()
+        )
 
 
 class TestFacades:

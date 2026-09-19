@@ -525,6 +525,88 @@ class TestASearchConditionCanEndTheBlockToo:
 
         assert messages(result) == ""
 
+    @staticmethod
+    def marked_gate():
+        return d.condition(
+            d.text("tag:wanted"),
+            [],
+            predicate_kind="note_query",
+            predicate_target={"binding": "note"},
+            unmatched_skips_trigger=True,
+        )
+
+    def test_a_marked_condition_inside_a_loop_body_ends_the_definition_too(self):
+        # `TriggerSkipped` is not scoped to the block it is raised in -- a loop body and a
+        # branch catch only `SkipBlock` -- so a marked condition at any depth ends the
+        # definition, and the root stage holding it is the one that can leave the results
+        # after it unset. Refusing only a root-level condition let this save clean and fail
+        # the caller at run time with "exports no 'H1'".
+        producer = d.variable("H1", d.text("x"))
+        loop = d.for_each_note("found", [self.marked_gate()], name="each found note")
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[d.note_query("found", "deck:x"), loop, producer],
+            exports=[d.export("H1", producer)],
+        )
+
+        result = analyze_definition(child)
+
+        # The root stage is what the message names: it is what the exports panel shows and
+        # where the rest of the block stops.
+        assert "'each found note' can skip the rest of the block" in messages(result)
+
+    def test_a_marked_condition_inside_a_branch_ends_it_too(self):
+        producer = d.variable("H1", d.text("x"))
+        gate = self.marked_gate()
+        gate["predicate_target"] = {"binding": "trigger"}
+        outer = d.condition(d.code("return True"), [gate])
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[outer, producer],
+            exports=[d.export("H1", producer)],
+        )
+
+        result = analyze_definition(child)
+
+        assert "cannot be guaranteed" in messages(result)
+
+    def test_a_result_produced_before_the_enclosing_root_stage_is_still_allowed(self):
+        producer = d.variable("H1", d.text("x"))
+        loop = d.for_each_note("found", [self.marked_gate()])
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[producer, d.note_query("found", "deck:x"), loop],
+            exports=[d.export("H1", producer)],
+        )
+
+        result = analyze_definition(child)
+
+        assert messages(result) == ""
+        assert result.export_types["H1"] == T_TEXT
+
+    def test_a_skip_block_inside_a_loop_body_does_not(self):
+        # `skip_block` names the block the stage is in: inside a loop body it ends that
+        # iteration and the loop carries on, so the root block runs to the end and the
+        # result after the loop is set whichever way the inner query goes.
+        producer = d.variable("H1", d.text("x"))
+        loop = d.for_each_note(
+            "found", [d.note_query("inner", "tag:{{note.Word}}", if_empty="skip_block")]
+        )
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[d.note_query("found", "deck:x"), loop, producer],
+            exports=[d.export("H1", producer)],
+        )
+
+        result = analyze_definition(child)
+
+        assert messages(result) == ""
+        assert result.export_types["H1"] == T_TEXT
+
     def test_an_ordinary_predicate_does_not_skip(self):
         # Only the search kind raises; a plain text or code predicate with no `else` just
         # runs nothing and carries on.

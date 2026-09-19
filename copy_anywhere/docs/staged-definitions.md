@@ -146,9 +146,11 @@ outer list plus `store` is how a loop reports anything back.
   the `else`, empty or not, and the definition carries on. The marker rather than the
   predicate kind, because the two are different questions: inferring it from "it is a search
   and has no `else`" made a condition anywhere but the outermost position reach out of its
-  block and discard what earlier stages had already written, while reporting success. At the
-  root the marked stage is a third way the rest of the block may not run, so it invalidates
-  exports from itself on, exactly as the two `skip_block` policies do.
+  block and discard what earlier stages had already written, while reporting success. The
+  marked stage is a third way the rest of the root block may not run, so it invalidates
+  exports from itself on, exactly as the two `skip_block` policies do -- and unlike them it
+  is not scoped to its block: marked inside a loop body or a branch it still ends the whole
+  definition, so the root stage that holds it is the one exports are refused from.
 * **A stage that only feeds one migrated field write shares its gates.** Migrating
   Destination-to-sources moves each write's per-source read in front of it, into a list, a
   loop and a reduce, and that is where the work is -- the code or the process chain runs once
