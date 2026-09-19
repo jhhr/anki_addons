@@ -751,3 +751,44 @@ class TestAnUnfocusRunOfAMigratedJoin:
 
         assert ok is True, logger.errors
         assert [n["Note"] for n in copied] == ["src"]
+
+
+class TestACopyIfEmptyWriteOfAMigratedJoin:
+    """What `copy_if_empty` skips in a migrated Destination-to-sources definition.
+
+    Format 1 looked at the destination field before it read a single source note, so a
+    write whose field was already filled cost nothing and could not fail the run. The
+    migrated shape carries the policy on the write, as `write_if: "empty"`, and the write
+    honours it -- but the write is the last stage, and the list, loop and reduce that feed
+    it have already evaluated the right-hand side once per source note by then.
+    """
+
+    @pytest.fixture
+    def source(self, col):
+        return real_anki.add_note(col, VOCAB, {"Word": "src", "Meaning": "M"}, tags=["pool"])
+
+    def test_a_write_whose_field_is_filled_is_not_evaluated(self, col, note, source, logger):
+        # `Reading` is already filled, so the write into it is declined either way; the
+        # question is whether its right-hand side runs first. Here it raises, which turns
+        # the answer into a failed definition and takes the `Note` write down with it.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="tag:pool",
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}"),
+                d.field_to_field(
+                    "Reading",
+                    use_code=True,
+                    copy_as_code="raise ValueError('not this field')",
+                    copy_if_empty=True,
+                ),
+            ],
+            select_card_count="0",
+        )
+
+        copied: list = []
+        ok = copy_for_single_trigger_note(
+            definition, note, copied_into_notes=copied, copied_into_cards_dict={}
+        )
+
+        assert ok is True, logger.errors
+        assert [(n["Note"], n["Reading"]) for n in copied] == [("src", "ne-ko")]

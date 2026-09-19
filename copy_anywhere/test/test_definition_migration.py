@@ -21,6 +21,7 @@ from copy_anywhere.logic.definition_schema import (
     SYNTAX_VERSION_LEGACY,
     validate_definition_structure,
 )
+from copy_anywhere.logic.flow_analysis import analyze_definition
 
 
 def stage_types(stages):
@@ -248,6 +249,33 @@ class TestDestinationToSources:
         joins = [stage for stage in migrated["stages"] if stage["type"] == "reduce"]
         assert [stage["result"] for stage in joins] == ["legacy_joined_1", "legacy_joined_2"]
 
+    def test_copy_if_empty_gates_the_join_that_feeds_the_write(self):
+        # The write declines when its field is filled, but only after the list, loop and
+        # reduce in front of it have evaluated the right-hand side once per source note. So
+        # they carry the policy and the field it asks about, and the executor asks the same
+        # question of them. The store inside the loop does not need it: skipping the loop
+        # skips its body.
+        migrated = migrate_definition_v1_to_v2(
+            d.destination_to_sources(
+                copy_from_cards_query="Word:a",
+                field_to_field_defs=[
+                    d.field_to_field("Note", "{{Word}}"),
+                    d.field_to_field("Reading", "{{Meaning}}", copy_if_empty=True),
+                ],
+            )
+        )
+        stages = migrated["stages"]
+        gated = [stage for stage in stages if stage.get("write_if") == "empty"]
+        assert stage_types(gated) == ["list_variable", "for_each_note", "reduce"]
+        assert {stage["write_if_field"] for stage in gated} == {"Reading"}
+        assert all("write_if" not in stage for stage in stages[1:4]), "the always-write's join"
+        loop = gated[1]
+        assert "write_if" not in loop["body"][0]
+        # The gate must not be mistaken for a stage that may leave its result undefined, or
+        # for a key the definition cannot be saved with.
+        assert validate_definition_structure(migrated) == []
+        assert analyze_definition(migrated).problem_messages() == []
+
     def test_the_query_is_counted_as_sources(self):
         assert self.build()["stages"][0]["counts_as_sources"] is True
         assert self.build()["legacy"]["trigger_is_source"] is False
@@ -304,6 +332,18 @@ class TestSelection:
         # writing, so the refusal migrates with it.
         selection = self.selection(select_card_by=select_card_by)
         assert fragment in selection["selection_error"]
+
+    def test_an_unusable_select_card_by_keeps_the_count_and_sort_field(self):
+        # The refusal is the strategy's alone. The count and sort field the user had are
+        # what they get back once they fix the strategy in the editor, so they migrate too.
+        selection = self.selection(
+            select_card_by="Bogus", select_card_count="3", sort_by_field="Word"
+        )
+        assert "incorrect 'select_card_by' value" in selection["selection_error"]
+        assert selection["strategy"] == "all"
+        assert selection["count"] == 3
+        assert selection["sort_field"] == "Word"
+        assert selection["sort_numeric"] is True
 
     def test_a_sort_field_sorts_numerically_and_descending_as_it_did(self):
         selection = self.selection(sort_by_field="Freq")

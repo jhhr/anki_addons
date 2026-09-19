@@ -83,6 +83,11 @@ def execute_stage(
         # skipped event rather than dropped, so the preview still shows it was considered.
         session.finish_event(event, "skipped")
         return
+    if actions.feeds_a_filled_field(stage, frame):
+        # The same stage on a run where the write it feeds is declining to fill a field that
+        # already has a value. Skipped for the same reason and recorded the same way.
+        session.finish_event(event, "skipped")
+        return
     # Actions record what they planned against whichever stage is running, so the trace can
     # say which stage caused a change without every handler taking a trace parameter.
     outer_event = session.current_event

@@ -218,6 +218,29 @@ def runs_on_unfocus(carrier: dict, session) -> bool:
     return flag not in carrier or bool(carrier[flag])
 
 
+def feeds_a_filled_field(carrier: dict, frame) -> bool:
+    """Whether this migrated stage feeds a `write_if: "empty"` write whose field is filled.
+
+    The other question format 1 asked of a field write before evaluating it, and the same
+    answer moved a level up for the same reason as `runs_on_unfocus`: the migrator copies
+    the write's `write_if` onto the stages that produce its value, with `write_if_field`
+    naming the field, so the per-source read in front of the write is skipped when the write
+    itself would be. Only a Destination-to-sources migration produces those stages, and it
+    always writes the trigger note, so that is the note asked.
+
+    Read live, as the write reads it: an earlier stage of this run filling the field counts.
+    A field the note does not have is not "filled" -- the write reports that as its own
+    error, and the stages feeding it are left to run so nothing about that changes.
+    """
+    if carrier.get("write_if", "always") != "empty" or frame.trigger_note is None:
+        return False
+    target = frame.session.working_note(frame.trigger_note)
+    try:
+        return target[carrier.get("write_if_field", "")] != ""
+    except KeyError:
+        return False
+
+
 def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
     sort_field = selection.get("sort_field")
     if not sort_field:

@@ -163,8 +163,18 @@ def _field_writes(definition: dict, modifies_other_notes: bool) -> list[dict]:
 UNFOCUS_GATE_KEYS = ("unfocus_trigger_fields", "unfocus_when_edit", "unfocus_when_add")
 
 
-def _unfocus_gate(field_write: dict) -> dict:
-    return {key: field_write[key] for key in UNFOCUS_GATE_KEYS if key in field_write}
+def _write_gate(field_write: dict) -> dict:
+    """The keys a stage that only feeds `field_write` needs to decline when the write would.
+
+    The unfocus keys are copied as they are. `write_if: "empty"` is copied along with the
+    field it asks about, because the write knows its field and the stages in front of it do
+    not; a write that always writes leaves nothing to copy.
+    """
+    gate = {key: field_write[key] for key in UNFOCUS_GATE_KEYS if key in field_write}
+    if field_write.get("write_if", "always") == "empty":
+        gate["write_if"] = "empty"
+        gate["write_if_field"] = field_write.get("field", "")
+    return gate
 
 
 def _tag_writes(definition: dict) -> dict:
@@ -184,24 +194,19 @@ def _selection(definition: dict, warnings: list[str]) -> dict:
     """Map `select_card_by`/`select_card_count`/`sort_by_field` onto a format-2 selection."""
     select_card_by = definition.get("select_card_by")
     strategy = "first"
+    strategy_error: Optional[str] = None
     if select_card_by is None or select_card_by not in LEGACY_SELECT_CARD_BY_VALUES:
         # Format 1 refused to select anything at all here, which is the behaviour to keep: a
         # definition whose stored value is missing or unreadable did nothing and said so, and
         # quietly treating it as "take the first note" would start writing notes for a
-        # definition that has never written one.
-        return {
-            "strategy": "all",
-            "count": None,
-            "sort_field": None,
-            "sort_order": "descending",
-            "selection_error": (
-                "Error in copy fields: 'select_card_by' was missing"
-                if select_card_by is None
-                else f"Error in copy fields: incorrect 'select_card_by' value"
-                f" '{select_card_by}'"
-            ),
-        }
-    if select_card_by == "Random":
+        # definition that has never written one. The count and sort field are still read
+        # below: they are what the user gets back once they fix the strategy in the editor.
+        strategy_error = (
+            "Error in copy fields: 'select_card_by' was missing"
+            if select_card_by is None
+            else f"Error in copy fields: incorrect 'select_card_by' value '{select_card_by}'"
+        )
+    elif select_card_by == "Random":
         strategy = "random"
     elif select_card_by == "Least_reps":
         # Never used in practice and dropped from format 2; random is the closest surviving
@@ -243,14 +248,18 @@ def _selection(definition: dict, warnings: list[str]) -> dict:
         else:
             selection["count"] = count
 
-    if selection["strategy"] == "all":
-        selection["count"] = None
-
     sort_by_field = definition.get("sort_by_field")
     if sort_by_field and sort_by_field != "-":
         selection["sort_field"] = sort_by_field
         # Format 1 sorted on int(value), falling back to 0, descending.
         selection["sort_numeric"] = True
+
+    if strategy_error:
+        # Format 1 checked `select_card_by` before the count, so its complaint is the one
+        # that stands. The count stays on the selection: `selection_error` is what makes the
+        # stage select nothing, not a missing count.
+        selection["strategy"] = "all"
+        selection["selection_error"] = strategy_error
 
     return selection
 
@@ -421,22 +430,24 @@ def _join_stages(
     index: int,
     expression: dict,
     separator: str,
-    unfocus_gate: Optional[dict] = None,
+    gate: Optional[dict] = None,
 ) -> tuple[list[Stage], str]:
     """The list/loop/store/reduce that stands in for format 1's implicit many-notes join.
 
     Returns the stages and the name of the result holding the joined text.
 
-    `unfocus_gate` carries the unfocus keys of the write these stages feed. Format 1 read the
-    sources once and then asked, per field write, whether the field that just lost focus
-    triggers it, so an untriggered write cost nothing and could not fail the run. Here the
-    per-source read has moved in front of the write, so without the gate an unfocus of one
-    field evaluates every other write's right-hand side once per source note -- and a raising
-    one fails the definition, discarding the write that was actually triggered.
+    `gate` carries the keys of the write these stages feed that say when it declines to
+    write: which unfocus it answers to, and whether it only fills an empty field. Format 1
+    read the sources once and then asked those questions per field write, before it
+    evaluated anything, so a write that was not going to be applied cost nothing and could
+    not fail the run. Here the per-source read has moved in front of the write, so without
+    the gate every write's right-hand side is evaluated once per source note whether or not
+    the write follows -- and a raising one fails the definition, discarding the writes that
+    would have been applied.
     """
     list_name = f"legacy_join_{index}"
     joined_name = f"legacy_joined_{index}"
-    gate = dict(unfocus_gate or {})
+    gate = dict(gate or {})
     stages: list[Stage] = [
         {
             "guid": _child_guid(definition_guid, f"join-list-{index}"),
@@ -564,7 +575,7 @@ def _destination_to_sources_stages(
             join_index,
             per_note_value,
             separator,
-            unfocus_gate=_unfocus_gate(write),
+            gate=_write_gate(write),
         )
         stages.extend(join_stages)
         write["value"] = value_expression(

@@ -143,14 +143,16 @@ outer list plus `store` is how a loop reports anything back.
   block and discard what earlier stages had already written, while reporting success. At the
   root the marked stage is a third way the rest of the block may not run, so it invalidates
   exports from itself on, exactly as the two `skip_block` policies do.
-* **A stage that only feeds one migrated field write shares its unfocus gate.** Migrating
+* **A stage that only feeds one migrated field write shares its gates.** Migrating
   Destination-to-sources moves each write's per-source read in front of it, into a list, a
   loop and a reduce, and that is where the work is -- the code or the process chain runs once
   per source note there. So the migrator copies the write's `unfocus_trigger_fields` and its
-  two `unfocus_when_*` flags onto those stages and the executor skips them the same way.
-  Without it an unfocus of one field evaluated every other write's right-hand side once per
-  source note, and a raising one failed the definition, discarding the write that had
-  actually been triggered.
+  two `unfocus_when_*` flags onto those stages, and a `write_if: "empty"` along with the
+  field it asks about as `write_if_field`, and the executor skips them the same way it
+  skips the write. Without it an unfocus of one field evaluated every other write's
+  right-hand side once per source note, and so did a write whose field was already filled,
+  and a raising one failed the definition, discarding the writes that would have been
+  applied.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
   note but the trigger, or to any card, cannot run against a note that has not been added
   yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
