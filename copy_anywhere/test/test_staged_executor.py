@@ -850,6 +850,29 @@ class TestACardValueReadThroughACardBinding:
         assert ok is True
         assert copied[0]["Note"] == "kept"
 
+    def test_reading_the_card_id_runs_no_revlog_query(self, col, note, logger, monkeypatch):
+        # Every card value was built to answer one key. Four of them share an aggregate over
+        # `revlog`, which the id has no use for -- so reading it cost a query it never read.
+        from copy_anywhere.shared.interpolate import interpolate_fields
+
+        def refuse(card_id):
+            raise AssertionError(f"revlog read for card {card_id} to answer __Card_ID")
+
+        monkeypatch.setattr(interpolate_fields, "get_card_time_values", refuse)
+        card = note.cards()[0]
+        definition = d.staged(stages=[
+            d.card_query("cards", f"cid:{card.id}"),
+            d.for_each_card(
+                "cards",
+                [d.edit_note("note", [d.write("Note", d.text("{{card.__Card_ID}}"))])],
+            ),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert copied[0]["Note"] == str(card.id)
+
     def test_the_format_1_spelling_on_the_note_still_works(self, col, note):
         # The path this does not touch: a migrated definition names a card value by template
         # on the note, and `get_from_note_fields` is still what answers it.
