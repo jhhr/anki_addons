@@ -16,7 +16,15 @@ from aqt.qt import (
 )
 
 from ..configuration import ALL_FIELD_TO_FIELD_PROCESS_NAMES
-from ..logic.definition_schema import MODE_CODE, MODE_TEXT, ValueExpression, value_expression
+from ..logic.definition_schema import (
+    MODE_CODE,
+    MODE_TEXT,
+    SYNTAX_VERSION_CURRENT,
+    SYNTAX_VERSION_LEGACY,
+    ValueExpression,
+    expression_is_legacy_syntax,
+    value_expression,
+)
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.toggle_switch import ToggleSwitch
@@ -59,6 +67,13 @@ class ValueExpressionEditor(QWidget):
         self.expression.setdefault("text", "")
         self.expression.setdefault("code", "")
         self.expression.setdefault("process_chain", [])
+        #: Whether the expression was written in format 1's syntax when the editor was
+        #: built, and the text and code it was built with. A migrated expression stays on
+        #: that syntax until the user changes it; what "changes" means is measured against
+        #: these on every save, so an edit typed and undone is no edit.
+        self._built_legacy = expression_is_legacy_syntax(self.expression)
+        self._built_text = self.expression.get("text", "") or ""
+        self._built_code = self.expression.get("code", "") or ""
         self.state = state
         self.context = context
 
@@ -143,17 +158,16 @@ class ValueExpressionEditor(QWidget):
         `allow_code` is settled when the widget is built and a stage whose kind the user can
         change while the dialog is open needs to move it: the condition stage switches
         between an Anki search, which has no code form at all, and an expression, which
-        does. Taking code away also turns the mode back to text, because code sitting behind
-        a hidden toggle is code that would never run.
+        does. The toggle keeps the mode the user chose while it is hidden, so allowing code
+        again brings their code back; it is `is_code_mode` that answers text while code is
+        not allowed, so a save made in that state stores the text form, because code
+        sitting behind a hidden toggle is code that would never run.
         """
         self.code_is_allowed = allowed
         if self.use_code_toggle is None:
             return
-        if not allowed and self.use_code_toggle.isChecked():
-            self.use_code_toggle.setChecked(False)
         self.use_code_toggle.setVisible(allowed)
-        if not allowed and self.code_layout is not None:
-            self.code_layout.setVisible(False)
+        self._apply_mode(allowed and self.use_code_toggle.isChecked())
 
     def is_code_mode(self) -> bool:
         return bool(
@@ -168,6 +182,20 @@ class ValueExpressionEditor(QWidget):
         self.expression["text"] = self.text_layout.get_text()
         if self.code_layout is not None:
             self.expression["code"] = self.code_layout.get_text()
+        if self._built_legacy:
+            # The menus in both boxes are built from the stage's format-2 scope, so what
+            # they offer -- `{{trigger.Word}}` -- is a field no note has to format 1's
+            # interpolation, which a migrated expression is still routed to. Changing the
+            # text is choosing the syntax the menu offered; an untouched migrated expression
+            # keeps running exactly as it did. Decided against the built state rather than
+            # the last save, because the dialog applies after every keystroke.
+            unchanged = (
+                self.expression["text"] == self._built_text
+                and self.expression.get("code", "") == self._built_code
+            )
+            self.expression["syntax_version"] = (
+                SYNTAX_VERSION_LEGACY if unchanged else SYNTAX_VERSION_CURRENT
+            )
         return self.expression
 
     def set_context(self, context: StageEditorContext) -> None:

@@ -15,6 +15,8 @@ import definitions as d
 from anki_shared.testing import real_anki
 from conftest import CLOZE, KANJI, VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
+from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
+from copy_anywhere.logic.definition_schema import SYNTAX_VERSION_CURRENT
 from copy_anywhere.logic.execution.commit import PreviewCommitter
 from copy_anywhere.logic.execution.context import ExecutionSession
 from copy_anywhere.logic.execution.runner import run_definition_for_trigger_note
@@ -503,6 +505,30 @@ class TestASearchConditionThatDoesNotMatch:
         assert [n["Note"] for n in copied] == ["kept"]
         assert [n.id for n in copied] == [keep.id]
         assert col.get_note(drop.id)["Note"] == ""
+
+
+class TestAMigratedExpressionEditedIntoTheCurrentSyntax:
+    """What the stage editor now saves when a migrated expression's text is changed.
+
+    The editor promotes `syntax_version` along with the text (the UI suite pins that); this
+    is the executor's half of the contract, that the promotion is all it takes for the
+    format-2 reference the editor's menu offered to resolve.
+    """
+
+    def test_the_reference_the_menu_offers_reaches_the_field(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        definition = migrate_definition_v1_to_v2(
+            d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
+        )
+        write = definition["stages"][0]["fields"][0]["value"]
+        write["text"] = "{{trigger.Word}}"
+        write["syntax_version"] = SYNTAX_VERSION_CURRENT
+
+        ok, copied = run(definition, note)
+
+        assert ok is True
+        assert copied == [note]
+        assert note["Note"] == "neko"
 
 
 class TestASearchConditionsPredicate:
@@ -1705,3 +1731,4 @@ class TestWideningTheUnfocusListOfAMigratedDefinition:
         _ok, _copied = run(self.migrated(["Word"]), note, field_only="Meaning")
 
         assert note["Meaning"] == ""
+

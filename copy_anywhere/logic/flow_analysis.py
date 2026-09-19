@@ -288,6 +288,29 @@ class _Analyzer:
                     stage,
                 )
 
+    def check_predicate_has_text(self, predicate: Any, stage: Stage) -> None:
+        """An empty text predicate is a condition nobody meant to write.
+
+        A text predicate holds when it resolves to something, so an empty one never holds;
+        as a search it is refused at run time instead. Neither is what a user who left the
+        box blank wanted, and nothing else reports it: the structural check reads the
+        mode and the process chain only. An empty *value* is legitimate elsewhere (a write
+        clearing a field), so this is the condition's rule alone. Code is left to the run,
+        as always: the analyser does not judge what code will return, and a blank code box
+        is where every new condition starts.
+        """
+        if not isinstance(predicate, dict) or expression_is_code(predicate):
+            return
+        if expression_is_legacy_syntax(predicate):
+            # Migrated conditions are resolved, and refused, at run time with format 1's
+            # own messages, like their references (see `check_references`).
+            return
+        if not (predicate.get("text") or "").strip():
+            if stage.get("predicate_kind") == "note_query":
+                self.problem("predicate is empty, so there is no search to run", stage)
+            else:
+                self.problem("predicate is empty, so the first branch would never run", stage)
+
     # -- stages -----------------------------------------------------------------------
 
     def analyze_block(
@@ -437,7 +460,9 @@ class _Analyzer:
             self.declare(scope, stage, stage_result_name(stage), result_type)
 
         elif stage_type == STAGE_CONDITION:
-            self.check_expression(stage.get("predicate"), scope, stage, "predicate")
+            predicate = stage.get("predicate")
+            self.check_expression(predicate, scope, stage, "predicate")
+            self.check_predicate_has_text(predicate, stage)
             if stage.get("predicate_kind") == "note_query":
                 effects["queries_collection"] = True
                 self.resolve(scope, stage.get("predicate_target"), stage, "predicate target")

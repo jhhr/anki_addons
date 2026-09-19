@@ -14,6 +14,10 @@ from copy_anywhere.configuration import (
     definition_runs_on_add,
     definition_unfocus_fields,
 )
+import definitions as d
+from anki_shared.testing import real_anki
+from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
+from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.definition_schema import (
     STAGE_CARD_QUERY,
     STAGE_CONDITION,
@@ -25,6 +29,8 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_NOTE_QUERY,
     STAGE_REDUCE,
     STAGE_VARIABLE,
+    SYNTAX_VERSION_CURRENT,
+    SYNTAX_VERSION_LEGACY,
     new_definition,
     value_expression,
 )
@@ -806,6 +812,41 @@ class TestTheConditionEditorOwnsHowThePredicateIsRun:
 
         assert stage["predicate_kind"] == "note_query"
         assert stage["predicate_target"] == {"binding": "trigger"}
+
+    def test_the_search_form_ticked_and_unticked_keeps_a_code_predicate(
+        self, col, qapp, widget_parent
+    ):
+        # Ticking the search form hides the code toggle, since a search has no code form.
+        # Hiding it unchecked it too, so unticking the form again came back to an empty text
+        # predicate: the code was still stored, nothing read it, and the branch never ran.
+        editor, stage = condition_stage_editor(
+            widget_parent, predicate=value_expression(mode="code", code="return True")
+        )
+
+        editor.match_as_search.setChecked(True)
+        editor.match_as_search.setChecked(False)
+        editor.apply()
+
+        assert stage["predicate"]["mode"] == "code"
+        assert stage["predicate"]["code"] == "return True"
+
+    def test_saving_as_a_search_keeps_the_code_but_stores_the_text_form(
+        self, col, qapp, widget_parent
+    ):
+        # A search is text run through find_notes, so the text box is what a search-form
+        # save stores. The code stays behind the hidden toggle for the day the form is
+        # turned off again.
+        editor, stage = condition_stage_editor(
+            widget_parent, predicate=value_expression(mode="code", code="return True")
+        )
+
+        editor.match_as_search.setChecked(True)
+        editor.predicate.text_layout.set_text("tag:done")
+        editor.apply()
+
+        assert stage["predicate"]["mode"] == "text"
+        assert stage["predicate"]["text"] == "tag:done"
+        assert stage["predicate"]["code"] == "return True"
 
 
 # -- the trigger editor's dependent boxes ----------------------------------------------
@@ -1689,3 +1730,90 @@ class TestTheConditionEditorsCaption:
         editor.match_as_search.setChecked(False)
 
         assert "search" not in self.caption(editor).lower()
+
+
+class TestEditingAMigratedExpression:
+    """What a migrated expression's `syntax_version` does when its text is edited.
+
+    The migrator marks every expression it writes `syntax_version: 1`, which routes it to
+    format 1's own interpolation, where `{{Word}}` is a field of the note at hand. The stage
+    editor's interpolation menu, though, is built from the stage's format-2 scope and offers
+    `{{trigger.Word}}`. Picking that entry into a migrated expression and saving wrote text
+    that format 1's interpolation read as a field no note has, and dropped: a clean save, and
+    the field written empty. Editing the text is choosing the syntax the menu offered, so
+    the save has to say so.
+    """
+
+    def migrated_variable(self, col, text="{{Word}}", code="", mode=None):
+        stage = default_stage(STAGE_VARIABLE, "v")
+        stage["result"] = "M"
+        stage["value"] = value_expression(
+            text=text, code=code, mode=mode, syntax_version=SYNTAX_VERSION_LEGACY
+        )
+        tree = tree_for(col, stage)
+        return tree, tree.rows["v"].editor.value
+
+    def test_a_changed_text_moves_it_to_the_current_syntax(self, col, qapp):
+        _tree, editor = self.migrated_variable(col)
+
+        editor.text_layout.set_text("{{trigger.Word}}")
+
+        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_CURRENT
+
+    def test_an_untouched_text_stays_legacy(self, col, qapp):
+        _tree, editor = self.migrated_variable(col)
+
+        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_LEGACY
+
+    def test_a_text_put_back_as_it_was_stays_legacy(self, col, qapp):
+        # "Edited" means different from what the editor was built with, not touched: a
+        # keystroke undone leaves the expression the migrator wrote.
+        _tree, editor = self.migrated_variable(col)
+
+        editor.text_layout.set_text("{{trigger.Word}}")
+        editor.text_layout.set_text("{{Word}}")
+
+        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_LEGACY
+
+    def test_a_changed_code_moves_it_too(self, col, qapp):
+        # The code editor carries the same menu, and a migrated code expression has its
+        # references resolved by the same format-1 interpolation.
+        _tree, editor = self.migrated_variable(col, code="return 'a'", mode="code")
+
+        editor.code_layout.set_text("return {{trigger.Word}}")
+
+        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_CURRENT
+
+    def test_a_format_1_spelling_left_behind_is_marked_in_the_box(self, col, qapp):
+        # The safety net for a spelling the promoted expression no longer means: the box
+        # validates every reference against the menu it offers, and `{{Word}}` is not in a
+        # format-2 scope. The analyser does not report it -- to it a bare name is a note or
+        # card value key looked up at run time -- so the red marker is what the user sees.
+        _tree, editor = self.migrated_variable(col)
+
+        editor.text_layout.set_text("{{trigger.Word}} {{Word}}")
+        editor.text_layout.validate_text()
+
+        assert "Word" in editor.text_layout.error_label.text()
+        assert "trigger.Word" not in editor.text_layout.error_label.text()
+
+    def test_what_the_editor_saves_reaches_the_field(self, col, qapp):
+        # The user-visible failure, end to end: a migrated within-note write, its text
+        # replaced through the editor with the reference the menu offers, then run.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        migrated = migrate_definition_v1_to_v2(
+            d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
+        )
+        tree = tree_for(col, *migrated["stages"])
+        edit_note = tree.rows[migrated["stages"][0]["guid"]].editor
+        edit_note.field_rows[0].value.text_layout.set_text("{{trigger.Word}}")
+        tree.apply_editors()
+
+        copied: list = []
+        ok = copy_for_single_trigger_note(
+            tree.document.definition, note, copied_into_notes=copied
+        )
+
+        assert ok is True
+        assert note["Note"] == "neko"
+

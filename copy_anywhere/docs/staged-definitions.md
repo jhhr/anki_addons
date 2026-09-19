@@ -218,6 +218,19 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   unfocus-while-adding has nothing to defer to and is simply not run there; turning on
   "Run when adding a new note" is what gives it a moment to run in.
 
+**What editing a migrated expression does.** Every expression the migrator writes carries
+`syntax_version: 1`, and the stage editor shows it as it is: `{{Word}}`, `{{__Dest__Word}}`,
+`{{Recognition__Card_Due}}`, resolved by format 1's own interpolation. The editor's menus,
+though, offer the stage's format-2 scope -- `{{trigger.Word}}` -- and format 1's
+interpolation reads that as a field no note has. So changing the text (or the code) of a
+migrated expression moves it to format-2 syntax on save; an expression left as the migrator
+wrote it, including one edited and put back, keeps `syntax_version: 1` and runs exactly as
+before. After the move, the promoted expression is judged the way an authored one is: a
+reference in the box that is not on the menu is marked in red as not a valid field, and a
+bare spelling that is left in falls through to the note-value and card-value lookup at run
+time rather than being checked by the analyser, which treats a bare name as a key looked up
+when the stage runs. Replace format-1 spellings with the menu's references when you edit.
+
 **What a migrated field write keeps.** Format 1 asked three questions per field write that
 format 2 asks once per definition: which editor fields trigger it, whether it runs on unfocus
 while editing, and whether it runs on unfocus while adding. The migrator records the answers
@@ -259,8 +272,13 @@ run, then the exports.
   is what a migrated copy condition is -- a search, run against the note the row names -- and
   it has no code form; turning it off leaves the ordinary expression a condition authored
   here holds, and drops the copy-condition marker with it, since a stage that is not a search
-  is not format 1's condition either. *Only check it during a sync* is format 1's
-  `condition_only_on_sync`: outside a sync the condition is not checked and the branch runs.
+  is not format 1's condition either. Choosing the search form hides the code toggle rather
+  than turning it off: a code predicate comes back when the form is turned off again, and a
+  save made while the form is on stores the text in the box, since that is what the search
+  runs. A condition whose text predicate is empty is reported, on either form -- as an
+  expression it would never hold, as a search it is refused at run time. *Only check it
+  during a sync* is format 1's `condition_only_on_sync`: outside a sync the condition is not
+  checked and the branch runs.
 * A reduce says which of its two forms it is, and shows only the controls that form reads.
   *Join them into one text* is what every migrated reduce is, and its separator is format 1's
   `select_card_separator`; *fold them with an expression* is the one that runs the starting

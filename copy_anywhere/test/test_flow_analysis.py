@@ -210,6 +210,42 @@ class TestInterpolationRules:
         assert result.is_valid, messages(result)
 
 
+class TestAConditionsPredicate:
+    def test_an_empty_text_predicate_is_refused(self):
+        # Text counts as true when it is not empty, so an empty text predicate is a
+        # condition that never runs its branch -- which nobody writes on purpose. Nothing
+        # else caught it: the structural check reads the mode and the process chain only.
+        stage = d.condition(d.text(""), [d.edit_note("trigger")])
+        result = analyze([stage])
+        assert "predicate is empty" in messages(result)
+        assert validate_definition_structure(d.staged(stages=[stage])) == []
+
+    def test_a_whitespace_predicate_is_as_empty(self):
+        result = analyze([d.condition(d.text("  "), [d.edit_note("trigger")])])
+        assert "predicate is empty" in messages(result)
+
+    def test_an_empty_search_predicate_is_refused_too(self):
+        result = analyze([
+            d.condition(
+                d.text(""),
+                [d.edit_note("trigger")],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            )
+        ])
+        assert "predicate is empty" in messages(result)
+
+    def test_a_reference_is_not_empty(self):
+        result = analyze([d.condition(d.text("{{trigger.Word}}"), [d.edit_note("trigger")])])
+        assert result.is_valid, messages(result)
+
+    def test_an_empty_code_predicate_is_left_to_the_run(self):
+        # Code returning nothing reads false too, but a blank code box is the state every
+        # new condition starts in; the analyser has never judged what code will return.
+        result = analyze([d.condition(d.code(""), [d.edit_note("trigger")])])
+        assert "predicate is empty" not in messages(result)
+
+
 class TestEffects:
     def effects(self, stages, **extra):
         return analyze(stages, **extra).effects
