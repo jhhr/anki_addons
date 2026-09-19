@@ -38,6 +38,7 @@ from ..definition_schema import (
 )
 from . import actions
 from .context import (
+    Cancelled,
     DefinitionFrame,
     SkipBlock,
     StageError,
@@ -50,10 +51,6 @@ from .expressions import evaluate_value
 #: The same hard limit the analyser uses, repeated at run time because the JSON may have
 #: been hand-edited since it was last analysed (§5.9).
 MAX_CALL_DEPTH = 32
-
-
-class Cancelled(Exception):
-    """The user asked to stop. Nothing half-evaluated is committed (§7.1)."""
 
 
 def execute_block(

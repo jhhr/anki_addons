@@ -578,6 +578,27 @@ class TestASearchConditionsPredicate:
         assert ok is True
         assert copied == []
 
+    def test_a_migrated_predicate_resolving_to_whitespace_is_refused_the_old_way(
+        self, col, logger
+    ):
+        # `find_notes("  nid:<id>")` matches the note, so a migrated condition that is one
+        # reference to a field holding a space read true and ran the copy. It is as empty as
+        # a field holding nothing, which format 1 refused with this message.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "   "})
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Meaning", "ran")],
+            copy_condition_query="{{Note}}",
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is False
+        assert copied == []
+        assert logger.errors == [
+            "Error in copy fields: Condition query '{{Note}}' could not be interpolated"
+            f" for note id {note.id} due to missing fields: "
+        ]
+
 
 class TestCardsAndCardStages:
     def test_a_card_query_and_card_loop_move_each_card_on_its_own(self, col, note, logger):
@@ -1299,6 +1320,30 @@ class TestCancellation:
             )
             is True
         )
+        assert copied == []
+
+    def test_a_cancel_before_a_query_stops_before_the_search_and_the_write(self, col, note):
+        # A query stage asks the session whether to stop before it searches, the same as a
+        # loop does before each iteration. Ignoring the answer meant the search ran, the
+        # block wrote and the run committed after the user had asked it to stop.
+        searches = []
+        original = col.find_notes
+        col.find_notes = lambda query: (searches.append(query), original(query))[1]
+        definition = d.staged(stages=[
+            d.note_query("found", "Word:neko"),
+            d.edit_note("trigger", [d.write("Note", d.text("touched"))]),
+        ])
+        session = ExecutionSession(want_cancel=lambda: True)
+        copied: list = []
+        try:
+            ok = run_definition_for_trigger_note(
+                definition, note, session, copied_into_notes=copied
+            )
+        finally:
+            col.find_notes = original
+
+        assert ok is True
+        assert searches == []
         assert copied == []
 
 

@@ -17,7 +17,6 @@ from typing import Any, Optional
 
 from anki.cards import Card
 from anki.notes import Note
-from aqt import mw
 
 from ...shared.interpolate.interpolate_fields import (
     TARGET_NOTES_COUNT,
@@ -34,7 +33,7 @@ from ..copy_primitives import (
 )
 from ..definition_schema import expression_is_code, expression_is_legacy_syntax
 from ..execute_code_wrappers import execute_code_for_files
-from .context import SkipBlock, summarize
+from .context import Cancelled, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
 
 logger = logging.getLogger(__name__)
@@ -256,11 +255,23 @@ def _empty_result(stage: dict, frame, query: str, kind: str) -> list:
     return _apply_if_empty(stage, frame, f"Query '{query}' matched no {kind}")
 
 
+def _search_text(resolved: Optional[str]) -> str:
+    """What a resolved expression is worth as an Anki search: the text, stripped.
+
+    `find_notes("   ")` matches every note in the collection, so a search that resolved to
+    whitespace -- one reference to a field holding a space -- is as empty as one that
+    resolved to nothing, and the caller's guard for the empty case has to see it as such.
+    What the guard does about it is the caller's: a query stage selects nothing, a
+    condition fails.
+    """
+    return (resolved or "").strip()
+
+
 def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
     session = frame.session
     kind = "cards" if is_card_query else "notes"
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
-    query = evaluate_text(stage.get("query"), ctx)
+    query = _search_text(evaluate_text(stage.get("query"), ctx))
     if not query:
         # Format 1 logged and selected nothing rather than failing the definition. The
         # complaint is the log line, so `error_if_empty` -- which is about a query that ran
@@ -275,7 +286,8 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
         logger.error(selection_error)
         return _apply_if_empty(stage, frame, selection_error)
 
-    session.check_cancel()
+    if session.check_cancel():
+        raise Cancelled()
     ids = session.find_cards(query) if is_card_query else session.find_notes(query)
     session.record_detail("query", query)
     session.record_detail("found", len(ids))
@@ -573,6 +585,7 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
                 source_note=target,
                 variable_values_dict=ctx.variables(),
             )
+            interpolated = _search_text(interpolated)
             if not interpolated:
                 raise frame.error(
                     f"Error in copy fields: Condition query '{raw_query}' could not be"
@@ -589,7 +602,7 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
             # narrowed by a reference then matched nothing, and a broad predicate narrowed by
             # one matched everything its broad half did, running the branch for the notes it
             # was written to exclude.
-            interpolated = evaluate_text(expression, ctx).strip()
+            interpolated = _search_text(evaluate_text(expression, ctx))
             if not interpolated:
                 # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
                 # trigger whatever the condition says, so every one of them would read true.
@@ -598,7 +611,13 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
                     f" nothing for note id {target.id}",
                     stage,
                 )
-        note_ids = mw.col.find_notes(f"{interpolated} nid:{target.id}")
+        # Through the session, like a query stage's search: the same predicate asked of the
+        # same note twice costs one trip to the collection, and the preview pane -- the one
+        # a user opens to see why a branch did not run -- gets the search it actually made.
+        search = f"{interpolated} nid:{target.id}"
+        note_ids = session.find_notes(search)
+        session.record_detail("query", search)
+        session.record_detail("found", len(note_ids))
         if not note_ids:
             logger.debug(
                 "copy_for_single_trigger_note: Condition query '%s' did not match for note id %s",

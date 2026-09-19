@@ -209,6 +209,21 @@ class TestGuardsCarriedOverFromFormat1:
 
         assert logger.has_error("Could not interpolate copy_from_cards_query")
 
+    @pytest.mark.parametrize("blank", [" ", "   ", "\t"])
+    def test_a_query_that_resolves_to_whitespace_selects_nothing(
+        self, col, trigger, targets, logger, blank
+    ):
+        # `find_notes("   ")` matches every note in the collection, so a query that is one
+        # reference to a field holding a space is the same refusal as one holding nothing,
+        # not a selection of everything the block then edits.
+        trigger["Note"] = blank
+        col.update_note(trigger)
+
+        found = selected(d.note_query("found", "{{trigger.Note}}"), trigger, logger)
+
+        assert found == []
+        assert logger.has_error("Could not interpolate copy_from_cards_query")
+
     @pytest.mark.parametrize(
         "select_card_by, message",
         [
@@ -270,6 +285,31 @@ class TestTheQueryCache:
             col.find_notes = original
 
         assert searches == ["tag:pool", "Word:w1"]
+
+    def test_a_search_condition_asked_twice_searches_once(self, col, trigger, targets):
+        # A condition matched as an Anki search is a search like any other, so two of them
+        # asking the same thing of the same note share one trip to the collection -- which
+        # is what keeps a condition inside a loop from costing a search per iteration on
+        # top of the loop's own.
+        searches = []
+        original = col.find_notes
+        col.find_notes = lambda query: (searches.append(query), original(query))[1]
+        try:
+
+            def gate():
+                return d.condition(
+                    d.text("Word:trigger"),
+                    [d.variable("seen", d.text("yes"))],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                )
+
+            definition = d.staged(stages=[gate(), gate()])
+            copy_for_single_trigger_note(definition, trigger)
+        finally:
+            col.find_notes = original
+
+        assert searches == [f"Word:trigger nid:{trigger.id}"]
 
 
 class TestARefusedQueryDoesNotWipeTheDestination:

@@ -52,6 +52,10 @@ class SkipBlock(Exception):
     """
 
 
+class Cancelled(Exception):
+    """The user asked to stop. Nothing half-evaluated is committed (§7.1)."""
+
+
 class StageError(Exception):
     """A structured failure, carrying where it happened (§7.2).
 

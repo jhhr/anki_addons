@@ -140,6 +140,24 @@ class TestTrace:
         assert details["found"] == 2
         assert details["selected"] == 1
 
+    def test_a_search_condition_records_what_it_searched(self, col, note):
+        # The pane a user opens to see why a branch did not run has to show the search the
+        # condition actually made, resolved and scoped to its note, the way a query stage's
+        # event does.
+        definition = d.staged(stages=[
+            d.condition(
+                d.text("Word:{{trigger.Word}}"),
+                [d.variable("M", d.text("matched"))],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            ),
+        ])
+        run = run_preview(definition, preview_note(note.id))
+
+        details = run.trace[0].details
+        assert details["query"] == f"Word:neko nid:{note.id}"
+        assert details["found"] == 1
+
     def test_a_file_write_records_the_name_it_would_write(self, col, note, media_dir):
         definition = d.staged(stages=[d.write_file("out.txt", d.text("body"))])
         run = run_preview(definition, preview_note(note.id))
