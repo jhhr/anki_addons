@@ -946,6 +946,58 @@ class TestFiles:
         assert run(definition, note)[0] is False
         assert not (media_dir / "_log.txt").exists()
 
+    def test_a_failed_write_keeps_what_came_before_and_fails_the_run(
+        self, col, note, media_dir, logger, monkeypatch
+    ):
+        # Files reach the disk after the notes are handed to the caller, and a media write
+        # can fail in ways no stage could have checked for. What was committed stays; the
+        # failing file and everything queued after it are not attempted; the run fails and
+        # says which file.
+        from copy_anywhere.logic.execution import commit
+
+        real_write = commit.write_media_file
+
+        def failing_write(filename, text):
+            if filename == "_second.txt":
+                raise OSError("disk full")
+            real_write(filename, text)
+
+        monkeypatch.setattr(commit, "write_media_file", failing_write)
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("written"))]),
+            d.write_file("first.txt", d.text("one")),
+            d.write_file("second.txt", d.text("two")),
+            d.write_file("third.txt", d.text("three")),
+        ])
+        ok, copied = run(definition, note)
+        assert ok is False
+        assert logger.has_error("_second.txt"), logger.errors
+        assert logger.has_error("disk full"), logger.errors
+        assert [n.id for n in copied] == [note.id]
+        assert note["Note"] == "written"
+        assert (media_dir / "_first.txt").read_text(encoding="utf-8") == "one"
+        assert not (media_dir / "_second.txt").exists()
+        assert not (media_dir / "_third.txt").exists()
+
+    def test_a_failed_write_leaves_no_queued_file_behind(
+        self, col, note, media_dir, monkeypatch
+    ):
+        # The overlay is what a later read sees "as if the file were written". Once the
+        # commit has given up on a file, nothing is going to write it, so the session must
+        # not keep claiming it is there.
+        from copy_anywhere.logic.execution import commit
+
+        def failing_write(filename, text):
+            raise OSError("read-only")
+
+        monkeypatch.setattr(commit, "write_media_file", failing_write)
+        definition = d.staged(stages=[d.write_file("log.txt", d.text("x"))])
+        session = ExecutionSession()
+        assert run_definition_for_trigger_note(definition, note, session) is False
+        assert session.file_overlay == {}
+        assert session.pending_files == []
+        assert session.read_file("log.txt") is None
+
     def test_invalid_utf8_fails_the_read(self, col, note, media_dir, logger):
         (media_dir / "_log.txt").write_bytes(b"\xff\xfe not utf 8")
         definition = d.staged(stages=[d.read_file("current", "log.txt")])

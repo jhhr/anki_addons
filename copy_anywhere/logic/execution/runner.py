@@ -92,5 +92,10 @@ def run_definition_for_trigger_note(
         # Format 1 counted the trigger note as the one source in every mode but
         # Destination-to-sources, where the query result was the source list.
         session.update_counts(processed_sources_inc=1)
-    committer.commit(session, copied_into_notes, copied_into_cards_dict)
+    result = committer.commit(session, copied_into_notes, copied_into_cards_dict)
+    if result.file_error:
+        # The notes and cards are already in the caller's lists and stay there. The failure
+        # is reported the way a stage error is: logged, and the bulk loop stops here.
+        logger.error(result.file_error)
+        return False
     return True

@@ -114,7 +114,10 @@ outer list plus `store` is how a loop reports anything back.
   working copy of it, so two stages editing it both land.
 * **Nothing is written until the definition finishes.** Notes, cards and files are committed
   together once the whole definition has run; a failure anywhere commits none of it. File
-  writes are applied after the collection changes and are outside Anki's undo.
+  writes are applied after the collection changes and are outside Anki's undo. A media
+  write that fails (a full disk, a read-only folder) fails the run and names the file: the
+  note and card changes are kept, the files queued before it are on disk, and it and the
+  files queued after it are not written.
 * **Files are UTF-8, no BOM, no newline translation**, and a filename resolves inside the
   media folder -- a path separator or a `..` segment is refused. There is no append mode:
   `read_file`, build the new content, `write_file` with `overwrite: true`.

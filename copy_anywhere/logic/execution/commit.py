@@ -7,12 +7,13 @@ two apart is what lets a failure anywhere in a definition leave the collection a
 what lets preview run the real evaluator and simply not commit.
 
 File writes are applied after the collection changes and are *not* covered by Anki's undo.
-The commit result says whether any were written so the caller can say so too.
+A write that fails stops the rest: the files before it are on disk, it and the ones queued
+after it are not, and the commit result carries the reason so the runner can fail the run
+the way it fails a stage error -- the notes and cards are already the caller's by then.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from anki.cards import Card
@@ -20,8 +21,6 @@ from anki.notes import Note
 
 from ...utils.media_files import write_media_file
 from .context import ExecutionSession
-
-logger = logging.getLogger(__name__)
 
 
 class CommitResult:
@@ -63,20 +62,31 @@ class CollectionCommitter:
         session.touched_cards.clear()
         session.edited_cards.clear()
         session.pending_files.clear()
+        # Cleared whether or not every file made it: the overlay is what a later read sees
+        # "as if the file were written", and once the queue is empty a file is either on
+        # disk, where the read finds it anyway, or abandoned, in which case the overlay
+        # would be the only thing still claiming it exists.
+        session.file_overlay.clear()
         return result
 
     def write_files(self, session: ExecutionSession, result: CommitResult) -> None:
-        for pending in session.pending_files:
+        for index, pending in enumerate(session.pending_files):
             try:
                 write_media_file(pending["filename"], pending["content"])
                 result.files.append(pending["filename"])
             except Exception as error:  # noqa: BLE001 -- reported, never raised past here
                 # The collection changes are already committed and file writes are outside
-                # undo, so a failure here is reported rather than unwinding anything.
-                result.file_error = f"Error in writing to file: {error}"
-                logger.error(result.file_error)
+                # undo, so a failure here is recorded rather than unwinding anything. The
+                # files after it are not attempted: the definition wrote them in this order
+                # for a reason, and a later one may well fail the same way.
+                remaining = len(session.pending_files) - index - 1
+                result.file_error = (
+                    f"Error in writing to file '{pending['filename']}': {error}."
+                    " The note and card changes were saved; this file"
+                    + (f" and the {remaining} queued after it" if remaining else "")
+                    + " were not written."
+                )
                 return
-        session.file_overlay.clear()
 
 
 class PreviewCommitter(CollectionCommitter):
