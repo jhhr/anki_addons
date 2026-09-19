@@ -2,7 +2,7 @@ import re
 import uuid
 import copy
 from contextlib import suppress
-from typing import Union, Optional, cast, Sequence, Callable
+from typing import Union, Optional, cast, Sequence
 
 from aqt import mw
 
@@ -27,7 +27,7 @@ from aqt.qt import (
 
 from aqt.utils import tooltip
 
-from .edit_state import EditState
+from .stage_edit_state import StageEditState
 
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
@@ -187,7 +187,7 @@ class RegexProcessDialog(QDialog):
         self,
         parent,
         process: RegexProcess,
-        state: EditState,
+        state: StageEditState,
         is_variable_extra_processing: bool = False,
     ):
         super().__init__(parent)
@@ -197,13 +197,8 @@ class RegexProcessDialog(QDialog):
         self.state = state
         self.is_variable_extra_processing = is_variable_extra_processing
 
-        # Store callback entries for controlling visibility
-        self.selected_model_callback = state.add_selected_model_callback(
-            self.update_field_options, is_visible=False
-        )
-        self.variable_names_callback = state.add_variable_names_callback(
-            self.update_field_options, is_visible=False
-        )
+        state.add_selected_model_callback(self.update_field_options)
+        state.add_variable_names_callback(self.update_field_options)
 
         self.initialized = False
         self.form = QFormLayout()
@@ -331,16 +326,10 @@ class RegexProcessDialog(QDialog):
         if not self.should_enable_separators():
             self.hide_separators()
 
-    def enable_callbacks(self):
-        self.selected_model_callback.is_visible = True
-        self.variable_names_callback.is_visible = True
-
     def initialize_ui_state(self):
         """Perform expensive UI state initialization when dialog is first shown"""
         if self.initialized:
             return
-
-        self.enable_callbacks()
 
         # Perform the expensive initialization
         self.update_field_options()
@@ -350,13 +339,7 @@ class RegexProcessDialog(QDialog):
     def showEvent(self, event):
         """Override showEvent to trigger lazy initialization"""
         super().showEvent(event)
-        self.enable_callbacks()
         self.initialize_ui_state()
-
-    # def hideEvent(self, event):
-    #     """Override hideEvent to clean up callbacks"""
-    #     super().hideEvent(event)
-    #     self.disable_callbacks()
 
     def save_process(self):
         self.process = {
@@ -693,7 +676,7 @@ class EditExtraProcessingWidget(QWidget):
         copy_definition: Optional[CopyDefinition],
         field_to_x_def: Union[CopyFieldToField, CopyFieldToVariable, CopyFieldToFile],
         allowed_process_names: list[str],
-        state: EditState,
+        state: StageEditState,
         is_variable_extra_processing: bool = False,
     ):
         super().__init__(parent)

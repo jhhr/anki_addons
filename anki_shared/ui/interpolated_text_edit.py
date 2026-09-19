@@ -75,9 +75,9 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         # Connect text changed to validation
         self.text_edit.textChanged.connect(self.validate_text)
         # Allow providing a QLabel that the provider can then modify
-        main_label = QLabel(label, widget_parent) if isinstance(label, str) else label
-
-        self.addWidget(main_label)
+        self.main_label = QLabel(label, widget_parent) if isinstance(label, str) else label
+        if self.main_label is not None:
+            self.addWidget(self.main_label)
 
         self.optional_description = QLabel("", widget_parent)
         self.optional_description.setWordWrap(True)
@@ -98,6 +98,19 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         """Set the text in the text field."""
         self.text_edit.setPlainText(text)
         self.text_edit.update_required_style()
+
+    def set_label(self, label: Optional[str]) -> None:
+        """Change the caption over the box, for a field whose meaning depends on a choice.
+
+        Kept as an attribute rather than a local because a caller that passed a plain string
+        has no other way back to it, and the caption is the thing that says what belongs in
+        the box. `CodeEditLayout.set_label` is the same method, so the two layouts stay
+        interchangeable.
+        """
+        if self.main_label is None:
+            return
+        self.main_label.setText(label or "")
+        self.main_label.setVisible(bool(label))
 
     def set_description(self, description):
         """Set the description text."""

@@ -2,7 +2,7 @@ import json
 import re
 import time
 from functools import partial
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 from anki.cards import Card, CardId
 from anki.consts import (
@@ -397,7 +397,7 @@ def get_card_last_reps(
     return reps
 
 
-ValuesDict = dict[str, ValueOrValueGetter]
+ValuesDict = Mapping[str, ValueOrValueGetter]
 
 
 def get_card_custom_data_prop(custom_data_str: str, prop: str) -> Any:
@@ -482,37 +482,83 @@ def get_formatted_card_created_time(card_id: int) -> str:
     return format_timestamp(card_id / 1000)
 
 
+class CardValues(Mapping[str, ValueOrValueGetter]):
+    """One card's values, keyed by `CARD_VALUES`, with the ones that cost a query read on demand.
+
+    Most of them are attributes of the card in hand. The four review-time values are one
+    aggregate over `revlog` and the other card ids are a second query, and a mapping that
+    computed everything to answer one key charged `__Card_ID` for both -- per card of the
+    note, on the note-level path. Those are computed on the first read of a key that needs
+    them and kept, so the four review-time values still share the one query.
+    """
+
+    def __init__(self, card: Card, note: Note) -> None:
+        self._card = card
+        self._note = note
+        self._time_values: Optional[CardTimeValues] = None
+        self._values: dict[str, ValueOrValueGetter] = {
+            CARD_ID: card.id or 0,
+            CARD_NID: card.nid or 0,
+            CARD_DUE: card.due or 0,
+            CARD_IVL: card.ivl or 0,
+            CARD_EASE: card.factor / 10 or 0,
+            # If FSRS is not enabled, memory_state will be None
+            CARD_STABILITY: round(card.memory_state.stability, 1) if card.memory_state else 0,
+            CARD_DIFFICULTY: round(card.memory_state.difficulty, 1) if card.memory_state else 0,
+            CARD_REP_COUNT: card.reps or 0,
+            CARD_LAPSE_COUNT: card.lapses or 0,
+            CARD_TYPE: get_card_type_as_string(card.type),
+            CARD_CREATED: get_formatted_card_created_time(card.id),
+            CARD_CUSTOM_DATA: card.custom_data or {},
+            CARD_CUSTOM_DATA_PROP: partial(get_card_custom_data_prop, card.custom_data),
+            CARD_LAST_EASES: partial(get_card_last_reps, card.id, get_ease=True),
+            CARD_LAST_FACTORS: partial(get_card_last_reps, card.id, get_fct=True),
+            CARD_LAST_IVLS: partial(get_card_last_reps, card.id, get_ivl=True),
+            CARD_LAST_REV_TYPES: partial(get_card_last_reps, card.id, get_type=True),
+            CARD_LAST_REV_TIMES: partial(get_card_last_reps, card.id, get_time=True),
+        }
+
+    def _times(self) -> CardTimeValues:
+        if self._time_values is None:
+            self._time_values = get_card_time_values(self._card.id)
+        return self._time_values
+
+    def _other_card_ids(self) -> list[int]:
+        return [cid for cid in self._note.card_ids() if cid != self._card.id]
+
+    #: The keys whose value is a query, each read through the memo above.
+    _ON_DEMAND: dict[str, Callable[["CardValues"], ValueOrValueGetter]] = {
+        OTHER_CARD_IDS: _other_card_ids,
+        CARD_FIRST_REVIEW: lambda self: get_formatted_first_review_time(self._times()[0]),
+        CARD_LATEST_REVIEW: lambda self: get_formatted_latest_review_time(self._times()[1]),
+        CARD_AVERAGE_TIME: lambda self: get_formatted_average_time(
+            self._times()[3], self._times()[2]
+        ),
+        CARD_TOTAL_TIME: lambda self: get_formatted_total_time(self._times()[3]),
+    }
+
+    def __getitem__(self, key: str) -> ValueOrValueGetter:
+        try:
+            return self._values[key]
+        except KeyError:
+            read = self._ON_DEMAND.get(key)
+            if read is None:
+                raise
+            value = self._values[key] = read(self)
+            return value
+
+    def __iter__(self):
+        return iter(CARD_VALUES)
+
+    def __len__(self) -> int:
+        return len(CARD_VALUES)
+
+
 def get_value_for_card(
     card: Card,
     note: Note,
 ) -> ValuesDict:
-    first, last, cnt, total = get_card_time_values(card.id)
-    return {
-        CARD_ID: card.id or 0,
-        OTHER_CARD_IDS: [cid for cid in note.card_ids() if cid != card.id],
-        CARD_NID: card.nid or 0,
-        CARD_DUE: card.due or 0,
-        CARD_IVL: card.ivl or 0,
-        CARD_EASE: card.factor / 10 or 0,
-        # If FSRS is not enabled, memory_state will be None
-        CARD_STABILITY: round(card.memory_state.stability, 1) if card.memory_state else 0,
-        CARD_DIFFICULTY: round(card.memory_state.difficulty, 1) if card.memory_state else 0,
-        CARD_REP_COUNT: card.reps or 0,
-        CARD_LAPSE_COUNT: card.lapses or 0,
-        CARD_FIRST_REVIEW: get_formatted_first_review_time(first),
-        CARD_LATEST_REVIEW: get_formatted_latest_review_time(last),
-        CARD_AVERAGE_TIME: get_formatted_average_time(total, cnt),
-        CARD_TOTAL_TIME: get_formatted_total_time(total),
-        CARD_TYPE: get_card_type_as_string(card.type),
-        CARD_CREATED: get_formatted_card_created_time(card.id),
-        CARD_CUSTOM_DATA: card.custom_data or {},
-        CARD_CUSTOM_DATA_PROP: partial(get_card_custom_data_prop, card.custom_data),
-        CARD_LAST_EASES: partial(get_card_last_reps, card.id, get_ease=True),
-        CARD_LAST_FACTORS: partial(get_card_last_reps, card.id, get_fct=True),
-        CARD_LAST_IVLS: partial(get_card_last_reps, card.id, get_ivl=True),
-        CARD_LAST_REV_TYPES: partial(get_card_last_reps, card.id, get_type=True),
-        CARD_LAST_REV_TIMES: partial(get_card_last_reps, card.id, get_time=True),
-    }
+    return CardValues(card, note)
 
 
 CardValuesDict = dict[str, ValuesDict]
@@ -556,6 +602,43 @@ def get_card_values_dict_for_note(
             card_values[cloze_key] = get_value_for_card(card, note)
 
     return card_values
+
+
+def get_card_value(
+    card: Card,
+    note: Note,
+    reference: str,
+) -> Optional[JSONSerializableValue]:
+    """One card value, read from the card itself rather than found by template name.
+
+    `get_from_note_fields` exists for a caller that has only a note, so it keys card values
+    by card template name and takes the name as a prefix on the reference. That indirection
+    cannot express two things a caller holding the card does not need it to:
+
+    * a cloze note's cards all share one template, so the dict keys them `"Cloze 1"`,
+      `"Cloze 2"` and a bare template name picks none of them -- and a miss there returns a
+      type-appropriate default rather than reporting anything;
+    * a definition spanning several note types drops the prefix entirely
+      (`MULTI_CARD_VALUE_RE`), so a prefixed reference matches nothing at all.
+
+    :param card: the card the value is read from
+    :param note: that card's note, which some values are relative to
+    :param reference: the card value key, with its argument if it takes one --
+        `__Card_Due`, or `__Card_Custom_Data_Prop==name`
+    :return: the value, which is None when its getter has nothing to say -- custom data
+        that does not parse, for one -- and never means the key was unknown
+    :raises KeyError: when `reference` does not name a card value
+    """
+    key, separator, arg = reference.partition(ARG_SEPARATOR)
+    # The key constants carry the separator when the value takes an argument, which is how
+    # the regexes above capture them too.
+    key += separator
+    if key not in CARD_VALUES_DICT:
+        raise KeyError(key)
+    value_or_partial = get_value_for_card(card, note).get(key)
+    if isinstance(value_or_partial, partial):
+        return cast(JSONSerializableValue, value_or_partial(arg))
+    return cast(JSONSerializableValue, value_or_partial)
 
 
 NOTE_VALUE_RE = re.compile(

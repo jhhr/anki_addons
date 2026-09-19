@@ -179,3 +179,228 @@ def source_to_destinations(
     definition["across_mode_direction"] = "Source to destinations"
     definition["copy_from_cards_query"] = copy_from_cards_query
     return definition
+
+
+# Format-2 builders ------------------------------------------------------------------------
+#
+# A staged definition is an ordered program, so its builders are per stage rather than per
+# definition: a test names the stages it is about and `staged()` supplies the trigger
+# metadata and the derived `effects`. Everything here writes format-2 syntax, so a
+# `{{...}}` reference has to qualify the binding it reads -- `{{trigger.Word}}`, not
+# `{{Word}}`. The legacy builders above are what produces `syntax_version: 1` expressions,
+# by going through the migrator.
+
+_stage_counter = {"n": 0}
+
+
+def _stage_guid(kind: str) -> str:
+    _stage_counter["n"] += 1
+    return f"{kind}-{_stage_counter['n']}"
+
+
+def text(value: str = "", process_chain: Optional[list] = None) -> dict:
+    return {
+        "mode": "text",
+        "text": value,
+        "code": "",
+        "process_chain": process_chain or [],
+    }
+
+
+def code(value: str = "", process_chain: Optional[list] = None) -> dict:
+    return {
+        "mode": "code",
+        "text": "",
+        "code": value,
+        "process_chain": process_chain or [],
+    }
+
+
+def _stage(stage_type: str, **fields: Any) -> dict:
+    stage = {
+        "guid": fields.pop("guid", None) or _stage_guid(stage_type),
+        "type": stage_type,
+        "name": fields.pop("name", stage_type),
+        "enabled": fields.pop("enabled", True),
+    }
+    stage.update(fields)
+    return stage
+
+
+def variable(result: str, value: Optional[dict] = None, **extra: Any) -> dict:
+    return _stage("variable", result=result, value=value or text(""), **extra)
+
+
+def note_query(result: str, query: str, strategy: str = "all", count=None, **extra: Any) -> dict:
+    selection = extra.pop("selection", None) or {
+        "strategy": strategy,
+        "count": count,
+        "sort_field": None,
+        "sort_order": "descending",
+    }
+    return _stage(
+        "note_query",
+        result=result,
+        query=text(query),
+        selection=selection,
+        if_empty=extra.pop("if_empty", "continue"),
+        **extra,
+    )
+
+
+def card_query(result: str, query: str, strategy: str = "all", count=None, **extra: Any) -> dict:
+    selection = extra.pop("selection", None) or {
+        "strategy": strategy,
+        "count": count,
+        "sort_field": None,
+        "sort_order": "descending",
+    }
+    return _stage(
+        "card_query",
+        result=result,
+        query=text(query),
+        selection=selection,
+        if_empty=extra.pop("if_empty", "continue"),
+        **extra,
+    )
+
+
+def write(field: str, value: dict, write_if: str = "always") -> dict:
+    return {"field": field, "value": value, "write_if": write_if}
+
+
+def edit_note(binding: str, fields: Optional[list] = None, **extra: Any) -> dict:
+    return _stage(
+        "edit_note",
+        target={"binding": binding},
+        fields=fields or [],
+        tags=extra.pop("tags", None) or {"add": [], "remove": []},
+        card_actions=extra.pop("card_actions", None) or [],
+        read_semantics="stage_snapshot",
+        **extra,
+    )
+
+
+def edit_card(binding: str, card_actions: Optional[list] = None, **extra: Any) -> dict:
+    return _stage("edit_card", target={"binding": binding}, card_actions=card_actions or [], **extra)
+
+
+def list_variable(result: str, item_type: str = "Text", **extra: Any) -> dict:
+    return _stage("list_variable", result=result, item_type=item_type, **extra)
+
+
+def store(binding: str, value: dict, **extra: Any) -> dict:
+    return _stage("store", target={"kind": "list", "binding": binding}, value=value, **extra)
+
+
+def for_each_note(binding: str, body: list, item_binding: str = "note", **extra: Any) -> dict:
+    return _stage(
+        "for_each_note",
+        input={"binding": binding},
+        item_binding=item_binding,
+        body=body,
+        **extra,
+    )
+
+
+def for_each_card(
+    binding: str,
+    body: list,
+    item_binding: str = "card",
+    note_binding: str = "note",
+    **extra: Any,
+) -> dict:
+    return _stage(
+        "for_each_card",
+        input={"binding": binding},
+        item_binding=item_binding,
+        note_binding=note_binding,
+        body=body,
+        **extra,
+    )
+
+
+def reduce(binding: str, result: str, value: Optional[dict] = None, **extra: Any) -> dict:
+    return _stage(
+        "reduce",
+        input={"binding": binding},
+        result=result,
+        initial=extra.pop("initial", None) or text(""),
+        item_binding=extra.pop("item_binding", "item"),
+        accumulator_binding=extra.pop("accumulator_binding", "accumulator"),
+        value=value or text(""),
+        **extra,
+    )
+
+
+def join(binding: str, result: str, separator: str = ", ", **extra: Any) -> dict:
+    return reduce(binding, result, operation="join", separator=separator, **extra)
+
+
+def condition(predicate: dict, then: list, otherwise: Optional[list] = None, **extra: Any) -> dict:
+    stage = _stage("condition", predicate=predicate, then=then, **extra)
+    stage["else"] = otherwise or []
+    return stage
+
+
+def read_file(result: str, filename: str, if_missing: str = "empty", **extra: Any) -> dict:
+    return _stage(
+        "read_file", result=result, filename=text(filename), if_missing=if_missing, **extra
+    )
+
+
+def write_file(filename: str, content: dict, overwrite: bool = True, **extra: Any) -> dict:
+    return _stage(
+        "write_file",
+        filename=text(filename),
+        content=content,
+        overwrite=overwrite,
+        **extra,
+    )
+
+
+def call_definition(definition_guid: str, trigger: str = "trigger", **extra: Any) -> dict:
+    return _stage(
+        "call_definition",
+        definition_guid=definition_guid,
+        trigger={"binding": trigger},
+        outputs=extra.pop("outputs", None) or [],
+        **extra,
+    )
+
+
+def export(name: str, stage: dict) -> dict:
+    return {"name": name, "stage_guid": stage["guid"]}
+
+
+def staged(
+    definition_name: str = "staged",
+    stages: Optional[list] = None,
+    note_types: Optional[list[str]] = None,
+    exports: Optional[list] = None,
+    guid: Optional[str] = None,
+    **trigger_extra: Any,
+) -> dict:
+    """A format-2 definition with derived `effects`, as a saved one would carry."""
+    from copy_anywhere.logic.flow_analysis import compute_effects
+
+    triggers = {
+        "note_types": note_types if note_types is not None else [VOCAB],
+        "deck_names": [],
+        "include_subdecks": False,
+        "on_sync": False,
+        "on_add": False,
+        "on_review": False,
+        "on_unfocus": {"edit_fields": [], "add_fields": []},
+    }
+    triggers.update(trigger_extra)
+    definition = {
+        "guid": guid or f"def-{definition_name}",
+        "format_version": 2,
+        "definition_name": definition_name,
+        "triggers": triggers,
+        "stages": stages or [],
+        "exports": exports or [],
+    }
+    definition["effects"] = compute_effects(definition)
+    return definition

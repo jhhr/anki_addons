@@ -168,15 +168,19 @@ class TestNoteTypeSelection:
         # editor wrote leaks into the user-facing text.
         assert logger.has_error('Did not find any notes of note type(s) Nope", "Nada')
 
-    def test_a_missing_copy_mode_raises_rather_than_erroring(self, col):
-        # `copy_into_note_types` is read with `.get`, but `copy_mode` is read with `[]`, so a
-        # definition dict missing that key takes the whole op down instead of logging.
+    def test_a_missing_copy_mode_is_reported_rather_than_raising(self, col, logger):
+        # Intentional format-2 change: a definition with no copy mode cannot be migrated to
+        # stages, so it is reported and the loop stops. Format 1 read `copy_mode` with `[]`
+        # and took the whole op down with a KeyError instead of logging anything.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = copy_word_into_note()
         del definition["copy_mode"]
+        copied: list = []
 
-        with pytest.raises(KeyError, match="copy_mode"):
-            run_bulk(definition)
+        run_bulk(definition, notes=copied)
+
+        assert logger.has_error("missing copy mode value")
+        assert copied == []
 
 
 class TestNoteIdFilter:
@@ -835,3 +839,79 @@ class TestTheFinalRender:
         run_bulk(copy_word_into_note(), progress_title="Syncing fields")
 
         assert progress.titles == ["Syncing fields"]
+
+
+class TestTheCallLookupIsBuiltOnce:
+    """A `call_definition` stage sends the loop to the config to resolve the guid.
+
+    That resolution reads and parses the addon config and builds the cache that remembers
+    each callee's migration. It used to happen once per trigger note, so a bulk run over a
+    few thousand notes parsed the config a few thousand times and re-migrated the callee for
+    every one of them -- the same answer every time, since it is the same definition all the
+    way round the loop.
+    """
+
+    @pytest.fixture
+    def counted(self, stub_mw, monkeypatch):
+        """Count reads of the stored config, whoever asks for it."""
+        reads: list[str] = []
+        original = stub_mw.addonManager.getConfig
+
+        def getConfig(tag):
+            reads.append(tag)
+            return original(tag)
+
+        monkeypatch.setattr(stub_mw.addonManager, "getConfig", getConfig)
+        return reads
+
+    def callee(self):
+        producer = d.variable("H1", d.text("called"))
+        return d.staged(
+            "callee",
+            guid="callee-guid",
+            stages=[producer],
+            exports=[d.export("H1", producer)],
+        )
+
+    def caller(self):
+        return d.staged(
+            "caller",
+            stages=[
+                d.call_definition("callee-guid", outputs=[{"export": "H1", "result": "got"}]),
+                d.edit_note("trigger", [d.write("Note", d.text("{{got}}"))]),
+            ],
+        )
+
+    def test_three_notes_do_not_mean_three_config_reads(
+        self, col, stub_mw, counted
+    ):
+        stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [self.callee()]
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        notes: list = []
+        run_bulk(self.caller(), notes=notes)
+
+        assert [note["Note"] for note in notes] == ["called"] * 3
+        assert len(counted) == 1
+
+    def test_a_definition_that_calls_nothing_reads_it_none(
+        self, col, stub_mw, counted
+    ):
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        run_bulk(copy_word_into_note())
+
+        assert counted == []
+
+    def test_definitions_handed_in_are_still_preferred_to_the_config(
+        self, col, stub_mw, counted
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "a"})
+
+        notes: list = []
+        run_bulk(self.caller(), notes=notes, definitions_for_calls=[self.callee()])
+
+        assert [note["Note"] for note in notes] == ["called"]
+        assert counted == []
