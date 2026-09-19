@@ -162,12 +162,19 @@ outer list plus `store` is how a loop reports anything back.
   and a raising one failed the definition, discarding the writes that would have been
   applied.
 * **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
-  note but the trigger, or to any card, cannot run against a note that has not been added
-  yet. The hooks read `effects.add_note_compatible`; the commit refuses anything else
-  regardless, in case the JSON was edited by hand. It defers such a definition rather than
-  dropping it: the add hook runs it once the note exists, under its own undo entry. The
-  editor warns about the combination and saves it anyway, since all three of those read
-  the stored flag and none of them the editor.
+  note but the trigger, or to any card, needs the add hook to write those changes itself.
+  The hooks read `effects.add_note_compatible` (a format-1 definition answers from its mode
+  and its card actions); the commit refuses anything but trigger-note changes from a
+  definition that claims compatibility, in case the JSON was edited by hand. Such a
+  definition is not dropped: the add hook runs it after the trigger-only ones, under its
+  own undo entry, and the unfocus hook skips it while a note is being added. The editor
+  warns about the combination and saves it anyway, since all three of those read the
+  stored flag and none of them the editor.
+* **A card action on the note being added does not run.** The add hook fires before the
+  note is in the collection: it has id 0 and no cards, so an Edit Note stage targeting the
+  trigger applies its field writes and skips its card actions with a log line, and nothing
+  runs them later. Card actions on other notes' cards, and edits to other notes, run as
+  usual. The editor names the stage whose action will not run.
 
 ## The startup migration
 
@@ -209,16 +216,17 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   interpolated the name over the live note but `__Dest__` over a copy taken before anything
   ran; the file is written by a stage after the one that writes the field, and a stage reads
   what the stages before it did.
-* A definition that both fills a field and acts on a card fills the field a moment later
-  when a note is being added. Format 1 ran it on every unfocus in the Add dialog and let the
-  card action quietly do nothing, because a note with id 0 has no cards. Format 2 has one
-  rule for that -- a definition touching another note or any card waits until the note
-  exists -- so the whole definition is deferred to the moment the note is saved rather than
-  running as you type. The editor says so rather than refusing the definition: the rule is
-  enforced by the hooks and again by the commit, both of which read the stored `effects`, so
-  what the editor allows changes nothing about what runs. A definition triggered only by
-  unfocus-while-adding has nothing to defer to and is simply not run there; turning on
-  "Run when adding a new note" is what gives it a moment to run in.
+* A definition that both fills a field and acts on a card fills the field when the note is
+  added rather than as you type. Format 1 ran it on every unfocus in the Add dialog and let
+  the card action quietly do nothing, because a note with id 0 has no cards. Format 2 has
+  one rule for that -- a definition touching another note or any card is not add-note
+  compatible -- so the unfocus hook skips the whole definition while a note is being added
+  and the add hook runs it when the note is added, where the card action on the new note is
+  a logged skip; nothing runs it later. The editor says so, naming the stage, rather than
+  refusing the definition: the rule is enforced by the hooks and again by the commit, both
+  of which read the stored `effects`, so what the editor allows changes nothing about what
+  runs. A definition triggered only by unfocus-while-adding is simply not run there;
+  turning on "Run when adding a new note" is what gives it a moment to run in.
 
 **What editing a migrated expression does.** Every expression the migrator writes carries
 `syntax_version: 1`, and the stage editor shows it as it is: `{{Word}}`, `{{__Dest__Word}}`,

@@ -415,7 +415,16 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     # sync path writes its `fc` flag onto all of them.
     session.touch_cards(cards)
     card_actions = stage.get("card_actions") or []
-    if card_actions:
+    if card_actions and not target.id:
+        # A note being added has no cards until the add creates them, and nothing runs this
+        # stage again afterwards, so the actions have nothing to reach. The field writes
+        # above have landed on the note object the add saves; only the actions are lost,
+        # and the log says so rather than nothing.
+        logger.warning(
+            "Card actions on '%s' skipped: the note is being added and has no cards yet",
+            stage.get("name") or stage.get("type"),
+        )
+    elif card_actions:
         try:
             apply_card_actions_by_template(
                 card_actions, target, cards, session.progress_updater

@@ -353,14 +353,34 @@ def filling_a_field_and_flagging_the_card(guid="e"):
 
 def test_an_add_note_trigger_warns_rather_than_blocks_when_a_stage_flags_a_card():
     # Refusing the save protected nothing: the hooks and the commit read the stored flag,
-    # never the editor, so the run is deferred either way.
+    # never the editor, so what runs is the same either way.
     doc = document(filling_a_field_and_flagging_the_card())
     doc.definition["triggers"]["on_add"] = True
     assert not doc.add_note_compatible()
     assert doc.can_save()
     warnings = doc.warnings()
-    assert any("once the note is saved" in warning for warning in warnings)
     assert any("has card actions" in warning for warning in warnings)
+
+
+def test_the_add_note_warning_says_the_card_action_on_the_named_stage_will_not_run():
+    # A note being added has no cards, and nothing runs the action later, so the warning
+    # names the stage and promises no later run.
+    doc = document(filling_a_field_and_flagging_the_card())
+    doc.definition["triggers"]["on_add"] = True
+    doc.stage("e")["name"] = "Fill and flag"
+    (warning,) = doc.warnings()
+    assert "card action on Fill and flag" in warning
+    assert "will not run" in warning
+    assert "once the note is saved" not in warning
+
+
+def test_the_add_note_warning_promises_no_later_run_for_an_unfocus_only_trigger_either():
+    doc = document(filling_a_field_and_flagging_the_card())
+    doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
+    (warning,) = doc.warnings()
+    assert "card action on Edit Note" in warning
+    assert "will not run" in warning
+    assert "once the note is saved" not in warning
 
 
 def test_the_add_note_warning_names_a_stage_editing_a_card():

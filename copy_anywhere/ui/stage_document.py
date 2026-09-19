@@ -541,42 +541,76 @@ class StageDocument:
         format 1 ran happily: one that fills a field *and* flags the card. Deleting either
         the card action or a trigger the user never set was the only way to close it.
 
-        It is not a refusal because refusing protected nothing. The add hook already defers
-        an incompatible definition until the note exists and runs it under its own undo
-        entry, the unfocus hook already skips it while a note is being added, and the commit
-        refuses anything but trigger-note changes whatever the stored `effects` claim. All
-        three read the flag, not the editor, so the behaviour is the same whether or not this
-        dialog would have let the definition through -- including for every definition that
-        arrived by migration and never passed through here at all.
+        It is not a refusal because refusing protected nothing. The add hook runs an
+        incompatible definition after the trigger-only ones, under its own undo entry; the
+        unfocus hook skips it while a note is being added; and the commit refuses anything
+        but trigger-note changes from a definition that claims compatibility, whatever the
+        stored `effects` say. All three read the flag, not the editor, so the behaviour is
+        the same whether or not this dialog would have let the definition through --
+        including for every definition that arrived by migration and never passed through
+        here at all.
 
-        What is left to say is when the work happens, which is what the wording does.
+        What is left to say is what does not happen: a card action on the note being added
+        has no card to reach, and nothing runs it later. The stage is named so the user
+        knows which action that is.
         """
         if not self.wants_add_note() or self.add_note_compatible():
             return []
-        # Both halves of `wants_add_note` end differently, so they are not one sentence:
-        # `on_add` defers the run to the moment the note is saved, while an unfocus-only
-        # trigger has nothing to defer to and is simply not run there.
         triggers = self.definition.get("triggers", {}) or {}
+        card_paths = self.trigger_card_action_paths()
         if triggers.get("on_add"):
-            message = (
-                "This definition runs when a note is added, and it edits notes or cards that"
-                " a note being added does not have yet. It runs once the note is saved,"
-                " rather than while it is being typed."
-            )
+            if card_paths:
+                message = (
+                    "This definition runs when a note is added, but the card action on "
+                    + "; ".join(card_paths)
+                    + " needs a card the note being added does not have yet, so that"
+                    " action will not run for it. Edits to other notes, and card actions"
+                    " on their cards, still do."
+                )
+            else:
+                message = (
+                    "This definition runs when a note is added, and it edits notes or cards"
+                    " beyond the note being added, so those edits are saved under their own"
+                    " undo entry rather than as part of adding the note."
+                )
         else:
+            # An unfocus-only trigger is skipped in the Add dialog outright; the add trigger
+            # is what would run the definition there, minus the card action on the new note.
             message = (
                 "This definition runs when you leave a field while adding a note, and it"
-                " edits notes or cards that a note being added does not have yet, so it is"
-                " skipped there. Turn on 'Run when adding a new note' to have it run once"
-                " the note is saved."
+                " edits notes or cards beyond the fields of the note being added, so it is"
+                " skipped there. Turn on 'Run when adding a new note' to have it run when"
+                " the note is added."
             )
+            if card_paths:
+                message += (
+                    " Even then, the card action on "
+                    + "; ".join(card_paths)
+                    + " will not run for the note being added, which has no cards yet."
+                )
         paths = self.incompatible_stage_paths()
         if paths:
             message += " Because of: " + "; ".join(paths) + "."
         return [message]
 
+    def trigger_card_action_paths(self) -> list[str]:
+        """The stages whose card actions reach the trigger note's own cards, by path.
+
+        These are the actions that cannot run while the note is being added: a note with
+        id 0 has no cards. Card actions on other notes' cards, and Edit Card stages (whose
+        card came from a query or a loop, which cannot yield the new note's cards), are not
+        listed -- they run.
+        """
+        paths: list[str] = []
+        for stage in walk_stages(self.root_block(), include_disabled=False):
+            if stage.get("type") != STAGE_EDIT_NOTE or not stage.get("card_actions"):
+                continue
+            if (stage.get("target") or {}).get("binding") == "trigger":
+                paths.append(self.path_of(stage.get("guid", "")))
+        return paths
+
     def incompatible_stage_paths(self) -> list[str]:
-        """The stages that make this definition unusable in the add hook, by path.
+        """The stages that keep this definition out of the add hook's trigger-only pile, by path.
 
         Called definitions are followed, so a caller is told which stage inside the callee
         is the problem rather than only that the call is.

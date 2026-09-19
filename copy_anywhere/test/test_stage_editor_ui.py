@@ -302,7 +302,9 @@ def test_an_add_note_trigger_warns_but_still_saves_a_card_flagging_definition(di
     assert "note is being added: <b>no</b>" in status
     assert "Worth knowing" in status
     assert "Cannot be saved yet" not in status
-    assert "once the note is saved" in status
+    assert "card action on Edit Note" in status
+    assert "will not run" in status
+    assert "once the note is saved" not in status
 
 
 def test_the_status_reports_add_note_compatibility(dialog):

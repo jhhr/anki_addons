@@ -750,3 +750,122 @@ class TestDestinationToSourcesWritesOnlyTheTriggerNote:
 
         col.undo()
         assert col.get_note(other.id)["Note"] == ""
+
+
+class TestCardActionsWhileTheNoteHasNoCards:
+    """A note being added has id 0 and no cards, so a card action on it has nothing to reach.
+
+    That is not a reason to discard the definition: its field writes land on the note object
+    the add is about to save, and its edits to other notes and their cards are real. The
+    card action on the note being added is the one thing that cannot run, and the log says
+    so rather than nothing.
+    """
+
+    def flag(self):
+        return d.card_action(VOCAB, "Recognition", set_flag=3)
+
+    def card_named(self, note, template_name):
+        return next(card for card in note.cards() if card.template()["name"] == template_name)
+
+    def filling_and_flagging(self, fmt):
+        """The definition format 1 ran happily: fills `Meaning` and flags the Recognition card."""
+        if fmt == 1:
+            return within("fill-and-flag", field="Meaning", card_actions=[self.flag()])
+        return d.staged(
+            "fill-and-flag",
+            on_add=True,
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("{{trigger.Word}}"))],
+                    card_actions=[self.flag()],
+                )
+            ],
+        )
+
+    @pytest.mark.parametrize("fmt", [1, 2])
+    def test_the_field_is_filled_and_the_card_action_is_a_logged_skip(
+        self, col, set_definitions, hook_logger, fmt
+    ):
+        set_definitions(self.filling_and_flagging(fmt))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+
+        assert note["Meaning"] == "neko"
+        assert hook_logger.errors == []
+        assert any("no cards yet" in message for message in hook_logger.warnings), (
+            hook_logger.warnings
+        )
+
+    @pytest.mark.parametrize("fmt", [1, 2])
+    def test_the_add_saves_the_field_and_the_card_stays_unflagged(
+        self, col, set_definitions, fmt
+    ):
+        set_definitions(self.filling_and_flagging(fmt))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        col.add_note(note, deck(col))
+
+        assert col.get_note(note.id)["Meaning"] == "neko"
+        assert self.card_named(note, "Recognition").user_flag() == 0
+        # Nothing was written for the definition, so nothing needed an undo entry of its own
+        assert col.undo_status().undo == "Add Note"
+
+    def test_the_rest_of_the_definition_still_lands(self, col, set_definitions, hook_logger):
+        # Field write on the trigger, card action on the trigger, and an edit to another
+        # note in one definition: only the card action on the note being added is skipped.
+        other = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
+        set_definitions(
+            d.staged(
+                "everything",
+                on_add=True,
+                stages=[
+                    d.edit_note(
+                        "trigger",
+                        [d.write("Meaning", d.text("{{trigger.Word}}"))],
+                        card_actions=[self.flag()],
+                    ),
+                    d.note_query("found", "Word:neko"),
+                    d.for_each_note(
+                        "found",
+                        [
+                            d.edit_note(
+                                "note",
+                                [d.write("Note", d.text("copied"))],
+                                card_actions=[self.flag()],
+                            )
+                        ],
+                    ),
+                ],
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+
+        assert note["Meaning"] == "neko"
+        assert col.get_note(other.id)["Note"] == "copied"
+        assert self.card_named(other, "Recognition").user_flag() == 3
+        assert hook_logger.errors == []
+        assert any("no cards yet" in message for message in hook_logger.warnings)
+
+    def test_a_format_1_card_action_on_other_notes_cards_is_written(
+        self, col, set_definitions, hook_logger
+    ):
+        # Card actions only, no field write and no tag: the format-1 fallback used to call
+        # this add-note compatible, so the hook ran it under the trigger-only backstop, which
+        # refused the queued card edits and discarded the run with an error.
+        other = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
+        set_definitions(
+            d.source_to_destinations(
+                definition_name="flag-found",
+                copy_on_add=True,
+                copy_from_cards_query="Word:neko",
+                select_card_count="0",
+                card_actions=[self.flag()],
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.errors == []
+        assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 3

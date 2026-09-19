@@ -46,8 +46,8 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     """The definitions that run when `note` is added: `copy_on_add`, and this note's type.
 
     Note-type membership only; the caller still has to split the result on
-    `definition_modifies_other_notes`, because those definitions have to wait until the
-    note exists and be run under their own undo entry.
+    `definition_is_add_note_compatible`, because a definition that writes to other notes
+    or cards has to be written by the hook itself, under its own undo entry.
     """
     config = Config()
     config.load()
@@ -84,8 +84,11 @@ def _edited_cards_for_update(copied_into_cards_dict: dict[int, Card]) -> list[Ca
 def run_copy_fields_on_add(note: Note, deck_id: int):
     """
     Copy fields when a note is about to be added. This applies to notes being added
-    by AnkiConnect or the Add cards dialog. Because the note is not yet added to the
-    database, we can't get the note ID, so we can't copy fields that affect other notes.
+    by AnkiConnect or the Add cards dialog. The note is not yet in the database: its id
+    is 0, no search can find it, and it has no cards, so a card action on it has nothing
+    to reach and is skipped by the stage (with a log line). Its field writes need no
+    write here -- the add saves the mutated note object -- but writes to other notes and
+    cards do, so those definitions run second, under an undo entry of their own.
     """
     config = Config()
     config.load()
@@ -94,10 +97,10 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in get_copy_definitions_for_add_note(note):
-            # A definition that writes to any other note or card has nothing to write to yet, so
-            # it waits until the note exists and runs under its own undo entry. The flag is the
-            # analyser's answer for a format-2 definition and the mode inspection for a
-            # format-1 one; either way the hook only reads it and never inspects stages (§8).
+            # A definition that writes to any other note or card needs the hook to write and
+            # undo those changes itself, so it runs below, under its own undo entry. The flag
+            # is the analyser's answer for a format-2 definition and the mode inspection for
+            # a format-1 one; either way the hook only reads it and never inspects stages (§8).
             if not definition_is_add_note_compatible(copy_definition):
                 editing_other_notes_definitions.append(copy_definition)
                 continue
@@ -151,7 +154,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 # after this undo entry will come the "Add Note" undo entry. This is not ideal, but
                 # it's the most reliable thing do while a note_was_added hook doesn't exist.
                 #
-                # Other altenatives would be to add a flag to new notes and run the deferred copy
+                # Other altenatives would be to add a flag to new notes and run these copy
                 # definitions on syncing but that seems less user-friendly.
                 undo_entry = mw.col.add_custom_undo_entry(undo_text)
             # Write after every definition, as the next one fetches its destinations from the
@@ -309,7 +312,6 @@ def on_editor_did_load_note(editor: Editor):
     This is a hack to get around the fact that the editor is not passed to the
     unfocus_field hook.
     """
-    global editor_for_note_id
     # None rather than NoteId(0) for no note, as 0 is what a new note's id is and the
     # editor would then match whatever note is being typed in the Add cards dialog
     editor_for_note_id[editor.editorMode] = editor, editor.note.id if editor.note else None
@@ -394,8 +396,8 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             modifies_other_notes = definition_modifies_other_notes(copy_definition)
 
             if is_new_note and not definition_is_add_note_compatible(copy_definition):
-                # Do not run ops that edit other notes while editing a new note. Such ops should only
-                # be run when the new note is saved. Same flag the add hook checks (§8).
+                # Do not run ops that edit other notes or cards while editing a new note: the
+                # add hook runs them, if `on_add` is on. Same flag it checks (§8).
                 continue
 
             if is_format_2(copy_definition):

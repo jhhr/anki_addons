@@ -13,8 +13,12 @@ These drive the stubbed addon config directly: the analyser never touches a coll
 import pytest
 
 import definitions as d
-from conftest import DEFAULT_CONFIG
-from copy_anywhere.configuration import Config
+from conftest import DEFAULT_CONFIG, VOCAB
+from copy_anywhere.configuration import (
+    Config,
+    definition_effects,
+    definition_is_add_note_compatible,
+)
 
 
 @pytest.fixture
@@ -167,3 +171,42 @@ class TestTheOtherWaysTheListChanges:
         saved.add_definition(writes_trigger_only())
 
         assert "effects" not in stored(stub_mw, "old")
+
+
+class TestAFormat1DefinitionsEffects:
+    """`definition_effects` inspects a format-1 definition instead of reading a stored object.
+
+    The add hook sorts on the same `add_note_compatible` it would read off a format-2
+    definition, so the fallback has to answer the way the analyser does: a card action
+    disqualifies a definition as much as an edit to another note.
+    """
+
+    def flag(self):
+        return d.card_action(VOCAB, "Recognition", set_flag=3)
+
+    def test_a_field_write_on_the_trigger_alone_is_compatible(self):
+        definition = d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
+        assert definition_effects(definition)["add_note_compatible"] is True
+        assert definition_is_add_note_compatible(definition)
+
+    def test_a_card_action_makes_a_within_note_definition_incompatible(self):
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            card_actions=[self.flag()],
+        )
+        effects = definition_effects(definition)
+        assert effects["edits_cards"] is True
+        assert effects["add_note_compatible"] is False
+        assert not definition_is_add_note_compatible(definition)
+
+    def test_a_card_action_only_definition_is_incompatible_too(self):
+        # No field write and no tag, so `edits_other_notes` is false and the card action is
+        # the only thing that can say no. The cards it reaches are the found notes' own.
+        definition = d.source_to_destinations(
+            copy_from_cards_query="Word:neko", card_actions=[self.flag()]
+        )
+        effects = definition_effects(definition)
+        assert effects["edits_other_notes"] is False
+        assert effects["edits_cards"] is True
+        assert effects["add_note_compatible"] is False
+        assert not definition_is_add_note_compatible(definition)

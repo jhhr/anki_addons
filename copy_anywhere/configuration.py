@@ -580,25 +580,31 @@ def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
     if is_format_2(copy_definition):
         return read_effects(copy_definition)
     modifies_other = definition_modifies_other_notes(copy_definition)
+    edits_cards = bool(copy_definition.get("card_actions"))
     return {
         "edits_trigger": definition_modifies_trigger_note(copy_definition),
         "edits_other_notes": modifies_other,
-        "edits_cards": bool(copy_definition.get("card_actions")),
+        "edits_cards": edits_cards,
         "reads_files": False,
         "writes_files": bool(copy_definition.get("field_to_file_defs")),
         "queries_collection": copy_definition.get("copy_mode") == COPY_MODE_ACROSS_NOTES,
         "calls_definitions": False,
-        "add_note_compatible": not modifies_other,
+        # The same rule the analyser applies to a format-2 definition: a card action counts,
+        # whichever note's cards it reaches
+        "add_note_compatible": not modifies_other and not edits_cards,
     }
 
 
 def definition_is_add_note_compatible(copy_definition: Union[CopyDefinition, dict]) -> bool:
-    """Whether this definition can run against a note that has not been added yet.
+    """Whether this definition edits nothing but the note that has not been added yet.
 
-    A note being added has id 0 and no cards, so a definition that writes to any other note
-    or to any card has nothing to write to. The add hook does not drop those definitions --
-    it defers them until the note exists and runs them under their own undo entry -- but it
-    is this flag that decides which pile a definition goes in.
+    A note being added has id 0 and no cards. A definition that stays within its fields and
+    tags needs no write of its own: the add saves the note object it mutated. One that
+    writes to any other note or to any card has to be written and undone by the hook
+    itself, so the add hook runs it after the trigger-only ones, under its own undo entry,
+    and the unfocus hook skips it while a note is being added. A card action on the note
+    being added never runs -- it has no cards -- which the editor warns about; this flag
+    only decides which pile a definition goes in.
     """
     return bool(definition_effects(copy_definition).get("add_note_compatible", False))
 
