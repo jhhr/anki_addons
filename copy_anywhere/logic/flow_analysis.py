@@ -59,6 +59,7 @@ from .definition_schema import (
     expression_source,
     is_format_2,
     list_of,
+    names_are_relaxed,
     result_name_problem,
     stage_result_name,
     validate_definition_structure,
@@ -148,9 +149,7 @@ class _Analyzer:
         # and a diamond in the call graph does not become exponential work.
         self.analyzed_callees = analyzed_callees if analyzed_callees is not None else {}
         self.call_stack = list(call_stack)
-        # Migrated definitions keep format-1 variable names, which were free text; the
-        # identifier rule applies to newly authored ones only.
-        self.relaxed_names = definition.get("migrated_from_format") == 1
+        self.relaxed_names = names_are_relaxed(definition)
         #: The first root stage that can skip the rest of the block, if there is one. Every
         #: root result from that stage onwards may be unset; the ones before it are already
         #: produced by the time it fires, whichever way it goes.
@@ -182,8 +181,8 @@ class _Analyzer:
         )
 
     def declare(self, scope: dict, stage: Stage, name: Any, value_type: ValueType) -> None:
-        problem = result_name_problem(name)
-        if problem and (not self.relaxed_names or "reserved" in problem or "missing" in problem):
+        problem = result_name_problem(name, relaxed=self.relaxed_names)
+        if problem:
             self.problem(problem, stage)
             return
         if not isinstance(name, str) or not name:
@@ -378,7 +377,9 @@ class _Analyzer:
         elif stage_type == STAGE_STORE:
             target = stage.get("target")
             binding = self.resolve(scope, target, stage, "store target")
-            if binding is not None and binding.type.kind != LIST:
+            # An Unknown binding is a code-mode result; as in `expect`, the action checks it
+            # when the value arrives.
+            if binding is not None and binding.type.kind not in (LIST, T_UNKNOWN.kind):
                 self.problem(
                     f"store target '{binding.name}' is {binding.type.name}, not a list", stage
                 )
@@ -406,7 +407,11 @@ class _Analyzer:
 
         elif stage_type == STAGE_REDUCE:
             binding = self.resolve(scope, stage.get("input"), stage, "reduce input")
-            if binding is not None and not binding.type.is_listy:
+            if (
+                binding is not None
+                and not binding.type.is_listy
+                and binding.type.kind != T_UNKNOWN.kind
+            ):
                 self.problem(
                     f"reduce input '{binding.name}' is {binding.type.name}, not a list", stage
                 )
@@ -685,7 +690,9 @@ def find_call_cycles(definitions: Sequence[CopyDefinitionV2]) -> list[list[str]]
     for definition in definitions:
         guid = definition.get("guid", "")
         targets: list[str] = []
-        for stage in _walk(definition.get("stages", []) or []):
+        # A disabled stage neither runs nor is analysed, and nothing under it does either,
+        # so a call there cannot close a cycle; disabling the call is how a user breaks one.
+        for stage in _walk(definition.get("stages", []) or [], include_disabled=False):
             if stage.get("type") == STAGE_CALL_DEFINITION and stage.get("definition_guid"):
                 targets.append(stage["definition_guid"])
         edges[guid] = targets
@@ -716,10 +723,10 @@ def find_call_cycles(definitions: Sequence[CopyDefinitionV2]) -> list[list[str]]
     return cycles
 
 
-def _walk(stages: Sequence[Stage]) -> Iterable[Stage]:
+def _walk(stages: Sequence[Stage], include_disabled: bool = True) -> Iterable[Stage]:
     from .definition_schema import walk_stages
 
-    return walk_stages(stages)
+    return walk_stages(stages, include_disabled)
 
 
 def callers_of(

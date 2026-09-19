@@ -148,13 +148,30 @@ def is_valid_result_name(name: Any) -> bool:
     return isinstance(name, str) and bool(RESULT_NAME_RE.match(name)) and not name.startswith("__")
 
 
-def result_name_problem(name: Any, what: str = "Result name") -> Optional[str]:
-    """The reason `name` cannot be a result name, or None when it can."""
+def names_are_relaxed(definition: Any) -> bool:
+    """Whether `definition` keeps format-1 variable names, which were free text.
+
+    The identifier rule applies to newly authored definitions only. The structural validator
+    and the analyser both run on a save, so they have to agree on this or the exemption
+    holds in neither and a migrated definition cannot even be opened to rename the variable.
+    """
+    return isinstance(definition, dict) and definition.get("migrated_from_format") == 1
+
+
+def result_name_problem(
+    name: Any, what: str = "Result name", relaxed: bool = False
+) -> Optional[str]:
+    """The reason `name` cannot be a result name, or None when it can.
+
+    `relaxed` waives the identifier rule (see `names_are_relaxed`); a missing name, the
+    reserved names and the `__` prefix the note and card values live under are refused
+    regardless, because the runtime owns those.
+    """
     if not isinstance(name, str) or not name:
         return f"{what} is missing"
     if name.startswith("__"):
         return f"{what} '{name}' may not begin with '__'"
-    if not RESULT_NAME_RE.match(name):
+    if not relaxed and not RESULT_NAME_RE.match(name):
         return (
             f"{what} '{name}' is not an identifier"
             " (letters, digits and underscore, not starting with a digit)"
@@ -537,9 +554,11 @@ def _require_binding(stage: Stage, key: str, problems: list[SchemaProblem]) -> N
         problems.append(SchemaProblem(f"'{key}.binding' is missing", guid, stage_type))
 
 
-def _require_result_name(stage: Stage, problems: list[SchemaProblem]) -> None:
+def _require_result_name(
+    stage: Stage, problems: list[SchemaProblem], relaxed: bool = False
+) -> None:
     guid, stage_type = stage.get("guid"), stage.get("type")
-    problem = result_name_problem(stage_result_name(stage))
+    problem = result_name_problem(stage_result_name(stage), relaxed=relaxed)
     if problem:
         problems.append(SchemaProblem(problem, guid, stage_type))
 
@@ -588,8 +607,14 @@ def _validate_choice(
         )
 
 
-def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
-    """Check one stage's own shape. Bindings and types are the analyser's job."""
+def validate_stage_structure(
+    stage: Any, problems: list[SchemaProblem], relaxed_names: bool = False
+) -> None:
+    """Check one stage's own shape. Bindings and types are the analyser's job.
+
+    `relaxed_names` is the definition's `names_are_relaxed` answer, passed down because a
+    stage does not know which definition it belongs to.
+    """
     if not isinstance(stage, dict):
         problems.append(SchemaProblem(f"stage is not an object: {stage!r}"))
         return
@@ -603,10 +628,10 @@ def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
         return
 
     if stage_type == STAGE_VARIABLE:
-        _require_result_name(stage, problems)
+        _require_result_name(stage, problems, relaxed_names)
         _require_expression(stage, "value", problems)
     elif stage_type in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY):
-        _require_result_name(stage, problems)
+        _require_result_name(stage, problems, relaxed_names)
         _require_expression(stage, "query", problems)
         _validate_selection(stage, problems)
         _validate_choice(stage, "if_empty", IF_EMPTY_POLICIES, "continue", problems)
@@ -641,7 +666,7 @@ def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
         if not isinstance(stage.get("card_actions", []), list):
             problems.append(SchemaProblem("'card_actions' is not a list", guid, stage_type))
     elif stage_type == STAGE_READ_FILE:
-        _require_result_name(stage, problems)
+        _require_result_name(stage, problems, relaxed_names)
         _require_expression(stage, "filename", problems)
         _validate_choice(stage, "if_missing", IF_MISSING_POLICIES, "empty", problems)
     elif stage_type == STAGE_WRITE_FILE:
@@ -651,7 +676,7 @@ def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
             stage, "filename", problems, required=not expression_is_code(stage.get("content"))
         )
     elif stage_type == STAGE_LIST_VARIABLE:
-        _require_result_name(stage, problems)
+        _require_result_name(stage, problems, relaxed_names)
         item_type = stage.get("item_type", TEXT)
         if item_type not in LIST_ITEM_TYPE_NAMES:
             problems.append(
@@ -680,7 +705,7 @@ def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
             problems.append(SchemaProblem("'body' is not a list", guid, stage_type))
     elif stage_type == STAGE_REDUCE:
         _require_binding(stage, "input", problems)
-        _require_result_name(stage, problems)
+        _require_result_name(stage, problems, relaxed_names)
         _require_expression(stage, "value", problems)
         _require_expression(stage, "initial", problems, required=False)
         for key in ("item_binding", "accumulator_binding"):
@@ -712,7 +737,7 @@ def validate_stage_structure(stage: Any, problems: list[SchemaProblem]) -> None:
 
     for _key, block in stage_body_blocks(stage):
         for child in block:
-            validate_stage_structure(child, problems)
+            validate_stage_structure(child, problems, relaxed_names)
 
 
 def validate_definition_structure(definition: Any) -> list[SchemaProblem]:
@@ -737,8 +762,9 @@ def validate_definition_structure(definition: Any) -> list[SchemaProblem]:
     if not isinstance(stages, list):
         problems.append(SchemaProblem("'stages' is not a list"))
         return problems
+    relaxed_names = names_are_relaxed(definition)
     for stage in stages:
-        validate_stage_structure(stage, problems)
+        validate_stage_structure(stage, problems, relaxed_names)
 
     exports = definition.get("exports", [])
     if not isinstance(exports, list):

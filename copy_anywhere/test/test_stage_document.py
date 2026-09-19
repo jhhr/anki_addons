@@ -324,6 +324,14 @@ def test_warnings_do_not_block_a_save():
     assert doc.can_save()
 
 
+def test_a_migrated_definition_keeps_the_free_text_name_format_1_allowed():
+    # The save runs the structural validator and the analyser together; both have to let
+    # the old name through, or the user cannot open the definition to rename it.
+    doc = document(valid_variable("v", "My Word"))
+    doc.definition["migrated_from_format"] = 1
+    assert doc.save_blockers() == []
+
+
 def filling_a_field_and_flagging_the_card(guid="e"):
     """The definition format 1 ran happily, and the one the refusal trapped in the dialog.
 

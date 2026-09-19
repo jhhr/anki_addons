@@ -69,7 +69,9 @@ note, a card or a list is a validation error: how several values become one piec
 the definition's decision, so it has to say so with a reduce or with code.
 
 Migrated expressions carry `syntax_version: 1` and keep format 1's unqualified names. New
-expressions must not rely on that.
+expressions must not rely on that. A migrated definition likewise keeps format 1's variable
+names, which did not have to be identifiers; a missing name, a reserved binding name and the
+`__` prefix are refused on a migrated definition too, since the runtime owns those.
 
 Code mode gets immutable facades -- `NoteFacade`, `CardFacade`, and iterable, indexable,
 sliceable `NoteListFacade` / `CardListFacade` -- plus `find_notes`, `find_cards` (raw id
@@ -124,7 +126,8 @@ outer list plus `store` is how a loop reports anything back.
 * **A called definition is isolated.** It gets its trigger note and nothing else of the
   caller's -- no variables, no lists, no loop bindings. It shares the working notes, cards
   and files, and returns only what it declares in `exports`. Call cycles are refused, and a
-  chain deeper than 32 is refused whatever the guids say.
+  chain deeper than 32 is refused whatever the guids say. A disabled call stage, or one under
+  a disabled stage, does not close a cycle: disabling the call is how a user breaks one.
 * **`skip_block` names the block the stage is in.** In a loop body it ends that iteration
   and the loop carries on; in a `then` or `else` branch it ends the branch and the stage
   after the condition runs; at the root it ends the definition, and what ran before it still

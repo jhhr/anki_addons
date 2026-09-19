@@ -296,6 +296,40 @@ class TestListsAndReductions:
         assert ok is False
         assert copied == []
 
+    def test_a_list_built_in_code_can_be_stored_into_and_reduced(self, note):
+        definition = d.staged(stages=[
+            d.variable("words", d.code("return ['a']")),
+            d.store("words", d.text("b")),
+            d.join("words", "joined", "-"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+        ])
+        assert run(definition, note)[0] is True
+        assert note["Note"] == "a-b"
+
+    def test_storing_into_a_code_result_that_holds_text_is_a_stage_error(self, note, logger):
+        # The analyser lets a code result through as a store target because its type is only
+        # known now; this is the other half of that contract.
+        definition = d.staged(stages=[
+            d.variable("words", d.code("return 'not a list'")),
+            d.store("words", d.text("b")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{words}}"))]),
+        ])
+        ok, copied = run(definition, note)
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("store target is not a list")
+
+    def test_reducing_over_a_code_result_that_holds_text_is_a_stage_error(self, note, logger):
+        definition = d.staged(stages=[
+            d.variable("words", d.code("return 'not a list'")),
+            d.join("words", "joined", "-"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+        ])
+        ok, copied = run(definition, note)
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("reduce input is not a list")
+
     def test_a_loop_local_variable_does_not_escape(self, note, three):
         definition = d.staged(stages=[
             d.note_query("found", "Word:w*"),

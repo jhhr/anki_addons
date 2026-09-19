@@ -7,6 +7,8 @@ make it invalid. No collection is involved -- the analyser never runs a query, i
 reads the program.
 """
 
+import pytest
+
 import definitions as d
 from copy_anywhere.logic.definition_schema import (
     T_CARD,
@@ -92,6 +94,44 @@ class TestScope:
         assert "identifier" in messages(analyze([d.variable("not a name", d.text("a"))]))
 
 
+class TestMigratedNames:
+    """Format 1 let a variable be called anything, so a migrated definition keeps its names.
+
+    Both validators run on every save, so the exemption has to hold in both or it holds in
+    neither: a user could not even open the definition to rename the variable.
+    """
+
+    def build(self, name, migrated):
+        definition = d.staged(stages=[d.variable(name, d.text("a"))])
+        if migrated:
+            definition["migrated_from_format"] = 1
+        return definition
+
+    def structure(self, definition):
+        return [str(problem) for problem in validate_definition_structure(definition)]
+
+    def test_a_free_text_name_is_kept_on_a_migrated_definition(self):
+        definition = self.build("My Word", migrated=True)
+        assert self.structure(definition) == []
+        assert analyze_definition(definition).problem_messages() == []
+
+    def test_the_same_name_is_refused_on_a_new_definition(self):
+        definition = self.build("My Word", migrated=False)
+        assert any("identifier" in problem for problem in self.structure(definition))
+        assert "identifier" in messages(analyze_definition(definition))
+
+    @pytest.mark.parametrize("migrated", [True, False])
+    @pytest.mark.parametrize(
+        "name, reason",
+        [("trigger", "reserved"), ("__x", "__"), ("", "missing")],
+        ids=["reserved", "dunder", "missing"],
+    )
+    def test_the_runtimes_own_names_are_refused_on_both(self, name, reason, migrated):
+        definition = self.build(name, migrated)
+        assert any(reason in problem for problem in self.structure(definition))
+        assert reason in messages(analyze_definition(definition))
+
+
 class TestTypes:
     def test_a_query_produces_a_note_list_and_a_card_query_a_card_list(self):
         notes = d.note_query("found", "deck:x")
@@ -123,6 +163,16 @@ class TestTypes:
 
     def test_an_unknown_binding_is_refused(self):
         assert "unknown binding" in messages(analyze([d.edit_note("nope")]))
+
+    def test_a_code_result_can_be_stored_into_and_reduced_over(self):
+        # A code-mode result's type is only known at run time; the executor checks it when
+        # the value arrives, the same way a loop over one is accepted here.
+        result = analyze([
+            d.variable("L", d.code("return ['a']")),
+            d.store("L", d.text("b")),
+            d.join("L", "joined"),
+        ])
+        assert result.problem_messages() == []
 
 
 class TestInterpolationRules:
@@ -333,6 +383,19 @@ class TestCallCycles:
         right = d.staged("r", guid="r", stages=[d.call_definition("bottom")])
         bottom = d.staged("bottom", guid="bottom", stages=[])
         assert find_call_cycles([top, left, right, bottom]) == []
+
+    def test_disabling_a_call_breaks_the_cycle(self):
+        a = d.staged("a", guid="a", stages=[d.call_definition("b", enabled=False)])
+        b = d.staged("b", guid="b", stages=[d.call_definition("a")])
+        assert find_call_cycles([a, b]) == []
+
+    @pytest.mark.parametrize("disable", ["the call", "its block"])
+    def test_a_disabled_call_inside_a_block_does_not_close_a_cycle(self, disable):
+        call = d.call_definition("b", enabled=disable != "the call")
+        block = d.condition(d.code("return True"), [call], enabled=disable != "its block")
+        a = d.staged("a", guid="a", stages=[block])
+        b = d.staged("b", guid="b", stages=[d.call_definition("a")])
+        assert find_call_cycles([a, b]) == []
 
     def test_the_analyser_refuses_a_cycle_too(self):
         a = d.staged("a", guid="a", stages=[d.call_definition("b")])
