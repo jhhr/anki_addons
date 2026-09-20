@@ -25,24 +25,41 @@ what a hand-written format-2 definition would look like:
 Intentional behaviour changes are listed in §11 of the design note: across-note selection is
 by note rather than by card (so a note with two matching cards is no longer selected twice),
 `Least_reps` becomes `random`, and file writes no longer translate newlines.
+
+`promote_definition()` is the second pass, at the bottom of this module: it rewrites those
+format-1 references into format-2 syntax, so that a migrated definition names the note every
+reference reads and nothing downstream has to know that format 1 ever existed. It is a pass
+of its own because what migration decides -- which stages, in what order -- and what
+promotion rewrites are two different questions.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from copy import deepcopy
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
+from ..shared.interpolate.interpolate_fields import (
+    DESTINATION_PREFIX,
+    FROM_TEXT_FIELD_REGEX,
+    QUERY_NOTE_INDEX,
+    TARGET_NOTES_COUNT,
+    extract_cloze_patterns,
+    intr_format,
+)
 from .definition_schema import (
     CARD_TYPE_SEPARATOR,
     FORMAT_VERSION,
     MODE_CODE,
     MODE_TEXT,
+    STAGE_CARD_QUERY,
     STAGE_CONDITION,
     STAGE_EDIT_NOTE,
     STAGE_FOR_EACH_NOTE,
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
+    STAGE_READ_FILE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -51,8 +68,13 @@ from .definition_schema import (
     TEXT,
     CopyDefinitionV2,
     Stage,
+    ValueExpression,
+    expression_is_legacy_syntax,
     is_format_2,
+    stage_body_blocks,
+    stage_result_names,
     value_expression,
+    walk_stages,
 )
 
 COPY_MODE_WITHIN_NOTE = "Within note"
@@ -814,12 +836,279 @@ def migrate_definitions(
     return migrated, problems
 
 
+# --------------------------------------------------------------------------------------
+# Promotion: format-1 syntax rewritten as format-2 syntax
+# --------------------------------------------------------------------------------------
+#
+# Migration makes the stages explicit; promotion makes the *references* explicit, so that
+# nothing carries format-1 syntax into the executor. `{{Word}}` becomes `{{trigger.Word}}`
+# and `{{__Dest__Word}}` becomes `{{note.Word}}`, naming whichever binding stood in for each
+# of format 1's two roles where that reference was read -- which `_note_roles` answers per
+# stage key, because the executor does. What a promoted expression computes is what the
+# format-1 interpolation computed, with one deliberate difference: a reference that resolves
+# to nothing is a stage error rather than a silent empty string.
+
+#: A cloze marker is not a reference, so `{{c1::...}}` is left as it is and its content is
+#: promoted on its own. Spelled the way the flow analyser spells it.
+_CLOZE_REFERENCE_RE = re.compile(r"^c\d+::")
+
+#: The runtime values a bare `{{__Name}}` still resolves to after promotion. They are not
+#: syntax -- the executor supplies them and the interpolation menu keeps offering them --
+#: so they are left unqualified.
+RUNTIME_VALUE_NAMES = (TARGET_NOTES_COUNT, QUERY_NOTE_INDEX)
+
+_RUNTIME_VALUES_BY_LOWER = {name.lower(): name for name in RUNTIME_VALUE_NAMES}
+
+#: The expression-valued keys of each stage type, read off the stage shapes in
+#: `definition_schema`. `edit_note` is absent because its expressions live one level down,
+#: on each field write; its tags are plain strings and its card actions carry Python code
+#: that is executed rather than interpolated, so neither holds a reference to promote.
+STAGE_EXPRESSION_KEYS: dict[str, tuple[str, ...]] = {
+    STAGE_VARIABLE: ("value",),
+    STAGE_NOTE_QUERY: ("query",),
+    STAGE_CARD_QUERY: ("query",),
+    STAGE_READ_FILE: ("filename",),
+    STAGE_WRITE_FILE: ("filename", "content"),
+    STAGE_STORE: ("value",),
+    STAGE_REDUCE: ("value", "initial"),
+    STAGE_CONDITION: ("predicate",),
+}
+
+
+def _promote_reference(
+    reference: str,
+    source: str,
+    destination: str,
+    known: dict[str, str],
+    binding_heads: frozenset,
+) -> str:
+    """One `{{...}}` reference, rewritten. `reference` is what stood between the braces."""
+    if _CLOZE_REFERENCE_RE.match(reference):
+        return intr_format(reference)
+    binding = known.get(reference.lower())
+    if binding is not None:
+        # A binding the migrator named. Format 1 matched names case-insensitively and
+        # format 2 resolves a binding exactly, so the promoted reference carries the
+        # binding's own spelling rather than the user's.
+        return intr_format(binding)
+    head, dot, _rest = reference.partition(".")
+    if dot and head in binding_heads:
+        # Already qualified. Nothing in format 1 could write this, but promoting it again
+        # would read the binding as a field name of itself.
+        return intr_format(reference)
+    if reference.startswith(DESTINATION_PREFIX):
+        # `interpolate_from_text` matched this prefix exactly, so a differently-cased one
+        # was a field name there and stays one here.
+        return intr_format(f"{destination}.{reference[len(DESTINATION_PREFIX):]}")
+    runtime_value = _RUNTIME_VALUES_BY_LOWER.get(reference.lower())
+    if runtime_value is not None:
+        return intr_format(runtime_value)
+    # Anything else names something on the source note: a field, a note value
+    # (`__Note_Tags`) or a card value (`Recognition__Card_Due`). Once qualified, all three
+    # are resolved by the same interpolation, against the note the binding holds. The
+    # user's spelling is kept: field matching is case-insensitive on that side too.
+    return intr_format(f"{source}.{reference}")
+
+
+def _promote_text(
+    text: str,
+    source: str,
+    destination: str,
+    known: dict[str, str],
+    binding_heads: frozenset,
+) -> str:
+    if not text:
+        return text or ""
+    # Cloze markers are not references. Their content is, so it is promoted on its own and
+    # the marker put back around the result -- the shape `resolve_references` uses.
+    placeholders: dict[str, str] = {}
+    for index, (start, end, cloze_num, content) in enumerate(
+        reversed(extract_cloze_patterns(text))
+    ):
+        placeholder = f"\x00CLOZE{index}\x00"
+        promoted = _promote_text(content, source, destination, known, binding_heads)
+        placeholders[placeholder] = f"{{{{c{cloze_num}::{promoted}}}}}"
+        text = text[:start] + placeholder + text[end:]
+
+    text = FROM_TEXT_FIELD_REGEX.sub(
+        lambda match: _promote_reference(
+            match.group(1), source, destination, known, binding_heads
+        ),
+        text,
+    )
+    for placeholder, cloze in placeholders.items():
+        text = text.replace(placeholder, cloze)
+    return text
+
+
+def promote_expression(
+    expression: ValueExpression,
+    source: str = "trigger",
+    destination: Optional[str] = None,
+    known_names: Optional[Iterable[str]] = None,
+) -> ValueExpression:
+    """One format-1 expression rewritten into format-2 syntax.
+
+    :param expression: the expression. It is not mutated; an expression that is already in
+        the current syntax is returned as a copy, unchanged, so this is idempotent.
+    :param source: the binding whose fields an unqualified name means
+    :param destination: the binding a `__Dest__` name means. `None` says format 1 had no
+        destination note for this stage, and the prefix collapses onto `source` -- which is
+        the note `interpolate_from_text` read with no destination in hand, minus the silent
+        empty it gave for the prefix it then could not strip.
+    :param known_names: the bare names that are bindings rather than fields of the source
+        note (see `promote_definition`), matched case-insensitively as format 1 matched
+        every name
+    """
+    if not isinstance(expression, dict):
+        return expression
+    if not expression_is_legacy_syntax(expression):
+        return deepcopy(expression)
+
+    promoted = deepcopy(expression)
+    promoted.pop("syntax_version", None)
+    # Isolation was about which variables a format-1 expression could see through the
+    # legacy interpolation; a promoted expression names its bindings, so there is nothing
+    # left for the flag to hide.
+    promoted.pop("legacy_isolated_variables", None)
+
+    known = {name.lower(): name for name in known_names or () if name}
+    binding_heads = frozenset(
+        [name for name in known.values()] + [source, destination or source, "trigger"]
+    )
+    for key in ("text", "code"):
+        if promoted.get(key):
+            promoted[key] = _promote_text(  # type: ignore[typeddict-item]
+                promoted[key], source, destination or source, known, binding_heads
+            )
+    return promoted
+
+
+def _binding_of(ref: Any) -> Optional[str]:
+    if isinstance(ref, dict) and isinstance(ref.get("binding"), str) and ref["binding"]:
+        return ref["binding"]
+    return None
+
+
+def _note_roles(stage: Stage, key: str) -> tuple[str, str]:
+    """Which binding an unqualified name, and a `__Dest__` name, read for one stage key.
+
+    This mirrors the contexts the executor builds -- every `make_context` call site in
+    `actions.py` and `evaluator.py` -- because that is where format 1's two roles ended up.
+    The roles are per *key*, not per stage: `copy_into_single_note` interpolated a file's
+    name over the destination note and its content over each source note, and an Edit Note
+    read `__Dest__` off the note it was writing however far away the values came from. A
+    single pair for the whole stage would quietly move one of them onto the other's note.
+    """
+    stage_type = stage.get("type", "")
+    source = _binding_of(stage.get("legacy_source"))
+    destination = _binding_of(stage.get("legacy_destination"))
+    if stage_type == STAGE_EDIT_NOTE:
+        # Every right-hand side reads the target's entry snapshot, which the stage binds
+        # under the target's own name, and `__Dest__` meant the note being written.
+        target = _binding_of(stage.get("target")) or "trigger"
+        return source or target, target
+    if stage_type == STAGE_WRITE_FILE and key == "filename":
+        # The name was interpolated over the destination note in both roles.
+        name = destination or source or "trigger"
+        return name, name
+    if stage_type == STAGE_WRITE_FILE:
+        # The content's destination falls back to its source: one note in both roles is
+        # what a definition with no destination of its own had.
+        return source or "trigger", destination or source or "trigger"
+    if stage_type == STAGE_STORE:
+        return source or "trigger", destination or "trigger"
+    if stage_type == STAGE_CONDITION and stage.get("predicate_kind") == "note_query":
+        # A migrated copy condition is a search run against one note, which is the note it
+        # reads too. Format 1 passed no destination note here at all, so `__Dest__` was an
+        # invalid field; it collapses onto the same note rather than staying empty.
+        target = _binding_of(stage.get("predicate_target")) or "trigger"
+        return target, target
+    # A variable, a query, a read, a reduce and a newly authored predicate all read the
+    # trigger note: format 1 computed them before it had any other note in hand.
+    return "trigger", "trigger"
+
+
+def promote_stage(stage: Stage, known_names: Optional[Iterable[str]] = None) -> Stage:
+    """One stage with every expression it holds promoted, and its legacy markers dropped.
+
+    The stage's `legacy_source` / `legacy_destination` are what say which note format 1
+    read an unqualified name and a `__Dest__` name from; once the references name those
+    bindings themselves, the two keys have nothing left to say and are removed.
+    """
+    if not isinstance(stage, dict):
+        return stage
+    promoted = deepcopy(stage)
+
+    for key in STAGE_EXPRESSION_KEYS.get(promoted.get("type", ""), ()):
+        if key in promoted:
+            source, destination = _note_roles(promoted, key)
+            promoted[key] = promote_expression(  # type: ignore[literal-required]
+                promoted[key], source, destination, known_names  # type: ignore[literal-required]
+            )
+    if promoted.get("type") == STAGE_EDIT_NOTE:
+        source, destination = _note_roles(promoted, "value")
+        for field_write in promoted.get("fields") or []:
+            if isinstance(field_write, dict) and "value" in field_write:
+                field_write["value"] = promote_expression(
+                    field_write["value"], source, destination, known_names
+                )
+    for key, block in stage_body_blocks(promoted):
+        if key in promoted:
+            promoted[key] = [  # type: ignore[literal-required]
+                promote_stage(child, known_names) for child in block
+            ]
+    promoted.pop("legacy_source", None)
+    promoted.pop("legacy_destination", None)
+    return promoted
+
+
+def _known_names(definition: Any) -> list[str]:
+    """The bare names a promoted expression keeps as they are: the bindings with names.
+
+    Every stage result -- a variable's, a query's, a synthesized join's -- plus the export
+    names. The loop and reduce bindings (`note`, `item`, `accumulator`) are deliberately
+    left out although they are bindings too: format 1 had no way to name them, so a bare
+    `{{Note}}` in a migrated expression is the field `Note`, which is what it has always
+    meant, and reading it as the loop's note would turn a common field name into a stage
+    error in every migrated across-notes definition.
+    """
+    names: list[str] = []
+    for stage in walk_stages(definition.get("stages") or []):
+        names.extend(stage_result_names(stage))
+    for export in definition.get("exports") or []:
+        if isinstance(export, dict) and isinstance(export.get("name"), str):
+            names.append(export["name"])
+    return [name for name in names if name]
+
+
+def promote_definition(definition: CopyDefinitionV2) -> CopyDefinitionV2:
+    """A whole definition with no format-1 syntax left in it.
+
+    Idempotent: a definition whose expressions are already in the current syntax comes back
+    as a copy of itself.
+    """
+    if not isinstance(definition, dict):
+        return definition
+    promoted = deepcopy(definition)
+    stages = promoted.get("stages")
+    if isinstance(stages, list):
+        known_names = _known_names(promoted)
+        promoted["stages"] = [promote_stage(stage, known_names) for stage in stages]
+    return promoted
+
+
 __all__ = [
     "CARD_TYPE_SEPARATOR",
     "DEFAULT_SELECT_CARD_SEPARATOR",
     "LEGACY_ITEM_BINDING",
     "LEGACY_QUERY_RESULT",
+    "RUNTIME_VALUE_NAMES",
+    "STAGE_EXPRESSION_KEYS",
     "MigrationError",
     "migrate_definition_v1_to_v2",
     "migrate_definitions",
+    "promote_definition",
+    "promote_expression",
+    "promote_stage",
 ]
