@@ -13,11 +13,14 @@ The shape of the output is dictated by what the format-1 executor did, which is 
 what a hand-written format-2 definition would look like:
 
 * Format 1 evaluated every variable against the trigger note alone, with no access to the
-  variables declared before it. Migrated variable stages carry `legacy_isolated_variables`
-  so the evaluator keeps doing that.
+  variables declared before it. Migrated variable stages are marked
+  `legacy_isolated_variables` while this module still has to know it, and promotion -- which
+  names the note every reference reads -- makes the mark redundant and drops it.
 * Format 1 expressions name note fields unqualified (`{{Word}}`) and the destination note's
-  fields with a `__Dest__` prefix. Migrated expressions carry `syntax_version: 1` and are
-  evaluated by the same interpolation the old executor used.
+  fields with a `__Dest__` prefix. Migration records which note each stage read in
+  `legacy_source` / `legacy_destination`, and promotion rewrites the references against
+  them; both the keys and the references' old spelling are gone by the time a definition
+  leaves here.
 * Destination-to-sources joined one value out of many source notes with
   `select_card_separator`. Format 2 has no implicit list-to-text conversion, so the join is
   synthesized here: a list, a loop that stores one value per source note, and a reduce.
@@ -64,12 +67,10 @@ from .definition_schema import (
     STAGE_STORE,
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
-    SYNTAX_VERSION_LEGACY,
     TEXT,
     CopyDefinitionV2,
     Stage,
     ValueExpression,
-    expression_is_legacy_syntax,
     is_format_2,
     stage_body_blocks,
     stage_result_names,
@@ -97,6 +98,21 @@ LEGACY_SELECT_CARD_BY_VALUES = ("None", "Random", "Least_reps")
 #: Format 1's name for the one process that could read more than one note at a time. Spelled
 #: out here for the same reason as the values above.
 LEGACY_REGEX_PROCESS = "Regex replace"
+
+#: Format-1 expressions accepted unqualified field names (`{{Word}}` meaning "a field of the
+#: note this expression is evaluated against"). Migration marks the expressions it writes
+#: with this while `promote_definition` still has to find them, and strips the marker again
+#: before it returns, so nothing outside this module ever sees one. It is also what
+#: recognises an expression a 0.3.0 start stored before promotion existed: read there, never
+#: written.
+SYNTAX_VERSION_LEGACY = 1
+
+
+def expression_is_legacy_syntax(expression: Any) -> bool:
+    """Whether this expression still speaks format-1 syntax and has to be promoted."""
+    return isinstance(expression, dict) and expression.get("syntax_version") == (
+        SYNTAX_VERSION_LEGACY
+    )
 
 
 def _split_quoted_list(value: Optional[str]) -> list[str]:

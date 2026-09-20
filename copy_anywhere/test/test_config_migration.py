@@ -17,11 +17,8 @@ from copy_anywhere.configuration import (
     PRE_STAGE_MIGRATION_KEY,
     migrate_config,
 )
-from copy_anywhere.logic.definition_schema import (
-    SYNTAX_VERSION_LEGACY,
-    is_format_2,
-    walk_stages,
-)
+from copy_anywhere.logic.definition_migration import SYNTAX_VERSION_LEGACY
+from copy_anywhere.logic.definition_schema import is_format_2, walk_stages
 
 
 @pytest.fixture

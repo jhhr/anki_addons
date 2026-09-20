@@ -28,14 +28,6 @@ from typing_extensions import TypeGuard
 # migrations; this one says how to read a single definition.
 FORMAT_VERSION = 2
 
-# Format-1 expressions accepted unqualified field names ({{Word}} meaning "a field of the
-# note this expression is evaluated against"). Nothing resolves them that way any more:
-# migration rewrites every reference into a qualified one and drops the marker, so no stored
-# expression carries it once it has been loaded. The marker is kept so migration can still
-# recognise one written by an earlier version -- it is read, never written out.
-SYNTAX_VERSION_LEGACY = 1
-SYNTAX_VERSION_CURRENT = 2
-
 CARD_TYPE_SEPARATOR = "<::>"
 
 
@@ -196,10 +188,6 @@ class ValueExpression(TypedDict, total=False):
     text: str
     code: str
     process_chain: Sequence[dict]
-    # The two keys migration writes on its way through and strips again before it is done;
-    # see SYNTAX_VERSION_LEGACY. Neither reaches a stored definition or the executor.
-    syntax_version: int
-    legacy_isolated_variables: bool
 
 
 def value_expression(
@@ -207,7 +195,6 @@ def value_expression(
     code: str = "",
     mode: Optional[str] = None,
     process_chain: Optional[Sequence[dict]] = None,
-    syntax_version: Optional[int] = None,
     **extra: Any,
 ) -> ValueExpression:
     expression: ValueExpression = {
@@ -216,8 +203,6 @@ def value_expression(
         "code": code or "",
         "process_chain": list(process_chain or []),
     }
-    if syntax_version is not None:
-        expression["syntax_version"] = syntax_version
     expression.update(extra)  # type: ignore[typeddict-item]
     return expression
 
@@ -231,13 +216,6 @@ def expression_source(expression: ValueExpression) -> str:
     if expression_is_code(expression):
         return expression.get("code", "") or ""
     return expression.get("text", "") or ""
-
-
-def expression_is_legacy_syntax(expression: Optional[ValueExpression]) -> bool:
-    """Whether this expression still speaks format-1 syntax and has to be promoted."""
-    return bool(expression) and expression.get("syntax_version", SYNTAX_VERSION_CURRENT) == (
-        SYNTAX_VERSION_LEGACY
-    )
 
 
 # --------------------------------------------------------------------------------------

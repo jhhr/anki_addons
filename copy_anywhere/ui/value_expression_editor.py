@@ -19,10 +19,7 @@ from ..configuration import ALL_FIELD_TO_FIELD_PROCESS_NAMES
 from ..logic.definition_schema import (
     MODE_CODE,
     MODE_TEXT,
-    SYNTAX_VERSION_CURRENT,
-    SYNTAX_VERSION_LEGACY,
     ValueExpression,
-    expression_is_legacy_syntax,
     value_expression,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
@@ -67,13 +64,6 @@ class ValueExpressionEditor(QWidget):
         self.expression.setdefault("text", "")
         self.expression.setdefault("code", "")
         self.expression.setdefault("process_chain", [])
-        #: Whether the expression was written in format 1's syntax when the editor was
-        #: built, and the text and code it was built with. A migrated expression stays on
-        #: that syntax until the user changes it; what "changes" means is measured against
-        #: these on every save, so an edit typed and undone is no edit.
-        self._built_legacy = expression_is_legacy_syntax(self.expression)
-        self._built_text = self.expression.get("text", "") or ""
-        self._built_code = self.expression.get("code", "") or ""
         self.state = state
         self.context = context
 
@@ -182,20 +172,6 @@ class ValueExpressionEditor(QWidget):
         self.expression["text"] = self.text_layout.get_text()
         if self.code_layout is not None:
             self.expression["code"] = self.code_layout.get_text()
-        if self._built_legacy:
-            # The menus in both boxes are built from the stage's format-2 scope, so what
-            # they offer -- `{{trigger.Word}}` -- is a field no note has to format 1's
-            # interpolation, which a migrated expression is still routed to. Changing the
-            # text is choosing the syntax the menu offered; an untouched migrated expression
-            # keeps running exactly as it did. Decided against the built state rather than
-            # the last save, because the dialog applies after every keystroke.
-            unchanged = (
-                self.expression["text"] == self._built_text
-                and self.expression.get("code", "") == self._built_code
-            )
-            self.expression["syntax_version"] = (
-                SYNTAX_VERSION_LEGACY if unchanged else SYNTAX_VERSION_CURRENT
-            )
         return self.expression
 
     def set_context(self, context: StageEditorContext) -> None:

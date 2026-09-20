@@ -200,10 +200,6 @@ definition makes goes through a stage, which is what keeps it visible to the pre
 the undo entry. After either form, the optional **Extra processing** chain runs — the same
 regex and text processes as before.
 
-Expressions that came from an older definition are a third case; they keep their old
-spelling until you edit them, and [section 8](#8-migrating-from-format-1) says what happens
-when you do.
-
 ### Inside an Edit Note stage
 
 One **Edit Note** stage names the note it writes to and can do three things to it: write
@@ -399,20 +395,23 @@ selection it could not read still selects nothing, and says so, until you tell i
 
 ![A refused migrated selection](docs/images/migrated-selection-refused.png)
 
-**The one thing to check by hand** is the wording inside converted values. They keep the old
-unqualified spelling — `{{Word}}`, `{{__Dest__Word}}`, `{{Recognition__Card_Due}}` — and as
-long as you leave them alone they keep being read that way and run exactly as before. But the
-right-click menu in the box offers the current spelling, `{{trigger.Word}}`, so the moment you
-change the text (or the code) of such a value, the whole value is read as current syntax from
-then on. Any old spelling still sitting in the box then refers to nothing.
+The references inside converted values are rewritten as part of the conversion. Format 1
+named a note's fields with no note in front of them — `{{Word}}`, `{{__Dest__Word}}`,
+`{{Recognition__Card_Due}}` — and left it to the executor to guess which note that was. The
+conversion knows which note each value read, so it writes the name in: `{{trigger.Word}}`,
+`{{note.Word}}`, whichever binding the old definition would have used. Nothing afterwards
+speaks the old spelling, in text or in code; a converted definition reads like one you wrote
+yourself, and the editor edits it like one. A reference that names nothing is not quietly
+skipped any more either — on the trigger note the editor refuses to save it, and anywhere
+else the stage fails and the log says which name it was.
 
-Nothing checks that for you except the box itself: an unqualified name is marked in red under
-the value, exactly as a misspelled one is.
-
-![A migrated value](docs/images/value-legacy.png)
-
-So when you edit a converted value, replace *every* reference in it with one from the menu,
-and make sure no red marker is left behind.
+**The one thing to check by hand** is values written as Python code. Their references are
+rewritten the same way, but the code around them now runs as current code: `note` is the
+note the stage is on — inside a loop, the note the loop is on — every other binding in scope
+is there under its own name, and the notes and cards are read-only views, so code that
+assigned to a field raises instead of writing. Open each converted definition that has
+**Execute content as Python code** ticked, read what the code does, and run the definition
+on one note before you let it loose on a selection.
 
 ## Where the details are
 

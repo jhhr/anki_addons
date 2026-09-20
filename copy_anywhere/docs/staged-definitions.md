@@ -69,9 +69,9 @@ name is a result, or one of the two values the run itself supplies
 (`{{__Target_Notes_Count}}`, `{{__Query_Note_Index}}`), and anything else fails the stage
 saying which name it was: a reference that resolves to nothing is a mistake, not an empty
 string. The analyser says the same from the same text, so the save is refused rather than
-the definition failing once per note later. Interpolating a note, a card or a list is a validation error: how several values
-become one piece of text is the definition's decision, so it has to say so with a reduce or
-with code.
+the definition failing once per note later. Interpolating a note, a card or a list is a
+validation error: how several values become one piece of text is the definition's decision,
+so it has to say so with a reduce or with code.
 
 Migration rewrites format 1's unqualified names into this syntax, so nothing stored still
 speaks format 1: `{{Word}}` becomes a reference to whichever note that stage read it from,
@@ -191,11 +191,11 @@ outer list plus `store` is how a loop reports anything back.
   they disqualify the definition. The editor names the stage whose action will not run.
 * **Reading the trigger's cards while it is being added is allowed.** Reading leaves
   nothing behind for a cancelled add to strand, so none of it is refused. A card-value key
-  on a note with no cards -- `{{Recognition__Card_Due}}`, in a migrated expression or a new
-  one -- answers from a new card's defaults rather than being reported as an unknown
-  reference, exactly as it did in format 1; on a cloze note with no cards yet it answers
-  empty. A query for the cards of a note that is not in the collection finds none, so a
-  loop over its results runs zero times. The editor says nothing about any of this.
+  on a note with no cards -- `{{trigger.Recognition__Card_Due}}` -- answers from a new
+  card's defaults rather than being reported as an unknown reference, exactly as it did in
+  format 1; on a cloze note with no cards yet it answers empty. A query for the cards of a
+  note that is not in the collection finds none, so a loop over its results runs zero times.
+  The editor says nothing about any of this.
 
 ## The startup migration
 
@@ -260,9 +260,12 @@ a variable's result, a synthesized join -- stays bare, because it is a result; s
 `{{__Target_Notes_Count}}` and `{{__Query_Note_Index}}`, which the run supplies. So a
 migrated expression is shown, edited and judged exactly as an authored one: the editor's
 menu offers the stage's scope, and what the menu offers is what is already in the box.
-Code is rewritten the same way, but only its `{{...}}` references: code that reached for a
-note by some other means is yours to check by hand. A config an earlier version already
-staged is rewritten in place by the `0.4.0` config migration.
+Code is rewritten the same way, but only its `{{...}}` references: the code itself then
+runs as format-2 code does, with every binding in scope under its own name, `note` meaning
+the stage's note or the loop's, and read-only facades where format 1 handed it the note
+object. Code that reached for a note by some other means, or wrote through one, is yours to
+check by hand. A config an earlier version already staged is rewritten in place by the
+`0.4.0` config migration.
 
 **What a migrated field write keeps.** Format 1 asked three questions per field write that
 format 2 asks once per definition: which editor fields trigger it, whether it runs on unfocus

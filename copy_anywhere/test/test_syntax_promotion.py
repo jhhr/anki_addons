@@ -23,13 +23,13 @@ from conftest import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.definition_migration import (
     STAGE_EXPRESSION_KEYS,
+    SYNTAX_VERSION_LEGACY,
     migrate_definition_v1_to_v2,
     promote_definition,
     promote_expression,
     promote_stage,
 )
 from copy_anywhere.logic.definition_schema import (
-    SYNTAX_VERSION_LEGACY,
     validate_definition_structure,
     value_expression,
     walk_stages,

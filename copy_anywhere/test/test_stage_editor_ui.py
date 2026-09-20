@@ -29,8 +29,6 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_NOTE_QUERY,
     STAGE_REDUCE,
     STAGE_VARIABLE,
-    SYNTAX_VERSION_CURRENT,
-    SYNTAX_VERSION_LEGACY,
     new_definition,
     value_expression,
 )
@@ -830,7 +828,7 @@ def migrated_condition(widget_parent, **stage_keys):
     """What the migrator writes for `copy_condition_query` (§11): a search, not a value."""
     return condition_stage_editor(
         widget_parent,
-        predicate=value_expression(text="tag:done", syntax_version=1),
+        predicate=value_expression(text="tag:done"),
         predicate_kind="note_query",
         predicate_target={"binding": "trigger"},
         **{"only_on_sync": False, **stage_keys},
@@ -1863,64 +1861,27 @@ class TestTheConditionEditorsCaption:
         assert "search" not in self.caption(editor).lower()
 
 
-class TestEditingAMigratedExpression:
-    """What a migrated expression's `syntax_version` does when its text is edited.
+class TestWhatTheExpressionEditorSaves:
+    """The round trip: what the user types in an expression box is what the run resolves.
 
-    The migrator marks every expression it writes `syntax_version: 1`, which routes it to
-    format 1's own interpolation, where `{{Word}}` is a field of the note at hand. The stage
-    editor's interpolation menu, though, is built from the stage's format-2 scope and offers
-    `{{trigger.Word}}`. Picking that entry into a migrated expression and saving wrote text
-    that format 1's interpolation read as a field no note has, and dropped: a clean save, and
-    the field written empty. Editing the text is choosing the syntax the menu offered, so
-    the save has to say so.
+    The editor has one syntax. It writes `mode`, `text` and `code` back and nothing else --
+    a migrated definition arrives promoted, so there is no second spelling to keep track of
+    -- and the box marks every reference its menu does not offer, which is the one thing
+    standing between a mistyped name and a stage error.
     """
 
-    def migrated_variable(self, col, text="{{Word}}", code="", mode=None):
+    def variable_editor(self, col, text="{{trigger.Word}}", code="", mode=None):
         stage = default_stage(STAGE_VARIABLE, "v")
         stage["result"] = "M"
-        stage["value"] = value_expression(
-            text=text, code=code, mode=mode, syntax_version=SYNTAX_VERSION_LEGACY
-        )
+        stage["value"] = value_expression(text=text, code=code, mode=mode)
         tree = tree_for(col, stage)
         return tree, tree.rows["v"].editor.value
 
-    def test_a_changed_text_moves_it_to_the_current_syntax(self, col, qapp):
-        _tree, editor = self.migrated_variable(col)
-
-        editor.text_layout.set_text("{{trigger.Word}}")
-
-        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_CURRENT
-
-    def test_an_untouched_text_stays_legacy(self, col, qapp):
-        _tree, editor = self.migrated_variable(col)
-
-        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_LEGACY
-
-    def test_a_text_put_back_as_it_was_stays_legacy(self, col, qapp):
-        # "Edited" means different from what the editor was built with, not touched: a
-        # keystroke undone leaves the expression the migrator wrote.
-        _tree, editor = self.migrated_variable(col)
-
-        editor.text_layout.set_text("{{trigger.Word}}")
-        editor.text_layout.set_text("{{Word}}")
-
-        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_LEGACY
-
-    def test_a_changed_code_moves_it_too(self, col, qapp):
-        # The code editor carries the same menu, and a migrated code expression has its
-        # references resolved by the same format-1 interpolation.
-        _tree, editor = self.migrated_variable(col, code="return 'a'", mode="code")
-
-        editor.code_layout.set_text("return {{trigger.Word}}")
-
-        assert editor.apply()["syntax_version"] == SYNTAX_VERSION_CURRENT
-
-    def test_a_format_1_spelling_left_behind_is_marked_in_the_box(self, col, qapp):
-        # The safety net for a spelling the promoted expression no longer means: the box
-        # validates every reference against the menu it offers, and `{{Word}}` is not in a
-        # format-2 scope. The analyser does not report it -- to it a bare name is a note or
-        # card value key looked up at run time -- so the red marker is what the user sees.
-        _tree, editor = self.migrated_variable(col)
+    def test_a_reference_the_menu_does_not_offer_is_marked_in_the_box(self, col, qapp):
+        # A format-1 spelling is the likeliest one to be typed from memory, and it is the
+        # one promotion rewrote everywhere: `{{Word}}` names no binding, so the box marks
+        # it, as the analyser refuses it on save and the run refuses it per note.
+        _tree, editor = self.variable_editor(col)
 
         editor.text_layout.set_text("{{trigger.Word}} {{Word}}")
         editor.text_layout.validate_text()
@@ -1929,15 +1890,15 @@ class TestEditingAMigratedExpression:
         assert "trigger.Word" not in editor.text_layout.error_label.text()
 
     def test_what_the_editor_saves_reaches_the_field(self, col, qapp):
-        # The user-visible failure, end to end: a migrated within-note write, its text
-        # replaced through the editor with the reference the menu offers, then run.
+        # End to end: a migrated within-note write, its text replaced through the editor
+        # with another reference the menu offers, then run.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         migrated = migrate_definition_v1_to_v2(
             d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
         )
         tree = tree_for(col, *migrated["stages"])
         edit_note = tree.rows[migrated["stages"][0]["guid"]].editor
-        edit_note.field_rows[0].value.text_layout.set_text("{{trigger.Word}}")
+        edit_note.field_rows[0].value.text_layout.set_text("{{trigger.Meaning}}")
         tree.apply_editors()
 
         copied: list = []
@@ -1946,8 +1907,7 @@ class TestEditingAMigratedExpression:
         )
 
         assert ok is True
-        assert note["Note"] == "neko"
-
+        assert note["Note"] == "cat"
 
 
 class TestAFieldTheTriggerNoteTypeDoesNotHave:

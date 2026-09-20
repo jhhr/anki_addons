@@ -1,9 +1,10 @@
 # Decided, not yet done
 
-Two findings from the review of the staged-definitions work were deliberately left out of
-that change. Both have a decision behind them; this is the record of what was chosen and
-why, so the work can be picked up without re-arguing it. Sections marked **Done** have since
-been implemented and are kept here for the reasoning, not as work outstanding.
+Findings from the review of the staged-definitions work that were deliberately left out of
+that change, or settled in a way worth writing down. Each has a decision behind it; this is
+the record of what was chosen and why, so the work can be picked up without re-arguing it.
+Sections marked **Done** have since been implemented and are kept here for the reasoning,
+not as work outstanding.
 
 ## Card actions and the Add dialog — Done
 
@@ -86,6 +87,88 @@ with a card action, which the strict pass had started skipping on unfocus while 
 being added, runs there again -- filling its field as you type, with the flag a logged
 skip -- exactly as its migrated form does. A format-1 definition that writes a file is
 newly skipped there instead.
+
+## Format-1 syntax at run time — Done
+
+**The problem.** A migrated expression was stored in format 1's own syntax and marked
+`syntax_version: 1`, and the executor kept a second resolver for it. `{{Word}}` meant "a
+field of the note at hand", and which note that was came off the stage's `legacy_source` /
+`legacy_destination`; `{{__Dest__Word}}` meant the other one. The review found the two
+resolvers disagreeing in the search predicate, where the marker chose between
+`interpolate_from_text` -- which dropped a name it could not resolve and ran the truncated
+search anyway -- and the current resolver, which refuses a search that resolved to nothing.
+But the predicate was only where it was noticed. The same fork ran through every expression
+the executor evaluated, and it cost more than the disagreement: the editor's menu is built
+from a stage's format-2 scope, so a migrated expression was shown in one language and read
+in another (the `{{trigger.Word}}` a user picked from the menu was a field no note had, and
+was silently dropped), and every rule about references had to be written twice.
+
+**The decision.** Retire format-1 syntax, at migration time rather than at run time. The
+migrator already records which note each stage read and wrote, so it spends that record on
+the references themselves: `{{Word}}` becomes `{{trigger.Word}}` or `{{note.Word}}`,
+`{{__Dest__Word}}` becomes the note the stage writes, a name the migrator itself bound stays
+bare, and the two values the run supplies -- `{{__Target_Notes_Count}}`,
+`{{__Query_Note_Index}}` -- stay bare as runtime values, which is what they always were.
+Nothing that has been loaded speaks format 1, so the second resolver, the `legacy_*` keys
+and the editor's legacy mode are deleted rather than maintained.
+
+Alongside it, the protection format 1 never had: a reference that resolves to nothing -- an
+unknown binding, an unknown field, an unknown runtime value -- is a stage error, in text and
+in code, in queries and in conditions. Format 1's answer was an empty string, which is how a
+typo became a truncated search over the whole collection or a field quietly written empty.
+The rule an empty answer is still allowed is the one about *data*: an expression that
+resolves to an empty value is empty, and a query that resolves to nothing goes through the
+stage's `if_empty` policy as before.
+
+**What changed.**
+
+1. `promote_definition()` in `definition_migration.py` rewrites every `{{...}}` in every
+   expression of a migrated definition, text and code alike, clozes included, and drops
+   `syntax_version` and `legacy_isolated_variables` with them. The migrator ends with it, so
+   nothing leaves that module speaking format 1; a `0.4.0` config step promotes a store an
+   earlier release already staged, using the `legacy_source` / `legacy_destination` it finds
+   there.
+2. `resolve_references` resolves a bare head to a binding, then to a runtime value, and
+   otherwise fails the stage saying which name it was. The fallback to
+   `interpolate_from_text` is gone, and with it the legacy branches in the expression
+   dispatcher, in `evaluate_predicate` and in the file-write code path, the
+   `legacy_source` / `legacy_destination` reads in the three actions, and the isolation
+   plumbing behind `legacy_isolated_variables`.
+3. The analyser says the same thing at edit time, so a definition that would fail this way
+   cannot be saved: an unknown bare name is a problem, and so is `{{trigger.X}}` where `X`
+   is not a field of any note type the definition's trigger names. Only the trigger can be
+   checked that far -- a note from a query holds whatever the query matched.
+4. The editor has one syntax. It no longer promotes an expression when the text changes,
+   which is what finding 3 decided and what the editor did until now: there is no legacy
+   expression left for it to meet, so the three fields that remembered what it was built
+   with and the `syntax_version` it wrote back are gone. The red marker under a reference
+   the menu does not offer is unchanged, and is now the only mode there is.
+5. The four format-1 characterization suites flipped the pins this removes -- a typo'd
+   condition that used to search on regardless, the "missing fields" wording of the empty
+   search, the unset `__Target_Notes_Count` that read as nothing in Within-note mode -- and
+   each flip is recorded with its old and new behaviour in the work plan for this branch.
+
+**Rejected:** leaving both resolvers in place and documenting the difference, which is what
+the first pass did. It is the cheapest change and the most expensive to keep: two languages
+in one box, an editor writing one and an executor reading the other, and a second place to
+remember every time a rule about references changes.
+
+Also rejected: fixing the predicate alone, so that the two branches at least agree about an
+unresolved search. It answers the finding as written and leaves the fork -- and the silently
+dropped reference in every other kind of expression -- exactly where it was.
+
+Also rejected: promoting at run time, leaving stored definitions in format-1 syntax and
+rewriting each expression as the executor reaches it. The stored JSON would keep a spelling
+the editor cannot show or check, the analyser would still be judging text that is not what
+runs, and every note in a bulk run would pay for the rewrite.
+
+**What this costs, and who pays it.** A promoted code expression runs as format-2 code:
+every binding in scope under its own name, `note` meaning the stage's note or the loop's,
+and read-only facades in place of the note object format 1 handed it. References inside the
+code are rewritten, but nothing else is, so code that reached for a note by some other means
+is the user's to check by hand -- which the README says, in the section about migrating.
+With a handful of installs and one of them the author's, that was judged cheaper than
+keeping an interpreter for the old language alive to serve it.
 
 ## Process chains and `use_all_notes`
 

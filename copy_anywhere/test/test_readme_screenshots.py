@@ -36,7 +36,6 @@ from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.definition_schema import (
     ALL_STAGE_TYPES,
-    SYNTAX_VERSION_LEGACY,
     validate_definition_structure,
     value_expression,
 )
@@ -406,10 +405,8 @@ def test_shoot_the_sub_editors(seeded, examples, shots, widget_parent):
 def test_shoot_the_value_expression_editor(seeded, examples, shots, widget_parent):
     """The one editor every computed value is written in, in each state worth explaining.
 
-    The last two are the same picture from the reader's point of view -- a reference in
-    red under the box -- and they are two shots because they are two mistakes: a name
-    typed wrong, and a format-1 spelling left behind by a migrated expression whose text
-    has since been edited.
+    Text, code, and the one mistake the box catches on its own: a reference no menu entry
+    offers, marked in red under the box.
     """
     collect = example(WALKTHROUGH, examples)
 
@@ -429,11 +426,6 @@ def test_shoot_the_value_expression_editor(seeded, examples, shots, widget_paren
         780,
     )
     shots.save(editor(value_expression(text="{{trigger.Wrod}}")), "value-unknown-reference", 780)
-    shots.save(
-        editor(value_expression(text="{{Word}}", syntax_version=SYNTAX_VERSION_LEGACY)),
-        "value-legacy",
-        780,
-    )
 
 
 @screenshots
