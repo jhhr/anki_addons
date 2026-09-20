@@ -20,10 +20,22 @@ so the import path is identical in development and in the released zip:
     from .shared.interpolate.interpolate_fields import interpolate_from_text
 
   link     <addon>/shared/<pkg> -> link into anki_shared/  (gitignore it)
-  install  addons21/<dev_dir_name> -> link to <addon>/     (once per device)
+  install  addons21/<folder> -> link to <addon>/           (once per device)
   vendor   <addon>/lib from requirements.txt, for every platform Anki runs on
   dist     dist/<addon>-<version>.ankiaddon with real file copies
   check    fail if an addon imports a shared package it did not declare
+
+Which <folder> an addon is linked under is this device's business, not the repo's: it is
+the name that device's Anki already keeps the addon's meta.json under. It defaults to the
+addon's `package`, the folder a released zip would create, and build.local.json (gitignored,
+next to this file) overrides it:
+
+    {
+      "addons_dir": "D:/Anki2/addons21",
+      "dev_dir_names": {"copy_anywhere": "my_folder_name"}
+    }
+
+Both keys are optional. `addons_dir` ranks below --addons-dir and ANKI_ADDONS_DIR.
 
 Stdlib only. Windows uses directory junctions, which need no admin rights.
 """
@@ -45,6 +57,8 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent
 SHARED_ROOT = ROOT / "anki_shared"
 DIST_DIR = ROOT / "dist"
+# Per-device preferences; see the module docstring. Never committed.
+LOCAL_CONFIG = ROOT / "build.local.json"
 
 EXCLUDE_DIRS = {
     "__pycache__",
@@ -94,13 +108,26 @@ SHARED_SIBLING_RE = re.compile(r"from\s+\.\.(\w+)")
 # --------------------------------------------------------------------------
 
 
+def load_local_config() -> dict:
+    """This device's build.local.json, or {} when there is none."""
+    if not LOCAL_CONFIG.is_file():
+        return {}
+    try:
+        data = json.loads(LOCAL_CONFIG.read_text("utf-8"))
+    except ValueError as e:
+        sys.exit(f"{LOCAL_CONFIG.name}: not valid JSON ({e})")
+    if not isinstance(data, dict) or not isinstance(data.get("dev_dir_names", {}), dict):
+        sys.exit(f'{LOCAL_CONFIG.name}: expected an object, with "dev_dir_names" an object')
+    return data
+
+
 class Addon:
-    def __init__(self, path: Path, meta: dict):
+    def __init__(self, path: Path, meta: dict, dev_dir_name: Optional[str] = None):
         self.path = path
         self.meta = meta
         self.package: str = meta["package"]
         self.name: str = meta["name"]
-        self.dev_dir_name: str = meta.get("dev_dir_name", path.name)
+        self.dev_dir_name: str = dev_dir_name or self.package
         self.shared: list[str] = meta.get("shared", [])
         self.version: str = meta.get("human_version", "0.0.1")
         self.extra_excludes: set[str] = set(meta.get("exclude", []))
@@ -115,10 +142,17 @@ class Addon:
 
 def discover(names: list[str] | None = None) -> list[Addon]:
     found = []
+    dev_dir_names: dict = load_local_config().get("dev_dir_names", {})
     for entry in sorted(ROOT.iterdir()):
         cfg = entry / "build.json"
         if entry.is_dir() and cfg.is_file():
-            found.append(Addon(entry, json.loads(cfg.read_text("utf-8"))))
+            meta = json.loads(cfg.read_text("utf-8"))
+            found.append(Addon(entry, meta, dev_dir_names.get(entry.name)))
+    # A misspelt key would otherwise be ignored, and `install` would quietly link the addon
+    # under its default name - a second, empty-configured copy of it as far as Anki can tell.
+    unknown = set(dev_dir_names) - {a.path.name for a in found}
+    if unknown:
+        sys.exit(f"{LOCAL_CONFIG.name}: no such addon dir(s): {', '.join(sorted(unknown))}")
     if names:
         wanted = set(names)
         found = [a for a in found if a.path.name in wanted or a.package in wanted]
@@ -190,6 +224,9 @@ def default_addons_dir() -> Path:
     env = os.environ.get("ANKI_ADDONS_DIR")
     if env:
         return Path(env)
+    local = load_local_config().get("addons_dir")
+    if local:
+        return Path(local)
     if ROOT.parent.name == "addons21":
         return ROOT.parent
     if sys.platform == "win32":

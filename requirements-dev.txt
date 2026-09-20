@@ -1,10 +1,9 @@
 # What the test suites need, for every addon in the repo. The versions are the ones the
 # full run was last verified against; bump them together and rerun `python -m pytest`.
 #
-# Install into the interpreter the tests run on -- the system Python 3.10 here, the same one
-# .vscode/settings.json and pyrightconfig.json point at, and the one to run `python -m mypy`
-# with: mypy reads anki/aqt out of whichever interpreter it runs on. The repo's .venv is a
-# different interpreter holding japanese_note_ai_ops' runtime libraries and has no Anki.
+# Install into one interpreter and use that same one for `python -m pytest`, `python -m mypy`
+# and the editor's type checker: all three read anki/aqt out of whichever interpreter they run
+# on. Python 3.10 or newer; mypy.ini checks against 3.10.
 #
 #   python -m pip install -r requirements-dev.txt
 #   python -m pip install --no-deps -r requirements-dev-nodeps.txt

@@ -31,11 +31,23 @@ Clone into `addons21` with submodules, then, with Anki closed:
 python build.py install
 ```
 
+Each addon is linked into `addons21` under its `package` name from `build.json`. If this
+device's Anki already knows an addon under another folder name (so its `meta.json` config
+lives there), say so first in a `build.local.json` next to `build.py`. The file is
+gitignored and both keys are optional:
+
+```json
+{
+  "addons_dir": "D:/Anki2/addons21",
+  "dev_dir_names": { "copy_anywhere": "my_folder_name" }
+}
+```
+
 ## Commands
 
 | command | what it does |
 | --- | --- |
-| `python build.py install [addon...]` | per-device setup: `shared/` links plus the `addons21/<dev_dir_name>` junctions |
+| `python build.py install [addon...]` | per-device setup: `shared/` links plus a junction per addon in `addons21` |
 | `python build.py link [addon...]` | just the `shared/` links |
 | `python build.py check` | fail if an addon imports a shared package it did not declare |
 | `python build.py dist [addon...]` | write `dist/<addon>-<version>.ankiaddon` |
@@ -48,9 +60,9 @@ One command runs every suite, from the repo root:
 python -m pytest
 ```
 
-It needs the dev dependencies in the interpreter the tests run on (the system Python
-that `.vscode/settings.json` points at, not `.venv`). Two steps, because `pytest-anki2`
-has to go in without its declared dependencies:
+It needs the dev dependencies in the interpreter the tests run on, which should also be the
+one mypy and your editor use. Two steps, because `pytest-anki2` has to go in without its
+declared dependencies:
 
 ```
 python -m pip install -r requirements-dev.txt

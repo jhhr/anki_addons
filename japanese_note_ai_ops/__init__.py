@@ -14,7 +14,7 @@ from aqt.qt import QAction, qconnect, QMenu
 from .shared.utils.vendor_path import add_vendor_paths, vendor_health  # noqa: E402
 
 ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
-ADDON_NAME = "Simple Anki AI Prompts"
+ADDON_NAME = "Japanese Note AI Ops"
 
 add_vendor_paths(ADDON_DIR)
 
