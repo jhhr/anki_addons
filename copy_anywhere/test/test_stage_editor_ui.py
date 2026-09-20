@@ -1948,3 +1948,50 @@ class TestEditingAMigratedExpression:
         assert ok is True
         assert note["Note"] == "neko"
 
+
+
+class TestAFieldTheTriggerNoteTypeDoesNotHave:
+    """The editor refuses what the run would refuse, where it can know.
+
+    A reference that resolves to nothing fails the stage at run time and writes nothing, so
+    a definition holding one is a definition the user cannot use. The analyser is pure and
+    the collection is what says which fields a note type has, so the dialog hands it the
+    trigger's field lists -- the only note types a definition names -- and the problem is
+    reported against the stage that holds the reference, like any other.
+    """
+
+    def write_into_the_trigger(self, dialog, text):
+        dialog.stage_tree.add_stage(STAGE_EDIT_NOTE, None, None)
+        guid = dialog.document.root_block()[0]["guid"]
+        editor = dialog.stage_tree.rows[guid].editor
+        editor._on_add_field()
+        editor.field_rows[0].field.setCurrentText("Note")
+        editor.field_rows[0].value.text_layout.set_text(text)
+        dialog.refresh_status()
+        return guid
+
+    def test_the_save_is_refused_and_the_stage_is_marked(self, col, qapp, dialog):
+        guid = self.write_into_the_trigger(dialog, "{{trigger.Nonexistent}}")
+
+        blockers = list(dialog.document.save_blockers())
+        assert any("Nonexistent" in blocker for blocker in blockers), blockers
+        assert not dialog.ok_button.isEnabled()
+        marked = [problem.message for problem in dialog.document.problems_for(guid)]
+        assert any("Nonexistent" in message for message in marked), marked
+        assert "⚠" in dialog.stage_tree.rows[guid].problem_label.text()
+
+    def test_a_field_the_note_type_has_saves(self, col, qapp, dialog):
+        guid = self.write_into_the_trigger(dialog, "{{trigger.Word}}")
+
+        assert list(dialog.document.save_blockers()) == []
+        assert dialog.document.problems_for(guid) == []
+
+    def test_the_check_follows_the_trigger_note_type(self, col, qapp, dialog):
+        # `Word` is a Vocab field and not a Kanji one, so the same definition becomes
+        # invalid the moment the trigger note type is changed under it.
+        self.write_into_the_trigger(dialog, "{{trigger.Word}}")
+
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
+        dialog.refresh_status()
+
+        assert any("Word" in blocker for blocker in dialog.document.save_blockers())

@@ -229,6 +229,21 @@ def selected_note_types(definition: CopyDefinitionV2) -> list[NotetypeDict]:
     return models
 
 
+def known_fields_for(definition: CopyDefinitionV2) -> dict[str, set[str]]:
+    """The field names each note binding's note can have, for the analyser.
+
+    Only the trigger has an answer: it is the one binding whose note types the definition
+    itself names. Everything else comes from a query, and a query's note types are not
+    knowable without running it, so a reference off one of those is checked at run time.
+    With no trigger note type chosen yet there is nothing to check against, and the entry
+    is left out rather than being an empty list of fields.
+    """
+    fields = {
+        field["name"] for model in selected_note_types(definition) for field in model["flds"]
+    }
+    return {"trigger": fields} if fields else {}
+
+
 def make_note_types_for(definition: CopyDefinitionV2) -> NoteTypesFor:
     """Resolve note bindings to note types the way the editor should.
 

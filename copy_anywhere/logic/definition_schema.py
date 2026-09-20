@@ -28,9 +28,11 @@ from typing_extensions import TypeGuard
 # migrations; this one says how to read a single definition.
 FORMAT_VERSION = 2
 
-# Format-1 expressions accept unqualified field names ({{Word}} meaning "a field of the
-# note this expression is evaluated against"). Migrated expressions carry this marker so the
-# runtime keeps resolving them that way; new expressions must qualify their references.
+# Format-1 expressions accepted unqualified field names ({{Word}} meaning "a field of the
+# note this expression is evaluated against"). Nothing resolves them that way any more:
+# migration rewrites every reference into a qualified one and drops the marker, so no stored
+# expression carries it once it has been loaded. The marker is kept so migration can still
+# recognise one written by an earlier version -- it is read, never written out.
 SYNTAX_VERSION_LEGACY = 1
 SYNTAX_VERSION_CURRENT = 2
 
@@ -194,9 +196,9 @@ class ValueExpression(TypedDict, total=False):
     text: str
     code: str
     process_chain: Sequence[dict]
-    # Only present on migrated expressions; see SYNTAX_VERSION_LEGACY.
+    # The two keys migration writes on its way through and strips again before it is done;
+    # see SYNTAX_VERSION_LEGACY. Neither reaches a stored definition or the executor.
     syntax_version: int
-    # Migrated variable expressions that must not see earlier variables (§11 step 2).
     legacy_isolated_variables: bool
 
 
@@ -232,6 +234,7 @@ def expression_source(expression: ValueExpression) -> str:
 
 
 def expression_is_legacy_syntax(expression: Optional[ValueExpression]) -> bool:
+    """Whether this expression still speaks format-1 syntax and has to be promoted."""
     return bool(expression) and expression.get("syntax_version", SYNTAX_VERSION_CURRENT) == (
         SYNTAX_VERSION_LEGACY
     )

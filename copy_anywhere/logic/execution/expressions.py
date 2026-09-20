@@ -6,13 +6,10 @@ depends on which note happens to be "current", and a reference to a list or a no
 error rather than a silent `str()`. A bare name is a result, or one of the two values the
 run itself supplies, or a mistake -- and the stage says so rather than writing nothing.
 
-*Format-1 syntax* (`syntax_version: 1`) named note fields unqualified and the destination
-note's with a `__Dest__` prefix, and was resolved by the same `get_field_values_from_notes()`
-the old executor used. Nothing writes it any more: the migrator rewrites every reference it
-converts, so the branch below that still reads it is unreachable and goes when the rest of
-the format-1 runtime does.
+There is one syntax. Format 1's unqualified names and its `__Dest__` prefix are rewritten
+into references to named bindings by the migrator, so nothing reaching here speaks it.
 
-The expression's process chain runs after either, unchanged from format 1.
+The expression's process chain runs after the value is produced, unchanged from format 1.
 """
 
 from __future__ import annotations
@@ -25,22 +22,15 @@ from anki.notes import Note
 
 from ...shared.interpolate.execute_code import execute_code_core
 from ...shared.interpolate.interpolate_fields import (
-    QUERY_NOTE_INDEX,
-    TARGET_NOTES_COUNT,
     extract_cloze_patterns,
     get_card_value,
     interpolate_from_text,
 )
-from ..copy_primitives import (
-    CopyFailedException,
-    apply_process_chain,
-    get_field_values_from_notes,
-)
+from ..copy_primitives import apply_process_chain
 
 from ..definition_schema import (
     ValueExpression,
     expression_is_code,
-    expression_is_legacy_syntax,
     expression_source,
 )
 from .context import ExecutionSession, StageError
@@ -95,9 +85,9 @@ CARD_PROPERTY_NAMES = frozenset({
 class ExpressionContext:
     """Everything an expression is evaluated against.
 
-    `source_note` is the note unqualified format-1 references read from and the note code
-    mode gets as `note`; `destination_note` is what `__Dest__` reads from. A format-2
-    expression uses neither except as the fallback for an unqualified reference.
+    `source_note` is the note code mode gets as `note`; `destination_note` is the one a
+    process chain treats as the note being written into. References themselves name their
+    binding and read neither.
     """
 
     __slots__ = (
@@ -106,10 +96,8 @@ class ExpressionContext:
         "environment",
         "source_note",
         "destination_note",
-        "separator",
         "multiple_note_types",
         "stage",
-        "isolated_variables",
         "purpose",
     )
 
@@ -120,10 +108,8 @@ class ExpressionContext:
         environment: dict,
         source_note: Note,
         destination_note: Optional[Note] = None,
-        separator: Optional[str] = None,
         multiple_note_types: bool = False,
         stage: Optional[dict] = None,
-        isolated_variables: bool = False,
         purpose: str = "",
     ) -> None:
         self.session = session
@@ -131,25 +117,22 @@ class ExpressionContext:
         self.environment = environment
         self.source_note = source_note
         self.destination_note = destination_note
-        self.separator = separator
         self.multiple_note_types = multiple_note_types
         self.stage = stage
-        self.isolated_variables = isolated_variables
         # What this expression is being evaluated for -- "field Meaning", "file out.txt" --
         # for the messages that are about the thing rather than about the stage. A stage can
         # hold many writes, so naming the stage is not enough to find the one that failed.
         self.purpose = purpose
 
-    def variables(self) -> Optional[dict]:
-        """The bindings a format-1 expression can reach as `{{Name}}`.
+    def process_chain_variables(self) -> dict:
+        """The names a process chain's own text can reach as `{{Name}}`.
 
-        Only scalars: there is no implicit list-to-text conversion, so a note, a card or a
-        list is simply not among the variables and reads as an invalid field, which is what
-        it is. `legacy_isolated_variables` reproduces format 1's rule that a variable's own
-        expression saw no variables at all.
+        A regex process interpolates its pattern and its replacement itself, through
+        format 1's interpolation, which is the one place that syntax survives -- those two
+        boxes are not value expressions and have no stage scope behind them. Only scalars
+        are offered: there is no implicit list-to-text conversion, so a note, a card or a
+        list is simply not among them.
         """
-        if self.isolated_variables:
-            return None
         variables: dict[str, Any] = {}
         for name, value in self.environment.items():
             if isinstance(value, SCALAR_TYPES):
@@ -286,21 +269,6 @@ def evaluate_raw(expression: Optional[ValueExpression], ctx: ExpressionContext) 
     source = expression_source(expression)
     is_code = expression_is_code(expression)
 
-    if expression_is_legacy_syntax(expression):
-        try:
-            return get_field_values_from_notes(
-                copy_from_text=source,
-                notes=[ctx.source_note],
-                dest_note=ctx.destination_note,
-                multiple_note_types=ctx.multiple_note_types,
-                variable_values_dict=ctx.variables(),
-                select_card_separator=ctx.separator,
-                use_code=is_code,
-                progress_updater=ctx.session.progress_updater,
-            )
-        except CopyFailedException as error:
-            raise ctx.error(str(error)) from error
-
     resolved = resolve_references(source, ctx)
     if not is_code:
         return resolved
@@ -322,7 +290,7 @@ def run_process_chain(value: str, expression: ValueExpression, ctx: ExpressionCo
         notes=[ctx.source_note],
         dest_note=ctx.destination_note if ctx.destination_note is not None else ctx.source_note,
         multiple_note_types=ctx.multiple_note_types,
-        variable_values_dict=ctx.variables(),
+        variable_values_dict=ctx.process_chain_variables(),
         progress_updater=ctx.session.progress_updater,
         file_cache=ctx.session.file_cache,
     )
@@ -368,25 +336,12 @@ def evaluate_value(expression: Optional[ValueExpression], ctx: ExpressionContext
     return run_process_chain(str(raw), expression or {}, ctx)
 
 
-def legacy_runtime_values(
-    query_note_index: Optional[int] = None, target_notes_count: Optional[int] = None
-) -> dict:
-    """The two runtime variables format-1 expressions expect the executor to provide."""
-    values: dict[str, Any] = {}
-    if query_note_index is not None:
-        values[QUERY_NOTE_INDEX] = query_note_index
-    if target_notes_count is not None:
-        values[TARGET_NOTES_COUNT] = target_notes_count
-    return values
-
-
 __all__ = [
     "ExpressionContext",
     "code_globals",
     "evaluate_raw",
     "evaluate_text",
     "evaluate_value",
-    "legacy_runtime_values",
     "resolve_references",
     "run_process_chain",
 ]

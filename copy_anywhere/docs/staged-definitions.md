@@ -68,7 +68,8 @@ note that holds them -- `{{trigger.__Note_ID}}`, `{{note.Recognition__Card_Due}}
 name is a result, or one of the two values the run itself supplies
 (`{{__Target_Notes_Count}}`, `{{__Query_Note_Index}}`), and anything else fails the stage
 saying which name it was: a reference that resolves to nothing is a mistake, not an empty
-string. Interpolating a note, a card or a list is a validation error: how several values
+string. The analyser says the same from the same text, so the save is refused rather than
+the definition failing once per note later. Interpolating a note, a card or a list is a validation error: how several values
 become one piece of text is the definition's decision, so it has to say so with a reduce or
 with code.
 
@@ -296,6 +297,13 @@ run, then the exports.
 * Every text edit's right-click menu is built from the analyser's record of what is in
   scope *at that stage*. A loop body offers the loop's note; the stage above the loop does
   not. Lists never appear, because no interpolation could turn one into text.
+* A reference nothing answers to is a complaint against the stage that holds it, not a
+  surprise at run time: a bare name that is neither a result in scope nor one of the two
+  values the run supplies, and a `{{trigger.X}}` naming something none of the definition's
+  trigger note types has a field for. Only the trigger can be checked that far -- a note
+  from a query holds whatever the query matched, so a name read off one of those is still
+  the run's to report -- and note values and card values are recognised by their shape, so
+  a misspelled one is left to the run too.
 * A reference that stopped resolving -- to a result whose stage you deleted, say -- stays
   selected and is marked in red on both rows. Nothing is silently rewritten. Moving a stage
   keeps its export for the same reason: a stage moved into a loop cannot be exported, so its

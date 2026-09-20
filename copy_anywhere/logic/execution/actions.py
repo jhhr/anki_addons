@@ -18,10 +18,7 @@ from typing import Any, Optional
 from anki.cards import Card
 from anki.notes import Note
 
-from ...shared.interpolate.interpolate_fields import (
-    TARGET_NOTES_COUNT,
-    interpolate_from_text,
-)
+from ...shared.interpolate.interpolate_fields import TARGET_NOTES_COUNT
 from ...utils.duplicate_note import duplicate_note
 from ...utils.media_files import MediaFileError
 from ..copy_primitives import (
@@ -31,7 +28,7 @@ from ..copy_primitives import (
     int_sort_by_field_value,
     sort_by_field_value,
 )
-from ..definition_schema import expression_is_code, expression_is_legacy_syntax
+from ..definition_schema import expression_is_code
 from ..execute_code_wrappers import execute_code_for_files
 from .context import Cancelled, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
@@ -111,7 +108,6 @@ def make_context(
     stage: dict,
     source_note: Note,
     destination_note: Optional[Note] = None,
-    isolated_variables: bool = False,
     purpose: str = "",
 ) -> ExpressionContext:
     return ExpressionContext(
@@ -120,10 +116,8 @@ def make_context(
         environment=env,
         source_note=source_note,
         destination_note=destination_note,
-        separator=frame.definition.get("legacy", {}).get("select_card_separator"),
         multiple_note_types=frame.multiple_note_types,
         stage=stage,
-        isolated_variables=isolated_variables,
         purpose=purpose,
     )
 
@@ -141,9 +135,6 @@ def run_variable(stage: dict, env: dict, frame) -> Any:
         stage,
         source_note=frame.trigger_note,
         destination_note=frame.trigger_note,
-        # Format 1 computed every variable from the trigger note alone, before anything
-        # else, so none of them could read the ones declared earlier.
-        isolated_variables=bool(expression.get("legacy_isolated_variables", False)),
     )
     return evaluate_value(expression, ctx)
 
@@ -156,17 +147,7 @@ def run_store(stage: dict, env: dict, frame) -> None:
     target = resolve_binding(env, stage.get("target"), frame, stage, "store target")
     if not isinstance(target, list):
         raise frame.error("store target is not a list", stage)
-    source_note = frame.trigger_note
-    destination_note = frame.trigger_note
-    legacy_source = binding_name(stage.get("legacy_source"))
-    if legacy_source:
-        source_note = resolve_note(env, stage["legacy_source"], frame, stage, "store source")
-    legacy_destination = binding_name(stage.get("legacy_destination"))
-    if legacy_destination:
-        destination_note = resolve_note(
-            env, stage["legacy_destination"], frame, stage, "store destination"
-        )
-    ctx = make_context(frame, env, stage, source_note, destination_note)
+    ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
     target.append(evaluate_value(stage.get("value"), ctx))
 
 
@@ -354,9 +335,6 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     # Every right-hand side in this stage reads the note as it was when the stage started,
     # which is what lets one stage swap two fields (§5.3).
     snapshot = duplicate_note(target)
-    source_note = snapshot
-    if binding_name(stage.get("legacy_source")):
-        source_note = resolve_note(env, stage["legacy_source"], frame, stage, "source")
     # Inside this stage the target's own binding names the snapshot, so `{{trigger.Word}}`
     # on the right of a write reads the value the stage started with rather than one an
     # earlier write in the same stage has already replaced.
@@ -390,7 +368,7 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
             # counts as filling the field, which is what format 1 did.
             continue
         ctx = make_context(
-            frame, write_env, stage, source_note, snapshot, purpose=f"field {field}"
+            frame, write_env, stage, snapshot, snapshot, purpose=f"field {field}"
         )
         target[field] = evaluate_text(field_write.get("value"), ctx)
         modified = True
@@ -487,14 +465,10 @@ def run_read_file(stage: dict, env: dict, frame) -> str:
 
 def run_write_file(stage: dict, env: dict, frame) -> None:
     session = frame.session
-    source_note = frame.trigger_note
-    if binding_name(stage.get("legacy_source")):
-        source_note = resolve_note(env, stage["legacy_source"], frame, stage, "source")
-    destination_note = source_note
-    if binding_name(stage.get("legacy_destination")):
-        destination_note = resolve_note(
-            env, stage["legacy_destination"], frame, stage, "destination"
-        )
+    # A file write names no note of its own -- its references name their bindings -- so the
+    # note behind it is the trigger, which is what code mode gets as `note` unless the
+    # stage sits in a loop that binds that name itself.
+    note = frame.trigger_note
 
     content_expression = stage.get("content") or {}
     overwrite = bool(stage.get("overwrite", False))
@@ -503,7 +477,7 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
     if expression_is_code(content_expression):
         # The code path names its own files: it returns (filename, content) pairs, so the
         # stage's filename expression is not used at all.
-        ctx = make_context(frame, env, stage, source_note, destination_note)
+        ctx = make_context(frame, env, stage, note, note)
         pairs = _code_file_pairs(content_expression, ctx, stage, frame)
         wrote = False
         for filename, content in pairs:
@@ -512,7 +486,7 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
             session.update_counts(processed_files_inc=1)
         return
 
-    filename_ctx = make_context(frame, env, stage, destination_note, destination_note)
+    filename_ctx = make_context(frame, env, stage, note, note)
     filename = evaluate_text(stage.get("filename"), filename_ctx)
     if not filename:
         raise frame.error("Error in copy fields: No file name provided", stage)
@@ -525,33 +499,17 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
                 return
         except MediaFileError as error:
             raise frame.error(str(error), stage) from error
-    content_ctx = make_context(
-        frame, env, stage, source_note, destination_note, purpose=f"file {filename}"
-    )
+    content_ctx = make_context(frame, env, stage, note, note, purpose=f"file {filename}")
     content = evaluate_text(content_expression, content_ctx)
     if _queue_file(frame, stage, filename, content, overwrite, skip_if_exists):
         session.update_counts(processed_files_inc=1)
 
 
 def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, frame) -> list:
-    from ..definition_schema import expression_is_legacy_syntax, expression_source
+    from ..definition_schema import expression_source
     from .expressions import code_globals, resolve_references
 
-    source = expression_source(expression)
-    if expression_is_legacy_syntax(expression):
-        interpolated, invalid = interpolate_from_text(
-            source,
-            source_note=ctx.source_note,
-            destination_note=ctx.destination_note,
-            variable_values_dict=ctx.variables(),
-            multiple_note_types=ctx.multiple_note_types,
-        )
-        if invalid:
-            logger.error(
-                "Error in copy fields: Invalid fields in copy_as_code: %s", ", ".join(invalid)
-            )
-    else:
-        interpolated = resolve_references(source, ctx)
+    interpolated = resolve_references(expression_source(expression), ctx)
     # The stage's bindings, the same names every other code expression runs with: a file
     # write inside a loop has to be able to say `note` and mean the note being looped over,
     # which is what a migrated Destination-to-sources file write always meant by it.
@@ -583,9 +541,9 @@ def _queue_file(
 def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
     """Whether the condition's `then` branch runs.
 
-    A migrated condition is an Anki search scoped to one note, which is how format 1 ran the
-    copy condition; a newly authored one is boolean code or a scalar the branch takes the
-    truthiness of.
+    A condition matched as an Anki search is scoped to one note, which is how format 1 ran
+    the copy condition a migration produced; any other is boolean code or a scalar the
+    branch takes the truthiness of.
     """
     session = frame.session
     if stage.get("only_on_sync") and not session.is_sync:
@@ -609,45 +567,17 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
             )
         ctx = make_context(frame, env, stage, target, target)
         raw_query = expression.get("text", "") or ""
-        if expression_is_legacy_syntax(expression):
-            # A migrated copy condition, kept on format 1's own interpolation rather than
-            # routed through `evaluate_text`. The dispatcher's legacy branch calls
-            # `get_field_values_from_notes`, which is a different function with different
-            # diagnostics -- it reports an unknown field that this has always dropped
-            # silently, and resolves a `__Dest__` reference this has always left invalid.
-            # Both are arguably improvements and neither is this fix's to make: the
-            # characterization suite pins what a migrated definition does, warts included.
-            interpolated, invalid = interpolate_from_text(
-                raw_query,
-                source_note=target,
-                variable_values_dict=ctx.variables(),
+        # What `run_query` does with a query stage's search, and what every other expression
+        # in the executor gets: the resolution the expression's own references ask for.
+        interpolated = _search_text(evaluate_text(expression, ctx))
+        if not interpolated:
+            # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
+            # trigger whatever the condition says, so every one of them would read true.
+            raise frame.error(
+                f"Error in copy fields: Condition query '{raw_query}' resolved to"
+                f" nothing for note id {target.id}",
+                stage,
             )
-            interpolated = _search_text(interpolated)
-            if not interpolated:
-                raise frame.error(
-                    f"Error in copy fields: Condition query '{raw_query}' could not be"
-                    f" interpolated for note id {target.id} due to missing fields:"
-                    f" {', '.join(invalid)}",
-                    stage,
-                )
-        else:
-            # What `run_query` does with a query stage's search, and what every other
-            # expression in the executor gets: the resolution the expression's own syntax
-            # asks for. Calling format-1 interpolation here read an editor-authored
-            # `{{trigger.Word}}` -- which the stage's interpolation menu offers and the
-            # analyser accepts -- as a field no note has, and dropped it. A predicate
-            # narrowed by a reference then matched nothing, and a broad predicate narrowed by
-            # one matched everything its broad half did, running the branch for the notes it
-            # was written to exclude.
-            interpolated = _search_text(evaluate_text(expression, ctx))
-            if not interpolated:
-                # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
-                # trigger whatever the condition says, so every one of them would read true.
-                raise frame.error(
-                    f"Error in copy fields: Condition query '{raw_query}' resolved to"
-                    f" nothing for note id {target.id}",
-                    stage,
-                )
         # Through the session, like a query stage's search: the same predicate asked of the
         # same note twice costs one trip to the collection, and the preview pane -- the one
         # a user opens to see why a branch did not run -- gets the search it actually made.

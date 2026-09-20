@@ -5,7 +5,9 @@ at a stage is by construction what the evaluator will have in scope there. Walki
 in order, each stage is validated against the bindings visible before it, and the result it
 produces -- if any -- is added to the scope the next stage sees.
 
-The analysis is pure: no collection, no `mw`, no config. It answers four questions.
+The analysis is pure: no collection, no `mw`, no config. A caller that does hold the
+collection can pass in `known_fields`, which is the one thing the definition alone cannot
+say -- which fields the note types it triggers on actually have. It answers four questions.
 
 * **Scope**: which bindings a stage can read. `scopes[stage_guid]` is exactly that, recorded
   before the stage runs, which is what an editor widget needs to build its menu.
@@ -24,6 +26,13 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
+from ..shared.interpolate.interpolate_fields import (
+    CARD_VALUE_RE,
+    MULTI_CARD_VALUE_RE,
+    NOTE_VALUE_RE,
+    QUERY_NOTE_INDEX,
+    TARGET_NOTES_COUNT,
+)
 from .definition_schema import (
     LIST,
     STAGE_CALL_DEFINITION,
@@ -54,7 +63,6 @@ from .definition_schema import (
     ValueExpression,
     ValueType,
     expression_is_code,
-    expression_is_legacy_syntax,
     export_result_name,
     expression_source,
     is_format_2,
@@ -75,6 +83,10 @@ INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
 CLOZE_REF_RE = re.compile(r"^c\d+::")
 
 TRIGGER_BINDING = "trigger"
+
+#: The values the run itself supplies, which no stage declares and so no binding holds.
+#: A bare name that is neither a binding nor one of these resolves to nothing (§11).
+RUNTIME_VALUE_NAMES = frozenset({TARGET_NOTES_COUNT, QUERY_NOTE_INDEX})
 
 
 class Binding:
@@ -143,9 +155,18 @@ class _Analyzer:
         lookup: Optional[Callable[[str], Optional[CopyDefinitionV2]]] = None,
         analyzed_callees: Optional[dict[str, AnalysisResult]] = None,
         call_stack: Sequence[str] = (),
+        known_fields: Optional[Mapping[str, set[str]]] = None,
     ) -> None:
         self.definition = definition
         self.lookup = lookup
+        # Lowercased once, because a field reference is matched case-insensitively at run
+        # time. A binding with an empty list is one nothing is known about, like a missing
+        # one: with no trigger note type chosen yet there is nothing to check against.
+        self.known_fields: dict[str, set[str]] = {
+            name: {str(field).lower() for field in fields}
+            for name, fields in (known_fields or {}).items()
+            if fields
+        }
         self.result = AnalysisResult()
         # Callee analyses are cached: a definition called from three places is analysed once,
         # and a diamond in the call graph does not become exponential work.
@@ -262,27 +283,32 @@ class _Analyzer:
         stage: Stage,
         what: str,
     ) -> None:
-        if expression_is_legacy_syntax(expression):
-            # Format-1 syntax names note fields unqualified, so a reference that is not a
-            # binding is a field name rather than a mistake. Those are resolved -- and
-            # reported -- at run time, exactly as they were before.
-            return
         for match in INTERPOLATION_RE.finditer(expression_source(expression)):
             reference = match.group(1)
             if CLOZE_REF_RE.match(reference):
                 continue
-            head = reference.split(".", 1)[0]
+            head, _dot, rest = reference.partition(".")
             binding = scope.get(head)
             if binding is None:
-                # Not a binding: a bare note-value or card-value key resolved at run time.
+                if head not in RUNTIME_VALUE_NAMES:
+                    # The same answer the run gives (§11): there is nothing else a bare name
+                    # can be, and reading it off whichever note was in hand is what let a
+                    # typo write an empty string with the definition reporting success.
+                    self.problem(
+                        f"{what} reads '{reference}', but '{head}' is not a binding"
+                        " or a runtime value",
+                        stage,
+                    )
                 continue
-            if "." in reference:
+            if _dot:
                 if binding.type not in (T_NOTE, T_CARD) and binding.type != T_UNKNOWN:
                     self.problem(
                         f"{what} reads '{reference}', but '{head}' is"
                         f" {binding.type.name}, not a note or card",
                         stage,
                     )
+                elif binding.type == T_NOTE:
+                    self.check_note_field(head, rest, reference, stage, what)
                 continue
             if binding.type.is_listy or binding.type in (T_NOTE, T_CARD):
                 # There is no implicit list-to-text conversion: how values are combined is
@@ -292,6 +318,37 @@ class _Analyzer:
                     " reduce it to a scalar first",
                     stage,
                 )
+
+    def check_note_field(
+        self, head: str, rest: str, reference: str, stage: Stage, what: str
+    ) -> None:
+        """Whether `<note binding>.X` names something that note can answer to.
+
+        Only a binding whose note types are known can be checked, which today means the
+        trigger and only when the editor passed them in. A binding that came from a query
+        or from a loop over one holds whatever the query matched, so nothing at edit time
+        says what fields it has; the run reports those.
+
+        Note values and card values are not fields and are not in the list. They are
+        recognised by shape rather than by key, so a misspelled `__Note_Tgas` is still left
+        to the run -- refusing it here would mean keeping a second copy of every key the
+        interpolation knows.
+        """
+        fields = self.known_fields.get(head)
+        if not fields:
+            return
+        if rest.lower() in fields:
+            return
+        if any(
+            pattern.match(rest)
+            for pattern in (NOTE_VALUE_RE, CARD_VALUE_RE, MULTI_CARD_VALUE_RE)
+        ):
+            return
+        self.problem(
+            f"{what} reads '{reference}', but '{rest}' is not a field of the note types"
+            f" '{head}' can hold",
+            stage,
+        )
 
     def check_predicate_has_text(self, predicate: Any, stage: Stage) -> None:
         """An empty text predicate is a condition nobody meant to write.
@@ -305,10 +362,6 @@ class _Analyzer:
         is where every new condition starts.
         """
         if not isinstance(predicate, dict) or expression_is_code(predicate):
-            return
-        if expression_is_legacy_syntax(predicate):
-            # Migrated conditions are resolved, and refused, at run time with format 1's
-            # own messages, like their references (see `check_references`).
             return
         if not (predicate.get("text") or "").strip():
             if stage.get("predicate_kind") == "note_query":
@@ -706,13 +759,20 @@ class _Analyzer:
 def analyze_definition(
     definition: CopyDefinitionV2,
     lookup: Optional[Callable[[str], Optional[CopyDefinitionV2]]] = None,
+    known_fields: Optional[Mapping[str, set[str]]] = None,
 ) -> AnalysisResult:
     """Analyse one definition, following `call_definition` stages through `lookup`.
 
     :param lookup: maps a definition guid to the definition. Without it, call stages are
         analysed pessimistically: unknown output types and every effect assumed.
+    :param known_fields: the field names a note binding's note can have, by binding name.
+        The analysis is pure, so only a caller holding the collection can say -- the editor
+        does, for the trigger, from the note types the definition triggers on. Without it a
+        qualified reference is checked no further than its head, which is what every caller
+        outside the editor gets. It is not passed on to a called definition: the callee's
+        trigger is whichever note the caller handed it.
     """
-    return _Analyzer(definition, lookup=lookup).run()
+    return _Analyzer(definition, lookup=lookup, known_fields=known_fields).run()
 
 
 def analyze_block(

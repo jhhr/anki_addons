@@ -11,7 +11,7 @@ cannot leave a half-edited definition behind in the config.
 """
 
 from copy import deepcopy
-from typing import Any, Callable, Iterable, NamedTuple, Optional
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Optional
 import uuid
 
 from ..logic.definition_schema import (
@@ -224,6 +224,7 @@ class StageDocument:
         definition: Optional[CopyDefinitionV2] = None,
         lookup: Optional[Callable[[str], Optional[CopyDefinitionV2]]] = None,
         make_guid: Callable[[], str] = new_guid,
+        known_fields: Optional[Callable[[CopyDefinitionV2], Mapping[str, set[str]]]] = None,
     ) -> None:
         self._make_guid = make_guid
         if definition is None:
@@ -236,6 +237,11 @@ class StageDocument:
         self.definition.setdefault("exports", [])
         self.definition.setdefault("format_version", FORMAT_VERSION)
         self._lookup = lookup
+        # Asked again for every analysis rather than captured: the trigger note types are
+        # edited in the same dialog, so the fields a `trigger.X` reference is checked
+        # against have to be the ones chosen now. Without it the analyser checks the head
+        # of a reference and no further.
+        self._known_fields = known_fields
         self._analysis: Optional[AnalysisResult] = None
 
     # -- analysis ------------------------------------------------------------------------
@@ -248,7 +254,13 @@ class StageDocument:
     @property
     def analysis(self) -> AnalysisResult:
         if self._analysis is None:
-            self._analysis = analyze_definition(self.definition, self._lookup)
+            self._analysis = analyze_definition(
+                self.definition,
+                self._lookup,
+                known_fields=(
+                    self._known_fields(self.definition) if self._known_fields else None
+                ),
+            )
         return self._analysis
 
     def problems_for(self, guid: str) -> list[SchemaProblem]:

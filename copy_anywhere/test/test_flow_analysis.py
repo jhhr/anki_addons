@@ -47,9 +47,10 @@ class TestScope:
     def test_it_does_not_see_the_ones_declared_after_it(self):
         first = d.variable("M", d.text("{{N}}"))
         result = analyze([first, d.variable("N", d.text("x"))])
-        # `{{N}}` is not a binding yet, so it is left to the runtime as a note value rather
-        # than reported here -- but the recorded scope is what the editor's menu offers.
+        # The recorded scope is what the editor's menu offers, and `{{N}}` is not in it yet.
+        # Reading it there is the same mistake as misspelling it, and reported the same way.
         assert "N" not in result.scopes[first["guid"]]
+        assert "'N' is not a binding or a runtime value" in messages(result)
 
     def test_a_loop_body_sees_the_loop_bindings(self):
         edit = d.edit_note("note")
@@ -700,3 +701,113 @@ class TestASearchConditionCanEndTheBlockToo:
         result = analyze_definition(child)
 
         assert messages(result) == ""
+
+
+class TestABareNameThatNamesNothing:
+    """The edit-time half of the protection: a reference that resolves to nothing is refused.
+
+    The run refuses a bare name that is neither a binding nor one of the values the run
+    itself supplies (§11). Saving a definition that would fail that way is a save the user
+    did not mean, so the analyser reports the same thing from the same text -- which is all
+    it needs, since a bare name says nothing about the collection.
+    """
+
+    def test_a_typo_in_a_write_is_refused(self):
+        result = analyze([d.edit_note("trigger", [d.write("Note", d.text("{{Wrod}}"))])])
+        assert "'Wrod' is not a binding or a runtime value" in messages(result)
+
+    def test_a_typo_in_a_query_is_refused(self):
+        result = analyze([d.note_query("found", "Word:{{Wrod}}")])
+        assert "'Wrod' is not a binding or a runtime value" in messages(result)
+
+    def test_a_typo_in_code_is_refused_too(self):
+        # Code is interpolated before it is executed, so its references are the same
+        # references; what the code then does with them is still left to the run.
+        result = analyze([d.variable("M", d.code("return '{{Wrod}}'"))])
+        assert "'Wrod' is not a binding or a runtime value" in messages(result)
+
+    def test_a_runtime_value_is_not_a_typo(self):
+        # No stage declares these, so nothing is in scope under the name; the run supplies
+        # them and the interpolation menu offers them.
+        result = analyze([
+            d.note_query("found", "deck:x"),
+            d.for_each_note("found", [
+                d.edit_note("note", [
+                    d.write(
+                        "Note",
+                        d.text("{{__Query_Note_Index}}/{{__Target_Notes_Count}}"),
+                    )
+                ]),
+            ]),
+        ])
+        assert result.is_valid, messages(result)
+
+    def test_a_cloze_marker_is_not_a_reference(self):
+        result = analyze([
+            d.edit_note("trigger", [d.write("Note", d.text("{{c1::{{trigger.Word}}}}"))]),
+        ])
+        assert result.is_valid, messages(result)
+
+
+#: The default for the helper below, so a test can pass `None` and mean it.
+_TRIGGER_FIELDS_OF_THE_TEST = {"trigger": {"Word", "Meaning", "Note"}}
+
+
+class TestTheFieldsTheEditorKnowsAbout:
+    """What a `trigger.X` reference can be checked against at edit time.
+
+    A definition names its trigger note types, so the editor can hand the analyser their
+    field lists. Nothing else can be checked: a binding from a query or a loop over one
+    holds whatever the query matched.
+    """
+
+    def analyze(self, stages, known_fields=_TRIGGER_FIELDS_OF_THE_TEST):
+        return analyze_definition(d.staged(stages=stages), known_fields=known_fields)
+
+    def write(self, text):
+        return d.edit_note("trigger", [d.write("Note", d.text(text))])
+
+    def test_a_field_the_trigger_note_types_do_not_have_is_refused(self):
+        result = self.analyze([self.write("{{trigger.Nonexistent}}")])
+        assert "'Nonexistent'" in messages(result)
+
+    def test_a_field_they_do_have_is_fine(self):
+        result = self.analyze([self.write("{{trigger.Word}}")])
+        assert result.is_valid, messages(result)
+
+    def test_the_spelling_is_matched_the_way_the_run_matches_it(self):
+        # `get_from_note_fields` lowercases both sides, so a field reference is
+        # case-insensitive at run time and has to be here too.
+        result = self.analyze([self.write("{{trigger.word}}")])
+        assert result.is_valid, messages(result)
+
+    def test_a_note_value_is_not_a_field(self):
+        result = self.analyze([self.write("{{trigger.__Note_Type_ID}}")])
+        assert result.is_valid, messages(result)
+
+    def test_a_card_value_read_through_a_card_type_name_is_not_either(self):
+        result = self.analyze([self.write("{{trigger.Recognition__Card_Due}}")])
+        assert result.is_valid, messages(result)
+
+    def test_a_card_value_without_a_card_type_name_is_not_either(self):
+        result = self.analyze([self.write("{{trigger.__Card_Due}}")])
+        assert result.is_valid, messages(result)
+
+    def test_a_binding_a_query_produced_is_not_checked(self):
+        result = self.analyze([
+            d.note_query("found", "deck:x"),
+            d.for_each_note("found", [
+                d.edit_note("note", [d.write("Note", d.text("{{note.Nonexistent}}"))]),
+            ]),
+        ])
+        assert result.is_valid, messages(result)
+
+    def test_without_the_field_lists_only_the_head_is_checked(self):
+        # `refresh_effects` and everything else outside the editor analyses the same
+        # definition with no note types to hand, and must not start refusing it.
+        result = self.analyze([self.write("{{trigger.Nonexistent}}")], known_fields=None)
+        assert result.is_valid, messages(result)
+
+    def test_no_trigger_note_type_chosen_yet_checks_nothing(self):
+        result = self.analyze([self.write("{{trigger.Nonexistent}}")], known_fields={})
+        assert result.is_valid, messages(result)

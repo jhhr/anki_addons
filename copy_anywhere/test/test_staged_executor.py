@@ -18,7 +18,6 @@ from anki_shared.testing import real_anki
 from conftest import CLOZE, KANJI, VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
-from copy_anywhere.logic.definition_schema import SYNTAX_VERSION_CURRENT
 from copy_anywhere.logic.execution.commit import PreviewCommitter
 from copy_anywhere.logic.execution.context import ExecutionSession
 from copy_anywhere.logic.execution.runner import run_definition_for_trigger_note
@@ -510,40 +509,13 @@ class TestASearchConditionThatDoesNotMatch:
         assert col.get_note(drop.id)["Note"] == ""
 
 
-class TestAMigratedExpressionEditedIntoTheCurrentSyntax:
-    """What the stage editor now saves when a migrated expression's text is changed.
-
-    The editor promotes `syntax_version` along with the text (the UI suite pins that); this
-    is the executor's half of the contract, that the promotion is all it takes for the
-    format-2 reference the editor's menu offered to resolve.
-    """
-
-    def test_the_reference_the_menu_offers_reaches_the_field(self, col):
-        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
-        definition = migrate_definition_v1_to_v2(
-            d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
-        )
-        write = definition["stages"][0]["fields"][0]["value"]
-        write["text"] = "{{trigger.Word}}"
-        write["syntax_version"] = SYNTAX_VERSION_CURRENT
-
-        ok, copied = run(definition, note)
-
-        assert ok is True
-        assert copied == [note]
-        assert note["Note"] == "neko"
-
-
 class TestASearchConditionsPredicate:
-    """Which interpolation resolves a predicate matched as an Anki search.
+    """What resolves a predicate matched as an Anki search.
 
-    Every other expression in the executor goes through `evaluate_raw`, whose one job is to
-    ask `expression_is_legacy_syntax` and send a migrated expression to
-    `get_field_values_from_notes` and an editor-authored one to `resolve_references`. The
-    search predicate did not ask: it called format-1 `interpolate_from_text` outright.
-
-    So a reference the editor itself offers -- the stage's interpolation menu is built from
-    its recorded input scope, and the analyser validates what it produces -- was not a field
+    It is the one expression in the executor that had its own interpolation: it called
+    format 1's `interpolate_from_text` outright instead of evaluating the expression. So a
+    reference the editor itself offers -- the stage's interpolation menu is built from its
+    recorded input scope, and the analyser validates what it produces -- was not a field
     name format 1 knew, and was dropped. Three different outcomes, none of them the one the
     definition asked for: a predicate narrowed by a reference silently matched nothing, a
     broad predicate narrowed by one silently matched everything the broad half did, and a
@@ -551,7 +523,8 @@ class TestASearchConditionsPredicate:
     blames the note for lacking a field by that name rather than naming the real cause.
 
     The middle case is the one that writes: the branch runs for notes the condition was
-    written to exclude.
+    written to exclude. Every case below now goes through the stage's own bindings, and a
+    definition that came from format 1 speaks the same syntax by the time it is run.
     """
 
     def gate(self, predicate_text, **extra):
@@ -1952,8 +1925,6 @@ class TestWideningTheUnfocusListOfAMigratedDefinition:
         )
 
     def migrated(self, watched_fields, write_watches="Word"):
-        from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
-
         definition = migrate_definition_v1_to_v2(
             d.within_note(
                 field_to_field_defs=[
