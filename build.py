@@ -94,6 +94,9 @@ EXCLUDE_FILES = {
     # The pinned requirements.txt compiled from this does ship - the runtime rebuild reads
     # it - but the source it was compiled from is a build-time input only.
     "requirements.in",
+    # Instructions for coding agents working in this repo; nothing a user's Anki reads.
+    "AGENTS.md",
+    "CLAUDE.md",
 }
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".ankiaddon"}
 EXCLUDE_PATTERNS = (re.compile(r".*_tests\.py$"),)
