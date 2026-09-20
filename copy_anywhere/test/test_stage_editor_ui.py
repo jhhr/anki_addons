@@ -794,6 +794,19 @@ class TestTheSelectionSurvivesASave:
         assert "selection_error" not in stage["selection"]
         assert stage["selection"]["count"] == 2
 
+    def test_a_stage_that_never_refused_does_not_show_the_override(self, col, qapp, widget_parent):
+        # The checkbox is built either way and only added to the form when there is a
+        # refusal to override. A child widget no layout ever places still paints itself,
+        # where it was born -- on top of the first row of every other query stage.
+        editor, _stage = query_stage_editor(widget_parent, strategy="first", count=2)
+        assert editor.keep_refusing.isVisibleTo(editor) is False
+
+    def test_a_refusal_shows_the_override(self, col, qapp, widget_parent):
+        editor, _stage = query_stage_editor(
+            widget_parent, strategy="all", selection_error="Error in copy fields: no such thing"
+        )
+        assert editor.keep_refusing.isVisibleTo(editor) is True
+
 
 # -- the condition stage's predicate ----------------------------------------------------
 
@@ -1456,6 +1469,31 @@ class TestEditsThatDoNotReachTheDefinition:
         seen = self.changes_from(tree, lambda: row.field.setCurrentText("Meaning"))
 
         assert seen
+
+
+def test_a_field_picker_built_with_a_field_does_not_ask_for_one(col, qapp):
+    # `field_combo` styles itself as needing a value while it is still empty, and
+    # `fill_field_combo` puts the stage's field in it with signals blocked -- which is what
+    # refreshes that style. The red border stayed on over a field the stage had all along,
+    # in every Edit Note row and on every query stage's sort field.
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["fields"] = [
+        {"field": "Word", "value": value_expression(text="x"), "write_if": "always"}
+    ]
+    tree = tree_for(col, stage)
+
+    field = tree.rows["e"].editor.field_rows[0].field
+
+    assert field.currentText() == "Word"
+    assert "darkred" not in field.styleSheet()
+
+
+def test_a_field_picker_with_nothing_in_it_still_asks_for_one(col, qapp):
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["fields"] = [{"field": "", "value": value_expression(text="x"), "write_if": "always"}]
+    tree = tree_for(col, stage)
+
+    assert "darkred" in tree.rows["e"].editor.field_rows[0].field.styleSheet()
 
 
 class TestChangingTheTriggerNoteType:

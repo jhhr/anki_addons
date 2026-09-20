@@ -1,0 +1,74 @@
+{
+  "guid": "example-archive-to-a-file",
+  "format_version": 2,
+  "definition_name": "Archive a note to a file",
+  "triggers": {
+    "note_types": ["CA Vocab"],
+    "deck_names": [],
+    "include_subdecks": false,
+    "on_sync": false,
+    "on_add": true,
+    "on_review": false,
+    "on_unfocus": {"edit_fields": [], "add_fields": []}
+  },
+  "stages": [
+    {
+      "guid": "archive-call",
+      "type": "call_definition",
+      "name": "Ask what is missing",
+      "enabled": true,
+      "definition_guid": "example-flag-and-export",
+      "trigger": {"binding": "trigger"},
+      "outputs": [{"export": "Status", "result": "Status"}]
+    },
+    {
+      "guid": "archive-write",
+      "type": "write_file",
+      "name": "Write the archive file",
+      "enabled": true,
+      "filename": {
+        "mode": "text",
+        "text": "archive-{{trigger.Word}}.txt",
+        "code": "",
+        "process_chain": []
+      },
+      "content": {
+        "mode": "text",
+        "text": "{{trigger.Word}}\t{{trigger.Meaning}}\t{{Status}}",
+        "code": "",
+        "process_chain": []
+      },
+      "overwrite": true
+    },
+    {
+      "guid": "archive-flag",
+      "type": "edit_note",
+      "name": "Mark it archived",
+      "enabled": true,
+      "target": {"binding": "trigger"},
+      "fields": [],
+      "tags": {"add": ["archived"], "remove": []},
+      "card_actions": [
+        {
+          "guid": "archive-recognition",
+          "card_type_name": "CA Vocab<::>Recognition",
+          "set_flag": 2
+        }
+      ],
+      "read_semantics": "stage_snapshot"
+    }
+  ],
+  "exports": [],
+  "effects": {
+    "edits_trigger": true,
+    "edits_other_notes": false,
+    "edits_cards": true,
+    "edits_trigger_cards": true,
+    "edits_other_cards": false,
+    "reads_files": false,
+    "writes_files": true,
+    "queries_collection": true,
+    "calls_definitions": true,
+    "add_note_compatible": false
+  }
+}

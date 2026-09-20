@@ -231,6 +231,10 @@ def fill_field_combo(
         combo.setCurrentText(current if current in offered else "")
     finally:
         combo.blockSignals(False)
+    # The "this needs a value" border is refreshed on `currentTextChanged`, which the block
+    # above deliberately suppresses. Without this, a picker built empty and filled here
+    # keeps the border over a field the stage has had all along, until the user focuses it.
+    combo.update_required_style()
 
 
 def name_edit(parent: QWidget, current: str, placeholder: str) -> RequiredLineEdit:
@@ -436,6 +440,11 @@ class QueryStageEditor(StageEditor):
             )
             self.keep_refusing.stateChanged.connect(self.notify)
             self.add_row("", self.keep_refusing)
+        else:
+            # Built either way so that `apply` can ask it without a branch -- but a child
+            # widget no layout ever places is not thereby invisible: it paints itself at
+            # the geometry it was born with, which is over the top of the first row.
+            self.keep_refusing.hide()
 
         self.if_empty = labelled_combo(
             self, IF_EMPTY_POLICIES, IF_EMPTY_LABELS, stage.get("if_empty", "continue")

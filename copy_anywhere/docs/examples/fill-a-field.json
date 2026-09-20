@@ -1,0 +1,54 @@
+{
+  "guid": "example-fill-a-field",
+  "format_version": 2,
+  "definition_name": "Fill the Note field",
+  "triggers": {
+    "note_types": ["CA Vocab"],
+    "deck_names": [],
+    "include_subdecks": false,
+    "on_sync": false,
+    "on_add": true,
+    "on_review": false,
+    "on_unfocus": {
+      "edit_fields": ["Word", "Reading"],
+      "add_fields": ["Word", "Reading"]
+    }
+  },
+  "stages": [
+    {
+      "guid": "fill-a-field-write",
+      "type": "edit_note",
+      "name": "Write the summary",
+      "enabled": true,
+      "target": {"binding": "trigger"},
+      "fields": [
+        {
+          "field": "Note",
+          "value": {
+            "mode": "text",
+            "text": "{{trigger.Word}} ({{trigger.Reading}})",
+            "code": "",
+            "process_chain": []
+          },
+          "write_if": "always"
+        }
+      ],
+      "tags": {"add": [], "remove": []},
+      "card_actions": [],
+      "read_semantics": "stage_snapshot"
+    }
+  ],
+  "exports": [],
+  "effects": {
+    "edits_trigger": true,
+    "edits_other_notes": false,
+    "edits_cards": false,
+    "edits_trigger_cards": false,
+    "edits_other_cards": false,
+    "reads_files": false,
+    "writes_files": false,
+    "queries_collection": false,
+    "calls_definitions": false,
+    "add_note_compatible": true
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "guid": "example-flag-and-export",
+  "format_version": 2,
+  "definition_name": "Flag a note that needs work",
+  "triggers": {
+    "note_types": ["CA Vocab"],
+    "deck_names": [],
+    "include_subdecks": false,
+    "on_sync": false,
+    "on_add": true,
+    "on_review": false,
+    "on_unfocus": {"edit_fields": [], "add_fields": []}
+  },
+  "stages": [
+    {
+      "guid": "flag-status",
+      "type": "variable",
+      "name": "What is missing",
+      "enabled": true,
+      "result": "Status",
+      "value": {
+        "mode": "code",
+        "text": "",
+        "code": "return \"no meaning yet\" if not trigger[\"Meaning\"] else \"\"",
+        "process_chain": []
+      }
+    },
+    {
+      "guid": "flag-note",
+      "type": "edit_note",
+      "name": "Say so on the note",
+      "enabled": true,
+      "target": {"binding": "trigger"},
+      "fields": [
+        {
+          "field": "Note",
+          "value": {
+            "mode": "text",
+            "text": "{{Status}}",
+            "code": "",
+            "process_chain": []
+          },
+          "write_if": "empty"
+        }
+      ],
+      "tags": {"add": ["needs-work"], "remove": ["done"]},
+      "card_actions": [
+        {
+          "guid": "flag-recognition",
+          "card_type_name": "CA Vocab<::>Recognition",
+          "set_flag": 1
+        }
+      ],
+      "read_semantics": "stage_snapshot"
+    }
+  ],
+  "exports": [
+    {"name": "Status", "stage_guid": "flag-status", "result": "Status"}
+  ],
+  "effects": {
+    "edits_trigger": true,
+    "edits_other_notes": false,
+    "edits_cards": true,
+    "edits_trigger_cards": true,
+    "edits_other_cards": false,
+    "reads_files": false,
+    "writes_files": false,
+    "queries_collection": true,
+    "calls_definitions": false,
+    "add_note_compatible": true
+  }
+}
