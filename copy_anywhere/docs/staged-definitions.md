@@ -163,20 +163,33 @@ outer list plus `store` is how a loop reports anything back.
   applied.
 * **Add-note compatibility is a flag, not an inspection.** While a note is being added the
   add can still be cancelled, so a definition may edit only that note: its fields and its
-  tags. One that writes to any other note, to a card that already exists, or to a file
-  needs the add hook to write those changes itself, once the add is past cancelling.
-  The hooks read `effects.add_note_compatible` (a format-1 definition answers from its mode
-  and its card actions); the commit refuses anything but trigger-note changes from a
+  tags. Writing to any other note, acting on a card that already exists, or writing a file
+  would outlive a cancelled add, so any of the three disqualifies the definition; the add
+  hook writes those changes itself, once the add is past cancelling. The hooks read
+  `effects.add_note_compatible` (a format-1 definition answers from its mode, its card
+  actions and its file writes: its card actions reach the trigger's own cards except in
+  Source-to-destinations); the commit refuses anything but trigger-note changes from a
   definition that claims compatibility, in case the JSON was edited by hand. Such a
   definition is not dropped: the add hook runs it after the trigger-only ones, under its
-  own undo entry, and the unfocus hook skips it while a note is being added. The editor
-  warns about the combination and saves it anyway, since all three of those read the
-  stored flag and none of them the editor.
-* **A card action on the note being added does not run.** The add hook fires before the
-  note is in the collection: it has id 0 and no cards, so an Edit Note stage targeting the
-  trigger applies its field writes and skips its card actions with a log line, and nothing
-  runs them later. Card actions on other notes' cards, and edits to other notes, run as
-  usual. The editor names the stage whose action will not run.
+  own undo entry, and the unfocus hook skips it while a note is being added. The Add dialog
+  is the one place the add can still be cancelled, so both hooks arm that backstop on a new
+  note; it refuses by failing the run and logging, which at the default `log_level` is what
+  the operation log holds. The editor warns and saves the definition anyway, since all
+  three of those read the stored flag and none of them the editor.
+* **A card action on the note being added does not run, and does not disqualify it.** The
+  add hook fires before the note is in the collection: it has id 0 and no cards, so an Edit
+  Note stage targeting the trigger applies its field writes and skips its card actions with
+  a log line, and nothing runs them later. A skipped action leaves nothing behind for a
+  cancelled add to strand, so it is not one of the three things above. Card actions on
+  other notes' cards, and edits to other notes, are: they really would run, and that is why
+  they disqualify the definition. The editor names the stage whose action will not run.
+* **Reading the trigger's cards while it is being added is allowed.** Reading leaves
+  nothing behind for a cancelled add to strand, so none of it is refused. A card-value key
+  on a note with no cards -- `{{Recognition__Card_Due}}`, in a migrated expression or a new
+  one -- answers from a new card's defaults rather than being reported as an unknown
+  reference, exactly as it did in format 1; on a cloze note with no cards yet it answers
+  empty. A query for the cards of a note that is not in the collection finds none, so a
+  loop over its results runs zero times. The editor says nothing about any of this.
 
 ## The startup migration
 
@@ -222,13 +235,14 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   action does nothing while the note is being added. Format 1 ran it on every unfocus in
   the Add dialog and let the card action quietly do nothing, because a note with id 0 has
   no cards. Format 2 has one rule for that -- while a note is being added a definition may
-  edit only that note -- so the field write still runs as you type and the card action on
+  edit only that note -- so the field write still runs as you type, and the card action on
   the new note is a logged skip; nothing runs it later. The editor says so, naming the
   stage, rather than refusing the definition: the rule is enforced by the hooks and again
   by the commit, both of which read the stored `effects`, so what the editor allows changes
-  nothing about what runs. A definition triggered only by unfocus-while-adding is simply
-  not run there; turning on "Run when adding a new note" is what gives it a moment to run
-  in.
+  nothing about what runs. A definition triggered only by unfocus-while-adding runs there
+  just as it did, as long as the only thing it edits is the note being added; one that also
+  writes to another note, to a card that already exists, or to a file is skipped, and
+  turning on "Run when adding a new note" is what gives it a moment to run in.
 
 **What editing a migrated expression does.** Every expression the migrator writes carries
 `syntax_version: 1`, and the stage editor shows it as it is: `{{Word}}`, `{{__Dest__Word}}`,
@@ -313,7 +327,14 @@ run, then the exports.
   under the stage list with the path of the stage each one belongs to. Warnings (several
   trigger note types, file writes outside undo) do not block a save.
 * The same panel says whether the definition can run while a note is being added, which is
-  the flag stored in `effects` and the one the add hook checks.
+  the flag stored in `effects` and the one the add hook checks, and it has up to two amber
+  notes to go with it. One is about what is *impossible*: a card action on the note being
+  added has no card to reach, so it will not run for that note and nothing runs it later --
+  the stage is named. The other is about what is *forbidden*: an edit to another note, to a
+  card that already exists, or to a file would outlive a cancelled add, so that work
+  happens after the add rather than as part of it (or, for an unfocus-only trigger, not at
+  all), and the stages responsible are listed after "Because of". They are independent: a
+  definition can earn both, one, or neither, and neither of them blocks the save.
 
 ## The preview
 

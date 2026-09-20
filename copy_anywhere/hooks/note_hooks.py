@@ -46,8 +46,9 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     """The definitions that run when `note` is added: `copy_on_add`, and this note's type.
 
     Note-type membership only; the caller still has to split the result on
-    `definition_is_add_note_compatible`, because a definition that writes to other notes
-    or cards has to be written by the hook itself, under its own undo entry.
+    `definition_is_add_note_compatible`, because a definition that reaches past the note
+    being added -- another note, a card that already exists, a file -- has to be written by
+    the hook itself, under its own undo entry.
     """
     config = Config()
     config.load()
@@ -97,10 +98,13 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in get_copy_definitions_for_add_note(note):
-            # A definition that writes to any other note or card needs the hook to write and
-            # undo those changes itself, so it runs below, under its own undo entry. The flag
-            # is the analyser's answer for a format-2 definition and the mode inspection for
-            # a format-1 one; either way the hook only reads it and never inspects stages (§8).
+            # A definition that reaches past the note being added -- another note, a card
+            # that already exists, a file -- needs the hook to write and undo those changes
+            # itself, so it runs below, under its own undo entry. A card action on the note
+            # being added is not such a reach: it has no card to act on and is skipped, so it
+            # stays in this pile. The flag is the analyser's answer for a format-2 definition
+            # and the mode inspection for a format-1 one; either way the hook only reads it
+            # and never inspects stages (§8).
             if not definition_is_add_note_compatible(copy_definition):
                 editing_other_notes_definitions.append(copy_definition)
                 continue
@@ -396,8 +400,10 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
             modifies_other_notes = definition_modifies_other_notes(copy_definition)
 
             if is_new_note and not definition_is_add_note_compatible(copy_definition):
-                # Do not run ops that edit other notes or cards while editing a new note: the
-                # add hook runs them, if `on_add` is on. Same flag it checks (§8).
+                # Do not run ops that reach past the note being added -- another note, a
+                # card that already exists, a file -- while it is being typed: the add can
+                # still be cancelled and those would persist. The add hook runs them once it
+                # cannot, if `on_add` is on. Same flag it checks (§8).
                 continue
 
             if is_format_2(copy_definition):

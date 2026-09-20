@@ -7,64 +7,85 @@ been implemented and are kept here for the reasoning, not as work outstanding.
 
 ## Card actions and the Add dialog — Done
 
-**The problem.** The analyser sets `edits_cards` for any card action, which makes
-`add_note_compatible` false, and both the unfocus hook and the editor act on that flag.
-Format 1 ran a within-note definition on every unfocus in the Add dialog and let a card
-action on the not-yet-added note (id 0) be a no-op. So a migrated definition that fills a
-field *and* flags the card now fills the field only when the note is added -- and, worse,
-opening it in the editor showed a red "cannot be saved yet" that the user could not clear
-without deleting either the card action or a trigger they never set.
+**The rule.** While a note is being added, a definition may edit **only the note being
+added** -- its fields and its tags. Card actions on that note are *impossible*: it has id 0
+and has no cards, so they are skipped with a log line and nothing runs them later. They do
+not disqualify the definition, because a skip leaves nothing behind. Edits to other notes,
+card actions or Edit Card stages on other notes' cards, and file writes are *forbidden*,
+because the add can still be cancelled and any of those would persist; each one of them
+disqualifies the definition. Reads are not edits: a card value read off the note being
+added answers from a new card's defaults, as it did in format 1, and is allowed.
 
-The first pass moved that refusal into a warning, but worded the warning as a promise: "it
-runs once the note is saved". It does not. `note_will_be_added` fires *before* the insert,
-the hook's second pile runs in the same call with the note still at id 0, and a card action
-on that note has no card to reach then and is never retried. The field write lands (the
-add saves the mutated note object), the action is silently lost, and nothing says so. The
-format-1 fallback in `definition_effects` had the same hole from the other side: it
-computed `add_note_compatible` from `edits_other_notes` alone, so a format-1 definition
-with only card actions on *found* notes went into the trigger-only pile, where the
-commit-time backstop refused its card edits and discarded the run.
+The cancellable window is the Add dialog before the user presses Add -- the unfocus hook on
+a new note, which is where the flag and the backstop both matter most. `note_will_be_added`
+fires inside `Collection.add_note`, past cancellation, so the add hook's second pile
+(other-note edits, under their own undo entry) is not constrained by any of this.
 
-**The decision.** Trigger-note card actions at add time are not supported, and nothing
-promises otherwise. A note with id 0 has no cards, and format 1 "working" here only meant
-the action silently did nothing. The compatibility rule stays, in both formats:
-`edits_cards` makes `add_note_compatible` false whether the definition is format 2 (the
-analyser) or format 1 (the fallback now reads `not modifies_other and not edits_cards`).
-What changes is what the user is told, and what the log says.
+**The problem it came from.** The analyser set `edits_cards` for any card action, which
+made `add_note_compatible` false, and both the unfocus hook and the editor acted on that
+flag. Format 1 ran a within-note definition on every unfocus in the Add dialog and let a
+card action on the not-yet-added note be a no-op. So a migrated definition that fills a
+field *and* flags the card filled the field only when the note was added -- and, worse,
+opening it in the editor showed a red "cannot be saved yet" the user could not clear
+without deleting either the card action or a trigger they never set. The format-1 fallback
+in `definition_effects` had the same hole from the other side: it computed
+`add_note_compatible` from `edits_other_notes` alone, so a format-1 definition with card
+actions on *found* notes went into the trigger-only pile, where the commit-time backstop
+refused its card edits and discarded the run. Neither side counted file writes at all.
 
-1. The editor's warning names the stage and says what happens, not when: this runs when a
-   note is added, but the card action on *&lt;stage&gt;* needs a card the note being added
-   does not have yet, so that action will not run for it; edits to other notes, and card
-   actions on their cards, still do. `trigger_card_action_paths()` finds the stage -- an
-   Edit Note targeting `trigger` with card actions -- and the existing
-   `incompatible_stage_paths()` list still follows as "Because of".
+**What changed.**
+
+1. The analyser tells the trigger's cards from everyone else's: `edits_trigger_cards` and
+   `edits_other_cards` beside `edits_cards` (which still means either), and
+   `add_note_compatible = not (edits_other_notes or edits_other_cards or writes_files)`.
+   The format-1 fallback answers the same question from the mode -- card actions reach the
+   trigger's own cards except in Source-to-destinations -- and from `field_to_file_defs`.
 2. At run time, `run_edit_note` on a note with id 0 applies the field writes and skips the
    card actions with a warning-level log line ("skipped: the note is being added and has no
-   cards yet"). Nothing else in the definition is discarded, and the `add_note_compatible_only`
-   backstop still refuses a definition that claims compatibility and queues changes to
-   another note, card or file -- on the unfocus hook as well as the add hook, since the Add
-   dialog is where the add can still be cancelled.
-3. The word "deferred" is gone from the hook, `definition_is_add_note_compatible`, the
+   cards yet"). Nothing else in the definition is discarded.
+3. The `add_note_compatible_only` backstop refuses a definition that claims compatibility
+   and queues a change to another note, card **or file**, and both hooks arm it on a new
+   note -- the unfocus one as well as the add one, since the Add dialog is where the add can
+   still be cancelled. The refusal is a `logger.error` and a failed run; at the default
+   `log_level` of `"error"` it lands in the operation log, which is the same channel the
+   add hook's backstop has always used.
+4. The editor says the two things separately, in two amber notes, because one definition
+   can deserve both. The impossible one names the stage
+   (`trigger_card_action_paths()`) and promises no later run. The forbidden one is the old
+   "runs after the add, under its own undo entry" sentence for an `on_add` trigger and the
+   old "skipped there, turn on Run when adding a new note" sentence for an unfocus-only
+   one, and ends with "Because of" and `incompatible_stage_paths()`, which now follows the
+   same split: an Edit Note with card actions is listed only when its target is not the
+   trigger, a Write File stage is listed, and a callee is listed for `edits_other_notes`,
+   `edits_other_cards` or `writes_files`. Neither note blocks the save.
+5. The word "deferred" is gone from the hooks, `definition_is_add_note_compatible`, the
    editor and the docs. The second pile is still real -- definitions writing to other notes
    or cards need the hook to write and undo those changes itself -- but it runs in the same
-   call, and the vocabulary now says "runs after the trigger-only ones, under its own undo
+   call, and the vocabulary says "runs after the trigger-only ones, under its own undo
    entry" rather than "waits until the note exists".
 
-**Rejected:** treating a card action on the *trigger* note as add-compatible, restoring
-format 1 exactly. It makes `edits_cards` stop meaning what it says, and the commit-time
-backstop would need a special case for "cards of the note being added" -- two rules where
-there is now one, to preserve a no-op. Also rejected: running those actions later (a flag
-on the note and a sync-time pass, or a `note_was_added` hook that does not exist) -- the
-earlier promise was made on the assumption that this happened, and nothing ever did it.
+**How it got here.** The first pass moved the editor's refusal into a warning but worded it
+as a promise: "it runs once the note is saved". It does not -- the second pile runs with
+the note still at id 0, and the action is never retried. The next pass dropped the promise
+and made *every* card action disqualify a definition, in both formats, which was correct
+about the promise and too strict about the cards: it took the Add dialog away from the
+fill-and-flag definition that format 1 had run for years. This pass separated the two
+questions -- can it run, and may it -- which is the rule above.
 
-**As built,** the two halves of "runs while a note is added" still end differently. With
-`on_add` the definition runs when the note is added, minus the card action on it. An
-unfocus-only trigger is skipped in the Add dialog and `on_add` is off, so there is no
-later moment either; that case is told to turn on "Run when adding a new note" and, when
-the definition has such a card action, that even then it will not run for the new note.
-The format-1 change has one visible consequence beyond the add hook: a stored format-1
-within-note definition with a card action is now skipped on unfocus while a note is being
-added, like its migrated form, and runs on add instead.
+**Rejected:** restoring format 1 exactly, by treating any card action as harmless at add
+time. An action on a card that already exists really does persist through a cancelled add,
+so "cards" is not one answer. Also rejected: running the impossible actions later (a flag
+on the note and a sync-time pass, or a `note_was_added` hook that does not exist) -- the
+original promise was made on the assumption that something did this, and nothing ever did.
+Also rejected: refusing the save for either case, which protected nothing; the hooks and
+the commit read the stored `effects`, never the editor, so a definition that arrived by
+migration has always been judged without passing through the dialog at all.
+
+**One visible consequence beyond the add hook:** a stored format-1 within-note definition
+with a card action, which the strict pass had started skipping on unfocus while a note is
+being added, runs there again -- filling its field as you type, with the flag a logged
+skip -- exactly as its migrated form does. A format-1 definition that writes a file is
+newly skipped there instead.
 
 ## Process chains and `use_all_notes`
 

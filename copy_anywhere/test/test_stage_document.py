@@ -352,18 +352,26 @@ def filling_a_field_and_flagging_the_card(guid="e"):
     return edit
 
 
+def writing_a_file(guid="f"):
+    """The stage that is forbidden while a note is being added.
+
+    The file is on disk whether or not the user goes through with the add, so a definition
+    with one in it cannot run as part of adding a note.
+    """
+    writing = default_stage(STAGE_WRITE_FILE, guid)
+    writing["filename"] = value_expression(text="out.txt")
+    writing["content"] = value_expression(text="{{trigger.Word}}")
+    return writing
+
+
 def flagging_the_card_and_writing_a_file(guid="e"):
     """Fill-and-flag with a file write beside it: impossible *and* forbidden at add time.
 
     The card action on the trigger's own cards cannot run -- the note has no cards yet --
-    but it leaves nothing behind either. The file does: it is on disk whether or not the
-    user goes through with the add, and that is what keeps this definition out of the add
-    hook's trigger-only pile.
+    but it leaves nothing behind either. The file does, which is what keeps this definition
+    out of the add hook's trigger-only pile.
     """
-    writing = default_stage(STAGE_WRITE_FILE, "f")
-    writing["filename"] = value_expression(text="out.txt")
-    writing["content"] = value_expression(text="{{trigger.Word}}")
-    return [filling_a_field_and_flagging_the_card(guid), writing]
+    return [filling_a_field_and_flagging_the_card(guid), writing_a_file()]
 
 
 def test_an_add_note_trigger_accepts_a_stage_that_flags_the_triggers_card():
@@ -378,23 +386,48 @@ def test_an_add_note_trigger_accepts_a_stage_that_flags_the_triggers_card():
 
 def test_the_add_note_warning_says_the_card_action_on_the_named_stage_will_not_run():
     # A note being added has no cards, and nothing runs the action later, so the warning
-    # names the stage and promises no later run.
-    doc = document(*flagging_the_card_and_writing_a_file())
+    # names the stage and promises no later run. The definition is still one the add hook
+    # may run: a skipped action leaves nothing behind, so there is nothing to forbid.
+    doc = document(filling_a_field_and_flagging_the_card())
     doc.definition["triggers"]["on_add"] = True
     doc.stage("e")["name"] = "Fill and flag"
     (warning,) = doc.warnings()
     assert "card action on Fill and flag" in warning
     assert "will not run" in warning
     assert "once the note is saved" not in warning
+    assert doc.add_note_compatible()
 
 
 def test_the_add_note_warning_promises_no_later_run_for_an_unfocus_only_trigger_either():
-    doc = document(*flagging_the_card_and_writing_a_file())
+    doc = document(filling_a_field_and_flagging_the_card())
     doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
     (warning,) = doc.warnings()
     assert "card action on Edit Note" in warning
     assert "will not run" in warning
     assert "once the note is saved" not in warning
+
+
+def test_a_file_write_is_what_the_forbidden_warning_names():
+    # Nothing here is impossible -- there is no card action -- so the only message is the
+    # one about work that would outlive a cancelled add, and it names the stage.
+    doc = document(writing_a_file())
+    doc.definition["triggers"]["on_add"] = True
+    (warning,) = doc.warnings()
+    assert "Write File — writes a file" in warning
+    assert not doc.add_note_compatible()
+
+
+def test_the_impossible_and_the_forbidden_are_two_messages():
+    # A definition can deserve both: the card action cannot run, and the file write is not
+    # allowed to. Neither sentence is about the other, so neither is buried in the other.
+    doc = document(*flagging_the_card_and_writing_a_file())
+    doc.definition["triggers"]["on_add"] = True
+    doc.stage("e")["name"] = "Fill and flag"
+    impossible, forbidden = doc.warnings()
+    assert "card action on Fill and flag" in impossible
+    assert "Because of" not in impossible
+    assert "Write File — writes a file" in forbidden
+    assert "card action" not in forbidden
 
 
 def test_the_add_note_warning_names_a_stage_editing_a_card():
@@ -424,9 +457,9 @@ def test_the_add_note_warning_also_names_a_stage_editing_another_note():
 def test_an_unfocus_only_add_trigger_is_told_what_to_turn_on():
     # Nothing to defer to: without `on_add` the definition is skipped in the Add dialog and
     # never runs on save either, so "it runs once the note is saved" would be a lie.
-    doc = document(*flagging_the_card_and_writing_a_file())
+    doc = document(writing_a_file())
     doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
-    warning = doc.warnings()[0]
+    (warning,) = doc.warnings()
     assert "skipped there" in warning
     assert "Run when adding a new note" in warning
 
@@ -459,6 +492,32 @@ def test_an_add_note_trigger_is_fine_for_a_trigger_only_definition():
     assert doc.add_note_compatible()
 
 
+def test_a_card_action_on_the_triggers_own_cards_is_not_an_add_note_blocker():
+    # It cannot run, which the impossible warning says; it also cannot outlive a cancelled
+    # add, so it is not one of the reasons the definition stays out of the add hook's pile.
+    doc = document(filling_a_field_and_flagging_the_card())
+    assert doc.incompatible_stage_paths() == []
+
+
+def test_a_card_action_on_another_note_is_still_an_add_note_blocker():
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "A1"
+    query["query"] = value_expression(text="deck:x")
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["input"] = {"binding": "A1"}
+    edit = default_stage(STAGE_EDIT_NOTE, "e")
+    edit["target"] = {"binding": "note"}
+    edit["card_actions"] = [{"card_type_name": "CA Vocab: Card 1", "set_flag": 1}]
+    loop["body"] = [edit]
+    doc = document(query, loop)
+    assert any(path.endswith("— has card actions") for path in doc.incompatible_stage_paths())
+
+
+def test_a_file_write_is_listed_as_an_add_note_blocker():
+    doc = document(writing_a_file())
+    assert doc.incompatible_stage_paths() == ["Write File — writes a file"]
+
+
 def test_a_disabled_stage_is_not_listed_as_an_add_note_blocker():
     edit = default_stage(STAGE_EDIT_CARD, "e")
     edit["enabled"] = False
@@ -466,17 +525,37 @@ def test_a_disabled_stage_is_not_listed_as_an_add_note_blocker():
     assert doc.incompatible_stage_paths() == []
 
 
-def test_incompatible_paths_follow_a_call_into_the_callee():
+def calling(effects):
     callee = new_definition("callee", "The callee")
-    callee["effects"] = {"edits_other_notes": True, "edits_cards": False}
+    callee["effects"] = effects
     call = default_stage(STAGE_CALL_DEFINITION, "call")
     call["definition_guid"] = "callee"
-    doc = StageDocument(
+    return StageDocument(
         new_definition("d", "n", stages=[call]), lookup={"callee": callee}.get
     )
+
+
+@pytest.mark.parametrize(
+    "effects",
+    [
+        {"edits_other_notes": True},
+        {"edits_other_cards": True},
+        {"writes_files": True},
+    ],
+)
+def test_incompatible_paths_follow_a_call_into_the_callee(effects):
+    doc = calling(effects)
     assert doc.incompatible_stage_paths() == [
-        "Call Definition — calls 'The callee', which edits other notes or cards"
+        "Call Definition — calls 'The callee', which reaches beyond the trigger note"
     ]
+
+
+def test_a_callee_that_only_flags_the_triggers_card_is_not_listed():
+    # The callee is handed this definition's own trigger, whose cards do not exist yet:
+    # the action is skipped, not refused, so the call is not a reason to hold the
+    # definition back.
+    doc = calling({"edits_trigger_cards": True, "edits_cards": True})
+    assert doc.incompatible_stage_paths() == []
 
 
 # -- exports --------------------------------------------------------------------------

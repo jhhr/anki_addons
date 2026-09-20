@@ -302,6 +302,10 @@ def test_an_add_note_trigger_still_saves_a_card_flagging_definition(dialog):
     assert dialog.ok_button.isEnabled()
     assert "note is being added: <b>yes</b>" in status
     assert "Cannot be saved yet" not in status
+    # The amber note is still there, saying the one thing that does not happen.
+    assert "Worth knowing" in status
+    assert "card action on Edit Note" in status
+    assert "will not run" in status
     assert "once the note is saved" not in status
 
 

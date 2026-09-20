@@ -613,13 +613,16 @@ def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
 def definition_is_add_note_compatible(copy_definition: Union[CopyDefinition, dict]) -> bool:
     """Whether this definition edits nothing but the note that has not been added yet.
 
-    A note being added has id 0 and no cards. A definition that stays within its fields and
-    tags needs no write of its own: the add saves the note object it mutated. One that
-    writes to any other note or to any card has to be written and undone by the hook
-    itself, so the add hook runs it after the trigger-only ones, under its own undo entry,
-    and the unfocus hook skips it while a note is being added. A card action on the note
-    being added never runs -- it has no cards -- which the editor warns about; this flag
-    only decides which pile a definition goes in.
+    A note being added has id 0 and no cards, and the add can still be cancelled, so only
+    that note's own fields and tags may be touched: the add saves the note object the
+    definition mutated, and a cancelled add takes them with it. Anything that would outlive
+    the cancel -- another note, a card that already exists, a file -- has to be written and
+    undone by the hook itself, so the add hook runs such a definition after the trigger-only
+    ones, under its own undo entry, and the unfocus hook skips it while a note is being
+    added. A card action on the note being added is not one of those: it never runs, because
+    there is no card to run it on, so it is skipped with a log line and leaves nothing
+    behind. This flag only decides which pile a definition goes in; the editor is what
+    tells the user about the skip.
     """
     return bool(definition_effects(copy_definition).get("add_note_compatible", False))
 
