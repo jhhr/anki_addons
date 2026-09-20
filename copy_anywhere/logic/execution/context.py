@@ -227,8 +227,8 @@ class ExecutionSession:
         self._want_cancel = want_cancel
         self.collect_trace = collect_trace
         #: Set while running against a note that has not been added yet. The commit refuses
-        #: any mutation to another note or to a card, whatever the definition's stored
-        #: `effects` claimed (§8).
+        #: any mutation that would outlive a cancelled add -- another note, a card or a
+        #: file -- whatever the definition's stored `effects` claimed (§8).
         self.add_note_compatible_only = add_note_compatible_only
 
         self.notes: dict[NoteKey, Note] = {}

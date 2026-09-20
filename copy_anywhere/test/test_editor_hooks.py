@@ -593,6 +593,117 @@ class TestANewNoteNeverRunsDefinitionsThatTouchOtherNotes:
         assert ran.names() == ["direct"]
 
 
+class TestANewNoteEditsOnlyItself:
+    """The Add dialog is the one place the add can still be cancelled (§8).
+
+    So an unfocus on a note that has not been added yet may fill that note's fields and
+    tags -- the add saves the object it mutated -- and nothing else. A card action on it is
+    impossible rather than forbidden: it is skipped with a log line and does not disqualify
+    the definition. Anything that would outlive a cancelled add -- another note, an existing
+    card, a file -- is stopped, by the gate when the definition's effects admit it and by
+    the backstop when they do not.
+    """
+
+    def flag(self):
+        return d.card_action(VOCAB, "Recognition", set_flag=3)
+
+    def card_named(self, note, template_name):
+        return next(card for card in note.cards() if card.template()["name"] == template_name)
+
+    def fill_and_flag(self, *extra_stages, **effects):
+        definition = d.staged(
+            "fill-and-flag",
+            on_unfocus={"edit_fields": [], "add_fields": ["Word"]},
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("{{trigger.Word}}"))],
+                    card_actions=[self.flag()],
+                ),
+                *extra_stages,
+            ],
+        )
+        definition["effects"].update(effects)
+        return definition
+
+    def test_the_field_is_filled_and_the_card_action_is_a_logged_skip(
+        self, col, set_definitions, hook_logger, ran
+    ):
+        set_definitions(self.fill_and_flag())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == ["fill-and-flag"]
+        assert note["Meaning"] == "neko"
+        assert hook_logger.errors == []
+        assert any("no cards yet" in message for message in hook_logger.warnings), (
+            hook_logger.warnings
+        )
+
+    def test_a_definition_that_also_writes_a_file_is_skipped_by_the_gate(
+        self, col, set_definitions, hook_logger, ran, media_dir
+    ):
+        # A file written while the note is being typed stays on disk even if the user
+        # presses Escape, so the whole definition waits for the add.
+        set_definitions(self.fill_and_flag(d.write_file("log.txt", d.text("{{trigger.Word}}"))))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == []
+        assert note["Meaning"] == ""
+        assert not (media_dir / "_log.txt").exists()
+        assert hook_logger.errors == []
+
+    def test_a_file_write_the_stored_effects_hid_is_refused_by_the_backstop(
+        self, col, set_definitions, hook_logger, media_dir
+    ):
+        # The gate only reads what the definition claims. A hand-edited config claiming a
+        # file write away is caught where the run is committed instead.
+        set_definitions(
+            self.fill_and_flag(
+                d.write_file("log.txt", d.text("{{trigger.Word}}")),
+                writes_files=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert not (media_dir / "_log.txt").exists()
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+
+    def test_an_edit_to_another_note_the_stored_effects_hid_is_refused_too(
+        self, col, set_definitions, hook_logger
+    ):
+        # The same lie about the other half of the principle: the found note's card would
+        # be flagged through the hook's own `update_cards` if the run were committed.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.fill_and_flag(
+                d.note_query("found", "Word:inu"),
+                d.for_each_note(
+                    "found",
+                    [
+                        d.edit_note(
+                            "note",
+                            [d.write("Note", d.text("copied"))],
+                            card_actions=[self.flag()],
+                        )
+                    ],
+                ),
+                edits_other_notes=False,
+                edits_other_cards=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert col.get_note(other.id)["Note"] == ""
+        assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 0
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+
+
 class TestWhichFieldFiresADefinition:
     def test_a_field_that_is_no_definitions_trigger_runs_nothing(
         self, col, set_definitions, ran

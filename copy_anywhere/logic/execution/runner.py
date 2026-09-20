@@ -77,10 +77,10 @@ def run_definition_for_trigger_note(
     if session.add_note_compatible_only:
         trigger_key = session.note_key(frame.trigger_note)
         other_notes = [key for key in session.modified_notes if key != trigger_key]
-        if other_notes or session.edited_cards:
+        if other_notes or session.edited_cards or session.pending_files:
             logger.error(
                 "Error in copy fields: definition '%s' is marked add-note compatible but"
-                " queued changes to another note or card; nothing was written",
+                " queued changes to another note, card or file; nothing was written",
                 staged.get("definition_name", ""),
             )
             session.discard()

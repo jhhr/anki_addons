@@ -666,7 +666,7 @@ def copy_for_single_trigger_note(
     :param definition_lookup: a ready-made lookup over those, for a caller running the same
         definition over many notes. Built here when it is not given
     :param add_note_compatible_only: refuse to commit anything but changes to the trigger
-        note, as the add-note hook needs when the note does not exist yet
+        note, as both hooks need while the note does not exist yet
     :return: True when the note is done -- written into or benignly skipped -- and False
         when the definition failed and the caller's bulk loop should stop
     """

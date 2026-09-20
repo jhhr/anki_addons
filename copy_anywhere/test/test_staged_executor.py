@@ -1609,6 +1609,47 @@ class TestAddNoteCompatibility:
         assert ok is True, logger.errors
         assert new_note["Meaning"] == "猫"
 
+    def test_a_queued_file_write_is_refused_under_the_add_backstop(self, col, media_dir, logger):
+        # A file survives a cancelled add the way another note's edit does, so the backstop
+        # has to refuse it too: the analyser already says such a definition is incompatible,
+        # and this is what catches a hand-edited one claiming otherwise.
+        new_note = col.new_note(col.models.by_name(VOCAB))
+        new_note["Word"] = "neko"
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Meaning", d.text("{{trigger.Word}}"))]),
+            d.write_file("log.txt", d.text("{{trigger.Word}}")),
+        ])
+        assert definition["effects"]["add_note_compatible"] is False
+        ok = copy_for_single_trigger_note(
+            definition, new_note, add_note_compatible_only=True
+        )
+        assert ok is False
+        assert not (media_dir / "_log.txt").exists()
+        assert logger.has_error("another note, card or file"), logger.errors
+
+    def test_a_card_action_on_the_note_being_added_is_not_a_queued_change(
+        self, col, logger
+    ):
+        # The whole point of telling the new note's own cards from everyone else's: the
+        # stage skips the action on an id-0 note before anything is queued, so a
+        # fill-and-flag definition reaches the commit and its field write lands.
+        new_note = col.new_note(col.models.by_name(VOCAB))
+        new_note["Word"] = "neko"
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Meaning", d.text("{{trigger.Word}}"))],
+                card_actions=[d.card_action(VOCAB, "Recognition", set_flag=3)],
+            ),
+        ])
+        assert definition["effects"]["add_note_compatible"] is True
+        ok = copy_for_single_trigger_note(
+            definition, new_note, add_note_compatible_only=True
+        )
+        assert ok is True, logger.errors
+        assert new_note["Meaning"] == "neko"
+        assert any("no cards yet" in message for message in logger.warnings), logger.warnings
+
 
 class TestRunningForOneEditorField:
     """`field_only`, which the unfocus hook sets to the field that just lost focus.

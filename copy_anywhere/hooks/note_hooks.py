@@ -421,6 +421,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                         field_only=field_name,
                         unfocus_is_add=is_new_note,
                         deck_id=deck_id,
+                        # The Add dialog is the one place the add can still be cancelled, so
+                        # a queued change to anything but the note being typed -- another
+                        # note, a card, a file -- fails the definition rather than outliving
+                        # an Escape. The gate above reads what the definition claims; this
+                        # is what a hand-edited claim runs into (§8).
+                        add_note_compatible_only=is_new_note,
                     )
                     edited_cards = _edited_cards_for_update(copied_into_cards_dict)
                     if edited_cards:
@@ -468,6 +474,9 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     # keeps the two answers the same.
                     unfocus_is_add=is_new_note,
                     deck_id=deck_id,
+                    # Same backstop as the format-2 branch above: on a new note, nothing but
+                    # that note may be committed.
+                    add_note_compatible_only=is_new_note,
                 )
                 edited_cards = _edited_cards_for_update(copied_into_cards_dict)
                 if edited_cards:

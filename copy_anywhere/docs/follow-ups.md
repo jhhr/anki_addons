@@ -41,8 +41,9 @@ What changes is what the user is told, and what the log says.
 2. At run time, `run_edit_note` on a note with id 0 applies the field writes and skips the
    card actions with a warning-level log line ("skipped: the note is being added and has no
    cards yet"). Nothing else in the definition is discarded, and the `add_note_compatible_only`
-   backstop is untouched: it still refuses a definition that claims compatibility and queues
-   changes to another note or card.
+   backstop still refuses a definition that claims compatibility and queues changes to
+   another note, card or file -- on the unfocus hook as well as the add hook, since the Add
+   dialog is where the add can still be cancelled.
 3. The word "deferred" is gone from the hook, `definition_is_add_note_compatible`, the
    editor and the docs. The second pile is still real -- definitions writing to other notes
    or cards need the hook to write and undo those changes itself -- but it runs in the same
