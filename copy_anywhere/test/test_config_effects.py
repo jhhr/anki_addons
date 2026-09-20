@@ -177,8 +177,10 @@ class TestAFormat1DefinitionsEffects:
     """`definition_effects` inspects a format-1 definition instead of reading a stored object.
 
     The add hook sorts on the same `add_note_compatible` it would read off a format-2
-    definition, so the fallback has to answer the way the analyser does: a card action
-    disqualifies a definition as much as an edit to another note.
+    definition, so the fallback has to answer the way the analyser does. Format 1 has no
+    target binding to read, but its mode says whose cards a card action reaches: Within
+    note and Destination to sources act on the trigger's own, Source to destinations on
+    the found notes'.
     """
 
     def flag(self):
@@ -189,15 +191,29 @@ class TestAFormat1DefinitionsEffects:
         assert definition_effects(definition)["add_note_compatible"] is True
         assert definition_is_add_note_compatible(definition)
 
-    def test_a_card_action_makes_a_within_note_definition_incompatible(self):
+    def test_a_card_action_on_the_triggers_own_cards_stays_compatible(self):
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
             card_actions=[self.flag()],
         )
         effects = definition_effects(definition)
         assert effects["edits_cards"] is True
-        assert effects["add_note_compatible"] is False
-        assert not definition_is_add_note_compatible(definition)
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is False
+        assert effects["add_note_compatible"] is True
+        assert definition_is_add_note_compatible(definition)
+
+    def test_destination_to_sources_acts_on_the_trigger_too(self):
+        # Its only destination is the trigger note, so its card actions are the trigger's.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="Word:neko",
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            card_actions=[self.flag()],
+        )
+        effects = definition_effects(definition)
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is False
+        assert effects["add_note_compatible"] is True
 
     def test_a_card_action_only_definition_is_incompatible_too(self):
         # No field write and no tag, so `edits_other_notes` is false and the card action is
@@ -208,5 +224,64 @@ class TestAFormat1DefinitionsEffects:
         effects = definition_effects(definition)
         assert effects["edits_other_notes"] is False
         assert effects["edits_cards"] is True
+        assert effects["edits_trigger_cards"] is False
+        assert effects["edits_other_cards"] is True
         assert effects["add_note_compatible"] is False
         assert not definition_is_add_note_compatible(definition)
+
+    def test_writing_a_file_is_incompatible(self):
+        # The file is on disk whether or not the user goes through with the add.
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            field_to_file_defs=[d.field_to_file("out.txt", "{{Word}}")],
+        )
+        effects = definition_effects(definition)
+        assert effects["writes_files"] is True
+        assert effects["add_note_compatible"] is False
+        assert not definition_is_add_note_compatible(definition)
+
+
+class TestADefinitionStoredBeforeTheCardSplit:
+    """`edits_trigger_cards` / `edits_other_cards` are newer than the configs holding them.
+
+    `effects` is derived, so a new key needs no format bump: `read_effects` fills what a
+    stored object is missing from the pessimistic set, and the next save of the definition
+    list recomputes the whole object from the stages.
+    """
+
+    def flags_its_trigger(self) -> dict:
+        definition = d.staged(
+            "old",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Note", d.text("x"))],
+                    card_actions=[d.card_action(VOCAB, "Recognition", set_flag=3)],
+                )
+            ],
+            guid="def-old",
+        )
+        definition["effects"] = {
+            key: value
+            for key, value in definition["effects"].items()
+            if key not in ("edits_trigger_cards", "edits_other_cards")
+        }
+        return definition
+
+    def test_the_missing_keys_read_as_the_pessimistic_ones(self, config, stub_mw):
+        config["copy_definitions"] = [self.flags_its_trigger()]
+        effects = definition_effects(stored(stub_mw, "old"))
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is True
+
+    def test_a_save_recomputes_them_from_the_stages(self, config, stub_mw):
+        config["copy_definitions"] = [self.flags_its_trigger()]
+
+        saved = Config()
+        saved.load()
+        saved.add_definition(writes_trigger_only())
+
+        effects = stored(stub_mw, "old")["effects"]
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is False
+        assert effects["add_note_compatible"] is True

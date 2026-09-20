@@ -269,12 +269,38 @@ class TestEffects:
         assert effects["edits_other_notes"] is True
         assert effects["add_note_compatible"] is False
 
-    def test_a_card_action_on_the_trigger_is_not(self):
-        # A note being added has no persisted cards, so there is nothing to act on.
+    def test_a_card_action_on_the_trigger_stays_add_note_compatible(self):
+        # A note being added has no cards, so the action cannot run -- but it cannot leave
+        # anything behind either, so it does not keep the definition out of the add hook.
         effects = self.effects([
             d.edit_note("trigger", card_actions=[d.card_action("CA Vocab", "Recognition")])
         ])
         assert effects["edits_cards"] is True
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is False
+        assert effects["add_note_compatible"] is True
+
+    def test_a_card_action_on_a_queried_note_is_not(self):
+        # That note exists, so the flag outlives an add the user then cancels.
+        effects = self.effects([
+            d.note_query("found", "deck:x"),
+            d.for_each_note("found", [
+                d.edit_note("note", card_actions=[d.card_action("CA Vocab", "Recognition")])
+            ]),
+        ])
+        assert effects["edits_trigger_cards"] is False
+        assert effects["edits_other_cards"] is True
+        assert effects["add_note_compatible"] is False
+
+    def test_an_edit_card_stage_is_not(self):
+        effects = self.effects([
+            d.card_query("cards", "deck:x"),
+            d.for_each_card("cards", [
+                d.edit_card("card", [d.card_action("CA Vocab", "Recognition")])
+            ]),
+        ])
+        assert effects["edits_trigger_cards"] is False
+        assert effects["edits_other_cards"] is True
         assert effects["add_note_compatible"] is False
 
     def test_files_are_reported_separately_in_each_direction(self):
@@ -283,6 +309,13 @@ class TestEffects:
             d.write_file("log.txt", d.text("{{t}}")),
         ])
         assert (effects["reads_files"], effects["writes_files"]) == (True, True)
+        # The written file survives a cancelled add, so writing one is out of the add hook.
+        assert effects["add_note_compatible"] is False
+
+    def test_reading_a_file_stays_add_note_compatible(self):
+        # Reads leave nothing behind: the principle forbids edits, not knowledge.
+        effects = self.effects([d.read_file("t", "log.txt")])
+        assert (effects["reads_files"], effects["writes_files"]) == (True, False)
         assert effects["add_note_compatible"] is True
 
 
@@ -329,6 +362,54 @@ class TestCalls:
         result = analyze_definition(parent, lookup=make_lookup([child, parent]))
         assert result.effects["edits_other_notes"] is True
         assert result.effects["add_note_compatible"] is False
+
+    def test_a_callee_flagging_the_callers_own_trigger_stays_compatible(self):
+        # The callee's trigger is this definition's trigger, so its card action is the same
+        # impossible-but-harmless one it would be written here.
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[
+                d.edit_note("trigger", card_actions=[d.card_action("CA Vocab", "Recognition")])
+            ],
+        )
+        parent = d.staged(
+            "parent", guid="parent-guid", stages=[d.call_definition("child-guid")]
+        )
+        result = analyze_definition(parent, lookup=make_lookup([child, parent]))
+        assert result.effects["edits_trigger_cards"] is True
+        assert result.effects["edits_other_cards"] is False
+        assert result.effects["add_note_compatible"] is True
+
+    def test_a_callee_flagging_a_note_the_caller_found_is_not(self):
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[
+                d.edit_note("trigger", card_actions=[d.card_action("CA Vocab", "Recognition")])
+            ],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.note_query("found", "deck:x"),
+                d.for_each_note("found", [d.call_definition("child-guid", trigger="note")]),
+            ],
+        )
+        result = analyze_definition(parent, lookup=make_lookup([child, parent]))
+        assert result.effects["edits_trigger_cards"] is False
+        assert result.effects["edits_other_cards"] is True
+        assert result.effects["add_note_compatible"] is False
+
+    def test_a_call_with_nothing_to_look_the_callee_up_in_assumes_every_card(self):
+        parent = d.staged(
+            "parent", guid="parent-guid", stages=[d.call_definition("child-guid")]
+        )
+        effects = analyze_definition(parent).effects
+        assert effects["edits_trigger_cards"] is True
+        assert effects["edits_other_cards"] is True
+        assert effects["add_note_compatible"] is False
 
     def test_exporting_a_result_an_earlier_skip_can_leave_unset_is_refused(self):
         producer = d.variable("H1", d.text("x"))

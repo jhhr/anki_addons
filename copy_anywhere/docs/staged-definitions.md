@@ -161,8 +161,10 @@ outer list plus `store` is how a loop reports anything back.
   right-hand side once per source note, and so did a write whose field was already filled,
   and a raising one failed the definition, discarding the writes that would have been
   applied.
-* **Add-note compatibility is a flag, not an inspection.** A definition that writes to any
-  note but the trigger, or to any card, needs the add hook to write those changes itself.
+* **Add-note compatibility is a flag, not an inspection.** While a note is being added the
+  add can still be cancelled, so a definition may edit only that note: its fields and its
+  tags. One that writes to any other note, to a card that already exists, or to a file
+  needs the add hook to write those changes itself, once the add is past cancelling.
   The hooks read `effects.add_note_compatible` (a format-1 definition answers from its mode
   and its card actions); the commit refuses anything but trigger-note changes from a
   definition that claims compatibility, in case the JSON was edited by hand. Such a
@@ -216,17 +218,17 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   interpolated the name over the live note but `__Dest__` over a copy taken before anything
   ran; the file is written by a stage after the one that writes the field, and a stage reads
   what the stages before it did.
-* A definition that both fills a field and acts on a card fills the field when the note is
-  added rather than as you type. Format 1 ran it on every unfocus in the Add dialog and let
-  the card action quietly do nothing, because a note with id 0 has no cards. Format 2 has
-  one rule for that -- a definition touching another note or any card is not add-note
-  compatible -- so the unfocus hook skips the whole definition while a note is being added
-  and the add hook runs it when the note is added, where the card action on the new note is
-  a logged skip; nothing runs it later. The editor says so, naming the stage, rather than
-  refusing the definition: the rule is enforced by the hooks and again by the commit, both
-  of which read the stored `effects`, so what the editor allows changes nothing about what
-  runs. A definition triggered only by unfocus-while-adding is simply not run there;
-  turning on "Run when adding a new note" is what gives it a moment to run in.
+* A definition that both fills a field and acts on a card says out loud that the card
+  action does nothing while the note is being added. Format 1 ran it on every unfocus in
+  the Add dialog and let the card action quietly do nothing, because a note with id 0 has
+  no cards. Format 2 has one rule for that -- while a note is being added a definition may
+  edit only that note -- so the field write still runs as you type and the card action on
+  the new note is a logged skip; nothing runs it later. The editor says so, naming the
+  stage, rather than refusing the definition: the rule is enforced by the hooks and again
+  by the commit, both of which read the stored `effects`, so what the editor allows changes
+  nothing about what runs. A definition triggered only by unfocus-while-adding is simply
+  not run there; turning on "Run when adding a new note" is what gives it a moment to run
+  in.
 
 **What editing a migrated expression does.** Every expression the migrator writes carries
 `syntax_version: 1`, and the stage editor shows it as it is: `{{Word}}`, `{{__Dest__Word}}`,

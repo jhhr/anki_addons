@@ -337,7 +337,10 @@ class Export(TypedDict, total=False):
 class Effects(TypedDict, total=False):
     edits_trigger: bool
     edits_other_notes: bool
+    #: Either of the two below: what a reader that does not care whose cards asks for.
     edits_cards: bool
+    edits_trigger_cards: bool
+    edits_other_cards: bool
     reads_files: bool
     writes_files: bool
     queries_collection: bool
@@ -374,6 +377,8 @@ EMPTY_EFFECTS: Effects = {
     "edits_trigger": False,
     "edits_other_notes": False,
     "edits_cards": False,
+    "edits_trigger_cards": False,
+    "edits_other_cards": False,
     "reads_files": False,
     "writes_files": False,
     "queries_collection": False,
@@ -388,6 +393,8 @@ UNKNOWN_EFFECTS: Effects = {
     "edits_trigger": True,
     "edits_other_notes": True,
     "edits_cards": True,
+    "edits_trigger_cards": True,
+    "edits_other_cards": True,
     "reads_files": True,
     "writes_files": True,
     "queries_collection": True,

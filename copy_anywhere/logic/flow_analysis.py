@@ -117,6 +117,8 @@ class AnalysisResult:
             "edits_trigger": False,
             "edits_other_notes": False,
             "edits_cards": False,
+            "edits_trigger_cards": False,
+            "edits_other_cards": False,
             "reads_files": False,
             "writes_files": False,
             "queries_collection": False,
@@ -385,11 +387,24 @@ class _Analyzer:
                     )
             if stage.get("card_actions"):
                 effects["edits_cards"] = True
+                # Whose cards decides whether this definition may run while a note is
+                # being added: the note has no cards yet, so an action on its own is
+                # impossible and skipped, while an action on a note that already exists
+                # outlives an add the user then cancels (§6).
+                if target is not None and target.name == TRIGGER_BINDING:
+                    effects["edits_trigger_cards"] = True
+                else:
+                    effects["edits_other_cards"] = True
 
         elif stage_type == STAGE_EDIT_CARD:
             target = self.resolve(scope, stage.get("target"), stage, "target")
             self.expect(target, T_CARD, stage, "edit_card target")
             effects["edits_cards"] = True
+            # The card came from a query or a loop, and neither can yield a card of the
+            # note being added -- it has none, so a loop over them runs zero times. Calling
+            # it another note's card is therefore safe and spares the analyser having to
+            # track where a card binding came from.
+            effects["edits_other_cards"] = True
 
         elif stage_type == STAGE_READ_FILE:
             effects["reads_files"] = True
@@ -527,6 +542,8 @@ class _Analyzer:
             self.result.effects.update({
                 "edits_other_notes": True,
                 "edits_cards": True,
+                "edits_trigger_cards": True,
+                "edits_other_cards": True,
                 "add_note_compatible": False,
             })
             return
@@ -571,6 +588,7 @@ class _Analyzer:
         for key in (
             "edits_other_notes",
             "edits_cards",
+            "edits_other_cards",
             "reads_files",
             "writes_files",
             "queries_collection",
@@ -585,6 +603,12 @@ class _Analyzer:
                 self.result.effects["edits_trigger"] = True
             else:
                 self.result.effects["edits_other_notes"] = True
+        if callee_result.effects.get("edits_trigger_cards"):
+            # Same rule for the cards of that note.
+            if trigger is not None and trigger.name == TRIGGER_BINDING:
+                self.result.effects["edits_trigger_cards"] = True
+            else:
+                self.result.effects["edits_other_cards"] = True
 
         for output in stage.get("outputs", []) or []:
             if not isinstance(output, dict):
@@ -666,10 +690,15 @@ class _Analyzer:
         )
         self.analyze_exports(outgoing)
         effects = self.result.effects
-        # A note being added has no persisted cards and no id, so anything touching another
-        # note or any card cannot run in the add hook (§6).
+        # While a note is being added the add can still be cancelled, so a definition may
+        # edit only that note: its fields and tags. Anything that would outlive the
+        # cancellation -- another note, a card that already exists, a file -- keeps the
+        # definition out of the add hook's trigger-only pile. A card action on the note
+        # being added is impossible rather than forbidden, and is skipped at run time (§6).
         effects["add_note_compatible"] = not (
-            effects["edits_other_notes"] or effects["edits_cards"]
+            effects["edits_other_notes"]
+            or effects["edits_other_cards"]
+            or effects["writes_files"]
         )
         return self.result
 

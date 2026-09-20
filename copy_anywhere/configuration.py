@@ -581,17 +581,32 @@ def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
         return read_effects(copy_definition)
     modifies_other = definition_modifies_other_notes(copy_definition)
     edits_cards = bool(copy_definition.get("card_actions"))
+    writes_files = bool(copy_definition.get("field_to_file_defs"))
+    # Format 1 has no target binding to read, but its direction says whose cards a card
+    # action reaches: Source to destinations acts on the found notes', while Within note
+    # and Destination to sources (whose only destination is the trigger) act on the
+    # trigger's own.
+    source_to_destinations = (
+        copy_definition.get("copy_mode") == COPY_MODE_ACROSS_NOTES
+        and copy_definition.get("across_mode_direction") == DIRECTION_SOURCE_TO_DESTINATIONS
+    )
+    edits_other_cards = edits_cards and source_to_destinations
     return {
         "edits_trigger": definition_modifies_trigger_note(copy_definition),
         "edits_other_notes": modifies_other,
         "edits_cards": edits_cards,
+        "edits_trigger_cards": edits_cards and not source_to_destinations,
+        "edits_other_cards": edits_other_cards,
         "reads_files": False,
-        "writes_files": bool(copy_definition.get("field_to_file_defs")),
+        "writes_files": writes_files,
         "queries_collection": copy_definition.get("copy_mode") == COPY_MODE_ACROSS_NOTES,
         "calls_definitions": False,
-        # The same rule the analyser applies to a format-2 definition: a card action counts,
-        # whichever note's cards it reaches
-        "add_note_compatible": not modifies_other and not edits_cards,
+        # The same rule the analyser applies to a format-2 definition: only the note being
+        # added may be edited, and a card action on its own cards is impossible rather than
+        # forbidden. Everything that would survive a cancelled add says no.
+        "add_note_compatible": (
+            not modifies_other and not edits_other_cards and not writes_files
+        ),
     }
 
 

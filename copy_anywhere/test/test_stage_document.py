@@ -16,6 +16,7 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_FOR_EACH_NOTE,
     STAGE_NOTE_QUERY,
     STAGE_VARIABLE,
+    STAGE_WRITE_FILE,
     new_definition,
     validate_definition_structure,
     value_expression,
@@ -351,21 +352,34 @@ def filling_a_field_and_flagging_the_card(guid="e"):
     return edit
 
 
-def test_an_add_note_trigger_warns_rather_than_blocks_when_a_stage_flags_a_card():
-    # Refusing the save protected nothing: the hooks and the commit read the stored flag,
-    # never the editor, so what runs is the same either way.
+def flagging_the_card_and_writing_a_file(guid="e"):
+    """Fill-and-flag with a file write beside it: impossible *and* forbidden at add time.
+
+    The card action on the trigger's own cards cannot run -- the note has no cards yet --
+    but it leaves nothing behind either. The file does: it is on disk whether or not the
+    user goes through with the add, and that is what keeps this definition out of the add
+    hook's trigger-only pile.
+    """
+    writing = default_stage(STAGE_WRITE_FILE, "f")
+    writing["filename"] = value_expression(text="out.txt")
+    writing["content"] = value_expression(text="{{trigger.Word}}")
+    return [filling_a_field_and_flagging_the_card(guid), writing]
+
+
+def test_an_add_note_trigger_accepts_a_stage_that_flags_the_triggers_card():
+    # Refusing the save protected nothing -- the hooks and the commit read the stored flag,
+    # never the editor -- and there is nothing left to refuse: an action on the cards of
+    # the note being added cannot run, but it cannot survive a cancelled add either.
     doc = document(filling_a_field_and_flagging_the_card())
     doc.definition["triggers"]["on_add"] = True
-    assert not doc.add_note_compatible()
+    assert doc.add_note_compatible()
     assert doc.can_save()
-    warnings = doc.warnings()
-    assert any("has card actions" in warning for warning in warnings)
 
 
 def test_the_add_note_warning_says_the_card_action_on_the_named_stage_will_not_run():
     # A note being added has no cards, and nothing runs the action later, so the warning
     # names the stage and promises no later run.
-    doc = document(filling_a_field_and_flagging_the_card())
+    doc = document(*flagging_the_card_and_writing_a_file())
     doc.definition["triggers"]["on_add"] = True
     doc.stage("e")["name"] = "Fill and flag"
     (warning,) = doc.warnings()
@@ -375,7 +389,7 @@ def test_the_add_note_warning_says_the_card_action_on_the_named_stage_will_not_r
 
 
 def test_the_add_note_warning_promises_no_later_run_for_an_unfocus_only_trigger_either():
-    doc = document(filling_a_field_and_flagging_the_card())
+    doc = document(*flagging_the_card_and_writing_a_file())
     doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
     (warning,) = doc.warnings()
     assert "card action on Edit Note" in warning
@@ -410,7 +424,7 @@ def test_the_add_note_warning_also_names_a_stage_editing_another_note():
 def test_an_unfocus_only_add_trigger_is_told_what_to_turn_on():
     # Nothing to defer to: without `on_add` the definition is skipped in the Add dialog and
     # never runs on save either, so "it runs once the note is saved" would be a lie.
-    doc = document(filling_a_field_and_flagging_the_card())
+    doc = document(*flagging_the_card_and_writing_a_file())
     doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
     warning = doc.warnings()[0]
     assert "skipped there" in warning

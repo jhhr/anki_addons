@@ -280,10 +280,11 @@ def test_the_status_says_why_a_definition_cannot_be_saved(dialog):
     assert "Loop Over Notes" in dialog.status_label.text()
 
 
-def test_an_add_note_trigger_warns_but_still_saves_a_card_flagging_definition(dialog):
+def test_an_add_note_trigger_still_saves_a_card_flagging_definition(dialog):
     # A definition that fills a field and flags the card: what format 1 ran in the Add
-    # dialog, and what the editor used to refuse with no way to clear the refusal. It goes
-    # in the amber list rather than the red one, and the Save button stays live.
+    # dialog, and what the editor used to refuse with no way to clear the refusal. The
+    # action on the new note's own cards cannot run, but it cannot outlive a cancelled add
+    # either, so the definition is one the add hook may run and the Save button stays live.
     stage = default_stage(STAGE_EDIT_NOTE, "e")
     stage["fields"] = [
         {
@@ -299,11 +300,8 @@ def test_an_add_note_trigger_warns_but_still_saves_a_card_flagging_definition(di
     dialog.refresh_status()
     status = dialog.status_label.text()
     assert dialog.ok_button.isEnabled()
-    assert "note is being added: <b>no</b>" in status
-    assert "Worth knowing" in status
+    assert "note is being added: <b>yes</b>" in status
     assert "Cannot be saved yet" not in status
-    assert "card action on Edit Note" in status
-    assert "will not run" in status
     assert "once the note is saved" not in status
 
 
