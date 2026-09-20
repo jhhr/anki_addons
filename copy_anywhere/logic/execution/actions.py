@@ -329,7 +329,7 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
         session.update_counts(processed_sources_inc=len(notes))
     # Format 1 published the size of the query result as a variable for every across-note
     # definition; migrated expressions still read it as `{{__Target_Notes_Count}}`.
-    frame.legacy_values[TARGET_NOTES_COUNT] = len(notes)
+    frame.runtime_values[TARGET_NOTES_COUNT] = len(notes)
     return notes
 
 
@@ -535,7 +535,7 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
 
 def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, frame) -> list:
     from ..definition_schema import expression_is_legacy_syntax, expression_source
-    from .expressions import resolve_references
+    from .expressions import code_globals, resolve_references
 
     source = expression_source(expression)
     if expression_is_legacy_syntax(expression):
@@ -552,7 +552,12 @@ def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, fram
             )
     else:
         interpolated = resolve_references(source, ctx)
-    pairs, code_error = execute_code_for_files(interpolated or "", ctx.source_note)
+    # The stage's bindings, the same names every other code expression runs with: a file
+    # write inside a loop has to be able to say `note` and mean the note being looped over,
+    # which is what a migrated Destination-to-sources file write always meant by it.
+    pairs, code_error = execute_code_for_files(
+        interpolated or "", ctx.source_note, extra_globals=code_globals(ctx)
+    )
     if code_error:
         raise frame.error(f"Code execution error in file definition:\n{code_error}", stage)
     frame.session.render_progress()

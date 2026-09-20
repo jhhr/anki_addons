@@ -89,12 +89,15 @@ class TestWithinNote:
         assert note["Note"] == "1"
 
     def test_target_notes_count_is_not_set_in_within_note_mode(self, note, logger):
+        # Nothing counts notes in this mode, so the runtime value the across modes supply is
+        # simply not there. Format 1 logged it as an invalid field and wrote an empty
+        # string; a reference that resolves to nothing fails the definition now (§11).
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")]
         )
-        copy_for_single_trigger_note(definition, note)
+        assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("__target_notes_count")
+        assert logger.has_error("__Target_Notes_Count")
 
     def test_a_missing_copy_mode_is_an_error(self, note, logger):
         definition = d.within_note()

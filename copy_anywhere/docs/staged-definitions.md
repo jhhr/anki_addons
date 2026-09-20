@@ -63,13 +63,18 @@ whatever consumes it. The process chain runs after either, and is the same chain
 had.
 
 References are qualified: `{{trigger.Word}}`, `{{note.Meaning}}`, `{{card.deck_name}}`,
-`{{M}}` for a result. A reference that names no binding falls through to the note-value and
-card-value keys format 1 used (`{{__Note_ID}}`, `{{Recognition__Card_Due}}`). Interpolating a
-note, a card or a list is a validation error: how several values become one piece of text is
-the definition's decision, so it has to say so with a reduce or with code.
+`{{M}}` for a result. The note-value and card-value keys format 1 used are read through the
+note that holds them -- `{{trigger.__Note_ID}}`, `{{note.Recognition__Card_Due}}`. A bare
+name is a result, or one of the two values the run itself supplies
+(`{{__Target_Notes_Count}}`, `{{__Query_Note_Index}}`), and anything else fails the stage
+saying which name it was: a reference that resolves to nothing is a mistake, not an empty
+string. Interpolating a note, a card or a list is a validation error: how several values
+become one piece of text is the definition's decision, so it has to say so with a reduce or
+with code.
 
-Migrated expressions carry `syntax_version: 1` and keep format 1's unqualified names. New
-expressions must not rely on that. A migrated definition likewise keeps format 1's variable
+Migration rewrites format 1's unqualified names into this syntax, so nothing stored still
+speaks format 1: `{{Word}}` becomes a reference to whichever note that stage read it from,
+`{{__Dest__Word}}` to the one it wrote. A migrated definition does keep format 1's variable
 names, which did not have to be identifiers; a missing name, a reserved binding name and the
 `__` prefix are refused on a migrated definition too, since the runtime owns those.
 
@@ -194,7 +199,8 @@ outer list plus `store` is how a loop reports anything back.
 ## The startup migration
 
 `migrate_config()` runs before anything can read a definition. It converts every stored
-definition to stages, fills in each one's derived `effects`, and bumps the config version.
+definition to stages, rewrites format 1's references into the current syntax, fills in each
+one's derived `effects`, and bumps the config version.
 
 It is all or nothing. If any definition cannot be converted -- one naming no copy mode, say,
 which format 1 could not have run either -- nothing is converted, the version stays where it
@@ -244,18 +250,18 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   writes to another note, to a card that already exists, or to a file is skipped, and
   turning on "Run when adding a new note" is what gives it a moment to run in.
 
-**What editing a migrated expression does.** Every expression the migrator writes carries
-`syntax_version: 1`, and the stage editor shows it as it is: `{{Word}}`, `{{__Dest__Word}}`,
-`{{Recognition__Card_Due}}`, resolved by format 1's own interpolation. The editor's menus,
-though, offer the stage's format-2 scope -- `{{trigger.Word}}` -- and format 1's
-interpolation reads that as a field no note has. So changing the text (or the code) of a
-migrated expression moves it to format-2 syntax on save; an expression left as the migrator
-wrote it, including one edited and put back, keeps `syntax_version: 1` and runs exactly as
-before. After the move, the promoted expression is judged the way an authored one is: a
-reference in the box that is not on the menu is marked in red as not a valid field, and a
-bare spelling that is left in falls through to the note-value and card-value lookup at run
-time rather than being checked by the analyser, which treats a bare name as a key looked up
-when the stage runs. Replace format-1 spellings with the menu's references when you edit.
+**What migration does to a format-1 expression.** The stages record which note format 1
+read an unqualified name from and which one `__Dest__` meant, and the migrator spends that
+record on the references themselves: `{{Word}}` comes out as `{{trigger.Word}}` or
+`{{note.Word}}`, `{{__Dest__Word}}` as the note the stage writes, and a card value keeps its
+card type name (`{{trigger.Recognition__Card_Due}}`). A name the migrator itself bound --
+a variable's result, a synthesized join -- stays bare, because it is a result; so do
+`{{__Target_Notes_Count}}` and `{{__Query_Note_Index}}`, which the run supplies. So a
+migrated expression is shown, edited and judged exactly as an authored one: the editor's
+menu offers the stage's scope, and what the menu offers is what is already in the box.
+Code is rewritten the same way, but only its `{{...}}` references: code that reached for a
+note by some other means is yours to check by hand. A config an earlier version already
+staged is rewritten in place by the `0.4.0` config migration.
 
 **What a migrated field write keeps.** Format 1 asked three questions per field write that
 format 2 asks once per definition: which editor fields trigger it, whether it runs on unfocus

@@ -1,25 +1,22 @@
-"""Turning one `ValueExpression` into a value, in whichever syntax it is written.
+"""Turning one `ValueExpression` into a value.
 
-Two syntaxes live side by side and will until every definition has been re-authored.
+Every reference is qualified: `{{trigger.Word}}`, `{{note.Meaning}}`, `{{card.deck_name}}`,
+`{{M}}` for a result. A reference is resolved against the binding it names, so nothing
+depends on which note happens to be "current", and a reference to a list or a note is an
+error rather than a silent `str()`. A bare name is a result, or one of the two values the
+run itself supplies, or a mistake -- and the stage says so rather than writing nothing.
 
-*Format-1 syntax* (`syntax_version: 1`, written only by the migrator) names note fields
-unqualified and the destination note's fields with a `__Dest__` prefix, and is resolved by
-the same `get_field_values_from_notes()` the old executor used -- the same interpolation, the
-same code execution, the same messages. A migrated definition therefore computes what it
-computed before; the staged executor only changes which note is the source and which the
-destination, which is exactly what migration made explicit.
+*Format-1 syntax* (`syntax_version: 1`) named note fields unqualified and the destination
+note's with a `__Dest__` prefix, and was resolved by the same `get_field_values_from_notes()`
+the old executor used. Nothing writes it any more: the migrator rewrites every reference it
+converts, so the branch below that still reads it is unreachable and goes when the rest of
+the format-1 runtime does.
 
-*Format-2 syntax* qualifies every reference: `{{trigger.Word}}`, `{{note.Meaning}}`,
-`{{card.deck_name}}`, `{{M}}` for a result. A reference is resolved against the binding it
-names, so nothing depends on which note happens to be "current", and a reference to a list
-or a note is an error rather than a silent `str()`.
-
-Both then run the expression's process chain, which is unchanged from format 1.
+The expression's process chain runs after either, unchanged from format 1.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any, Optional
 
@@ -56,7 +53,6 @@ from .facades import (
     to_facade,
 )
 
-logger = logging.getLogger(__name__)
 
 INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
 
@@ -158,7 +154,7 @@ class ExpressionContext:
         for name, value in self.environment.items():
             if isinstance(value, SCALAR_TYPES):
                 variables[name] = value
-        variables.update(self.frame.legacy_values)
+        variables.update(self.frame.runtime_values)
         return variables
 
     def error(self, message: str) -> StageError:
@@ -240,20 +236,14 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
                 f"'{head}' holds a note, card or list and cannot be interpolated;"
                 " reduce it to a scalar first"
             )
-        # Not a binding: a note value, a card value or one of the runtime variables, all of
-        # which the format-1 interpolation already knows how to find.
-        resolved, invalid = interpolate_from_text(
-            match.group(0),
-            source_note=ctx.source_note,
-            destination_note=ctx.destination_note,
-            variable_values_dict=ctx.variables(),
-            multiple_note_types=ctx.multiple_note_types,
-        )
-        if invalid:
-            logger.error(
-                "Error in copy fields: Invalid fields in copy_from_text: %s", ", ".join(invalid)
-            )
-        return resolved or ""
+        if head in ctx.frame.runtime_values:
+            # The run's own values -- the query's size, the current loop index -- which no
+            # stage declares and so no binding holds.
+            return str(ctx.frame.runtime_values[head])
+        # There is nothing else a bare name can be. Reading it as a field of whichever note
+        # happened to be in hand is what let a typo run a truncated query or write an empty
+        # string, with the definition reporting success either way (§11).
+        raise ctx.error(f"'{head}' is not a binding or a runtime value")
 
     text = INTERPOLATION_RE.sub(replace, text)
     for placeholder, cloze_value in placeholders.items():

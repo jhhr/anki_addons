@@ -7,7 +7,8 @@ table -- one case per rule -- plus the two questions the table cannot answer on 
 that a promoted note value and a promoted card value still resolve against a real note, and
 that every shape the migrator can produce comes out with no legacy marker left in it.
 
-Nothing here runs the promotion as part of a copy: it is not wired into the migrator yet.
+The migrator promotes its own output, so a definition that still speaks format 1 is built
+here by hand -- `legacy()` -- wherever one is needed.
 """
 
 import pytest
@@ -409,11 +410,15 @@ class TestPromoteDefinition:
         assert promote_definition(migrated)["legacy"] == migrated["legacy"]
 
     def test_the_input_is_not_mutated(self):
-        migrated = migrate_definition_v1_to_v2(
-            d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")])
+        # Built by hand: the migrator promotes its own output now, so there is no longer a
+        # definition it hands back that still has something left to promote.
+        definition = d.staged(
+            stages=[d.edit_note("trigger", fields=[d.write("Note", legacy("{{Word}}"))])]
         )
-        promote_definition(migrated)
-        assert migrated["stages"][0]["fields"][0]["value"]["text"] == "{{Word}}"
+        promote_definition(definition)
+        value = definition["stages"][0]["fields"][0]["value"]
+        assert value["text"] == "{{Word}}"
+        assert value["syntax_version"] == SYNTAX_VERSION_LEGACY
 
     def test_promoting_twice_is_promoting_once(self):
         migrated = migrate_definition_v1_to_v2(

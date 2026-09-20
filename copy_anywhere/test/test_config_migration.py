@@ -17,7 +17,11 @@ from copy_anywhere.configuration import (
     PRE_STAGE_MIGRATION_KEY,
     migrate_config,
 )
-from copy_anywhere.logic.definition_schema import is_format_2
+from copy_anywhere.logic.definition_schema import (
+    SYNTAX_VERSION_LEGACY,
+    is_format_2,
+    walk_stages,
+)
 
 
 @pytest.fixture
@@ -32,6 +36,22 @@ def config(stub_mw):
 def stored(stub_mw) -> dict:
     """What is in the config now. `save()` replaces the dict, so re-read it every time."""
     return stub_mw.addonManager.configs["copy_anywhere"]
+
+
+def no_legacy_syntax(definition) -> bool:
+    """Whether a stored definition has any format-1 marker left anywhere in it."""
+    for stage in walk_stages(definition.get("stages") or []):
+        if "legacy_source" in stage or "legacy_destination" in stage:
+            return False
+        expressions = [stage.get(key) for key in ("value", "query", "predicate", "filename",
+                                                  "content", "initial")]
+        expressions.extend(write.get("value") for write in stage.get("fields") or [])
+        for expression in expressions:
+            if isinstance(expression, dict) and (
+                "syntax_version" in expression or "legacy_isolated_variables" in expression
+            ):
+                return False
+    return True
 
 
 class TestConvertingTheStoredDefinitions:
@@ -100,6 +120,81 @@ class TestConvertingTheStoredDefinitions:
         migrate_config()
 
         assert stored(stub_mw)["version"] == CONFIG_VERSION
+
+
+class TestRetiringFormat1Syntax:
+    """The 0.4.0 migration: no stored expression still speaks format 1 (§11).
+
+    0.3.0 turned the definitions into stages but left their references as format 1 wrote
+    them -- a bare `{{Word}}` meaning a field of whichever note the stage happened to read,
+    recorded in `legacy_source` / `legacy_destination`. Nothing resolves those any more, so
+    a config an earlier start of this version already staged has to be rewritten too.
+    """
+
+    def a_staged_definition_that_still_speaks_format_1(self):
+        """What 0.3.0 stored: staged, but with the old syntax inside the expressions."""
+        definition = d.staged(
+            definition_name="old",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Note", d.text("{{Word}}"))],
+                )
+            ],
+        )
+        definition["migrated_from_format"] = 1
+        edit = definition["stages"][0]
+        edit["legacy_source"] = {"binding": "trigger"}
+        edit["fields"][0]["value"]["syntax_version"] = SYNTAX_VERSION_LEGACY
+        return definition
+
+    def test_a_stored_definition_is_promoted_where_it_stands(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_staged_definition_that_still_speaks_format_1()]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        edit = stored(stub_mw)["copy_definitions"][0]["stages"][0]
+        assert "legacy_source" not in edit
+        assert edit["fields"][0]["value"]["text"] == "{{trigger.Word}}"
+        assert "syntax_version" not in edit["fields"][0]["value"]
+        assert stored(stub_mw)["version"] == CONFIG_VERSION
+
+    def test_a_promoted_definition_keeps_its_effects_up_to_date(self, config, stub_mw):
+        # Promotion rewrites the expressions the analyser reads, and nothing on the load
+        # path recomputes `effects` -- only a save does.
+        config["copy_definitions"] = [self.a_staged_definition_that_still_speaks_format_1()]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        effects = stored(stub_mw)["copy_definitions"][0]["effects"]
+        assert effects["edits_trigger"] is True
+
+    def test_a_format_1_config_arrives_promoted_in_one_pass(self, config, stub_mw):
+        # The fresh path goes through the migrator, which promotes as its last act; the
+        # 0.4.0 step then has nothing left to do.
+        config["copy_definitions"] = [
+            d.within_note(
+                definition_name="w",
+                field_to_field_defs=[d.field_to_field("Note", copy_from_text="{{Word}}")],
+            )
+        ]
+
+        migrate_config()
+
+        definition = stored(stub_mw)["copy_definitions"][0]
+        assert no_legacy_syntax(definition)
+        assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Word}}"
+
+    def test_a_definition_that_never_spoke_format_1_is_untouched(self, config, stub_mw):
+        authored = d.staged(stages=[d.variable("M", d.text("{{trigger.Word}}"))])
+        config["copy_definitions"] = [authored]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        assert stored(stub_mw)["copy_definitions"][0]["stages"] == authored["stages"]
 
 
 class TestTheBackup:

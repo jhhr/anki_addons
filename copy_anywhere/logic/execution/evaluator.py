@@ -184,7 +184,7 @@ def _run_loop(
     count = len(items)
     session.record_detail("iterations", count)
 
-    previous_index = frame.legacy_values.get(QUERY_NOTE_INDEX)
+    previous_index = frame.runtime_values.get(QUERY_NOTE_INDEX)
     for index, item in enumerate(items, 1):
         if session.check_cancel():
             raise Cancelled()
@@ -197,7 +197,7 @@ def _run_loop(
         body_env["index"] = index
         body_env["count"] = count
         # Format-1 expressions read the position in the query result as a variable.
-        frame.legacy_values[QUERY_NOTE_INDEX] = index
+        frame.runtime_values[QUERY_NOTE_INDEX] = index
         frame.loop_path.append(index)
         try:
             execute_block(stage.get("body") or [], body_env, frame, event)
@@ -207,9 +207,9 @@ def _run_loop(
         finally:
             frame.loop_path.pop()
     if previous_index is None:
-        frame.legacy_values.pop(QUERY_NOTE_INDEX, None)
+        frame.runtime_values.pop(QUERY_NOTE_INDEX, None)
     else:
-        frame.legacy_values[QUERY_NOTE_INDEX] = previous_index
+        frame.runtime_values[QUERY_NOTE_INDEX] = previous_index
 
 
 def _run_reduce(
@@ -360,7 +360,7 @@ def execute_definition(
     legacy = frame.definition.get("legacy") or {}
     default_index = legacy.get("query_note_index_default")
     if default_index is not None:
-        frame.legacy_values[QUERY_NOTE_INDEX] = default_index
+        frame.runtime_values[QUERY_NOTE_INDEX] = default_index
     try:
         execute_block(frame.definition.get("stages") or [], env, frame, parent_event)
     except SkipBlock:

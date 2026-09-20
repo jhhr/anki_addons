@@ -15,7 +15,7 @@ from ..shared.interpolate.execute_code import execute_code_core
 
 
 def execute_code_for_files(
-    code: str, note: Note
+    code: str, note: Note, extra_globals: Optional[dict] = None
 ) -> Tuple[Union[list[tuple[str, str]], None], Optional[str]]:
     """Execute user-provided Python code expected to return a list of file tuples.
 
@@ -26,11 +26,14 @@ def execute_code_for_files(
         ``return``).  ``{{field}}`` markers have already been interpolated.
     :param note: The current source note, available as ``note`` inside the
         code.
+    :param extra_globals: Extra names to expose inside the code, for a caller
+        whose context holds more than a note — the stage's bindings, say.
+        Applied last, so a caller may also replace a standard name.
     :return: ``(file_tuples|None, error_message)`` — *error_message* is
         ``None`` on success.  ``None`` result indicates no return value or an
         error.
     """
-    result, error = execute_code_core(code, note)
+    result, error = execute_code_core(code, note, extra_globals=extra_globals)
     if error:
         return None, error
     if result is None:

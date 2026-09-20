@@ -12,20 +12,36 @@ import pytest
 import definitions as d
 from copy_anywhere.logic.definition_migration import (
     LEGACY_QUERY_RESULT,
+    STAGE_EXPRESSION_KEYS,
     MigrationError,
     migrate_definition_v1_to_v2,
     migrate_definitions,
 )
 from copy_anywhere.logic.definition_schema import (
     FORMAT_VERSION,
-    SYNTAX_VERSION_LEGACY,
     validate_definition_structure,
+    walk_stages,
 )
 from copy_anywhere.logic.flow_analysis import analyze_definition
 
 
 def stage_types(stages):
     return [stage["type"] for stage in stages]
+
+
+def expressions_of(stage):
+    """Every expression one stage holds, wherever the stage type keeps it."""
+    found = [
+        stage[key]
+        for key in STAGE_EXPRESSION_KEYS.get(stage.get("type", ""), ())
+        if isinstance(stage.get(key), dict)
+    ]
+    found.extend(
+        field_write["value"]
+        for field_write in stage.get("fields") or []
+        if isinstance(field_write.get("value"), dict)
+    )
+    return found
 
 
 def find(stages, stage_type):
@@ -48,8 +64,10 @@ class TestWithinNote:
         # stage's own entry snapshot the source, which is what lets two fields swap.
         assert "legacy_source" not in edit
         assert [write["field"] for write in edit["fields"]] == ["Note"]
-        assert edit["fields"][0]["value"]["text"] == "{{Word}}"
-        assert edit["fields"][0]["value"]["syntax_version"] == SYNTAX_VERSION_LEGACY
+        # The reference is promoted on the way out: the note `{{Word}}` meant is named, so
+        # nothing downstream has to know this definition was ever format 1.
+        assert edit["fields"][0]["value"]["text"] == "{{trigger.Word}}"
+        assert "syntax_version" not in edit["fields"][0]["value"]
 
     def test_copy_if_empty_becomes_write_if_empty(self):
         migrated = migrate_definition_v1_to_v2(
@@ -114,14 +132,17 @@ class TestVariables:
         assert stage_types(migrated["stages"]) == ["variable", "variable", "edit_note"]
         assert [stage["result"] for stage in migrated["stages"][:2]] == ["a", "b"]
 
-    def test_they_are_marked_as_not_seeing_each_other(self):
+    def test_each_one_reads_the_trigger_note_and_nothing_else(self):
         # Format 1 evaluated every variable against the trigger note alone, so none of them
-        # could read the ones declared before it. Dropping this marker is the change that
-        # makes a later variable able to consume an earlier one.
+        # could read the ones declared before it. Promotion says that outright -- `{{Word}}`
+        # becomes a field of the trigger -- instead of carrying an isolation marker, and a
+        # later variable that did mean an earlier one would have kept its bare name.
         migrated = migrate_definition_v1_to_v2(
             d.within_note(field_to_variable_defs=[d.field_to_variable("a", "{{Word}}")])
         )
-        assert migrated["stages"][0]["value"]["legacy_isolated_variables"] is True
+        value = migrated["stages"][0]["value"]
+        assert value["text"] == "{{trigger.Word}}"
+        assert "legacy_isolated_variables" not in value
 
 
 class TestCondition:
@@ -175,8 +196,10 @@ class TestSourceToDestinations:
         edit = loop["body"][0]
         assert edit["target"] == {"binding": "note"}
         # The values come from the trigger note while the note being written is the loop's,
-        # which is what `{{Word}}` and `{{__Dest__Note}}` meant in this mode.
-        assert edit["legacy_source"] == {"binding": "trigger"}
+        # which is what `{{Word}}` and `{{__Dest__Note}}` meant in this mode. Promotion
+        # spells both out, so no source binding is left on the stage.
+        assert "legacy_source" not in edit
+        assert edit["fields"][0]["value"]["text"] == "{{trigger.Word}}"
 
     def test_the_query_is_not_counted_as_sources(self):
         # The trigger note was the one source here; the query found destinations.
@@ -465,6 +488,77 @@ class TestPurity:
         ):
             migrated = migrate_definition_v1_to_v2(definition)
             assert validate_definition_structure(migrated) == []
+
+
+class TestTheSyntaxThatComesOut:
+    """Nothing the migrator hands back still speaks format 1 inside its expressions.
+
+    Migration turns a definition into stages; promotion turns the references inside them
+    into format-2 syntax, so a bare `{{Word}}` says which note it meant. The rewrite's own
+    truth table is `test_syntax_promotion.py`; what is pinned here is that every definition
+    leaving the migrator has been through it, because the executor has only the one
+    resolution path to run it with.
+    """
+
+    @pytest.mark.parametrize(
+        "builder",
+        [
+            pytest.param(
+                lambda: d.within_note(
+                    field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+                    field_to_variable_defs=[d.field_to_variable("a", "{{Meaning}}")],
+                    field_to_file_defs=[d.field_to_file("{{Word}}.txt", "{{Meaning}}")],
+                    copy_condition_query="Word:{{Word}}",
+                ),
+                id="within note",
+            ),
+            pytest.param(
+                lambda: d.source_to_destinations(
+                    copy_from_cards_query="Word:{{Word}}",
+                    field_to_field_defs=[
+                        d.field_to_field("Note", "{{__Dest__Note}}, {{Word}}")
+                    ],
+                ),
+                id="source to destinations",
+            ),
+            pytest.param(
+                lambda: d.destination_to_sources(
+                    copy_from_cards_query="Word:a",
+                    field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+                    field_to_file_defs=[d.field_to_file("out.txt", "{{Word}}")],
+                ),
+                id="destination to sources",
+            ),
+        ],
+    )
+    def test_no_stage_or_expression_carries_a_legacy_marker(self, builder):
+        migrated = migrate_definition_v1_to_v2(builder())
+        for stage in walk_stages(migrated["stages"]):
+            assert "legacy_source" not in stage, stage["guid"]
+            assert "legacy_destination" not in stage, stage["guid"]
+            for expression in expressions_of(stage):
+                assert "syntax_version" not in expression, stage["guid"]
+                assert "legacy_isolated_variables" not in expression, stage["guid"]
+
+    def test_the_references_name_the_notes_format_1_left_implicit(self):
+        # The across-notes write is the one where the two notes are different: the value
+        # comes from the trigger and `__Dest__` is the note being written.
+        migrated = migrate_definition_v1_to_v2(
+            d.source_to_destinations(
+                copy_from_cards_query="Word:a",
+                field_to_field_defs=[
+                    d.field_to_field("Note", "{{__Dest__Note}}, {{Word}}")
+                ],
+            )
+        )
+        edit = migrated["stages"][1]["body"][0]
+        assert edit["fields"][0]["value"]["text"] == "{{note.Note}}, {{trigger.Word}}"
+
+    def test_a_definition_that_was_never_format_1_is_still_passed_through(self):
+        # Promotion is idempotent, so the format-2 shortcut at the top of the migrator is
+        # still the whole story for a definition that never had legacy syntax in it.
+        staged = d.staged(stages=[d.variable("M", d.text("{{trigger.Word}}"))])
+        assert migrate_definition_v1_to_v2(staged) == staged
 
 
 class TestRefusals:

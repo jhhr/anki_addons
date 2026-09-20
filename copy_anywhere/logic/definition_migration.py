@@ -697,9 +697,15 @@ def migrate_definition_v1_to_v2(
         definition guid instead.
     :raises MigrationError: when the definition names no copy mode, or names an across-note
         direction that format 1 would also have refused.
+
+    What comes back is in the current syntax throughout: the stages are promoted on the way
+    out, so no expression the executor is ever handed carries a `syntax_version`.
     """
     if is_format_2(definition):
-        return deepcopy(definition)  # type: ignore[return-value]
+        # Promotion, not a plain copy: a definition a 0.3.0 start already staged is format 2
+        # and still speaks format 1 inside its expressions, and every caller here wants a
+        # definition the executor can run.
+        return promote_definition(definition)  # type: ignore[arg-type]
 
     definition = deepcopy(definition)
     definition_guid = definition.get("guid") or new_guid()
@@ -785,7 +791,11 @@ def migrate_definition_v1_to_v2(
     }  # type: ignore[typeddict-unknown-key]
     if warnings:
         migrated["migration_warnings"] = warnings  # type: ignore[typeddict-unknown-key]
-    return migrated
+    # Format-1 syntax does not outlive the migration. The stages above record which note
+    # each bare reference meant, in `legacy_source` / `legacy_destination`; promotion spends
+    # that record by writing the binding into the reference itself, so what comes out has
+    # one syntax and the executor one way to resolve it (§11).
+    return promote_definition(migrated)
 
 
 def migrate_definitions(

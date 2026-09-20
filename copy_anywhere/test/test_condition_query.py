@@ -173,25 +173,29 @@ class TestConditionInterpolation:
         definition = copy_note_field(copy_condition_query="{{Freq}}")
         assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("could not be interpolated for note id")
+        assert logger.has_error("resolved to nothing for note id")
 
-    def test_the_empty_interpolation_error_names_no_missing_fields(self, note, logger):
-        # The message blames "missing fields", but an existing-and-empty field is not
-        # invalid, so the list it prints is empty. The reported cause is misleading.
+    def test_the_empty_interpolation_error_names_the_query_it_resolved(self, note, logger):
+        # Migration names the note the reference meant, so the message can quote the search
+        # it actually ran rather than blaming "missing fields" -- which, for a field that
+        # exists and is empty, printed an empty list of them (§11).
         definition = copy_note_field(copy_condition_query="{{Freq}}")
         copy_for_single_trigger_note(definition, note)
         assert logger.errors == [
-            "Error in copy fields: Condition query '{{Freq}}' could not be interpolated"
-            f" for note id {note.id} due to missing fields: "
+            "Error in copy fields: Condition query '{{trigger.Freq}}' resolved to nothing"
+            f" for note id {note.id}"
         ]
 
-    def test_an_unknown_field_is_ignored_when_other_text_survives(self, note, logger):
-        # invalid_fields is never consulted -- only the emptiness of the result is. So an
-        # unknown field silently becomes "" and the truncated query runs, with no error.
+    def test_an_unknown_field_fails_the_definition_rather_than_truncating_the_search(
+        self, note, logger
+    ):
+        # Format 1 never consulted its own invalid-field list: an unknown field became ""
+        # and the truncated `Word:neko` ran, matched, and copied. A reference that resolves
+        # to nothing is a stage error now, so the condition is not guessed at (§11).
         definition = copy_note_field(copy_condition_query="Word:neko {{Nonexistent}}")
-        assert copy_for_single_trigger_note(definition, note) is True
-        assert note["Note"] == "neko"
-        assert logger.errors == []
+        assert copy_for_single_trigger_note(definition, note) is False
+        assert note["Note"] == ""
+        assert logger.has_error("Nonexistent")
 
     def test_a_syntactically_invalid_condition_raises_out_of_the_function(self, note):
         # find_notes is not guarded here, so a search error is neither logged nor turned into
@@ -212,13 +216,14 @@ class TestVariablesAreResolvedBeforeTheCondition:
 
     def test_variables_are_computed_even_for_a_note_the_condition_skips(self, note, logger):
         # Step 1 runs before Step 3, so the cost of resolving variables is paid for every
-        # trigger note, including the ones the condition is about to throw away. The error
-        # from the bad variable is the only evidence that it ran at all.
+        # trigger note, including the ones the condition is about to throw away. A variable
+        # naming a field the note has not is now what proves it: it used to log an invalid
+        # field and carry on, and it fails the definition instead (§11).
         definition = copy_note_field(copy_condition_query="Word:inu")
         definition["field_to_variable_defs"] = [d.field_to_variable("v", "{{Nonexistent}}")]
-        assert copy_for_single_trigger_note(definition, note) is True
+        assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("Invalid fields in copy_from_text: nonexistent")
+        assert logger.has_error("Nonexistent")
 
 
 class TestTheConditionGatesTheSourceQuery:

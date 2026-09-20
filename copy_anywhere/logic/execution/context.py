@@ -507,9 +507,11 @@ class DefinitionFrame:
         self.multiple_note_types = (
             len((definition.get("triggers") or {}).get("note_types") or []) > 1
         )
-        #: Values format-1 expressions expect to find among the variables, filled in by the
-        #: stages a migration synthesized: the query's size and the current loop index.
-        self.legacy_values: dict[str, Any] = {}
+        #: Values the run supplies rather than the definition naming them: the query's size
+        #: and the current loop index. A bare `{{__Target_Notes_Count}}` or
+        #: `{{__Query_Note_Index}}` resolves to one of these once the bindings have been
+        #: asked, which is the only thing a reference with no binding in it can mean.
+        self.runtime_values: dict[str, Any] = {}
         #: The root block's scope, so `exports` can read the results it left behind.
         self.root_env: Optional[dict] = None
         self.loop_path: list[int] = []

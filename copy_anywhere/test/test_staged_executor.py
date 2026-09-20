@@ -641,12 +641,11 @@ class TestASearchConditionsPredicate:
         assert ok is True
         assert copied == []
 
-    def test_a_migrated_predicate_resolving_to_whitespace_is_refused_the_old_way(
-        self, col, logger
-    ):
+    def test_a_migrated_predicate_resolving_to_whitespace_is_refused(self, col, logger):
         # `find_notes("  nid:<id>")` matches the note, so a migrated condition that is one
         # reference to a field holding a space read true and ran the copy. It is as empty as
-        # a field holding nothing, which format 1 refused with this message.
+        # a field holding nothing, and it is refused. Migration names the note the reference
+        # meant, so the refusal is the one message every predicate gets (§11).
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "   "})
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Meaning", "ran")],
@@ -658,9 +657,102 @@ class TestASearchConditionsPredicate:
         assert ok is False
         assert copied == []
         assert logger.errors == [
-            "Error in copy fields: Condition query '{{Note}}' could not be interpolated"
-            f" for note id {note.id} due to missing fields: "
+            "Error in copy fields: Condition query '{{trigger.Note}}' resolved to nothing"
+            f" for note id {note.id}"
         ]
+
+
+class TestABareNameThatNamesNothing:
+    """The protection format 1 never had: a reference that resolves to nothing is an error.
+
+    Format 1 read any bare name off whichever note the stage happened to be holding and
+    wrote an empty string when it found none, so a typo ran a truncated search, or filled a
+    field with nothing, and the definition reported success either way. Format 2 names its
+    bindings, so a bare name is a binding, or one of the two values the run itself supplies,
+    or a mistake -- and the stage says which name it could not resolve (§11).
+    """
+
+    def test_a_typo_in_a_field_write_fails_the_stage_and_writes_nothing(self, note, logger):
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Word}}/{{Wrod}}"))]),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("'Wrod' is not a binding or a runtime value")
+        assert note["Note"] == ""
+
+    def test_a_typo_in_a_query_fails_the_stage_and_the_loop_never_runs(
+        self, col, note, logger
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
+        definition = d.staged(stages=[
+            d.note_query("found", "Word:{{Wrod}}"),
+            d.for_each_note("found", [
+                d.edit_note("note", [d.write("Note", d.text("reached"))]),
+            ]),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("'Wrod' is not a binding or a runtime value")
+
+    def test_a_typo_in_a_condition_fails_the_stage_and_neither_branch_runs(
+        self, note, logger
+    ):
+        definition = d.staged(stages=[
+            d.condition(
+                d.text("Word:{{Wrod}}"),
+                [d.edit_note("trigger", [d.write("Note", d.text("then"))])],
+                [d.edit_note("trigger", [d.write("Note", d.text("else"))])],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            ),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("'Wrod' is not a binding or a runtime value")
+        assert note["Note"] == ""
+
+    def test_a_typo_in_a_file_name_fails_the_stage_and_writes_no_file(
+        self, note, media_dir, logger
+    ):
+        definition = d.staged(stages=[d.write_file("{{Wrod}}.txt", d.text("content"))])
+
+        ok, _copied = run(definition, note)
+
+        assert ok is False
+        assert logger.has_error("'Wrod' is not a binding or a runtime value")
+        assert list(media_dir.iterdir()) == []
+
+    def test_the_two_runtime_values_are_not_typos(self, col, note, logger):
+        # `__Target_Notes_Count` and `__Query_Note_Index` are supplied by the run rather
+        # than declared by a stage, so no binding holds them; they are what a bare name is
+        # asked against once the bindings have said no.
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word, "Meaning": word.upper()})
+        definition = d.staged(stages=[
+            d.note_query("found", "Word:a OR Word:b"),
+            d.for_each_note("found", [
+                d.edit_note("note", [
+                    d.write(
+                        "Note", d.text("{{__Query_Note_Index}}/{{__Target_Notes_Count}}")
+                    ),
+                ]),
+            ]),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert sorted(one["Note"] for one in copied) == ["1/2", "2/2"]
 
 
 class TestCardsAndCardStages:
@@ -1225,8 +1317,10 @@ class TestCalls:
             "child",
             guid="child-guid",
             stages=[
-                # `{{M}}` is the caller's variable, which the callee has no access to, so it
-                # resolves to nothing rather than to the caller's value.
+                # `{{trigger.Meaning}}` is the edit the caller made before calling; `{{M}}`
+                # is the caller's variable, which is not in the callee's scope. A name the
+                # scope does not hold fails the stage rather than reading as nothing, so the
+                # isolation is reported instead of being written into the note.
                 d.edit_note(
                     "trigger", [d.write("Note", d.text("[{{M}}][{{trigger.Meaning}}]"))]
                 )
@@ -1242,8 +1336,29 @@ class TestCalls:
             ],
         )
         ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
+        assert ok is False
+        assert any("'M' is not a binding" in error for error in logger.errors)
+        assert note["Note"] == ""
+
+    def test_the_callee_sees_the_note_edits_the_caller_made(self, col, note, logger):
+        # The other half of the same rule, with nothing out of scope in the way: what the
+        # callee reads off the trigger is what the caller wrote to it a stage earlier.
+        child = d.staged(
+            "child",
+            guid="child-guid",
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Meaning}}"))])],
+        )
+        parent = d.staged(
+            "parent",
+            guid="parent-guid",
+            stages=[
+                d.edit_note("trigger", [d.write("Meaning", d.text("edited first"))]),
+                d.call_definition("child-guid"),
+            ],
+        )
+        ok, _copied = run(parent, note, definitions_for_calls=[child, parent])
         assert ok is True, logger.errors
-        assert note["Note"] == "[][edited first]"
+        assert note["Note"] == "edited first"
 
     def test_a_call_inside_a_loop_reaches_each_note(self, col, note, logger):
         real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})

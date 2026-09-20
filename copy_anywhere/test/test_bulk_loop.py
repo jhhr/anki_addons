@@ -426,7 +426,7 @@ class TestCancellation:
 
         results = run_bulk(definition)
 
-        assert logger.has_error("could not be interpolated")
+        assert logger.has_error("resolved to nothing")
         assert summary(results) == ""
         assert results.get_count() == 0
 

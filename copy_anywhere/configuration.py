@@ -352,7 +352,7 @@ def compare_versions(version1: str, version2: str) -> int:
 #: The version a fully migrated config carries. Each migration below owns its own bump and
 #: spells its version out, so adding one is adding a block rather than editing this; this is
 #: here for the readers and tests that want to ask what "up to date" currently means.
-CONFIG_VERSION = "0.3.0"
+CONFIG_VERSION = "0.4.0"
 
 #: Where the format-1 definitions are kept when the staged migration converts them (§11).
 #: One release, so a user who hits a migration bug still has the originals to hand back.
@@ -446,6 +446,33 @@ def stage_copy_definitions(config: "Config") -> bool:
     return True
 
 
+def promote_definition_syntax(config: "Config") -> None:
+    """The 0.4.0 migration: retire format-1 syntax from the stored expressions (§11).
+
+    0.3.0 turned every definition into stages but left the references inside them as format
+    1 wrote them: a bare `{{Word}}` meaning a field of whichever note the stage happened to
+    read, recorded in the stage's `legacy_source` / `legacy_destination`. Nothing resolves
+    those any more, so a config an earlier start already staged is rewritten here the way
+    the migrator now rewrites a fresh one. Promotion is idempotent, so a definition that
+    never spoke format 1 -- an authored one, or one this start's 0.3.0 step just produced --
+    comes back as it was.
+
+    Unlike the staged migration this cannot fail: there is nothing to refuse, only
+    references to qualify. `effects` is recomputed because it is derived from the
+    expressions promotion just rewrote and nothing on the load path recomputes it -- only a
+    save does, through `Config._save_definitions`.
+    """
+    from .logic.definition_migration import promote_definition
+    from .logic.flow_analysis import refresh_effects
+
+    definitions = [
+        promote_definition(definition) if is_format_2(definition) else definition
+        for definition in config.data.get("copy_definitions") or []
+    ]
+    refresh_effects(definitions)
+    config.data["copy_definitions"] = definitions
+
+
 def migrate_config():
     """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed."""
     config = Config()
@@ -465,6 +492,11 @@ def migrate_config():
         with operation_logging("config_migration", config.log_level):
             if stage_copy_definitions(config):
                 reached = "0.3.0"
+    # Only once the definitions are staged: a 0.3.0 that left them in format 1 has nothing
+    # for this to promote, and the version has to stay behind so the next start runs both.
+    if compare_versions(reached, "0.3.0") >= 0 and compare_versions(reached, "0.4.0") < 0:
+        promote_definition_syntax(config)
+        reached = "0.4.0"
     config.data["version"] = reached
     config.save()
 

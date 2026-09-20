@@ -585,10 +585,10 @@ class TestWhichNoteAFileWriteReadsAcrossNotes:
     `copy_into_single_note` used them: the filename was interpolated over
     `notes=[destination_note]` with `dest_note=destination_note`, and the code path ran with
     `source_note=` each source note and `dest_note=destination_note`. Format 2 has no such
-    global assignment -- a stage says which note it reads -- so the migrator has to write the
-    roles onto each stage as `legacy_source` and `legacy_destination`. A missing
-    `legacy_destination` is not "no destination": `run_write_file` falls back to the source
-    note, so the two roles silently collapse onto one note.
+    global assignment -- a stage says which note it reads -- so the migrator spends the roles
+    on the references themselves, per key: a filename's names become the destination's, a
+    content expression's the source's. Getting one of them wrong collapses the two roles onto
+    one note, which is the failure these pin.
     """
 
     def test_each_destination_gets_its_own_file(self, col, note, media_dir):
@@ -631,10 +631,9 @@ class TestWhichNoteAFileWriteReadsAcrossNotes:
         self, col, note, media_dir
     ):
         # Destination to sources, the mirror image: the trigger is the destination and the
-        # query found the sources, so file code sees `note` as each source and `__Dest__` as
-        # the trigger. The migrator's own join stage gets this pair right -- it writes both
-        # `legacy_source` (the loop item) and `legacy_destination` (the trigger) -- which is
-        # what makes the file stage beside it, carrying only the first, the odd one out.
+        # query found the sources, so file code sees `note` as each source -- the loop's own
+        # binding, which is what `note` means inside a loop in any code expression -- and
+        # `{{__Dest__Word}}` as the trigger, which is where migration sends it.
         for word in ("a", "b"):
             real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
         run_across(
