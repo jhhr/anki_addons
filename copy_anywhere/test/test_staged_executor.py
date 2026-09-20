@@ -727,6 +727,22 @@ class TestABareNameThatNamesNothing:
         assert ok is True, logger.errors
         assert sorted(one["Note"] for one in copied) == ["1/2", "2/2"]
 
+    def test_a_value_key_the_note_cannot_answer_names_itself_too(self, note, logger):
+        # The same rule one level down, where the binding is real and the name after it is
+        # not. `__Note_Type` is spelled like a note value and is not one -- the key is
+        # `__Note_Type_ID` -- so the message has to say which name it could not read for
+        # the user to find it. The editor refuses this one as well (`test_flow_analysis`).
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("{{trigger.__Note_Type}}"))]),
+        ])
+
+        ok, copied = run(definition, note)
+
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("'__Note_Type' is not a field or value of that note")
+        assert note["Note"] == ""
+
 
 class TestCardsAndCardStages:
     def test_a_card_query_and_card_loop_move_each_card_on_its_own(self, col, note, logger):

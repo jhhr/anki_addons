@@ -193,6 +193,82 @@ class TestRetiringFormat1Syntax:
 
         assert stored(stub_mw)["copy_definitions"][0]["stages"] == authored["stages"]
 
+    def test_a_store_holding_both_kinds_comes_out_all_promoted(self, config, stub_mw):
+        # What a user who started Anki once on 0.3.0 and then authored a definition has:
+        # one of each, side by side. The step runs over every definition rather than
+        # picking the ones with a marker, so neither is the odd one out.
+        authored = d.staged(
+            definition_name="new",
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Word}}"))])],
+        )
+        config["copy_definitions"] = [
+            self.a_staged_definition_that_still_speaks_format_1(),
+            authored,
+        ]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        definitions = stored(stub_mw)["copy_definitions"]
+        assert [one["definition_name"] for one in definitions] == ["old", "new"]
+        assert all(no_legacy_syntax(one) for one in definitions)
+        assert [
+            one["stages"][0]["fields"][0]["value"]["text"] for one in definitions
+        ] == ["{{trigger.Word}}", "{{trigger.Word}}"]
+
+    def test_a_hand_edited_definition_with_no_source_binding_is_promoted_anyway(
+        self, config, stub_mw
+    ):
+        # `legacy_source` is how the migrator recorded which note a bare name meant, but it
+        # is only ever written where it differs from the default. A stage without one -- a
+        # definition edited by hand, or one whose stage always read the trigger -- has to
+        # come out promoted just the same, reading the trigger, and a variable's result
+        # still has to survive as the binding it is rather than becoming a field.
+        definition = d.staged(
+            definition_name="hand",
+            stages=[
+                d.variable("v", d.text("{{Word}}")),
+                d.edit_note("trigger", [d.write("Note", d.text("{{v}}/{{Meaning}}"))]),
+            ],
+        )
+        definition["migrated_from_format"] = 1
+        definition["stages"][0]["value"]["syntax_version"] = SYNTAX_VERSION_LEGACY
+        definition["stages"][1]["fields"][0]["value"]["syntax_version"] = (
+            SYNTAX_VERSION_LEGACY
+        )
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        promoted = stored(stub_mw)["copy_definitions"][0]
+        assert no_legacy_syntax(promoted)
+        assert promoted["stages"][0]["value"]["text"] == "{{trigger.Word}}"
+        assert promoted["stages"][1]["fields"][0]["value"]["text"] == (
+            "{{v}}/{{trigger.Meaning}}"
+        )
+
+    def test_a_definition_the_step_cannot_promote_is_kept_rather_than_dropped(
+        self, config, stub_mw
+    ):
+        # Only a definition in stages can be promoted, and 0.3.0 is all or nothing, so this
+        # is a store someone edited by hand. The step leaves such a definition exactly as it
+        # found it -- the one thing it must not do is quietly lose it.
+        config["copy_definitions"] = [
+            d.within_note(definition_name="never staged"),
+            d.staged(definition_name="staged", stages=[]),
+        ]
+        config["version"] = "0.3.0"
+
+        migrate_config()
+
+        definitions = stored(stub_mw)["copy_definitions"]
+        assert [one["definition_name"] for one in definitions] == [
+            "never staged",
+            "staged",
+        ]
+        assert not is_format_2(definitions[0])
+
 
 class TestTheBackup:
     def test_the_originals_are_kept_under_the_backup_key(self, config, stub_mw):

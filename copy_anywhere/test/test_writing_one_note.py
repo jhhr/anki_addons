@@ -650,6 +650,37 @@ class TestWhichNoteAFileWriteReadsAcrossNotes:
         assert (media_dir / "_a.txt").read_text(encoding="utf-8") == "neko"
         assert (media_dir / "_b.txt").read_text(encoding="utf-8") == "neko"
 
+    def test_file_code_in_the_other_direction_sees_the_loop_note_too(
+        self, col, note, media_dir
+    ):
+        # The mirror of the test above, and the one place the two answers differ from
+        # format 1's. Source to destinations: the loop runs over the *destinations*, so
+        # `note` is each found note where `copy_into_single_note` gave the code the trigger.
+        # Both cases follow the one rule promoted code runs by -- inside a loop, `note` is
+        # the loop's binding -- and the references beside it keep their own notes:
+        # `{{Word}}` in the same expression is still the trigger's, because that is the
+        # note the migrator spent the content role on. A definition that meant the old
+        # `note` is one to fix by hand (§11).
+        for word in ("a", "b"):
+            real_anki.add_note(col, VOCAB, {"Word": word}, tags=["pool"])
+        definition = d.source_to_destinations(
+            copy_from_cards_query="tag:pool",
+            field_to_file_defs=[
+                d.field_to_file(
+                    "",
+                    use_code=True,
+                    copy_as_code="return [(note['Word'] + '.txt', '{{Word}}')]",
+                )
+            ],
+            select_card_count="0",
+        )
+        copy_for_single_trigger_note(
+            definition, note, copied_into_notes=[], copied_into_cards_dict={}
+        )
+
+        assert sorted(p.name for p in media_dir.iterdir()) == ["_a.txt", "_b.txt"]
+        assert (media_dir / "_a.txt").read_text(encoding="utf-8") == "neko"
+
 
 class TestAnUnfocusRunOfAMigratedJoin:
     """What a Destination-to-sources unfocus run evaluates, and what it should.

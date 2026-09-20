@@ -303,10 +303,9 @@ run, then the exports.
 * A reference nothing answers to is a complaint against the stage that holds it, not a
   surprise at run time: a bare name that is neither a result in scope nor one of the two
   values the run supplies, and a `{{trigger.X}}` naming something none of the definition's
-  trigger note types has a field for. Only the trigger can be checked that far -- a note
-  from a query holds whatever the query matched, so a name read off one of those is still
-  the run's to report -- and note values and card values are recognised by their shape, so
-  a misspelled one is left to the run too.
+  trigger note types has a field for, nor a note value or card value by name. Only the
+  trigger can be checked that far -- a note from a query holds whatever the query matched,
+  so a name read off one of those is still the run's to report.
 * A reference that stopped resolving -- to a result whose stage you deleted, say -- stays
   selected and is marked in red on both rows. Nothing is silently rewritten. Moving a stage
   keeps its export for the same reason: a stage moved into a loop cannot be exported, so its

@@ -136,8 +136,10 @@ stage's `if_empty` policy as before.
    plumbing behind `legacy_isolated_variables`.
 3. The analyser says the same thing at edit time, so a definition that would fail this way
    cannot be saved: an unknown bare name is a problem, and so is `{{trigger.X}}` where `X`
-   is not a field of any note type the definition's trigger names. Only the trigger can be
-   checked that far -- a note from a query holds whatever the query matched.
+   is neither a field of any note type the definition's trigger names nor one of the note
+   and card value keys, matched by key rather than by shape so that a misspelling of one is
+   caught too. Only the trigger can be checked that far -- a note from a query holds
+   whatever the query matched.
 4. The editor has one syntax. It no longer promotes an expression when the text changes,
    which is what finding 3 decided and what the editor did until now: there is no legacy
    expression left for it to meet, so the three fields that remembered what it was built

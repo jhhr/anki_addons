@@ -793,6 +793,25 @@ class TestTheFieldsTheEditorKnowsAbout:
         result = self.analyze([self.write("{{trigger.__Card_Due}}")])
         assert result.is_valid, messages(result)
 
+    def test_a_note_value_key_that_does_not_exist_is_refused(self):
+        # `__Note_Type` is spelled like a note value and is not one -- the key is
+        # `__Note_Type_ID`. The run says so per note; the shape alone cannot tell them
+        # apart, so the key itself is what is checked.
+        result = self.analyze([self.write("{{trigger.__Note_Type}}")])
+        assert "'__Note_Type'" in messages(result)
+
+    def test_a_card_value_key_that_does_not_exist_is_refused(self):
+        result = self.analyze([self.write("{{trigger.Recognition__Card_Do}}")])
+        assert "'Recognition__Card_Do'" in messages(result)
+
+    def test_a_value_that_takes_an_argument_is_read_without_it(self):
+        # `__Note_Has_Tag==x` and `__Card_Last_Reps==5` carry their argument after the
+        # separator; the key the lists hold ends with it.
+        result = self.analyze([
+            self.write("{{trigger.__Note_Has_Tag==done}} {{trigger.Recognition__Card_Last_Reps==3}}")
+        ])
+        assert result.is_valid, messages(result)
+
     def test_a_binding_a_query_produced_is_not_checked(self):
         result = self.analyze([
             d.note_query("found", "deck:x"),

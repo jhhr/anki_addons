@@ -28,8 +28,10 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..shared.interpolate.interpolate_fields import (
     CARD_VALUE_RE,
+    CARD_VALUES_DICT,
     MULTI_CARD_VALUE_RE,
     NOTE_VALUE_RE,
+    NOTE_VALUES,
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
 )
@@ -87,6 +89,28 @@ TRIGGER_BINDING = "trigger"
 #: The values the run itself supplies, which no stage declares and so no binding holds.
 #: A bare name that is neither a binding nor one of these resolves to nothing (§11).
 RUNTIME_VALUE_NAMES = frozenset({TARGET_NOTES_COUNT, QUERY_NOTE_INDEX})
+
+
+def names_a_note_or_card_value(reference: str) -> bool:
+    """Whether `<note>.X` names one of the values the interpolation reads off a note.
+
+    The shape is not enough to tell: `__Note_Type` is spelled exactly like the real
+    `__Note_Type_ID` and is not a key, so the run refuses it. `get_from_note_fields` matches
+    the shape and then asks whether the key it captured exists, and so does this, against
+    the same two lists -- otherwise the editor would accept a misspelling that fails once
+    per note.
+    """
+    note_match = NOTE_VALUE_RE.match(reference)
+    if note_match and note_match.group(1) in NOTE_VALUES:
+        return True
+    # The prefixed spelling and the one a definition spanning several note types uses, which
+    # drops the card type name. Which of the two applies is not known until the run, so a
+    # key that either of them can reach is accepted.
+    for pattern, key_group in ((CARD_VALUE_RE, 2), (MULTI_CARD_VALUE_RE, 1)):
+        card_match = pattern.match(reference)
+        if card_match and card_match.group(key_group) in CARD_VALUES_DICT:
+            return True
+    return False
 
 
 class Binding:
@@ -329,24 +353,20 @@ class _Analyzer:
         or from a loop over one holds whatever the query matched, so nothing at edit time
         says what fields it has; the run reports those.
 
-        Note values and card values are not fields and are not in the list. They are
-        recognised by shape rather than by key, so a misspelled `__Note_Tgas` is still left
-        to the run -- refusing it here would mean keeping a second copy of every key the
-        interpolation knows.
+        Note values and card values are not fields and are not in the list; they are
+        recognised by their own keys, the same ones the interpolation looks them up by, so
+        a misspelled `__Note_Tgas` is reported here rather than once per note at run time.
         """
         fields = self.known_fields.get(head)
         if not fields:
             return
         if rest.lower() in fields:
             return
-        if any(
-            pattern.match(rest)
-            for pattern in (NOTE_VALUE_RE, CARD_VALUE_RE, MULTI_CARD_VALUE_RE)
-        ):
+        if names_a_note_or_card_value(rest):
             return
         self.problem(
-            f"{what} reads '{reference}', but '{rest}' is not a field of the note types"
-            f" '{head}' can hold",
+            f"{what} reads '{reference}', but '{rest}' is not a field or value of the"
+            f" note types '{head}' can hold",
             stage,
         )
 

@@ -1098,6 +1098,13 @@ def _known_names(definition: Any) -> list[str]:
     `{{Note}}` in a migrated expression is the field `Note`, which is what it has always
     meant, and reading it as the loop's note would turn a common field name into a stage
     error in every migrated across-notes definition.
+
+    A name that is both -- a variable called `Word` on a note type that also has a field
+    `Word` -- resolves to the *binding* afterwards, which reverses format 1: it asked the
+    note first and fell back to its variables, so the field won. The reversal is deliberate
+    and not checked for. Format 2 has no shadowing at all, so there is no promoted spelling
+    that could mean the field while the variable is in scope, and a definition with such a
+    name would have to be rewritten by hand either way (§11).
     """
     names: list[str] = []
     for stage in walk_stages(definition.get("stages") or []):
