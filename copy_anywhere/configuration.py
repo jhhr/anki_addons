@@ -821,10 +821,20 @@ class Config:
 
         Recomputing here rather than in the editor means an import, a delete, or anything
         else that reaches these mutators is covered too.
+
+        The name snapshot is refreshed for the same reason and in the same place: it is what
+        the reconcile pass compares live names against, so a definition saved naming a note
+        type nothing had referenced before has to bring that note type's field and template
+        names with it or the next rename of one has no old name to be recognised by. There
+        is no collection to read at import time, and a save then leaves the snapshot alone.
         """
         from .logic.flow_analysis import refresh_effects
+        from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot
 
-        refresh_effects(self.data["copy_definitions"] or [])
+        definitions = self.data["copy_definitions"] or []
+        refresh_effects(definitions)
+        if mw.col is not None:
+            self.data[SNAPSHOT_KEY] = build_name_snapshot(definitions, mw.col)
         self.save()
 
     def add_definition(self, definition: CopyDefinition):

@@ -207,6 +207,44 @@ outer list plus `store` is how a loop reports anything back.
   note that is not in the collection finds none, so a loop over its results runs zero times.
   The editor says nothing about any of this.
 
+## Following a rename in Anki
+
+Anki has one rename hook -- for a field -- and it fires while the Fields dialog is still
+open, so a cancelled dialog leaves it having lied; a note type, a card type and a deck
+rename fire nothing at all, and a rename made on another device arrives as "something
+changed". So no rename hook is used. Instead, the objects with a stable id are stored as
+references and resolved by id (above), and one **reconcile pass** keeps the rest honest.
+
+The pass runs when the collection is opened and after any operation that reports changing a
+note type or a deck -- which covers every dialog that can rename one, its undo and its redo,
+and the everything-changed operation a sync ends with. It:
+
+1. **binds** a reference whose `id` is null but whose name resolves, which is how an example
+   definition, a hand-written one and a definition kept for a note type you had not made
+   yet pick up their ids;
+2. **refreshes** the cached `name` of every reference whose id still resolves, so a picker
+   never shows a name the collection has stopped using;
+3. **follows a renamed field or card type** of a trigger note type into that definition's
+   field slots -- a field write on the trigger, the unfocus lists, each write's trigger
+   fields -- and into every `{{trigger.Word}}` and `{{trigger.Recognition__Card_Due}}` token
+   in an expression's **text**. The whole rename map is applied in one step, so two fields
+   that swap names swap correctly;
+4. **reports** everything else: a reference that resolves to nothing, an object that has been
+   deleted, a field or template with no id (note types saved before Anki 23.10 can have
+   them, and nothing can follow a name with no id behind it), and code that still mentions
+   an old name.
+
+What it never rewrites is a search term, `selection.sort_field`, or code. A query is free
+text read by Anki's own grammar -- `col.replace_in_search_node` swaps every term of a kind
+and so cannot rename one deck inside a query naming two -- and `note['Word']` is a spelling
+of a field name that no `{{...}}` rewrite can see. Those are reported and fixed by hand.
+
+Both names of a rename come from `name_snapshot` in the addon config: per referenced note
+type id, its name and the names of its fields and templates by their ids, plus a name per
+referenced deck id. It is written by the same pass and refreshed whenever definitions are
+saved, so it is never older than the last save, and a changed name under an unchanged id is
+what a rename *is*. The pass writes the config only when something changed.
+
 ## The startup migration
 
 `migrate_config()` runs before anything can read a definition. It converts every stored

@@ -918,6 +918,35 @@ STAGE_EXPRESSION_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def rewrite_references(text: str, rewrite: Callable[[str], str]) -> str:
+    """Every `{{...}}` reference in `text` replaced by what `rewrite` makes of it.
+
+    The one walker over an expression's references, so that everything which rewrites them
+    agrees on what a reference is. `rewrite` is handed what stands between the braces and
+    returns what should stand there instead; the braces are put back here. A cloze marker
+    is not a reference, so `{{c1::...}}` is left as it is and its content walked on its
+    own. Promotion below and the reconcile pass (`logic/rename_reconcile.py`) are its
+    callers.
+    """
+    if not text:
+        return text or ""
+    placeholders: dict[str, str] = {}
+    for index, (start, end, cloze_num, content) in enumerate(
+        reversed(extract_cloze_patterns(text))
+    ):
+        placeholder = f"\x00CLOZE{index}\x00"
+        rewritten = rewrite_references(content, rewrite)
+        placeholders[placeholder] = f"{{{{c{cloze_num}::{rewritten}}}}}"
+        text = text[:start] + placeholder + text[end:]
+
+    text = FROM_TEXT_FIELD_REGEX.sub(
+        lambda match: intr_format(rewrite(match.group(1))), text
+    )
+    for placeholder, cloze in placeholders.items():
+        text = text.replace(placeholder, cloze)
+    return text
+
+
 def _promote_reference(
     reference: str,
     source: str,
@@ -927,30 +956,30 @@ def _promote_reference(
 ) -> str:
     """One `{{...}}` reference, rewritten. `reference` is what stood between the braces."""
     if _CLOZE_REFERENCE_RE.match(reference):
-        return intr_format(reference)
+        return reference
     binding = known.get(reference.lower())
     if binding is not None:
         # A binding the migrator named. Format 1 matched names case-insensitively and
         # format 2 resolves a binding exactly, so the promoted reference carries the
         # binding's own spelling rather than the user's.
-        return intr_format(binding)
+        return binding
     head, dot, _rest = reference.partition(".")
     if dot and head in binding_heads:
         # Already qualified. Nothing in format 1 could write this, but promoting it again
         # would read the binding as a field name of itself.
-        return intr_format(reference)
+        return reference
     if reference.startswith(DESTINATION_PREFIX):
         # `interpolate_from_text` matched this prefix exactly, so a differently-cased one
         # was a field name there and stays one here.
-        return intr_format(f"{destination}.{reference[len(DESTINATION_PREFIX):]}")
+        return f"{destination}.{reference[len(DESTINATION_PREFIX):]}"
     runtime_value = _RUNTIME_VALUES_BY_LOWER.get(reference.lower())
     if runtime_value is not None:
-        return intr_format(runtime_value)
+        return runtime_value
     # Anything else names something on the source note: a field, a note value
     # (`__Note_Tags`) or a card value (`Recognition__Card_Due`). Once qualified, all three
     # are resolved by the same interpolation, against the note the binding holds. The
     # user's spelling is kept: field matching is case-insensitive on that side too.
-    return intr_format(f"{source}.{reference}")
+    return f"{source}.{reference}"
 
 
 def _promote_text(
@@ -960,28 +989,12 @@ def _promote_text(
     known: dict[str, str],
     binding_heads: frozenset,
 ) -> str:
-    if not text:
-        return text or ""
-    # Cloze markers are not references. Their content is, so it is promoted on its own and
-    # the marker put back around the result -- the shape `resolve_references` uses.
-    placeholders: dict[str, str] = {}
-    for index, (start, end, cloze_num, content) in enumerate(
-        reversed(extract_cloze_patterns(text))
-    ):
-        placeholder = f"\x00CLOZE{index}\x00"
-        promoted = _promote_text(content, source, destination, known, binding_heads)
-        placeholders[placeholder] = f"{{{{c{cloze_num}::{promoted}}}}}"
-        text = text[:start] + placeholder + text[end:]
-
-    text = FROM_TEXT_FIELD_REGEX.sub(
-        lambda match: _promote_reference(
-            match.group(1), source, destination, known, binding_heads
-        ),
+    return rewrite_references(
         text,
+        lambda reference: _promote_reference(
+            reference, source, destination, known, binding_heads
+        ),
     )
-    for placeholder, cloze in placeholders.items():
-        text = text.replace(placeholder, cloze)
-    return text
 
 
 def promote_expression(
@@ -1161,4 +1174,5 @@ __all__ = [
     "promote_definition",
     "promote_expression",
     "promote_stage",
+    "rewrite_references",
 ]

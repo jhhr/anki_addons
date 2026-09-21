@@ -353,3 +353,23 @@ swaps every term of a kind, so it cannot rename one deck inside a query naming t
 
 Built in three commits on `feat/copyanywhere_rename_protection`: the references and the
 readers that go through them, the reconcile pass, and the editor's reporting.
+
+**What the reconcile pass turned out to be** (`logic/rename_reconcile.py`, registered in
+`hooks/rename_hooks.py` on `collection_did_load` and on `operation_did_execute` when
+`changes.notetype or changes.deck`). It binds a null id whose name resolves, refreshes the
+cached name of every reference whose id still resolves, follows a renamed field or card
+type of a trigger note type into that definition's field slots and its `{{trigger....}}`
+tokens -- the whole rename map applied in one step, so a swap of two names is correct --
+and reports the rest: a reference that resolves to nothing, a deleted object, a field or
+template with no id to be followed by, and code still mentioning an old name. Only an
+expression's `text` is rewritten, never its `code` and never a search term, which is (a)'s
+job kept where a rewrite would be a guess.
+
+Both names of a rename come out of `name_snapshot` in the addon config -- per referenced
+note type id, its name and its fields' and templates' names by *their* ids, plus a name per
+referenced deck id -- which is tier (c)'s snapshot, kept in step by `_save_definitions` so
+it is never older than the last save. That is what makes a rename visible with no hook at
+all, including one synced in from another device and one undone with Ctrl+Z, which is just
+a second rename the same pass follows back. The pass writes the config only when something
+changed, and never while a dialog is still open, so a cancelled Fields dialog is a
+non-problem.
