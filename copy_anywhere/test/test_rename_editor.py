@@ -1,0 +1,462 @@
+"""What the editor, the picker and the run say about a name Anki no longer has.
+
+The reconcile pass follows what it can (`test_rename_reconcile.py`) and reports the rest,
+but its report goes into a log file the user has to have turned up to read. This is the
+other half: the places a user already looks.
+
+A structured reference that resolves to nothing is shown under the name it was written
+with, marked, and refuses the save -- a definition naming a note type this collection does
+not have runs on nothing, and that is worth being stopped for. A name inside a query or a
+code block is only ever reported, here as an amber warning under the query: query text is
+Anki's grammar, not this addon's, and a mechanical rewrite of one term inside it would be a
+guess. The picker marks a definition the last pass could not resolve, and a sort field no
+selected note has says so once per run rather than per note.
+"""
+
+import pytest
+from aqt import mw
+
+import definitions as d
+from anki_shared.testing import real_anki
+from conftest import DEFAULT_CONFIG, KANJI, VOCAB
+from copy_anywhere.configuration import Config
+from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
+from copy_anywhere.logic.definition_schema import (
+    STAGE_EDIT_NOTE,
+    STAGE_NOTE_QUERY,
+    new_definition,
+    value_expression,
+)
+from copy_anywhere.logic.object_refs import NOT_FOUND_SUFFIX
+from copy_anywhere.logic.query_terms import stale_search_terms
+from copy_anywhere.logic.rename_reconcile import reconcile
+from copy_anywhere.ui.stage_document import StageDocument, default_stage
+from copy_anywhere.ui.stage_editor_context import (
+    build_contexts,
+    make_note_types_for,
+    unresolved_reference_problems,
+)
+from copy_anywhere.ui.stage_editors import StageEditorEnvironment, make_stage_editor
+from copy_anywhere.ui.stage_list import StageTreeWidget
+from copy_anywhere.ui.stage_triggers_editor import TriggersEditor, selected_names
+
+ADDON_TAG = "copy_anywhere"
+
+#: An id no collection this suite builds can have, so a reference carrying it resolves by
+#: neither half.
+GONE_ID = 999999
+
+
+def triggers_editor(col, widget_parent, **triggers):
+    """A trigger editor over a definition with these trigger settings, as stored."""
+    real_anki.add_note(col, VOCAB, {"Word": "neko"})
+    definition = new_definition("d", "A definition")
+    definition["triggers"].update(triggers)
+    return TriggersEditor(widget_parent, definition), definition
+
+
+def document_for(definition) -> StageDocument:
+    """A document wired to the collection the way the dialog wires it."""
+    return StageDocument(definition, unresolved_refs=unresolved_reference_problems)
+
+
+def item_texts(box) -> list[str]:
+    return [box.itemText(index) for index in range(box.count())]
+
+
+def choose(box, *names) -> None:
+    box.setCurrentText(", ".join(f'"{name}"' for name in names))
+
+
+def card_actions_editor(col, stage):
+    """The card actions editor of an Edit Note stage, with its staged load drained."""
+    definition = new_definition("d", "A definition", stages=[stage])
+    definition["triggers"]["note_types"] = [d.object_ref(VOCAB, col.models.id_for_name(VOCAB))]
+    document = StageDocument(definition)
+    environment = StageEditorEnvironment(
+        make_note_types_for(document.definition), [definition], "d"
+    )
+    tree = StageTreeWidget(None, document, environment)
+    editor = tree.rows[stage["guid"]].editor.card_actions
+    editor.finish_loading_initial_actions()
+    return tree, editor
+
+
+# -- N6: a reference that resolves to nothing ------------------------------------------
+
+
+class TestATriggerNoteTypeThatResolvesToNothing:
+    """It is still shown, marked, and it refuses the save.
+
+    Dropping it silently would be worse than either: the user would reopen a definition
+    that has quietly stopped naming anything and see nothing wrong with it.
+    """
+
+    def test_it_is_shown_under_its_stored_name(self, col, qapp, widget_parent):
+        editor, _definition = triggers_editor(
+            col, widget_parent, note_types=[d.object_ref("CA Ghost", GONE_ID)]
+        )
+
+        assert selected_names(editor.note_types_box) == ["CA Ghost" + NOT_FOUND_SUFFIX]
+
+    def test_it_survives_being_opened_and_saved(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[d.object_ref("CA Ghost", GONE_ID)]
+        )
+
+        editor.apply()
+
+        assert definition["triggers"]["note_types"] == [{"id": GONE_ID, "name": "CA Ghost"}]
+
+    def test_it_blocks_the_save(self, col, qapp, widget_parent):
+        _editor, definition = triggers_editor(
+            col, widget_parent, note_types=[d.object_ref("CA Ghost", GONE_ID)]
+        )
+
+        assert document_for(definition).save_blockers() == [
+            "Note type 'CA Ghost' no longer exists; pick another or remove it."
+        ]
+
+    def test_choosing_a_live_note_type_clears_it(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[d.object_ref("CA Ghost", GONE_ID)]
+        )
+
+        choose(editor.note_types_box, VOCAB)
+        editor.apply()
+
+        assert definition["triggers"]["note_types"] == [
+            {"id": col.models.id_for_name(VOCAB), "name": VOCAB}
+        ]
+        assert document_for(definition).save_blockers() == []
+
+    def test_a_null_id_whose_name_resolves_is_fine(self, col, qapp, widget_parent):
+        _editor, definition = triggers_editor(
+            col, widget_parent, note_types=[d.object_ref(VOCAB)]
+        )
+
+        assert document_for(definition).save_blockers() == []
+
+    def test_a_stale_cached_name_is_offered_once_under_the_live_name(
+        self, col, qapp, widget_parent
+    ):
+        stored = d.object_ref("What it used to be called", col.models.id_for_name(VOCAB))
+        editor, _definition = triggers_editor(col, widget_parent, note_types=[stored])
+
+        assert selected_names(editor.note_types_box) == [VOCAB]
+        assert item_texts(editor.note_types_box).count(f'"{VOCAB}"') == 1
+        assert not any(NOT_FOUND_SUFFIX in text for text in item_texts(editor.note_types_box))
+
+
+class TestATriggerDeckThatResolvesToNothing:
+    def test_it_is_shown_under_its_stored_name(self, col, qapp, widget_parent):
+        editor, _definition = triggers_editor(
+            col,
+            widget_parent,
+            note_types=[d.object_ref(VOCAB)],
+            deck_names=[d.object_ref("Gone deck", GONE_ID)],
+        )
+
+        assert selected_names(editor.decks_box) == ["Gone deck" + NOT_FOUND_SUFFIX]
+
+    def test_it_blocks_the_save(self, col, qapp, widget_parent):
+        _editor, definition = triggers_editor(
+            col,
+            widget_parent,
+            note_types=[d.object_ref(VOCAB)],
+            deck_names=[d.object_ref("Gone deck", GONE_ID)],
+        )
+
+        assert document_for(definition).save_blockers() == [
+            "Deck 'Gone deck' no longer exists; pick another or remove it."
+        ]
+
+    def test_unticking_it_clears_it(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col,
+            widget_parent,
+            note_types=[d.object_ref(VOCAB)],
+            deck_names=[d.object_ref("Gone deck", GONE_ID)],
+        )
+
+        choose(editor.decks_box)
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == []
+        assert document_for(definition).save_blockers() == []
+
+
+class TestACardTypeThatResolvesToNothing:
+    def action_stage(self, col):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["target"] = {"binding": "trigger"}
+        stage["card_actions"] = [
+            d.card_action(
+                VOCAB,
+                "Deleted card type",
+                card_type={
+                    "note_type_id": col.models.id_for_name(VOCAB),
+                    "template_id": GONE_ID,
+                    "name": f"{VOCAB}<::>Deleted card type",
+                },
+                set_flag=1,
+            )
+        ]
+        del stage["card_actions"][0]["card_type_name"]
+        return stage
+
+    def test_the_card_actions_editor_shows_it_under_its_stored_name(self, col, qapp):
+        _tree, editor = card_actions_editor(col, self.action_stage(col))
+
+        assert list(editor.card_actions) == [
+            f"{VOCAB}<::>Deleted card type" + NOT_FOUND_SUFFIX
+        ]
+
+    def test_relisting_the_card_types_does_not_drop_it(self, col, qapp):
+        _tree, editor = card_actions_editor(col, self.action_stage(col))
+
+        editor.relist_card_types()
+
+        assert list(editor.card_actions) == [
+            f"{VOCAB}<::>Deleted card type" + NOT_FOUND_SUFFIX
+        ]
+
+    def test_it_blocks_the_save(self, col, qapp):
+        definition = new_definition("d", "A definition", stages=[self.action_stage(col)])
+        definition["triggers"]["note_types"] = [d.object_ref(VOCAB)]
+
+        assert document_for(definition).save_blockers() == [
+            f"Card type '{VOCAB}<::>Deleted card type' no longer exists;"
+            " pick another or remove it."
+        ]
+
+
+class TestTheDialogRefusesToSave:
+    def test_a_definition_naming_a_gone_note_type_cannot_be_saved(self, col, qapp):
+        from copy_anywhere.ui.edit_staged_definition_dialog import EditStagedDefinitionDialog
+
+        definition = new_definition("d", "A definition")
+        definition["triggers"]["note_types"] = [d.object_ref("CA Ghost", GONE_ID)]
+        dialog = EditStagedDefinitionDialog(None, definition)
+        try:
+            assert any(
+                "CA Ghost" in blocker for blocker in dialog.document.save_blockers()
+            )
+        finally:
+            dialog._refresh_timer.stop()
+            dialog.deleteLater()
+
+
+# -- N7: names inside queries and code --------------------------------------------------
+
+
+class TestStaleSearchTerms:
+    """What a query names that the collection does not have.
+
+    Nothing rewrites these: `col.replace_in_search_node` swaps every term of a kind at
+    once, so it cannot rename one deck inside a query naming two, and nothing else in the
+    Python API parses a search into nodes. So the scan checks the exact-name case and
+    leaves everything Anki's grammar would have to be reimplemented for alone.
+    """
+
+    def stale(self, col, query) -> list[tuple[str, str]]:
+        return [(term.kind, term.name) for term in stale_search_terms(query, col)]
+
+    def test_a_live_deck_is_not_reported(self, col):
+        assert self.stale(col, "deck:Other") == []
+
+    def test_a_deck_that_is_gone_is_reported(self, col):
+        assert self.stale(col, "deck:Nowhere") == [("deck", "Nowhere")]
+
+    def test_a_quoted_name_is_read(self, col):
+        assert self.stale(col, 'deck:"JP vocab"') == []
+        assert self.stale(col, 'deck:"No such deck"') == [("deck", "No such deck")]
+
+    def test_the_whole_term_may_be_quoted(self, col):
+        assert self.stale(col, '"deck:No such deck"') == [("deck", "No such deck")]
+
+    def test_a_negated_term_is_read(self, col):
+        assert self.stale(col, "-deck:Nowhere") == [("deck", "Nowhere")]
+
+    def test_a_term_inside_parentheses_is_read(self, col):
+        assert self.stale(col, "(deck:Other or deck:Nowhere)") == [("deck", "Nowhere")]
+
+    def test_a_note_type_that_is_gone_is_reported(self, col):
+        assert self.stale(col, f'note:"{VOCAB}" or note:Ghost') == [("note type", "Ghost")]
+
+    def test_a_card_type_that_is_gone_is_reported(self, col):
+        assert self.stale(col, "card:Recognition card:Nope") == [("card type", "Nope")]
+
+    def test_a_card_ordinal_is_not_a_name(self, col):
+        assert self.stale(col, "card:1") == []
+
+    def test_a_field_that_is_gone_is_reported(self, col):
+        assert self.stale(col, "Word:neko Nonsuch:x") == [("field", "Nonsuch")]
+
+    def test_ankis_own_search_keywords_are_not_fields(self, col):
+        assert self.stale(col, "tag:x is:due prop:ivl>3 added:1 flag:1 nid:1") == []
+
+    def test_a_term_with_a_wildcard_is_skipped(self, col):
+        assert self.stale(col, "deck:Now*re") == []
+        assert self.stale(col, "deck:Now_ere") == []
+
+    def test_a_regex_term_is_skipped(self, col):
+        assert self.stale(col, "deck:re:nowhere") == []
+        assert self.stale(col, "re:nowhere") == []
+
+    def test_a_term_holding_a_reference_is_skipped(self, col):
+        assert self.stale(col, "deck:{{trigger.Word}}") == []
+
+    def test_a_bare_word_is_not_a_term(self, col):
+        assert self.stale(col, "neko or inu") == []
+
+
+class TestTheQueryEditorsWarning:
+    def query_editor(self, col, widget_parent, query):
+        stage = default_stage(STAGE_NOTE_QUERY, "s")
+        stage["result"] = "found"
+        stage["query"] = value_expression(text=query)
+        definition = new_definition("d", "A definition", stages=[stage])
+        definition["triggers"]["note_types"] = [d.object_ref(VOCAB)]
+        document = StageDocument(definition)
+        environment = StageEditorEnvironment(
+            make_note_types_for(document.definition), [definition], "d"
+        )
+        return make_stage_editor(
+            widget_parent, document.stage("s"), build_contexts(document)["s"], environment
+        )
+
+    def test_a_stale_deck_name_is_warned_about(self, col, qapp, widget_parent):
+        editor = self.query_editor(col, widget_parent, "deck:Nowhere")
+
+        assert "Nowhere" in editor.stale_terms_label.text()
+        assert editor.stale_terms_label.isVisibleTo(editor)
+
+    def test_a_query_that_names_only_live_things_says_nothing(
+        self, col, qapp, widget_parent
+    ):
+        editor = self.query_editor(col, widget_parent, "deck:Other")
+
+        assert editor.stale_terms_label.text() == ""
+
+    def test_the_warning_goes_away_when_the_query_is_fixed(self, col, qapp, widget_parent):
+        editor = self.query_editor(col, widget_parent, "deck:Nowhere")
+        assert editor.stale_terms_label.text() != ""
+
+        editor.query.text_layout.set_text("deck:Other")
+
+        assert editor.stale_terms_label.text() == ""
+
+
+# -- N8: the picker and the sort field ---------------------------------------------------
+
+
+class TestThePickerMarksADefinition:
+    """What the last pass could not resolve, where the user picks a definition to run.
+
+    The pass reports into an operation log nobody reads at the default level, so a
+    definition that has stopped naming anything would otherwise look exactly like one that
+    works. Both of the pass's "only you can fix this" lists mark a row.
+    """
+
+    @pytest.fixture
+    def picker(self, col, qapp, widget_parent, stub_mw):
+        """A stored config and a way to run the pass and build the row it produces."""
+        from copy_anywhere.hooks import rename_hooks
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        stub_mw.addonManager.configs[ADDON_TAG] = dict(DEFAULT_CONFIG)
+        config = Config()
+        config.load()
+        previous = rename_hooks._last_result
+
+        def run(definition):
+            config.data["copy_definitions"] = [definition]
+            rename_hooks._last_result = reconcile(config, mw.col)
+            return DefinitionRow(widget_parent, definition, 0), rename_hooks._last_result
+
+        try:
+            yield config, run
+        finally:
+            rename_hooks._last_result = previous
+
+    def test_a_deck_that_was_deleted_marks_the_row(self, col, picker):
+        config, run = picker
+        deck_id = col.decks.id_for_name("Other")
+        definition = d.staged(
+            "Marked", note_types=[VOCAB], deck_names=[d.object_ref("Other", deck_id)]
+        )
+        run(definition)
+        col.decks.remove([deck_id])
+
+        row, result = run(definition)
+
+        assert [stale.name for stale in result.unresolved] == ["Other"]
+        assert row.stale_marker.text() != ""
+        assert "Other" in row.stale_marker.toolTip()
+
+    def test_a_field_that_was_deleted_marks_the_row(self, col, picker):
+        config, run = picker
+        definition = d.staged("Marked", note_types=[VOCAB])
+        # The first pass is what snapshots the field ids; without one there is no old name
+        # to miss.
+        run(definition)
+        model = col.models.by_name(VOCAB)
+        col.models.remove_field(model, model["flds"][-1])
+
+        row, result = run(definition)
+
+        assert [stale.name for stale in result.gone] == ["Note"]
+        assert "Note" in row.stale_marker.toolTip()
+
+    def test_a_definition_the_pass_was_happy_with_is_not_marked(self, col, picker):
+        _config, run = picker
+
+        row, result = run(d.staged("Fine", note_types=[VOCAB]))
+
+        assert result.unresolved == [] and result.gone == []
+        assert row.stale_marker.text() == ""
+
+
+class TestTheSortFieldWarning:
+    """Once per run, not once per note.
+
+    `sort_by_field_value` stays silent per note on purpose -- a query legitimately mixes
+    note types, and the characterization suites pin the empty-string fallback -- so a sort
+    field nobody has is invisible without this.
+    """
+
+    def run_with_sort_field(self, col, trigger, sort_field):
+        stage = d.note_query(
+            "found",
+            "tag:pool",
+            selection={
+                "strategy": "all",
+                "count": None,
+                "sort_field": sort_field,
+                "sort_order": "descending",
+            },
+        )
+        definition = d.staged(stages=[stage])
+        return copy_for_single_trigger_note(definition, trigger, copied_into_notes=[])
+
+    @pytest.fixture
+    def trigger(self, col):
+        real_anki.add_note(col, VOCAB, {"Word": "w1", "Freq": "1"}, tags=["pool"])
+        real_anki.add_note(col, KANJI, {"Kanji": "k", "Keyword": "kw"}, tags=["pool"])
+        return real_anki.add_note(col, VOCAB, {"Word": "trigger"})
+
+    def test_it_fires_once_when_no_note_has_the_field(self, col, trigger, logger):
+        self.run_with_sort_field(col, trigger, "Nonsuch")
+
+        assert [
+            message for message in logger.warnings if "Nonsuch" in message
+        ] == [
+            "Sorting on field 'Nonsuch', which none of the selected notes has:"
+            " every note sorted as if it were empty"
+        ]
+
+    def test_it_stays_quiet_when_one_note_has_the_field(self, col, trigger, logger):
+        self.run_with_sort_field(col, trigger, "Freq")
+
+        assert [message for message in logger.warnings if "Freq" in message] == []

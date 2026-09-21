@@ -237,6 +237,28 @@ def selected_note_types(definition: CopyDefinitionV2) -> list[NotetypeDict]:
     return models
 
 
+def unresolved_reference_problems(definition: CopyDefinitionV2) -> list[str]:
+    """What a definition names that this collection does not have, as save blockers.
+
+    A reference resolves by id and then by name (`logic/object_refs.py`), so one that
+    answers to neither names nothing at all: the definition triggers on no note, or holds
+    a card action that reaches no card. Saving it would leave the user with a definition
+    that looks complete and does nothing, so the editor refuses and says which name it is
+    -- the same name the reconcile pass already logged, worded the same way.
+    """
+    from aqt import mw
+
+    from ..logic.rename_reconcile import unresolved_references
+
+    if mw is None or mw.col is None:
+        return []
+    return [
+        f"{stale.kind.capitalize()} '{stale.name}' no longer exists;"
+        " pick another or remove it."
+        for stale in unresolved_references(definition, mw.col)
+    ]
+
+
 def known_fields_for(definition: CopyDefinitionV2) -> dict[str, set[str]]:
     """The field names each note binding's note can have, for the analyser.
 

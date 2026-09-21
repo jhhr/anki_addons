@@ -378,6 +378,63 @@ class TestACardTypeOfTheTriggerNoteTypeIsRenamed:
         assert action["card_type"]["name"] == f"{VOCAB}<::>Reading card"
 
 
+# What the pass reports without rewriting ------------------------------------------------
+
+
+class TestTheSearchTermsInTheReport:
+    """A query's names are checked every run, not only after a rename.
+
+    Nothing rewrites them -- `col.replace_in_search_node` swaps every term of a kind at
+    once, so one deck inside a query naming two cannot be renamed -- and a query can go
+    stale on another device, where no rename this profile can see ever happened.
+    """
+
+    def query_definition(self, query: str) -> dict:
+        return d.staged(note_types=[VOCAB], stages=[d.note_query("found", query)])
+
+    def test_a_deck_a_query_names_but_the_collection_has_not_is_reported(self, col, config):
+        store(config, self.query_definition("deck:Nowhere"))
+
+        result = reconcile(config, mw.col)
+
+        assert [(stale.kind, stale.name) for stale in result.stale_terms] == [
+            ("deck", "Nowhere")
+        ]
+
+    def test_a_renamed_field_left_in_a_search_term_is_reported(self, col, config):
+        store(config, self.query_definition("Word:neko"))
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert [(stale.kind, stale.name) for stale in result.stale_terms] == [
+            ("field", "Word")
+        ]
+
+    def test_a_query_naming_only_live_things_reports_nothing(self, col, config):
+        store(config, self.query_definition('deck:"JP vocab" Word:neko'))
+
+        assert reconcile(config, mw.col).stale_terms == []
+
+    def test_a_search_built_by_code_is_left_to_the_code_report(self, col, config):
+        stage = d.note_query("found", "")
+        stage["query"] = d.code('return "deck:Nowhere"')
+        store(config, d.staged(note_types=[VOCAB], stages=[stage]))
+
+        assert reconcile(config, mw.col).stale_terms == []
+
+    def test_the_report_does_not_make_the_pass_write(self, col, config, stub_mw):
+        store(config, self.query_definition("deck:Nowhere"))
+        reconcile(config, mw.col)
+        before = saves(stub_mw)
+
+        result = reconcile(config, mw.col)
+
+        assert result.stale_terms and result.changed is False
+        assert saves(stub_mw) == before
+
+
 # When it runs ------------------------------------------------------------------------------
 
 

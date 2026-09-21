@@ -173,6 +173,10 @@ class DefinitionRow(QWidget):
         self.checkbox.setSizePolicy(QSizePolicyFixed, QSizePolicyFixed)
         self.layout.addWidget(self.checkbox)
 
+        self.stale_marker = QLabel("", self)
+        self.layout.addWidget(self.stale_marker)
+        self._mark_if_stale()
+
         # Add stretch to push buttons to the right
         self.layout.addStretch()
 
@@ -194,6 +198,30 @@ class DefinitionRow(QWidget):
         )
         self.remove_button.clicked.connect(
             lambda: parent_dialog.remove_definition_by_guid(self.definition_guid)
+        )
+
+    def _mark_if_stale(self) -> None:
+        """Mark a definition the last reconcile pass could not resolve.
+
+        The pass reports into an operation log the user has to have turned the level up to
+        read (`logic/rename_reconcile.py`); this list is where they would notice it
+        without looking. Only what the pass could not resolve at all is marked -- a name it
+        refreshed or a rename it followed is not a problem any more.
+        """
+        from ..hooks.rename_hooks import last_reconcile_result
+
+        result = last_reconcile_result()
+        stale = [
+            item
+            for item in list(result.unresolved) + list(result.gone)
+            if item.definition_guid == self.definition_guid
+        ]
+        if not stale:
+            return
+        self.stale_marker.setText("<span style='color: #b8860b'>&#9888;</span>")
+        self.stale_marker.setToolTip(
+            "This definition names something this collection does not have:\n"
+            + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
         )
 
     def dragEnterEvent(self, event):

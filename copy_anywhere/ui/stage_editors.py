@@ -60,6 +60,7 @@ from ..logic.definition_schema import (
     WRITE_IF_POLICIES,
     value_expression,
 )
+from ..logic.query_terms import stale_search_terms
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
@@ -378,6 +379,16 @@ class QueryStageEditor(StageEditor):
         )
         self.form.addRow(self.query)
 
+        # What the search names that the collection does not have. A warning rather than a
+        # problem: a query may deliberately name a deck that does not exist yet, and unlike
+        # a field slot or a `{{trigger....}}` token the text of a search is never rewritten
+        # when something is renamed (`logic/query_terms.py`), so saying so is all there is.
+        self.stale_terms_label = QLabel("", self)
+        self.stale_terms_label.setWordWrap(True)
+        self.form.addRow(self.stale_terms_label)
+        self.query.changed.connect(self._refresh_stale_terms)
+        self._refresh_stale_terms()
+
         selection = stage.setdefault("selection", {})
         self.strategy = labelled_combo(
             self, SELECTION_STRATEGIES, SELECTION_LABELS, selection.get("strategy", "all")
@@ -452,6 +463,23 @@ class QueryStageEditor(StageEditor):
         self.if_empty.currentIndexChanged.connect(self.notify)
         self.add_row("If nothing matches", self.if_empty)
         self._on_strategy_changed()
+
+    def _refresh_stale_terms(self, *_args) -> None:
+        if mw is None or mw.col is None:
+            return
+        # A search built by code is not text to read; what it ends up naming is only known
+        # when the stage runs.
+        text = "" if self.query.is_code_mode() else self.query.text_layout.get_text()
+        stale = stale_search_terms(text, mw.col)
+        self.stale_terms_label.setVisible(bool(stale))
+        if not stale:
+            self.stale_terms_label.setText("")
+            return
+        self.stale_terms_label.setText(
+            "<span style='color: #b8860b'>Not in this collection:</span> "
+            + ", ".join(term.as_text() for term in stale)
+            + ". A search is left alone when something is renamed, so check it by hand."
+        )
 
     def _wrap(self, layout) -> QWidget:
         container = QWidget(self)

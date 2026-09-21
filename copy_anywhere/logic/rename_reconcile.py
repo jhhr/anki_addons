@@ -33,9 +33,23 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from ..shared.interpolate.interpolate_fields import CARD_VALUE_RE, CARD_VALUES_DICT
 from .definition_migration import STAGE_EXPRESSION_KEYS, rewrite_references
-from .definition_schema import CARD_TYPE_SEPARATOR, STAGE_EDIT_NOTE, is_format_2, walk_stages
+from .definition_schema import (
+    CARD_TYPE_SEPARATOR,
+    MODE_CODE,
+    STAGE_CARD_QUERY,
+    STAGE_CONDITION,
+    STAGE_EDIT_NOTE,
+    STAGE_NOTE_QUERY,
+    is_format_2,
+    walk_stages,
+)
 from .flow_analysis import TRIGGER_BINDING
 from .object_refs import (
+    KIND_CARD_TYPE,
+    KIND_DECK,
+    KIND_FIELD,
+    KIND_NOTE_TYPE,
+    card_type_resolves,
     normalize_card_type_ref,
     normalize_ref,
     resolve_deck_id,
@@ -43,16 +57,12 @@ from .object_refs import (
     resolve_template,
     split_card_type_name,
 )
+from .query_terms import stale_search_terms
 
 if TYPE_CHECKING:  # pragma: no cover -- the import would close a cycle at run time
     from ..configuration import Config
 
 logger = logging.getLogger(__name__)
-
-KIND_NOTE_TYPE = "note type"
-KIND_DECK = "deck"
-KIND_CARD_TYPE = "card type"
-KIND_FIELD = "field"
 
 #: The key `referenced` files a definition under for the note types it *triggers* on, as
 #: against the ones it merely names in a card action: only a trigger note type's fields and
@@ -93,9 +103,13 @@ class ReconcileResult:
     #: A field or template of a trigger note type that carries no id, so a rename of it
     #: cannot be seen at all (note types saved before Anki 23.10 keep null ids).
     unfollowable: list[StaleName] = dataclass_field(default_factory=list)
-    #: An old name still inside a code block or left in a search term, where a mechanical
-    #: rewrite would be a guess at what the user meant.
+    #: An old name still inside a code block, where a mechanical rewrite would be a guess
+    #: at what the user meant.
     not_rewritten: list[StaleName] = dataclass_field(default_factory=list)
+    #: A name a query spells that the collection does not have. Checked every run rather
+    #: than only after a rename: a query can go stale on another device, and nothing else
+    #: ever looks inside search text (`query_terms.py`).
+    stale_terms: list[StaleName] = dataclass_field(default_factory=list)
     changed: bool = False
 
 
@@ -142,6 +156,56 @@ def _card_type_refs(definition: dict) -> Iterator[dict]:
         for card_action in stage.get("card_actions") or []:
             if isinstance(card_action, dict) and card_action.get("card_type") is not None:
                 yield card_action
+
+
+def unresolved_references(definition: dict, col: Any) -> list[StaleName]:
+    """Every structured reference of one definition that this collection cannot resolve.
+
+    The same condition the pass reports as `unresolved`, asked of a single definition
+    without touching it, so the editor can refuse a save over a reference that names
+    nothing (§N6) in the words the log already uses.
+    """
+    stale: list[StaleName] = []
+    triggers = definition.get("triggers")
+    if isinstance(triggers, dict):
+        for value in triggers.get("note_types") or []:
+            reference = normalize_ref(value)
+            if resolve_note_type(reference, col) is None:
+                stale.append(_stale(definition, KIND_NOTE_TYPE, reference["name"]))
+        for value in triggers.get("deck_names") or []:
+            reference = normalize_ref(value)
+            if resolve_deck_id(reference, col) is None:
+                stale.append(_stale(definition, KIND_DECK, reference["name"]))
+    for card_action in _card_type_refs(definition):
+        reference = normalize_card_type_ref(card_action["card_type"])
+        if not card_type_resolves(reference, col):
+            stale.append(_stale(definition, KIND_CARD_TYPE, reference["name"]))
+    return stale
+
+
+def _search_expressions(stage: dict) -> Iterator[dict]:
+    """The expressions of one stage whose text is an Anki search rather than a value."""
+    stage_type = stage.get("type", "")
+    if stage_type in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY):
+        if isinstance(stage.get("query"), dict):
+            yield stage["query"]
+    elif stage_type == STAGE_CONDITION and stage.get("predicate_kind") == "note_query":
+        if isinstance(stage.get("predicate"), dict):
+            yield stage["predicate"]
+
+
+def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> None:
+    """What every search in this definition names that the collection does not have."""
+    for stage in walk_stages(definition.get("stages") or []):
+        for expression in _search_expressions(stage):
+            if expression.get("mode") == MODE_CODE:
+                # A search built by code is not text this scan can read; the code report
+                # below is what covers it.
+                continue
+            for term in stale_search_terms(expression.get("text"), col):
+                stale = _stale(definition, term.kind, term.name)
+                if stale not in result.stale_terms:
+                    result.stale_terms.append(stale)
 
 
 # Step 1: bind and refresh -------------------------------------------------------------------
@@ -581,6 +645,9 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         if model is not None:
             _report_unfollowable(model, holders, result)
 
+    for definition in definitions:
+        _report_stale_terms(definition, col, result)
+
     renames = _diff(config.data.get(SNAPSHOT_KEY) or {}, col, referenced, result)
     for note_type_id, renamed in renames.items():
         for definition in referenced.get((_TRIGGER_NOTE_TYPE, note_type_id)) or []:
@@ -638,6 +705,14 @@ def log_result(result: ReconcileResult) -> None:
             stale.kind,
             stale.name,
         )
+    for stale in result.stale_terms:
+        logger.warning(
+            "Rename reconcile: not rewritten: a search in '%s' names %s '%s', which this"
+            " collection does not have",
+            stale.definition_name,
+            stale.kind,
+            stale.name,
+        )
 
 
 __all__ = [
@@ -653,4 +728,5 @@ __all__ = [
     "log_result",
     "reconcile",
     "referenced_object_ids",
+    "unresolved_references",
 ]

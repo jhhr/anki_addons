@@ -373,3 +373,19 @@ all, including one synced in from another device and one undone with Ctrl+Z, whi
 a second rename the same pass follows back. The pass writes the config only when something
 changed, and never while a dialog is still open, so a cancelled Fields dialog is a
 non-problem.
+
+**Where (a)'s report ended up.** The pass writes everything into one operation log, which
+is invisible at the default log level, so the three findings a user can act on were put
+where they already look. A structured reference that resolves to nothing is shown in the
+editor under the name it was written with, marked `(not found)`, and blocks the save; a
+query stage carries an amber note listing what its search spells that the collection does
+not have; and the definition picker marks a definition the last pass left `unresolved` or
+`gone`, with the names in its tooltip. The search scan (`logic/query_terms.py`) checks
+`deck:`, `note:` and `card:` terms and field searches by exact name only -- a term holding
+a wildcard, a regex or an unresolved `{{...}}` reference is skipped rather than guessed at,
+because a scan that cried wolf over a working query would be ignored. The same scan runs in
+the pass, so a query that went stale on another device is reported without anything being
+renamed here. `selection.sort_field` is still not rewritten and a note without the field
+still sorts as empty -- a query legitimately mixes note types, and the characterization
+suites pin that fallback -- but a run where no selected note had the field logs one warning,
+because then the sort did nothing at all.

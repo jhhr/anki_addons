@@ -239,6 +239,24 @@ text read by Anki's own grammar -- `col.replace_in_search_node` swaps every term
 and so cannot rename one deck inside a query naming two -- and `note['Word']` is a spelling
 of a field name that no `{{...}}` rewrite can see. Those are reported and fixed by hand.
 
+**Where the report reaches you.** The pass writes all of it into one operation log, which
+you only see with the log level turned up, so the three things you can act on are also put
+where you already look:
+
+- a reference that resolves to nothing is shown in the editor under the name it was
+  written with, marked `(not found)`, and **blocks the save** until you pick another or
+  remove it. Picking a live entry from the same box clears it;
+- a query stage shows an amber note under the search naming what it spells that this
+  collection does not have -- `deck:`, `note:` and `card:` terms and field searches, exact
+  names only: a term with a wildcard, a regex or a `{{...}}` reference in it is left alone.
+  It is a note, not a blocker: a query may name something you have not made yet;
+- the definition list marks a definition the last pass could not resolve, with the names in
+  its tooltip.
+
+A sort field is still not rewritten and still sorts a note that lacks it as empty -- a
+query legitimately mixes note types -- but a run where *no* selected note had the field
+logs one warning, because then the sort did nothing at all.
+
 Both names of a rename come from `name_snapshot` in the addon config: per referenced note
 type id, its name and the names of its fields and templates by their ids, plus a name per
 referenced deck id. It is written by the same pass and refreshed whenever definitions are

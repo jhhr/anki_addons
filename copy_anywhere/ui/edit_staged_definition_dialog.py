@@ -34,7 +34,11 @@ from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from ..logic.flow_analysis import find_call_cycles, make_lookup
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from .stage_document import StageDocument
-from .stage_editor_context import known_fields_for, make_note_types_for
+from .stage_editor_context import (
+    known_fields_for,
+    make_note_types_for,
+    unresolved_reference_problems,
+)
 from .stage_editors import StageEditorEnvironment
 from .stage_exports_editor import ExportsEditor
 from .stage_list import StageTreeWidget
@@ -83,6 +87,7 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
             copy_definition,
             lookup=make_lookup(self.all_definitions),
             known_fields=known_fields_for,
+            unresolved_refs=unresolved_reference_problems,
         )
 
         self.body = QVBoxLayout(self.inner_widget)

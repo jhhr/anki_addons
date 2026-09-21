@@ -291,7 +291,9 @@ def test_an_add_note_trigger_still_saves_a_card_flagging_definition(dialog):
             "write_if": "always",
         }
     ]
-    stage["card_actions"] = [{"card_type_name": "CA Vocab: Card 1", "set_flag": 1}]
+    stage["card_actions"] = [
+        {"card_type_name": f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition", "set_flag": 1}
+    ]
     dialog.document.root_block().append(stage)
     dialog.triggers_editor.on_add.setChecked(True)
     dialog.stage_tree.rebuild()
@@ -1139,6 +1141,9 @@ class TestSavingWhatTheBoxesCannotOffer:
     ):
         # No card of a trigger note type is in "Archive", so the box has no row for it: the
         # deck was emptied, or renamed, or its cards moved after the whitelist was written.
+        # The deck itself is still there -- one that is not is shown instead, marked, so
+        # that the user can see which name went (`test_rename_editor.py`).
+        archive = col.decks.id("Archive")
         editor, definition = triggers_editor(
             col, widget_parent, note_types=[VOCAB], deck_names=["Archive"]
         )
@@ -1146,7 +1151,7 @@ class TestSavingWhatTheBoxesCannotOffer:
 
         editor.apply()
 
-        assert definition["triggers"]["deck_names"] == [{"id": None, "name": "Archive"}]
+        assert definition["triggers"]["deck_names"] == [{"id": archive, "name": "Archive"}]
 
     def test_a_deck_only_the_dropped_note_type_had_survives_a_save(
         self, col, qapp, widget_parent
@@ -1183,6 +1188,7 @@ class TestSavingWhatTheBoxesCannotOffer:
     def test_unticking_an_offered_deck_still_removes_it(self, col, qapp, widget_parent):
         # The other half of the same rule: within what the box does offer, it is the whole
         # answer, so a name the user unticked is gone.
+        archive = col.decks.id("Archive")
         editor, definition = triggers_editor(
             col, widget_parent, note_types=[VOCAB], deck_names=["Default", "Archive"]
         )
@@ -1191,7 +1197,7 @@ class TestSavingWhatTheBoxesCannotOffer:
         choose(editor.decks_box)
         editor.apply()
 
-        assert definition["triggers"]["deck_names"] == [{"id": None, "name": "Archive"}]
+        assert definition["triggers"]["deck_names"] == [{"id": archive, "name": "Archive"}]
 
 
 class TestAddingASecondActionToAnEditCardStage:

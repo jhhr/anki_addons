@@ -24,6 +24,23 @@ from typing import Any, Optional, Sequence, TypedDict
 
 from .definition_schema import CARD_TYPE_SEPARATOR
 
+#: What one of these objects is called when something has to say which kind it is talking
+#: about -- a log line, a save blocker, a warning under a query. Fields are in the list
+#: because those reports name them too, even though a field has no reference of its own.
+KIND_NOTE_TYPE = "note type"
+KIND_DECK = "deck"
+KIND_CARD_TYPE = "card type"
+KIND_FIELD = "field"
+
+#: Appended to a stored name that resolves to neither an id nor a name in this collection,
+#: wherever a picker still has to show it. The user chose that name once; hiding it would
+#: leave them with a definition that has quietly stopped naming anything.
+NOT_FOUND_SUFFIX = " (not found)"
+
+
+def not_found_label(name: str) -> str:
+    return f"{name}{NOT_FOUND_SUFFIX}"
+
 
 class ObjectRef(TypedDict, total=False):
     """A note type or a deck: its id, which may be null, and the name last seen with it."""
@@ -180,6 +197,18 @@ def resolve_template(ref: Any, model: Any) -> Optional[Any]:
         if template.get("name") == halves[1]:
             return template
     return None
+
+
+def card_type_resolves(ref: Any, col: Any) -> bool:
+    """Whether this card type reference still finds a note type and a template of it.
+
+    Both halves, because either can go: the note type may have been deleted, or kept and
+    the template removed from it.
+    """
+    reference = normalize_card_type_ref(ref)
+    halves = split_card_type_name(reference["name"]) or ("", "")
+    model = resolve_note_type({"id": reference["note_type_id"], "name": halves[0]}, col)
+    return model is not None and resolve_template(reference, model) is not None
 
 
 # Display ---------------------------------------------------------------------------------

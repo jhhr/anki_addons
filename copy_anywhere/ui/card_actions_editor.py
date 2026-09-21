@@ -40,7 +40,9 @@ from ..logic.object_refs import (
     card_action_card_type,
     card_type_display_name,
     card_type_ref,
+    card_type_resolves,
     normalize_card_type_ref,
+    not_found_label,
     split_card_type_name,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
@@ -159,6 +161,12 @@ class CardActionsEditor(QWidget):
         # Map card type names to their CardAction definitions
         self.card_actions: Dict[str, CardAction] = {}
 
+        #: The keys of actions whose card type reference resolves to nothing. They are
+        #: marked rather than dropped: an action the collection cannot place is still one
+        #: the user wrote, and a save that quietly forgot it would be the worst of the
+        #: three things this could do.
+        self._missing_card_types: set[str] = set()
+
         # Load existing card actions from copy_definition
         if copy_definition and copy_definition.get("card_actions"):
             for action in copy_definition["card_actions"]:
@@ -171,8 +179,12 @@ class CardActionsEditor(QWidget):
                 # type was renamed in Anki still lines up with what the selector offers.
                 ref = card_action_card_type(action)
                 card_type_name = card_type_display_name(ref, mw.col)
-                if card_type_name:
-                    self.card_actions[card_type_name] = action
+                if not card_type_name:
+                    continue
+                if not card_type_resolves(ref, mw.col):
+                    card_type_name = not_found_label(card_type_name)
+                    self._missing_card_types.add(card_type_name)
+                self.card_actions[card_type_name] = action
 
         if single_card_mode:
             # Nothing to pick: the stage already named the card these actions apply to.
@@ -286,7 +298,10 @@ class CardActionsEditor(QWidget):
         offered = self._offered_card_types()
         if offered is not None:
             for card_type_name in list(self.card_actions):
-                if card_type_name not in offered:
+                if (
+                    card_type_name not in offered
+                    and card_type_name not in self._missing_card_types
+                ):
                     self._discard_action(card_type_name)
         self.update_card_type_options()
 
@@ -767,6 +782,7 @@ class CardActionsEditor(QWidget):
     def _discard_action(self, card_type_name: str):
         """Forget one action, its row, and its place in the staged load."""
         self.card_actions.pop(card_type_name, None)
+        self._missing_card_types.discard(card_type_name)
         self._load_queue = [
             (name, action) for name, action in self._load_queue if name != card_type_name
         ]
