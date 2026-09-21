@@ -217,13 +217,21 @@ def scope_options_dict(
 
 
 def selected_note_types(definition: CopyDefinitionV2) -> list[NotetypeDict]:
-    """The note types a definition's trigger can be, from its trigger settings."""
+    """The note types a definition's trigger can be, from its trigger settings.
+
+    By reference, so a note type the user renamed in Anki is still the one the definition
+    means; a reference that resolves to nothing contributes no note type, as a stale name
+    did before.
+    """
     from aqt import mw
+
+    from ..configuration import definition_note_type_refs
+    from ..logic.object_refs import resolve_note_type
 
     assert mw is not None and mw.col is not None
     models = []
-    for name in (definition.get("triggers", {}) or {}).get("note_types", []) or []:
-        model = mw.col.models.by_name(name)
+    for ref in definition_note_type_refs(definition):
+        model = resolve_note_type(ref, mw.col)
         if model is not None:
             models.append(model)
     return models

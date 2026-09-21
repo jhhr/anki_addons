@@ -348,11 +348,13 @@ def test_the_dialog_round_trips_an_edit_note_stage(dialog):
     assert saved["effects"]["add_note_compatible"] is True
 
 
-def test_the_dialog_writes_the_trigger_settings_as_arrays(dialog):
+def test_the_dialog_writes_the_trigger_settings_as_arrays(col, dialog):
     dialog.triggers_editor.on_review.setChecked(True)
     dialog.triggers_editor.include_subdecks.setChecked(True)
     saved = dialog.get_copy_definition()
-    assert saved["triggers"]["note_types"] == [VOCAB]
+    assert saved["triggers"]["note_types"] == [
+        {"id": col.models.id_for_name(VOCAB), "name": VOCAB}
+    ]
     assert saved["triggers"]["on_review"] is True
     assert saved["triggers"]["include_subdecks"] is True
     assert saved["triggers"]["deck_names"] == []
@@ -419,7 +421,7 @@ def test_an_edit_card_stage_saves_actions_without_a_card_type(col, qapp):
     tree.apply_editors()
     saved = tree.document.stage("e")["card_actions"]
     assert len(saved) == 1
-    assert saved[0]["card_type_name"] == ""
+    assert saved[0]["card_type"] is None
     assert saved[0]["change_deck"] == "Default"
 
 
@@ -1003,6 +1005,63 @@ def offered_card_note_types(editor):
     }
 
 
+class TestTheTriggerEditorWritesIds:
+    """What a saved definition stores for a note type or a deck: an id beside the name.
+
+    Anki fires no hook for either rename, so the name a definition was written with is the
+    only record it has -- and it goes stale silently. The editor is where a collection is at
+    hand, so it is where the id is bound.
+    """
+
+    def test_a_chosen_note_type_is_saved_with_its_id(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(col, widget_parent, note_types=[VOCAB])
+
+        editor.apply()
+
+        assert definition["triggers"]["note_types"] == [
+            {"id": col.models.id_for_name(VOCAB), "name": VOCAB}
+        ]
+
+    def test_a_chosen_deck_is_saved_with_its_id(self, col, qapp, widget_parent):
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[VOCAB], deck_names=["Default"]
+        )
+
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == [
+            {"id": col.decks.id_for_name("Default"), "name": "Default"}
+        ]
+
+    def test_a_renamed_note_type_is_offered_under_its_new_name(self, col, qapp, widget_parent):
+        stored = {"id": col.models.id_for_name(VOCAB), "name": "What it used to be called"}
+        editor, definition = triggers_editor(col, widget_parent, note_types=[stored])
+
+        assert selected_names(editor.note_types_box) == [VOCAB]
+
+        editor.apply()
+
+        assert definition["triggers"]["note_types"] == [
+            {"id": col.models.id_for_name(VOCAB), "name": VOCAB}
+        ]
+
+    def test_a_deck_the_collection_no_longer_has_keeps_its_stored_reference(
+        self, col, qapp, widget_parent
+    ):
+        # The deck box can only offer decks that exist, and the chosen list outlives it
+        # (see `TestSavingWhatTheBoxesCannotOffer`), so the stored reference is all there
+        # is to write back -- and writing a fresh null-id one instead would throw away the
+        # id that would find the deck again if it came back.
+        stored = {"id": 1234, "name": "Deleted deck"}
+        editor, definition = triggers_editor(
+            col, widget_parent, note_types=[VOCAB], deck_names=[stored]
+        )
+
+        editor.apply()
+
+        assert definition["triggers"]["deck_names"] == [stored]
+
+
 class TestClearingATriggerSelection:
     """The deck and unfocus boxes are rebuilt whenever the note types change.
 
@@ -1041,7 +1100,9 @@ class TestClearingATriggerSelection:
         )
         choose(editor.note_types_box, VOCAB, KANJI)
         editor.apply()
-        assert definition["triggers"]["deck_names"] == ["Default"]
+        assert definition["triggers"]["deck_names"] == [
+            {"id": col.decks.id_for_name("Default"), "name": "Default"}
+        ]
         assert definition["triggers"]["on_unfocus"]["edit_fields"] == ["Word"]
 
     def test_a_field_only_the_dropped_note_type_had_comes_back_with_it(
@@ -1085,7 +1146,7 @@ class TestSavingWhatTheBoxesCannotOffer:
 
         editor.apply()
 
-        assert definition["triggers"]["deck_names"] == ["Archive"]
+        assert definition["triggers"]["deck_names"] == [{"id": None, "name": "Archive"}]
 
     def test_a_deck_only_the_dropped_note_type_had_survives_a_save(
         self, col, qapp, widget_parent
@@ -1101,7 +1162,9 @@ class TestSavingWhatTheBoxesCannotOffer:
         choose(editor.note_types_box, VOCAB)
         editor.apply()
 
-        assert definition["triggers"]["deck_names"] == ["Kanji only"]
+        assert definition["triggers"]["deck_names"] == [
+            {"id": col.decks.id_for_name("Kanji only"), "name": "Kanji only"}
+        ]
 
     def test_a_field_only_the_dropped_note_type_had_survives_a_save(
         self, col, qapp, widget_parent
@@ -1128,7 +1191,7 @@ class TestSavingWhatTheBoxesCannotOffer:
         choose(editor.decks_box)
         editor.apply()
 
-        assert definition["triggers"]["deck_names"] == ["Archive"]
+        assert definition["triggers"]["deck_names"] == [{"id": None, "name": "Archive"}]
 
 
 class TestAddingASecondActionToAnEditCardStage:
@@ -1565,6 +1628,28 @@ class TestChangingTheTriggerNoteType:
 
         assert offered_card_note_types(self.edit_note_editor(dialog)) == {KANJI}
 
+    def test_a_saved_action_carries_the_ids_of_its_note_type_and_card_type(
+        self, col, qapp, dialog
+    ):
+        self.dialog_with_an_edit_stage(dialog)
+        actions = self.edit_note_editor(dialog).card_actions
+        vocab = f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition"
+        actions.card_type_selector.setCurrentText(vocab)
+        actions.add_new_action()
+        actions.action_ui_components[vocab]["deck_combo"].setCurrentText("Default")
+        dialog.refresh_status()
+
+        guid = dialog.document.root_block()[0]["guid"]
+        note_type = col.models.by_name(VOCAB)
+        saved = dialog.document.stage(guid)["card_actions"]
+        assert [action["card_type"] for action in saved] == [
+            {
+                "note_type_id": note_type["id"],
+                "template_id": note_type["tmpls"][0]["id"],
+                "name": vocab,
+            }
+        ]
+
     def test_an_action_for_a_card_type_the_new_note_type_does_not_have_is_dropped(
         self, col, qapp, dialog
     ):
@@ -1576,7 +1661,9 @@ class TestChangingTheTriggerNoteType:
         actions.action_ui_components[vocab]["deck_combo"].setCurrentText("Default")
         dialog.refresh_status()
         guid = dialog.document.root_block()[0]["guid"]
-        assert [a["card_type_name"] for a in dialog.document.stage(guid)["card_actions"]] == [vocab]
+        assert [
+            a["card_type"]["name"] for a in dialog.document.stage(guid)["card_actions"]
+        ] == [vocab]
 
         dialog.triggers_editor.note_types_box.setCurrentText(f'"{KANJI}"')
         dialog.refresh_status()
@@ -1806,7 +1893,7 @@ class TestWhatElseFollowsARetarget:
         tree.apply_editors()
 
         saved = tree.document.stage("e")["card_actions"]
-        assert [action["card_type_name"] for action in saved] == [vocab]
+        assert [action["card_type"]["name"] for action in saved] == [vocab]
         assert kanji not in editor.card_actions.action_ui_components
 
     def test_retargeting_to_a_queried_note_keeps_every_action(self, col, qapp):
@@ -1818,7 +1905,7 @@ class TestWhatElseFollowsARetarget:
         tree.apply_editors()
 
         saved = tree.document.stage("e")["card_actions"]
-        assert [action["card_type_name"] for action in saved] == [vocab]
+        assert [action["card_type"]["name"] for action in saved] == [vocab]
 
 
 class TestTheConditionEditorsCaption:

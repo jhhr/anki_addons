@@ -21,7 +21,7 @@ start after this release, and there is one executor and one editor from there on
   "format_version": 2,
   "definition_name": "Example",
   "triggers": {
-    "note_types": ["Vocabulary"],
+    "note_types": [{ "id": 1699999999999, "name": "Vocabulary" }],
     "deck_names": [],
     "include_subdecks": false,
     "on_sync": false,
@@ -36,7 +36,17 @@ start after this release, and there is one executor and one editor from there on
 ```
 
 `triggers` decides which notes the definition considers; that filtering happens before any
-stage runs. `exports` is authored: each one is `{ "name", "stage_guid", "result" }`, naming
+stage runs. A note type, a deck and a card type are each stored as `{ "id", "name" }` -- the
+objects Anki gives a stable id. **The id wins where it still exists**, so renaming one in
+Anki does not stop the definition; the name is what is looked up when the id is gone, which
+is what makes a definition written for a note type you have not created yet, or one shipped
+as an example with `"id": null`, still bind. A card type takes both halves,
+`{ "note_type_id", "template_id", "name" }`, because a template id is only unique within its
+note type, and its `name` keeps the display form `"<NoteType><::><CardType>"`. A bare string
+is still read wherever a reference is expected. **Field names are not references**: a field
+is what you type in expressions, queries and code, so it is stored as the name you spelled.
+
+`exports` is authored: each one is `{ "name", "stage_guid", "result" }`, naming
 a root stage and which of its results to take. Only a `call_definition` binds more than one
 result -- one per declared output -- and an export that leaves `result` out takes the stage's
 single result, which is what every export written before call outputs could be exported does. `effects` is derived -- the flow analyser computes it,

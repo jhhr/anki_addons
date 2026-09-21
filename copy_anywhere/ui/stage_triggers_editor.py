@@ -25,6 +25,13 @@ from aqt.qt import (
 )
 
 from ..logic.definition_schema import CopyDefinitionV2, Triggers
+from ..logic.object_refs import (
+    ObjectRef,
+    deck_display_name,
+    deck_ref,
+    normalize_refs,
+    note_type_display_name,
+)
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_text_input import RequiredLineEdit
 
@@ -120,8 +127,18 @@ class TriggersEditor(QWidget):
         self.note_types_box.addItems(
             quoted_items(model.name for model in mw.col.models.all_names_and_ids())
         )
+        # The boxes list and answer in names; the definition stores references. A stored
+        # reference is shown under its *live* name, so a note type the user renamed in Anki
+        # appears where they would look for it rather than under the name the definition
+        # was written with.
+        self._stored_note_types = normalize_refs(triggers.get("note_types"))
+        self._stored_decks = normalize_refs(triggers.get("deck_names"))
         self.note_types_box.setCurrentText(
-            ", ".join(quoted_items(triggers.get("note_types", []) or []))
+            ", ".join(
+                quoted_items(
+                    note_type_display_name(ref, mw.col) for ref in self._stored_note_types
+                )
+            )
         )
         self.note_types_box.currentTextChanged.connect(self._on_note_types_changed)
         form.addRow(QLabel("<h3>Trigger note type</h3>", self), self.note_types_box)
@@ -189,7 +206,7 @@ class TriggersEditor(QWidget):
         # boxes are rebuilt from the note types on every change, so their contents cannot be
         # the record: a name that the current note types do not have would be read back as
         # "not chosen" and lost. Kept here instead, and narrowed only by what the user does.
-        self._chosen_decks = list(triggers.get("deck_names", []) or [])
+        self._chosen_decks = [deck_display_name(ref, mw.col) for ref in self._stored_decks]
         self._chosen_unfocus = [
             list(unfocus.get("edit_fields", []) or []),
             list(unfocus.get("add_fields", []) or []),
@@ -286,9 +303,37 @@ class TriggersEditor(QWidget):
 
     # -- writing back ---------------------------------------------------------------------
 
+    def _note_type_refs(self, names: list[str]) -> list[ObjectRef]:
+        """The chosen note type names, as references that carry their ids.
+
+        A name the collection no longer offers keeps whichever stored reference showed it:
+        a definition written for a note type the user has not made yet, or one whose note
+        type was deleted, must survive being opened and saved.
+        """
+        assert mw is not None and mw.col is not None
+        live = {entry.name: entry.id for entry in mw.col.models.all_names_and_ids()}
+        stored = {note_type_display_name(ref, mw.col): ref for ref in self._stored_note_types}
+        return [
+            {"id": live[name], "name": name}
+            if name in live
+            else stored.get(name, {"id": None, "name": name})
+            for name in names
+        ]
+
+    def _deck_refs(self, names: list[str]) -> list[ObjectRef]:
+        assert mw is not None and mw.col is not None
+        live = {entry.name: entry.id for entry in mw.col.decks.all_names_and_ids()}
+        stored = {deck_display_name(ref, mw.col): ref for ref in self._stored_decks}
+        return [
+            deck_ref(live[name], name)
+            if name in live
+            else stored.get(name, {"id": None, "name": name})
+            for name in names
+        ]
+
     def apply(self) -> None:
         self.definition["definition_name"] = self.name_edit.text().strip()
-        self.triggers["note_types"] = selected_names(self.note_types_box)
+        self.triggers["note_types"] = self._note_type_refs(selected_names(self.note_types_box))
         # What gets saved is the chosen list, not the box. The box holds only what the
         # currently selected note types put in it, so a whitelisted deck whose cards have
         # moved, or a field belonging to a note type the user has just deselected, has no
@@ -300,7 +345,11 @@ class TriggersEditor(QWidget):
             (self.unfocus_edit, self.unfocus_add), self._chosen_unfocus, self._offered_unfocus
         ):
             self._take_choice(box, chosen, offered)
-        self.triggers["deck_names"] = list(self._chosen_decks)
+        self.triggers["deck_names"] = self._deck_refs(list(self._chosen_decks))
+        # Written back so a second apply() in the same dialog still answers for a name the
+        # collection does not offer.
+        self._stored_note_types = list(self.triggers["note_types"])
+        self._stored_decks = list(self.triggers["deck_names"])
         self.triggers["include_subdecks"] = self.include_subdecks.isChecked()
         self.triggers["on_sync"] = self.on_sync.isChecked()
         self.triggers["on_add"] = self.on_add.isChecked()

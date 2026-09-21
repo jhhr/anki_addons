@@ -329,8 +329,27 @@ subsumes (b) and is the only one that survives a sync; (b) is worth building onl
 fields it can do safely, and only if the report shows field renames dominating.
 
 One defect is pinned rather than only described:
-`test/test_renamed_in_anki.py` is an xfail saying that a card action whose card type was
-renamed should say so. It is the sharpest of the five, because a card action is pure loss --
-the field writes in the same definition still land, so the run reports success.
+`test/test_renamed_in_anki.py` says that a card action whose card type was renamed should
+say so. It is the sharpest of the five, because a card action is pure loss -- the field
+writes in the same definition still land, so the run reports success. It was an xfail until
+the decision below was built; it is a plain test now.
 
-**decision: pending**
+**decision: a fourth option, (d): store the ids.** None of the three tiers was taken as it
+stood. What a definition keeps for a note type, a deck and a card template is now a
+reference -- `{"id", "name"}`, and `{"note_type_id", "template_id", "name"}` for a card type
+-- and **the id wins where it still exists, the name being looked up only when it does not**
+(`logic/object_refs.py`). That needs no rename hook at all, which settles what (b) could not:
+the hook fires before the Fields dialog is accepted and a rename can be cancelled out from
+under it, and a rename undone with Ctrl+Z fires nothing that names anything. It also follows
+a rename made on another device, which (c) is the only other tier to do, and it costs
+nothing per rename because there is nothing to rewrite.
+
+Field names stay names, because a field is what the user types in expressions, queries and
+code -- the row of the table above that a mechanical rewrite would mangle. What (a) and (c)
+are still needed for is kept: one reconcile pass refreshes the cached names by id and
+rewrites a renamed trigger field's parsed reference tokens, and what stays name-only is
+reported rather than rewritten. Search text is never rewritten: `col.replace_in_search_node`
+swaps every term of a kind, so it cannot rename one deck inside a query naming two.
+
+Built in three commits on `feat/copyanywhere_rename_protection`: the references and the
+readers that go through them, the reconcile pass, and the editor's reporting.

@@ -77,6 +77,7 @@ from .definition_schema import (
     value_expression,
     walk_stages,
 )
+from .object_refs import card_action_card_type, normalize_ref
 
 COPY_MODE_WITHIN_NOTE = "Within note"
 COPY_MODE_ACROSS_NOTES = "Across notes"
@@ -224,8 +225,18 @@ def _tag_writes(definition: dict) -> dict:
 
 def _card_actions(definition: dict) -> list[dict]:
     # Card actions keep their card type selector: a note-level action still says which
-    # template it applies to (§11 step 6). `edit_card` is the stage without one.
-    return [deepcopy(action) for action in definition.get("card_actions") or []]
+    # template it applies to (§11 step 6). `edit_card` is the stage without one. The
+    # selector becomes a reference here so a definition migrated on this version never
+    # carries the bare `card_type_name` string; the ids stay null because the migrator runs
+    # before there is a collection to bind them in.
+    actions = []
+    for action in definition.get("card_actions") or []:
+        copied = deepcopy(action)
+        if isinstance(copied, dict):
+            copied["card_type"] = card_action_card_type(copied)
+            copied.pop("card_type_name", None)
+        actions.append(copied)
+    return actions
 
 
 def _selection(definition: dict, warnings: list[str]) -> dict:
@@ -679,11 +690,17 @@ def _triggers(definition: dict) -> dict:
         if field_def.get("copy_on_unfocus_when_add", False):
             add_fields.extend(name for name in fields if name and name not in add_fields)
     return {
-        "note_types": _split_quoted_list(definition.get("copy_into_note_types")),
+        "note_types": [
+            normalize_ref(name)
+            for name in _split_quoted_list(definition.get("copy_into_note_types"))
+        ],
         "deck_names": (
             []
             if definition.get("only_copy_into_decks") in (None, "", "-")
-            else _split_quoted_list(definition.get("only_copy_into_decks"))
+            else [
+                normalize_ref(name)
+                for name in _split_quoted_list(definition.get("only_copy_into_decks"))
+            ]
         ),
         "include_subdecks": bool(definition.get("include_subdecks", False)),
         "on_sync": bool(definition.get("copy_on_sync", False)),

@@ -20,9 +20,14 @@ binding exists, whether its type fits the action, which effects a definition has
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Literal, Optional, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, Sequence, TypedDict
 
 from typing_extensions import TypeGuard
+
+if TYPE_CHECKING:
+    # Only for the annotations below: `object_refs` imports the card type separator from
+    # here, so a runtime import would close the cycle.
+    from .object_refs import ObjectRef
 
 # The per-definition format version. The global config version stays for config-wide
 # migrations; this one says how to read a single definition.
@@ -335,8 +340,11 @@ class UnfocusTriggers(TypedDict, total=False):
 
 
 class Triggers(TypedDict, total=False):
-    note_types: list[str]
-    deck_names: list[str]
+    #: Structured references since 0.5.0 -- `{"id", "name"}`, the id winning where it still
+    #: exists, so a renamed note type or deck is still the one the definition meant. A bare
+    #: name is still read, as `{"id": None, "name": s}`; see `logic/object_refs.py`.
+    note_types: list["ObjectRef"]
+    deck_names: list["ObjectRef"]
     include_subdecks: bool
     on_sync: bool
     on_add: bool
@@ -648,11 +656,11 @@ def validate_stage_structure(
         tags = stage.get("tags", {})
         if tags is not None and not isinstance(tags, dict):
             problems.append(SchemaProblem("'tags' is not an object", guid, stage_type))
+        _validate_card_actions(stage, problems)
         _validate_choice(stage, "read_semantics", READ_SEMANTICS, "stage_snapshot", problems)
     elif stage_type == STAGE_EDIT_CARD:
         _require_binding(stage, "target", problems)
-        if not isinstance(stage.get("card_actions", []), list):
-            problems.append(SchemaProblem("'card_actions' is not a list", guid, stage_type))
+        _validate_card_actions(stage, problems)
     elif stage_type == STAGE_READ_FILE:
         _require_result_name(stage, problems, relaxed_names)
         _require_expression(stage, "filename", problems)
@@ -728,6 +736,60 @@ def validate_stage_structure(
             validate_stage_structure(child, problems, relaxed_names)
 
 
+def _is_reference(value: Any) -> bool:
+    """A reference slot takes an `{"id", "name"}` object, or the bare name that came first."""
+    return isinstance(value, (str, dict))
+
+
+def _stage_id(stage: Stage) -> tuple[Optional[str], Optional[str]]:
+    return stage.get("guid"), stage.get("type")
+
+
+def _validate_triggers(definition: Any, problems: list[SchemaProblem]) -> None:
+    triggers = definition.get("triggers")
+    if triggers is None:
+        return
+    if not isinstance(triggers, dict):
+        problems.append(SchemaProblem("'triggers' is not an object"))
+        return
+    for key in ("note_types", "deck_names"):
+        stored = triggers.get(key)
+        if stored is None:
+            continue
+        if not isinstance(stored, list):
+            problems.append(SchemaProblem(f"'triggers.{key}' is not a list"))
+            continue
+        for value in stored:
+            if not _is_reference(value):
+                problems.append(
+                    SchemaProblem(
+                        f"'triggers.{key}' has an entry that is neither a name nor a"
+                        f" reference: {value!r}"
+                    )
+                )
+
+
+def _validate_card_actions(stage: Stage, problems: list[SchemaProblem]) -> None:
+    card_actions = stage.get("card_actions")
+    if not isinstance(card_actions, list):
+        problems.append(SchemaProblem("'card_actions' is not a list", *_stage_id(stage)))
+        return
+    for card_action in card_actions:
+        if not isinstance(card_action, dict):
+            continue
+        # `edit_card` names no card type -- the stage already named the card -- so only a
+        # slot that is filled in is checked.
+        value = card_action.get("card_type", card_action.get("card_type_name"))
+        if value is not None and not _is_reference(value):
+            problems.append(
+                SchemaProblem(
+                    f"a card action's 'card_type' is neither a name nor a reference:"
+                    f" {value!r}",
+                    *_stage_id(stage),
+                )
+            )
+
+
 def validate_definition_structure(definition: Any) -> list[SchemaProblem]:
     """Every structural complaint about `definition`, in reading order.
 
@@ -750,6 +812,7 @@ def validate_definition_structure(definition: Any) -> list[SchemaProblem]:
     if not isinstance(stages, list):
         problems.append(SchemaProblem("'stages' is not a list"))
         return problems
+    _validate_triggers(definition, problems)
     relaxed_names = names_are_relaxed(definition)
     for stage in stages:
         validate_stage_structure(stage, problems, relaxed_names)

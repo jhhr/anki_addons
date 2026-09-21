@@ -26,6 +26,7 @@ from ..logging_setup import ADDON_MODULE, SHARED_LOGGER_NAME
 from .definition_migration import MigrationError
 from .definition_schema import CopyDefinitionV2
 from .execution.commit import PreviewCommitter
+from .object_refs import deck_display_name, note_type_display_name
 from .execution.context import ExecutionSession, TraceEvent
 
 #: How many notes the trigger-note browser offers at once. The list is there to pick one
@@ -138,6 +139,7 @@ def _preview_into(
     # Imported here rather than at module level: `copy_fields` is the operation boundary and
     # already imports the executor, so importing it from a module the executor's own package
     # can reach would close a cycle.
+    from ..configuration import definition_deck_refs
     from .copy_fields import (
         definitions_a_call_may_reach,
         make_definition_lookup,
@@ -154,7 +156,7 @@ def _preview_into(
 
     triggers = staged.get("triggers", {}) or {}
     if not note_passes_deck_whitelist(
-        deck_names=triggers.get("deck_names") or [],
+        deck_refs=definition_deck_refs(staged),
         include_subdecks=bool(triggers.get("include_subdecks", False)),
         trigger_note=trigger_note,
         deck_id=deck_id,
@@ -199,15 +201,30 @@ def trigger_note_query(definition: CopyDefinitionV2, extra: str = "") -> str:
     """An Anki search for the notes this definition would consider, plus the user's terms.
 
     The note types come from the definition's own trigger settings, so the browser starts by
-    offering notes the definition actually applies to rather than the whole collection.
+    offering notes the definition actually applies to rather than the whole collection. They
+    are searched for by their *live* names -- a reference resolved by id may have been
+    renamed since -- and a reference that resolves to nothing keeps the stored name, which
+    matches nothing and shows the user which name went stale.
     """
-    triggers = definition.get("triggers", {}) or {}
+    from ..configuration import definition_deck_refs, definition_note_type_refs
+
     parts = []
-    note_types = [name for name in (triggers.get("note_types") or []) if name]
+    note_types = [
+        name
+        for name in (
+            note_type_display_name(ref, mw.col)
+            for ref in definition_note_type_refs(definition)
+        )
+        if name
+    ]
     if note_types:
         joined = " OR ".join(f'note:"{name}"' for name in note_types)
         parts.append(f"({joined})")
-    decks = [name for name in (triggers.get("deck_names") or []) if name]
+    decks = [
+        name
+        for name in (deck_display_name(ref, mw.col) for ref in definition_deck_refs(definition))
+        if name
+    ]
     if decks:
         joined = " OR ".join(f'deck:"{name}"' for name in decks)
         parts.append(f"({joined})")

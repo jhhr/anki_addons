@@ -26,7 +26,7 @@ from ..configuration import (
     get_triggered_field_to_field_defs_for_field,
     definition_is_add_note_compatible,
     definition_modifies_other_notes,
-    definition_note_type_names,
+    definition_note_type_refs,
     definition_runs_on_add,
     definition_runs_on_review,
     definition_runs_on_sync,
@@ -38,8 +38,23 @@ from ..logic.copy_fields import (
     copy_fields,
     make_copy_fields_undo_text,
 )
+from ..logic.object_refs import resolve_note_type
 
 logger = logging.getLogger(__name__)
+
+
+def definition_triggers_on(copy_definition: CopyDefinition, note_type: dict) -> bool:
+    """Whether this definition's trigger note types include the note type of a note.
+
+    By id, so a note type the user has renamed since the definition was written still
+    matches: Anki fires no hook for that rename, and the name the definition stores is the
+    old one until the reconcile pass refreshes it. A reference that resolves to nothing
+    matches nothing, which is what a name that had gone stale did before.
+    """
+    return any(
+        (resolve_note_type(ref, mw.col) or {}).get("id") == note_type["id"]
+        for ref in definition_note_type_refs(copy_definition)
+    )
 
 
 def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
@@ -56,14 +71,13 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     if not note_type:
         # Error situation, note_type should exist when adding note
         return []
-    note_type_name = note_type["name"]
 
     copy_definitions: list[CopyDefinition] = []
 
     for copy_definition in config.copy_definitions:
         if not definition_runs_on_add(copy_definition):
             continue
-        if note_type_name not in definition_note_type_names(copy_definition):
+        if not definition_triggers_on(copy_definition, note_type):
             continue
 
         copy_definitions.append(copy_definition)
@@ -228,7 +242,6 @@ def run_copy_fields_on_review(card: Card):
         if not note_type:
             # Error situation, note_type should exist when reviewing card
             return
-        note_type_name = note_type["name"]
 
         copy_definitions_to_run: list[CopyDefinition] = []
         has_definitions_to_process_on_sync = False
@@ -248,7 +261,7 @@ def run_copy_fields_on_review(card: Card):
                     stored_note_types,
                 )
                 continue
-            if note_type_name not in definition_note_type_names(copy_definition):
+            if not definition_triggers_on(copy_definition, note_type):
                 continue
 
             copy_definitions_to_run.append(copy_definition)
@@ -383,7 +396,6 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         if not note_type:
             # Error situation, note_type should exist when unfocusing field
             return changed
-        note_type_name = note_type["name"]
         field_name = note.keys()[field_idx]
         # Make a copy because values() returns a reference
         initial_field_values = note.values().copy()
@@ -394,7 +406,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in config.copy_definitions:
-            if note_type_name not in definition_note_type_names(copy_definition):
+            if not definition_triggers_on(copy_definition, note_type):
                 continue
 
             modifies_other_notes = definition_modifies_other_notes(copy_definition)
