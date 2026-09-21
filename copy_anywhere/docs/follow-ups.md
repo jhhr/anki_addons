@@ -232,3 +232,105 @@ source notes" format 2 was designed to remove, and needs an answer for nested lo
 would come back as a bug); and making the process name a binding to interpolate across
 (honest, and it would work in natively authored definitions too, but it is a schema change
 plus new UI in `edit_extra_processing_dialog.py` -- the largest of the four).
+
+## Following a rename in Anki
+
+**The problem.** A definition stores every name it uses as text: the note types it triggers
+on, the decks it is limited to, the fields it writes, the fields its expressions read, the
+card types its card actions name, and whatever names the user typed into a search. Anki lets
+all of those be renamed, and nothing tells the addon. Since the format-1 syntax was retired
+a reference to a renamed field at least fails loudly -- the stage errors and the editor
+refuses the save -- but that is only one of the six, and the other five change what the
+definition does without saying anything at all.
+
+**What was found**, against Anki 25.9.4.
+
+*The hooks.* `anki/hooks_gen.py` has no rename hook of any kind: `deck_added` (161),
+`note_type_added` (393), `notes_will_be_deleted` (518) and `schema_will_change` (546) are
+the collection-level ones, and the first two are marked "Obsolete, do not use". On the GUI
+side there is exactly one: `fields_did_rename_field(dialog, field, old_name)`
+(`_aqt/hooks.py:3255`), fired from `aqt/fields.py:167` with the note type on
+`dialog.model` -- old name and new name both in hand. Its two neighbours
+`fields_did_add_field` (3174) and `fields_did_delete_field` (3211) cover the other two
+things the Fields dialog does. Nothing else has one. A note type rename is
+`nt["name"] = text` followed by `update_notetype_legacy` (`aqt/models.py:127-135`); a card
+type rename is `template["name"] = name` followed by a redraw (`aqt/clayout.py:656-665`),
+saved later by the dialog's `accept()`; a deck rename is
+`col.decks.rename(deck_id, new_name)` (`aqt/operations/deck.py:45-53`), which takes the id
+and the new name and never sees the old one. All three surface only as
+`operation_did_execute(changes, initiator)` (`aqt/operations/__init__.py:159`), and
+`OpChanges` carries booleans -- `notetype`, `deck` -- not names or ids. A rename made on
+another device arrives with no hook at all beyond `sync_did_finish()`
+(`aqt/main.py:1107`), which takes no arguments, followed by `mw.reset()` and its
+everything-changed `operation_did_execute` (`aqt/main.py:842-850, 893-904`).
+
+*The silent five.* A renamed note type leaves `triggers.note_types` naming nothing, and the
+hooks compare it against the note's live name (`hooks/note_hooks.py:66, 251, 397`), so the
+definition simply stops running; only the bulk path says anything, and only in the log
+(`logic/copy_fields.py:495-500`). A renamed deck leaves `triggers.deck_names` matching no
+deck id, so `note_passes_deck_whitelist` skips every note benignly
+(`logic/copy_fields.py:582-600`). A renamed card type leaves a card action's
+`NoteType<::>CardType` matching no template, and
+`card_actions_by_template_name` drops it without a word (`logic/copy_primitives.py:459-481`).
+A renamed field leaves `selection.sort_field` sorting every note equal
+(`logic/copy_primitives.py:367-380`) and an unfocus trigger field never firing
+(`configuration.py:589-601`). And every name inside a search -- `deck:"..."`, `note:"..."`,
+`card:"..."`, `Field:value` -- matches nothing rather than erroring: Anki's search returns
+zero results for all four, so the stage takes its `if_empty` path, which defaults to
+`continue`.
+
+*What is already there.* The analyser takes `known_fields` and refuses a reference to a
+field the trigger's note types do not have (`logic/flow_analysis.py:346-365`), and the
+editor fills it from the live note types (`ui/stage_editor_context.py:232-244`) -- so the
+editor already reports one of the six, for the trigger binding only. `migrate_config` is the
+pattern for a one-off pass over the stored definitions (`configuration.py:476-501`),
+`Config._save_definitions` is the one way in for a rewrite (`configuration.py:732-750`), and
+`operation_logging` opens a file for a message that has nowhere else to go
+(`logging_setup.py:261-272`). None of them knows anything about note type, deck or card type
+names: the analyser never reads them.
+
+**The options.**
+
+*(a) Report only.* On `collection_did_load`, walk the stored definitions against the live
+collection and list every stale name in an operation log, and mark the stale ones in the
+definition picker. Needs a new check for the five kinds the analyser does not cover, because
+`analyze_definition` only ever looks at field references. Roughly one job. Fails only by
+being noisy -- a definition kept deliberately for a note type the user has not made yet
+reports forever.
+
+*(b) Follow what the hooks make safe.* Register `fields_did_rename_field` and rewrite the
+stored definitions: field writes, unfocus trigger lists, `sort_field`, and `{{trigger.X}}`
+references whose binding is the trigger and whose note type is the renamed one. About one
+job, but only for fields, and it carries two failure modes the report-only tier does not.
+The hook fires while the Fields dialog is still open, before `accept()` -- the user can
+still press Cancel and discard the rename (`aqt/fields.py:287-296`), leaving the definitions
+rewritten to a name that does not exist. And a rewrite inside a search query or inside code
+is a text substitution over free text: `Word:src` and `note['Word']` are the names a rewrite
+would have to find, and `{{trigger.Word}}` is not the only spelling of them.
+
+*(c) Snapshot comparison.* Keep the note type ids, template ids and deck ids the stored
+definitions name, with the names they had, and on `collection_did_load` -- and after
+`operation_did_execute` with `notetype` or `deck` set -- compare against the live ones. An id
+whose name changed is a rename with both names in hand, which is exactly what the hooks do
+not give; it is also the only thing that sees a rename made on another device. Two jobs:
+the snapshot has to be stored, kept in step with the definitions, and reconciled with a
+deletion, a re-creation under the old name, and a swap of two names.
+
+**The recommendation is (a), on its own, first.** It is the only tier that covers all six
+kinds of name, it is the only one that needs nothing from a hook Anki does not have, and it
+is the one that can be built without deciding anything the other two would have to decide.
+Every rewrite tier needs to know which names are safe to rewrite mechanically -- a note type
+name in `triggers.note_types` is a whole structured value and is; a note type name inside
+`note:"..."` in a query the user typed is not -- and the report is what tells us, from a real
+config, how often each kind actually goes stale. It also makes the recovery concrete: the
+report names the definition and the stale name, and the editor is already where a name is
+fixed. Tier (c) is the one to build second if the report says renames are common, because it
+subsumes (b) and is the only one that survives a sync; (b) is worth building only for the
+fields it can do safely, and only if the report shows field renames dominating.
+
+One defect is pinned rather than only described:
+`test/test_renamed_in_anki.py` is an xfail saying that a card action whose card type was
+renamed should say so. It is the sharpest of the five, because a card action is pure loss --
+the field writes in the same definition still land, so the run reports success.
+
+**decision: pending**
