@@ -2,6 +2,7 @@ import html
 import json
 import asyncio
 import logging
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,7 @@ from .api_client import (
     GEMINI,
     OPENAI,
     TOGETHER,
+    PauseState,
     begin_run,
     cancel_run,
     close_all_sessions,
@@ -49,6 +51,7 @@ from .diagnostics import (
     seconds_since_cancel,
     start_cancel_watchdog,
 )
+from .progress_controls import disable_run_controls, install_run_controls, refresh_run_controls
 
 from ..call_logging import bulk_op_logging, phase_log
 from ..utils import get_field_config, print_error_traceback
@@ -1043,6 +1046,34 @@ async def wait_for_completions(
     return finished
 
 
+def format_pause_line(
+    pause: PauseState, tasks_in_progress: int = 0, now: Optional[float] = None
+) -> str:
+    """The dialog's line saying the run is paused, why, and until when.
+
+    The tasks counted are the ones holding a gate slot. During a manual pause they are
+    finishing their requests; during a usage-limit pause most of them are waiting to retry the
+    request that hit the limit, so the wording has to be true of both.
+    """
+    line = f"<b>Paused</b>: {html.escape(pause.reason)}"
+    if pause.automatic and pause.resume_at is not None:
+        if now is None:
+            now = time.time()
+        minutes = max(0, math.ceil((pause.resume_at - now) / 60))
+        resume_clock = time.strftime("%H:%M", time.localtime(pause.resume_at))
+        line += f", resuming at {resume_clock} (in {minutes} min)"
+    if tasks_in_progress > 0:
+        tasks = "1 task" if tasks_in_progress == 1 else f"{tasks_in_progress} tasks"
+        line += f", {tasks} finishing or waiting to retry"
+    return line
+
+
+def show_dialog_label(label: str, value: int, maximum: int) -> None:
+    """Redraw the progress dialog and its run controls. Main thread only."""
+    mw.progress.update(label=label, value=value, max=maximum)
+    refresh_run_controls()
+
+
 class AsyncTaskProgressUpdater:
     """A class to update the progress dialog in async ops."""
 
@@ -1058,6 +1089,12 @@ class AsyncTaskProgressUpdater:
         self.cumulative_task_time = 0.0
         self.max_task_time = 0.0
         self.start_time = time.time()
+        # How much of the time since start_time the run spent paused, left out of the ETA: the
+        # tasks still to do will not spend it again. Counted by the periodic tick, so it is
+        # accurate to about a second at each end of a pause.
+        self.paused_seconds = 0.0
+        # When the periodic tick last ran (time.monotonic()); None until its first tick
+        self._last_tick: Optional[float] = None
         # Counters are incremented from both the event loop and executor threads
         self._counts_lock = threading.Lock()
         # Set by the bulk ops so the dialog can show what the concurrency gate is doing
@@ -1092,9 +1129,25 @@ class AsyncTaskProgressUpdater:
         self._autoupdate_deferred = False
 
     async def _periodic_update_progress(self):
+        # Each bulk op starts and stops its own ticker; the gap between two of them (the next
+        # phase's planning, or a pause between phases) is not this ticker's to count
+        self._last_tick = None
         while True:
-            self.update_progress()
+            self._tick(time.monotonic())
             await asyncio.sleep(1)
+
+    def _tick(self, now: float) -> None:
+        """One beat of the periodic redraw, at `now` (time.monotonic()).
+
+        The time since the last beat counts as paused if the run is paused at this one. The
+        ticker runs on the op thread's event loop, which is enrolled in the run, so run_paused
+        answers for it - and is also the poll that ends an automatic pause whose time has come.
+        """
+        last, self._last_tick = self._last_tick, now
+        if last is not None and run_paused():
+            with self._counts_lock:
+                self.paused_seconds += now - last
+        self.update_progress()
 
     def stop_autoupdate(self):
         """Stop the periodic progress update task."""
@@ -1134,6 +1187,9 @@ class AsyncTaskProgressUpdater:
             self.cumulative_task_time = 0.0
             self.max_task_time = 0.0
             self.start_time = time.time()
+            # Paused time is time since start_time, so it starts over with it
+            self.paused_seconds = 0.0
+            self._last_tick = None
         phase_title = f"{self.title} (Phase {index}/{total}"
         phase_title += f": {name})" if name else ")"
         self._show_title(phase_title)
@@ -1163,7 +1219,9 @@ class AsyncTaskProgressUpdater:
 
         def run_update():
             try:
-                mw.progress.update(label=label, value=value, max=maximum)
+                # The buttons are refreshed with the label, so they follow a pause or resume
+                # made anywhere - an automatic one included - within one redraw
+                show_dialog_label(label, value, maximum)
             finally:
                 with self._ui_lock:
                     self._update_pending = False
@@ -1183,6 +1241,34 @@ class AsyncTaskProgressUpdater:
         )
         with self._ui_lock:
             self._suppressed = True
+        # Pause or Resume on a run being cancelled would do nothing, and a Resume would look
+        # like it undid the cancel. Also covers a cancel the run's own work made, which does
+        # not set the dialog's flag the buttons otherwise watch.
+        mw.taskman.run_on_main(disable_run_controls)
+
+    def show_paused(self, detail: str = "") -> None:
+        """Draw the pause into the dialog now, for a wait that nothing else redraws.
+
+        Between two phases the phase before has stopped its ticker, so without this the
+        dialog would keep that phase's last figures and the buttons would never change. Draws
+        nothing when the run is not paused or is being cancelled.
+        """
+        # Ends an automatic pause that is already over, rather than showing it
+        run_paused()
+        pause = pause_state()
+        if pause is None:
+            return
+        label = format_pause_line(pause)
+        if detail:
+            label += f"<br>{html.escape(detail)}"
+        with self._ui_lock:
+            if self._suppressed:
+                return
+            # A redraw still queued from the phase before would otherwise swallow this one,
+            # and nothing else draws until the resume. Both run, in order.
+            self._update_pending = False
+        # A full bar rather than a busy one: the phase before is done and nothing is running
+        self._push(label, value=1, maximum=1, force=True)
 
     def increment_counts(
         self,
@@ -1221,13 +1307,27 @@ class AsyncTaskProgressUpdater:
                 f' <small style="opacity: 0.85"> | Avg tasks per note: {tasks_per_note}</small>'
             )
 
+        # Ends an automatic pause whose time has come before showing it, as a waiter would
+        run_paused()
+        pause = pause_state()
+        if pause is not None:
+            pause_msg = format_pause_line(pause, self.tasks_in_progress)
+            task_progress_msg = f"{pause_msg}<br>{task_progress_msg}"
+
+        # "Time" is the wall clock since the phase began, pauses included, so it matches what
+        # the user has been waiting; the estimate works from the time spent working
         elapsed_s = time.time() - self.start_time
+        working_s = max(0.0, elapsed_s - self.paused_seconds)
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
-        # estimate time remaining from tasks_done and elapsed_time
         time_msg = f"<br><code>Time: {elapsed_time}</code>"
+        if self.paused_seconds >= 1:
+            paused_time = time.strftime("%H:%M:%S", time.gmtime(self.paused_seconds))
+            time_msg += f" <small>(paused {paused_time})</small>"
         if self.tasks_done > 3:
-            eta_s = (self.total_tasks - self.tasks_done) * (elapsed_s / self.tasks_done)
+            eta_s = (self.total_tasks - self.tasks_done) * (working_s / self.tasks_done)
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
+            # Each task's own running time, from its gate slot to its return, so a pause that
+            # held tasks at the gate is not in it; one a task spent waiting to retry is
             avg_per_op_s = self.cumulative_task_time / self.tasks_done
             time_msg += f""" | <small> Avg time per task: {avg_per_op_s:.2f}s
             | Max: {self.max_task_time:.2f}s</small>
@@ -1776,14 +1876,11 @@ def sync_bulk_notes_op(
         # note holds nothing up
         if run_paused():
             pause = pause_state()
-            reason = html.escape(pause.reason) if pause else ""
+            pause_msg = format_pause_line(pause) if pause else "<b>Paused</b>"
             # Nothing else redraws the dialog while this thread waits, so say why it stopped
             mw.taskman.run_on_main(
                 partial(
-                    mw.progress.update,
-                    label=f"<b>{message}</b><br><b>Paused</b>: {reason}",
-                    value=note_cnt,
-                    max=total_notes,
+                    show_dialog_label, f"<b>{message}</b><br>{pause_msg}", note_cnt, total_notes
                 )
             )
             paused_at = time.time()
@@ -1809,10 +1906,11 @@ def sync_bulk_notes_op(
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
             time_msg += f"""<br><code>ETA: {eta_time}</code>"""
         mw.taskman.run_on_main(
-            lambda: mw.progress.update(
-                label=f"<b>{message}</b><br>{note_cnt}/{total_notes} notes processed{time_msg}",
-                value=note_cnt,
-                max=total_notes,
+            partial(
+                show_dialog_label,
+                f"<b>{message}</b><br>{note_cnt}/{total_notes} notes processed{time_msg}",
+                note_cnt,
+                total_notes,
             )
         )
         if mw.progress.want_cancel():
@@ -2052,6 +2150,11 @@ async def run_op_phases(
         # clock and run its planning pass, so the pause would count against the phase's ETA.
         # Blocking the loop is fine between phases: the phase before has finished, and the
         # progress ticker and cancel monitor it ran on the loop have stopped with it.
+        if index > 0 and run_paused():
+            # Nothing else redraws the dialog during this wait, the ticker included
+            next_phase = f"Phase {index + 1}/{total}"
+            next_phase += f" ({phase.name})" if phase.name else ""
+            progress_updater.show_paused(f"{next_phase} starts when the run resumes")
         if index > 0 and not wait_while_paused(DialogCancelState()):
             logger.debug("Multi-phase op cancelled while paused before phase %d", index + 1)
             break
@@ -2514,22 +2617,23 @@ def selected_notes_op(
             # ones that must keep seeing the cancellation.
             end_run()
 
-    return (
-        CollectionOp(
-            parent=parent,
-            op=run_bulk_op,
+    CollectionOp(
+        parent=parent,
+        op=run_bulk_op,
+    ).success(
+        lambda out: on_bulk_success(
+            out,
+            done_text,
+            edited_nids,
+            edited_other_nids,
+            nids,
+            parent,
+            # notes_to_add_dict,
+            on_success,
         )
-        .success(
-            lambda out: on_bulk_success(
-                out,
-                done_text,
-                edited_nids,
-                edited_other_nids,
-                nids,
-                parent,
-                # notes_to_add_dict,
-                on_success,
-            )
-        )
-        .run_in_background()
-    )
+    ).run_in_background()
+    # run_in_background opens the progress dialog before it returns (taskman.with_progress
+    # calls progress.start on this, the main thread), so the buttons can go in now, before
+    # the dialog is first shown. The op thread's redraws cannot overtake this: they are run
+    # on this thread, after this function returns.
+    install_run_controls()

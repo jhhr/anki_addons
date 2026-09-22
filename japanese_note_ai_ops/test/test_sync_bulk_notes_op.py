@@ -75,6 +75,23 @@ class SyncBulkNotesOpPauseTest(unittest.TestCase):
         paused_labels = [label for label in self.labels if "Paused" in label]
         self.assertEqual(paused_labels, ["<b>Doing the thing</b><br><b>Paused</b>: paused by user"])
 
+    def test_every_label_refreshes_the_run_controls(self):
+        """The sync op draws its own labels, so it has to bring the buttons along itself."""
+        refreshed: list = []
+        saved = base_ops.refresh_run_controls
+        setattr(base_ops, "refresh_run_controls", lambda: refreshed.append(len(self.labels)))
+        self.addCleanup(setattr, base_ops, "refresh_run_controls", saved)
+
+        def on_sleep(sleeps):
+            api.resume_run()
+
+        self.install_clock(on_sleep)
+        self.run_op()
+
+        # The paused label and one per note, each followed by a refresh
+        self.assertEqual(len(self.labels), 4)
+        self.assertEqual(refreshed, [1, 2, 3, 4])
+
     def test_escape_while_paused_ends_the_op(self):
         """The dialog's cancel does not cancel the run, so the wait has to watch it too."""
 

@@ -47,9 +47,13 @@ class FakeUpdater:
 
     def __init__(self):
         self.phases: list[tuple[int, int, str]] = []
+        self.paused: list[str] = []
 
     def begin_phase(self, index: int, total: int, name: str = "") -> None:
         self.phases.append((index, total, name))
+
+    def show_paused(self, detail: str = "") -> None:
+        self.paused.append(detail)
 
 
 class RunOpPhasesTest(unittest.TestCase):
@@ -208,6 +212,15 @@ class RunOpPhasesTest(unittest.TestCase):
         self.assertEqual(seen_while_paused, [["one"]] * 3)
         self.assertEqual(len(clock.slept), 3)
         self.assertEqual(self.notes[0].fields, ["b"])
+        # Drawn once, before the wait: nothing else redraws the dialog between phases
+        self.assertEqual(self.updater.paused, ["Phase 2/2 (two) starts when the run resumes"])
+
+    def test_an_unpaused_run_draws_no_pause_between_phases(self):
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        self.run_phases([self.writing_phase("one", "a"), self.writing_phase("two", "b")])
+
+        self.assertEqual(self.updater.paused, [])
 
     def test_a_cancel_while_paused_between_phases_stops_the_next_one_starting(self):
         """Both kinds of cancel: the dialog's (Escape) and the run's own."""
