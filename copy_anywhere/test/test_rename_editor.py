@@ -391,7 +391,9 @@ class TestThePickerMarksADefinition:
 
         row, result = run(definition)
 
-        assert [stale.name for stale in result.unresolved] == ["Other"]
+        # Gone rather than unresolved: the first pass snapshotted the deck, so the second
+        # knows it was deleted. The marker covers both lists.
+        assert [stale.name for stale in result.gone] == ["Other"]
         assert row.stale_marker.text() != ""
         assert "Other" in row.stale_marker.toolTip()
 

@@ -150,11 +150,71 @@ class TestRefreshingACachedName:
         definition = d.staged(definition_name="whitelisted", deck_names=["Other"])
         store(config, definition)
         reconcile(config, mw.col)
+        deck_id = col.decks.id_for_name("Other")
 
-        col.decks.remove([col.decks.id_for_name("Other")])
+        col.decks.remove([deck_id])
         result = reconcile(config, mw.col)
 
-        assert "Other" in names(result.gone) + names(result.unresolved)
+        # Gone, not unresolved: the snapshot watched this deck being bound, so the pass
+        # knows the user deleted it rather than that the name never answered to anything.
+        assert names(result.gone) == ["Other"]
+        assert names(result.unresolved) == []
+        assert definition["triggers"]["deck_names"] == [{"id": deck_id, "name": "Other"}]
+
+
+class TestAnObjectTheSnapshotKnewAndTheCollectionNoLongerHas:
+    """`gone` is what the snapshot remembers; `unresolved` is what nothing ever bound.
+
+    The two lists answer different questions for the user. A name in `unresolved` is one
+    this collection has never had -- a definition written for a note type not made yet, a
+    typo, a definition copied from another profile -- and the fix is to make the object or
+    correct the name. A name in `gone` is one the pass watched being bound and then
+    watched disappear, so it is the user's own deletion, and the last name it had is the
+    one the report can name it by. The deck half is
+    `TestRefreshingACachedName.test_a_deleted_deck_is_reported_rather_than_rebound`.
+    """
+
+    def test_a_deleted_note_type_is_reported_gone_rather_than_unresolved(self, col, config):
+        definition = d.staged(definition_name="on kanji", note_types=[KANJI])
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        col.models.remove(col.models.by_name(KANJI)["id"])
+        result = reconcile(config, mw.col)
+
+        assert names(result.gone) == [KANJI]
+        assert names(result.unresolved) == []
+        assert result.gone[0].definition_name == "on kanji"
+
+    def test_a_name_the_snapshot_never_knew_is_still_unresolved(self, col, config):
+        definition = d.staged(definition_name="orphan", note_types=["CA Gone"])
+        store(config, definition)
+
+        result = reconcile(config, mw.col)
+
+        assert names(result.unresolved) == ["CA Gone"]
+        assert names(result.gone) == []
+
+    def test_a_note_type_deleted_and_remade_under_its_name_is_rebound_quietly(
+        self, col, config
+    ):
+        definition = d.staged(note_types=[KANJI])
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        # Made before the old one is removed, so the two cannot share an id: Anki keys a
+        # note type by the millisecond it was made, and a suite is quick enough to make
+        # the replacement inside the same one.
+        replacement = real_anki.make_note_type(col, "CA Kanji 2", ["Kanji"], None)
+        col.models.remove(col.models.by_name(KANJI)["id"])
+        replacement["name"] = KANJI
+        col.models.update_dict(replacement)
+        result = reconcile(config, mw.col)
+
+        assert definition["triggers"]["note_types"] == [
+            {"id": col.models.by_name(KANJI)["id"], "name": KANJI}
+        ]
+        assert names(result.gone) == [] and names(result.unresolved) == []
 
 
 # Following a renamed field ---------------------------------------------------------------

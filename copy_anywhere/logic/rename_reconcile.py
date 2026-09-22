@@ -95,10 +95,12 @@ class ReconcileResult:
     bound: list[str] = dataclass_field(default_factory=list)
     refreshed: list[str] = dataclass_field(default_factory=list)
     rewritten: list[str] = dataclass_field(default_factory=list)
-    #: A reference whose id and name both resolve to nothing: the definition names an object
-    #: that is not in this collection, so it does nothing rather than the wrong thing.
+    #: A reference whose id and name both resolve to nothing and that the snapshot never
+    #: knew: the definition names an object this collection has never had, so it does
+    #: nothing rather than the wrong thing.
     unresolved: list[StaleName] = dataclass_field(default_factory=list)
-    #: A snapshotted id that is no longer in the collection. Reported, never rewritten.
+    #: A snapshotted id that is no longer in the collection -- the user deleted the object,
+    #: and the name is the last one it had. Reported, never rewritten.
     gone: list[StaleName] = dataclass_field(default_factory=list)
     #: A field or template of a trigger note type that carries no id, so a rename of it
     #: cannot be seen at all (note types saved before Anki 23.10 keep null ids).
@@ -211,11 +213,35 @@ def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> 
                     result.stale_terms.append(stale)
 
 
-# Step 1: bind and refresh -------------------------------------------------------------------
+# Step 1: what the collection no longer has -------------------------------------------------
+
+
+def _deleted_objects(snapshot: dict, col: Any) -> dict[tuple, str]:
+    """The snapshotted note type and deck ids the collection no longer has, by last name.
+
+    Asked before anything re-binds, because a re-bind is what destroys the answer: a
+    reference whose id is gone falls back to its name, and once it carries another id
+    nothing is left to say whether the user deleted the object it named or whether this
+    collection never had it. That is the difference between `gone` and `unresolved`, and
+    the snapshot is the only thing that knows it.
+    """
+    deleted: dict[tuple, str] = {}
+    for key, entry in (snapshot.get("note_types") or {}).items():
+        note_type_id = _as_int(key)
+        if note_type_id is not None and col.models.get(note_type_id) is None:
+            deleted[(KIND_NOTE_TYPE, note_type_id)] = entry.get("name", "")
+    for key, name in (snapshot.get("decks") or {}).items():
+        deck_id = _as_int(key)
+        if deck_id is not None and col.decks.name_if_exists(deck_id) is None:
+            deleted[(KIND_DECK, deck_id)] = name
+    return deleted
+
+
+# Step 2: bind and refresh ------------------------------------------------------------------
 
 
 def _bind(
-    definition: dict, col: Any, result: ReconcileResult, referenced: dict
+    definition: dict, col: Any, result: ReconcileResult, referenced: dict, deleted: dict
 ) -> bool:
     """Give every reference the id and the name the collection has for it now."""
     changed = False
@@ -241,7 +267,15 @@ def _bind(
                     name = None if deck_id is None else col.decks.name_if_exists(deck_id)
                     live = None if name is None else (deck_id, name)
                 if live is None:
-                    result.unresolved.append(_stale(definition, kind, reference["name"]))
+                    last_name = deleted.get((kind, reference["id"]))
+                    if last_name is None:
+                        result.unresolved.append(
+                            _stale(definition, kind, reference["name"])
+                        )
+                    else:
+                        # The pass saw this id bound and now sees it gone, so this is the
+                        # user's own deletion rather than a name nothing ever answered to.
+                        result.gone.append(_stale(definition, kind, last_name))
                     continue
                 _remember(referenced, (kind, live[0]), definition)
                 if kind == KIND_NOTE_TYPE:
@@ -300,7 +334,7 @@ def _refresh(
     return True
 
 
-# Step 2: diff the snapshot ---------------------------------------------------------------
+# Step 3: diff the snapshot ---------------------------------------------------------------
 
 
 @dataclass
@@ -343,8 +377,10 @@ def _diff(
     """Compare the snapshotted names against the live ones, by id.
 
     A changed name under an id that is still there is a rename, and the only place both
-    names exist. An id that is gone is reported: a deleted field is not a renamed one, and
-    guessing which live field replaced it is how a rewrite writes to the wrong field.
+    names exist. A field or template id that is gone is reported: a deleted field is not a
+    renamed one, and guessing which live field replaced it is how a rewrite writes to the
+    wrong field. The note types and decks that are gone were reported before the bind
+    (`_deleted_objects`); what is left here is what they contain.
     """
     renames: dict[int, _Renames] = {}
     for key, entry in (snapshot.get("note_types") or {}).items():
@@ -355,10 +391,9 @@ def _diff(
             continue
         model = col.models.get(note_type_id)
         if model is None:
-            for definition in definitions:
-                result.gone.append(
-                    _stale(definition, KIND_NOTE_TYPE, entry.get("name", ""))
-                )
+            # `referenced` holds only ids that bound live a moment ago, and a snapshotted
+            # id the collection no longer has was reported gone before that bind, so there
+            # is nothing to say here and nothing under it left to compare.
             continue
         # A field or a template only reaches a definition's own slots through the trigger
         # binding, so a definition that names this note type in a card action alone is not
@@ -390,14 +425,6 @@ def _diff(
         if renamed:
             renames[note_type_id] = renamed
 
-    for key, old_name in (snapshot.get("decks") or {}).items():
-        deck_id = _as_int(key)
-        definitions = referenced.get((KIND_DECK, deck_id)) or []
-        if deck_id is None or not definitions:
-            continue
-        if col.decks.name_if_exists(deck_id) is None:
-            for definition in definitions:
-                result.gone.append(_stale(definition, KIND_DECK, old_name))
     return renames
 
 
@@ -424,7 +451,7 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-# Step 3: rewrite --------------------------------------------------------------------------
+# Step 4: rewrite --------------------------------------------------------------------------
 
 
 def _rewrite_reference(reference: str, renamed: _Renames) -> str:
@@ -636,8 +663,10 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
     ]
     changed = False
     referenced: dict = {}
+    snapshot = config.data.get(SNAPSHOT_KEY) or {}
+    deleted = _deleted_objects(snapshot, col)
     for definition in definitions:
-        changed |= _bind(definition, col, result, referenced)
+        changed |= _bind(definition, col, result, referenced, deleted)
 
     for (kind, object_id), holders in referenced.items():
         model = col.models.get(object_id) if kind == _TRIGGER_NOTE_TYPE else None
@@ -647,17 +676,17 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
     for definition in definitions:
         _report_stale_terms(definition, col, result)
 
-    renames = _diff(config.data.get(SNAPSHOT_KEY) or {}, col, referenced, result)
+    renames = _diff(snapshot, col, referenced, result)
     for note_type_id, renamed in renames.items():
         for definition in referenced.get((_TRIGGER_NOTE_TYPE, note_type_id)) or []:
             changed |= _rewrite(definition, renamed, result)
 
-    snapshot = build_name_snapshot(definitions, col)
-    if snapshot != (config.data.get(SNAPSHOT_KEY) or _empty_snapshot()):
+    refreshed_snapshot = build_name_snapshot(definitions, col)
+    if refreshed_snapshot != (snapshot or _empty_snapshot()):
         # The snapshot going out of date is itself a change worth a write: it is what the
         # next pass compares against, so a first run on a config that has none has to store
         # one or no rename after it could ever be seen.
-        config.data[SNAPSHOT_KEY] = snapshot
+        config.data[SNAPSHOT_KEY] = refreshed_snapshot
         changed = True
 
     result.changed = changed
