@@ -339,6 +339,8 @@ class RequestTests(ClockTestCase):
         cmd, kwargs = popen.calls[0]
         self.assertEqual(cmd[0], "C:/bin/claude.exe")
         self.assertEqual(kwargs["env"]["MAX_THINKING_TOKENS"], "0")
+        self.assertEqual(kwargs["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+        self.assertEqual(kwargs["cwd"], str(tc.WORK_DIR))
         self.assertEqual(popen.processes[0].inputs[0], "prompt 日本語".encode("utf-8"))
 
     def test_text_answer_uses_corrector(self):

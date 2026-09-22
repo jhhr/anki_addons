@@ -57,10 +57,18 @@ DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_TIMEOUT = 180
 # Windows caps a whole command line at 32767 characters; longer instructions go in a file
 MAX_INLINE_INSTRUCTIONS = 8000
-# The process runs here, so it never picks up a project's CLAUDE.md or settings from Anki's cwd
-WORK_DIR = Path(__file__).resolve().parent.parent / "user_files" / "terminal_cwd"
-# The API path sends no thinking; with it on Haiku takes twice as long per call
-CLI_ENV = {"MAX_THINKING_TOKENS": "0"}
+# The process runs here, so it never picks up a project's CLAUDE.md or settings from Anki's cwd.
+# Not under the addon's user_files: an addon linked in from a git checkout resolves into that
+# repo, and the CLI then runs git over the whole repo at every start, a fifth of its CPU.
+WORK_DIR = Path(tempfile.gettempdir()) / "anki_claude_terminal_cwd"
+CLI_ENV = {
+    # The API path sends no thinking; with it on Haiku takes twice as long per call
+    "MAX_THINKING_TOKENS": "0",
+    # Telemetry, update checks and error reports each cost startup CPU in every process;
+    # together they were about a quarter of a request's CPU
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+}
 RETRY_STATUSES = frozenset({429, 529})
 # Wording of the subscription usage limit, which no retry clears before its reset time, so the
 # run pauses until then. Not seen in a real response yet, only in the CLI's strings: "You've
