@@ -113,6 +113,24 @@ def _is_skipped(text: str) -> bool:
     return False
 
 
+def _split_at_colon(text: str) -> Optional[tuple[str, str]]:
+    """The term's key and value, or None when the term holds no key/value colon.
+
+    Only an *unescaped* colon separates a key from a value: `foo\\:bar` is a plain-text
+    search in Anki, not a search of a field called `foo`, and splitting it would report a
+    working query as naming a field the collection does not have.
+    """
+    escaped = False
+    for index, character in enumerate(text):
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == ":":
+            return text[:index], text[index + 1 :]
+    return None
+
+
 def _unescape(text: str) -> str:
     result: list[str] = []
     escaped = False
@@ -190,10 +208,11 @@ def stale_search_terms(query_text: Any, col: Any) -> list[StaleTerm]:
     found: list[StaleTerm] = []
     for raw in _split_terms(query_text):
         text = raw.lstrip("-")
-        if ":" not in text or _is_skipped(text):
+        split = _split_at_colon(text)
+        if split is None or _is_skipped(text):
             continue
-        key = _unescape(text.partition(":")[0])
-        value = _unescape(text.partition(":")[2])
+        key = _unescape(split[0])
+        value = _unescape(split[1])
         # `re:...` is a regex over the whole note and `Word:re:neko` one over a field;
         # neither is a name. An empty value is `deck:` with nothing after it.
         if not value or key.lower() == "re" or value.lower().startswith("re:"):

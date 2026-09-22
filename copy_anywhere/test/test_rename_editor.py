@@ -317,6 +317,14 @@ class TestStaleSearchTerms:
     def test_a_bare_word_is_not_a_term(self, col):
         assert self.stale(col, "neko or inu") == []
 
+    def test_an_escaped_colon_is_not_a_field_search(self, col):
+        # `foo\:bar` is a plain-text search in Anki: nothing before the escaped colon is a
+        # key, so there is no field called `foo` to be missing.
+        assert self.stale(col, r"foo\:bar") == []
+
+    def test_a_field_search_splits_at_the_first_unescaped_colon(self, col):
+        assert self.stale(col, r"Word:a\:b") == []
+        assert self.stale(col, r"Nope:a\:b") == [("field", "Nope")]
 
 class TestTheQueryEditorsWarning:
     def query_editor(self, col, widget_parent, query):
