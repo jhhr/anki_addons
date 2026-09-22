@@ -426,6 +426,45 @@ class TestThePickerMarksADefinition:
         assert [stale.name for stale in result.gone] == ["Note"]
         assert "Note" in row.stale_marker.toolTip()
 
+    def test_a_definition_fixed_since_the_last_pass_is_not_marked(
+        self, col, picker, widget_parent
+    ):
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        _config, run = picker
+        definition = d.staged("Marked", note_types=[d.object_ref("Nonsuch", GONE_ID)])
+        _row, result = run(definition)
+        assert [stale.name for stale in result.unresolved] == ["Nonsuch"]
+        # What the editor's save writes: a note type this collection does have. No pass
+        # runs over a config write, so the last result still names this definition.
+        model = col.models.by_name(VOCAB)
+        definition["triggers"]["note_types"] = [d.object_ref(VOCAB, model["id"])]
+
+        row = DefinitionRow(widget_parent, definition, 0)
+
+        assert row.stale_marker.text() == ""
+
+    def test_a_definition_that_went_stale_since_the_last_pass_is_marked(
+        self, col, picker, widget_parent
+    ):
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        _config, run = picker
+        deck_id = col.decks.id_for_name("Other")
+        definition = d.staged(
+            "Marked", note_types=[VOCAB], deck_names=[d.object_ref("Other", deck_id)]
+        )
+        _row, result = run(definition)
+        assert result.unresolved == [] and result.gone == []
+        # The deck goes away with no pass behind it -- a deck operation is one of the two
+        # things that would run one, but an import or a sync is not.
+        col.decks.remove([deck_id])
+
+        row = DefinitionRow(widget_parent, definition, 0)
+
+        assert row.stale_marker.text() != ""
+        assert "Other" in row.stale_marker.toolTip()
+
     def test_a_definition_the_pass_was_happy_with_is_not_marked(self, col, picker):
         _config, run = picker
 

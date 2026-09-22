@@ -202,20 +202,35 @@ class DefinitionRow(QWidget):
         )
 
     def _mark_if_stale(self) -> None:
-        """Mark a definition the last reconcile pass could not resolve.
+        """Mark a definition that names something this collection cannot resolve.
 
         The pass reports into an operation log the user has to have turned the level up to
         read (`logic/rename_reconcile.py`); this list is where they would notice it
-        without looking. Only what the pass could not resolve at all is marked -- a name it
+        without looking. Only what cannot be resolved at all is marked -- a name the pass
         refreshed or a rename it followed is not a problem any more.
+
+        What a reference resolves to is asked of the collection here rather than taken
+        from the last pass: the pass runs on a note type or deck operation and on a
+        collection load, so a definition the user has just fixed in the editor, or one an
+        import has just made stale, would otherwise carry the pass's answer until the next
+        one. What the pass alone knows -- a field or a template that was *deleted*, which
+        takes the snapshot to tell from a rename -- still comes from its result.
         """
         from ..hooks.rename_hooks import last_reconcile_result
+        from ..logic.rename_reconcile import unresolved_references
 
-        result = last_reconcile_result()
-        stale = [
+        if mw is None or mw.col is None:
+            return
+        stale = unresolved_references(self.definition, mw.col)
+        # A deleted note type or deck is in both -- the pass reports it gone, and the
+        # reference it left behind resolves to nothing here -- and the tooltip is a list of
+        # names, not of reasons, so it says each one once.
+        named = {(item.kind, item.name) for item in stale}
+        stale += [
             item
-            for item in list(result.unresolved) + list(result.gone)
+            for item in last_reconcile_result().gone
             if item.definition_guid == self.definition_guid
+            and (item.kind, item.name) not in named
         ]
         if not stale:
             return
