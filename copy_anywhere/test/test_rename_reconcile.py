@@ -766,6 +766,48 @@ class TestWhenThePassRuns:
             operation_did_execute.remove(rename_hooks.on_operation_did_execute)
 
 
+class TestAConfigThePassCannotRead:
+    """A config the pass chokes on must not take the pass out for the rest of the session.
+
+    `operation_did_execute.__call__` drops a hook that raises and re-raises, so anything
+    the handler lets escape unregisters it silently until Anki is restarted.
+    """
+
+    def test_a_config_that_cannot_be_read_at_all_does_not_escape(
+        self, col, config, stub_mw, monkeypatch
+    ):
+        """`getConfig` on a corrupt `meta.json` raises, and the load is the first thing done."""
+        from copy_anywhere.hooks import rename_hooks
+
+        def raise_on_load(self):
+            raise ValueError("meta.json is not JSON")
+
+        monkeypatch.setattr(Config, "load", raise_on_load)
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert rename_hooks._running is False
+
+    def test_a_definition_the_scan_cannot_read_does_not_escape(
+        self, col, config, stub_mw, monkeypatch
+    ):
+        """A stored definition shaped wrongly enough to trip the scan for references."""
+        from copy_anywhere.hooks import rename_hooks
+
+        definition = d.staged(note_types=[VOCAB])
+        definition["triggers"] = [VOCAB]
+
+        def load_a_broken_config(self):
+            self.data = dict(DEFAULT_CONFIG)
+            self.data["copy_definitions"] = [definition]
+
+        monkeypatch.setattr(Config, "load", load_a_broken_config)
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert rename_hooks._running is False
+
+
 class FakeChanges:
     """The two booleans of `OpChanges` the pass reads."""
 

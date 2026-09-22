@@ -51,15 +51,19 @@ def run_reconcile() -> None:
     global _running, _last_result
     if _running or mw.col is None:
         return
-    config = Config()
-    config.load()
-    if not definitions_hold_references(config.copy_definitions):
-        return
-    # The main window clears this in its own handler, but hook order is not something to
-    # rely on: a note type read through a stale cache would compare equal to its old name.
-    mw.col.models._clear_cache()
     _running = True
     try:
+        # Reading the config is inside the try like everything else: a `meta.json` Anki
+        # cannot parse, or a definition stored in a shape the scan chokes on, would
+        # otherwise take the pass out for the rest of the session.
+        config = Config()
+        config.load()
+        if not definitions_hold_references(config.copy_definitions):
+            return
+        # The main window clears this in its own handler, but hook order is not something
+        # to rely on: a note type read through a stale cache would compare equal to its
+        # old name.
+        mw.col.models._clear_cache()
         with operation_logging("rename_reconcile", config.log_level):
             _last_result = reconcile(config, mw.col)
             log_result(_last_result)
