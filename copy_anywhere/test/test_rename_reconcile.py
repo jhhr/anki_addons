@@ -19,9 +19,9 @@ from aqt import mw
 import definitions as d
 from anki_shared.testing import real_anki
 from conftest import DEFAULT_CONFIG, KANJI, VOCAB
-from copy_anywhere.configuration import Config
+from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
-from copy_anywhere.logic.rename_reconcile import reconcile
+from copy_anywhere.logic.rename_reconcile import definitions_hold_references, reconcile
 
 ADDON_TAG = "copy_anywhere"
 
@@ -376,6 +376,66 @@ class TestACardTypeOfTheTriggerNoteTypeIsRenamed:
         reconcile(config, mw.col)
 
         assert action["card_type"]["name"] == f"{VOCAB}<::>Reading card"
+
+
+class TestAnActionThatNamesNoCardType:
+    """An `edit_card` stage's actions name no card type: the stage already named the card.
+
+    The old editor wrote one empty `card_type_name` string for them, so a config the 0.5.0
+    step has been over is full of references with no name and no ids. That is not a
+    reference to anything, and the pass has nothing to bind, report or refresh for it.
+    """
+
+    def a_definition_with_one(self):
+        action = d.card_action("CA Vocab", "Recognition", set_flag=2)
+        del action["card_type_name"]
+        action["card_type"] = {"note_type_id": None, "template_id": None, "name": ""}
+        return d.staged(
+            definition_name="single card",
+            note_types=[],
+            stages=[
+                d.card_query("cards", "deck:JP vocab"),
+                d.for_each_card("cards", [d.edit_card("card", [action])]),
+            ],
+        )
+
+    def test_it_is_not_reported_as_unresolved(self, col, config):
+        store(config, self.a_definition_with_one())
+
+        result = reconcile(config, mw.col)
+
+        assert names(result.unresolved) == []
+
+    def test_a_config_that_holds_only_those_has_nothing_to_follow(self, col, config):
+        store(config, self.a_definition_with_one())
+
+        assert definitions_hold_references(config.copy_definitions) is False
+
+    def test_a_migrated_0_4_0_config_gives_the_pass_nothing_to_do(self, col, stub_mw):
+        """End to end: what 0.4.0 stored, through the migration, into the pass."""
+        action = d.card_action("CA Vocab", "Recognition", set_flag=2)
+        action["card_type_name"] = ""
+        stored = dict(DEFAULT_CONFIG)
+        stored["version"] = "0.4.0"
+        stored["copy_definitions"] = [
+            d.staged(
+                definition_name="single card",
+                note_types=[],
+                stages=[
+                    d.card_query("cards", "deck:JP vocab"),
+                    d.for_each_card("cards", [d.edit_card("card", [action])]),
+                ],
+            )
+        ]
+        stub_mw.addonManager.configs[ADDON_TAG] = stored
+        migrate_config()
+        configuration = Config()
+        configuration.load()
+
+        result = reconcile(configuration, mw.col)
+
+        assert names(result.unresolved) == []
+        assert definitions_hold_references(configuration.copy_definitions) is False
 
 
 # What the pass reports without rewriting ------------------------------------------------

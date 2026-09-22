@@ -17,6 +17,7 @@ from .logic.object_refs import (
     CardTypeRef,
     ObjectRef,
     card_action_card_type,
+    card_type_ref_names_nothing,
     normalize_ref,
 )
 from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
@@ -509,7 +510,14 @@ def structure_object_references(config: "Config") -> None:
                     continue
                 if "card_type" not in card_action and "card_type_name" not in card_action:
                     continue
-                card_action["card_type"] = card_action_card_type(card_action)
+                reference = card_action_card_type(card_action)
+                # An `edit_card` stage's actions name no card type -- the stage already
+                # named the card -- and the old spelling for that was an empty string. The
+                # slot stays empty rather than holding a reference to nothing, which every
+                # reader would report as a card type this collection does not have.
+                card_action["card_type"] = (
+                    None if card_type_ref_names_nothing(reference) else reference
+                )
                 card_action.pop("card_type_name", None)
 
 

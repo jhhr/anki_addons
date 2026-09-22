@@ -101,6 +101,22 @@ def card_action_card_type(card_action: Any) -> CardTypeRef:
     return normalize_card_type_ref(card_action.get("card_type_name"))
 
 
+def card_type_ref_names_nothing(ref: Any) -> bool:
+    """Whether this reference names no card type at all: no ids, and no name either.
+
+    An `edit_card` stage's actions carry one, because the stage has already named the card
+    they apply to; before 0.5.0 that was spelled as an empty `card_type_name` string. It is
+    not a reference to a card type this collection is missing, and a reader that treats it
+    as one reports a card type called ''.
+    """
+    reference = normalize_card_type_ref(ref)
+    return (
+        reference["note_type_id"] is None
+        and reference["template_id"] is None
+        and not reference["name"]
+    )
+
+
 def split_card_type_name(name: str) -> Optional[tuple[str, str]]:
     """The note type and card type halves of a display name, or None if it has neither."""
     if CARD_TYPE_SEPARATOR not in name:

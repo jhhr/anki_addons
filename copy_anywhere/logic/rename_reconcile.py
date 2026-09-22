@@ -49,6 +49,7 @@ from .object_refs import (
     KIND_FIELD,
     KIND_NOTE_TYPE,
     card_type_live_name,
+    card_type_ref_names_nothing,
     card_type_resolves,
     normalize_card_type_ref,
     normalize_ref,
@@ -128,10 +129,8 @@ def definitions_hold_references(definitions: Any) -> bool:
         triggers = definition.get("triggers") or {}
         if triggers.get("note_types") or triggers.get("deck_names"):
             return True
-        for stage in walk_stages(definition.get("stages") or []):
-            for card_action in stage.get("card_actions") or []:
-                if isinstance(card_action, dict) and card_action.get("card_type"):
-                    return True
+        if next(_card_type_refs(definition), None) is not None:
+            return True
     return False
 
 
@@ -148,12 +147,17 @@ def _card_type_refs(definition: dict) -> Iterator[dict]:
     """Every card action that carries a structured card type reference.
 
     An action still in the pre-0.5.0 spelling -- one `card_type_name` string -- is left to
-    the config step that converts it; an `edit_card` stage's actions carry `card_type: None`
+    the config step that converts it; an `edit_card` stage's actions name no card type
     because the stage already names the card, and there is nothing to bind there either.
+    That one is spelled `card_type: None`, but a config an earlier 0.5.0 step converted
+    carries an empty reference in its place, which names nothing just the same.
     """
     for stage in walk_stages(definition.get("stages") or []):
         for card_action in stage.get("card_actions") or []:
-            if isinstance(card_action, dict) and card_action.get("card_type") is not None:
+            if not isinstance(card_action, dict):
+                continue
+            reference = card_action.get("card_type")
+            if reference is not None and not card_type_ref_names_nothing(reference):
                 yield card_action
 
 

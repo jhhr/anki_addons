@@ -339,6 +339,31 @@ class TestIdCarryingReferences:
         triggers = stored(stub_mw)["copy_definitions"][0]["triggers"]
         assert triggers["note_types"] == [{"id": 42, "name": "CA Vocab"}]
 
+    def test_an_empty_card_type_name_becomes_no_reference_at_all(self, config, stub_mw):
+        """An `edit_card` stage's actions name no card type -- the stage named the card.
+
+        The old editor wrote one empty `card_type_name` string for them. A reference with
+        no name and no ids is not a reference to anything, so the slot comes out as the
+        `None` the editor itself writes there now.
+        """
+        action = d.card_action("CA Vocab", "Recognition", set_flag=2)
+        action["card_type_name"] = ""
+        definition = d.staged(
+            definition_name="single card",
+            stages=[
+                d.card_query("cards", "deck:x"),
+                d.for_each_card("cards", [d.edit_card("card", [action])]),
+            ],
+        )
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        stage = stored(stub_mw)["copy_definitions"][0]["stages"][1]["body"][0]
+        assert stage["card_actions"][0]["card_type"] is None
+        assert "card_type_name" not in stage["card_actions"][0]
+
     def test_a_format_1_config_arrives_structured_in_one_pass(self, config, stub_mw):
         config["copy_definitions"] = [
             d.within_note(
