@@ -999,13 +999,14 @@ class GateTestCase(MemoryStubs, unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.remove_stubs()
 
-    def make_gate(self, limit=None, max_limit=None, config=None):
+    def make_gate(self, limit=None, max_limit=None, config=None, is_paused=None):
         # Every gate records the ceilings it reports, so any test can assert on them
         self.reported_ceilings: list[int] = []
         gate = conc.ConcurrencyGate(
             config or {},
             op_key="test op",
             on_ceiling_changed=self.reported_ceilings.append,
+            is_paused=is_paused,
         )
         if limit is not None:
             gate.limit = limit
@@ -1148,6 +1149,124 @@ class GateAcquireReleaseTests(GateTestCase):
         gate = self.make_gate(limit=4)
         await gate.acquire()
         self.assertIn("1/4", gate.status_text())
+
+
+class GatePauseTests(GateTestCase):
+    """A paused run starts no new task: the gate hands out nothing until it resumes.
+
+    The pause is polled, so the poll interval is cut to a millisecond here; a test that waited
+    out the real half second per turn would take seconds. Each test flips a plain flag rather
+    than pausing a real run, which keeps these independent of api_client.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.paused = False
+        patcher = mock.patch.object(conc, "PAUSE_POLL_INTERVAL", 0.001)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make_pausable_gate(self, limit):
+        return self.make_gate(limit=limit, is_paused=lambda: self.paused)
+
+    async def poll_turns(self):
+        """Long enough for a held task to have looked at the pause several times."""
+        await asyncio.sleep(0.02)
+
+    async def test_a_paused_gate_hands_out_no_slot_even_with_slots_free(self):
+        gate = self.make_pausable_gate(limit=4)
+        self.paused = True
+        waiter = asyncio.ensure_future(gate.acquire())
+        await self.poll_turns()
+        self.assertFalse(waiter.done())
+        self.assertEqual(gate.in_flight, 0)
+
+        self.paused = False
+        await asyncio.wait_for(waiter, timeout=1)
+        self.assertEqual(gate.in_flight, 1)
+
+    async def test_a_task_queued_before_the_pause_does_not_take_the_slot_freed_during_it(self):
+        """A request finishing during the pause wakes a waiter, which must not start."""
+        gate = self.make_pausable_gate(limit=1)
+        await gate.acquire()
+        waiter = asyncio.ensure_future(gate.acquire())
+        await self.settle()
+
+        self.paused = True
+        gate.release()
+        await self.poll_turns()
+        self.assertFalse(waiter.done())
+        self.assertEqual(gate.in_flight, 0)
+
+        self.paused = False
+        await asyncio.wait_for(waiter, timeout=1)
+        self.assertEqual(gate.in_flight, 1)
+
+    async def test_resume_lets_the_held_tasks_through_as_slots_allow(self):
+        gate = self.make_pausable_gate(limit=2)
+        self.paused = True
+        waiters = [asyncio.ensure_future(gate.acquire()) for _ in range(5)]
+        await self.poll_turns()
+        self.assertFalse(any(w.done() for w in waiters))
+
+        self.paused = False
+        await self.poll_turns()
+        self.assertEqual(sum(w.done() for w in waiters), 2)
+        self.assertEqual(gate.in_flight, 2)
+
+        # The rest follow one per finished task, none lost
+        for through in (3, 4, 5):
+            gate.release()
+            await self.poll_turns()
+            self.assertEqual(sum(w.done() for w in waiters), through)
+        self.assertEqual(gate.in_flight, 2)
+
+    async def test_abort_during_a_pause_raises_in_the_held_tasks(self):
+        """Held tasks are not in the queue abort() empties; they find it on their next turn."""
+        gate = self.make_pausable_gate(limit=4)
+        self.paused = True
+        waiters = [asyncio.ensure_future(gate.acquire()) for _ in range(3)]
+        await self.poll_turns()
+
+        gate.abort()
+        for waiter in waiters:
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(waiter, timeout=1)
+        self.assertEqual(gate.in_flight, 0)
+
+    async def test_a_held_task_cancelled_during_the_pause_strands_no_waiter(self):
+        """The queue empties into the pause loop, so no wakeup is left with a cancelled task.
+
+        Without that, the task woken for the freed slot would hold the only wakeup while the
+        next one stayed queued; cancelling it would leave that one behind a free slot for good.
+        """
+        gate = self.make_pausable_gate(limit=1)
+        await gate.acquire()
+        first = asyncio.ensure_future(gate.acquire())
+        second = asyncio.ensure_future(gate.acquire())
+        await self.settle()
+
+        self.paused = True
+        gate.release()
+        await self.poll_turns()
+        first.cancel()
+        await self.settle()
+
+        self.paused = False
+        await asyncio.wait_for(second, timeout=1)
+        self.assertTrue(first.cancelled())
+        self.assertEqual(gate.in_flight, 1)
+
+    async def test_status_text_says_when_the_run_is_paused(self):
+        gate = self.make_pausable_gate(limit=4)
+        self.assertNotIn("paused", gate.status_text())
+        self.paused = True
+        self.assertTrue(gate.status_text().startswith("paused | 0/4"))
+
+    async def test_a_gate_given_no_pause_check_is_never_paused(self):
+        gate = self.make_gate(limit=1)
+        await asyncio.wait_for(gate.acquire(), timeout=1)
+        self.assertEqual(gate.status_text()[:3], "1/1")
 
 
 class CollectionPressureTests(MemoryStubTestCase):

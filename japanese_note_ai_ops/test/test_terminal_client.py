@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from addon_modules import FakeClock, load_ops_module
+from addon_modules import FakeClock, PausingClock, load_ops_module
 
 tc = load_ops_module("terminal_client")
 api = load_ops_module("api_client")
@@ -314,6 +314,62 @@ class RequestTests(ClockTestCase):
                 self.assertFalse(api.run_cancelled())
                 self.assertIsNone(api.take_stop_reason())
                 self.assertEqual(self.ask(FakePopen((0, SUCCESS))), {"decision": "match"})
+
+    def paused_run(self, on_sleep) -> PausingClock:
+        """A run on this thread, paused, with the clock driving (and ending) the wait."""
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        clock = PausingClock(on_sleep)
+        # tearDown puts both clocks back
+        setattr(tc, "time", clock)
+        setattr(api, "time", clock)
+        return clock
+
+    def test_a_paused_run_spawns_nothing_until_resumed(self):
+        popen = FakePopen((0, SUCCESS))
+        spawned_while_paused = []
+
+        def on_sleep(sleeps):
+            spawned_while_paused.append(len(popen.calls))
+            if sleeps == 3:
+                api.resume_run()
+
+        self.paused_run(on_sleep)
+        api.pause_run("paused by user")
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(spawned_while_paused, [0, 0, 0])
+        self.assertEqual(len(popen.calls), 1)
+
+    def test_a_retry_waits_for_resume(self):
+        """Paused during the backoff after a rate limit: the retry is held past the backoff."""
+        popen = FakePopen((1, RATE_LIMITED), (0, SUCCESS))
+        spawned = []
+
+        def on_sleep(sleeps):
+            spawned.append(len(popen.calls))
+            if sleeps == 1:
+                api.pause_run("paused by user")
+            if sleeps == 20:
+                api.resume_run()
+
+        clock = self.paused_run(on_sleep)
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(spawned, [1] * 20)
+        self.assertEqual(len(clock.slept), 20)
+        self.assertEqual(len(popen.calls), 2)
+
+    def test_a_cancel_while_paused_spawns_nothing(self):
+        popen = FakePopen((0, SUCCESS))
+        cancel_state = FakeCancelState()
+
+        def on_sleep(sleeps):
+            if sleeps == 2:
+                cancel_state.cancelled = True
+
+        self.paused_run(on_sleep)
+        api.pause_run("paused by user")
+        self.assertIsNone(self.ask(popen, cancel_state=cancel_state))
+        self.assertEqual(popen.calls, [])
 
     def test_long_instructions_go_in_a_file(self):
         seen = {}

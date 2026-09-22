@@ -21,6 +21,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Callable
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ADDON_ROOT.parent
@@ -125,3 +126,25 @@ class FakeClock:
     @property
     def total_slept(self) -> float:
         return sum(self.slept)
+
+
+class PausingClock(FakeClock):
+    """A FakeClock that calls `on_sleep(sleeps_so_far)` after every sleep.
+
+    For driving a paused run: a pause nothing lifts polls forever under a fake clock, so the
+    test resumes or cancels from `on_sleep`. Past `max_sleeps` a sleep raises instead, so a
+    test whose pause never ends fails rather than hangs.
+    """
+
+    def __init__(
+        self, on_sleep: Callable[[int], None], max_sleeps: int = 1000, start: float = 1000.0
+    ):
+        super().__init__(start)
+        self.on_sleep = on_sleep
+        self.max_sleeps = max_sleeps
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        if len(self.slept) > self.max_sleeps:
+            raise AssertionError(f"Still waiting after {self.max_sleeps} sleeps")
+        self.on_sleep(len(self.slept))

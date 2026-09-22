@@ -127,6 +127,12 @@ GROWTH_RATE = 0.25
 # each other: see memory_per_slot and MemoryEstimator.
 TASK_QUEUE_DEPTH = 4
 
+# How often a task held at a paused gate looks again. The pause is the run's, not the gate's -
+# the gate is only handed an is_paused callable, which keeps this module free of the addon - so
+# nothing tells the gate when it lifts and polling is the only way to see it. Half a second is
+# lost in a pause that lasts minutes, and is how often everything else in a run polls cancel.
+PAUSE_POLL_INTERVAL = 0.5
+
 # Share of the time the collection's one permit must be busy before the gate treats it as the
 # run's bottleneck and stops growing. Not 1.0: the sample covers a couple of seconds and a few
 # turns, so it is noisy, and a limit held one tick too long costs far less than a limit that
@@ -1095,8 +1101,12 @@ class ConcurrencyGate:
         config: Optional[dict] = None,
         op_key: Optional[str] = None,
         on_ceiling_changed: Optional[Callable[[int], None]] = None,
+        is_paused: Optional[Callable[[], bool]] = None,
     ):
         config = config or {}
+        # Whether the run is paused, asked on the event loop's thread. A paused run starts no
+        # new task, so no slot is handed out while this says so. None: never paused.
+        self._is_paused: Callable[[], bool] = is_paused or (lambda: False)
         total, available = system_memory() or (0, 0)
         self.total_memory = total
         self.memory_limit = configured_memory_limit_bytes(config, total)
@@ -1184,10 +1194,21 @@ class ConcurrencyGate:
         )
 
     async def acquire(self) -> None:
-        """Wait for a free slot. Raises CancelledError if the task is cancelled while waiting."""
-        if self._aborted:
-            raise asyncio.CancelledError("concurrency gate aborted")
-        while self.in_flight >= self.limit:
+        """Wait for a free slot. Raises CancelledError if the task is cancelled while waiting.
+
+        No slot is handed out while the run is paused, however many are free.
+        """
+        while True:
+            # A task held here is not in _waiters, so abort() cannot wake it; it finds _aborted
+            # on its next turn instead, at most PAUSE_POLL_INTERVAL later.
+            while self._is_paused():
+                if self._aborted:
+                    raise asyncio.CancelledError("concurrency gate aborted")
+                await asyncio.sleep(PAUSE_POLL_INTERVAL)
+            if self._aborted:
+                raise asyncio.CancelledError("concurrency gate aborted")
+            if self.in_flight < self.limit:
+                break
             future: asyncio.Future = asyncio.get_running_loop().create_future()
             self._waiters.append(future)
             try:
@@ -1201,6 +1222,15 @@ class ConcurrencyGate:
                     if future.done() and not future.cancelled():
                         self._wake_waiters(1)
                 raise
+            if self._is_paused():
+                # Woken for a slot the pause will not let this task take: a task queued before
+                # the pause began is handed one by every request that finishes during it. Pass
+                # the wakeup on rather than sit on it. The next waiter finds the pause too and
+                # does the same, so the queue empties into the pause loop above, where each
+                # task looks for a free slot itself once the run resumes. Left in the queue, a
+                # waiter could end up behind a free slot with nothing left to wake it, if the
+                # task holding its wakeup were cancelled during the pause.
+                self._wake_waiters(1)
         self.in_flight += 1
 
     def release(self) -> None:
@@ -1601,6 +1631,8 @@ class ConcurrencyGate:
     def status_text(self) -> str:
         """Short description of the gate's state, for the progress dialog."""
         text = f"{self.in_flight}/{self.limit}"
+        if self._is_paused():
+            text = "paused | " + text
         if self.available_memory:
             text += f" | Free memory: {format_bytes(self.available_memory)}"
         if self.estimator.measured:

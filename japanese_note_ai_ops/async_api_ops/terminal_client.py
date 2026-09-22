@@ -34,6 +34,7 @@ from .api_client import (
     current_run,
     is_cancelled,
     rate_limit_tracker,
+    wait_while_paused,
 )
 
 try:
@@ -445,6 +446,9 @@ def _run_with_retry(
     for attempt in range(max_retries + 1):
         if is_cancelled(cancel_state):
             logger.info("Skipping request to %s, the run was cancelled", key)
+            return None
+        # A paused run spawns nothing new, retries included; a cancel during the pause ends it
+        if not wait_while_paused(cancel_state):
             return None
         cooldown = rate_limit_tracker.wait_time(key)
         if cooldown > 0 and not _sleep_cancellable(cooldown, cancel_state):

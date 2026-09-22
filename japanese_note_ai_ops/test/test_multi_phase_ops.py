@@ -12,9 +12,11 @@ import time
 import unittest
 from typing import TYPE_CHECKING
 
-from addon_modules import load_ops_module, mw
+from addon_modules import PausingClock, load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
+# The same module object base_ops imported, so pausing it pauses base_ops' run
+api = load_ops_module("api_client")
 
 if TYPE_CHECKING:
     # The real class, so `OpPhase` is a type and not just a name load_ops_module handed back
@@ -163,6 +165,73 @@ class RunOpPhasesTest(unittest.TestCase):
         self.assertEqual(started, ["one"])
         self.assertEqual(self.notes[0].fields, [])
         self.assertEqual(pos, 101)
+
+    # --- pausing ----------------------------------------------------------------------------
+
+    def pausing_phase(self, name: str, started: list) -> OpPhase:
+        """A phase that pauses the run as it finishes, the way a user's click lands mid-phase."""
+
+        async def op(col, notes, edited_nids, progress_updater, **dicts):
+            started.append(name)
+            api.pause_run("paused by user")
+            return (
+                col.add_custom_undo_entry(name),
+                dicts["notes_to_add_dict"],
+                dicts["notes_to_update_dict"],
+                [],
+            )
+
+        return OpPhase(name, op)
+
+    def install_clock(self, on_sleep) -> PausingClock:
+        """Drive the pause wait from a fake clock, inside a run on this thread."""
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        clock = PausingClock(on_sleep)
+        saved = api.time
+        setattr(api, "time", clock)
+        self.addCleanup(setattr, api, "time", saved)
+        return clock
+
+    def test_a_paused_run_starts_the_next_phase_only_after_resume(self):
+        started: list = []
+        seen_while_paused: list = []
+
+        def on_sleep(sleeps):
+            seen_while_paused.append(list(started))
+            if sleeps == 3:
+                api.resume_run()
+
+        clock = self.install_clock(on_sleep)
+        self.run_phases([self.pausing_phase("one", started), self.writing_phase("two", "b")])
+
+        self.assertEqual(seen_while_paused, [["one"]] * 3)
+        self.assertEqual(len(clock.slept), 3)
+        self.assertEqual(self.notes[0].fields, ["b"])
+
+    def test_a_cancel_while_paused_between_phases_stops_the_next_one_starting(self):
+        """Both kinds of cancel: the dialog's (Escape) and the run's own."""
+        cancels = {
+            "dialog": lambda: setattr(mw.progress, "cancel", True),
+            "run": api.cancel_run,
+        }
+        for kind, cancel in cancels.items():
+            with self.subTest(cancel=kind):
+                mw.progress.cancel = False
+                self.notes = [FakeNote(1), FakeNote(2)]
+                started: list = []
+
+                def on_sleep(sleeps, cancel=cancel):
+                    if sleeps == 2:
+                        cancel()
+
+                self.install_clock(on_sleep)
+                self.run_phases(
+                    [self.pausing_phase("one", started), self.writing_phase("two", "b")]
+                )
+
+                self.assertEqual(started, ["one"])
+                self.assertEqual(self.notes[0].fields, [])
 
     # --- phases that do not play along --------------------------------------------------------
 

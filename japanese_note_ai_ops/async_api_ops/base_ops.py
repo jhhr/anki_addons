@@ -29,11 +29,14 @@ from .api_client import (
     end_run,
     is_cancelled,
     join_run,
+    pause_state,
     post_with_retry,
     rate_limit_tracker,
     run_cancelled,
+    run_paused,
     set_connection_pool_size,
     take_stop_reason,
+    wait_while_paused,
 )
 from .terminal_client import get_response_from_terminal, is_terminal_model
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
@@ -164,6 +167,19 @@ class CancelState:
 
     def is_cancelled(self):
         return self._cancelled
+
+
+class DialogCancelState:
+    """The progress dialog's cancel, as a cancel state for wait_while_paused.
+
+    Escape or the dialog's close box only sets the dialog's flag; nothing turns it into a
+    cancel of the run while no async phase is running (CancelManager does that, and only
+    during run_plans_rolling). A pause wait on the op thread that watched the run alone would
+    hold a sync op, or the gap between two phases, until someone resumed it.
+    """
+
+    def is_cancelled(self) -> bool:
+        return bool(mw.progress.want_cancel())
 
 
 def get_response(
@@ -1634,7 +1650,12 @@ async def bulk_nested_notes_op(
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
     # gate says when it raises it and the pool follows, rather than staying at the guess.
-    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=size_pools_to_ceiling)
+    gate = ConcurrencyGate(
+        config,
+        op_key=message,
+        on_ceiling_changed=size_pools_to_ceiling,
+        is_paused=run_paused,
+    )
     progress_updater.gate = gate
     gate.start_adapting()
     size_pools_to_ceiling(gate.max_limit)
@@ -1747,7 +1768,28 @@ def sync_bulk_notes_op(
         notes_to_remove = []
     note_cnt = 0
     start_time = time.time()
+    # Left out of the ETA: the notes still to do will not spend it again
+    paused_s = 0.0
+    dialog_cancel = DialogCancelState()
     for note in notes:
+        # Checked before a note rather than after one, so a pause that comes after the last
+        # note holds nothing up
+        if run_paused():
+            pause = pause_state()
+            reason = html.escape(pause.reason) if pause else ""
+            # Nothing else redraws the dialog while this thread waits, so say why it stopped
+            mw.taskman.run_on_main(
+                partial(
+                    mw.progress.update,
+                    label=f"<b>{message}</b><br><b>Paused</b>: {reason}",
+                    value=note_cnt,
+                    max=total_notes,
+                )
+            )
+            paused_at = time.time()
+            if not wait_while_paused(dialog_cancel):
+                break
+            paused_s += time.time() - paused_at
         try:
             op(
                 config=config,
@@ -1763,7 +1805,7 @@ def sync_bulk_notes_op(
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         time_msg = f"<br><code>Time: {elapsed_time}</code>"
         if note_cnt > 3:
-            eta_s = (total_notes - note_cnt) * (elapsed_s / note_cnt)
+            eta_s = (total_notes - note_cnt) * ((elapsed_s - paused_s) / note_cnt)
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
             time_msg += f"""<br><code>ETA: {eta_time}</code>"""
         mw.taskman.run_on_main(
@@ -1859,7 +1901,12 @@ async def bulk_notes_op(
     # The message doubles as the op's identity for the learned per-task memory cost. The pool
     # is sized to the gate's ceiling, which is a guess until the op has been measured - so the
     # gate says when it raises it and the pool follows, rather than staying at the guess.
-    gate = ConcurrencyGate(config, op_key=message, on_ceiling_changed=size_pools_to_ceiling)
+    gate = ConcurrencyGate(
+        config,
+        op_key=message,
+        on_ceiling_changed=size_pools_to_ceiling,
+        is_paused=run_paused,
+    )
     progress_updater.gate = gate
     gate.start_adapting()
     # One task per note here, and no planning pass to wait for, so the run's size is already
@@ -1999,6 +2046,14 @@ async def run_op_phases(
     for index, phase in enumerate(phases):
         if index > 0 and (mw.progress.want_cancel() or run_cancelled()):
             logger.debug("Multi-phase op cancelled before phase %d/%d", index + 1, total)
+            break
+        # A paused run starts no new phase. The gate and the sync op would each hold the phase
+        # at its first task anyway, but only after it had reset the dialog's counters and
+        # clock and run its planning pass, so the pause would count against the phase's ETA.
+        # Blocking the loop is fine between phases: the phase before has finished, and the
+        # progress ticker and cancel monitor it ran on the loop have stopped with it.
+        if index > 0 and not wait_while_paused(DialogCancelState()):
+            logger.debug("Multi-phase op cancelled while paused before phase %d", index + 1)
             break
         if total > 1:
             progress_updater.begin_phase(index + 1, total, phase.name)
@@ -2443,6 +2498,13 @@ def selected_notes_op(
                 teardown_started,
                 threads=threading.active_count(),
             )
+            # A run that is over while still paused - its op raised, or the user paused as the
+            # last requests finished - must not leave its abandoned pool threads polling a pause
+            # nobody will lift. Cancelled rather than resumed: a resume would let them send
+            # requests for a run that has ended. Before end_run, while this thread still reads
+            # the run it is ending.
+            if pause_state() is not None:
+                cancel_run()
             # Last, so everything above still logs as part of the run it belongs to. This
             # thread is Anki's and goes back to a pool that runs other work, including our own
             # single-note ops, so its membership of this run must not outlive it: leaving it
