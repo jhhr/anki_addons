@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import load_ops_module, mw
 
 match_flags = load_ops_module("match_flags", subdir="word_array")
 match_targets = load_ops_module("match_targets", subdir="word_array")
@@ -594,6 +594,293 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             updated = self.mwtn.update_fake_note_ids([not_added], self.config, Progress())
         self.assertEqual((searched, updated), ([], {}))
         self.assertEqual(not_added["new_note_id_field"], "-1234567")
+
+
+class CountingNote(FakeNote):
+    """Counts the writes of its word array, so that saving one array twice shows."""
+
+    def __init__(self, fields, note_id=1):
+        super().__init__(fields, note_id)
+        self.array_writes = 0
+
+    def __setitem__(self, field, value):
+        if field == "word_list_field":
+            self.array_writes += 1
+        super().__setitem__(field, value)
+
+
+class RunProgress(Progress):
+    """What make_inner_bulk_op and the rolling driver ask of the progress updater."""
+
+    gate = None
+
+    def __init__(self):
+        super().__init__()
+        self.tasks_done = 0
+
+    def increment_counts(self, notes_done=0, tasks_done=0, **_):
+        super().increment_counts(notes_done)
+        self.tasks_done += tasks_done
+
+    def update_progress(self):
+        pass
+
+    def show_cancelling(self):
+        pass
+
+
+class RunGate:
+    """Lets every task through. A limit of 0 is a budget of one API task, so the rolling driver
+    starts a plan only once the one before has all but finished."""
+
+    limit = 0
+
+    async def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+    def note_live_tasks(self, _):
+        pass
+
+    def abort(self):
+        pass
+
+
+def passthrough_inner_bulk_op(config, op, **_):
+    async def process(**op_args):
+        return await op(config, **op_args)
+
+    return process
+
+
+async def wait_until(condition, seconds=5.0):
+    for _ in range(int(seconds / 0.01)):
+        if condition():
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+class CancelledMatchRunTests(unittest.TestCase):
+    """A note's word array is saved once all its word tasks are done, by a task a cancel
+    cancels too. So a cancelled run lost every finished word of the notes it was in the middle
+    of, the placeholders of new notes it had made for them among them: cleanup added the new
+    notes, and nothing referred to them."""
+
+    def setUp(self):
+        self.mwtn = load_ops_module("match_words_to_notes")
+        self.config = {
+            "Word": {key: key for key in self.mwtn.MATCH_FIELD_KEYS},
+            "match_words_model": "model",
+        }
+        mw.progress.cancel = False
+        self.addCleanup(setattr, mw.progress, "cancel", False)
+
+    def test_a_cancelled_run_saves_each_notes_finished_words(self):
+        """Through bulk_match_words_to_notes and the rolling driver, with a real cancel; only
+        bulk_nested_notes_op's gate and dialog upkeep is left out."""
+
+        def note(note_id, arr):
+            fields = {
+                "furigana_sentence_field": "文",
+                "word_list_field": json.dumps(arr, ensure_ascii=False),
+                "new_note_id_field": "",
+            }
+            return CountingNote(fields, note_id)
+
+        # Planned in this order: 箱 finishes before 本 starts, and 棚 is never started
+        finished = note(3, [word("箱", ["match"])])
+        cancelled = note(1, [word("本", ["match"]), word("棚", ["match"]), word("様", [111])])
+        never_started = note(2, [word("棚", ["match"])])
+        never_started_field = never_started["word_list_field"]
+        linked = FakeNote({"meaning_field": "書物", "english_meaning_field": "book"}, 111)
+        new_note = FakeNote({"new_note_id_field": "-1234567"}, 0)
+        notes_to_add = {}
+        updates = {111: linked}
+        edited_nids = []
+        progress = RunProgress()
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            index = args["word_index"]
+            if args["word"] == "棚":
+                # A request that never answers
+                await asyncio.get_running_loop().create_future()
+            elif args["word"] == "本":
+                # As create_new_note_without_matching does: the note is registered first
+                args["notes_to_add_dict"].setdefault("Word", []).append(new_note)
+                args["match_qualities"][index] = 3
+                args["processed_word_tuples"][index] = ("本", "よみ", "本", -1234567)
+            else:
+                args["processed_word_tuples"][index] = ("箱", "よみ", "箱", 555)
+            return True
+
+        async def nested_op(bulk_inner_op, notes, config, **kwargs):
+            base_ops = load_ops_module("base_ops")
+            gate = RunGate()
+            cancel_state = base_ops.CancelState()
+            plans = [
+                bulk_inner_op(
+                    config,
+                    n,
+                    edited_nids=edited_nids,
+                    notes_to_add_dict=notes_to_add,
+                    notes_to_update_dict=updates,
+                    progress_updater=progress,
+                    cancel_state=cancel_state,
+                    gate=gate,
+                )
+                for n in notes
+            ]
+            runner = asyncio.ensure_future(
+                base_ops.run_plans_rolling(
+                    plans,
+                    gate=gate,
+                    progress_updater=progress,
+                    cancel_state=cancel_state,
+                    label="test",
+                )
+            )
+            # 箱, 本 and 様's rating done; 棚 waiting
+            self.assertTrue(await wait_until(lambda: progress.tasks_done == 3))
+            mw.progress.cancel = True
+            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
+            self.assertTrue(runner.result())
+            return 1, notes_to_add, updates, []
+
+        fake_mw = mock.MagicMock()
+        fake_mw.progress = mw.progress
+        fake_mw.addonManager.getConfig.return_value = self.config
+        fake_mw.pm.profileFolder.return_value = "/nonexistent-profile"
+
+        async def run():
+            await self.mwtn.bulk_match_words_to_notes(
+                col=None,
+                notes=[finished, cancelled, never_started],
+                edited_nids=edited_nids,
+                progress_updater=progress,
+                notes_to_add_dict=notes_to_add,
+                notes_to_update_dict=updates,
+            )
+            writes = cancelled.array_writes
+            # Let the cancelled tasks unwind: the note's own save must not run as well
+            for _ in range(50):
+                await asyncio.sleep(0)
+            return writes
+
+        with (
+            mock.patch.object(self.mwtn, "mw", fake_mw),
+            mock.patch.object(self.mwtn, "bulk_nested_notes_op", nested_op),
+            mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
+            mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
+            mock.patch.object(self.mwtn, "get_response", lambda *a, **k: {"match_quality": 4}),
+        ):
+            writes_at_flush = asyncio.run(run())
+
+        saved = json.loads(cancelled["word_list_field"])
+        # the new note's placeholder with its quality, the unfinished word left to match, and
+        # the rating that finished
+        self.assertEqual([w[4] for w in saved], [[-1234567, 3], ["match"], [111, 4]])
+        self.assertEqual((writes_at_flush, cancelled.array_writes), (1, 1))
+        self.assertIs(updates[1], cancelled)
+        self.assertEqual(notes_to_add, {"Word": [new_note]})
+        # the note that finished was saved by its own task, and only then
+        self.assertEqual(json.loads(finished["word_list_field"])[0][4], [555])
+        self.assertEqual(finished.array_writes, 1)
+        # and the one never started is untouched
+        self.assertEqual(never_started.array_writes, 0)
+        self.assertEqual(never_started["word_list_field"], never_started_field)
+        self.assertNotIn(2, updates)
+        self.assertEqual(edited_nids, [3, 1])
+
+    def test_a_flushed_array_is_not_saved_again_by_its_own_task(self):
+        """The other order: a word the flush found unfinished finishes after all, as one whose
+        thread the cancel could not stop does, and the note's own save runs."""
+        arr = [word("本", ["match"]), word("棚", ["match"]), word("様", [-111, 4])]
+        fields = {"word_list_field": json.dumps(arr, ensure_ascii=False)}
+        fields["new_note_id_field"] = "-111"
+        note = CountingNote(fields)
+        release = []
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            if args["word"] == "棚":
+                release.append(asyncio.get_running_loop().create_future())
+                await release[0]
+                args["processed_word_tuples"][args["word_index"]] = ("棚", "よみ", "棚", 666)
+            else:
+                args["processed_word_tuples"][args["word_index"]] = ("本", "よみ", "本", 555)
+            return True
+
+        progress, updates, edited_nids, unsaved = Progress(), {}, [], {}
+        plan = self.mwtn.plan_word_array_matching(
+            config=self.config,
+            note=note,
+            arr=arr,
+            sentence="本棚様",
+            edited_nids=edited_nids,
+            notes_to_add_dict={},
+            notes_to_update_dict=updates,
+            progress_updater=progress,
+            cancel_state=None,
+            gate=None,
+            all_generated_meanings_dict={},
+            word_locks_dict={},
+            word_lock=None,
+            word_note_index_cache=WordIndexCache(),
+            note_cache=None,
+            sentence_cache=None,
+            limit_words_and_readings=None,
+            log_prefix="",
+            unsaved_arrays=unsaved,
+        )
+        # The placeholder the note holds itself was resolved and saved while planning, and the
+        # save waits only once the tasks are started
+        self.assertEqual((note.array_writes, edited_nids, unsaved), (1, [1], {}))
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            self.assertEqual(len(unsaved), 1)
+            self.assertTrue(await wait_until(lambda: len(release) == 1))
+            await asyncio.sleep(0)
+            self.assertEqual(self.mwtn.flush_unsaved_arrays(unsaved, cancelled=True), 1)
+            self.assertEqual(unsaved, {})
+            release[0].set_result(None)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", passthrough_inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[555], ["match"], [1, 4]])
+        self.assertEqual(note.array_writes, 2)
+        self.assertEqual((updates, edited_nids), ({1: note}, [1]))
+        # the note's own task still counts it done
+        self.assertEqual(progress.notes_done, 1)
+
+    def test_an_array_left_unsaved_by_a_finished_run_is_an_error_and_still_saved(self):
+        calls = []
+
+        def failing():
+            calls.append("failing")
+            raise ValueError("boom")
+
+        def fine():
+            calls.append("fine")
+
+        unsaved = {id(failing): failing, id(fine): fine}
+        with self.assertLogs(self.mwtn.logger, level="ERROR") as logs:
+            self.assertEqual(self.mwtn.flush_unsaved_arrays(unsaved, cancelled=False), 2)
+        self.assertIn("not cancelled", logs.output[0])
+        # one note's error does not keep the next one's results from cleanup
+        self.assertEqual(calls, ["failing", "fine"])
+        self.assertEqual(self.mwtn.flush_unsaved_arrays({}, cancelled=False), 0)
 
 
 if __name__ == "__main__":

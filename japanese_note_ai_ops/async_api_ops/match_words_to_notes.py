@@ -54,6 +54,7 @@ from ..word_array.match_flags import (
     read_word_array,
     word_array_query_regex,
 )
+from .api_client import run_cancelled
 from .base_ops import (
     AsyncTaskProgressUpdater,
     BulkOpResult,
@@ -1996,6 +1997,44 @@ async def rate_linked_word(
     return quality
 
 
+# The saves of the word arrays whose tasks a run has started and not yet saved, keyed by id() of
+# the save, which each save removes itself from. A dict for its order and cheap removal; the id
+# is unique for as long as the entry holds the save alive.
+UnsavedArrays = dict[int, Callable[[], None]]
+
+
+def flush_unsaved_arrays(unsaved_arrays: UnsavedArrays, cancelled: bool) -> int:
+    """Save every word array still in `unsaved_arrays` with the results its finished tasks left,
+    returning how many there were.
+
+    A note's array is saved by its own task once all of its word tasks are done, and a cancel
+    cancels that task along with the unfinished words. That lost the finished ones: matches to
+    existing notes, and the placeholder ids of new notes, which cleanup still adds and which
+    nothing then referred to. Unfinished words stay `["match"]`, for the next run.
+
+    Must run after the rolling driver has returned and before cleanup takes its copy of
+    notes_to_add_dict. A new note is registered there before its placeholder is put in the
+    results, so any placeholder saved here belongs to a note cleanup adds.
+    """
+    if not unsaved_arrays:
+        return 0
+    count = len(unsaved_arrays)
+    if cancelled:
+        logger.info("Saving the finished words of %d word arrays the cancel left unsaved", count)
+    else:
+        # A finished run leaves one here only when a word task raised past process_op, so
+        # gather did too and the note's own save never ran; drain_task_errors logged the error
+        logger.error("%d word arrays were left unsaved by a run that was not cancelled", count)
+    for save in list(unsaved_arrays.values()):
+        try:
+            save()
+        except Exception as e:
+            # One note's error must not keep the others' results from cleanup
+            logger.error(f"Error saving a word array's finished words: {e}")
+            print_error_traceback(e, logger)
+    return count
+
+
 def plan_word_array_matching(
     config: dict,
     note: Note,
@@ -2016,6 +2055,7 @@ def plan_word_array_matching(
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
     log_prefix: str,
     states: Iterable[MatchState] = (MatchState.MATCH,),
+    unsaved_arrays: Optional[UnsavedArrays] = None,
 ) -> Optional[NotePlan]:
     """Plan matching the words of a note's word array in `states`, by default the ones the
     judge made `["match"]` (see match_targets.states_to_match).
@@ -2025,6 +2065,10 @@ def plan_word_array_matching(
     `match_data` - the targets hold the elements themselves, however deeply nested - and the
     array is written back to the field. Returns None, with the note counted done, when there
     is nothing to match.
+
+    From when its tasks are spawned until that save, the note's save waits in
+    `unsaved_arrays`, so that a cancelled run can still save what the finished tasks found
+    (flush_unsaved_arrays). The save runs once, whichever comes first.
 
     Words linked to a note without a match_quality, `[note_id]`, are rated by the secondary
     prompt in the same run (rate_linked_word), unless `states` has them matched again.
@@ -2154,19 +2198,42 @@ def plan_word_array_matching(
 
         return handle_op_error
 
-    async def save_results(word_tasks: list[asyncio.Task]):
-        await asyncio.gather(*word_tasks)
-        saved = match_targets.save_results(targets, results, qualities)
-        rated = match_targets.save_ratings(rate_targets, ratings)
+    array_saved = False
+
+    def save_array() -> None:
+        # Once only: match_targets.save_results writes into the array's elements, and the
+        # flush may come after this note's own save or before its cancelled task is unwound
+        nonlocal array_saved
+        if array_saved:
+            return
+        array_saved = True
+        if unsaved_arrays is not None:
+            unsaved_arrays.pop(id(save_array), None)
+        # Copies, since after a cancel an abandoned worker thread can still be writing a
+        # result. Results first: a match_quality is put in before its result, so every
+        # result copied has its quality in the later copy.
+        results_now = dict(results)
+        qualities_now = dict(qualities)
+        saved = match_targets.save_results(targets, results_now, qualities_now)
+        rated = match_targets.save_ratings(rate_targets, dict(ratings))
         logger.debug(
             f"{log_prefix}Matched {saved} of {len(targets)} and rated {rated} of"
             f" {len(rate_targets)} words in the word array"
         )
         if saved or rated:
             save_note()
+
+    async def save_results(word_tasks: list[asyncio.Task]):
+        # Nothing awaited after the gather, so a cancel either stops this before save_array
+        # or not at all
+        await asyncio.gather(*word_tasks)
+        save_array()
         progress_updater.increment_counts(notes_done=1)
 
     def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
+        # Not at planning time: a note whose tasks never started has no results to save
+        if unsaved_arrays is not None:
+            unsaved_arrays[id(save_array)] = save_array
         word_tasks: list[asyncio.Task] = []
         for op, op_targets, action in (
             (match_op, targets, "matching"),
@@ -2213,6 +2280,7 @@ def match_words_to_notes_for_note(
     sentence_cache: SentenceCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: Optional[WithProcessed] = None,
+    unsaved_arrays: Optional[UnsavedArrays] = None,
 ) -> Optional[NotePlan]:
     """
     Plan the matching of words to notes for a single note.
@@ -2249,6 +2317,8 @@ def match_words_to_notes_for_note(
             instead of all words in the note.
         reprocess_words (str|None): When limit_words_and_readings is provided, which
             already-processed words to rematch as well. None matches unprocessed only.
+        unsaved_arrays (UnsavedArrays): The run's word arrays waiting to be saved, for a
+            cancelled run to flush (see plan_word_array_matching).
     """
     if not note:
         logger.error("Error: No note provided for matching words")
@@ -2310,6 +2380,7 @@ def match_words_to_notes_for_note(
             replace_existing,
             reprocess_words if limit_words_and_readings else None,
         ),
+        unsaved_arrays=unsaved_arrays,
     )
 
 
@@ -2370,6 +2441,9 @@ async def bulk_match_words_to_notes(
     # And again, on the same argument: which notes mention a note id cannot change while the
     # run is going, and one measured run asked that question 257 times about 60 note ids
     sentence_cache = SentenceCache()
+    # The notes whose tasks have started and whose word array is not saved yet, for the flush
+    # after a cancel
+    unsaved_arrays: UnsavedArrays = {}
 
     def inner_op(
         config: dict,
@@ -2402,6 +2476,7 @@ async def bulk_match_words_to_notes(
             sentence_cache=sentence_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
+            unsaved_arrays=unsaved_arrays,
         )
 
     def on_end():
@@ -2409,7 +2484,7 @@ async def bulk_match_words_to_notes(
         # Write updated meanings dictionary to file after successful operation
         write_meanings_dict_to_file(all_generated_meanings_dict)
 
-    return await bulk_nested_notes_op(
+    result = await bulk_nested_notes_op(
         message=message,
         config=config,
         bulk_inner_op=inner_op,
@@ -2422,6 +2497,9 @@ async def bulk_match_words_to_notes(
         model=model,
         on_end=on_end,
     )
+    # Not in on_end, which bulk_nested_notes_op keeps for side effects that edit no notes
+    flush_unsaved_arrays(unsaved_arrays, cancelled=mw.progress.want_cancel() or run_cancelled())
+    return result
 
 
 def match_words_to_notes_from_selected(
