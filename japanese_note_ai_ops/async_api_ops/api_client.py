@@ -958,6 +958,9 @@ def post_with_retry(
             logger.debug("Waiting %.1fs on active cooldown for %s", cooldown, key)
             if not _sleep_cancellable(cooldown, cancel_state):
                 return None
+            # The run may have been paused while this request sat out the cooldown
+            if not wait_while_paused(cancel_state):
+                return None
 
         # Noted before the request goes out: a 200 only says the limit has cleared if the
         # request was sent after the cooldown went up. See RateLimitTracker.note_success.

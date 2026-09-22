@@ -40,6 +40,7 @@
   "max_retry_wait_seconds": 120,
   "request_timeout": 180,
   "terminal_max_concurrent_requests": 16,
+  "terminal_usage_limit_retry_minutes": 15,
   "claude_cli_path": "",
   "mdx_filenames": [],
   "mdx_pick_dictionary": "all",

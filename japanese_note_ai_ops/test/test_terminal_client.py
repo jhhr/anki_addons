@@ -8,6 +8,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from addon_modules import FakeClock, PausingClock, load_ops_module
@@ -42,6 +43,9 @@ BAD_MODEL = cli_json(
 RATE_LIMITED = cli_json(is_error=True, api_error_status=429, result="Rate limited")
 USAGE_LIMIT = cli_json(
     is_error=True, api_error_status=429, result="You've hit your session limit · resets 5pm"
+)
+USAGE_LIMIT_6PM = cli_json(
+    is_error=True, api_error_status=429, result="You've hit your session limit · resets 6pm"
 )
 # The whole of add_note_20260922_222819.log: 2018 requests, every one of them this
 EXPIRED_LOGIN = cli_json(
@@ -106,6 +110,28 @@ class FakeCancelState:
 
 def which(_name):
     return "C:/bin/claude.exe"
+
+
+def local(hour, minute, second=0, day=23):
+    """A time.time() value for a local time of day, so the tests hold in any timezone."""
+    return datetime(2026, 9, day, hour, minute, second).timestamp()
+
+
+class CountingSemaphore:
+    """Stands in for the process semaphore; `on_acquire(n)` runs as the n-th caller gets a slot."""
+
+    def __init__(self, on_acquire=lambda n: None):
+        self.on_acquire = on_acquire
+        self.acquired = 0
+        self.released = 0
+
+    def acquire(self, timeout=None):
+        self.acquired += 1
+        self.on_acquire(self.acquired)
+        return True
+
+    def release(self):
+        self.released += 1
 
 
 class ClockTestCase(unittest.TestCase):
@@ -216,6 +242,96 @@ class PureTests(unittest.TestCase):
         self.assertEqual(tc._semaphore_size, tc.DEFAULT_MAX_CONCURRENT)
 
 
+class UsageLimitResumeTimeTests(unittest.TestCase):
+    def test_reset_times(self):
+        now = local(11, 0)
+        tomorrow = datetime(2026, 9, 24, 9, 0).timestamp()
+        cases = [
+            ("You've hit your session limit · resets 5pm", local(17, 0)),
+            ("You've hit your session limit · resets 5:30pm", local(17, 30)),
+            ("Usage limit reached, resets at 5 pm", local(17, 0)),
+            ("Your limit will reset at 17:00", local(17, 0)),
+            ("You've hit your limit · resets 5pm (Europe/Helsinki)", local(17, 0)),
+            ("resets 12pm", local(12, 0)),
+            ("Resets 9 A.M.", tomorrow),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message):
+                self.assertEqual(tc.usage_limit_resume_time(message, now), expected)
+
+    def test_a_time_already_passed_today_is_tomorrow(self):
+        tomorrow = datetime(2026, 9, 24, 17, 0).timestamp()
+        self.assertEqual(tc.usage_limit_resume_time("resets 5pm", local(17, 0, 30)), tomorrow)
+        # The reset instant itself has passed too: the limit is not reset "now" but tomorrow
+        self.assertEqual(tc.usage_limit_resume_time("resets 5pm", local(17, 0)), tomorrow)
+        midnight = datetime(2026, 9, 24, 0, 0).timestamp()
+        self.assertEqual(tc.usage_limit_resume_time("resets 12am", local(23, 0)), midnight)
+
+    def test_no_time_is_none(self):
+        for message in (
+            "You've hit your session limit",
+            "resets 5",
+            "resets in 5 hours",
+            "resets 13pm",
+            "resets 25:00",
+            "resets 5:75pm",
+            "",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(tc.usage_limit_resume_time(message, local(11, 0)))
+
+
+class PauseForUsageLimitTests(unittest.TestCase):
+    def setUp(self):
+        api.begin_run()
+
+    def tearDown(self):
+        api.end_run()
+        api.take_stop_reason()
+
+    def test_pauses_until_the_stated_reset(self):
+        now = local(16, 0)
+        self.assertTrue(tc.pause_for_usage_limit(" hit your limit · resets 5pm ", {}, now))
+        pause = api.pause_state()
+        self.assertEqual(pause.resume_at, local(17, 0))
+        self.assertTrue(pause.automatic)
+        self.assertEqual(pause.reason, "usage limit was reached: hit your limit · resets 5pm")
+        self.assertFalse(api.run_cancelled())
+
+    def test_the_first_pause_stands(self):
+        now = local(16, 0)
+        self.assertTrue(tc.pause_for_usage_limit("resets 5pm", {}, now))
+        # Another worker's request hit the limit too, and reads a later time off its message
+        self.assertTrue(tc.pause_for_usage_limit("resets 6pm", {}, now + 30))
+        self.assertEqual(api.pause_state().resume_at, local(17, 0))
+        self.assertIn("resets 5pm", api.pause_state().reason)
+
+    def test_no_reset_time_falls_back_to_the_configured_interval(self):
+        now = local(16, 0)
+        tc.pause_for_usage_limit("You've hit your limit", {}, now)
+        self.assertEqual(api.pause_state().resume_at, now + 15 * 60)
+        api.resume_run()
+        config = {"terminal_usage_limit_retry_minutes": 30}
+        tc.pause_for_usage_limit("You've hit your limit", config, now)
+        self.assertEqual(api.pause_state().resume_at, now + 30 * 60)
+
+    def test_a_reset_a_day_away_is_not_believed(self):
+        # A request in flight across the reset comes back limited just after it; "5pm" then
+        # reads as tomorrow, and the run would sit out a whole day
+        now = local(17, 0, 30)
+        tc.pause_for_usage_limit("resets 5pm", {}, now)
+        self.assertEqual(api.pause_state().resume_at, now + 15 * 60)
+        api.resume_run()
+        # Tomorrow within the limit is believed
+        tc.pause_for_usage_limit("resets 1am", {}, local(23, 0))
+        self.assertEqual(api.pause_state().resume_at, datetime(2026, 9, 24, 1, 0).timestamp())
+
+    def test_outside_a_run_nothing_is_paused(self):
+        api.end_run()
+        self.assertFalse(tc.pause_for_usage_limit("resets 5pm", {}, local(16, 0)))
+        self.assertIsNone(api.pause_state())
+
+
 class RequestTests(ClockTestCase):
     def test_success_sends_prompt_on_stdin(self):
         popen = FakePopen((0, SUCCESS))
@@ -282,17 +398,26 @@ class RequestTests(ClockTestCase):
         self.assertEqual(len(popen.calls), 1)
         self.assertEqual(tc._live_processes, set())
 
-    def test_usage_limit_stops_the_run(self):
-        api.begin_run()
-        self.addCleanup(api.end_run)
-        self.assertIsNone(self.ask(FakePopen((1, USAGE_LIMIT))))
-        self.assertTrue(api.run_cancelled())
-        self.assertIn("resets 5pm", api.take_stop_reason())
-        self.assertIsNone(api.take_stop_reason())
+    def test_usage_limit_pauses_the_run_and_retries_the_request(self):
+        popen = FakePopen((1, USAGE_LIMIT), (0, SUCCESS))
+        seen = []
 
-        later = FakePopen((0, SUCCESS))
-        self.assertIsNone(self.ask(later))
-        self.assertEqual(later.calls, [])
+        def on_sleep(_sleeps):
+            seen.append((len(popen.calls), api.pause_state()))
+
+        clock = self.paused_run(on_sleep, start=local(16, 59))
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(len(popen.calls), 2)
+        # Held for the minute up to the reset, spawning nothing meanwhile
+        self.assertEqual(clock.total_slept, 60)
+        self.assertEqual({calls for calls, _ in seen}, {1})
+        pause = seen[0][1]
+        self.assertEqual(pause.resume_at, local(17, 0))
+        self.assertTrue(pause.automatic)
+        self.assertIn("resets 5pm", pause.reason)
+        self.assertIsNone(api.pause_state())
+        self.assertFalse(api.run_cancelled())
+        self.assertIsNone(api.take_stop_reason())
 
     def test_expired_login_stops_the_run(self):
         api.begin_run()
@@ -315,11 +440,12 @@ class RequestTests(ClockTestCase):
                 self.assertIsNone(api.take_stop_reason())
                 self.assertEqual(self.ask(FakePopen((0, SUCCESS))), {"decision": "match"})
 
-    def paused_run(self, on_sleep) -> PausingClock:
+    def paused_run(self, on_sleep, start: float = 1000.0) -> PausingClock:
         """A run on this thread, paused, with the clock driving (and ending) the wait."""
         api.begin_run()
         self.addCleanup(api.end_run)
-        clock = PausingClock(on_sleep)
+        self.addCleanup(api.take_stop_reason)
+        clock = PausingClock(on_sleep, start=start)
         # tearDown puts both clocks back
         setattr(tc, "time", clock)
         setattr(api, "time", clock)
@@ -370,6 +496,113 @@ class RequestTests(ClockTestCase):
         api.pause_run("paused by user")
         self.assertIsNone(self.ask(popen, cancel_state=cancel_state))
         self.assertEqual(popen.calls, [])
+
+    def test_a_usage_limit_spends_no_retry(self):
+        popen = FakePopen((1, USAGE_LIMIT), (1, RATE_LIMITED))
+        self.paused_run(lambda _sleeps: None, start=local(16, 59))
+        self.assertIsNone(self.ask(popen, {"max_request_retries": 2}))
+        # The retried request still gets its first attempt and both retries
+        self.assertEqual(len(popen.calls), 1 + 3)
+
+    def test_every_request_that_hit_the_limit_waits_out_the_first_pause(self):
+        inner = FakePopen((1, USAGE_LIMIT_6PM), (0, SUCCESS))
+
+        def popen(cmd, **kwargs):
+            if not inner.calls:
+                # Another worker's request hits the limit while this one is in flight
+                self.assertTrue(tc.pause_for_usage_limit(json.loads(USAGE_LIMIT)["result"], {}))
+            return inner(cmd, **kwargs)
+
+        clock = self.paused_run(lambda _sleeps: None, start=local(16, 59))
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(len(inner.calls), 2)
+        # Retried at 5pm, when the first pause ended, not at the 6pm its own message gave
+        self.assertEqual(clock.now, local(17, 0))
+        self.assertFalse(api.run_cancelled())
+
+    def test_a_limit_hit_again_after_the_reset_pauses_again(self):
+        popen = FakePopen((1, USAGE_LIMIT), (1, USAGE_LIMIT), (0, SUCCESS))
+        pauses = []
+
+        def on_sleep(_sleeps):
+            pause = api.pause_state()
+            if not pauses or pauses[-1] is not pause:
+                pauses.append(pause)
+
+        clock = self.paused_run(on_sleep, start=local(16, 59))
+        config = {"max_request_retries": 2, "terminal_usage_limit_retry_minutes": 1}
+        self.assertEqual(self.ask(popen, config), {"decision": "match"})
+        self.assertEqual(len(popen.calls), 3)
+        # The second "resets 5pm" arrives at 17:00, reads as 5pm tomorrow, and is not believed
+        self.assertEqual([p.resume_at for p in pauses], [local(17, 0), local(17, 1)])
+        self.assertEqual(clock.now, local(17, 1))
+
+    def test_a_cancel_during_the_usage_limit_pause_spawns_nothing(self):
+        popen = FakePopen((1, USAGE_LIMIT), (0, SUCCESS))
+
+        def on_sleep(sleeps):
+            if sleeps == 3:
+                api.cancel_run()
+
+        self.paused_run(on_sleep, start=local(16, 59))
+        self.assertIsNone(self.ask(popen))
+        self.assertEqual(len(popen.calls), 1)
+        self.assertTrue(api.run_cancelled())
+        reason = api.take_stop_reason()
+        self.assertIn("cancelled while paused: usage limit was reached", reason)
+        self.assertIn("resets 5pm", reason)
+
+    def use_semaphore(self, semaphore: CountingSemaphore) -> None:
+        """Serve `semaphore` as the process semaphore for the default config's size."""
+        saved = (tc._semaphore, tc._semaphore_size)
+        setattr(tc, "_semaphore", semaphore)
+        setattr(tc, "_semaphore_size", tc.DEFAULT_MAX_CONCURRENT)
+
+        def restore() -> None:
+            setattr(tc, "_semaphore", saved[0])
+            setattr(tc, "_semaphore_size", saved[1])
+
+        self.addCleanup(restore)
+
+    def test_a_pause_while_queued_for_a_process_slot_spawns_nothing(self):
+        # The usage limit lands while this worker waits behind the full process semaphore
+        semaphore = CountingSemaphore(
+            lambda n: api.pause_run("usage limit", local(17, 0)) if n == 1 else None
+        )
+        self.use_semaphore(semaphore)
+        popen = FakePopen((0, SUCCESS))
+        spawned = []
+
+        def on_sleep(_sleeps):
+            spawned.append(len(popen.calls))
+
+        clock = self.paused_run(on_sleep, start=local(16, 59))
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(set(spawned), {0})
+        self.assertEqual(clock.now, local(17, 0))
+        self.assertEqual(len(popen.calls), 1)
+        # The slot was given back for the pause and taken again after it
+        self.assertEqual((semaphore.acquired, semaphore.released), (2, 2))
+
+    def test_a_pause_during_the_cooldown_waits_before_taking_a_slot(self):
+        semaphore = CountingSemaphore()
+        self.use_semaphore(semaphore)
+        popen = FakePopen((0, SUCCESS))
+        spawned = []
+
+        def on_sleep(sleeps):
+            spawned.append(len(popen.calls))
+            if sleeps == 1:
+                api.pause_run("paused by user")
+            if sleeps == 10:
+                api.resume_run()
+
+        self.paused_run(on_sleep)
+        # 2 s of cooldown is 4 slices; the pause lands in the first and lasts to the tenth
+        api.rate_limit_tracker.note_rate_limited("terminal:claude-haiku-4-5", 2.0)
+        self.assertEqual(self.ask(popen), {"decision": "match"})
+        self.assertEqual(spawned, [0] * 10)
+        self.assertEqual(semaphore.acquired, 1)
 
     def test_long_instructions_go_in_a_file(self):
         seen = {}

@@ -1234,6 +1234,28 @@ class PostWhilePausedTests(PostWithRetryTestCase):
         self.assertEqual(session.call_count, 2)
         self.assertEqual(sent_at[1] - sent_at[0], resume_slice * api.CANCEL_POLL_INTERVAL)
 
+    def test_a_pause_during_the_cooldown_holds_the_request(self):
+        # Another task's 429 put the model on a cooldown, and the run is paused while this
+        # request sits it out: it must not go out when the cooldown ends
+        self.tracker.note_rate_limited(self.key, 2.0)
+        session = self.serve(FakeResponse(200))
+        sent_during_pause = []
+
+        def poll(n):
+            sent_during_pause.append(session.call_count)
+            if n == 1:
+                api.pause_run("paused by user")
+            if n == 10:
+                api.resume_run()
+
+        self.on_sleep(poll)
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        # 2 s of cooldown is 4 slices; the pause holds it to the tenth
+        self.assertEqual(sent_during_pause, [0] * 10)
+        self.assertEqual(session.call_count, 1)
+
 
 class SessionTests(unittest.TestCase):
     """Connection pools are sized to the concurrency ceiling at the start of each run."""
