@@ -229,6 +229,12 @@ def update_fake_note_ids(
         if not new_note_id_field or not word_list_field:
             logger.error("Error: Missing required fields in config")
             return notes_to_update_dict
+        if not new_note.id:
+            # Not added (add_note failed, or no deck to add it to). Its references used to be
+            # rewritten to this 0, which points at nothing and loses the word's link for good;
+            # left as the placeholder they stay recognisable and can be resolved or rematched.
+            logger.warning(f"New note was not added, its placeholder is kept: {new_note.fields}")
+            continue
         if new_note_id_field in new_note and word_list_field in new_note:
             # Find other notes whose word_list_field contains the fake note ID. Only a
             # placeholder is worth searching for: once this has run the field holds the note's
