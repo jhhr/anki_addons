@@ -36,6 +36,7 @@ from copy_anywhere.logic.object_refs import (
     normalize_ref,
     note_type_ref,
     ref_matches_note_type,
+    resolve_card_type,
     resolve_deck_id,
     resolve_note_type,
     resolve_template,
@@ -187,6 +188,63 @@ class TestResolvingACardTemplate:
         assert ref_matches_note_type(
             {"id": ref["note_type_id"], "name": VOCAB}, col.models.by_name("Renamed vocab")
         )
+
+
+class TestResolvingACardTypeInOneStep:
+    """`resolve_card_type` is the one place the two steps are taken.
+
+    Every reader of a card type reference -- the save blocker, the picker's label, the
+    reconcile pass -- goes through here, so the note type half and the template half are
+    looked up once, by the one rule, and drift is not possible.
+    """
+
+    def test_both_ids_win_over_names_that_are_no_longer_their_own(self, col):
+        note_type = col.models.by_name(VOCAB)
+        ref = card_type_ref(note_type, note_type["tmpls"][0])
+        rename_note_type(col, VOCAB, "Renamed vocab")
+        rename_template(col, "Renamed vocab", 0, "Reading card")
+
+        model, template = resolve_card_type(ref, col)
+        assert (model["name"], template["name"]) == ("Renamed vocab", "Reading card")
+
+    def test_a_stale_note_type_id_falls_back_to_the_stored_name(self, col):
+        # The note type half follows the rule: the id is gone, so the name is looked up.
+        # The template half does not get that far -- a template is only answered for a
+        # reference whose note type half matches the note type it is looked for in, and an
+        # id that named something else does not match the note type the name found.
+        note_type = col.models.by_name(VOCAB)
+        ref = {
+            "note_type_id": note_type["id"] + 10_000,
+            "template_id": note_type["tmpls"][1]["id"] + 10_000,
+            "name": f"{VOCAB}<::>Recall",
+        }
+
+        model, template = resolve_card_type(ref, col)
+        assert model["id"] == note_type["id"]
+        assert template is None
+
+    def test_a_null_template_id_resolves_the_template_by_name(self, col):
+        # The pre-23.10 shape: the note type carries an id, the template never had one.
+        note_type = col.models.by_name(VOCAB)
+        ref = {
+            "note_type_id": note_type["id"],
+            "template_id": None,
+            "name": f"{VOCAB}<::>Recall",
+        }
+        rename_note_type(col, VOCAB, "Renamed vocab")
+
+        model, template = resolve_card_type(ref, col)
+        assert (model["name"], template["name"]) == ("Renamed vocab", "Recall")
+
+    def test_a_reference_to_nothing_resolves_to_a_pair_of_nothings(self, col):
+        ref = {"note_type_id": 999, "template_id": 999, "name": "Gone<::>Gone"}
+        assert resolve_card_type(ref, col) == (None, None)
+
+    def test_a_live_note_type_with_a_gone_card_type_keeps_the_note_type(self, col):
+        # Either half can go on its own, and the caller has to be able to tell which.
+        note_type = col.models.by_name(VOCAB)
+        model, template = resolve_card_type(f"{VOCAB}<::>Gone", col)
+        assert (model["id"], template) == (note_type["id"], None)
 
 
 # The readers -------------------------------------------------------------------------

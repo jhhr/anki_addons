@@ -120,15 +120,18 @@ def deck_ref(deck_id: Any, name: str) -> ObjectRef:
     return {"id": _as_id(deck_id), "name": name}
 
 
+def card_type_live_name(model: Any, template: Any) -> str:
+    """The display form of a resolved card type, spelled the one way a reference does."""
+    return f"{model.get('name') or ''}{CARD_TYPE_SEPARATOR}{template.get('name') or ''}"
+
+
 def card_type_ref(model: Any, template: Any) -> CardTypeRef:
     return {
         "note_type_id": _as_id(model.get("id")),
         # Nullable since before 23.10: a note type saved with template ids stripped keeps
         # None and the backend does not backfill it, so that reference is name-only.
         "template_id": _as_id(template.get("id")),
-        "name": (
-            f"{model.get('name') or ''}{CARD_TYPE_SEPARATOR}{template.get('name') or ''}"
-        ),
+        "name": card_type_live_name(model, template),
     }
 
 
@@ -199,16 +202,30 @@ def resolve_template(ref: Any, model: Any) -> Optional[Any]:
     return None
 
 
+def resolve_card_type(ref: Any, col: Any) -> tuple[Optional[Any], Optional[Any]]:
+    """The note type and the template a card type reference names, each or both None.
+
+    The one rule for both halves: the id wins while it exists, the stored half of the
+    display name is looked up when it does not. Every reader of a card type reference goes
+    through here, because a card type is the one kind whose resolution takes two steps and
+    three copies of those two steps drifted apart the moment one of them was fixed.
+    """
+    reference = normalize_card_type_ref(ref)
+    halves = split_card_type_name(reference["name"]) or ("", "")
+    model = resolve_note_type({"id": reference["note_type_id"], "name": halves[0]}, col)
+    if model is None:
+        return None, None
+    return model, resolve_template(reference, model)
+
+
 def card_type_resolves(ref: Any, col: Any) -> bool:
     """Whether this card type reference still finds a note type and a template of it.
 
     Both halves, because either can go: the note type may have been deleted, or kept and
     the template removed from it.
     """
-    reference = normalize_card_type_ref(ref)
-    halves = split_card_type_name(reference["name"]) or ("", "")
-    model = resolve_note_type({"id": reference["note_type_id"], "name": halves[0]}, col)
-    return model is not None and resolve_template(reference, model) is not None
+    model, template = resolve_card_type(ref, col)
+    return model is not None and template is not None
 
 
 # Display ---------------------------------------------------------------------------------
@@ -234,12 +251,7 @@ def deck_display_name(ref: Any, col: Any) -> str:
 
 
 def card_type_display_name(ref: Any, col: Any) -> str:
-    reference = normalize_card_type_ref(ref)
-    halves = split_card_type_name(reference["name"]) or ("", "")
-    model = resolve_note_type(
-        {"id": reference["note_type_id"], "name": halves[0]}, col
-    )
-    template = resolve_template(reference, model)
+    model, template = resolve_card_type(ref, col)
     if model is None or template is None:
-        return reference["name"]
-    return f"{model['name']}{CARD_TYPE_SEPARATOR}{template['name']}"
+        return normalize_card_type_ref(ref)["name"]
+    return card_type_live_name(model, template)

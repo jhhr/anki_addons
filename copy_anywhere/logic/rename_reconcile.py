@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional
 from ..shared.interpolate.interpolate_fields import CARD_VALUE_RE, CARD_VALUES_DICT
 from .definition_migration import STAGE_EXPRESSION_KEYS, rewrite_references
 from .definition_schema import (
-    CARD_TYPE_SEPARATOR,
     MODE_CODE,
     STAGE_CARD_QUERY,
     STAGE_CONDITION,
@@ -49,13 +48,13 @@ from .object_refs import (
     KIND_DECK,
     KIND_FIELD,
     KIND_NOTE_TYPE,
+    card_type_live_name,
     card_type_resolves,
     normalize_card_type_ref,
     normalize_ref,
+    resolve_card_type,
     resolve_deck_id,
     resolve_note_type,
-    resolve_template,
-    split_card_type_name,
 )
 from .query_terms import stale_search_terms
 
@@ -251,16 +250,12 @@ def _bind(
         if reference != card_action["card_type"]:
             changed = True
         card_action["card_type"] = reference
-        halves = split_card_type_name(reference["name"]) or ("", "")
-        model = resolve_note_type(
-            {"id": reference["note_type_id"], "name": halves[0]}, col
-        )
-        template = None if model is None else resolve_template(reference, model)
+        model, template = resolve_card_type(reference, col)
         if model is None or template is None:
             result.unresolved.append(_stale(definition, KIND_CARD_TYPE, reference["name"]))
             continue
         _remember(referenced, (KIND_NOTE_TYPE, model["id"]), definition)
-        live_name = f"{model['name']}{CARD_TYPE_SEPARATOR}{template['name']}"
+        live_name = card_type_live_name(model, template)
         changed |= _refresh(
             reference, "note_type_id", model["id"], definition, KIND_CARD_TYPE, result
         )
