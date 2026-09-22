@@ -951,6 +951,290 @@ class CancellationTests(PostWithRetryTestCase):
         self.assertTrue(run.cancelled.is_set())
 
 
+# --- Pausing a run --------------------------------------------------------------------------
+
+
+class PauseTestCase(unittest.TestCase):
+    """A run on this thread and a fake clock; both the wall clock and the sleeps are fake."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self._real_time = api.time
+        api.time = self.clock
+        self.run = api.begin_run()
+
+    def tearDown(self):
+        api.time = self._real_time
+        api.end_run()
+        api.take_stop_reason()
+
+    def on_sleep(self, callback):
+        """Call `callback(slice_number)` after each fake sleep slice, numbered from 1."""
+        sleep_slice = self.clock.sleep
+
+        def sleep(seconds):
+            sleep_slice(seconds)
+            callback(len(self.clock.slept))
+
+        self.clock.sleep = sleep
+
+    def in_thread(self, target):
+        """Run `target` on a fresh thread and return what it returned."""
+        outcome = {}
+        thread = threading.Thread(target=lambda: outcome.update(value=target()))
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        return outcome["value"]
+
+
+class PauseStateTests(PauseTestCase):
+    def test_a_run_is_paused_and_resumed(self):
+        self.assertFalse(api.run_paused())
+        self.assertIsNone(api.pause_state())
+
+        self.assertTrue(api.pause_run("paused by user"))
+        self.assertTrue(api.run_paused())
+        self.assertEqual(api.pause_state(), api.PauseState("paused by user", None, False))
+
+        api.resume_run()
+        self.assertFalse(api.run_paused())
+        self.assertIsNone(api.pause_state())
+        self.assertFalse(self.run.paused.is_set())
+
+    def test_a_pause_with_a_resume_time_is_automatic(self):
+        self.assertTrue(api.pause_run("usage limit was reached: x", resume_at=2000.0))
+        self.assertEqual(
+            api.pause_state(), api.PauseState("usage limit was reached: x", 2000.0, True)
+        )
+
+    def test_a_second_pause_changes_nothing_and_the_first_record_stands(self):
+        # Many workers hit a usage limit at once; the first one's reset time is the one kept
+        self.assertTrue(api.pause_run("paused by user"))
+        self.assertFalse(api.pause_run("usage limit was reached: x", resume_at=2000.0))
+        self.assertEqual(api.pause_state(), api.PauseState("paused by user", None, False))
+
+    def test_pausing_with_no_run_does_nothing(self):
+        api.end_run()
+        self.assertFalse(api.pause_run("paused by user"))
+        self.assertIsNone(api.pause_state())
+        api.resume_run()  # harmless
+        self.assertFalse(api.run_paused())
+
+    def test_resuming_a_run_that_is_not_paused_is_harmless(self):
+        api.resume_run()
+        self.assertFalse(api.run_paused())
+
+    def test_a_thread_outside_the_run_pauses_and_resumes_the_run_in_progress(self):
+        # The dialog's buttons act from the main thread, which is never enrolled in a run
+        self.assertTrue(self.in_thread(lambda: api.pause_run("paused by user")))
+        self.assertTrue(api.run_paused())
+        self.assertEqual(self.in_thread(api.pause_state).reason, "paused by user")
+
+        self.in_thread(api.resume_run)
+        self.assertFalse(api.run_paused())
+
+    def test_a_thread_outside_the_run_is_never_held_by_its_pause(self):
+        # Same as for cancel: a thread in no run - an editor hook on the main thread - must
+        # never block on a bulk run's pause
+        api.pause_run("paused by user")
+        self.assertFalse(self.in_thread(api.run_paused))
+        self.assertTrue(self.in_thread(api.wait_while_paused))
+
+    def test_a_worker_enrolled_in_the_run_is_paused_with_it(self):
+        api.pause_run("paused by user")
+
+        def worker():
+            api.join_run(self.run)
+            return api.run_paused()
+
+        self.assertTrue(self.in_thread(worker))
+
+    def test_a_pause_does_not_reach_the_threads_of_another_run(self):
+        # Threads a previous run abandoned stay enrolled in it; a new run's pause is not theirs
+        old_run = self.run
+        joined = threading.Event()
+        check = threading.Event()
+        outcome = {}
+
+        def abandoned_worker():
+            api.join_run(old_run)
+            joined.set()
+            check.wait(5)
+            outcome["paused"] = api.run_paused()
+
+        thread = threading.Thread(target=abandoned_worker)
+        thread.start()
+        self.assertTrue(joined.wait(5))
+        new_run = api.begin_run()
+        self.assertTrue(api.pause_run("paused by user"))
+        check.set()
+        thread.join(5)
+
+        self.assertFalse(outcome["paused"])
+        self.assertIsNone(old_run.pause)
+        self.assertIsNotNone(new_run.pause)
+
+    def test_run_paused_ends_an_expired_automatic_pause(self):
+        api.pause_run("usage limit was reached: x", resume_at=self.clock.now + 60)
+        self.clock.advance(59)
+        self.assertTrue(api.run_paused())
+        self.clock.advance(1)
+        self.assertFalse(api.run_paused())
+        self.assertIsNone(api.pause_state())
+        self.assertFalse(self.run.paused.is_set())
+
+    def test_a_manual_pause_never_expires(self):
+        api.pause_run("paused by user")
+        self.clock.advance(10**6)
+        self.assertTrue(api.run_paused())
+
+
+class WaitWhilePausedTests(PauseTestCase):
+    def test_returns_at_once_when_not_paused(self):
+        self.assertTrue(api.wait_while_paused())
+        self.assertEqual(self.clock.slept, [])
+
+    def test_waits_until_resumed(self):
+        api.pause_run("paused by user")
+        self.on_sleep(lambda n: api.resume_run() if n == 3 else None)
+        self.assertTrue(api.wait_while_paused())
+        self.assertEqual(self.clock.slept, [api.CANCEL_POLL_INTERVAL] * 3)
+
+    def test_a_resume_from_another_thread_releases_the_waiter(self):
+        # Real threads and a real clock: the resume comes from the main thread while the waiter
+        # sits on a worker, which is the whole reason this polls rather than waits on an event
+        api.time = self._real_time
+        real_interval = api.CANCEL_POLL_INTERVAL
+        api.CANCEL_POLL_INTERVAL = 0.005
+        self.addCleanup(setattr, api, "CANCEL_POLL_INTERVAL", real_interval)
+
+        api.pause_run("paused by user")
+        resumed = threading.Event()
+
+        def resume_later():
+            resumed.wait(0.05)  # a short real delay, so the waiter is already polling
+            api.resume_run()  # this thread is in no run: resumes the run in progress
+
+        thread = threading.Thread(target=resume_later)
+        started = self._real_time.monotonic()
+        thread.start()
+        self.assertTrue(api.wait_while_paused())
+        elapsed = self._real_time.monotonic() - started
+        thread.join(5)
+
+        self.assertGreaterEqual(elapsed, 0.04)
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(api.run_paused())
+
+    def test_a_cancel_of_the_run_while_paused_returns_false(self):
+        api.pause_run("paused by user")
+        self.on_sleep(lambda n: api.cancel_run() if n == 2 else None)
+        self.assertFalse(api.wait_while_paused())
+        self.assertEqual(len(self.clock.slept), 2)
+
+    def test_a_cancel_of_the_caller_while_paused_returns_false(self):
+        state = FakeCancelState()
+        api.pause_run("paused by user")
+        self.on_sleep(lambda n: setattr(state, "cancelled", True) if n == 2 else None)
+        self.assertFalse(api.wait_while_paused(state))
+        # The pause itself stands: only this caller gave up
+        self.assertTrue(api.run_paused())
+
+    def test_an_expired_automatic_pause_is_cleared_and_the_wait_ends(self):
+        api.pause_run("usage limit was reached: x", resume_at=self.clock.now + 2)
+        self.assertTrue(api.wait_while_paused())
+        self.assertEqual(self.clock.total_slept, 2.0)
+        self.assertIsNone(api.pause_state())
+
+
+class CancelWhilePausedTests(PauseTestCase):
+    def test_cancelling_an_automatic_pause_records_why_the_run_stopped(self):
+        # The user cancels a run the usage limit paused; the end message must say why notes
+        # were left undone
+        api.pause_run("usage limit was reached: resets 5pm", resume_at=self.clock.now + 600)
+        api.cancel_run()
+        self.assertTrue(api.run_cancelled())
+        self.assertIsNone(api.pause_state())
+        self.assertFalse(self.run.paused.is_set())
+        self.assertEqual(
+            api.take_stop_reason(), "cancelled while paused: usage limit was reached: resets 5pm"
+        )
+
+    def test_a_cancel_with_its_own_reason_keeps_it(self):
+        api.pause_run("usage limit was reached: x", resume_at=self.clock.now + 600)
+        api.cancel_run(reason="claude login expired")
+        self.assertEqual(api.take_stop_reason(), "claude login expired")
+        self.assertIsNone(api.pause_state())
+
+    def test_cancelling_a_manual_pause_records_no_reason(self):
+        # The user chose both the pause and the cancel; there is nothing to explain
+        api.pause_run("paused by user")
+        api.cancel_run()
+        self.assertIsNone(api.take_stop_reason())
+        self.assertIsNone(api.pause_state())
+
+
+class PostWhilePausedTests(PostWithRetryTestCase):
+    def on_sleep(self, callback):
+        sleep_slice = self.clock.sleep
+
+        def sleep(seconds):
+            sleep_slice(seconds)
+            callback(len(self.clock.slept))
+
+        self.clock.sleep = sleep
+
+    def test_nothing_is_sent_while_paused_and_the_request_goes_after_resume(self):
+        session = self.serve(FakeResponse(200))
+        api.pause_run("paused by user")
+        sent_during_pause = []
+
+        def poll(n):
+            sent_during_pause.append(session.call_count)
+            if n == 4:
+                api.resume_run()
+
+        self.on_sleep(poll)
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sent_during_pause, [0, 0, 0, 0])
+        self.assertEqual(session.call_count, 1)
+
+    def test_a_cancel_during_the_pause_sends_nothing(self):
+        session = self.serve(FakeResponse(200))
+        state = FakeCancelState()
+        api.pause_run("paused by user")
+        self.on_sleep(lambda n: setattr(state, "cancelled", True) if n == 2 else None)
+        self.assertIsNone(self.post(cancel_state=state))
+        self.assertEqual(session.call_count, 0)
+
+    def test_a_retry_after_a_rate_limit_waits_for_the_resume(self):
+        # The pause lands while the first request is in flight. Its 429 backoff runs out while
+        # the run is still paused, and the retry must not go out until the resume.
+        sent_at = []
+
+        def rejected_while_pausing():
+            sent_at.append(self.clock.now)
+            api.pause_run("paused by user")
+            return FakeResponse(429, headers={"Retry-After": "5"}, body={})
+
+        def accepted():
+            sent_at.append(self.clock.now)
+            return FakeResponse(200)
+
+        session = self.serve(rejected_while_pausing, accepted)
+        # 5 s of backoff is 10 slices; resume 3 s into the wait for the pause after it
+        resume_slice = 10 + 6
+        self.on_sleep(lambda n: api.resume_run() if n == resume_slice else None)
+        response = self.post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.call_count, 2)
+        self.assertEqual(sent_at[1] - sent_at[0], resume_slice * api.CANCEL_POLL_INTERVAL)
+
+
 class SessionTests(unittest.TestCase):
     """Connection pools are sized to the concurrency ceiling at the start of each run."""
 

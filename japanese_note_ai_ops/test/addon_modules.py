@@ -110,6 +110,11 @@ class FakeClock:
     def monotonic(self) -> float:
         return self.now
 
+    def time(self) -> float:
+        # The same clock as monotonic: code that measures wall-clock deadlines (an automatic
+        # pause's resume_at) moves on with the sleeps too
+        return self.now
+
     def sleep(self, seconds: float) -> None:
         self.slept.append(seconds)
         self.now += seconds
