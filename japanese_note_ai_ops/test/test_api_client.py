@@ -1014,6 +1014,19 @@ class PauseStateTests(PauseTestCase):
         self.assertFalse(api.pause_run("usage limit was reached: x", resume_at=2000.0))
         self.assertEqual(api.pause_state(), api.PauseState("paused by user", None, False))
 
+    def test_a_pause_past_its_end_time_gives_way_to_a_new_one(self):
+        # A request that hits the limit again after the reset, before any poll has cleared the
+        # old pause, must still pause the run rather than retry straight into the limit
+        start = self.clock.now
+        self.assertTrue(api.pause_run("usage limit was reached: a", resume_at=start + 60))
+        self.assertFalse(api.pause_run("usage limit was reached: b", resume_at=start + 90))
+        self.clock.advance(60)
+        self.assertTrue(api.pause_run("usage limit was reached: c", resume_at=start + 900))
+        self.assertEqual(
+            api.pause_state(), api.PauseState("usage limit was reached: c", start + 900, True)
+        )
+        self.assertTrue(api.run_paused())
+
     def test_pausing_with_no_run_does_nothing(self):
         api.end_run()
         self.assertFalse(api.pause_run("paused by user"))

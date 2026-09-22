@@ -259,14 +259,21 @@ def pause_run(reason: str, resume_at: Optional[float] = None) -> bool:
 
     `resume_at` (time.time() based) makes the pause automatic: it ends by itself at that time.
     Returns False, changing nothing, when there is no run or it is already paused, so the first
-    pause's reason and end time stand.
+    pause's reason and end time stand. An automatic pause whose time has passed but that no
+    poll has cleared yet does not count: a request hitting the limit again in that moment
+    would otherwise be refused its pause, retry at once and spend one more request on the limit.
     """
     run = _pause_target()
     if run is None:
         logger.debug("Pause requested with no run in progress")
         return False
     with _pause_lock:
-        if run.pause is not None:
+        current = run.pause
+        if current is not None and not (
+            current.automatic
+            and current.resume_at is not None
+            and time.time() >= current.resume_at
+        ):
             return False
         run.pause = PauseState(reason, resume_at, resume_at is not None)
         run.paused.set()
