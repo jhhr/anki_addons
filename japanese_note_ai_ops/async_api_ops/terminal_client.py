@@ -57,6 +57,14 @@ RETRY_STATUSES = frozenset({429, 529})
 # Wording of the subscription usage limit, which no retry within a run can clear. Not seen in a
 # real response yet, only in the CLI's strings: "You've hit your ... limit", "resets ...".
 USAGE_LIMIT_RE = re.compile(r"hit your .*limit|usage limit|limit reached|limit will reset", re.I)
+# Wording of an expired or missing login, which no retry can clear either: seen as
+# "Failed to authenticate: OAuth session expired and could not be refreshed".
+AUTH_FAILURE_RE = re.compile(
+    r"failed to authenticate|authentication (?:failed|error)|oauth|invalid api key"
+    r"|/login|not logged in|unauthorized",
+    re.I,
+)
+AUTH_STATUSES = frozenset({401, 403})
 
 
 def is_terminal_model(model: str) -> bool:
@@ -96,7 +104,17 @@ class CliAction:
     RETRY = "retry"
     # The subscription's usage limit: nothing more will go through until it resets
     EXHAUSTED = "exhausted"
+    # The CLI's login expired: nothing will go through until the user logs in again
+    UNAUTHENTICATED = "unauthenticated"
     FAIL = "fail"
+
+
+# The dead ends: what went wrong for the whole run, not for this one request, so the run stops
+# instead of spending its remaining notes on the same wall.
+STOP_REASONS = {
+    CliAction.EXHAUSTED: "usage limit was reached",
+    CliAction.UNAUTHENTICATED: "login has expired - run `claude` in a terminal to log in again",
+}
 
 
 class CliOutcome(NamedTuple):
@@ -115,8 +133,10 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
     except (ValueError, TypeError):
         body = None
     if not isinstance(body, dict):
-        # A crash or a kill leaves no JSON: this process's problem, worth another try
         tail = (stderr or stdout or "").strip()[-500:]
+        if AUTH_FAILURE_RE.search(tail):
+            return CliOutcome(CliAction.UNAUTHENTICATED, None, tail)
+        # A crash or a kill leaves no JSON: this process's problem, worth another try
         return CliOutcome(CliAction.RETRY, None, f"exit {exit_code}, no JSON output: {tail}")
 
     text = body.get("result")
@@ -131,6 +151,8 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
 
     if USAGE_LIMIT_RE.search(text):
         return CliOutcome(CliAction.EXHAUSTED, None, text, status)
+    if AUTH_FAILURE_RE.search(text) or status in AUTH_STATUSES:
+        return CliOutcome(CliAction.UNAUTHENTICATED, None, text, status)
     if status is not None and (status in RETRY_STATUSES or status >= 500):
         return CliOutcome(CliAction.RETRY, None, text, status)
     return CliOutcome(CliAction.FAIL, None, text or stdout.strip()[-500:], status)
@@ -343,15 +365,15 @@ def _text(data: Optional[bytes]) -> str:
     return data.decode("utf-8", errors="replace") if data else ""
 
 
-def stop_run_for_usage_limit(message: str) -> None:
-    """Cancel the run: every request after this one would hit the same limit.
+def stop_run_for_dead_end(reason: str, message: str) -> None:
+    """Cancel the run: every request after this one would hit the same wall.
 
     The processes still running are killed and nothing more is spawned; the op's end message
     says why. A request outside a bulk run (an editor hook) only fails.
     """
     if current_run() is None:
         return
-    cancel_run(reason=f"The claude CLI usage limit was reached: {message.strip()}")
+    cancel_run(reason=f"The claude CLI {reason}: {message.strip()}")
 
 
 def get_response_from_terminal(
@@ -452,9 +474,10 @@ def _run_with_retry(
             if outcome.result is not None:
                 return outcome.result
             return decode_text_result(outcome.message, json_result_corrector)
-        if outcome.action == CliAction.EXHAUSTED:
-            logger.error("claude CLI usage limit reached for %s: %s", key, outcome.message)
-            stop_run_for_usage_limit(outcome.message)
+        if outcome.action in STOP_REASONS:
+            reason = STOP_REASONS[outcome.action]
+            logger.error("claude CLI %s, stopping %s: %s", reason, key, outcome.message)
+            stop_run_for_dead_end(reason, outcome.message)
             return None
         if outcome.action == CliAction.FAIL:
             # Full output, so a failure this classifier doesn't know yet can be taught to it

@@ -43,6 +43,12 @@ RATE_LIMITED = cli_json(is_error=True, api_error_status=429, result="Rate limite
 USAGE_LIMIT = cli_json(
     is_error=True, api_error_status=429, result="You've hit your session limit · resets 5pm"
 )
+# The whole of add_note_20260922_222819.log: 2018 requests, every one of them this
+EXPIRED_LOGIN = cli_json(
+    is_error=True,
+    api_error_status=None,
+    result="Failed to authenticate: OAuth session expired and could not be refreshed",
+)
 
 
 class FakeProcess:
@@ -153,11 +159,21 @@ class PureTests(unittest.TestCase):
             ((1, RATE_LIMITED), tc.CliAction.RETRY),
             ((1, cli_json(is_error=True, api_error_status=529)), tc.CliAction.RETRY),
             ((1, USAGE_LIMIT), tc.CliAction.EXHAUSTED),
+            ((1, EXPIRED_LOGIN), tc.CliAction.UNAUTHENTICATED),
+            ((1, cli_json(is_error=True, api_error_status=401)), tc.CliAction.UNAUTHENTICATED),
+            (
+                (1, cli_json(is_error=True, result="Invalid API key · Please run /login")),
+                tc.CliAction.UNAUTHENTICATED,
+            ),
             ((3221225786, ""), tc.CliAction.RETRY),
         ]
         for (exit_code, stdout), action in cases:
             with self.subTest(stdout=stdout[:60]):
                 self.assertEqual(tc.classify_result(exit_code, stdout, "").action, action)
+        # A login failure the CLI printed instead of returning is still a dead end, not a crash
+        self.assertEqual(
+            tc.classify_result(1, "", "Authentication failed").action, tc.CliAction.UNAUTHENTICATED
+        )
         self.assertEqual(tc.classify_result(0, SUCCESS, "").result, {"decision": "match"})
         self.assertEqual(
             tc.classify_result(1, USAGE_LIMIT, "").message, json.loads(USAGE_LIMIT)["result"]
@@ -231,8 +247,8 @@ class RequestTests(ClockTestCase):
         self.assertIsNone(self.ask(popen))
         self.assertEqual(len(popen.calls), 3)
 
-    def test_fail_and_usage_limit_not_retried(self):
-        for outcome in ((1, BAD_MODEL), (1, USAGE_LIMIT)):
+    def test_fail_and_dead_ends_not_retried(self):
+        for outcome in ((1, BAD_MODEL), (1, USAGE_LIMIT), (1, EXPIRED_LOGIN)):
             with self.subTest(outcome=outcome[1][:40]):
                 popen = FakePopen(outcome)
                 self.assertIsNone(self.ask(popen))
@@ -278,11 +294,26 @@ class RequestTests(ClockTestCase):
         self.assertIsNone(self.ask(later))
         self.assertEqual(later.calls, [])
 
-    def test_usage_limit_outside_a_run_only_fails(self):
-        self.assertIsNone(self.ask(FakePopen((1, USAGE_LIMIT))))
-        self.assertFalse(api.run_cancelled())
-        self.assertIsNone(api.take_stop_reason())
-        self.assertEqual(self.ask(FakePopen((0, SUCCESS))), {"decision": "match"})
+    def test_expired_login_stops_the_run(self):
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        self.assertIsNone(self.ask(FakePopen((1, EXPIRED_LOGIN))))
+        self.assertTrue(api.run_cancelled())
+        reason = api.take_stop_reason()
+        self.assertIn("login has expired", reason)
+        self.assertIn("OAuth session expired", reason)
+
+        later = FakePopen((0, SUCCESS))
+        self.assertIsNone(self.ask(later))
+        self.assertEqual(later.calls, [])
+
+    def test_dead_ends_outside_a_run_only_fail(self):
+        for outcome in ((1, USAGE_LIMIT), (1, EXPIRED_LOGIN)):
+            with self.subTest(outcome=outcome[1][:40]):
+                self.assertIsNone(self.ask(FakePopen(outcome)))
+                self.assertFalse(api.run_cancelled())
+                self.assertIsNone(api.take_stop_reason())
+                self.assertEqual(self.ask(FakePopen((0, SUCCESS))), {"decision": "match"})
 
     def test_long_instructions_go_in_a_file(self):
         seen = {}

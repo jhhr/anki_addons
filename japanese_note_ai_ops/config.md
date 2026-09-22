@@ -112,7 +112,8 @@ API: about 70 requests a minute on a 4-core PC. Put the API model back in the co
 back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
 and `max_retry_wait_seconds` apply as for the API. When the subscription's usage limit is hit, the
 run stops (the remaining notes are left as they were) and the end message says when the limit
-resets; switch the model to an API one and rerun to finish.
+resets; switch the model to an API one and rerun to finish. A login that has expired stops the run
+the same way: log in again by running `claude` in a terminal, then rerun.
 
 - `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
   takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
