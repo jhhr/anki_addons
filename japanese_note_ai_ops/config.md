@@ -112,6 +112,12 @@ how many tasks are still finishing, and the paused time is left out of the ETA. 
 Escape does, and works while paused too. If a later Anki version changes its progress dialog the
 buttons may be missing; Escape still cancels.
 
+A cancelled run keeps what it finished: edited notes are saved, and the new notes a match run
+prepared are added and linked from their sentences as after a full run, so the meanings already
+paid for are not lost. Words still unanswered stay to be matched by the next run. Once the run is
+saving and adding notes, both buttons are greyed out; that part is local and finishes on its own.
+The end message says how many new notes were added.
+
 ### terminal- models (claude CLI)
 
 Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude

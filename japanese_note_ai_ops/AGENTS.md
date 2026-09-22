@@ -86,6 +86,13 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   `get_note`, `get_notes`, `run_on_collection_async`); never `mw.col`. Sync ops run
   sequentially on the op thread and do use `mw.col`. `collection_access` raises
   `RunCancelled` on a cancelled run, except inside `begin_cleanup_phase()`.
+- **A cancelled run still saves everything it prepared, new notes included.** Cleanup's
+  `add_new_notes` never checks for a cancel: the dialog's flag stays set for the rest of a
+  cancelled run, and a check there once meant no new note (and no paid-for meaning) survived
+  one. A note that could not be added keeps its placeholder id in the arrays;
+  `update_fake_note_ids` skips it rather than writing `0`. The match op saves each started
+  note's finished words after a cancel (`flush_unsaved_arrays`), before cleanup copies
+  `notes_to_add_dict`, so every placeholder it saves belongs to a note cleanup adds.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight
