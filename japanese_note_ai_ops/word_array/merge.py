@@ -21,10 +21,10 @@ whole module exists to get out of.
 
 Within a changed region a word usually survives the correction - 小枝 is still there, only its
 reading moved - so `match_data` that would otherwise be lost is carried over, in the two steps
-`research/migrate.py` found were needed for the same job: the dictionary form and the reading
+the migration found were needed for the same job: the dictionary form and the reading
 together, and then the dictionary form alone, which is what carries a word the old array simply
 misread (小枝 read しょうえだ). A step only carries where exactly one old and one new element
-of the region still hold that key. Two candidates is the case migrate.py already decided not to
+of the region still hold that key. Two candidates is the case the migration already decided not to
 guess at: the judge can judge such a word again and match_words_to_notes can find its note again
 from the sentence, and a coin toss here cannot be undone. Whatever is dropped is reported with
 the note id it had, for the caller to log - a lost link is the only part of this worth anyone's

@@ -185,10 +185,11 @@ Sudachi tags it so or an honorific follows: 深い谷, 玄関のベル stay noun
 `generator.build_name_lexicon(sentences)` builds the lexicon; `generate(sentence, names=lexicon)`
 merges each name it finds into one `proper noun` with no sub-words, leaving the honorific a word
 of its own. The add-on keeps the lexicon in `user_files/name_lexicon.json`, built by the browser
-menu entry "Build name lexicon from selected notes" (select the whole collection) and read by the
-migration op; without one, names stay cut up. Over the export: 115 names, links carried unchanged
+menu entry "Build name lexicon from selected notes" (select the whole collection) and read by
+extract_words; without one, names stay cut up. Over the export: 115 names, links carried unchanged
 (76087), 22 fewer array words. `research/name_lexicon.py` reports what the lexicon holds and misses;
-`migrate_fit.py` builds one from its corpus unless given `--no-names`.
+the research scripts that generate arrays build one from the export
+(`corpora.export_name_lexicon`).
 
 Without a lexicon, three rules within the sentence fix Sudachi's proper noun calls: katakana nouns
 joined by ・ are one name when a part is a Sudachi proper noun or not in JMdict (ナツキ・スバル, not
@@ -203,7 +204,7 @@ proper nouns the sentence has (a JSON list), and `fix_array` makes every name th
 top-level word boundaries one proper noun without sub-words (a name inside a word, 日本 of 日本語,
 changes nothing). Op `async_api_ops/find_proper_nouns.py`, one request per note, browser entry "Find
 proper nouns in word arrays", model `proper_nouns_model` (default gpt-5.6-luna, the most precise
-below). It is its own step of the migration: build the name lexicon, migrate, find proper nouns,
+below). It was its own step of the migration: build the name lexicon, migrate, find proper nouns,
 then judge. "Extract words" makes the same call inline (`add_proper_nouns`, sharing the tokenizer
 lock), so a freshly generated array has been through it already.
 `research/proper_noun_eval.py` scores models on 300 export sentences with old proper nouns and 300
@@ -263,10 +264,9 @@ the generator read differently is a changed word and the new reading wins.
 Within a changed region `match_data` is carried over by dictionary form and reading, and then by
 dictionary form alone, which is what recognises the word the old array misread (小枝 read
 しょうえだ). Each step carries only where exactly one old and one new element of the region
-still holds the key; two candidates is what `research/migrate.py` decided not to guess at, and
-the op logs the note id of every link it could not carry. The second guard still stands: an old
-extract_words word list is left alone either way, since the migration that could read one is
-gone.
+still holds the key; two candidates is what the migration decided not to guess at either, and
+the op logs the note id of every link it could not carry. The second guard still stands: a field
+that is not a readable array is left alone either way.
 
 The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
 is what follows it and then "Match extracted words to notes". A regeneration that changes
@@ -402,51 +402,32 @@ the old values in `output/vocab_dedupe_undo.jsonl` for `--revert`. "Clean dictio
 "Deduplicate existing meaning notes" on the tag then collapsed the meanings and repointed the links.
 A key that spells a word wrong (まだ → 未だ) goes in `generator.CANONICAL_EXCEPTIONS`.
 
-## Migrating the old word lists
+## The old word lists
 
-**The migration was run on the collection on 2026-09-16** (name lexicon, migrate, find proper
-nouns, judge), so no note should hold an old word list any more; what follows is what it did.
-Every reader of the old format has gone since, along with the export of it
-(`make_extract_words_migration_data`) and the compound verb migration; the research scripts that
-read `output/extract_words_migration_data.jsonl` work on the file already written.
+**The collection was migrated on 2026-09-16** (name lexicon, migrate, find proper nouns, judge),
+and the migration, every reader of the old format and the export of it
+(`make_extract_words_migration_data`) have gone since. The migration fitted each old entry's
+note id into the generated array and nothing else: the array was taken as correct. Over the
+extract_words fine-tuning set, a hand-checked corpus of the old format, 87.6% of 3768 entries
+carried over, the rest mostly compound function words the structural rules refuse (には, でも,
+として) and て and ない, which belong to the verb's inflection chain now.
 
-`research/migrate.py`'s `migrate(word_lists, arr)` fits a stored extract_words word list into a
-generated array, writing `match_data` in place. It sits under `research/` because the op that
-called it is gone; `migrate_fit.py`, `judge_eval.py` and `proper_nouns.py` still use it. The
-array is taken as correct, so the only thing carried over is the one thing the generator cannot
-produce: the note id of a word already matched. The meaning index goes (a word's position in the
-array is what tells two occurrences apart now) and so does the sort field value, which the note
-itself has; an entry with no note id therefore carries nothing and is counted, not reported.
+The old lists live on in the research corpora (`research/corpora.py`: the export, as written
+before the migration, and its hand-checked subset), which several evaluations score against.
+`research/old_word_lists.py` reads their entries and finds the word of a generated array an
+entry names, in steps, the first that fits anything deciding:
 
-An entry finds its element in steps, each needing exactly one element to fit, and the step also
-ranks the claim, so that of two entries wanting one word the better-founded one keeps it
-instead of both standing down:
+| Step | Fits when |
+| --- | --- |
+| `form` | the form and reading as they stand |
+| `okurigana` | same reading, same kanji (向う -> 向こう) |
+| `written` | same form, the old reading colloquial or wrong (何[なん], ノイローゼ[はいろーぜ]) |
+| `reading` | same reading, part of speech fits the category (する -> 為る, について -> に就いて) |
+| `raw` | the element's raw text is the entry's word (です -> だ, 突き -> 突く) |
 
-| Step | Fits when | Carries over |
-| --- | --- | --- |
-| `form` | the form and reading as they stand | 3071 |
-| `okurigana` | same reading, same kanji (向う -> 向こう) | 19 |
-| `written` | same form, the old reading colloquial or wrong (何[なん], ノイローゼ[はいろーぜ]) | 27 |
-| `reading` | same reading, part of speech fits the category (する -> 為る, について -> に就いて) | 121 |
-| `raw` | the element's raw text is the entry's word (です -> だ, 突き -> 突く) | 62 |
-
-What fits nothing, fits several elements, or is contested by a second link is reported rather
-than guessed at: match_words_to_notes can match the word again from the sentence with `<b>`
-marking which occurrence it is, which beats a coin toss here. The exception is **several
-occurrences of one word**, where the link goes on all of them: the old list naming 為る once for
-a sentence with two of them gave it one note and never said which occurrence it meant. This was
-first done for particles and the copula only; over the whole collection that left some 450
-content-word links lost, so the rare two occurrences with two meanings are left to the matching
-step instead.
-`lost_note_ids` is the part worth a caller's attention: a lost link is what the op tags a note
-for.
-
-Measured by `research/migrate_fit.py` over the 292 sentences of the extract_words fine-tuning
-set, which is a hand-checked corpus of the old format: **87.6% of 3768 entries carried over**
-(220 of them spread over several occurrences), the rest being 9.0% with no element at all, 1.7%
-ambiguous and 0.8% contested. The no-element share is mostly by design - the old lists gave
-notes to compound function words the structural rules refuse (には, でも, として), and to て and
-ない, which now belong to the verb's inflection chain.
+`judge_eval.py` labels a word `match` when an entry of the checked export names it, and
+`proper_nouns.py`, `proper_noun_eval.py` and `name_lexicon.py` compare against the old lists'
+proper nouns.
 
 The sentence the array is generated from has its `<i>` context sentences stripped first
 (`html_stripping.strip_context_sentences`), the way extract_words strips them: the neighbouring
@@ -516,7 +497,6 @@ python word_array/research/setup_resources.py   # the first-use downloads, into 
 python word_array/research/evaluate.py          # accuracy against the gold, -q for the summary
 python word_array/research/validate.py          # reconstruction, sub-words, <b> wrapping
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
-python word_array/research/migrate_fit.py       # the corpus loader; its own report is spent
 python word_array/research/sub_readings.py      # parents whose sub-words' readings don't add up
 python word_array/research/okurigana_decomp.py  # what the okurigana rules split, and don't
 python word_array/research/name_lexicon.py      # what the name lexicon holds and misses
@@ -534,10 +514,6 @@ py -3.10 word_array/research/unbalanced_tags.py      # array words whose html do
 py -3.10 word_array/research/canonical_forms.py      # what one spelling per entry changes
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
-
-`migrate_fit.py --corpus export` (the default) dry-runs the migration over the whole collection's
-exported word lists, invalid data and crashes included; `checked` and `fine_tuning` are the
-smaller corpora. The whole export takes some minutes.
 
 An installed `sudachidict_*` package also counts as the dictionary; `SUDACHI_DICT` (a
 dictionary name or an absolute path to a `.dic`) overrides both.

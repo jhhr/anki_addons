@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import proper_nouns as survey
 from _bootstrap import ADDON_ROOT
-from migrate_fit import CORPORA, read_export
+from corpora import CORPORA, read_export
 
 RESULTS = ADDON_ROOT / "output" / "proper_noun_eval_results.jsonl"
 MODELS = [
@@ -65,7 +65,7 @@ def sample_rows(corpus: str, n: int) -> list[tuple[str, list]]:
         sentence = survey.html_stripping.strip_context_sentences(raw)
         if not sentence.strip():
             continue
-        old, _ = survey.migrate.read_word_lists(word_lists)
+        old, _ = survey.old_word_lists.read_word_lists(word_lists)
         names = [e for e in old if e.category == "proper_nouns" and e.word]
         (with_names if names else without).append((sentence, names))
     rng = random.Random(0)

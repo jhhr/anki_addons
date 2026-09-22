@@ -11,10 +11,10 @@ import argparse
 from collections import Counter, defaultdict
 
 from _bootstrap import ADDON_ROOT, load, load_root
-from migrate_fit import CORPORA, read_export
+from corpora import CORPORA, read_export
 
 generator = load("generator")
-migrate = load("research.migrate")
+old_word_lists = load("research.old_word_lists")
 match_flags = load("match_flags")
 html_stripping = load_root("html_stripping")
 
@@ -40,10 +40,10 @@ SAMPLES = 12
 
 def script(word: str) -> str:
     if generator.KANJI_RE.search(word):
-        return "kanji" if not migrate.KANA_RE.search(word) else "mixed"
+        return "kanji" if not old_word_lists.KANA_RE.search(word) else "mixed"
     if all("ァ" <= c <= "ヶ" or c == "ー" for c in word):
         return "katakana"
-    return "hiragana" if migrate.KANA_RE.search(word) else "other"
+    return "hiragana" if old_word_lists.KANA_RE.search(word) else "other"
 
 
 def top_spans(arr: list) -> list[tuple[int, int, list]]:
@@ -64,7 +64,7 @@ def honorific_after(spans: list, end: int) -> str:
 def classify(entry, arr: list, spans: list) -> tuple[str, str, list]:
     """The class of an old proper noun, a short description of the words it became, and the
     top-level elements it became (none when it is only a sub-word or not in the text)."""
-    hits, _ = migrate._find(entry, _all(arr))
+    hits, _ = old_word_lists.find_elements(entry, _all(arr))
     top = [e for _, _, e in spans if len(e) > 1]
     top_hits = [e for e in hits if any(e is t for t in top)]
     if top_hits:
@@ -141,7 +141,7 @@ def main() -> int:
         top_words = [w for w in analysis.final if w.kind != "punct"]
         word_of = {id(e): w for e, w in zip(top_elems, top_words)}
         oov = oov_offsets(analysis.text_map.natural)
-        old, _ = migrate.read_word_lists(word_lists)
+        old, _ = old_word_lists.read_word_lists(word_lists)
         named = {e.word for e in old if e.category == "proper_nouns"}
         for entry in old:
             if entry.category != "proper_nouns" or not entry.word:

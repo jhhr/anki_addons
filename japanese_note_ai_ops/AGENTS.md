@@ -134,8 +134,9 @@ Research scripts run from the **addon root**: `python word_array/research/<scrip
 script's directory is `sys.path[0]`, so siblings import each other by bare name. Addon
 modules come through `_bootstrap.load(...)`, `load_root(...)`, `load_shared(...)`, which
 register a fake package `jnaio_dev` rooted at the addon so that `..shared` imports resolve
-without running `__init__.py`. `research/migrate.py` is the one non-script there (loaded as
-`research.migrate`, relative imports, excluded from mypy). Collection repair scripts talk to
+without running `__init__.py`. `research/old_word_lists.py` is the one non-script there (loaded
+as `research.old_word_lists`, relative imports, excluded from mypy); `research/corpora.py` is
+the corpus loader the other scripts read their sentences through. Collection repair scripts talk to
 a running Anki over AnkiConnect, list changes by default, write only with `--apply`, undo
 with `--revert`, and log to `output/`. Never run one with `--apply` unless the user asked for
 that run. Commit the tooling; do not commit one-off reports or plans it produces

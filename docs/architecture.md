@@ -125,7 +125,7 @@ Details, fixtures and the three things that bite are in
 - `anki_shared/jp_text_processing` is excluded and silenced; it has its own mypy run. Its
   types still flow into importers.
 - Three directories are on `mypy_path` because their scripts import each other by bare name
-  at runtime. Two `conftest.py` files and `research/migrate.py` are excluded for what that
+  at runtime. Two `conftest.py` files and `research/old_word_lists.py` are excluded for what that
   does to their module names, not for their content.
 
 `pyrightconfig.json` and the root `.vscode/` are gitignored: they name one machine's
