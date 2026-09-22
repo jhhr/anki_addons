@@ -225,6 +225,44 @@ class ControlsRefreshTests(DialogTestCase):
 
         self.assertEqual(disabled, [True])
 
+    def test_cleanup_disables_the_buttons_of_a_run_that_was_not_cancelled(self):
+        disabled: list = []
+        self.replace("disable_run_controls", lambda: disabled.append(True))
+        updater = self.make_updater()
+
+        updater.begin_cleanup()
+
+        self.assertEqual(disabled, [True])
+
+
+class CleanupDrawTests(DialogTestCase):
+    """A cancelled run's cleanup adds its new notes, and shows it doing so."""
+
+    def draw_adding(self, updater, notes_added: int) -> None:
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(notes_added=notes_added, total_notes=3)
+
+    def test_adding_progress_is_drawn_over_the_cancelling_message_once_cleanup_begins(self):
+        updater = self.make_updater()
+        updater.show_cancelling()
+        self.draw_adding(updater, 1)
+        self.assertEqual(len(self.drawn), 1, "the unwinding burst is still held back")
+
+        updater.begin_cleanup()
+        self.draw_adding(updater, 2)
+
+        self.assertEqual(len(self.drawn), 2)
+        self.assertIn("Adding notes", self.labels[-1])
+        self.assertIn("2/3", self.labels[-1])
+
+    def test_a_run_that_was_not_cancelled_draws_as_before(self):
+        updater = self.make_updater()
+
+        updater.begin_cleanup()
+        self.draw_adding(updater, 1)
+
+        self.assertIn("Adding notes", self.labels[-1])
+
 
 class FakeButton:
     def __init__(self, text: str):
