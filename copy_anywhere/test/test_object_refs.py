@@ -403,3 +403,20 @@ class TestWhatValidationSaysAboutAReferenceSlot:
         assert "card action's 'card_type'" in str(
             validate_definition_structure(definition)[0]
         )
+
+    def test_an_edit_card_stage_without_card_actions_passes(self):
+        stage = d.edit_card("trigger")
+        del stage["card_actions"]
+        assert validate_definition_structure(d.staged(stages=[stage])) == []
+
+    def test_an_edit_note_stage_without_card_actions_passes(self):
+        stage = d.edit_note("trigger")
+        del stage["card_actions"]
+        assert validate_definition_structure(d.staged(stages=[stage])) == []
+
+    def test_card_actions_that_are_not_a_list_are_still_reported(self):
+        stage = d.edit_card("trigger")
+        stage["card_actions"] = {"guid": "a"}
+        assert "'card_actions' is not a list" in str(
+            validate_definition_structure(d.staged(stages=[stage]))[0]
+        )

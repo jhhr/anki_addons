@@ -770,7 +770,9 @@ def _validate_triggers(definition: Any, problems: list[SchemaProblem]) -> None:
 
 
 def _validate_card_actions(stage: Stage, problems: list[SchemaProblem]) -> None:
-    card_actions = stage.get("card_actions")
+    # The key is optional everywhere it is read -- a stage that acts on no card simply has
+    # none -- so a missing one is an empty list, not a broken stage.
+    card_actions = stage.get("card_actions", [])
     if not isinstance(card_actions, list):
         problems.append(SchemaProblem("'card_actions' is not a list", *_stage_id(stage)))
         return
