@@ -263,6 +263,16 @@ referenced deck id. It is written by the same pass and refreshed whenever defini
 saved, so it is never older than the last save, and a changed name under an unchanged id is
 what a rename *is*. The pass writes the config only when something changed.
 
+**Several profiles.** The addon's config is one file for the whole add-on, shared by every
+profile, while a note type id, a deck id and a field id belong to the collection that issued
+them -- and a collection restored from a backup as a second profile answers to the first
+one's ids under whatever names it has been given since. So the snapshot records which
+collection it was taken of, and a pass that opens on a different one does not read it at
+all: no name in it is an old name here, nothing is rewritten, every reference is re-bound by
+the usual rule -- the id while it still exists, the name when it does not -- and the snapshot
+is replaced with this collection's names. A rename is only ever followed inside the
+collection it happened in, so switching profiles leaves each one's definitions as they were.
+
 ## The startup migration
 
 `migrate_config()` runs before anything can read a definition. It converts every stored

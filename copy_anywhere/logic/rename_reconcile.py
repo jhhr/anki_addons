@@ -70,7 +70,9 @@ logger = logging.getLogger(__name__)
 _TRIGGER_NOTE_TYPE = "trigger note type"
 
 #: Where the names the ids last had are kept. Not a definition's business -- it is about the
-#: collection, and one entry serves every definition that references the object.
+#: collection, and one entry serves every definition that references the object. It says
+#: *which* collection, too: this config is the addon's and is shared by every profile on the
+#: machine, while every id in it belongs to the one collection that issued it.
 SNAPSHOT_KEY = "name_snapshot"
 
 
@@ -112,6 +114,9 @@ class ReconcileResult:
     #: than only after a rename: a query can go stale on another device, and nothing else
     #: ever looks inside search text (`query_terms.py`).
     stale_terms: list[StaleName] = dataclass_field(default_factory=list)
+    #: The one line a pass on a collection other than the snapshot's has to say: nothing
+    #: was followed, because nothing in the snapshot was about this collection.
+    collection_changed: Optional[str] = None
     changed: bool = False
 
 
@@ -614,8 +619,27 @@ def referenced_object_ids(definitions: Any) -> tuple[set, set]:
     return note_type_ids, deck_ids
 
 
-def _empty_snapshot() -> dict:
-    return {"note_types": {}, "decks": {}}
+def _collection_path(col: Any) -> str:
+    """Which collection a snapshot is of. The config is shared by every profile on the
+    machine, and the ids in it are not: they are the issuing collection's own."""
+    return str(getattr(col, "path", "") or "")
+
+
+def _empty_snapshot(col: Any) -> dict:
+    return {"collection": _collection_path(col), "note_types": {}, "decks": {}}
+
+
+def _snapshot_is_of_another_collection(snapshot: Any, col: Any) -> bool:
+    """Whether this snapshot was taken of a different collection than the one in hand.
+
+    A snapshot written before the stamp existed carries no path; it is read as this
+    collection's once, and the pass that reads it stamps it. Guessing the other way would
+    make every upgrade look like a profile switch.
+    """
+    if not isinstance(snapshot, dict):
+        return False
+    stored = snapshot.get("collection")
+    return bool(stored) and stored != _collection_path(col)
 
 
 def build_name_snapshot(definitions: Any, col: Any) -> dict:
@@ -649,7 +673,11 @@ def build_name_snapshot(definitions: Any, col: Any) -> dict:
         name = col.decks.name_if_exists(deck_id)
         if name is not None:
             decks[str(deck_id)] = name
-    return {"note_types": note_types, "decks": decks}
+    return {
+        "collection": _collection_path(col),
+        "note_types": note_types,
+        "decks": decks,
+    }
 
 
 # The pass ------------------------------------------------------------------------------------
@@ -663,7 +691,22 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
     ]
     changed = False
     referenced: dict = {}
-    snapshot = config.data.get(SNAPSHOT_KEY) or {}
+    stored_snapshot = config.data.get(SNAPSHOT_KEY) or {}
+    snapshot = stored_snapshot
+    if _snapshot_is_of_another_collection(snapshot, col):
+        # A note type id, a deck id and a field id are the issuing collection's own, and
+        # the config that holds them is shared by every profile. So nothing the snapshot
+        # says is evidence about the collection in front of the pass now: no id in it is
+        # gone, no name in it changed, and a name that differs under an id both happen to
+        # have is not a rename but two collections. The snapshot is left out of this pass
+        # entirely -- every reference re-binds by the one rule, the id first and the name
+        # after it -- and replaced with this collection's names below. A rename is only
+        # ever followed inside the collection it happened in.
+        result.collection_changed = (
+            f"the collection changed from '{snapshot.get('collection')}'"
+            f" to '{_collection_path(col)}'"
+        )
+        snapshot = {}
     deleted = _deleted_objects(snapshot, col)
     for definition in definitions:
         changed |= _bind(definition, col, result, referenced, deleted)
@@ -682,10 +725,11 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
             changed |= _rewrite(definition, renamed, result)
 
     refreshed_snapshot = build_name_snapshot(definitions, col)
-    if refreshed_snapshot != (snapshot or _empty_snapshot()):
+    if refreshed_snapshot != (stored_snapshot or _empty_snapshot(col)):
         # The snapshot going out of date is itself a change worth a write: it is what the
         # next pass compares against, so a first run on a config that has none has to store
-        # one or no rename after it could ever be seen.
+        # one or no rename after it could ever be seen. A snapshot that gains nothing but
+        # its collection stamp differs too, which is how another collection's is replaced.
         config.data[SNAPSHOT_KEY] = refreshed_snapshot
         changed = True
 
@@ -702,6 +746,12 @@ def log_result(result: ReconcileResult) -> None:
     written at info; a name that resolves to nothing, a deleted object and a name left
     inside code are things only the user can fix, so they are warnings.
     """
+    if result.collection_changed is not None:
+        # First, because it is why everything under it re-bound and nothing was followed.
+        logger.info(
+            "Rename reconcile: %s, so no name was followed across the two",
+            result.collection_changed,
+        )
     for line in result.bound + result.refreshed + result.rewritten:
         logger.info("Rename reconcile: %s", line)
     for stale in result.unfollowable:

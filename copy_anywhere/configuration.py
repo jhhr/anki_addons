@@ -835,6 +835,9 @@ class Config:
         type nothing had referenced before has to bring that note type's field and template
         names with it or the next rename of one has no old name to be recognised by. There
         is no collection to read at import time, and a save then leaves the snapshot alone.
+        The snapshot records which collection it was taken of, so a save made in one profile
+        cannot be read as a rename in the next: this config is shared by all of them, and the
+        ids in it are not.
         """
         from .logic.flow_analysis import refresh_effects
         from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot

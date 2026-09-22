@@ -231,7 +231,12 @@ def resolve_card_type(ref: Any, col: Any) -> tuple[Optional[Any], Optional[Any]]
     model = resolve_note_type({"id": reference["note_type_id"], "name": halves[0]}, col)
     if model is None:
         return None, None
-    return model, resolve_template(reference, model)
+    # The template is looked for in the note type that was *found*, not in the one the
+    # reference names: when a stale id fell through to the name, the two differ, and
+    # `resolve_template`'s own gate -- which is what tells a note-level action addressed to
+    # this note type from one addressed to another (`copy_primitives.py`) -- would answer
+    # None for a template whose name is right there.
+    return model, resolve_template({**reference, "note_type_id": model["id"]}, model)
 
 
 def card_type_resolves(ref: Any, col: Any) -> bool:

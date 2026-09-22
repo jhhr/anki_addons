@@ -13,15 +13,22 @@ definition's field slots and its `{{trigger....}}` tokens, and everything it wil
 rewrite -- a search term, code, a deleted field -- is reported instead.
 """
 
+import shutil
+from contextlib import contextmanager
+
 import pytest
 from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import DEFAULT_CONFIG, KANJI, VOCAB
+from conftest import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
 from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
-from copy_anywhere.logic.rename_reconcile import definitions_hold_references, reconcile
+from copy_anywhere.logic.rename_reconcile import (
+    SNAPSHOT_KEY,
+    definitions_hold_references,
+    reconcile,
+)
 
 ADDON_TAG = "copy_anywhere"
 
@@ -63,6 +70,22 @@ def rename_template(col, note_type_name: str, old_name: str, new_name: str) -> N
 
 def names(items) -> list[str]:
     return [item.name for item in items]
+
+
+@contextmanager
+def opened(stub_mw, collection):
+    """Run a block with `mw` pointing at this collection, as a profile switch leaves it.
+
+    The pass is given the collection to reconcile, but the save at the end of it rebuilds
+    the snapshot from `mw.col` (`Config._save_definitions`), so a test that moved one and
+    not the other would be testing a state Anki never has.
+    """
+    previous = stub_mw.col
+    stub_mw.col = collection
+    try:
+        yield collection
+    finally:
+        stub_mw.col = previous
 
 
 # Binding and refreshing ------------------------------------------------------------------
@@ -215,6 +238,137 @@ class TestAnObjectTheSnapshotKnewAndTheCollectionNoLongerHas:
             {"id": col.models.by_name(KANJI)["id"], "name": KANJI}
         ]
         assert names(result.gone) == [] and names(result.unresolved) == []
+
+
+# A pass on another collection --------------------------------------------------------------
+
+
+def a_copy_of(collection, path):
+    """The same collection opened at a second path: a backup restored as another profile.
+
+    What a copy keeps is the *ids*, which is the case a config shared by every profile
+    cannot tell from a rename on its own: the second collection answers to the first's note
+    type, deck and field ids, under whatever names it has been given since. The checkpoint
+    is because Anki writes through a WAL, so the file on its own is the collection without
+    its last few operations in it.
+    """
+    collection.db.execute("pragma wal_checkpoint(TRUNCATE)")
+    shutil.copyfile(collection.path, path)
+    return real_anki.open_collection(path)
+
+
+class TestAPassOnAnotherCollection:
+    """Ids belong to the collection that issued them; this addon's config belongs to none.
+
+    The config lives in the addon's `meta.json`, which every profile on the machine shares,
+    so a second profile's first `collection_did_load` hands the pass definitions bound to
+    another collection's ids and a snapshot of names that were never this collection's.
+    Read as a rename, that rewrites a definition's field slots and `{{trigger....}}` tokens
+    against the wrong collection, and switching back does it again. So the snapshot records
+    which collection it came from, and a pass that finds another one re-binds by the one
+    rule, replaces the snapshot, rewrites nothing and says so once.
+    """
+
+    def a_definition_reading_word(self):
+        return d.staged(
+            definition_name="reads word",
+            note_types=[VOCAB],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Note", d.text("{{trigger.Word}}"))])
+            ],
+        )
+
+    def test_a_field_renamed_in_the_other_collection_is_not_a_rename(
+        self, col, config, stub_mw, tmp_path
+    ):
+        definition = self.a_definition_reading_word()
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        other = a_copy_of(col, tmp_path / "second.anki2")
+        rename_field(other, VOCAB, "Word", "Term")
+        with opened(stub_mw, other):
+            result = reconcile(config, other)
+        other.close()
+
+        assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Word}}"
+        assert result.rewritten == []
+
+    def test_the_snapshot_is_replaced_with_the_collection_in_front_of_it(
+        self, col, config, stub_mw, tmp_path
+    ):
+        store(config, self.a_definition_reading_word())
+        reconcile(config, mw.col)
+
+        other = a_copy_of(col, tmp_path / "second.anki2")
+        rename_field(other, VOCAB, "Word", "Term")
+        with opened(stub_mw, other):
+            reconcile(config, other)
+        snapshot = config.data[SNAPSHOT_KEY]
+        other.close()
+
+        assert snapshot["collection"] == other.path
+        entry = snapshot["note_types"][str(col.models.by_name(VOCAB)["id"])]
+        assert sorted(entry["fields"].values()) == sorted(
+            ["Term" if name == "Word" else name for name in VOCAB_FIELDS]
+        )
+
+    def test_the_change_of_collection_is_reported_once(
+        self, col, config, stub_mw, tmp_path
+    ):
+        store(config, self.a_definition_reading_word())
+        reconcile(config, mw.col)
+
+        other = a_copy_of(col, tmp_path / "second.anki2")
+        with opened(stub_mw, other):
+            result = reconcile(config, other)
+        other.close()
+
+        assert result.collection_changed is not None
+        assert col.path in result.collection_changed
+        assert other.path in result.collection_changed
+
+    def test_the_same_collection_still_follows_its_own_renames(self, col, config):
+        definition = self.a_definition_reading_word()
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Term}}"
+        assert result.collection_changed is None
+
+    def test_a_collection_that_never_had_the_ids_re_binds_by_name(
+        self, col, config, stub_mw, tmp_path
+    ):
+        """The other kind of second profile: made separately, so the names are the shared
+        thing and the ids are not. Every reference falls through to its name, the card
+        action's two halves included."""
+        note_type = col.models.by_name(VOCAB)
+        action = d.card_action_ref(note_type, note_type["tmpls"][0], set_flag=2)
+        definition = d.staged(
+            note_types=[VOCAB],
+            stages=[d.edit_note("trigger", card_actions=[action])],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        other = real_anki.open_collection(tmp_path / "separate.anki2")
+        theirs = real_anki.make_note_type(other, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES)
+        with opened(stub_mw, other):
+            result = reconcile(config, other)
+        other.close()
+
+        assert definition["triggers"]["note_types"] == [
+            {"id": theirs["id"], "name": VOCAB}
+        ]
+        assert action["card_type"] == {
+            "note_type_id": theirs["id"],
+            "template_id": theirs["tmpls"][0]["id"],
+            "name": f"{VOCAB}<::>Recognition",
+        }
+        assert names(result.unresolved) == []
 
 
 # Following a renamed field ---------------------------------------------------------------

@@ -208,10 +208,10 @@ class TestResolvingACardTypeInOneStep:
         assert (model["name"], template["name"]) == ("Renamed vocab", "Reading card")
 
     def test_a_stale_note_type_id_falls_back_to_the_stored_name(self, col):
-        # The note type half follows the rule: the id is gone, so the name is looked up.
-        # The template half does not get that far -- a template is only answered for a
-        # reference whose note type half matches the note type it is looked for in, and an
-        # id that named something else does not match the note type the name found.
+        # Both halves follow the rule, and the template half follows it inside the note
+        # type the first half *found*: a definition carried to another collection has ids
+        # that mean nothing there and names that mean everything, and a card type that
+        # would not re-bind is one the reconcile pass would report as naming nothing.
         note_type = col.models.by_name(VOCAB)
         ref = {
             "note_type_id": note_type["id"] + 10_000,
@@ -221,7 +221,7 @@ class TestResolvingACardTypeInOneStep:
 
         model, template = resolve_card_type(ref, col)
         assert model["id"] == note_type["id"]
-        assert template is None
+        assert template["id"] == note_type["tmpls"][1]["id"]
 
     def test_a_null_template_id_resolves_the_template_by_name(self, col):
         # The pre-23.10 shape: the note type carries an id, the template never had one.
