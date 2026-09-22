@@ -290,6 +290,13 @@ class TestStaleSearchTerms:
     def test_a_card_ordinal_is_not_a_name(self, col):
         assert self.stale(col, "card:1") == []
 
+    def test_a_name_anki_matches_in_any_case_is_not_stale(self, col):
+        # Anki's `card:`, `deck:` and `note:` all match without regard to case, so a query
+        # spelling a live name in another case works and must not be reported.
+        assert self.stale(col, "card:recognition") == []
+        assert self.stale(col, "deck:other") == []
+        assert self.stale(col, f'note:"{VOCAB.lower()}"') == []
+
     def test_a_field_that_is_gone_is_reported(self, col):
         assert self.stale(col, "Word:neko Nonsuch:x") == [("field", "Nonsuch")]
 

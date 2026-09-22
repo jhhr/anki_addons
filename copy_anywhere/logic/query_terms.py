@@ -128,7 +128,13 @@ def _unescape(text: str) -> str:
 
 
 class _CollectionNames:
-    """The name lists a scan needs, read once per scan rather than once per term."""
+    """The name lists a scan needs, read once per scan rather than once per term.
+
+    Both lists are folded to lower case: Anki matches a field search and `card:` without
+    regard to case, so a query spelling a live name in another case works and must not be
+    reported. `deck:` and `note:` need no list -- `decks.id_for_name` and `models.by_name`
+    already fold for themselves.
+    """
 
     def __init__(self, col: Any) -> None:
         self._col = col
@@ -149,7 +155,7 @@ class _CollectionNames:
     def templates(self) -> set[str]:
         if self._templates is None:
             self._templates = {
-                template["name"]
+                template["name"].lower()
                 for model in self._col.models.all()
                 for template in model.get("tmpls") or []
             }
@@ -168,7 +174,7 @@ def _stale_term(key: str, value: str, col: Any, names: _CollectionNames):
     if key == "card":
         # `card:2` names the second template of whatever note type the note has, so it is
         # not a name at all.
-        if value.isdigit() or value in names.templates:
+        if value.isdigit() or value.lower() in names.templates:
             return None
         return StaleTerm(KIND_CARD_TYPE, value)
     if key.lower() in names.fields:
