@@ -103,6 +103,15 @@ enough of the run has been measured to fit one.
 Default `180`. Seconds to wait for a single API response before giving up on that attempt.
 Timeouts are retried, subject to `max_request_retries`.
 
+### pausing and cancelling a run
+
+Nothing to configure. The progress dialog of a bulk run has **Pause** and **Cancel** buttons.
+Pause starts no new request, note or phase until you press Resume: requests already sent run to
+completion, and one that needs a retry waits for the resume. While paused the dialog says so and
+how many tasks are still finishing, and the paused time is left out of the ETA. Cancel does what
+Escape does, and works while paused too. If a later Anki version changes its progress dialog the
+buttons may be missing; Escape still cancels.
+
 ### terminal- models (claude CLI)
 
 Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
@@ -110,13 +119,24 @@ subscription instead of the HTTP API, e.g. `"word_matching_judge_model": "termin
 Each request starts one `claude -p` process (thinking off, no tools), so it is far slower than the
 API: about 70 requests a minute on a 4-core PC. Put the API model back in the config to switch
 back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
-and `max_retry_wait_seconds` apply as for the API. When the subscription's usage limit is hit, the
-run stops (the remaining notes are left as they were) and the end message says when the limit
-resets; switch the model to an API one and rerun to finish. A login that has expired stops the run
-the same way: log in again by running `claude` in a terminal, then rerun.
+and `max_retry_wait_seconds` apply as for the API.
+
+When the subscription's usage limit is hit during a bulk run, the run pauses until the reset time
+the CLI states (read as your local time) and then carries on by itself: every request that hit the
+limit is retried, without counting against `max_request_retries`, and the notes still queued are
+done as usual. If the reset time cannot be read, or lies more than 20 hours ahead, the run retries
+after `terminal_usage_limit_retry_minutes` instead, and pauses again if the limit still holds. The
+progress dialog shows the pause and when it ends; its "Resume now" button retries at once. You can
+cancel while paused, and the end message then says the run was cancelled while paused for the usage
+limit. Outside a bulk run (a translation or story written when a field loses focus) the request
+only fails. A login that has expired stops the run, leaving the remaining notes as they were: log
+in again by running `claude` in a terminal, then rerun.
 
 - `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
   takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
+- `terminal_usage_limit_retry_minutes`: Default `15`. How long a run paused by the usage limit
+  waits before retrying when the CLI's message gives no reset time that can be read, or one more
+  than 20 hours ahead. At least 1 minute; `0` uses the default.
 - `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
   `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
 

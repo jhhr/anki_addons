@@ -10,7 +10,7 @@ are hardcoded in the hooks. Operations: clean/generate a meaning from MDX dictio
 entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a **word
 array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
 judge which words deserve a note, match words to vocab notes or create them. Bulk runs are
-asynchronous, parallel, memory-aware and cancellable.
+asynchronous, parallel, memory-aware, pausable and cancellable.
 
 ## Map
 
@@ -23,11 +23,12 @@ asynchronous, parallel, memory-aware and cancellable.
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch |
-| `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation. stdlib + `requests` only |
+| `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
-| `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider; cancel watchdog and stack dumps |
+| `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login stops it); cancel watchdog and stack dumps |
+| `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3400 lines |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
@@ -87,6 +88,15 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   `RunCancelled` on a cancelled run, except inside `begin_cleanup_phase()`.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
+- **A paused run starts no new task, phase, request or `claude` process**; what is in flight
+  finishes, and a retry waits for the resume. The gate (`is_paused=run_paused`),
+  `post_with_retry`, `terminal_client._run_with_retry`, `sync_bulk_notes_op` and
+  `run_op_phases` poll the pause, and every pause wait also polls cancel; the op-thread waits
+  pass `DialogCancelState`, because Escape only sets the dialog's flag. Pause is per run like
+  cancel: `run_paused()` reads only the calling thread's run, so the main thread is never held,
+  and is the only place an automatic pause expires; the dialog reads `pause_state()`, which
+  falls back to the run in progress. A run that ends while paused is cancelled in teardown,
+  before `end_run()`.
 - These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`,
   `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An `aqt`
   import in one of them takes the test suite offline (`test/addon_modules.py` says so).
@@ -135,8 +145,9 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
   from this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir
   so pytest never imports the addon's aqt-importing `__init__.py`, and sets
   `--import-mode=importlib`. `test/addon_modules.py` provides `load_addon_module`,
-  `load_ops_module(name, subdir)` (synthetic package + `anki_stubs.install()`) and
-  `FakeClock`. Word-array tests skip when SudachiPy or the downloaded dictionaries are
+  `load_ops_module(name, subdir)` (synthetic package + `anki_stubs.install()`),
+  `FakeClock` and `PausingClock` (calls back after each sleep, so a test can resume or cancel
+  a pause). Word-array tests skip when SudachiPy or the downloaded dictionaries are
   missing; a skip is not a pass, so say which ran.
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.
