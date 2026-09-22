@@ -25,9 +25,10 @@ from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
     Config,
     CopyDefinition,
-    definition_deck_names,
-    definition_note_type_names,
+    definition_deck_refs,
+    definition_note_type_refs,
 )
+from ..logic.object_refs import deck_display_name, note_type_display_name
 from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
 from ..logic.definition_schema import is_format_2
 from .edit_staged_definition_dialog import EditStagedDefinitionDialog
@@ -670,10 +671,28 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             if checkbox.isChecked():
                 nothing_checked = False
                 checked_definition = self.copy_definitions[index]
-                deck_names = definition_deck_names(checked_definition)
+                # By live name, because the run resolves a reference by its id: a note type
+                # renamed since this definition was written is still the one it applies to,
+                # and counting by the stored name would call it "nothing to do". A reference
+                # that resolves to nothing keeps its stored name, which matches nothing.
+                deck_names = [
+                    name
+                    for name in (
+                        deck_display_name(ref, mw.col)
+                        for ref in definition_deck_refs(checked_definition)
+                    )
+                    if name
+                ]
                 decks_query = make_query_string("deck", deck_names) if deck_names else ""
 
-                note_type_names_list = definition_note_type_names(checked_definition)
+                note_type_names_list = [
+                    name
+                    for name in (
+                        note_type_display_name(ref, mw.col)
+                        for ref in definition_note_type_refs(checked_definition)
+                    )
+                    if name
+                ]
                 note_type_query = (
                     make_query_string("note", note_type_names_list)
                     if note_type_names_list

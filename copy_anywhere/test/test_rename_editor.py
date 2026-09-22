@@ -420,6 +420,61 @@ class TestThePickerMarksADefinition:
         assert row.stale_marker.text() == ""
 
 
+class TestThePickerCountsApplicableNotes:
+    """The count beside a row is what the run would work on, not what the stored name finds.
+
+    The run resolves a trigger note type or deck by its id, so a rename it has not caught up
+    with changes nothing about which notes it visits. A count built from the stored name
+    instead would read '(0)' and the picker would refuse to apply a definition that in fact
+    has plenty to do.
+    """
+
+    def picker(self, widget_parent, definition):
+        """The dialog over this one definition, with its row ticked so the count is made."""
+        from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
+
+        dialog = PickCopyDefinitionDialog(widget_parent, [definition], None, None)
+        dialog.checkboxes[0].setChecked(True)
+        return dialog
+
+    def test_a_renamed_note_type_is_counted_by_its_id(self, col, qapp, widget_parent):
+        real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        real_anki.add_note(col, VOCAB, {"Word": "inu"})
+        model = col.models.by_name(VOCAB)
+        definition = d.staged("Counted", note_types=[d.object_ref(VOCAB, model["id"])])
+        # Renamed in Anki with the reconcile pass not yet run, so the definition still
+        # carries the old name beside the id that is still good.
+        model["name"] = "Vocabulary"
+        col.models.update_dict(model)
+
+        dialog = self.picker(widget_parent, definition)
+
+        assert dialog.checkboxes[0].text() == "Counted (2)"
+        assert len(dialog.selected_definitions_applicable_notes) == 2
+        assert dialog.apply_button.isEnabled()
+
+    def test_a_renamed_deck_is_counted_by_its_id(self, col, qapp, widget_parent):
+        real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
+        deck_id = col.decks.id_for_name("Other")
+        definition = d.staged("Counted", deck_names=[d.object_ref("Other", deck_id)])
+        col.decks.rename(col.decks.get(deck_id), "Elsewhere")
+
+        dialog = self.picker(widget_parent, definition)
+
+        assert dialog.checkboxes[0].text() == "Counted (1)"
+
+    def test_a_name_that_resolves_to_nothing_still_counts_nothing(
+        self, col, qapp, widget_parent
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        definition = d.staged("Counted", note_types=[d.object_ref("Nonsuch", GONE_ID)])
+
+        dialog = self.picker(widget_parent, definition)
+
+        assert dialog.checkboxes[0].text() == "Counted (0)"
+        assert not dialog.apply_button.isEnabled()
+
+
 class TestTheSortFieldWarning:
     """Once per run, not once per note.
 
