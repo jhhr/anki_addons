@@ -1470,8 +1470,10 @@ class ConcurrencyGate:
         self._refresh_ceiling()
 
         # Only grow when the gate itself is the bottleneck; if tasks aren't queueing up, a
-        # bigger limit wouldn't be used anyway.
-        if self.adaptive and self.in_flight >= self.limit:
+        # bigger limit wouldn't be used anyway. Not while paused: the slots are then held by
+        # requests waiting out a usage limit to retry, which is not a sign the run could use
+        # more, and a limit grown during the pause would all start at once on resume.
+        if self.adaptive and self.in_flight >= self.limit and not self._is_paused():
             if collection is not None and collection[0] >= COLLECTION_SATURATED:
                 # Every slot is taken, but by tasks queueing for a resource that serves one at
                 # a time. Raising the limit here adds waiters, not work: throughput is already

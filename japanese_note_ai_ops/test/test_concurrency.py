@@ -1319,6 +1319,18 @@ class GateAdaptationTests(GateTestCase):
         await gate._adapt_once()
         self.assertGreater(gate.limit, 16)
 
+    async def test_a_paused_gate_does_not_grow_although_every_slot_is_held(self):
+        # The slots are held by requests waiting out a usage limit, not by a run short of them
+        paused = True
+        gate = self.make_gate(limit=16, max_limit=256, is_paused=lambda: paused)
+        gate.in_flight = gate.limit
+        await gate._adapt_once()
+        self.assertEqual(gate.limit, 16)
+
+        paused = False
+        await gate._adapt_once()
+        self.assertGreater(gate.limit, 16)
+
     async def test_an_idle_gate_does_not_grow(self):
         # If tasks are not queueing up, a bigger limit would not be used anyway
         gate = self.make_gate(limit=16, max_limit=256)
