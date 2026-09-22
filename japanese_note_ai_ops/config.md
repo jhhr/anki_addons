@@ -202,11 +202,9 @@ You need to define
 
 ## test data exports
 
-Tools > "AI ops: generate test data" runs both browser-menu exports at once, each on the
-notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
-that export.
+Tools > "AI ops: generate test data" runs the browser-menu export, on the notes an Anki
+search query finds (written to the addon's `output/` folder). An empty query skips it.
 
-- `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
 - `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
   (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
   kanjified sentence fields, one row per distinct sentence)
@@ -214,19 +212,5 @@ that export.
 ## optipnal specification
 
 ### `match_words_model` operation
-
--`word_lists_to_process` to select what parts of speech you collect:
-    - `nouns`: default = yes
-    - `proper_nouns`: default = no
-    - `verbs`: default = yes
-    - `compound_verbs`: default = yes
-    - `adjectives`: default = yes
-    - `adverbs`: default = yes
-    - `adjectivals`: default = yes
-    - `particles`: default = no
-    - `pronouns`: default = yes
-    - `suffixes`: default = yes
-    - `expressions`: default = yes
-    - `yojijukugo`: default = yes
 
 - `replace_existing_matched_words`: (default: false) overwrite previously processed matched words?

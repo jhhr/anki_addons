@@ -18,7 +18,7 @@ catches and exactly the failure that reaches the user as a crash.
 import unittest
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path, which the ops
-# need for json_repair, rapidfuzz and requests
+# need for rapidfuzz and requests
 from addon_modules import load_ops_module
 
 # Every module __init__.py pulls in at startup, plus the two they rest on
@@ -30,7 +30,6 @@ STARTUP_MODULES = [
     "note_cache",
     "diagnostics",
     "base_ops",
-    "word_list_format",
     "clean_meaning",
     "make_all_meanings",
     "match_words_to_notes",
@@ -38,7 +37,6 @@ STARTUP_MODULES = [
     "kanjify_sentence",
     "make_kanji_story",
     "translate_field",
-    "migrate_compound_verbs",
     "word_matching_judge",
     "find_proper_nouns",
     "new_note_all_ops",

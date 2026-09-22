@@ -21,7 +21,6 @@ from anki.collection import Collection
 from anki.models import NotetypeDict
 from anki.notes import Note, NoteId
 from aqt import mw
-from json_repair import repair_json  # type: ignore
 from rapidfuzz.distance import Levenshtein  # type: ignore
 
 from ..configuration import (
@@ -35,7 +34,7 @@ from ..configuration import (
     RawMultiMeaningWordType,
     RawOneMeaningWordType,
 )
-from ..kana_conv import is_kana_str, to_hiragana
+from ..kana_conv import to_hiragana
 from ..shared.jp_text_processing.kana.check_word_reading_type import (
     WordReadingType,
     check_word_reading_type,
@@ -51,8 +50,8 @@ from ..utils import copy_into_new_note, get_field_config, print_error_traceback
 from ..word_array import match_flags, match_targets
 from ..word_array.match_flags import (
     MatchState,
-    decode_word_array,
     format_word_array,
+    read_word_array,
     word_array_query_regex,
 )
 from .base_ops import (
@@ -75,7 +74,6 @@ from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
 from .word_index import WordFields, WordIndex, WordIndexCache
 from .clean_meaning import clean_meaning_in_note
-from .word_list_format import word_lists_str_format
 from .make_all_meanings import (
     make_all_meanings_for_word,
     make_meaning_dict_key,
@@ -84,74 +82,36 @@ from .make_all_meanings import (
 
 logger = logging.getLogger(__name__)
 
-WORD_LIST_TO_PART_OF_SPEECH: dict[str, str] = {
-    "nouns": "Noun",
-    "proper_nouns": "Proper Noun",
-    "numbers": "Number",
-    "counters": "Counter",
-    "verbs": "Verb",
-    "prefix_verbs": "Verb",
-    "suffix_verbs": "Verb",
-    "compound_verbs": "Verb",
-    "adjectives": "Adjective",
-    "adverbs": "Adverb",
-    "adjectivals": "Adjectival",
-    "particles": "Particle",
-    "conjunctions": "Conjunction",
-    "pronouns": "Pronoun",
-    "suffixes": "Suffix",
-    "prefixes": "Prefix",
-    "expressions": "Expression",
-    "yojijukugo": "Idiom",
-}
-WORD_LISTS = list(WORD_LIST_TO_PART_OF_SPEECH.keys())
+INVALID_WORD_ARRAY_TAG = "invalid_word_list_json"
 
 
-def decode_word_list_field(
+def decode_word_array_field(
     note: Note,
     word_list_field: str,
     notes_to_update_dict: dict[NoteId, Note],
     log_prefix: str = "",
-) -> Union[dict[str, Any], None]:
-    repair_res = repair_json(
-        json_str=note[word_list_field],
-        return_objects=True,
-        logging=True,
-        ensure_ascii=False,
-    )
-    # When the json is invalid, repair_json can returns a tuple with the repaired object and a log
-    # of the repairs it made
-    # When the json is valid, it returns just the decoded object
-    if isinstance(repair_res, tuple) and len(repair_res) == 2 and isinstance(repair_res[1], list):
-        word_list = repair_res[0]
-        json_repair_log: list[dict[str, str]] = repair_res[1]
-    else:
-        word_list = repair_res
-        json_repair_log = []
-    if isinstance(word_list, list):
-        # This is probably not the old word list format, but the new word array
-        logger.warning(
-            f"{log_prefix}Word list field is a list, expected a dict. Original:"
-            f" {note[word_list_field]}\nDecoded: {json.dumps(word_list, ensure_ascii=False)}"
-        )
-        return None
-    if not isinstance(word_list, dict):
+) -> Optional[list]:
+    """The note's word array, or None when there is none to work on. An empty field is a note
+    extract_words has not reached yet. Anything else that is not an array, as text or in its
+    shape (read_word_array), is a broken one, usually a bracket lost in a hand edit, and the
+    note is tagged so it can be found and fixed.
+
+    Nothing tries to repair it: a lost bracket leaves JSON that can still parse with the
+    sub-words spilled into their parent, and a guess at where the bracket went, written back
+    with matches in it, would corrupt the field further instead of leaving it for a person."""
+    field_value = note[word_list_field]
+    arr, problem = read_word_array(field_value)
+    if problem is None and arr is None:
+        logger.debug(f"{log_prefix}The word list field is empty")
+    elif problem is not None:
         logger.error(
-            f"{log_prefix}Failed to decode valid dict from word list field, original:"
-            f" {note[word_list_field]}\ndecoded: {json.dumps(word_list, ensure_ascii=False)}"
-            f"\njson_repair_log: {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
+            f"{log_prefix}The word list field holds no valid word array, {problem}; tagged"
+            f" {INVALID_WORD_ARRAY_TAG}: {field_value}"
         )
-        # tag note
-        note.add_tag("invalid_word_list_json")
+        note.add_tag(INVALID_WORD_ARRAY_TAG)
         if note.id > 0 and note.id not in notes_to_update_dict:
             notes_to_update_dict[note.id] = note
-        return None
-    logger.debug(
-        f"{log_prefix}Decoded word list field, original: {note[word_list_field]}\ndecoded:"
-        f" {json.dumps(word_list, ensure_ascii=False)}\njson_repair_log:"
-        f" {json.dumps(json_repair_log, ensure_ascii=False, indent=2)}"
-    )
-    return word_list
+    return arr
 
 
 def check_note_processed_furigana_field(
@@ -227,114 +187,8 @@ FinalWordTuple = Union[
     OneMeaningMatchedWordType,
     MultiMeaningMatchedWordType,
 ]
-ProcessedWordTuples = Union[list[ProcessedWordTuple], dict[int, ProcessedWordTuple]]
-
-
-def normalize_word_tuple(entry: Any) -> Optional[tuple]:
-    """Make a word tuple out of one entry of a stored word list, or say it cannot be done.
-
-    Every shape in `FinalWordTuple` is a sequence whose first two values are the word and its
-    reading; everything after them is bookkeeping. What comes back out of the word list field
-    is not always one of those. The field holds JSON written by an LLM and read back through
-    `repair_json`, and four other shapes have turned up in real runs:
-
-    * `[]` - an empty list, with nothing to read a word out of.
-    * `1378555076170` - a bare int, and the value is a *note id*, so something wrote an id
-      where the tuple holding it should have gone.
-    * `["なんと"]` - a one-element list: a word with no reading.
-    * `"三"` - a bare string, the same thing without the list around it.
-
-    Reading these positionally is what the caller used to do, and two of the four raised - a
-    TypeError on `wt[0]` for the int, an IndexError on `wt[1]` for a one-character string -
-    which is how they came to be noticed at all. **The one that never raised is the one that
-    mattered:** a bare string of two or more characters indexes perfectly well, so `"なんと"`
-    was silently read as the word `"な"` with the reading `"ん"` and processed as if it were
-    real. That is why a string is wrapped here rather than indexed.
-
-    A word with no reading is recoverable exactly when the word is all kana, because then the
-    reading is the word - which covers `["なんと"]` and every other entry of this shape seen so
-    far, all of them particles and kana expressions. Anything else is refused rather than
-    guessed at: `"三"` reads さん, and nothing here knows that.
-
-    Returns the tuple to use in place of `entry`, or None when there is no word in it.
-    """
-    if isinstance(entry, str):
-        # A bare string where the list around it went missing. Treated as a one-element list
-        # rather than indexed, which is the whole point - see above.
-        values: list = [entry]
-    elif isinstance(entry, (tuple, list)):
-        values = list(entry)
-    else:
-        return None
-
-    if not values or not isinstance(values[0], str) or not values[0]:
-        return None
-    if len(values) == 1:
-        word = values[0]
-        return (word, word) if is_kana_str(word) else None
-    if not isinstance(values[1], str) or not values[1]:
-        return None
-    return tuple(values)
-
-
-def drop_duplicate_word_tuples(
-    word_list_dict: "dict[str, Any]",
-    word_list_keys: Sequence[str],
-    log_prefix: str = "",
-) -> None:
-    """Drop repeated words from a note's word lists, rewriting each list in place.
-
-    One word and reading is processed once, so a second entry for it is work the run would do
-    twice and a duplicate the note would keep. A multi-meaning entry is exempt: its third
-    value is the meaning index, and those entries are *meant* to repeat the word.
-
-    One `encountered_words` across all the lists, because that is what the caller had: a word
-    already seen in one list is a duplicate in the next one too.
-
-    Built as one pass into a new list rather than `word_tuples.remove(wt)` while iterating
-    over `word_tuples` itself. `remove` deletes the *first* equal element, which need not be
-    `wt`, and everything past it shifts left, so the iterator steps straight over the next
-    entry: given three equal word tuples the third was never examined and stayed in the note.
-    `match_words_to_notes_for_note` had the same defect and was fixed the same way.
-
-    Entries nothing can be read out of are logged and kept: rewriting a note's word list
-    without an entry nobody understands is not this function's call to make.
-    """
-    encountered_words: set[str] = set()
-    for word_list_key in word_list_keys:
-        word_tuples = word_list_dict.get(word_list_key, [])
-        if not isinstance(word_tuples, list):
-            logger.error(
-                f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in the note"
-            )
-            continue
-        kept: list = []
-        for wt in word_tuples:
-            try:
-                word = wt[0]
-                reading = wt[1]
-                word_key = f"{word}_{reading}"
-                # if the word is a multi-meaning type, then duplicates are intended
-                multi_meaning_index = wt[2] if len(wt) >= 3 else None
-            except Exception as e:
-                logger.error(
-                    f"{log_prefix}Error processing word tuple {wt} in word list"
-                    f" '{word_list_key}': {e}"
-                )
-                print_error_traceback(e, logger)
-                kept.append(wt)
-                continue
-            if word_key in encountered_words and not isinstance(multi_meaning_index, int):
-                logger.debug(
-                    f"{log_prefix}Removing duplicate word '{word}' with reading"
-                    f" '{reading}' from word list '{word_list_key}'"
-                )
-                continue
-            encountered_words.add(word_key)
-            kept.append(wt)
-        # In place, because this list is `word_list_dict[word_list_key]` and the caller hands
-        # that same object on
-        word_tuples[:] = kept
+# A match result by the index of the word array target it is for
+ProcessedWordTuples = dict[int, ProcessedWordTuple]
 
 
 def update_fake_note_ids(
@@ -2087,408 +1941,6 @@ _Current sentence_: {prompt_sentence}"""
             return False
 
 
-def match_words_to_notes(
-    config: dict,
-    current_note: Note,
-    word_tuples: list[
-        Union[
-            RawOneMeaningWordType,
-            RawMultiMeaningWordType,
-            OneMeaningMatchedWordType,
-            MultiMeaningMatchedWordType,
-        ]
-    ],
-    word_tuple_indexes: set[int],
-    word_list_key: str,
-    sentence: str,
-    note_tasks: list[asyncio.Task],
-    final_update_tasks: list[asyncio.Task],
-    notes_to_add_dict: dict[str, list[Note]],
-    notes_to_update_dict: dict[NoteId, Note],
-    progress_updater: AsyncTaskProgressUpdater,
-    cancel_state: CancelState,
-    gate: ConcurrencyGate,
-    all_generated_meanings_dict: GeneratedMeaningsDictType,
-    update_word_list_in_dict: Callable[[list[ProcessedWordTuple], list[ProcessedWordTuple]], None],
-    note_type: NotetypeDict,
-    word_locks_dict: dict[str, asyncio.Lock],
-    word_lock: asyncio.Lock,
-    word_note_index_cache: WordIndexCache,
-    note_cache: NoteCache,
-    sentence_cache: SentenceCache,
-    replace_existing: bool = False,
-) -> tuple[int, Optional[Callable[[list[asyncio.Task]], None]]]:
-    """
-    Plan the matching of one word list's words to notes, based on the kanjified sentence.
-
-    Nothing is started here: the words that need an API call are worked out synchronously, and
-    the returned spawner creates the tasks for them when the caller is ready to run them. That
-    keeps the count of tasks the whole run will do knowable before any of it starts, while
-    still leaving it to the caller to decide how many exist at once.
-
-    :param config (dict): Addon config
-    :param current_note (Note): The current note being processed
-    :param word_tuples (list): List of tuples containing words and their readings, possibly some values
-            already processed by this function previously
-    :param word_tuple_indexes (set): Set of indexes to process in word_tuples. Used to limit
-            processing to only some words.
-    :param word_list_key (str): The key in the note to get the word list
-    :param sentence (str): The sentence that provides context for the words' meaning
-    :param note_tasks (list): List to append word-matching tasks to. Mutated by the spawner.
-    :param final_update_tasks (list): List to append final update tasks to. Mutated by the
-            spawner. These tasks will call update_word_list_in_dict.
-    :param notes_to_add_dict (dict): Dict to append new notes to be added. Will be mutated by this
-            function. Used to also check if the operation has already created something it should
-            reuse.
-    :param notes_to_update_dict (dict): Dict to append notes to be updated with new meanings and also
-            to get an already updated note for additional changes if needed. Will be mutated by this
-            function.
-    :param progress_updater (AsyncTaskProgressUpdater): An updater to report progress of the operation.
-    :param cancel_state (CancelState): An object to check if the operation has been cancelled.
-    :param all_generated_meanings_dict (GeneratedMeaningsDictType): Required to be passed to
-            clean_meaning_in_note
-    :param update_word_list_in_dict (Callable): Function to update the word list in a note. Should
-            be called async when the task actually finishes.
-    :param note_type (NotetypeDict): The note type dict for the current note.
-    :param word_locks_dict (dict): A dict of asyncio locks for each word being processed. Used to avoid
-            two match_ops don't create new duplicate words
-    :param word_lock (asyncio.Lock): A lock to protect access to the word_locks_dict dict.
-    :param word_note_index_cache (WordIndexCache): The run's word index, shared by every note,
-            built by the first task that needs it.
-    :param note_cache (NoteCache): The run's fetched notes, shared by every note, so a note the
-            run has already retrieved is not retrieved again.
-    :param replace_existing (bool): If True, replace existing matched words with new matches.
-            Otherwise, words that already have a note match will be skipped during processing and
-            returned as is.
-    :return: How many word-matching tasks this word list will produce, and a callable that
-            creates them, or None when there is nothing for this word list to do.
-    """
-    if not config:
-        logger.error("Error: Missing addon configuration")
-        return 0, None
-    model = config.get("match_words_model", "")
-    if not model:
-        logger.error("Error: Missing match words model in config")
-        return 0, None
-
-    log_prefix = f"Match words, note.id={current_note.id}--"
-
-    if not word_tuples:
-        logger.debug(f"{log_prefix}No words to match against notes")
-        return 0, None
-    if not sentence:
-        logger.error(f"{log_prefix}Error: No sentence provided for matching words")
-        return 0, None
-
-    fields = get_match_fields(config, note_type)
-    if fields is None:
-        return 0, None
-    new_note_id_field = fields["new_note_id_field"]
-
-    # Copy the word_tuples to processed_word_tuples, which will be mutated by the match_op calls
-    processed_word_tuples = cast(list[ProcessedWordTuple], word_tuples.copy())
-
-    # This is the op function run in inner_bulk_op
-    async def match_op(
-        _,
-        notes_to_add_dict: dict[str, list[Note]],
-        notes_to_update_dict: dict[NoteId, Note],
-        # the **op_args passed by process_op in make_inner_bulk_op and process_word_tuple
-        # below
-        word_index: int,
-        word: str,
-        reading: str,
-        multi_meaning_index: Optional[int] = None,
-    ) -> bool:
-        # Awaited outside the word lock, so the one task that ends up building it does not
-        # hold up the tasks for other words while it does. Everything after this point reads
-        # the index synchronously, including create_new_note_without_matching in its thread.
-        word_note_index = await word_note_index_cache.get(word_index_fields(fields))
-        return await match_single_word_in_word_tuple(
-            config=config,
-            word_lock=word_lock,
-            word_locks_dict=word_locks_dict,
-            log_prefix=log_prefix,
-            match_op_args=MatchOpArgs(
-                **fields,
-                current_note=current_note,
-                note_type=note_type,
-                word_index=word_index,
-                part_of_speech=WORD_LIST_TO_PART_OF_SPEECH.get(word_list_key, ""),
-                multi_meaning_index=multi_meaning_index,
-                word=word,
-                reading=reading,
-                sentence=sentence,
-                processed_word_tuples=processed_word_tuples,
-                all_generated_meanings_dict=all_generated_meanings_dict,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                word_note_index=word_note_index,
-                note_cache=note_cache,
-                sentence_cache=sentence_cache,
-                cancel_state=cancel_state,
-            ),
-        )
-
-    new_tasks_count = 0
-
-    def handle_return_word_tuples():
-        nonlocal processed_word_tuples
-        logger.debug(f"{log_prefix}Returning processed word tuples: {processed_word_tuples}")
-        update_word_list_in_dict(processed_word_tuples)
-
-    need_update_note = False
-
-    def create_result_handler(word_index, word):
-        def handle_result(_: bool):
-            logger.debug(f"{log_prefix}Task completed for word {word} (index {word_index})")
-            # At this point, processed_word_tuples[word_index] should have the final result for
-            # this word. Only update the word list after all tasks complete
-            # Don't call update_word_list_in_dict here
-
-        return handle_result
-
-    word_list_task_count = 0
-    # One entry per word that needs an API call, each one able to create its task later
-    word_task_spawners: list[Callable[[list[asyncio.Task]], None]] = []
-
-    for i, entry in enumerate(word_tuples):
-        if i not in word_tuple_indexes:
-            # This index is indicated to be skipped
-            continue
-        if mw.progress.want_cancel():
-            break
-        if not isinstance(entry, (tuple, list)):
-            logger.debug(f"{log_prefix}Error: Invalid word tuple at index {i}: {entry}")
-            continue
-        # The shapes differ in length and it is the length, checked below, that says which
-        # position holds what - so the positions are read off one sequence view of the
-        # tuple rather than off whichever shape it happens to be.
-        word_tuple: Sequence[Any] = entry
-        word: str = ""
-        reading: str = ""
-        multi_meaning_index: Optional[int] = None
-        if len(word_tuple) in [3, 5]:
-            multi_meaning_index = word_tuple[2]
-        if len(word_tuple) in [4, 5]:
-            # If this the id is a negative number, it means the word was added as a new note
-            # and should try to set the id to an actual note.id, if the note was created
-            try:
-                if len(word_tuple) == 5:
-                    fake_note_id = int(word_tuple[4])
-                else:
-                    fake_note_id = int(word_tuple[3])
-            except Exception as e:
-                logger.debug(
-                    f"{log_prefix}Error: Invalid third value in word tuple: {word_tuple}, {e}"
-                )
-                continue
-            if fake_note_id < 0:
-                logger.debug(
-                    f"{log_prefix}Trying to set new note ID found in word tuple at index {i}:"
-                    f" {word_tuple} to actual note.id"
-                )
-                # Is the current note the holder of this fake Id?
-                unfake_note = None
-                if current_note[new_note_id_field] == str(fake_note_id):
-                    # Yes, so we can use the current note's ID
-                    unfake_note = current_note
-                    if unfake_note.id in notes_to_update_dict:
-                        unfake_note = notes_to_update_dict[unfake_note.id]
-                    logger.debug(
-                        f"{log_prefix}Current note ID {current_note.id} matches fake note ID"
-                        f" {fake_note_id}, updating word tuple at index {i}"
-                    )
-
-                else:
-                    # Try to find a note with this in its 'new_note_id_field' field
-                    nids = col_find_notes(
-                        f'''"note:{note_type["name"]}" "{new_note_id_field}:{fake_note_id}"'''
-                    )
-                    if len(nids) == 1:
-                        note_id = nids[0]
-                        # Found a note, set the note_id into the word_tuple
-                        logger.debug(
-                            f"{log_prefix}Found note with ID {note_id} for new note ID"
-                            f" {fake_note_id}, updating word tuple at index {i}"
-                        )
-                        unfake_note = col_get_note(note_id)
-                    elif len(nids) > 1:
-                        logger.debug(
-                            f"{log_prefix}Error: Found multiple notes with new note ID"
-                            f" {fake_note_id}, can't determine which one to use"
-                        )
-                        continue
-                    else:
-                        logger.debug(
-                            f"{log_prefix}Error: No note found with new note ID {fake_note_id},"
-                            " this note was never added doesn't exist"
-                        )
-                        continue
-                if unfake_note is not None:
-                    # Set the new note ID to the actual note ID
-                    unfaked: FinalWordTuple
-                    if len(word_tuple) == 5:
-                        unfaked = (
-                            word_tuple[0],
-                            word_tuple[1],
-                            word_tuple[2],
-                            word_tuple[3],
-                            unfake_note.id,
-                        )
-                    else:
-                        unfaked = (
-                            word_tuple[0],
-                            word_tuple[1],
-                            word_tuple[2],
-                            unfake_note.id,
-                        )
-                    word_tuple = unfaked
-                    # Update the processed word tuples with the new note ID
-                    processed_word_tuples[i] = unfaked
-                    logger.debug(
-                        f"{log_prefix}Setting new note ID to {unfake_note.id} for word tuple at"
-                        f" index {i}: {word_tuple}"
-                    )
-                    # Also remove the fake id from the note now, so we don't try doing this again
-                    if unfake_note.id in notes_to_update_dict:
-                        # If the note was already updated, update the note in the dict
-                        notes_to_update_dict[unfake_note.id][new_note_id_field] = ""
-                    else:
-                        unfake_note[new_note_id_field] = ""
-                        notes_to_update_dict[unfake_note.id] = unfake_note
-                    need_update_note = True
-                else:
-                    logger.debug(
-                        f"{log_prefix}Error: No note found to un-fake the new note ID"
-                        f" {fake_note_id} for word tuple at index {i}"
-                    )
-                    continue
-            if not replace_existing:
-                # Not replacing existing word links
-                continue
-            else:
-                word = word_tuple[0]
-                reading = word_tuple[1]
-        elif len(word_tuple) in [2, 3]:
-            word = word_tuple[0]
-            reading = word_tuple[1]
-        else:
-            logger.debug(
-                f"{log_prefix}Error: Invalid word tuple length at index {i}: {word_tuple}, "
-                f"length: {len(word_tuple)}"
-            )
-            continue
-        if not word or not reading:
-            logger.debug(f"{log_prefix}Error: Empty word or reading at index {i}: {word_tuple}")
-            continue
-
-        logger.debug(f"{log_prefix}Processing word tuple {word_tuple} at index {i}")
-
-        new_tasks_count += 1
-
-        def make_word_task_spawner(
-            word_index: int,
-            spawn_word: str,
-            spawn_reading: str,
-            spawn_multi_meaning_index: Optional[int],
-            spawn_word_tuple,
-        ) -> Callable[[list[asyncio.Task]], None]:
-            """Bind one word's arguments now, and create its task when asked to.
-
-            The binding has to happen in a function of its own: closures made in the loop body
-            would all see whichever word the loop ended on.
-            """
-
-            def handle_op_error(e: Exception):
-                logger.error(
-                    f"{log_prefix}Error processing word tuple {spawn_word_tuple} at index"
-                    f" {word_index}: {e}"
-                )
-                print_error_traceback(e, logger)
-
-            def spawn_word_task(tasks: list[asyncio.Task]) -> None:
-                # Built here rather than while planning so that a word waiting for its window
-                # holds only its own arguments, not a wrapper around the whole op
-                process_word_tuple: Callable[..., Coroutine[Any, Any, bool]] = make_inner_bulk_op(
-                    config=config,
-                    op=match_op,
-                    gate=gate,
-                    progress_updater=progress_updater,
-                    handle_op_error=handle_op_error,
-                    handle_op_result=create_result_handler(word_index, spawn_word),
-                    cancel_state=cancel_state,
-                )
-                task: asyncio.Task = asyncio.create_task(
-                    process_word_tuple(
-                        notes_to_add_dict=notes_to_add_dict,
-                        notes_to_update_dict=notes_to_update_dict,
-                        # the below kwargs are passed back to the match_op function (and any
-                        # more if we were to add them)
-                        word=spawn_word,
-                        reading=spawn_reading,
-                        word_index=word_index,
-                        multi_meaning_index=spawn_multi_meaning_index,
-                    )
-                )
-                tasks.append(task)
-                note_tasks.append(task)
-
-            return spawn_word_task
-
-        word_task_spawners.append(
-            make_word_task_spawner(i, word, reading, multi_meaning_index, word_tuple)
-        )
-        word_list_task_count += 1
-
-    logger.debug(f"{log_prefix}Final processed word tuples: {processed_word_tuples}")
-
-    if word_list_task_count == 0 and not need_update_note:
-        return 0, None
-
-    def spawn_word_list_tasks(tasks: list[asyncio.Task]) -> None:
-        """Create this word list's tasks, plus the task that writes their results back."""
-        for spawn_word_task in word_task_spawners:
-            spawn_word_task(tasks)
-
-        # After all tasks are created, add one final task
-        logger.debug(
-            f"{log_prefix}Adding final update task after processing {len(note_tasks)} word tasks"
-        )
-
-        async def final_update_task():
-            # Wait for all word-specific tasks to complete
-            await asyncio.gather(*note_tasks)
-            logger.debug(
-                f"{log_prefix}All word tasks completed, updating word list with final"
-                f" processed_word_tuples: {processed_word_tuples}"
-            )
-            update_word_list_in_dict(processed_word_tuples)
-
-        # Add this task to final_update_tasks so it gets waited for before saving the note
-        final_task = asyncio.create_task(final_update_task())
-        final_update_tasks.append(final_task)
-        tasks.append(final_task)
-
-        if not note_tasks and need_update_note:
-            logger.debug(
-                f"{log_prefix}No word tasks were created, but we need to update the note with"
-                " final_word_tuples"
-            )
-
-            # If we ended up skipping all word tuples, we still may need to update the note
-            # Create a dummy task that'll trigger calling handle_return_word_tuples
-            async def run_dummy_task():
-                await asyncio.sleep(0)
-                handle_return_word_tuples()
-
-            # Counted as a note done by wait_for_tasks, which gathers note_tasks, so this one
-            # must not count it again
-            note_tasks.append(asyncio.create_task(run_dummy_task()))
-
-    return word_list_task_count, spawn_word_list_tasks
-
-
 async def rate_linked_word(
     config: dict,
     target: match_targets.MatchTarget,
@@ -2562,7 +2014,7 @@ def plan_word_array_matching(
     """Plan matching the words of a note's word array in `states`, by default the ones the
     judge made `["match"]` (see match_targets.states_to_match).
 
-    Each occurrence is its own task, matched like an old word list's word. Its result is kept
+    Each occurrence is its own task (match_single_word_in_word_tuple). Its result is kept
     by target index, and once every task is done the matched ids go into the elements'
     `match_data` - the targets hold the elements themselves, however deeply nested - and the
     array is written back to the field. Returns None, with the note counted done, when there
@@ -2759,7 +2211,7 @@ def match_words_to_notes_for_note(
     """
     Plan the matching of words to notes for a single note.
 
-    Reads the note's word lists and works out which words need an API call, without starting
+    Reads the note's word array and works out which words need an API call, without starting
     any of them: the returned NotePlan says how many tasks that is and creates them when the
     caller is ready. Returns None when the note has nothing to do.
 
@@ -2820,272 +2272,39 @@ def match_words_to_notes_for_note(
         logger.error(f"Error: Note's sentence field '{furigana_sentence_field}' is empty")
         return None
 
-    word_lists_to_process = config.get("word_lists_to_process", {})
-    if not word_lists_to_process:
-        logger.error("Error: No word lists to process in the config")
-    if not isinstance(word_lists_to_process, dict):
-        logger.error("Error: Invalid word lists format in the config, expected a dictionary")
-        return None
-    # Filter the WORD_LISTS based on the config
-    word_list_keys = [wl for wl in WORD_LISTS if word_lists_to_process.get(wl, False)]
-
-    word_tuples = []
-    note_tasks: list[asyncio.Task] = []
-    final_update_tasks: list[asyncio.Task] = []
     log_prefix = f"Match words, note.id={note.id}--"
-    # Get the word tuples from the note
     word_list_field = get_field_config(config, "word_list_field", note_type)
-    # Checked before decode_word_list_field, which tags anything but a dict as invalid
-    arr = decode_word_array(note[word_list_field]) if word_list_field in note else None
-    if arr is not None:
-        return plan_word_array_matching(
-            config=config,
-            note=note,
-            arr=arr,
-            sentence=sentence,
-            edited_nids=edited_nids,
-            notes_to_add_dict=notes_to_add_dict,
-            notes_to_update_dict=notes_to_update_dict,
-            progress_updater=progress_updater,
-            cancel_state=cancel_state,
-            gate=gate,
-            all_generated_meanings_dict=all_generated_meanings_dict,
-            word_locks_dict=word_locks_dict,
-            word_lock=word_lock,
-            word_note_index_cache=word_note_index_cache,
-            note_cache=note_cache,
-            sentence_cache=sentence_cache,
-            limit_words_and_readings=limit_words_and_readings,
-            log_prefix=log_prefix,
-            states=match_targets.states_to_match(
-                replace_existing,
-                reprocess_words if limit_words_and_readings else None,
-            ),
-        )
-    if word_list_field in note:
-        word_list_dict = decode_word_list_field(
-            note,
-            word_list_field,
-            notes_to_update_dict,
-            log_prefix,
-        )
-        if not word_list_dict:
-            logger.error(
-                f"{log_prefix}Error: Invalid word list format in the note, expected a dictionary"
-            )
-            return None
-
-        # Make a task for waiting for until all tasks for a single note are done before
-        # updating the note
-        async def wait_for_tasks(
-            all_note_tasks: list[asyncio.Task],
-            all_final_update_tasks: list[asyncio.Task],
-            current_note: Note,
-            updated_word_list_dict: dict[str, list[FinalWordTuple]],
-        ):
-            await asyncio.gather(*all_note_tasks)
-            # Wait for all final update tasks to complete (these call update_word_list_in_dict)
-            await asyncio.gather(*all_final_update_tasks)
-            if current_note.id in notes_to_update_dict:
-                logger.debug(f"{log_prefix}Updating note {note.id} with new word list")
-                current_note = notes_to_update_dict[current_note.id]
-                edited_nids.append(current_note.id)
-            logger.debug(
-                f"Updating note {note.id} with word list field '{word_list_field}'"
-                f"with dict: {updated_word_list_dict}"
-            )
-            current_note = notes_to_update_dict.get(current_note.id, current_note)
-            new_word_list = word_lists_str_format(updated_word_list_dict)
-            if new_word_list is not None:
-                current_note[word_list_field] = new_word_list
-                if current_note.id not in notes_to_update_dict:
-                    notes_to_update_dict[current_note.id] = current_note
-            progress_updater.increment_counts(
-                notes_done=1,
-            )
-
-        def make_word_list_updater(current_key):
-            def update_function(updated_tuples: list[ProcessedWordTuple]):
-                logger.debug(
-                    f"{log_prefix}Updating word list for key '{current_key}' with tuples:"
-                    f" {updated_tuples}"
-                )
-                word_list_dict[current_key] = [wt for wt in updated_tuples if wt is not None]
-
-            return update_function
-
-        encountered_words = set()
-        # One entry per word list that has something to do, each able to create its tasks later
-        word_list_spawners: list[Callable[[list[asyncio.Task]], None]] = []
-        planned_task_count = 0
-        logger.debug(
-            f"{log_prefix}Processing word lists with limit_words_and_readings="
-            f" {limit_words_and_readings}, reprocess_words={reprocess_words}"
-        )
-        for word_list_key in word_list_keys:
-            # Go through each list and replace the key in the dict with the result
-            word_tuples = word_list_dict.get(word_list_key, [])
-            if not isinstance(word_tuples, list):
-                logger.error(
-                    f"{log_prefix}Error: Invalid word list format for key '{word_list_key}' in the"
-                    " note"
-                )
-                continue
-            word_tuple_indexes = set()
-
-            # Drop the duplicates and work out which of what is left this run is to process.
-            #
-            # One pass building a new list, rather than `word_tuples.remove(wt)` inside an
-            # `enumerate` over the same list: removing during iteration skips the entry after
-            # each removal and shifts every index past it, and `word_tuple_indexes` holds
-            # positions in this very list - so a single duplicate meant the run processed a
-            # different word than the one it had decided on. Indexes are recorded against the
-            # final list instead, which is what `match_words_to_notes` below is handed.
-            kept: list = []
-            malformed: list = []
-            for wt in word_tuples:
-                normalized = normalize_word_tuple(wt)
-                if normalized is None:
-                    # Nothing a word can be read out of. Kept in the list rather than dropped -
-                    # rewriting the note's word list without an entry nobody understands is not
-                    # this loop's call to make - and simply never indexed, which is what the
-                    # exception this replaces achieved by accident. See normalize_word_tuple.
-                    malformed.append(wt)
-                    kept.append(wt)
-                    continue
-                word = normalized[0]
-                reading = normalized[1]
-                word_key = f"{word}_{reading}"
-                # if the word is a multi-meaning type, then duplicates are intended
-                multi_meaning_index = normalized[2] if len(normalized) >= 3 else None
-                if word_key in encountered_words and not isinstance(multi_meaning_index, int):
-                    logger.debug(
-                        f"{log_prefix}Removing duplicate word '{word}' with reading"
-                        f" '{reading}' from word list '{word_list_key}'"
-                    )
-                    continue
-                encountered_words.add(word_key)
-                if limit_words_and_readings:
-                    # Is this a word and reading that we're limited to process?
-                    if any(
-                        word == lwt[0] and reading == lwt[1] for lwt in limit_words_and_readings
-                    ):
-                        word_tuple_indexes.add(len(kept))
-                else:
-                    word_tuple_indexes.add(len(kept))
-                kept.append(normalized)
-
-            if malformed:
-                # One line for the list rather than one traceback per entry. These arrive in
-                # small clusters - eight of one run's ten were on a single note - and a
-                # traceback each said nothing the value itself does not.
-                logger.error(
-                    f"{log_prefix}Skipping {len(malformed)} entr"
-                    f"{'y' if len(malformed) == 1 else 'ies'} in word list '{word_list_key}'"
-                    f" that are not word tuples: {malformed}"
-                )
-            # In place, because this list is `word_list_dict[word_list_key]` and is handed on
-            # to match_words_to_notes as the same object.
-            word_tuples[:] = kept
-            logger.debug(
-                f"{log_prefix}Processing word list '{word_list_key}' with word tuples:"
-                f" {word_tuples}"
-            )
-            if len(word_tuple_indexes) == 0:
-                logger.debug(
-                    f"{log_prefix}No word tuples to process for word list '{word_list_key}',"
-                    f" single_word_and_reading={limit_words_and_readings}"
-                )
-                continue
-
-            if limit_words_and_readings and reprocess_words:
-                # Find all notes whose word list contains this word tuple and process them too
-                for target_index in word_tuple_indexes:
-                    target_word_tuple = word_tuples[target_index]
-                    target_word = target_word_tuple[0]
-                    target_reading = target_word_tuple[1]
-
-                    # Mutate word_tuples to change the one word to unprocessed state
-                    if len(target_word_tuple) in [3, 5]:
-                        # Has multi-meaning index
-                        word_tuples[target_index] = (
-                            target_word,
-                            target_reading,
-                            target_word_tuple[2],
-                        )
-                    else:
-                        word_tuples[target_index] = (target_word, target_reading)
-                    logger.debug(
-                        f"{log_prefix}Single word only mode, reprocessing single word tuple at"
-                        f" index {word_tuple_indexes} for word list '{word_list_key}':"
-                        f" {target_word_tuple}"
-                    )
-            else:
-                logger.debug(
-                    f"{log_prefix}Processing all word tuples for word list '{word_list_key}'"
-                )
-
-            update_word_list_in_dict = make_word_list_updater(word_list_key)
-            word_list_task_count, spawn_word_list_tasks = match_words_to_notes(
-                config=config,
-                current_note=note,
-                word_tuples=word_tuples,
-                word_list_key=word_list_key,
-                word_tuple_indexes=word_tuple_indexes,
-                sentence=sentence,
-                note_tasks=note_tasks,
-                final_update_tasks=final_update_tasks,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                progress_updater=progress_updater,
-                cancel_state=cancel_state,
-                gate=gate,
-                all_generated_meanings_dict=all_generated_meanings_dict,
-                update_word_list_in_dict=update_word_list_in_dict,
-                note_type=note_type,
-                word_locks_dict=word_locks_dict,
-                word_lock=word_lock,
-                word_note_index_cache=word_note_index_cache,
-                note_cache=note_cache,
-                sentence_cache=sentence_cache,
-                replace_existing=replace_existing,
-            )
-            planned_task_count += word_list_task_count
-            if spawn_word_list_tasks is not None:
-                word_list_spawners.append(spawn_word_list_tasks)
-
-        if not word_list_spawners:
-            # Nothing to do for this note, mark it done now rather than counting it as pending
-            progress_updater.increment_counts(
-                notes_done=1,
-            )
-            return None
-
-        def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
-            for spawn_word_list in word_list_spawners:
-                spawn_word_list(tasks)
-            if note_tasks:
-                # Create a task to wait for all note tasks to finish
-                tasks.append(
-                    asyncio.create_task(
-                        wait_for_tasks(
-                            all_note_tasks=note_tasks,
-                            all_final_update_tasks=final_update_tasks,
-                            current_note=note,
-                            updated_word_list_dict=word_list_dict,
-                        )
-                    )
-                )
-            else:
-                # No tasks were created after all, mark this note as done
-                progress_updater.increment_counts(
-                    notes_done=1,
-                )
-
-        return NotePlan(task_count=planned_task_count, spawn=spawn_note_tasks)
-    else:
-        logger.error(f"Error: Note is missing the word list field '{word_list_field}'")
+    if word_list_field not in note:
+        logger.error(f"{log_prefix}Error: Note is missing the word list field '{word_list_field}'")
         return None
+    arr = decode_word_array_field(note, word_list_field, notes_to_update_dict, log_prefix)
+    if arr is None:
+        progress_updater.increment_counts(notes_done=1)
+        return None
+    return plan_word_array_matching(
+        config=config,
+        note=note,
+        arr=arr,
+        sentence=sentence,
+        edited_nids=edited_nids,
+        notes_to_add_dict=notes_to_add_dict,
+        notes_to_update_dict=notes_to_update_dict,
+        progress_updater=progress_updater,
+        cancel_state=cancel_state,
+        gate=gate,
+        all_generated_meanings_dict=all_generated_meanings_dict,
+        word_locks_dict=word_locks_dict,
+        word_lock=word_lock,
+        word_note_index_cache=word_note_index_cache,
+        note_cache=note_cache,
+        sentence_cache=sentence_cache,
+        limit_words_and_readings=limit_words_and_readings,
+        log_prefix=log_prefix,
+        states=match_targets.states_to_match(
+            replace_existing,
+            reprocess_words if limit_words_and_readings else None,
+        ),
+    )
 
 
 async def bulk_match_words_to_notes(
@@ -3229,25 +2448,6 @@ def match_words_to_notes_from_selected(
     )
 
 
-def get_word_list_query_regex_for_word_and_reading(
-    word: str,
-    reading: str,
-    with_processed: WithProcessed = "only_unprocessed",
-) -> str:
-    """Get the regex to query the word list field for a specific word and reading."""
-    white_space = r"\s*\n?"
-    # "word","reading",<optional multi-meaningn index>
-    unprocessed_part = rf"{white_space}\"{re.escape(word)}\",{white_space}\"{re.escape(reading)}\"(,{white_space}\d)?"
-    # "word_sort_field", note.id
-    processed_part = rf",{white_space}\"[^\"]+\",{white_space}\d+"
-    if with_processed == "only_unprocessed":
-        return rf"\[{unprocessed_part}\]"
-    if with_processed == "only_processed":
-        return rf"\[{unprocessed_part}{processed_part}\]"
-    if with_processed == "both":
-        return rf"\[{unprocessed_part}({processed_part})?\]"
-
-
 def get_note_word_match_query(
     config: dict,
     note: Note,
@@ -3300,14 +2500,6 @@ def match_single_word_to_notes_from_selected(
     if not config:
         logger.error("Error: Missing addon configuration")
         return None
-    word_lists_to_process = config.get("word_lists_to_process", {})
-    if not word_lists_to_process:
-        logger.error("Error: No word lists to process in the config")
-    if not isinstance(word_lists_to_process, dict):
-        logger.error("Error: Invalid word lists format in the config, expected a dictionary")
-        return
-    # Filter the WORD_LISTS based on the config
-    word_list_keys = [wl for wl in WORD_LISTS if word_lists_to_process.get(wl, False)]
 
     def bulk_op(
         col: Collection,
@@ -3331,35 +2523,12 @@ def match_single_word_to_notes_from_selected(
                 continue
             target_word, target_reading, word_list_field = note_word_info
 
-            # Bound before the `if`, not inside it. `word_list_field` can resolve to "" or to
-            # a field this notetype does not have - a misconfigured `word_list_field` does
-            # both - and it is read unconditionally below: on the first such note that raised
-            # NameError out of bulk_op, and on a later one it silently re-read and
-            # deduplicated the *previous* note's word lists.
-            word_list_dict: dict[str, Any] = {}
-            # A word array has no word lists to deduplicate, and decode_word_list_field would
-            # tag it invalid
-            if word_list_field in cur_note and decode_word_array(cur_note[word_list_field]) is None:
-                word_list_dict = (
-                    decode_word_list_field(
-                        cur_note, word_list_field, notes_to_update_dict, log_prefix
-                    )
-                    or {}
-                )
-
             single_word_and_reading: RawOneMeaningWordType = (target_word, target_reading)
-            drop_duplicate_word_tuples(word_list_dict, word_list_keys, log_prefix)
-            target_word_regex = get_word_list_query_regex_for_word_and_reading(
-                word=target_word,
-                reading=target_reading,
-                with_processed=reprocess_words or "only_unprocessed",
-            )
-            array_word_regex = word_array_query_regex(
+            target_word_regex = word_array_query_regex(
                 target_word,
                 target_reading,
                 match_targets.states_to_match(reprocess=reprocess_words),
             )
-            target_word_regex = f"({target_word_regex}|{array_word_regex})"
             logger.debug(
                 f"{log_prefix}Single-word-only mode: Querying for notes with word '{target_word}'"
                 f" and reading '{target_reading}' using regex '{target_word_regex}'"

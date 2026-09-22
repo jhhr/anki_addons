@@ -108,7 +108,7 @@ class MigrationReport:
     without_note_id: int = 0
     """Of those, the ones that carried nothing to migrate."""
     unreadable: int = 0
-    """Of those, the ones that held no word either (`normalize_word_tuple`'s shapes)."""
+    """Of those, the ones that held no word either (the shapes the old word list reader skipped)."""
     by_step: dict[str, int] = field(default_factory=lambda: {s: 0 for s in STEPS})
     """Note ids carried over, by the step that found the element."""
     spread: int = 0
@@ -141,7 +141,7 @@ def read_entry(category: str, entry: Any) -> Optional[OldEntry]:
     The shapes written by extract_words and match_words_to_notes are [word, reading],
     [word, reading, meaning_index], [word, reading, sort_value, note_id] and
     [word, reading, meaning_index, sort_value, note_id]. Real word lists also hold the
-    malformed ones `normalize_word_tuple` documents: a bare string, a one-element list, an
+    malformed ones the old word list reader skipped: a bare string, a one-element list, an
     empty list and a bare note id, the last of which is a link worth keeping if only it said
     which word it belonged to.
     """

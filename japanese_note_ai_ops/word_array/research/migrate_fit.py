@@ -3,9 +3,10 @@
 Three corpora of the old format can be measured:
 
 - `export` (the default): `output/extract_words_migration_data.jsonl`, every sentence of the
-  collection with its raw word list field, as `make_extract_words_migration_data` writes it -
-  `{"sentence", "word_list", "nids"}` per row (`nids` every note with the sentence, unused here). The field is read the way the migration op reads it,
-  through repair_json, so this is a dry run of the real migration, invalid data included.
+  collection with its raw word list field, as the since-removed `make_extract_words_migration_data` wrote it -
+  `{"sentence", "word_list", "nids"}` per row (`nids` every note with the sentence, unused here). A field
+  that is not valid JSON is counted and skipped; the migration op ran it through `json_repair`,
+  which the addon no longer ships, so those few rows are what this can no longer reproduce.
 - `checked`: `output/extract_words_migration_data_checked.jsonl`, a hand-checked subset of that.
 - `fine_tuning`: `output/extract_words_fine_tuning.jsonl`, a validated corpus whose entries carry
   no note ids - the training format drops them - so each distinct (word, reading) is given a
@@ -35,14 +36,6 @@ from _bootstrap import ADDON_ROOT, load, load_root
 generator = load("generator")
 migrate = load("research.migrate")
 html_stripping = load_root("html_stripping")
-
-try:
-    from json_repair import repair_json  # type: ignore
-except ImportError:
-    # Pure Python, so the vendored copy works in any development Python; appended rather than
-    # prepended so that nothing else in lib/ shadows what that Python has installed.
-    sys.path.append(str(ADDON_ROOT / "lib"))
-    from json_repair import repair_json  # type: ignore
 
 CORPORA = {
     "export": ADDON_ROOT / "output" / "extract_words_migration_data.jsonl",
@@ -92,20 +85,12 @@ def read_fine_tuning(path: Path, invalid: Counter) -> list[tuple[str, dict]]:
 
 
 def decode_word_list(text: str, invalid: Counter):
-    """The word list field as `match_words_to_notes.decode_word_list_field` decodes it, or None
-    where the op would leave the note alone. That function takes a Note, hence the copy."""
+    """The word list field as JSON, or None, counted, when it is not valid JSON."""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        pass
-    result = repair_json(json_str=text, return_objects=True, logging=True, ensure_ascii=False)
-    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], list):
-        result = result[0]
-    if isinstance(result, dict):
-        invalid["json repaired"] += 1
-        return result
-    invalid["json unrepairable (note left alone)"] += 1
-    return None
+        invalid["json unreadable (skipped)"] += 1
+        return None
 
 
 def read_export(path: Path, invalid: Counter) -> list[tuple[str, dict]]:

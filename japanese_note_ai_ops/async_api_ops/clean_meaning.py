@@ -79,7 +79,7 @@ def get_sentences_for_note(
     A sentence from a note whose word list field holds a word array has this note's word in
     `<b>`: the occurrence linked to this note, else the first of its word
     (`match_targets.example_sentence`), so a sentence using the word twice says which one the
-    meaning is for. A note with an old word list gives its sentence as it is.
+    meaning is for. A note whose field holds no word array gives its sentence as it is.
     """
     note_type = note.note_type()
     if not note_type:

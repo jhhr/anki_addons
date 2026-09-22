@@ -98,9 +98,10 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         self.assertEqual(note["words"], '[["本"]]')
         self.assertEqual(updates, {})
 
-    def test_an_old_word_list_is_left_for_the_migration(self):
-        old_list = '{"nouns": [["本", "ほん", "本", 1378555077520]]}'
-        note = FakeNote({"sentence": "本を読む。", "words": old_list})
+    def test_a_broken_array_is_left_for_a_person(self):
+        # A bracket lost in a hand edit: the matched note id must not be generated over
+        broken = '[["本", "noun", "本", "ほん", [1378555077520], []]'
+        note = FakeNote({"sentence": "本を読む。", "words": broken})
         updates: dict = {}
 
         changed, generate, proper_nouns = run(note, updates)
@@ -108,7 +109,7 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         self.assertFalse(changed)
         generate.assert_not_called()
         proper_nouns.assert_not_called()
-        self.assertEqual(note["words"], old_list)
+        self.assertEqual(note["words"], broken)
         self.assertEqual(updates, {})
 
     def test_a_note_with_no_sentence_gets_nothing(self):
@@ -176,9 +177,9 @@ class RegenerateWordsTests(unittest.TestCase):
         self.assertEqual(written[0][4], ["match"])
         self.assertEqual(updates, {note.id: note})
 
-    def test_an_old_word_list_is_left_for_the_migration_even_with_overwrite(self):
-        old_list = '{"nouns": [["本", "ほん", "本", 1378555077520]]}'
-        note = FakeNote({"sentence": "本を読む。", "words": old_list})
+    def test_a_broken_array_is_left_for_a_person_even_with_overwrite(self):
+        broken = '[["本", "noun", "本", "ほん", [1378555077520], []]'
+        note = FakeNote({"sentence": "本を読む。", "words": broken})
         updates: dict = {}
 
         changed, generate, proper_nouns = run(note, updates, overwrite=True)
@@ -186,7 +187,7 @@ class RegenerateWordsTests(unittest.TestCase):
         self.assertFalse(changed)
         generate.assert_not_called()
         proper_nouns.assert_not_called()
-        self.assertEqual(note["words"], old_list)
+        self.assertEqual(note["words"], broken)
         self.assertEqual(updates, {})
 
     def test_a_regeneration_that_changes_nothing_writes_nothing(self):

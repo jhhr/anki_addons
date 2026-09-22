@@ -238,8 +238,8 @@ result. One `bulk_notes_op` request per note, one Sudachi tokenizer at a time
 before touching a note (`with_generator_resources`). The words come out unjudged, `[]`.
 
 A note whose field already holds an array is skipped, so re-running over a selection is free; a
-note still holding an old extract_words word list is skipped too, because generating over it
-would throw away the note ids of its matched words - that is the migration's job to carry over.
+note whose field does not parse as an array is skipped too, because generating over it would
+throw away the note ids of its matched words - a broken array is for a person to repair.
 
 ### Regenerating over an array
 
@@ -364,9 +364,10 @@ saved `[note_id, match_quality]`, or `[note_id]` when the response gave no valid
 (`parse_match_quality()`). The prompt shows the target's sentence in plain text with the very
 occurrence in `<b>` (`highlighted_sentence()`, without the field's `<i>` context), and each
 existing meaning's example sentence with that note's word in `<b>` when the note holds an array
-(`example_sentence()`: the occurrence linked to the note, else the first of its word); an old word
-list note's sentence is shown as it is. An old word list's words get the same prompt, their
-match_quality dropped. Every run also rates the `[note_id]` words (`states_to_rate()`: unless the
+(`example_sentence()`: the occurrence linked to the note, else the first of its word); a note
+whose field holds no array has its sentence shown as it is. A note whose own field is not a
+readable array is tagged `invalid_word_list_json` and left alone
+(`decode_word_array_field()`). Every run also rates the `[note_id]` words (`states_to_rate()`: unless the
 run matches them again) with a secondary prompt given only the linked note's meaning and the
 `<b>` sentence (`rating_prompt()`, `RATING_INSTRUCTIONS`, same 1-5 scale as the main prompt);
 `save_ratings()` makes them `[note_id, match_quality]`. A note with no meaning yet, or not found,
@@ -405,6 +406,9 @@ A key that spells a word wrong (まだ → 未だ) goes in `generator.CANONICAL_
 
 **The migration was run on the collection on 2026-09-16** (name lexicon, migrate, find proper
 nouns, judge), so no note should hold an old word list any more; what follows is what it did.
+Every reader of the old format has gone since, along with the export of it
+(`make_extract_words_migration_data`) and the compound verb migration; the research scripts that
+read `output/extract_words_migration_data.jsonl` work on the file already written.
 
 `research/migrate.py`'s `migrate(word_lists, arr)` fits a stored extract_words word list into a
 generated array, writing `match_data` in place. It sits under `research/` because the op that

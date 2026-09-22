@@ -15,10 +15,6 @@ charset-normalizer==3.5.1
     # via requests
 idna==3.19
     # via requests
-json-repair==0.44.1 ; python_full_version < '3.10'
-    # via -r requirements.in
-json-repair==0.63.4 ; python_full_version >= '3.10'
-    # via -r requirements.in
 psutil==7.2.2
     # via -r requirements.in
 rapidfuzz==3.13.0 ; python_full_version < '3.10'

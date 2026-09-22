@@ -243,14 +243,13 @@ class WordIndexCache:
 
 
 class MatchWordsToNotesArrayTests(unittest.TestCase):
-    """The op reads a word array rather than taking it for a broken old word list."""
+    """The op reads a word array, and tags a field it cannot read as one."""
 
     def setUp(self):
         self.mwtn = load_ops_module("match_words_to_notes")
         self.config = {
             "Word": {key: key for key in self.mwtn.MATCH_FIELD_KEYS},
             "match_words_model": "model",
-            "word_lists_to_process": {"nouns": True},
         }
 
     def plan(
@@ -278,13 +277,8 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             log_prefix="",
         )
 
-    def test_an_array_note_is_not_taken_for_a_broken_word_list(self):
-        arr = [word("本", ["dontmatch"]), word("を", ["dontmatch"])]
-        fields = {"furigana_sentence_field": "本を", "word_list_field": json.dumps(arr)}
-        note = FakeNote(fields)
-        progress = Progress()
-        updates = {}
-        plan = self.mwtn.match_words_to_notes_for_note(
+    def plan_note(self, note, progress, updates):
+        return self.mwtn.match_words_to_notes_for_note(
             config=self.config,
             note=note,
             edited_nids=[],
@@ -300,7 +294,44 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             note_cache=None,
             sentence_cache=None,
         )
-        self.assertIsNone(plan)
+
+    def test_a_broken_array_is_tagged_and_the_note_counted_done(self):
+        # The field that was rejected as "a list, expected a dict": a sub-word's extra bracket
+        # shifts every close after it by one, so the array ends before its last word and
+        # what follows makes the text no JSON at all
+        broken = (
+            '[["事が出来る", "expression", "事が出来る", "ことができる", ["dontmatch"], [\n'
+            '  ["事", "noun", "事", "こと", ["match"]], []],\n'
+            '  ["出来る", "verb", "出来る", "できる", [1378555077220], []]\n'
+            "]],\n"
+            '["。"]\n'
+            "]"
+        )
+        note = FakeNote({"furigana_sentence_field": "事が出来る", "word_list_field": broken})
+        progress = Progress()
+        updates = {}
+        self.assertIsNone(self.plan_note(note, progress, updates))
+        self.assertEqual(note.tags, [self.mwtn.INVALID_WORD_ARRAY_TAG])
+        self.assertEqual(updates, {note.id: note})
+        self.assertEqual(note["word_list_field"], broken)
+        self.assertEqual(progress.notes_done, 1)
+
+    def test_an_empty_word_list_field_is_not_tagged(self):
+        note = FakeNote({"furigana_sentence_field": "本を", "word_list_field": ""})
+        progress = Progress()
+        updates = {}
+        self.assertIsNone(self.plan_note(note, progress, updates))
+        self.assertEqual(note.tags, [])
+        self.assertEqual(updates, {})
+        self.assertEqual(progress.notes_done, 1)
+
+    def test_an_array_note_is_not_tagged(self):
+        arr = [word("本", ["dontmatch"]), word("を", ["dontmatch"])]
+        fields = {"furigana_sentence_field": "本を", "word_list_field": json.dumps(arr)}
+        note = FakeNote(fields)
+        progress = Progress()
+        updates = {}
+        self.assertIsNone(self.plan_note(note, progress, updates))
         self.assertEqual(note.tags, [])
         self.assertEqual(updates, {})
         self.assertEqual(progress.notes_done, 1)

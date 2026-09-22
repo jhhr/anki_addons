@@ -9,7 +9,7 @@ The judge decides which words of a word array get a note, in `match_data` (see
 
 Every word is asked about alone, under the rules for its part of speech (`word_array.judge`),
 so a note fans out into as many requests as it has words and runs through `bulk_nested_notes_op`.
-A note whose field still holds an old extract_words word list is skipped, and note ids a re-judge
+A note whose field holds no word array it can read is skipped, and note ids a re-judge
 unlinked are logged, so a link lost to a bad call can be put back. Particles and the
 copula are judged `dontmatch` while planning, without a request. Once a note's requests are done
 the array is written back, keeping every word that got a decision; a word whose request failed
