@@ -602,6 +602,9 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
                     decks_query = make_query_string("deck", deck_names)
 
                 note_type_query = ""
+                # Set per definition: the editor saves one with no note types, and checking it
+                # first raised UnboundLocalError below
+                note_type_names_list: list[str] = []
                 # Split by comma and remove the first wrapping " but keeping the last one
                 note_type_names = checked_definition.get("copy_into_note_types")
                 if note_type_names and note_type_names != "-":

@@ -28,11 +28,15 @@ def notes(col):
     return vocab
 
 
-def open_dialog(qtbot, note_source):
-    dialog = PickCopyDefinitionDialog(None, [d.within_note(note_types=[d.VOCAB])], note_source)
+def open_dialog_on(qtbot, definitions, note_source):
+    dialog = PickCopyDefinitionDialog(None, definitions, note_source)
     qtbot.addWidget(dialog)
     dialog.checkboxes[0].setChecked(True)
     return dialog
+
+
+def open_dialog(qtbot, note_source):
+    return open_dialog_on(qtbot, [d.within_note(note_types=[d.VOCAB])], note_source)
 
 
 def test_selection_mode_counts_only_the_selected_notes(qtbot, notes):
@@ -61,3 +65,12 @@ def test_nothing_selected_counts_nothing_until_the_search_is_clicked(qtbot, note
     # An empty search box matches the whole collection; the note type narrows it.
     assert sorted(dialog.definition_note_ids[0]) == sorted(n.id for n in notes)
     assert dialog.apply_button.isEnabled()
+
+
+def test_a_definition_without_note_types_counts_without_a_type_filter(qtbot, notes):
+    # The editor saves a definition with no note types; checking it raised UnboundLocalError
+    untyped = d.within_note("untyped")
+    untyped["copy_into_note_types"] = ""
+    dialog = open_dialog_on(qtbot, [untyped], NoteSource([notes[0].id], ""))
+    assert list(dialog.definition_note_ids[0]) == [notes[0].id]
+    assert dialog.applicable_note_type_names == []
