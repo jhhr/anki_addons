@@ -3,7 +3,8 @@
 Read the root [AGENTS.md](../AGENTS.md) first.
 
 Runs LLM prompts and local operations over Japanese notes, from the browser's "AI helper"
-right-click submenu and from a few automatic triggers: adding a "Japanese vocab note" runs
+right-click submenu, from the browser's Edit > "Japanese AI ops..." dialog (several ops in a
+row, see "Chains" below) and from a few automatic triggers: adding a "Japanese vocab note" runs
 `clean_meaning` and `extract_words`; unfocusing an empty story field on a "Kanji draw" note
 writes a story; unfocusing an empty translation field translates. Those two note type names
 are hardcoded in the hooks. Operations: clean/generate a meaning from MDX dictionary
@@ -19,7 +20,10 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `__init__.py` | strict order, see below |
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts. Importing it creates `user_files/` and imports `anki` |
 | `call_logging.py` | per-call log files in `user_files/logs/`; `bulk_op_logging()`, `phase_log()`, `in_bulk_op()` |
-| `generator_resources.py` | `with_generator_resources(parent, then)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp` |
+| `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
+| `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
+| `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
+| `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch |
@@ -28,6 +32,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
 | `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login stops it); cancel watchdog and stack dumps |
+| `async_api_ops/chain_types.py` | `ChainStep(label, on_done)`, `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
+| `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 2500 lines |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
@@ -40,7 +46,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 1. `add_vendor_paths(ADDON_DIR)`. Nothing that imports a vendored package may come first.
 2. `VENDOR_HEALTH = vendor_health(...)`.
 3. All operation imports inside one `try/except ImportError`, which sets `MISSING_PACKAGE`.
-   **New operation imports go inside this block.**
+   **New operation imports go inside this block**, and so do `op_registry`, `ai_helper_menu`,
+   `multi_op_dialog` and `op_chain`, which import op modules.
 4. Hooks and menus are registered only when `MISSING_PACKAGE is None`.
 5. `install_rebuild_ui(...)`, unconditionally, so a broken install can still repair itself.
 
@@ -60,17 +67,52 @@ that checking later cost 25 minutes per bulk run.
    `NotePlan(task_count, spawn, flush=None)` and must not start work itself; a note saved once
    all its tasks are done gives a `flush`, see Invariants). Local ops pass
    `is_sync_op=True`. Multi-phase operations pass a list of `OpPhase(name, bulk_op)`.
-3. `*_selected_notes(nids, parent, chain=None)` calling `selected_notes_op(..., chain=chain)`
-   with an `AsyncTaskProgressUpdater`. An early return before that call must
-   `fail_step(chain, ...)`, or a chain waits forever.
+3. `*_selected_notes(nids, parent, chain=None)` ending in `selected_notes_op(..., chain=chain)`
+   with an `AsyncTaskProgressUpdater`. Every path that returns before that call must
+   `fail_step(chain, reason)`, or a chain waits forever; a wrapper in
+   `with_generator_resources` passes it `chain=chain`, which does that for its no-run paths.
 
-Registration: an `OpSpec` in `op_registry.OPS`, whose order is the menu's;
-`ai_helper_menu.py` builds the browser's "AI helper" submenu from it.
+Registration: an `OpSpec` in `op_registry.OPS`. Without one an op is in neither the "AI
+helper" submenu nor the multi-op dialog; with one it is in both, and `__init__.py` needs no
+change. Its position is its menu position, `group` picks the side of the async/sync
+separator, `needs_generator` is set when the entry function goes through
+`with_generator_resources`, and `start` is a lambda that looks the entry function up in
+`op_registry`'s globals when called (tests patch it there) and passes `chain` on. An entry
+that runs no `selected_notes_op` and writes no notes is a `MenuOnlyAction` in
+`ai_helper_menu.py` instead, never a chain step.
 
 `selected_notes_op` wraps the run in one `CollectionOp`: a fresh asyncio loop, one
 `ThreadPoolExecutor` whose workers call `join_run(run)`, and all collection writes
 (`update_notes`, `remove_notes`, `add_note`, `merge_undo_entries`) in a cleanup phase after
 every op has finished.
+
+### Chains: the multi-op dialog
+
+Selecting thousands of rows makes the browser lag, and the right click again. The dialog
+needs one selected row and the search. It opens from the browser's Edit menu, "Japanese AI
+ops..." (`__init__.add_browser_edit_menu_action` on `browser_menus_did_init`; shortcut from
+`multi_op_dialog_shortcut`, read once per browser window), and from "Run several ops..." at
+the top of the "AI helper" submenu. A click on an available op moves it to the end of the
+numbered run order (each op once); drag, Up/Down, Remove, double-click and Clear edit it.
+Below: the shared `NoteSourceButtons` and a count of the notes (`find_notes` on opening and
+on each mode switch). Run needs one op and one note, fixes the ids, and the chain starts
+after `exec()` returns, so its first progress dialog is not under a modal one.
+
+`run_op_chain(specs, nids, parent)`, per step:
+
+- One full, ordinary run: its own `selected_notes_op`, progress dialog titled
+  `"Step i/n: ..."`, cleanup and undo entry. Cleanup commits (added notes included) before
+  the next step starts, so a later step that queries the collection sees added notes, but
+  they never join the chain's ids. `OpPhase` does not join steps: that would share one undo
+  entry and hold the added notes back.
+- Before it, the ids fixed at Run are re-filtered by `existing_note_ids` (a cleanup can remove
+  notes; `selected_notes_op` raises on a removed id). None left stops the chain.
+- A cancelled, stopped or failed step, or a `start` that raises, stops the chain; a
+  cancelled step still saves what it did.
+- No tooltip per step. One summary at the end: `showInfo`, or `showWarning` when stopped
+  early, naming the step, why, and the steps that did not run.
+- If any op `needs_generator`, the downloads are asked about once, before step 1; declined,
+  no SudachiPy or a failed download starts nothing and shows no summary.
 
 ### Providers
 
@@ -121,9 +163,30 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   and is the only place an automatic pause expires; the dialog reads `pause_state()`, which
   falls back to the run in progress. A run that ends while paused is cancelled in teardown,
   before `end_run()`.
+- **A chain step's `chain.on_done` is called exactly once**, on the main thread, after its
+  progress is finished, on every path: completed, cancelled, stopped (a stop reason wins over
+  the cancel it causes), failed (exception in the op or in the success handler), a caught
+  `RunCancelled`, and `fail_step` for an entry function that gives up before running. A
+  second call is ignored with a warning; a missing one leaves the chain waiting forever
+  (there is no timeout). `fail_step`'s call is synchronous, from inside `spec.start`.
+- **Nothing is started from inside `on_done`.** The next step, the first one and the summary
+  wait until `mw.progress.busy()` is 0 on two looks in a row (`mw.progress.single_shot(100)`
+  polls, no cap). A step's progress is finished twice (aqt's and `on_bulk_success`'s), and
+  each finish closes a dialog shown under 0.5 s ago from a background task; a step started
+  between the two closings gets no dialog of its own (`progress.start` returns None at
+  levels > 1) and has the shared one closed under it. One `single_shot(0)` is not enough.
+- **A run without a chain behaves as before the chain existed**: its tooltip or stop warning,
+  and no `.failure` handler, so aqt shows an exception itself. Only with a chain is one set,
+  and `failed_step_outcome` then shows the error with aqt's `show_exception`.
+- **An empty browser search is the whole collection.** `Browser.current_search()` is `""`
+  while the browser shows its default search, and `find_notes("")` matches every note. The
+  dialog's count says so in red; anything else resolving a `NoteSource` in search mode must
+  deal with it too.
 - These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`,
   `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An `aqt`
   import in one of them takes the test suite offline (`test/addon_modules.py` says so).
+  `async_api_ops/chain_types.py` is kept free of both too, so the chain's types need nothing
+  of Anki.
 - A progress **message is also a key**: `ConcurrencyGate` stores the learned memory cost
   under `op_key=message`, so rewording it resets the estimate.
 - `bulk_*_op` signatures have mutable `{}` defaults, harmless only because
@@ -168,7 +231,7 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
 
 ## Tests and types
 
-- `test/` (about 45 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
+- `test/` (about 50 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
   this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir so pytest
   never imports the addon's aqt-importing `__init__.py`, and sets `--import-mode=importlib`.
   `test/addon_modules.py` provides `load_addon_module`, `load_ops_module(name, subdir)`
@@ -177,6 +240,14 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
   `bulk_nested_notes_op` (`RunGate`, `RunProgress`, `RunCollection`, `patch_nested_run`,
   `wait_until`). Word-array tests skip when SudachiPy or the downloaded dictionaries are
   missing; a skip is not a pass, so say which ran.
+- Chains: `test_op_chain_step.py` drives `selected_notes_op`'s chain paths through a fake
+  `CollectionOp`; `test_op_chain.py` runs `OpChain` with fake ops and hooks;
+  `test_op_registry.py` pins the menu's labels, order and wiring. `__init__.py`'s Edit-menu
+  hook has no test.
+- The suite's `aqt.qt` is a stub of empty classes. `test_multi_op_dialog.py` still runs real
+  widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
+  from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
+  skip. Copy it for another dialog rather than un-stubbing the suite.
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.

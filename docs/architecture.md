@@ -83,7 +83,9 @@ It does **not** verify that a declared package's own sibling imports are satisfi
   `try/except ImportError`; without them, code mode just lacks those names.
 - Four `ui` modules (`interpolated_text_edit`, `code_edit_layout`, `add_model_options_to_dict`,
   `add_intersecting_model_field_options_to_dict`) import `..interpolate` at module top,
-  unguarded. An addon that uses them must declare `interpolate` too. Both current users do.
+  unguarded. An addon that uses them must declare `interpolate` too. `copy_anywhere` and
+  `related_card_disperse` do; `japanese_note_ai_ops` declares `ui` without `interpolate`
+  and uses only `ui/note_source_buttons`, so it must not import those four.
 
 ## What goes into a release zip
 

@@ -14,6 +14,12 @@ Prompts:
 - `extract_words`: Partition the kanjified sentence into its dictionary words and write the word array into the note (`word_array/README.md`). Built by rules from SudachiPy and JMdict, so the only API call is the proper noun one (`proper_nouns_model`); the words are left unjudged. "Extract words + Judge matchability" runs the word matching judge over the new words as a second phase.
 - `match_words_to_notes`: Match the extracted words in the list to an existing word note, using the word's meaning. If matching isn't possible, creates a new word note and comes up with a meaning that matches the usage of the word in the sentence.
 
+## Running several ops at once
+
+Selecting thousands of notes in the browser makes Anki lag, and right-clicking them lags again. The browser's Edit > "Japanese AI ops..." dialog (also "Run several ops..." at the top of the "AI helper" right-click submenu; an optional shortcut is set with `multi_op_dialog_shortcut` in the config) avoids that: leave one note selected, open it and pick "Use all notes from current search". The other button, "Use selected notes (N)", runs on the selection instead. The label under the lists says how many notes will be processed; when the browser's search box is empty it warns in red that this is every note in the collection.
+
+Click ops in the left list ("Available ops") to add them, in that order, to the right list ("Run in this order"). Reorder them by dragging or with Up/Down; Remove or a double click takes one back out, Clear empties the list. Run runs them one after another on the same notes. Each op is a normal run with its own progress dialog ("Step 1/3: ...") and its own entry in Edit > Undo. Cancelling a step, or a step that fails or stops (usage limit, expired login), ends the chain there; one summary at the end lists what each step did and which did not run.
+
 ## Installing dependencies
 
 First install mdict-query manually from GitHub (repo has no setup.py):
