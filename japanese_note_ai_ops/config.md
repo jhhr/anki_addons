@@ -112,18 +112,20 @@ how many tasks are still finishing, and the paused time is left out of the ETA. 
 Escape does, and works while paused too. If a later Anki version changes its progress dialog the
 buttons may be missing; Escape still cancels.
 
-A cancelled run keeps what it finished: edited notes are saved, and the new notes a match run
-prepared are added and linked from their sentences as after a full run, so the meanings already
-paid for are not lost. Words still unanswered stay to be matched by the next run.
+A cancelled run keeps what it finished: edited notes are saved, words a match or judge run had
+already answered are kept, and the new notes a match run prepared are added and linked from
+their sentences as after a full run, so the meanings already paid for are not lost. Words still
+unanswered stay to be matched by the next run.
 
-Adding the new notes can itself take a while, since every added note runs the note-adding
-hooks (copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel
-(or Escape) stops the adding; a note already being added is finished first. The notes not
-added are dropped, and the words that were linked to them are left to be matched again by the
-next run. A note that failed to add keeps its placeholder id in the word lists, which may help
-debugging, but only until the next match run over those sentences puts the words back to be
-matched. The end message says how many new notes were added, how many were left out by the
-cancel and how many failed.
+Adding the new notes can itself take a while, since every added note runs the note-adding hooks
+(copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel (or
+Escape) stops the adding; a note already being added is finished first. Cancel is only live
+while notes are being added. The notes not added are dropped, the words that were linked to them
+are left to be matched again by the next run, and a numbering such as "(m1)" or "(r1)" they put
+on the word's other notes is taken back. A note that failed to add keeps its placeholder id in
+the word lists, which may help debugging, but only until the next match run over those sentences
+puts the words back to be matched. The end message says how many new notes were added, how many
+were left out by the cancel and how many failed.
 
 ### terminal- models (claude CLI)
 
