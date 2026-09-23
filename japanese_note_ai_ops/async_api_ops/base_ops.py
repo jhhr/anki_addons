@@ -11,11 +11,12 @@ from functools import partial
 
 from anki.notes import Note, NoteId
 from anki.collection import Collection, OpChanges
+from anki.decks import DeckId
 from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
-from collections.abc import Sequence
+from collections.abc import Container, Iterable, Sequence
 
 from .api_client import (
     ANTHROPIC,
@@ -51,12 +52,16 @@ from .diagnostics import (
     seconds_since_cancel,
     start_cancel_watchdog,
 )
-from .progress_controls import disable_run_controls, install_run_controls, refresh_run_controls
+from .progress_controls import (
+    disable_run_controls,
+    install_run_controls,
+    rearm_cleanup_cancel,
+    refresh_run_controls,
+)
 
 from ..call_logging import bulk_op_logging, phase_log
 from ..utils import get_field_config, print_error_traceback
 
-from ..make_notes_tsv import make_tsv_from_notes, import_tsv_file
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +69,9 @@ MAX_TOKENS_VALUE = 8000
 # Shortest gap between progress dialog redraws. Redraws run on Anki's main thread, so this is
 # what keeps a burst of finishing tasks from starving the UI.
 PROGRESS_UPDATE_INTERVAL = 0.15
+# How long the cleanup waits for the main thread to re-arm the dialog's cancel. The main thread
+# is idle during a run, so this is only reached if it is stuck on something else.
+CLEANUP_REARM_TIMEOUT = 2.0
 DEFAULT_SYSTEM_INSTRUCTION = (
     "You are a helpful assistant for processing Japanese text. You are a"
     " superlative expert in the Japanese language and its writing system."
@@ -1103,7 +1111,19 @@ class AsyncTaskProgressUpdater:
         self._ui_lock = threading.Lock()
         self._update_pending = False
         self._last_update_at = 0.0
+        # Set by begin_cleanup_stage: the next label is the stage's first (see _push)
+        self._stage_starting = False
+        # The adding's last counts, for end_cleanup_cancel to redraw without the Cancel hint
+        self._adding_counts: Optional[tuple[int, int, int]] = None
         self._suppressed = False
+        # Set once the main thread has reset the dialog's flag for the cleanup's note adding,
+        # cleared once nothing is left for that cancel to stop
+        self._cleanup_cancel_armed = threading.Event()
+        # Which re-arm the op thread still wants; bumped when it stops waiting for one or ends
+        # the adding's cancel, so a re-arm landing after that does nothing. Under _arm_lock,
+        # which the main thread's check-and-reset holds as well.
+        self._arm_lock = threading.Lock()
+        self._arm_generation = 0
         if title is None:
             title = "Processing asynchronous tasks..."
         self.set_title(title)
@@ -1209,6 +1229,14 @@ class AsyncTaskProgressUpdater:
         with self._ui_lock:
             if self._suppressed and not force:
                 return
+            if self._stage_starting:
+                # A cleanup stage's first label, drawn even right after the stage before's
+                # last and over a redraw of it still queued, which then draws first. Dropped,
+                # the dialog showed the stage before through the whole of a slow first step:
+                # the first add_note's hooks under "Processing new notes".
+                self._stage_starting = False
+                self._update_pending = False
+                force = True
             if self._update_pending:
                 return
             now = time.time()
@@ -1245,6 +1273,135 @@ class AsyncTaskProgressUpdater:
         # like it undid the cancel. Also covers a cancel the run's own work made, which does
         # not set the dialog's flag the buttons otherwise watch.
         mw.taskman.run_on_main(disable_run_controls)
+
+    def begin_cleanup(self) -> None:
+        """Let the cleanup draw its progress again, and grey the buttons while it writes.
+
+        The suppression `show_cancelling` sets is for the burst of redraws while every task
+        unwinds at once; by cleanup the drivers have returned and nothing bursts. Left on, a
+        cancelled run's dialog would say "Finishing up" through the whole of note adding and
+        new-note processing, which a cancel of the API work does not skip.
+
+        Nothing a cancel could stop runs until the note adding, which arms a cancel of its own
+        (`arm_cleanup_cancel`), and only when there are notes to add: the edited notes' write
+        before it can be long (a translate or kanjify run over thousands of notes), and a live
+        Cancel through it would do nothing.
+        """
+        with self._ui_lock:
+            self._suppressed = False
+        mw.taskman.run_on_main(disable_run_controls)
+
+    def arm_cleanup_cancel(self, total_notes: int) -> None:
+        """Give the note adding a cancel of its own, and say so in the dialog as it goes live.
+
+        Adding can be slow (every `add_note` runs the note_will_be_added hooks), so a second
+        cancel stops it. The dialog's flag still holds the first, so it is reset on the main
+        thread (`rearm_cleanup_cancel`), and this thread waits for that: reading the flag
+        before the reset lands would take the first cancel for a second one and add nothing.
+        Done for every run with notes to add, cancelled or not, so a finished run's adding can
+        be stopped too.
+
+        `cleanup_cancel_requested` hears the flag only once the main thread has really reset
+        it: without a dialog, or if the reset failed, the flag may still hold the first cancel,
+        and trusting it once dropped every prepared note. The adding just cannot be cancelled
+        then. If the main thread gets to the reset only after this thread stopped waiting, or
+        after the adding ended, it does nothing: resetting the flag then could erase a cancel
+        pressed in between, and the adding would be told of a cancel after it was over.
+
+        The adding's label is drawn in the same main-thread step, so the dialog stops saying
+        "Cancelling operations" as Cancel comes back, and says Cancel stops the adding only if
+        it does.
+
+        The flag is reset in a run that was not cancelled too. Set then, it holds a press made
+        after the API work, while the results were flushed or the edited notes written, with
+        Cancel still live for part of it and saying it cancels the run. Kept, it stopped the
+        adding and dropped every note the run had paid for, where the same press a moment
+        earlier cancels the run and adds them all: a press is the run's cancel until Cancel
+        says it stops the adding.
+        """
+        # The label rearm draws, for end_cleanup_cancel to take the hint off: a cancel before
+        # the first note is added leaves it the adding's last
+        self._adding_counts = (0, total_notes, 0)
+        landed = threading.Event()
+        with self._arm_lock:
+            self._arm_generation += 1
+            generation = self._arm_generation
+
+        def rearm():
+            with self._arm_lock:
+                if self._arm_generation != generation:
+                    return
+                if rearm_cleanup_cancel():
+                    self._cleanup_cancel_armed.set()
+                # Under the lock, so this thread's give-up below sees the check-and-reset
+                # either done or not begun
+                landed.set()
+            try:
+                show_dialog_label(
+                    self._note_adding_label(0, total_notes, 0), value=0, maximum=total_notes
+                )
+            except Exception as e:
+                logger.error("Error drawing the note adding progress: %s", e)
+
+        mw.taskman.run_on_main(rearm)
+        if landed.wait(CLEANUP_REARM_TIMEOUT):
+            return
+        with self._arm_lock:
+            if landed.is_set():
+                return
+            self._arm_generation += 1
+        logger.warning(
+            "The main thread did not re-arm the cancel within %.0f s; the adding cannot be"
+            " cancelled",
+            CLEANUP_REARM_TIMEOUT,
+        )
+
+    def cleanup_cancel_requested(self) -> bool:
+        """Whether the user cancelled the cleanup's note adding, since `arm_cleanup_cancel`.
+
+        The dialog's flag only, not `run_cancelled()`, which holds the cancel of the API work
+        and stays set for the rest of the run. Only while the cancel is armed: until the main
+        thread has reset it, the flag may still hold that first cancel.
+        """
+        return self._cleanup_cancel_armed.is_set() and bool(mw.progress.want_cancel())
+
+    def end_cleanup_cancel(self) -> None:
+        """Grey the buttons again, once nothing is left in the cleanup that a cancel stops.
+
+        Resolving the added notes' ids and unlinking the ones not added always run to the
+        end, as they are what leaves the word arrays consistent; a live Cancel during them
+        would look like it could stop them.
+        """
+        with self._arm_lock:
+            # A re-arm still queued on the main thread must not arm the cancel again
+            self._arm_generation += 1
+            self._cleanup_cancel_armed.clear()
+        counts, self._adding_counts = self._adding_counts, None
+        if counts is not None:
+            # Its last label said Cancel stops the adding, and stays up until a later stage
+            # draws, which a run with nothing to resolve or unlink may not have
+            with self._ui_lock:
+                self._update_pending = False
+            self._push(self._note_adding_label(*counts), counts[0], counts[1], force=True)
+        mw.taskman.run_on_main(disable_run_controls)
+
+    def begin_cleanup_stage(self) -> None:
+        """Restart the clock for one stage of the cleanup (deduping, adding, resolving ids).
+
+        The cleanup's labels measure their time and ETA from `start_time`, which until this
+        was last set when the API phase began: after an hour of requests, adding ten notes
+        showed an hour gone and an average of minutes per note. Called by the cleanup before
+        each stage, not by the stage's own progress calls, which repeat. The stage's first label
+        is drawn whatever the redraw throttle says (`_push`).
+
+        The API phase's task and note counters stay as they are: no cleanup label reads them.
+        The paused time is only reset, not tracked: the cleanup cannot be paused.
+        """
+        with self._counts_lock:
+            self.start_time = time.time()
+            self.paused_seconds = 0.0
+        with self._ui_lock:
+            self._stage_starting = True
 
     def show_paused(self, detail: str = "") -> None:
         """Draw the pause into the dialog now, for a wait that nothing else redraws.
@@ -1364,24 +1521,34 @@ class AsyncTaskProgressUpdater:
         Update the Step 2 progress dialog for note adding operations occuring after async tasks
         are done.
         """
+        self._adding_counts = (notes_added, total_notes, failed)
         try:
-            elapsed_s = time.time() - self.start_time
-            elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
-            time_msg = f"<br><code>Time: {elapsed_time}</code>"
-            if notes_added > 0:
-                eta_s = (notes_added - self.notes_done) * (elapsed_s / notes_added)
-                eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-                avg_per_note_s = elapsed_s / notes_added
-                time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
-                <br><code>ETA: {eta_time}</code>"""
-            task_progress_msg = f"""<strong>Adding notes:</strong>
-                <br><strong><code>{notes_added}/{total_notes}</code></strong> notes"""
-            if failed > 0:
-                task_progress_msg += f""" | <strong style="color: red;">{failed} failed</strong>"""
+            label = self._note_adding_label(notes_added, total_notes, failed)
         except Exception as e:
             logger.error("Error updating note adding progress: %s", e)
             return
-        self._push(f"{task_progress_msg}{time_msg}", notes_added, total_notes)
+        self._push(label, notes_added, total_notes)
+
+    def _note_adding_label(self, notes_added: int, total_notes: int, failed: int) -> str:
+        failed_msg = ""
+        if failed > 0:
+            failed_msg = f""" | <strong style="color: red;">{failed} failed</strong>"""
+        hint = ""
+        if self._cleanup_cancel_armed.is_set():
+            hint = (
+                '<br><small style="opacity: 0.85">Cancel stops the adding; the words of'
+                " notes not added are left to match again.</small>"
+            )
+        # A failed add took its time too, so the rate is over every note tried. The API
+        # phase's notes_done, which this used to subtract, has nothing to do with adding.
+        return self._note_stage_label(
+            "Adding notes",
+            notes_added,
+            total_notes,
+            notes_timed=notes_added + failed,
+            after_count=failed_msg,
+            after_time=hint,
+        )
 
     def update_new_note_processing_progress(
         self,
@@ -1389,18 +1556,63 @@ class AsyncTaskProgressUpdater:
         total_notes: int = 0,
     ):
         """Update the Step 3 progress dialog for processing new notes after they have been added."""
+        self._push_note_stage("Processing new notes", new_notes_processed, total_notes)
+
+    def update_unadded_note_clearing_progress(
+        self,
+        notes_cleared: int = 0,
+        total_notes: int = 0,
+    ):
+        """Progress of unlinking the new notes a cancel of the adding left out, the stage after
+        the new-note processing."""
+        self._push_note_stage("Unlinking notes not added", notes_cleared, total_notes)
+
+    def update_marker_tidying_progress(self, words_done: int = 0, total_words: int = 0):
+        """Progress of tidying the sort field markers, the cleanup's last stage."""
+        self._push_note_stage("Tidying sort field markers", words_done, total_words, "word")
+
+    def _push_note_stage(
+        self, label: str, notes_done: int, total_notes: int, unit: str = "note"
+    ) -> None:
+        # Another stage's label is up, and end_cleanup_cancel has no hint to take off
+        self._adding_counts = None
+        self._push(
+            self._note_stage_label(label, notes_done, total_notes, unit=unit),
+            notes_done,
+            total_notes,
+        )
+
+    def _note_stage_label(
+        self,
+        stage: str,
+        notes_done: int,
+        total_notes: int,
+        *,
+        notes_timed: Optional[int] = None,
+        after_count: str = "",
+        after_time: str = "",
+        unit: str = "note",
+    ) -> str:
+        """The label of one of the cleanup's note stages: its count, time, average and ETA.
+
+        `notes_timed` is how many notes the stage's time went on, when that is more than
+        `notes_done` counts (the adding's failed notes); the average and the ETA are over it.
+        `after_count` and `after_time` are HTML put after the count and after the timing.
+        `unit` is what is counted, in the singular: the marker tidying counts words.
+        """
+        timed = notes_done if notes_timed is None else notes_timed
         elapsed_s = time.time() - self.start_time
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         time_msg = f"<br><code>Time: {elapsed_time}</code>"
-        if new_notes_processed > 0:
-            eta_s = (total_notes - new_notes_processed) * (elapsed_s / new_notes_processed)
+        if timed > 0:
+            avg_per_note_s = elapsed_s / timed
+            eta_s = (total_notes - timed) * avg_per_note_s
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-            avg_per_note_s = elapsed_s / new_notes_processed
-            time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
+            time_msg += f""" | <small> Avg time per {unit}: {avg_per_note_s:.2f}s</small>
             <br><code>ETA: {eta_time}</code>"""
-        task_progress_msg = f"""<strong>Processing new notes:</strong>
-            <br><strong><code>{new_notes_processed}/{total_notes}</code></strong> notes"""
-        self._push(f"{task_progress_msg}{time_msg}", new_notes_processed, total_notes)
+        count_msg = f"""<strong>{stage}:</strong>
+            <br><strong><code>{notes_done}/{total_notes}</code></strong> {unit}s"""
+        return f"{count_msg}{after_count}{time_msg}{after_time}"
 
 
 def make_inner_bulk_op(
@@ -1552,10 +1764,18 @@ class NotePlan(NamedTuple):
     `spawn` creates those tasks, appending them to the window's task list. It is called only
     when the note's window comes up, so the tasks themselves - which each hold a note and a
     prompt for as long as they live - still exist only a window at a time.
+
+    `flush`, for a note whose tasks save it together once they are all done: runs that save
+    with what the finished tasks left, returning True, or returns False if it has run already.
+    A cancel cancels the saving task along with the unfinished ones, which lost the finished
+    ones' paid work; bulk_nested_notes_op flushes every started note once the driver returns.
+    The save must run once only, whichever comes first, and must copy anything a worker
+    thread the cancel abandoned can still be writing.
     """
 
     task_count: int
     spawn: Callable[[list[asyncio.Task]], None]
+    flush: Optional[Callable[[], bool]] = None
 
 
 async def run_plans_rolling(
@@ -1564,6 +1784,7 @@ async def run_plans_rolling(
     progress_updater: AsyncTaskProgressUpdater,
     cancel_state: CancelState,
     label: str,
+    started_plans: "Optional[list[NotePlan]]" = None,
 ) -> bool:
     """Run every plan, keeping the task budget full instead of processing fixed windows.
 
@@ -1585,6 +1806,10 @@ async def run_plans_rolling(
 
     Shared per-run state (word locks, generated meanings) lives in the caller's closure and is
     unaffected by which plans happen to be in flight together.
+
+    Every plan whose spawn has run is appended to `started_plans`, if given: after a cancel
+    those are the only notes that can have unsaved results, and a note never started must be
+    left exactly as it was.
 
     Returns True if the run was cancelled.
     """
@@ -1613,6 +1838,8 @@ async def run_plans_rolling(
             index += 1
             spawned: "list[asyncio.Task]" = []
             plan.spawn(spawned)
+            if started_plans is not None:
+                started_plans.append(plan)
             if not spawned:
                 continue
             # A plan with no API tasks of its own still creates the bookkeeping tasks that
@@ -1702,6 +1929,33 @@ async def run_plans_rolling(
             threads=threading.active_count(),
         )
     return cancelled
+
+
+def flush_started_plans(started_plans: "Sequence[NotePlan]", cancelled: bool) -> int:
+    """Run the flush of every started plan that has one, returning how many notes it saved
+    that their own tasks had not.
+
+    Each flush in its own try: one note's error must not keep the others' results from
+    cleanup. A flush that raised counts as left unsaved.
+    """
+    unsaved = 0
+    for plan in started_plans:
+        if plan.flush is None:
+            continue
+        try:
+            if plan.flush():
+                unsaved += 1
+        except Exception as e:
+            unsaved += 1
+            logger.error(f"Error saving a note's finished results: {e}")
+            print_error_traceback(e, logger)
+    if unsaved and cancelled:
+        logger.info("Saved the finished results of %d notes the cancel left unsaved", unsaved)
+    elif unsaved:
+        # A finished run leaves one only when a task raised past process_op, so the gather in
+        # the note's saving task did too and the save never ran; drain_task_errors logged why
+        logger.error("%d notes were left unsaved by a run that was not cancelled", unsaved)
+    return unsaved
 
 
 async def bulk_nested_notes_op(
@@ -1806,17 +2060,20 @@ async def bulk_nested_notes_op(
     # would have been traced for nothing had measuring started with the adapt loop.
     gate.begin_measuring(planned_tasks)
 
+    started_plans: list[NotePlan] = []
     try:
         # Every task holds onto its note, prompt and config for as long as it lives, so they
         # are not all created up front: a plan is only the closure that will create one when
         # the rolling driver has room for it.
-        if await run_plans_rolling(
+        cancelled = await run_plans_rolling(
             plans,
             gate=gate,
             progress_updater=progress_updater,
             cancel_state=cancel_state,
             label="nested op",
-        ):
+            started_plans=started_plans,
+        )
+        if cancelled:
             logger.debug("Bulk operation was cancelled, returning results so far")
     finally:
         marker = time.monotonic()
@@ -1824,12 +2081,27 @@ async def bulk_nested_notes_op(
         marker = log_phase("nested op: gate.finish", marker)
         progress_updater.gate = None
 
+    # The notes to add are the ones registered by now, taken before the flush: a thread a
+    # cancel abandoned goes on registering new notes, and one registered after the flush has
+    # its placeholder in no result saved, so added it would be a note no sentence links to,
+    # and its word matched again for a duplicate. A note is registered before its placeholder
+    # goes into its result, so every one taken here is linked once flushed; one registered
+    # during the flush can leave a placeholder of a note never added, which the next match
+    # run resets. Deep: the thread appends to the word's list, not just the dict.
+    registered = {word: list(word_notes) for word, word_notes in list(notes_to_add_dict.items())}
+    # Only once the driver has returned: until then a note's own save may still come. Outside
+    # the finally, as a run the driver raised out of fails before cleanup and keeps nothing
+    # anyway. Before on_end, which is for side effects that edit no notes and so may expect
+    # the op's results to be complete.
+    flush_started_plans(started_plans, cancelled)
+    marker = log_phase("nested op: flush", marker)
+
     if on_end:
         on_end()
         marker = log_phase("nested op: on_end", marker)
     progress_updater.stop_autoupdate()
     log_phase("nested op: stop_autoupdate", marker, threads=threading.active_count())
-    return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
+    return pos, registered, notes_to_update_dict, notes_to_remove
 
 
 def sync_bulk_notes_op(
@@ -2140,6 +2412,22 @@ async def run_op_phases(
     """
     pos: Optional[int] = None
     notes_to_remove: list[NoteId] = []
+    # The phases' answers, not the shared dict: a phase answers with the notes it wants added,
+    # which for bulk_nested_notes_op are those registered before its flush, while threads a
+    # cancel abandoned may still be registering more in the shared dict. Starting from what it
+    # was handed, and by identity under each key, as a phase answering with the shared dict
+    # repeats the earlier phases' notes.
+    to_add: dict[str, list[Note]] = {}
+    to_add_ids: set[tuple[str, int]] = set()
+
+    def fold_in(add_dict: dict[str, list[Note]]) -> None:
+        for key, added in list(add_dict.items()):
+            for note in list(added):
+                if (key, id(note)) not in to_add_ids:
+                    to_add_ids.add((key, id(note)))
+                    to_add.setdefault(key, []).append(note)
+
+    fold_in(notes_to_add_dict)
     total = len(phases)
     for index, phase in enumerate(phases):
         if index > 0 and (mw.progress.want_cancel() or run_cancelled()):
@@ -2177,11 +2465,9 @@ async def run_op_phases(
         phase_pos, phase_add_dict, phase_update_dict, phase_notes_to_remove = result
         if pos is None:
             pos = phase_pos
+        fold_in(phase_add_dict)
         # A phase is handed the shared dicts and normally returns those same objects, but it
         # is free to build its own, so fold anything new in rather than assuming identity.
-        if phase_add_dict is not notes_to_add_dict:
-            for note_type_name, added in phase_add_dict.items():
-                notes_to_add_dict.setdefault(note_type_name, []).extend(added)
         if phase_update_dict is not notes_to_update_dict:
             notes_to_update_dict.update(phase_update_dict)
         if phase_notes_to_remove:
@@ -2190,7 +2476,52 @@ async def run_op_phases(
         # Every phase bailed out. There is nothing to merge, but the cleanup still needs an
         # undo entry to merge its own writes into.
         pos = col.add_custom_undo_entry(label or "Multi-phase op")
-    return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
+    return pos, to_add, notes_to_update_dict, notes_to_remove
+
+
+class NewNotesCounts(NamedTuple):
+    """How a run's new notes fared in the cleanup, for the final message."""
+
+    added: int = 0
+    # Attempted and raised, or skipped with no note type or deck. The arrays keep their
+    # placeholders until the next match run puts them back to be matched: a short-lived
+    # hint for debugging, not a record to rely on.
+    failed: int = 0
+    # Never attempted, because the adding was cancelled first. Their words were unlinked.
+    not_added: int = 0
+
+    @property
+    def prepared(self) -> int:
+        return self.added + self.failed + self.not_added
+
+
+def _count_new_notes(count: int) -> str:
+    return "1 new note" if count == 1 else f"{count} new notes"
+
+
+def new_notes_message(counts: NewNotesCounts) -> str:
+    """The final message's lines about the new notes, "" when the run prepared none.
+
+    Said after a cancel too, which adds them: they hold the paid-for work. A cancel of the
+    adding itself is said as well, so the user sees what the second press did.
+    """
+    if not counts.prepared:
+        return ""
+    if counts.added == counts.prepared:
+        message = f"<br>Added {_count_new_notes(counts.added)}."
+    else:
+        message = f"<br>Added {counts.added} of {_count_new_notes(counts.prepared)}."
+    if counts.not_added:
+        message += (
+            f"<br>{counts.not_added} not added, as the adding was cancelled: the words linked"
+            " to them are left to be matched again."
+        )
+    if counts.failed:
+        message += (
+            f"<br>{counts.failed} could not be added: the words linked to them keep their"
+            " placeholder ids."
+        )
+    return message
 
 
 def on_bulk_success(
@@ -2200,37 +2531,19 @@ def on_bulk_success(
     edited_other_nids: Sequence[NoteId],
     nids: Sequence[NoteId],
     parent: Browser,
-    # notes_to_add_dict: Optional[dict[str, list[Note]]] = None,
     extra_callback=None,
+    new_notes: NewNotesCounts = NewNotesCounts(),
 ):
     success_started = time.monotonic()
     logger.debug("[phase] on_bulk_success reached, closing progress")
     mw.taskman.run_on_main(lambda: mw.progress.finish())
-    # if DEBUG:
-    # print("on_bulk_success", out, notes_to_add_dict)
     if extra_callback:
         extra_callback()
         log_phase("success: extra_callback", success_started)
-    # if notes_to_add_dict:
-    #     new_notes: list[Note] = []
-    #     for note_list in notes_to_add_dict.values():
-    #         new_notes.extend(note_list)
-    #     if new_notes:
-    #         new_notes_tsv_str = make_tsv_from_notes(
-    #             notes=new_notes,
-    #             config=mw.addonManager.getConfig(__name__) or {},
-    #         )
-    #         if new_notes_tsv_str:
-    #             # Write the TSV to the media folder
-    #             import_tsv_file(
-    #                 "new_notes.tsv",
-    #                 new_notes_tsv_str,
-    #             )
-    # Show a tooltip after the import call as otherwise the import dialog would close the tooltip
-    # immediately after it had appeared
     message = f"{done_text} in {len(edited_nids)}/{len(nids)} selected notes."
     if edited_other_nids:
         message += f"<br>Edited {len(edited_other_nids)} other notes not among the selection."
+    message += new_notes_message(new_notes)
     stop_reason = take_stop_reason()
     if stop_reason:
         # A tooltip would be gone before the user looks: the rest of the notes were not done
@@ -2251,6 +2564,345 @@ FilterNewNotesOp = Callable[
 ]
 
 
+class NewNotesAdded(NamedTuple):
+    """What `add_new_notes` did, for the cleanup to fold into its own state."""
+
+    counts: NewNotesCounts
+    # The last merge into the run's undo entry; None when nothing was written
+    op_changes: Optional[OpChanges]
+    # Notes new_notes_op or unadded_notes_op rewrote that were then saved, bar the added notes
+    # themselves (their own id written in), which the counts have as added
+    updated_nids: list[NoteId]
+    # Notes filter_new_notes_op rewrote that were then saved
+    filtered_nids: list[NoteId]
+    # The notes added, and the other notes saved, for the marker tidying to look at
+    added_notes: Sequence[Note] = ()
+    saved_notes: Sequence[Note] = ()
+
+    @property
+    def added(self) -> int:
+        return self.counts.added
+
+
+def count_new_notes_edits(
+    added: NewNotesAdded,
+    selected: Container[NoteId],
+    edited_nids: list[NoteId],
+    edited_other_nids: list[NoteId],
+) -> None:
+    """Count the notes the note adding saved into the final message's two figures, each once:
+    a selected note as one of the selection edited, any other as an other note.
+
+    The resolving and the unlinking rewrite whichever sentences link to the new notes, often
+    mostly outside the selection. All were once counted as selected, the added notes
+    included, which read "in 50/10 selected notes" and left the other-notes line short.
+    """
+    count_edits(
+        [*added.filtered_nids, *added.updated_nids], selected, edited_nids, edited_other_nids
+    )
+
+
+def count_edits(
+    nids: Iterable[NoteId],
+    selected: Container[NoteId],
+    edited_nids: list[NoteId],
+    edited_other_nids: list[NoteId],
+) -> None:
+    """Count notes the cleanup saved into the final message's two figures, each once.
+
+    Against sets of what is counted already: the lists run to thousands of notes when a run's
+    new notes are linked from thousands of sentences, and a list's `in` made that quadratic.
+    """
+    counted = set(edited_nids)
+    counted_other = set(edited_other_nids)
+    for nid in nids:
+        if nid in selected:
+            if nid not in counted:
+                counted.add(nid)
+                edited_nids.append(nid)
+        elif nid not in counted_other:
+            counted_other.add(nid)
+            edited_other_nids.append(nid)
+
+
+def _insert_deck_id(col: Collection, config: dict, note: Note) -> Optional[DeckId]:
+    """The deck a new note goes into, or None when it cannot be added."""
+    note_type = note.note_type()
+    if note_type is None:
+        logger.debug(f"Error: Note type for note {note.id} is None, skipping note adding")
+        return None
+    model_config = config.get(note_type["name"])
+    # Optional, unlike the fields: get_field_config raises for a key left out, which stopped
+    # the adding of every note in the run. A note type not configured at all still raises.
+    insert_deck = (
+        model_config.get("insert_deck")
+        if isinstance(model_config, dict)
+        else get_field_config(config, "insert_deck", note_type)
+    )
+    if insert_deck:
+        insert_deck_id = col.decks.id_for_name(insert_deck)
+    else:
+        insert_deck_id = col.decks.id_for_name("Default")
+        logger.debug("No insert deck set, setting deck_id to Default")
+    if insert_deck_id is None:
+        logger.debug("Default deck not found, skipping note adding")
+    return insert_deck_id
+
+
+def add_new_notes(
+    col: Collection,
+    notes_to_add: Sequence[Note],
+    config: dict,
+    pos: int,
+    progress_updater: AsyncTaskProgressUpdater,
+    new_notes_op: Optional[NewNotesOp] = None,
+    *,
+    filter_new_notes_op: Optional[FilterNewNotesOp] = None,
+    unadded_notes_op: Optional[NewNotesOp] = None,
+    notes_to_remove: Optional[set[NoteId]] = None,
+) -> NewNotesAdded:
+    """Add a run's new notes to the collection: dedupe them, add them, resolve their ids.
+
+    The cleanup's note adding, finished and cancelled runs alike. Every write is merged into
+    the run's undo entry `pos` as it is made, so the whole run stays one undo step.
+
+    The adding has a cancel of its own (`arm_cleanup_cancel` re-arms the dialog's, here, when
+    there is anything to add), honoured before the dedupe, between its merges, right after it,
+    and before each note; never inside one `add_note`, whose hooks run to the end. Once it is
+    seen the rest is not added, and the notes are split three ways:
+
+    - added: `new_notes_op` resolves their placeholder ids, as in a finished run;
+    - failed (attempted and raised, or no note type or deck): handed to neither op, so their
+      placeholders stay in the arrays, a hint for debugging that lasts only until the next
+      match run resets them (match_targets.resolve_placeholder_ids);
+    - not added (never attempted): `unadded_notes_op` puts the words linked to them back to
+      be matched again, since no note will ever hold their placeholders.
+
+    Which notes are "not added" depends on where the cancel was seen. Before the first add
+    (before, during or right after the dedupe) it is every note as prepared, the dedupe's
+    duplicates included: an interrupted dedupe has remapped only some references of a
+    duplicate it dropped, and the rest still point at its placeholder. During the adding it
+    is the rest of the deduped list only. The dedupe finished then, so every reference to a
+    duplicate points at the note kept in its place, which is in that list or already added.
+
+    Resolving and unlinking always run to the end: they are what leaves the arrays
+    consistent. A resolving that raises fails the op, but only after the unlinking has run.
+    """
+    total_notes = len(notes_to_add)
+    logger.debug(f"Adding {total_notes} new notes to note_will_be_added hooks will be run")
+    removed = notes_to_remove or set()
+    # As prepared, before the dedupe drops any: see "not added" above
+    prepared = list(notes_to_add)
+    notes = prepared
+    added_notes: list[Note] = []
+    failed_cnt = 0
+    not_added: list[Note] = []
+    op_changes: Optional[OpChanges] = None
+    updated_nids: list[NoteId] = []
+    filtered_nids: list[NoteId] = []
+    saved_notes: list[Note] = []
+    started = time.monotonic()
+
+    try:
+        if notes:
+            # First, so the label drawn as Cancel comes back, and the dedupe's after it, show
+            # this stage's time, not the API phase's: one stage, whose arming takes moments
+            progress_updater.begin_cleanup_stage()
+            progress_updater.arm_cleanup_cancel(total_notes)
+        cancelled = progress_updater.cleanup_cancel_requested()
+        if filter_new_notes_op is not None and notes and not cancelled:
+            notes, filtered_notes_to_update_dict = filter_new_notes_op(
+                list(notes), config, progress_updater
+            )
+            # Saved even when the dedupe was cancelled: the references it remapped point at the
+            # notes kept, which are prepared notes like the duplicates, and are unlinked alike
+            valid_filtered_notes = [
+                note
+                for note in filtered_notes_to_update_dict.values()
+                if note.id != 0 and note.id not in removed
+            ]
+            if valid_filtered_notes:
+                try:
+                    col.update_notes(valid_filtered_notes)
+                except Exception as e:
+                    logger.error(f"Error updating notes after filter_new_notes_op: {e}")
+                    print_error_traceback(e, logger)
+                op_changes = col.merge_undo_entries(pos)
+                filtered_nids = [note.id for note in valid_filtered_notes]
+                saved_notes.extend(valid_filtered_notes)
+            started = log_phase("cleanup: filter_new_notes_op", started, kept=len(notes))
+            cancelled = progress_updater.cleanup_cancel_requested()
+        if cancelled:
+            not_added = prepared
+        else:
+            total_notes = len(notes)
+            progress_updater.begin_cleanup_stage()
+            # Drawn before the first note too: its hooks can take a while, and until something
+            # draws the dialog shows the stage before, and not that Cancel now stops the adding
+            progress_updater.update_note_adding_progress(total_notes=total_notes)
+            # The adding phase is a phase, not `total_notes` independent events, so it gets
+            # one log file for the whole of itself. `note_will_be_added` fires inside this
+            # block once per note, and the hook behind it used to open a file and close the
+            # previous one every time: one measured run left 1,453 of them, and the run's
+            # own log - the phase table included - ended up in the last. The handler goes
+            # back the way it was at the end of the block, so everything either side of the
+            # loop stays in one file.
+            with phase_log("add_note_phase"):
+                for index, note in enumerate(notes):
+                    if progress_updater.cleanup_cancel_requested():
+                        not_added = notes[index:]
+                        break
+                    insert_deck_id = _insert_deck_id(col, config, note)
+                    if insert_deck_id is None:
+                        failed_cnt += 1
+                    else:
+                        try:
+                            logger.debug(f"Adding note {index} to deck {insert_deck_id}")
+                            col.add_note(note, insert_deck_id)
+                        except Exception as e:
+                            logger.error(f"Error adding note {index}: {e}")
+                            print_error_traceback(e, logger)
+                            failed_cnt += 1
+                        else:
+                            added_notes.append(note)
+                            op_changes = col.merge_undo_entries(pos)
+
+                    progress_updater.update_note_adding_progress(
+                        notes_added=len(added_notes),
+                        total_notes=total_notes,
+                        failed=failed_cnt,
+                    )
+            started = log_phase(
+                "cleanup: add_note loop",
+                started,
+                added=len(added_notes),
+                failed=failed_cnt,
+                not_added=len(not_added),
+            )
+    finally:
+        # However the adding ends, a raise included (a note type the config lacks, a failed
+        # merge): the op still has its teardown ahead with the dialog up, and a Cancel left
+        # live and armed there would say it can be stopped. Around the arming too, so a
+        # re-arm still queued when it raised does nothing once it lands.
+        progress_updater.end_cleanup_cancel()
+    counts = NewNotesCounts(len(added_notes), failed_cnt, len(not_added))
+    if not_added:
+        logger.info(
+            f"The adding was cancelled: {len(not_added)} of {counts.prepared} new notes not added"
+        )
+
+    # The added notes are counted as added; updated_nids holds the notes edited for them
+    added_nids = {note.id for note in added_notes}
+    resolving_error: Optional[Exception] = None
+    if new_notes_op and added_notes:
+        progress_updater.begin_cleanup_stage()
+        additional_updates_notes_dict: dict[NoteId, Note] = {}
+        try:
+            # col.add_note mutates the note given, adding the id to it
+            additional_updates_notes_dict = new_notes_op(
+                list(added_notes), config, progress_updater
+            )
+        except Exception as e:
+            # Raised again once the unlinking has run: the words of notes that will never
+            # exist must not be left linked to them. Nothing the op rewrote in memory is
+            # saved: the arrays and the added notes' id fields keep the placeholders, and the
+            # next match run over those sentences resolves each as a placeholder one note
+            # holds. Still a failed op, as it always was: the user has to see it.
+            logger.error(f"Error resolving the new notes' ids: {e}")
+            print_error_traceback(e, logger)
+            resolving_error = e
+        started = log_phase("cleanup: new_notes_op", started)
+
+        # Every note the op is given has an id, and so has every note it rewrites; a failed
+        # add is given to no op, and keeps no record but its placeholder
+        valid_notes = list(additional_updates_notes_dict.values())
+        if valid_notes:
+            try:
+                col.update_notes(valid_notes)
+            except Exception as e:
+                logger.error(f"Error updating valid notes after new_notes_op: {e}")
+                print_error_traceback(e, logger)
+            op_changes = col.merge_undo_entries(pos)
+            updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
+            saved_notes.extend(valid_notes)
+
+    if unadded_notes_op and not_added:
+        # After the resolving has saved its notes: the unlinking reads the arrays from the
+        # collection, and an added note's own array may link to a note that was not added
+        progress_updater.begin_cleanup_stage()
+        unlinked_notes_dict: dict[NoteId, Note] = {}
+        try:
+            unlinked_notes_dict = unadded_notes_op(list(not_added), config, progress_updater)
+        except Exception as e:
+            # Such as a note type missing from the config. The placeholders it leaves are
+            # repaired by the next match run, which finds no note holding them.
+            logger.error(f"Error unlinking the new notes not added: {e}")
+            print_error_traceback(e, logger)
+        unlinked_notes = [
+            note
+            for note in unlinked_notes_dict.values()
+            if note.id > 0 and note.id not in removed
+        ]
+        if unlinked_notes:
+            try:
+                col.update_notes(unlinked_notes)
+            except Exception as e:
+                logger.error(f"Error updating notes after unadded_notes_op: {e}")
+                print_error_traceback(e, logger)
+            op_changes = col.merge_undo_entries(pos)
+            already = {*updated_nids, *added_nids}
+            updated_nids.extend(note.id for note in unlinked_notes if note.id not in already)
+            saved_notes.extend(unlinked_notes)
+        log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
+    if resolving_error is not None:
+        raise resolving_error
+    return NewNotesAdded(
+        counts, op_changes, updated_nids, filtered_nids, list(added_notes), saved_notes
+    )
+
+
+def tidy_markers(
+    col: Collection,
+    notes: Sequence[Note],
+    config: dict,
+    pos: int,
+    progress_updater: AsyncTaskProgressUpdater,
+    tidy_markers_op: NewNotesOp,
+    notes_to_remove: Optional[set[NoteId]] = None,
+) -> tuple[Optional[OpChanges], list[NoteId]]:
+    """The cleanup's last stage: `tidy_markers_op` renames what the run left of the sort field
+    markers of `notes`' words, and the notes it renames are saved into the run's undo entry.
+
+    After everything else is saved, whether the run was cancelled or not and whether or not it
+    had notes to add: a new reading whose meaning could not be made adds nothing and still
+    leaves its markers. It cannot be cancelled, and a raise is logged and saves nothing: the
+    markers are only names, and the run's work is saved already. Returns the undo entry's
+    changes when something was saved, and the ids of the notes saved.
+    """
+    removed = notes_to_remove or set()
+    started = time.monotonic()
+    progress_updater.begin_cleanup_stage()
+    try:
+        renamed = tidy_markers_op(list(notes), config, progress_updater)
+    except Exception as e:
+        logger.error(f"Error tidying the sort field markers: {e}")
+        print_error_traceback(e, logger)
+        return None, []
+    renamed_notes = [
+        note for note in renamed.values() if note.id > 0 and note.id not in removed
+    ]
+    op_changes: Optional[OpChanges] = None
+    if renamed_notes:
+        try:
+            col.update_notes(renamed_notes)
+        except Exception as e:
+            logger.error(f"Error updating notes after tidying their markers: {e}")
+            print_error_traceback(e, logger)
+        op_changes = col.merge_undo_entries(pos)
+    log_phase("cleanup: tidy_markers_op", started, renamed=len(renamed_notes))
+    return op_changes, [note.id for note in renamed_notes]
+
+
 def selected_notes_op(
     done_text: str,
     bulk_op: Union[
@@ -2262,11 +2914,15 @@ def selected_notes_op(
     new_notes_op: Optional[NewNotesOp] = None,
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
     on_success: Optional[Callable] = None,
+    unadded_notes_op: Optional[NewNotesOp] = None,
+    tidy_markers_op: Optional[NewNotesOp] = None,
 ):
     """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
 
     A list of phases runs them in order over the same notes and finishes with the same
     cleanup as a single op - see `run_op_phases` for what they share and what they do not.
+    The new notes are added by `add_new_notes`, which says what the three note ops are for.
+    `tidy_markers_op` gets every note the cleanup saved and added, last (see `tidy_markers`).
     """
     phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
     edited_nids: list[NoteId] = []
@@ -2274,6 +2930,7 @@ def selected_notes_op(
     notes_to_add_dict: dict[str, list[Note]] = {}
     notes_to_update_dict: dict[NoteId, Note] = {}
     notes_to_remove: set[NoteId] = set()
+    new_notes = NewNotesCounts()
     config = mw.addonManager.getConfig(__name__) or {}
     nids_set = set(nids)
 
@@ -2293,7 +2950,7 @@ def selected_notes_op(
         clear_cancel_time()
 
         async def async_wrapper():
-            nonlocal edited_nids, edited_other_nids
+            nonlocal edited_nids, edited_other_nids, new_notes
             # Loaded once and handed to every phase, so a later phase sees the earlier
             # ones' writes and each note is written back to the collection only in cleanup
             notes = [mw.col.get_note(nid) for nid in nids]
@@ -2314,6 +2971,8 @@ def selected_notes_op(
             # though the run is cancelled. Some ops have real work left here, such as resolving
             # the ids of the notes they added. Cleared in run_bulk_op's finally.
             begin_cleanup_phase()
+            # Greys the buttons: nothing here heeds a cancel until add_new_notes arms its own
+            progress_updater.begin_cleanup()
             pos, res_notes_to_add_dict, res_notes_to_update_dict, res_notes_to_remove = result
 
             sanitized_notes_to_remove: list[NoteId] = []
@@ -2341,12 +3000,16 @@ def selected_notes_op(
             # A cancelled run leaves its requests running in worker threads, and one of them
             # can still be writing into these dicts while we work through them here. Take a
             # snapshot so the cleanup sees a consistent set and can't trip over a dict that
-            # changed size mid-iteration.
-            res_notes_to_add_dict = dict(res_notes_to_add_dict)
+            # changed size mid-iteration. The notes to add are the op's answer alone, never
+            # the shared dict: bulk_nested_notes_op answers with the notes registered before
+            # its flush, and one a thread registers after it, during the edited notes' write
+            # below as likely as not, would be added with nothing linking to it.
+            res_notes_to_add_dict = {
+                word: list(word_notes) for word, word_notes in list(res_notes_to_add_dict.items())
+            }
             res_notes_to_update_dict = dict(res_notes_to_update_dict)
 
             logger.debug(f"res_notes_to_update_dict keys: {res_notes_to_update_dict.keys()}")
-            notes_to_add_dict.update(res_notes_to_add_dict)
             notes_to_update_dict.update(res_notes_to_update_dict)
             notes_to_remove.update(sanitized_notes_to_remove)
             logger.debug(f"notes_to_update_dict keys: {notes_to_update_dict.keys()}")
@@ -2356,9 +3019,11 @@ def selected_notes_op(
             for nid in sanitized_notes_to_remove:
                 if nid not in nids_set:
                     edited_other_nids.append(nid)
-            edited_nids = list(filter(lambda x: x in nids, notes_to_update_dict.keys()))
+            edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
             edited_nids.extend(
-                [nid for nid in sanitized_notes_to_remove if nid in nids and nid not in edited_nids]
+                nid
+                for nid in dict.fromkeys(sanitized_notes_to_remove)
+                if nid in nids_set and nid not in notes_to_update_dict
             )
 
             if notes_to_remove:
@@ -2408,136 +3073,56 @@ def selected_notes_op(
                     print_error_traceback(e, logger)
                 cleanup_started = log_phase("cleanup: remove_notes", cleanup_started)
             op_changes = mw.col.merge_undo_entries(pos)
-            notes_to_add = []
-            if notes_to_add_dict:
-                for note_list in list(notes_to_add_dict.values()):
-                    notes_to_add.extend(list(note_list))
+            # Every note saved from here on, for the marker tidying
+            saved_notes: list[Note] = list(all_updated_notes)
+            added_nids: set[NoteId] = set()
+            notes_to_add = [
+                note for word_notes in res_notes_to_add_dict.values() for note in word_notes
+            ]
             cleanup_started = log_phase(
                 "cleanup: merge_undo_entries", cleanup_started, to_add=len(notes_to_add)
             )
 
-            if notes_to_add and filter_new_notes_op:
-                notes_to_add, filtered_notes_to_update_dict = filter_new_notes_op(
+            if notes_to_add:
+                added = add_new_notes(
+                    mw.col,
                     notes_to_add,
                     config,
+                    pos,
                     progress_updater,
+                    new_notes_op,
+                    filter_new_notes_op=filter_new_notes_op,
+                    unadded_notes_op=unadded_notes_op,
+                    notes_to_remove=notes_to_remove,
                 )
-                valid_filtered_notes = [
-                    note
-                    for note in filtered_notes_to_update_dict.values()
-                    if note.id != 0 and note.id not in notes_to_remove
-                ]
-                if valid_filtered_notes:
-                    try:
-                        mw.col.update_notes(valid_filtered_notes)
-                    except Exception as e:
-                        logger.error(f"Error updating notes after filter_new_notes_op: {e}")
-                        print_error_traceback(e, logger)
-                    op_changes = mw.col.merge_undo_entries(pos)
-                    for note in valid_filtered_notes:
-                        if note.id in nids_set:
-                            if note.id not in edited_nids:
-                                edited_nids.append(note.id)
-                        elif note.id not in edited_other_nids:
-                            edited_other_nids.append(note.id)
-                cleanup_started = log_phase(
-                    "cleanup: filter_new_notes_op", cleanup_started, kept=len(notes_to_add)
+                new_notes = added.counts
+                if added.op_changes is not None:
+                    op_changes = added.op_changes
+                count_new_notes_edits(added, nids_set, edited_nids, edited_other_nids)
+                saved_notes.extend(added.added_notes)
+                saved_notes.extend(added.saved_notes)
+                added_nids = {note.id for note in added.added_notes}
+                cleanup_started = time.monotonic()
+            if tidy_markers_op is not None and saved_notes:
+                tidy_changes, tidied_nids = tidy_markers(
+                    mw.col,
+                    saved_notes,
+                    config,
+                    pos,
+                    progress_updater,
+                    tidy_markers_op,
+                    notes_to_remove,
                 )
-
-            if notes_to_add:
-                logger.debug(
-                    f"Adding {len(notes_to_add)} new notes to note_will_be_added hooks will be run"
+                if tidy_changes is not None:
+                    op_changes = tidy_changes
+                # An added note renamed is counted as added
+                count_edits(
+                    [nid for nid in tidied_nids if nid not in added_nids],
+                    nids_set,
+                    edited_nids,
+                    edited_other_nids,
                 )
-                total_notes = len(notes_to_add)
-                failed_cnt = 0
-                added_cnt = 0
-                # The adding phase is a phase, not `total_notes` independent events, so it gets
-                # one log file for the whole of itself. `note_will_be_added` fires inside this
-                # block once per note, and the hook behind it used to open a file and close the
-                # previous one every time: one measured run left 1,453 of them, and the run's
-                # own log - the phase table included - ended up in the last. The handler goes
-                # back the way it was at the end of the block, so everything either side of the
-                # loop stays in one file.
-                with phase_log("add_note_phase"):
-                    for index, note in enumerate(notes_to_add):
-                        note_type = note.note_type()
-                        if note_type is None:
-                            logger.debug(
-                                f"Error: Note type for note {note.id} is None, skipping note"
-                                " adding"
-                            )
-                            continue
-                        insert_deck = get_field_config(config, "insert_deck", note_type)
-                        insert_deck_id = None
-                        if insert_deck:
-                            insert_deck_id = mw.col.decks.id_for_name(insert_deck)
-                        else:
-                            insert_deck_id = mw.col.decks.id_for_name("Default")
-                            logger.debug("No insert deck set, setting deck_id to Default")
-                        if insert_deck_id is None:
-                            logger.debug("Default deck not found, skipping note adding")
-                            continue
-                        if mw.progress.want_cancel():
-                            logger.debug("Bulk notes op cancelled during note adding")
-                            break
-                        try:
-                            logger.debug(f"Adding note {index} to deck {insert_deck_id}")
-                            mw.col.add_note(note, insert_deck_id)
-                            added_cnt += 1
-                            op_changes = mw.col.merge_undo_entries(pos)
-                        except Exception as e:
-                            logger.error(f"Error adding note {index}: {e}")
-                            print_error_traceback(e, logger)
-                            failed_cnt += 1
-
-                        progress_updater.update_note_adding_progress(
-                            notes_added=added_cnt,
-                            total_notes=total_notes,
-                            failed=failed_cnt,
-                        )
-                cleanup_started = log_phase(
-                    "cleanup: add_note loop", cleanup_started, added=added_cnt, failed=failed_cnt
-                )
-                if new_notes_op:
-                    # Run the new notes operation if provided
-                    # col.add_note mutates the note given, adding the id to it
-                    additional_updates_notes_dict = new_notes_op(
-                        notes_to_add, config, progress_updater
-                    )
-                    cleanup_started = log_phase("cleanup: new_notes_op", cleanup_started)
-
-                    additional_updated_notes = list(additional_updates_notes_dict.values())
-                    if additional_updated_notes:
-                        # Skip notes where the id is still zero, something went wrong during adding
-                        valid_notes = []
-                        invalid_notes = []
-                        for note in additional_updated_notes:
-                            if note.id == 0:
-                                invalid_notes.append(note)
-                            else:
-                                valid_notes.append(note)
-                        if invalid_notes:
-                            logger.debug(f"Invalid notes found after adding: {len(invalid_notes)}")
-                            new_notes_tsv_str = make_tsv_from_notes(
-                                notes=invalid_notes,
-                                config=mw.addonManager.getConfig(__name__) or {},
-                            )
-                            if new_notes_tsv_str:
-                                # Write the TSV to the media folder
-                                import_tsv_file(
-                                    "new_notes.tsv",
-                                    new_notes_tsv_str,
-                                    do_import=False,
-                                )
-                        try:
-                            mw.col.update_notes(valid_notes)
-                        except Exception as e:
-                            logger.error(f"Error updating valid notes after new_notes_op: {e}")
-                            print_error_traceback(e, logger)
-                        op_changes = mw.col.merge_undo_entries(pos)
-                        edited_nids.extend(
-                            [note.id for note in valid_notes if note.id not in edited_nids]
-                        )
+                cleanup_started = time.monotonic()
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes
 
@@ -2628,8 +3213,8 @@ def selected_notes_op(
             edited_other_nids,
             nids,
             parent,
-            # notes_to_add_dict,
             on_success,
+            new_notes=new_notes,
         )
     ).run_in_background()
     # run_in_background opens the progress dialog before it returns (taskman.with_progress

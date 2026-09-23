@@ -112,6 +112,31 @@ how many tasks are still finishing, and the paused time is left out of the ETA. 
 Escape does, and works while paused too. If a later Anki version changes its progress dialog the
 buttons may be missing; Escape still cancels.
 
+A cancelled run keeps what it finished: edited notes are saved, words a match or judge run had
+already answered are kept, and the new notes a match run prepared are added and linked from
+their sentences as after a full run, so the meanings already paid for are not lost. Words still
+unanswered stay to be matched by the next run.
+
+Adding the new notes can itself take a while, since every added note runs the note-adding hooks
+(copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel (or
+Escape) stops the adding; a note already being added is finished first. Cancel is only live
+while notes are being added; a press just before it, while the run saves its edits, cancels the
+run, which keeps the notes it prepared. The notes not added are dropped, the words that were
+linked to them are left to be matched again by the next run, and a numbering such as "(m1)" or
+"(r1)" they put on the word's other notes is taken back. A note that failed to add keeps its
+placeholder id in the word lists, which may help debugging, but only until the next match run
+over those sentences puts the words back to be matched. The end message says how many new notes
+were added, how many were left out by the cancel and how many failed.
+
+Last, after every match run, cancelled or not, the sort field markers of the words the run
+touched are tidied: a numbering with a gap ("(m1)", "(m3)") is closed up, and a "(m1)", "(r1)",
+"(kun)" or "(on)" left on a note with nothing to tell it apart from is taken off. The numbers
+follow the order the notes were created in, so a note you add by hand to a numbered word is
+numbered after the others, and a numbering in some other order is put in that one. A note that
+failed to add, a duplicate the run dropped, or a new reading whose meaning could not be made
+leaves those behind. A note whose sort field holds any other marker, such as "(x1)", is left as
+it is.
+
 ### terminal- models (claude CLI)
 
 Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
@@ -197,8 +222,8 @@ You need to define
   7. `english_meaning_field`
   8. `part_of_speech_field`
   9. `new_note_id_field`
-  10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
-      file will simply not specify the deck
+  10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
+      into the "Default" deck
 
 ## test data exports
 

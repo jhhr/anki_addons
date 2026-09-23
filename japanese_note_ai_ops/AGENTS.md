@@ -57,7 +57,8 @@ that checking later cost 25 minutes per bulk run.
 2. `bulk_*_op(col, notes, edited_nids, progress_updater, ...)` returning
    `bulk_notes_op(message, config, op, ...)` (one task per note) or
    `bulk_nested_notes_op(...)` (several requests per note; the inner op returns a
-   `NotePlan(task_count, spawn)` and must not start work itself). Local ops pass
+   `NotePlan(task_count, spawn, flush=None)` and must not start work itself; a note saved once
+   all its tasks are done gives a `flush`, see Invariants). Local ops pass
    `is_sync_op=True`. Multi-phase operations pass a list of `OpPhase(name, bulk_op)`.
 3. `*_selected_notes(nids, parent)` calling `selected_notes_op(...)` with an
    `AsyncTaskProgressUpdater`.
@@ -83,9 +84,44 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
 - **A run never writes to the collection before cleanup.** `word_index`, `note_cache`,
   `sentence_cache` and `mdx_memo` all assume it.
 - On worker threads, collection reads go through `collection_access` (`find_notes`,
-  `get_note`, `get_notes`, `run_on_collection_async`); never `mw.col`. Sync ops run
+  `get_note`, `get_notes`, `run_on_collection[_async]`); never `mw.col`. Sync ops run
   sequentially on the op thread and do use `mw.col`. `collection_access` raises
   `RunCancelled` on a cancelled run, except inside `begin_cleanup_phase()`.
+- **A cancelled run still saves everything it prepared, new notes included, and its note
+  adding has a cancel of its own.** `bulk_nested_notes_op` runs `NotePlan.flush` for every
+  started note after the driver returns (`flush_started_plans`): a note's own save waits for
+  all its tasks, and a cancel cancels it with them, which lost the finished ones. Each op's
+  flush and own save run once only, whichever comes first (the match op and the judge).
+  The notes to add are those registered before the flush, which it answers with, and the
+  cleanup adds that answer only, never the shared `notes_to_add_dict`: threads a cancel
+  abandoned go on registering notes there that no saved result links to.
+  Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
+  (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
+  `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
+  set for the rest of a cancelled run. It is reset in a run not cancelled too: a press before
+  Cancel says it stops the adding is the run's cancel, which keeps every prepared note. A
+  reset that could not happen, or lands after the op thread stopped waiting or closed the
+  window (a generation under `_arm_lock`), arms nothing, so a stale first cancel is never
+  taken for a second one. From then on a cancel (`cleanup_cancel_requested()`, never
+  `run_cancelled()`) stops the adding, checked before the dedupe, between its merges, after it
+  and before each `add_note` - never inside one, where copy_anywhere's on-add definitions run.
+  `end_cleanup_cancel()` closes it in a `finally`.
+  The notes split three ways: added (placeholders resolved by `update_fake_note_ids`),
+  failed (placeholders kept, a debugging hint the next match run's `resolve_placeholder_ids`
+  resets), not added (words put back to `["match"]` by `clear_unadded_note_ids`). The
+  markers preparing either of the last two put on other notes are the tidying's, below.
+  Resolving and unlinking always run to the end; a resolving that raises fails the op after
+  the unlinking.
+- **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
+  op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
+  without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
+  for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
+  without gaps in creation (note id) order, meanings then readings, dropping a marker that
+  tells nothing apart; the rules are the pure `sort_field_markers.tidy_word_markers`.
+  Preparing a note renames its word's other notes, saved before the adding decides whether it
+  will exist, so a note not added (cancelled, failed, a dedupe's duplicate) or a new reading
+  whose meaning failed leaves such markers. This is the only thing that takes them back:
+  there is no record of renames to undo. It cannot be cancelled, and a raise only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight
@@ -144,14 +180,16 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
 
 ## Tests and types
 
-- `test/` (about 45 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it
-  from this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir
-  so pytest never imports the addon's aqt-importing `__init__.py`, and sets
-  `--import-mode=importlib`. `test/addon_modules.py` provides `load_addon_module`,
-  `load_ops_module(name, subdir)` (synthetic package + `anki_stubs.install()`),
-  `FakeClock` and `PausingClock` (calls back after each sleep, so a test can resume or cancel
-  a pause). Word-array tests skip when SudachiPy or the downloaded dictionaries are
+- `test/` (about 45 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
+  this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir so pytest
+  never imports the addon's aqt-importing `__init__.py`, and sets `--import-mode=importlib`.
+  `test/addon_modules.py` provides `load_addon_module`, `load_ops_module(name, subdir)`
+  (synthetic package + `anki_stubs.install()`), `FakeClock` and `PausingClock` (calls back after
+  each sleep, so a test can resume or cancel a pause), and the fakes that drive a real
+  `bulk_nested_notes_op` (`RunGate`, `RunProgress`, `RunCollection`, `patch_nested_run`,
+  `wait_until`). Word-array tests skip when SudachiPy or the downloaded dictionaries are
   missing; a skip is not a pass, so say which ran.
+
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.
 - The root `mypy.ini` puts `test/` and `word_array/research/` on `mypy_path` for the

@@ -5,7 +5,14 @@ import json
 import unittest
 from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import (
+    RunCollection,
+    RunProgress,
+    load_ops_module,
+    mw,
+    patch_nested_run,
+    wait_until,
+)
 
 match_flags = load_ops_module("match_flags", subdir="word_array")
 match_targets = load_ops_module("match_targets", subdir="word_array")
@@ -184,6 +191,50 @@ class ResolvePlaceholderIdsTests(unittest.TestCase):
         )
         self.assertEqual(asked, [-111, -222, -333])
         self.assertFalse(match_targets.has_placeholder_ids([real, word("本", ["match"])]))
+
+
+class ClearPlaceholderIdsTests(unittest.TestCase):
+    """The placeholders of new notes a cancel left out of the adding: no note will hold them."""
+
+    def test_the_words_of_notes_not_added_are_matched_again(self):
+        rated = word("様", [-1111111, 4])
+        # two levels down, the sub-word of a sub-word
+        nested = word("本", [-1111111])
+        other_not_added = word("棚", [-3333333])
+        failed_add = word("為る", [-2222222], pos="verb")
+        longer = word("机", [-11111112])
+        real = word("椅子", [1111111])
+        arr = [
+            word("様に", ["dontmatch"], [rated, word("に", ["dontmatch"])]),
+            word("本棚", ["dontmatch"], [word("本", [], [nested])]),
+            other_not_added,
+            failed_add,
+            longer,
+            real,
+            ["。"],
+        ]
+
+        changed = match_targets.clear_placeholder_ids(arr, [-1111111, -3333333])
+
+        self.assertEqual(changed, 3)
+        self.assertEqual(
+            [e[4] for e in (rated, nested, other_not_added)], [["match"], ["match"], ["match"]]
+        )
+        # a failed add's placeholder is kept on purpose, and a longer placeholder holding the
+        # digits of a cleared one is another note's
+        self.assertEqual([failed_add[4], longer[4], real[4]], [[-2222222], [-11111112], [1111111]])
+
+    def test_a_real_id_is_never_cleared(self):
+        real = word("本", [1234567, 3])
+
+        self.assertEqual(match_targets.clear_placeholder_ids([real], [1234567]), 0)
+        self.assertEqual(real[4], [1234567, 3])
+
+    def test_nothing_to_clear(self):
+        arr = [word("本", ["match"]), word("様", []), word("棚", [-1234567])]
+
+        self.assertEqual(match_targets.clear_placeholder_ids(arr, []), 0)
+        self.assertEqual(arr[2][4], [-1234567])
 
 
 class UnlinkMissingNotesTests(unittest.TestCase):
@@ -561,6 +612,209 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
         self.assertEqual(searched, [])
         self.assertEqual(new_note["new_note_id_field"], "42")
+
+
+class CountingNote(FakeNote):
+    """Counts the writes of its word array, so that saving one array twice shows."""
+
+    def __init__(self, fields, note_id=1):
+        super().__init__(fields, note_id)
+        self.array_writes = 0
+
+    def __setitem__(self, field, value):
+        if field == "word_list_field":
+            self.array_writes += 1
+        super().__setitem__(field, value)
+
+
+def passthrough_inner_bulk_op(config, op, **_):
+    async def process(**op_args):
+        return await op(config, **op_args)
+
+    return process
+
+
+class CancelledMatchRunTests(unittest.TestCase):
+    """A note's word array is saved once all its word tasks are done, by a task a cancel
+    cancels too. So a cancelled run lost every finished word of the notes it was in the middle
+    of, the placeholders of new notes it had made for them among them: cleanup added the new
+    notes, and nothing referred to them."""
+
+    def setUp(self):
+        self.mwtn = load_ops_module("match_words_to_notes")
+        self.config = {
+            "Word": {key: key for key in self.mwtn.MATCH_FIELD_KEYS},
+            "match_words_model": "model",
+        }
+        mw.progress.cancel = False
+        self.addCleanup(setattr, mw.progress, "cancel", False)
+
+    def test_a_cancelled_run_saves_each_notes_finished_words(self):
+        """Through bulk_match_words_to_notes, the real bulk_nested_notes_op and rolling driver,
+        with a real cancel; only the gate and the dialog are fakes."""
+
+        def note(note_id, arr):
+            fields = {
+                "furigana_sentence_field": "文",
+                "word_list_field": json.dumps(arr, ensure_ascii=False),
+                "new_note_id_field": "",
+            }
+            return CountingNote(fields, note_id)
+
+        # Planned in this order: 箱 finishes before 本 starts, and 棚 is never started
+        finished = note(3, [word("箱", ["match"])])
+        cancelled = note(1, [word("本", ["match"]), word("棚", ["match"]), word("様", [111])])
+        never_started = note(2, [word("棚", ["match"])])
+        never_started_field = never_started["word_list_field"]
+        linked = FakeNote({"meaning_field": "書物", "english_meaning_field": "book"}, 111)
+        new_note = FakeNote({"new_note_id_field": "-1234567"}, 0)
+        notes_to_add = {}
+        updates = {111: linked}
+        edited_nids = []
+        progress = RunProgress()
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            index = args["word_index"]
+            if args["word"] == "棚":
+                # A request that never answers
+                await asyncio.get_running_loop().create_future()
+            elif args["word"] == "本":
+                # As create_new_note_without_matching does: the note is registered first
+                args["notes_to_add_dict"].setdefault("Word", []).append(new_note)
+                args["match_qualities"][index] = 3
+                args["processed_word_tuples"][index] = ("本", "よみ", "本", -1234567)
+            else:
+                args["processed_word_tuples"][index] = ("箱", "よみ", "箱", 555)
+            return True
+
+        fake_mw = mock.MagicMock()
+        fake_mw.progress = mw.progress
+        fake_mw.addonManager.getConfig.return_value = self.config
+        fake_mw.pm.profileFolder.return_value = "/nonexistent-profile"
+
+        async def run():
+            runner = asyncio.ensure_future(
+                self.mwtn.bulk_match_words_to_notes(
+                    col=RunCollection(),
+                    notes=[finished, cancelled, never_started],
+                    edited_nids=edited_nids,
+                    progress_updater=progress,
+                    notes_to_add_dict=notes_to_add,
+                    notes_to_update_dict=updates,
+                )
+            )
+            # 箱, 本 and 様's rating done; 棚 waiting
+            self.assertTrue(await wait_until(lambda: progress.tasks_done == 3))
+            mw.progress.cancel = True
+            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
+            runner.result()
+            writes = cancelled.array_writes
+            # Let the cancelled tasks unwind: the note's own save must not run as well
+            for _ in range(50):
+                await asyncio.sleep(0)
+            return writes
+
+        # on_end writes the generated meanings; the flush comes before it
+        writes_at_on_end = []
+
+        with (
+            patch_nested_run(load_ops_module("base_ops")),
+            mock.patch.object(
+                self.mwtn,
+                "write_meanings_dict_to_file",
+                lambda _: writes_at_on_end.append(cancelled.array_writes),
+            ),
+            mock.patch.object(self.mwtn, "mw", fake_mw),
+            mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
+            mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
+            mock.patch.object(self.mwtn, "get_response", lambda *a, **k: {"match_quality": 4}),
+        ):
+            writes_at_flush = asyncio.run(run())
+
+        saved = json.loads(cancelled["word_list_field"])
+        # the new note's placeholder with its quality, the unfinished word left to match, and
+        # the rating that finished
+        self.assertEqual([w[4] for w in saved], [[-1234567, 3], ["match"], [111, 4]])
+        self.assertEqual((writes_at_flush, cancelled.array_writes), (1, 1))
+        self.assertEqual(writes_at_on_end, [1])
+        self.assertIs(updates[1], cancelled)
+        self.assertEqual(notes_to_add, {"Word": [new_note]})
+        # the note that finished was saved by its own task, and only then
+        self.assertEqual(json.loads(finished["word_list_field"])[0][4], [555])
+        self.assertEqual(finished.array_writes, 1)
+        # and the one never started is untouched
+        self.assertEqual(never_started.array_writes, 0)
+        self.assertEqual(never_started["word_list_field"], never_started_field)
+        self.assertNotIn(2, updates)
+        self.assertEqual(edited_nids, [3, 1])
+
+    def test_a_flushed_array_is_not_saved_again_by_its_own_task(self):
+        """The other order: a word the flush found unfinished finishes after all, as one whose
+        thread the cancel could not stop does, and the note's own save runs."""
+        arr = [word("本", ["match"]), word("棚", ["match"]), word("様", [-111, 4])]
+        fields = {"word_list_field": json.dumps(arr, ensure_ascii=False)}
+        fields["new_note_id_field"] = "-111"
+        note = CountingNote(fields)
+        release = []
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            if args["word"] == "棚":
+                release.append(asyncio.get_running_loop().create_future())
+                await release[0]
+                args["processed_word_tuples"][args["word_index"]] = ("棚", "よみ", "棚", 666)
+            else:
+                args["processed_word_tuples"][args["word_index"]] = ("本", "よみ", "本", 555)
+            return True
+
+        progress, updates, edited_nids = Progress(), {}, []
+        plan = self.mwtn.plan_word_array_matching(
+            config=self.config,
+            note=note,
+            arr=arr,
+            sentence="本棚様",
+            edited_nids=edited_nids,
+            notes_to_add_dict={},
+            notes_to_update_dict=updates,
+            progress_updater=progress,
+            cancel_state=None,
+            gate=None,
+            all_generated_meanings_dict={},
+            word_locks_dict={},
+            word_lock=None,
+            word_note_index_cache=WordIndexCache(),
+            note_cache=None,
+            sentence_cache=None,
+            limit_words_and_readings=None,
+            log_prefix="",
+        )
+        # The placeholder the note holds itself was resolved and saved while planning
+        self.assertEqual((note.array_writes, edited_nids), (1, [1]))
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            self.assertTrue(await wait_until(lambda: len(release) == 1))
+            await asyncio.sleep(0)
+            # As bulk_nested_notes_op flushes a started note after a cancel
+            self.assertTrue(plan.flush())
+            self.assertFalse(plan.flush())
+            release[0].set_result(None)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", passthrough_inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[555], ["match"], [1, 4]])
+        self.assertEqual(note.array_writes, 2)
+        self.assertEqual((updates, edited_nids), ({1: note}, [1]))
+        # the note's own task still counts it done
+        self.assertEqual(progress.notes_done, 1)
 
 
 if __name__ == "__main__":

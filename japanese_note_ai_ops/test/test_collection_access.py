@@ -116,7 +116,7 @@ class SerialisationTests(CollectionAccessTestCase):
         def outer():
             return ca.find_notes("inner")
 
-        result = ca._run_on_collection("outer", outer)
+        result = ca.run_on_collection("outer", outer)
         self.assertEqual(list(result), [1, 2, 3])
 
     def test_a_batch_is_one_turn_rather_than_one_per_note(self):
@@ -129,7 +129,7 @@ class SerialisationTests(CollectionAccessTestCase):
             raise ValueError("no")
 
         with self.assertRaises(ValueError):
-            ca._run_on_collection("boom", boom)
+            ca.run_on_collection("boom", boom)
 
     def test_holding_the_collection_is_what_gets_recorded(self):
         conc.collection_pressure.reset()

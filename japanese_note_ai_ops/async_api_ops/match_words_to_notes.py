@@ -72,7 +72,8 @@ from .collection_access import (
 )
 from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
-from .word_index import WordFields, WordIndex, WordIndexCache
+from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, word_key
+from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
 from .clean_meaning import clean_meaning_in_note
 from .make_all_meanings import (
     make_all_meanings_for_word,
@@ -204,7 +205,8 @@ def update_fake_note_ids(
     rather than emptied. That id is what the card and its popovers read to know which word
     of a sentence belongs to the note under review -- the reviewer has no other way to ask.
 
-    paran: new_notes (Sequence[Note]): The notes to update.
+    paran: new_notes (Sequence[Note]): The notes added, each with its id. A note whose add
+        failed is never given here (add_new_notes), so its placeholder stays where it is.
     paran: config (dict): The addon configuration.
     paran: progress_updater (AsyncTaskProgressUpdater): Progress reporter.
     returns: dict[NoteId, Note]: A dictionary mapping the original note IDs to the updated notes.
@@ -263,8 +265,7 @@ def update_fake_note_ids(
             # The note's own id says the references have been updated, where a placeholder says
             # they have not. Written even when nothing referenced the note, which is how a new
             # note no other sentence linked used to be left holding its placeholder for good.
-            if new_note.id:
-                new_note[new_note_id_field] = str(new_note.id)
+            new_note[new_note_id_field] = str(new_note.id)
             progress_updater.update_new_note_processing_progress(
                 total_notes=total_notes,
                 new_notes_processed=index + 1,
@@ -275,12 +276,212 @@ def update_fake_note_ids(
         if (
             new_note_id_field in new_note
             and new_note[new_note_id_field] == str(new_note.id)
-            and new_note.id != 0
             and new_note.id not in notes_to_update_dict
         ):
             notes_to_update_dict[new_note.id] = new_note
 
     return notes_to_update_dict
+
+
+# How many placeholders one collection search looks for. Each is a term of an OR, and SQLite
+# refuses a query whose expression tree is more than 1000 deep, which a long OR chain becomes.
+PLACEHOLDERS_PER_SEARCH = 50
+
+
+def clear_unadded_note_ids(
+    unadded_notes: Sequence[Note],
+    config: dict,
+    progress_updater: AsyncTaskProgressUpdater,
+) -> dict[NoteId, Note]:
+    """Put the words linked to new notes that were never added back to be matched again.
+
+    For the notes a cancel of the adding left out. Their placeholders are already in word
+    arrays saved to the collection, and no note will ever hold them. Each is found as
+    update_fake_note_ids finds one, but by one search for many placeholders; the substring
+    search also finds a longer placeholder that contains a shorter one, and the exact ids
+    compared in the decoded array (match_targets.clear_placeholder_ids) leave that note be.
+    A note whose add failed is not in `unadded_notes`: its placeholder is left for debugging,
+    though only until the next match run, which resets it as a placeholder no note holds.
+    The markers preparing them put on the other notes of their words are the tidying's to
+    take off (tidy_sort_field_markers).
+
+    Returns the notes changed, for the cleanup to save: those with words cleared, and any
+    whose field turned out not to be an array, left as it is and only tagged.
+    """
+    notes_to_update_dict: dict[NoteId, Note] = {}
+    if not unadded_notes:
+        return notes_to_update_dict
+    if not config:
+        logger.error("Error: Missing addon configuration")
+        return notes_to_update_dict
+    # By the fields of the note type the references are in: word_list_field to search and
+    # rewrite, new_note_id_field to tell a note the match op writes arrays into, as
+    # update_fake_note_ids does. Each a dict as an ordered set: a cancel can leave thousands
+    # of notes, too many for list lookups, and the searches go in the order they were prepared
+    placeholders_by_fields: dict[tuple[str, str], dict[int, None]] = {}
+    for note in unadded_notes:
+        note_type = note.note_type()
+        if not note_type:
+            logger.error(f"Error: A new note not added has no note type: {note.fields}")
+            continue
+        new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
+        word_list_field = get_field_config(config, "word_list_field", note_type)
+        if not new_note_id_field or not word_list_field:
+            logger.error("Error: Missing required fields in config")
+            continue
+        if new_note_id_field not in note:
+            logger.error(f"Error: A new note not added has no field {new_note_id_field}")
+            continue
+        try:
+            placeholder = int(note[new_note_id_field])
+        except ValueError:
+            placeholder = 0
+        if placeholder >= 0:
+            logger.warning(f"A new note not added holds no placeholder id: {note.fields}")
+            continue
+        fields = (word_list_field, new_note_id_field)
+        placeholders_by_fields.setdefault(fields, {})[placeholder] = None
+
+    total_notes = sum(len(placeholders) for placeholders in placeholders_by_fields.values())
+    progress_updater.update_unadded_note_clearing_progress(total_notes=total_notes)
+    notes_cleared = 0
+    words_cleared = 0
+    for (word_list_field, new_note_id_field), placeholder_set in placeholders_by_fields.items():
+        placeholders = list(placeholder_set)
+        cleared_ids = frozenset(placeholders)
+        for start in range(0, len(placeholders), PLACEHOLDERS_PER_SEARCH):
+            chunk = placeholders[start : start + PLACEHOLDERS_PER_SEARCH]
+            terms = " OR ".join(f'"{word_list_field}:*{placeholder}*"' for placeholder in chunk)
+            referencing_note_ids = col_find_notes(f"({terms})")
+            # A note an earlier search already changed is taken as it now is, not re-read
+            referencing_notes: list[Note] = []
+            unread_nids: list[NoteId] = []
+            for nid in referencing_note_ids:
+                if nid in notes_to_update_dict:
+                    referencing_notes.append(notes_to_update_dict[nid])
+                else:
+                    unread_nids.append(nid)
+            referencing_notes.extend(col_get_notes(unread_nids))
+            for referencing_note in referencing_notes:
+                if (
+                    word_list_field not in referencing_note
+                    or new_note_id_field not in referencing_note
+                ):
+                    continue
+                arr = decode_word_array_field(
+                    referencing_note,
+                    word_list_field,
+                    notes_to_update_dict,
+                    f"Clearing new notes not added, note.id={referencing_note.id}--",
+                )
+                if arr is None:
+                    continue
+                changed = match_targets.clear_placeholder_ids(arr, cleared_ids)
+                if changed:
+                    referencing_note[word_list_field] = format_word_array(arr)
+                    notes_to_update_dict[referencing_note.id] = referencing_note
+                    words_cleared += changed
+            notes_cleared += len(chunk)
+            progress_updater.update_unadded_note_clearing_progress(
+                notes_cleared=notes_cleared, total_notes=total_notes
+            )
+    logger.info(
+        f"Cleared {words_cleared} words linked to {total_notes} new notes not added,"
+        f" in {len(notes_to_update_dict)} notes"
+    )
+    return notes_to_update_dict
+
+
+def _marker_fields(note: Note, config: dict) -> Optional[tuple[str, str]]:
+    """The note's sort field and processed furigana field, or None if it has no sort field.
+
+    Not get_field_config, which raises for a note type or field not in the config: a note of
+    some other type among those saved must not stop the tidying of the rest.
+    """
+    note_type = note.note_type()
+    model_config = config.get(note_type["name"]) if note_type else None
+    if not isinstance(model_config, dict):
+        return None
+    sort_field = model_config.get("word_sort_field")
+    if not sort_field or sort_field not in note:
+        return None
+    return sort_field, model_config.get("word_processed_furigana_field") or ""
+
+
+def tidy_sort_field_markers(
+    notes: Sequence[Note],
+    config: dict,
+    progress_updater: AsyncTaskProgressUpdater,
+) -> dict[NoteId, Note]:
+    """Tidy the sort field markers of every word a note the cleanup saved carries markers for.
+
+    The cleanup's last stage, once everything else is saved, so that the notes read here are
+    as the run leaves them: the (mN)/(rN)/(kun)/(on) numbering has no gap and no marker is left
+    that tells nothing apart (sort_field_markers.tidy_word_markers says how). Preparing a new
+    note renames the word's other notes to tell it apart, and those are saved before the
+    adding decides whether the new note will exist. One not added (cancelled, failed or
+    dropped as a duplicate) leaves them, and so does a new reading whose meaning could not
+    be made, in any run.
+
+    This replaced a record of each rename, taken back for the notes a cancel left out unless
+    a note added had been made seeing it. It reached only a cancel's notes, and hung on every
+    reader passing the very object the rename was recorded on: a note another word's thread
+    renamed and replaced meanwhile was seen stale, and the rename taken back under the note
+    that had numbered itself after it. Tidying whole words from the collection needs neither.
+
+    `notes` are the notes the cleanup saved and added. Only their words are tidied, and only
+    those one of them carries a marker for, but each word whole: its notes the run never
+    touched are renamed too. A note whose sort field holds another marker, such as (x1), is
+    left out, as the match op leaves it out when it numbers the word.
+
+    Returns the notes renamed, for the cleanup to save.
+    """
+    renamed_notes: dict[NoteId, Note] = {}
+    # By the sort field the words are in, which is what their notes are found by
+    words_by_sort_field: dict[str, dict[str, str]] = {}
+    for note in notes:
+        fields = _marker_fields(note, config) if note.id else None
+        if fields is None:
+            continue
+        sort_field, _ = fields
+        markers = parse_sort_field(note[sort_field])
+        if markers is None or not markers.has_markers:
+            continue
+        words = words_by_sort_field.setdefault(sort_field, {})
+        words.setdefault(word_key(markers.base), markers.base)
+
+    total_words = sum(len(words) for words in words_by_sort_field.values())
+    progress_updater.update_marker_tidying_progress(total_words=total_words)
+    words_tidied = 0
+    for sort_field, words in words_by_sort_field.items():
+        nids_by_word = sort_base_note_ids(sort_field, words.values())
+        notes_by_id = {
+            note.id: note
+            for note in col_get_notes([nid for nids in nids_by_word.values() for nid in nids])
+        }
+        for key in words:
+            word_notes: list[WordNote] = []
+            for word_note in (notes_by_id.get(nid) for nid in nids_by_word.get(key, ())):
+                fields = _marker_fields(word_note, config) if word_note is not None else None
+                # A note of a type configured with another sort field is not this word's
+                if word_note is None or fields is None or fields[0] != sort_field:
+                    continue
+                reading_type = check_note_processed_furigana_field(word_note, fields[1])
+                word_notes.append(WordNote(word_note.id, word_note[sort_field], reading_type))
+            for renamed_nid, sort_value in tidy_word_markers(word_notes).items():
+                renamed_note = notes_by_id[NoteId(renamed_nid)]
+                logger.debug(
+                    f"Note {renamed_nid}'s sort field {renamed_note[sort_field]!r}"
+                    f" tidied {sort_value!r}"
+                )
+                renamed_note[sort_field] = sort_value
+                renamed_notes[renamed_note.id] = renamed_note
+            words_tidied += 1
+            progress_updater.update_marker_tidying_progress(
+                words_done=words_tidied, total_words=total_words
+            )
+    logger.info(f"Tidied the markers of {total_words} words, renaming {len(renamed_notes)} notes")
+    return renamed_notes
 
 
 def deduplicate_notes_list(
@@ -301,9 +502,10 @@ def deduplicate_notes_list(
 
     param: notes_to_filter: Notes to filter (new or existing).
     param: config: The addon configuration.
-    param: progress_updater: Progress reporter.
+    param: progress_updater: Progress reporter; a cancel of the cleanup's adding stops the merges.
     param: notes_to_update_dict: Optional dict of already-updated existing notes to reuse and fill.
-    returns: The filtered list of notes and a dict of existing notes updated by this process.
+    returns: The filtered list of notes and a dict of existing notes updated by this process;
+        once cancelled, every note given, with the references remapped so far in the dict.
     """
     if notes_to_update_dict is None:
         notes_to_update_dict = {}
@@ -527,6 +729,16 @@ def deduplicate_notes_list(
     filtered_notes = [note for note in notes_to_filter if id(note) not in deleted_note_obj_ids]
     processed_note_ids = {note.id for note in notes_to_filter if note.id > 0}
     for index, (dup_ref, keep_ref, word_list_field) in enumerate(merge_mappings):
+        # The cleanup's cancel of its note adding, which runs this first: no note is added
+        # after it, so the rest of the merging would be for nothing. Every note comes back,
+        # the duplicates included: a caller that adds them anyway leaves no reference
+        # unresolved, as some still point at duplicates. What was remapped so far is in
+        # notes_to_update_dict, to be saved; it points at the notes kept.
+        if progress_updater is not None and progress_updater.cleanup_cancel_requested():
+            logger.info(
+                f"{log_prefix} Cancelled after {index} of {total} merges, no notes dropped"
+            )
+            return list(notes_to_filter), notes_to_update_dict
         dup_ref_pattern = rf'"?{re.escape(dup_ref)}"?'
         for ref_note in filtered_notes:
             if word_list_field in ref_note and dup_ref in ref_note[word_list_field]:
@@ -877,7 +1089,9 @@ def create_new_note_without_matching(
                 marker_note, word_sort_field, word_processed_furigana_field
             )
             if marker_note_reading_type == "kun":
-                has_kun_markers = "(kun)" in marker_sort_field
+                # Any kun note marked, not the last one seen: an overwrite made the outcome
+                # depend on the order the index returned the notes in
+                has_kun_markers = has_kun_markers or "(kun)" in marker_sort_field
                 kun_marker_notes.append(marker_note)
                 if "(kun)" not in marker_sort_field and new_note_reading_type == "on":
                     logger.debug(
@@ -891,7 +1105,7 @@ def create_new_note_without_matching(
                     update_note_reading_markers(marker_note, add_reading_type="kun")
                     has_kun_markers = True
             elif marker_note_reading_type == "on":
-                has_on_markers = "(on)" in marker_sort_field
+                has_on_markers = has_on_markers or "(on)" in marker_sort_field
                 on_marker_notes.append(marker_note)
                 if "(on)" not in marker_sort_field and new_note_reading_type == "kun":
                     logger.debug(
@@ -913,6 +1127,12 @@ def create_new_note_without_matching(
                     largest_kun_r_number = r_number
                 if marker_note_reading_type == "on" and r_number > largest_on_r_number:
                     largest_on_r_number = r_number
+
+    # Decided once, after every note of the word has been looked at. This used to sit inside
+    # the loop, so it ran once per note from the notes seen so far, and a rename it made from
+    # half the facts stayed: with the (on) note found last, every note got (r1) that the same
+    # notes found the other way round left alone. A word with no other notes gets no marker.
+    if marker_notes:
 
         def update_marker_notes_with_r1(marker_notes_list: list[Note]):
             for marker_note in marker_notes_list:
@@ -2020,6 +2240,11 @@ def plan_word_array_matching(
     array is written back to the field. Returns None, with the note counted done, when there
     is nothing to match.
 
+    The save is also the plan's flush, so that a cancelled run still saves what the finished
+    tasks found: matches to existing notes, and the placeholder ids of new notes, which cleanup
+    still adds and which nothing would refer to otherwise. Unfinished words stay `["match"]`,
+    for the next run. The save runs once, whichever comes first.
+
     Words linked to a note without a match_quality, `[note_id]`, are rated by the secondary
     prompt in the same run (rate_linked_word), unless `states` has them matched again.
 
@@ -2148,16 +2373,35 @@ def plan_word_array_matching(
 
         return handle_op_error
 
-    async def save_results(word_tasks: list[asyncio.Task]):
-        await asyncio.gather(*word_tasks)
-        saved = match_targets.save_results(targets, results, qualities)
-        rated = match_targets.save_ratings(rate_targets, ratings)
+    array_saved = False
+
+    def save_array() -> bool:
+        # Once only: match_targets.save_results writes into the array's elements, and the
+        # flush may come after this note's own save or before its cancelled task is unwound
+        nonlocal array_saved
+        if array_saved:
+            return False
+        array_saved = True
+        # Copies, since after a cancel an abandoned worker thread can still be writing a
+        # result. Results first: a match_quality is put in before its result, so every
+        # result copied has its quality in the later copy.
+        results_now = dict(results)
+        qualities_now = dict(qualities)
+        saved = match_targets.save_results(targets, results_now, qualities_now)
+        rated = match_targets.save_ratings(rate_targets, dict(ratings))
         logger.debug(
             f"{log_prefix}Matched {saved} of {len(targets)} and rated {rated} of"
             f" {len(rate_targets)} words in the word array"
         )
         if saved or rated:
             save_note()
+        return True
+
+    async def save_results(word_tasks: list[asyncio.Task]):
+        # Nothing awaited after the gather, so a cancel either stops this before save_array
+        # or not at all
+        await asyncio.gather(*word_tasks)
+        save_array()
         progress_updater.increment_counts(notes_done=1)
 
     def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
@@ -2187,7 +2431,9 @@ def plan_word_array_matching(
                 tasks.append(task)
         tasks.append(asyncio.create_task(save_results(word_tasks)))
 
-    return NotePlan(task_count=len(targets) + len(rate_targets), spawn=spawn_note_tasks)
+    return NotePlan(
+        task_count=len(targets) + len(rate_targets), spawn=spawn_note_tasks, flush=save_array
+    )
 
 
 def match_words_to_notes_for_note(
@@ -2445,6 +2691,8 @@ def match_words_to_notes_from_selected(
         progress_updater,
         new_notes_op,
         filter_new_notes_op,
+        unadded_notes_op=clear_unadded_note_ids,
+        tidy_markers_op=tidy_sort_field_markers,
     )
 
 
@@ -2576,4 +2824,6 @@ def match_single_word_to_notes_from_selected(
         progress_updater,
         new_notes_op,
         filter_new_notes_op,
+        unadded_notes_op=clear_unadded_note_ids,
+        tidy_markers_op=tidy_sort_field_markers,
     )

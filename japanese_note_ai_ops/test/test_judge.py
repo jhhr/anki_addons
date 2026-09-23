@@ -1,8 +1,19 @@
 """Word matching judge: which words it asks about, what each prompt says, what it writes back."""
 
+import asyncio
+import json
+import threading
 import unittest
+from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import (
+    RunCollection,
+    RunProgress,
+    load_ops_module,
+    mw,
+    patch_nested_run,
+    wait_until,
+)
 
 judge = load_ops_module("judge", subdir="word_array")
 match_flags = load_ops_module("match_flags", subdir="word_array")
@@ -130,6 +141,124 @@ class ModelConfigTests(unittest.TestCase):
         self.assertEqual(
             op.judge_model({"word_matching_judge_model": "", "extract_words_model": "b"}), "b"
         )
+
+
+class JudgedNote:
+    """Counts the writes of its word array, so that saving one array twice shows."""
+
+    def __init__(self, note_id, arr):
+        self.id = note_id
+        self.fields = {"word_list_field": json.dumps(arr, ensure_ascii=False)}
+        self.array_writes = 0
+
+    def note_type(self):
+        return {"name": "Word"}
+
+    def __contains__(self, field):
+        return field in self.fields
+
+    def __getitem__(self, field):
+        return self.fields[field]
+
+    def __setitem__(self, field, value):
+        self.array_writes += 1
+        self.fields[field] = value
+
+
+class CancelledJudgeRunTests(unittest.TestCase):
+    """A note's word array is written back once all its words are judged, by a task a cancel
+    cancels too, so a cancelled run lost every judgment of the notes it was in the middle of."""
+
+    def setUp(self):
+        self.op = load_ops_module("word_matching_judge")
+        self.base_ops = load_ops_module("base_ops")
+        self.config = {
+            "Word": {"word_list_field": "word_list_field"},
+            "word_matching_judge_model": "model",
+        }
+        mw.progress.cancel = False
+        self.addCleanup(setattr, mw.progress, "cancel", False)
+
+    def test_a_cancelled_run_saves_each_notes_finished_judgments(self):
+        """Through the real bulk_nested_notes_op and rolling driver, with a real cancel."""
+        # Planned in this order: 箱 finishes before 本 starts, and 机 is never started
+        finished = JudgedNote(3, [word("箱")])
+        cancelled = JudgedNote(1, [word("本"), word("を", "particle"), word("棚")])
+        never_started = JudgedNote(2, [word("机")])
+        never_started_field = never_started["word_list_field"]
+        updates, edited_nids, progress = {}, [], RunProgress()
+        asked, answer = threading.Event(), threading.Event()
+        applied = []
+        real_apply = self.op.judge.apply_word_response
+
+        def get_response(model, prompt, **_):
+            if "<b>棚</b>" in prompt:
+                # A request the cancel abandons, answered only after the run has returned
+                asked.set()
+                answer.wait(5)
+                return {"decision": "dontmatch"}
+            return {"decision": "match"}
+
+        def apply_word_response(elem, response):
+            result = real_apply(elem, response)
+            applied.append(elem)
+            return result
+
+        fake_mw = mock.MagicMock()
+        fake_mw.progress = mw.progress
+        fake_mw.addonManager.getConfig.return_value = self.config
+
+        async def run():
+            runner = asyncio.ensure_future(
+                self.op.make_bulk_op(match_flags.JUDGE_NEW)(
+                    col=RunCollection(),
+                    notes=[finished, cancelled, never_started],
+                    edited_nids=edited_nids,
+                    progress_updater=progress,
+                    notes_to_add_dict={},
+                    notes_to_update_dict=updates,
+                )
+            )
+            # 箱 and 本 judged, 棚 waiting for its answer
+            self.assertTrue(await wait_until(lambda: progress.tasks_done == 2 and asked.is_set()))
+            mw.progress.cancel = True
+            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
+            runner.result()
+            at_return = (cancelled["word_list_field"], cancelled.array_writes)
+            # The abandoned thread judges 棚 after all, and the note's cancelled task unwinds
+            answer.set()
+            self.assertTrue(await wait_until(lambda: len(applied) == 3))
+            for _ in range(50):
+                await asyncio.sleep(0)
+            return at_return
+
+        with (
+            patch_nested_run(self.base_ops),
+            mock.patch.object(self.op, "mw", fake_mw),
+            mock.patch.object(self.op, "get_response", get_response),
+            mock.patch.object(self.op.judge, "apply_word_response", apply_word_response),
+        ):
+            field_at_return, writes_at_return = asyncio.run(run())
+
+        # 本 judged by its request, を while planning; 棚 unjudged, to be asked again next run
+        saved = json.loads(field_at_return)
+        self.assertEqual([w[4] for w in saved], [["match"], ["dontmatch"], []])
+        self.assertEqual(writes_at_return, 1)
+        self.assertIs(updates[1], cancelled)
+        # The late judgment changed the element in memory only: the field was written once,
+        # before it, and is not written again
+        self.assertEqual(applied[-1][2], "棚")
+        self.assertEqual(applied[-1][4], ["dontmatch"])
+        self.assertEqual(cancelled["word_list_field"], field_at_return)
+        self.assertEqual(cancelled.array_writes, 1)
+        # the note that finished was saved by its own task, and only then
+        self.assertEqual(json.loads(finished["word_list_field"])[0][4], ["match"])
+        self.assertEqual(finished.array_writes, 1)
+        # and the one never started is untouched
+        self.assertEqual(never_started.array_writes, 0)
+        self.assertEqual(never_started["word_list_field"], never_started_field)
+        self.assertNotIn(2, updates)
+        self.assertEqual(edited_nids, [3, 1])
 
 
 if __name__ == "__main__":
