@@ -57,6 +57,7 @@ from ..word_array.match_flags import (
     read_word_array,
     word_array_query_regex,
 )
+from .chain_types import ChainStep, fail_step
 from .base_ops import (
     AsyncTaskProgressUpdater,
     BulkOpResult,
@@ -2690,6 +2691,7 @@ async def bulk_match_words_to_notes(
 def match_words_to_notes_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Match words to notes for selected notes.
@@ -2697,6 +2699,7 @@ def match_words_to_notes_from_selected(
     Args:
         nids (Sequence[NoteId]): List of note IDs to process.
         parent (Any): Parent widget for the operation.
+        chain (ChainStep|None): The chain this run is a step of, see selected_notes_op.
 
     Returns:
         What selected_notes_op returns for the run.
@@ -2715,6 +2718,7 @@ def match_words_to_notes_from_selected(
         new_notes_op,
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
+        chain=chain,
     )
 
 
@@ -2752,6 +2756,7 @@ def match_single_word_to_notes_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
     reprocess_words: Optional[WithProcessed] = None,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Match words to notes for selected notes.
@@ -2761,6 +2766,8 @@ def match_single_word_to_notes_from_selected(
         parent (Any): Parent widget for the operation.
         reprocess_words (str|None): How to match the single word, either rematching all,
             only rematching unprocessed words, or only rematching already processed words.
+        chain (ChainStep|None): The chain this run is a step of, see selected_notes_op. A
+            missing config fails the step, since no run starts to report back.
     Returns:
         What selected_notes_op returns for the run.
     """
@@ -2769,6 +2776,7 @@ def match_single_word_to_notes_from_selected(
     config = mw.addonManager.getConfig(__name__)
     if not config:
         logger.error("Error: Missing addon configuration")
+        fail_step(chain, "Missing addon configuration")
         return None
 
     def bulk_op(
@@ -2847,4 +2855,5 @@ def match_single_word_to_notes_from_selected(
         new_notes_op,
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
+        chain=chain,
     )

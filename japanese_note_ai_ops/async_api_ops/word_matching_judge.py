@@ -39,6 +39,7 @@ from ..word_array.match_flags import (
     decode_word_array,
     format_word_array,
 )
+from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
@@ -231,8 +232,13 @@ def make_bulk_op(states: frozenset[MatchState]):
 
 
 def word_matching_judge_from_selected_notes(
-    nids: Sequence[NoteId], parent: Browser, states: frozenset[MatchState] = JUDGE_NEW
+    nids: Sequence[NoteId],
+    parent: Browser,
+    states: frozenset[MatchState] = JUDGE_NEW,
+    chain: Optional[ChainStep] = None,
 ):
     progress_updater = AsyncTaskProgressUpdater(title=f"Async AI op: {MODE_NAMES[states]}")
     done_text = "Judged words matchability"
-    return selected_notes_op(done_text, make_bulk_op(states), nids, parent, progress_updater)
+    return selected_notes_op(
+        done_text, make_bulk_op(states), nids, parent, progress_updater, chain=chain
+    )

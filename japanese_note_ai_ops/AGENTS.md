@@ -60,10 +60,13 @@ that checking later cost 25 minutes per bulk run.
    `NotePlan(task_count, spawn, flush=None)` and must not start work itself; a note saved once
    all its tasks are done gives a `flush`, see Invariants). Local ops pass
    `is_sync_op=True`. Multi-phase operations pass a list of `OpPhase(name, bulk_op)`.
-3. `*_selected_notes(nids, parent)` calling `selected_notes_op(...)` with an
-   `AsyncTaskProgressUpdater`.
+3. `*_selected_notes(nids, parent, chain=None)` calling `selected_notes_op(..., chain=chain)`
+   with an `AsyncTaskProgressUpdater`. An early return before that call must
+   `fail_step(chain, ...)`, or a chain waits forever.
 
-Registration is manual in `__init__.py`: import, `QAction`, `qconnect`.
+Registration: an `OpSpec` in `op_registry.OPS`, whose order is the menu's;
+`ai_helper_menu.py` builds the browser's "AI helper" submenu from it.
+
 `selected_notes_op` wraps the run in one `CollectionOp`: a fresh asyncio loop, one
 `ThreadPoolExecutor` whose workers call `join_run(run)`, and all collection writes
 (`update_notes`, `remove_notes`, `add_note`, `merge_undo_entries`) in a cleanup phase after

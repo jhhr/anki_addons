@@ -53,6 +53,8 @@ STARTUP_SYNC_MODULES = [
 # Top-level modules that reach for aqt
 STARTUP_ROOT_MODULES = [
     "generator_resources",
+    "op_registry",
+    "ai_helper_menu",
 ]
 
 

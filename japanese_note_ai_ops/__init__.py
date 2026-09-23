@@ -43,65 +43,17 @@ try:
     from .utils import get_field_config  # noqa: E402
     from .call_logging import in_bulk_op, start_call_log  # noqa: E402
 
-    from .async_api_ops.clean_meaning import (  # noqa: E402
-        clean_meaning_in_note,
-        clean_selected_notes,
-    )
-    from .async_api_ops.translate_field import (  # noqa: E402
-        translate_selected_notes,
-        translate_sentence_in_note,
-    )
-    from .async_api_ops.make_kanji_story import (  # noqa: E402
-        make_stories_for_selected_notes,
-        make_story_for_note,
-    )
-    from .async_api_ops.kanjify_sentence import (  # noqa: E402
-        kanjify_selected_notes,
-    )
-    from .async_api_ops.extract_words import (  # noqa: E402
-        extract_words_and_judge_from_selected_notes,
-        extract_words_from_selected_notes,
-        extract_words_op,
-        regenerate_words_from_selected_notes,
-    )
-    from .async_api_ops.match_words_to_notes import (  # noqa: E402
-        match_words_to_notes_from_selected,
-        match_single_word_to_notes_from_selected,
-    )
-
-    from .async_api_ops.word_matching_judge import (  # noqa: E402
-        word_matching_judge_from_selected_notes,
-    )
-    from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED  # noqa: E402
-    from .async_api_ops.find_proper_nouns import (  # noqa: E402
-        find_proper_nouns_from_selected_notes,
-    )
-
+    from .async_api_ops.clean_meaning import clean_meaning_in_note  # noqa: E402
+    from .async_api_ops.translate_field import translate_sentence_in_note  # noqa: E402
+    from .async_api_ops.make_kanji_story import make_story_for_note  # noqa: E402
+    from .async_api_ops.extract_words import extract_words_op  # noqa: E402
     from .async_api_ops.make_all_meanings import (  # noqa: E402
         load_meanings_dict_from_file,
-        make_meanings_selected_notes,
-        merge_meanings_selected_notes,
         write_meanings_dict_to_file,
     )
-    from .async_api_ops.new_note_all_ops import (  # noqa: E402
-        new_note_all_ops_selected_notes,
-    )
-    from .sync_local_ops.find_missing_matched_note_ids import (  # noqa: E402
-        find_missing_matched_note_ids_selected_notes,
-    )
-    from .sync_local_ops.tag_notes_matched_status import (  # noqa: E402
-        tag_notes_matched_status_from_selected,
-    )
-    from .sync_local_ops.build_name_lexicon import (  # noqa: E402
-        build_name_lexicon_from_selected,
-    )
-    from .sync_local_ops.deduplicate_existing_meaning_notes import (  # noqa: E402
-        deduplicate_existing_meaning_notes_selected_notes,
-    )
-    from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
-        make_kanjify_sentence_data,
-        make_all_test_data,
-    )
+    from .sync_local_ops.make_fine_tuning_data import make_all_test_data  # noqa: E402
+    # The ops the browser menu runs, by way of the registry, which imports every op module
+    from .ai_helper_menu import add_ai_helper_actions  # noqa: E402
 
     MISSING_PACKAGE: Optional[str] = None
 except ImportError as error:
@@ -136,174 +88,14 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     logger = logging.getLogger(__name__)
     start_call_log("add_note")
 
-    # Create a new action for the context menu
-    meaning_action = QAction("Clean dictionary meaning", mw)
-    translation_action = QAction("Translate sentence", mw)
-    kanji_story_action = QAction("Generate kanji story", mw)
-    component_words_action = QAction("Kanjify sentence", mw)
-    extract_words_action = QAction("Extract words", mw)
-    extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
-    regenerate_words_action = QAction("Regenerate words over the current array", mw)
-    find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
-    judge_words_action = QAction("Judge words matchability", mw)
-    rejudge_matched_words_action = QAction("Re-judge matched words", mw)
-    rejudge_all_words_action = QAction("Re-judge matched/judged words", mw)
-    match_words_action = QAction("Match extracted words to notes", mw)
-    rematch_single_word_action = QAction("Rematch all single word to notes", mw)
-    rematch_processed_single_word_action = QAction("Rematch processed single words to notes", mw)
-    match_remaining_single_word_action = QAction(
-        "Match remaining unprocessed single words to notes", mw
-    )
-    find_missing_matched_note_ids_action = QAction(
-        "Find missing matched note ids for selected notes", mw
-    )
-    tag_notes_matched_status_action = QAction("Tag notes matched status", mw)
-    build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
-    deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
-    export_kanjify_ft_action = QAction("Export kanjify test data", mw)
-    make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
-    merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
-    new_note_all_ops_action = QAction("Run all ops for new notes", mw)
-
-    # Connect the action to the operation
+    # Captured once, when the menu opens: every action runs over the selection it was opened on
     selected_nids = browser.selectedNotes()
-    qconnect(
-        meaning_action.triggered,
-        lambda: clean_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        translation_action.triggered,
-        lambda: translate_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        kanji_story_action.triggered,
-        lambda: make_stories_for_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        component_words_action.triggered,
-        lambda: kanjify_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        extract_words_action.triggered,
-        lambda: extract_words_from_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        extract_words_and_judge_action.triggered,
-        lambda: extract_words_and_judge_from_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        regenerate_words_action.triggered,
-        lambda: regenerate_words_from_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        find_proper_nouns_action.triggered,
-        lambda: find_proper_nouns_from_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        judge_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
-            selected_nids, parent=browser, states=JUDGE_NEW
-        ),
-    )
-    qconnect(
-        rejudge_matched_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
-            selected_nids, parent=browser, states=REJUDGE_MATCHED
-        ),
-    )
-    qconnect(
-        rejudge_all_words_action.triggered,
-        lambda: word_matching_judge_from_selected_notes(
-            selected_nids, parent=browser, states=REJUDGE_ALL
-        ),
-    )
-    qconnect(
-        match_words_action.triggered,
-        lambda: match_words_to_notes_from_selected(selected_nids, parent=browser),
-    )
-    qconnect(
-        rematch_single_word_action.triggered,
-        lambda: match_single_word_to_notes_from_selected(
-            selected_nids, parent=browser, reprocess_words="both"
-        ),
-    )
-    qconnect(
-        rematch_processed_single_word_action.triggered,
-        lambda: match_single_word_to_notes_from_selected(
-            selected_nids, parent=browser, reprocess_words="only_processed"
-        ),
-    )
-    qconnect(
-        match_remaining_single_word_action.triggered,
-        lambda: match_single_word_to_notes_from_selected(
-            selected_nids, parent=browser, reprocess_words="only_unprocessed"
-        ),
-    )
-    qconnect(
-        make_all_meanings_action.triggered,
-        lambda: make_meanings_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        merge_meanings_action.triggered,
-        lambda: merge_meanings_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        new_note_all_ops_action.triggered,
-        lambda: new_note_all_ops_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        find_missing_matched_note_ids_action.triggered,
-        lambda: find_missing_matched_note_ids_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        tag_notes_matched_status_action.triggered,
-        lambda: tag_notes_matched_status_from_selected(selected_nids, parent=browser),
-    )
-    qconnect(
-        build_name_lexicon_action.triggered,
-        lambda: build_name_lexicon_from_selected(selected_nids, parent=browser),
-    )
-    qconnect(
-        deduplicate_existing_meaning_notes_action.triggered,
-        lambda: deduplicate_existing_meaning_notes_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        export_kanjify_ft_action.triggered,
-        lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
-    )
 
     ai_menu = menu.addMenu("AI helper")
     if ai_menu is None:
         logger.error("Error: AI helper menu could not be created.")
         return
-    # Add the action to the browser's card context menu
-
-    # Async ops
-    ai_menu.addAction(meaning_action)
-    ai_menu.addAction(translation_action)
-    ai_menu.addAction(kanji_story_action)
-    ai_menu.addAction(component_words_action)
-    ai_menu.addAction(extract_words_action)
-    ai_menu.addAction(extract_words_and_judge_action)
-    ai_menu.addAction(regenerate_words_action)
-    ai_menu.addAction(find_proper_nouns_action)
-    ai_menu.addAction(judge_words_action)
-    ai_menu.addAction(rejudge_matched_words_action)
-    ai_menu.addAction(rejudge_all_words_action)
-    ai_menu.addAction(match_words_action)
-    ai_menu.addAction(rematch_single_word_action)
-    ai_menu.addAction(rematch_processed_single_word_action)
-    ai_menu.addAction(match_remaining_single_word_action)
-    ai_menu.addAction(make_all_meanings_action)
-    ai_menu.addAction(merge_meanings_action)
-    ai_menu.addAction(new_note_all_ops_action)
-    ai_menu.addSeparator()
-    # Sync ops
-    ai_menu.addAction(find_missing_matched_note_ids_action)
-    ai_menu.addAction(tag_notes_matched_status_action)
-    ai_menu.addAction(build_name_lexicon_action)
-    ai_menu.addAction(deduplicate_existing_meaning_notes_action)
-    ai_menu.addAction(export_kanjify_ft_action)
+    add_ai_helper_actions(ai_menu, selected_nids, parent=browser)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):

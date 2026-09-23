@@ -22,6 +22,7 @@ from ..generator_resources import with_generator_resources
 from ..utils import get_field_config
 from ..word_array import generator, proper_noun_llm
 from ..word_array.match_flags import decode_word_array, format_word_array
+from .chain_types import ChainStep
 from .base_ops import AsyncTaskProgressUpdater, bulk_notes_op, get_response, selected_notes_op
 
 logger = logging.getLogger(__name__)
@@ -127,12 +128,16 @@ async def bulk_find_proper_nouns_op(
     )
 
 
-def find_proper_nouns_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def find_proper_nouns_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Needs the generator's resources: a name the generator cut across is split with it."""
 
     def run():
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Finding proper nouns")
         done_text = "Found proper nouns"
-        selected_notes_op(done_text, bulk_find_proper_nouns_op, nids, parent, progress_updater)
+        selected_notes_op(
+            done_text, bulk_find_proper_nouns_op, nids, parent, progress_updater, chain=chain
+        )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)

@@ -4,7 +4,7 @@ import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, Optional
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -29,6 +29,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .diagnostics import StageTimer, log_stage
+from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -599,11 +600,13 @@ def bulk_make_meanings_op(
     )
 
 
-def make_meanings_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def make_meanings_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Making meanings")
     done_text = "Made meanings"
     bulk_op = bulk_make_meanings_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)
 
 
 def bulk_merge_meanings_op(
@@ -652,8 +655,10 @@ def bulk_merge_meanings_op(
     )
 
 
-def merge_meanings_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def merge_meanings_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Merging meanings")
     done_text = "Merged meanings"
     bulk_op = bulk_merge_meanings_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

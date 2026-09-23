@@ -49,6 +49,7 @@ from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import merge, names, resources
 from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
+from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
     OpPhase,
@@ -186,29 +187,39 @@ bulk_extract_from_notes_op = make_bulk_op()
 bulk_regenerate_from_notes_op = make_bulk_op(overwrite=True)
 
 
-def extract_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def extract_words_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Needs the generator's resources, asked about before any note is touched."""
 
     def run():
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Extracting words")
         done_text = "Extracted words"
-        selected_notes_op(done_text, bulk_extract_from_notes_op, nids, parent, progress_updater)
+        selected_notes_op(
+            done_text, bulk_extract_from_notes_op, nids, parent, progress_updater, chain=chain
+        )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
 
 
-def regenerate_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def regenerate_words_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Extract words over the array a note already holds, for a sentence that was corrected."""
 
     def run():
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Regenerating word arrays")
         done_text = "Regenerated word arrays"
-        selected_notes_op(done_text, bulk_regenerate_from_notes_op, nids, parent, progress_updater)
+        selected_notes_op(
+            done_text, bulk_regenerate_from_notes_op, nids, parent, progress_updater, chain=chain
+        )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
 
 
-def extract_words_and_judge_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def extract_words_and_judge_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Extract words, then judge the new words' matchability, as one operation. The judge has
     to be a phase of its own: its requests cannot be planned until the words exist."""
 
@@ -226,6 +237,7 @@ def extract_words_and_judge_from_selected_notes(nids: Sequence[NoteId], parent: 
             nids,
             parent,
             progress_updater,
+            chain=chain,
         )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
