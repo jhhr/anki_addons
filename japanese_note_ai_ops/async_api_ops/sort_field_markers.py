@@ -13,11 +13,11 @@ several things leave markers behind that nothing needs:
   `(m1)` or `(r1)`;
 - a new reading whose meaning could not be made has already marked the word's other notes.
 
-restore_renamed_sort_fields takes back what the notes a cancel left out did, but only those,
-and only where nothing that was added saw the rename. `tidy_word_markers` is the rest: given
-every note of one word, it says what each sort field should be, meanings first and then
-readings, and the cleanup's last stage applies it to every word a saved note carries markers
-for.
+Nothing records the renames to take them back. Preparing a note only ever adds a marker a
+note lacks, to tell it from the new one, so a marker whose new note is gone tells nothing
+apart and is one `tidy_word_markers` takes off: given every note of one word, it says what
+each sort field should be, meanings first and then readings, and the cleanup's last stage
+applies it to every word a saved note carries markers for.
 
 Pure: no collection, no Anki. The cleanup stage that reads the notes is
 match_words_to_notes.tidy_sort_field_markers.

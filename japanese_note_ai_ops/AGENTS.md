@@ -104,18 +104,20 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   copy_anywhere's on-add definitions run. `end_cleanup_cancel()` closes it in a `finally`.
   The notes split three ways: added (placeholders resolved by `update_fake_note_ids`),
   failed (placeholders kept, a debugging hint the next match run's `resolve_placeholder_ids`
-  resets), not added (words put back to `["match"]` by `clear_unadded_note_ids`, which also
-  takes back the `(mN)`/`(rN)`/`(on)`/`(kun)` markers preparing them put on other notes,
-  unless an added note was made seeing them). Resolving and unlinking always run to the end;
-  a resolving that raises fails the op after the unlinking.
+  resets), not added (words put back to `["match"]` by `clear_unadded_note_ids`). The
+  markers preparing either of the last two put on other notes are the tidying's, below.
+  Resolving and unlinking always run to the end; a resolving that raises fails the op after
+  the unlinking.
 - **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
   without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
   for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
   without gaps, meanings then readings, dropping a marker that tells nothing apart; the rules
-  are the pure `sort_field_markers.tidy_word_markers`. A failed add, a dedupe's dropped
-  duplicate and a new reading whose meaning failed leave such markers, which the restore of
-  the unadded notes does not reach. It cannot be cancelled, and a raise only logs.
+  are the pure `sort_field_markers.tidy_word_markers`. Preparing a note renames its word's
+  other notes, saved before the adding decides whether it will exist, so a note not added
+  (cancelled, failed, a dedupe's duplicate) or a new reading whose meaning failed leaves such
+  markers. This is the only thing that takes them back: there is no record of renames to
+  undo. It cannot be cancelled, and a raise only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight

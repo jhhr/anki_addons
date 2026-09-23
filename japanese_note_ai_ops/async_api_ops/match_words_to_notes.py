@@ -1,11 +1,8 @@
 import asyncio
-import itertools
 import json
 import logging
 import random
 import re
-import threading
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
@@ -286,109 +283,6 @@ def update_fake_note_ids(
     return notes_to_update_dict
 
 
-@dataclass(eq=False)
-class SortFieldRename:
-    """A note's sort field, renamed by the match op for a new note it prepared.
-
-    A second meaning copied from a note numbers that note (m1); a new reading of a word numbers
-    the word's other notes (r1), or marks them (kun)/(on). The renamed note is saved with the
-    run's other edits before the adding starts, so when a cancel of the adding leaves the new
-    note out, only a second write takes the marker back (restore_renamed_sort_fields).
-    """
-
-    note: Note
-    field_name: str
-    before: str
-    after: str
-    # Across the run, so that the renames of one note are undone newest first
-    order: int
-    # The new notes made after it that looked at the renamed note: their own markers were
-    # chosen seeing the rename, so one of them added keeps it
-    seen_by: list[Note] = field(default_factory=list)
-
-
-# Kept on the notes themselves: a new note's list reaches clear_unadded_note_ids among the notes
-# not added, and a renamed note's is where a later new note finds the renames it saw. Both go
-# with the run's notes.
-_RENAMES_MADE = "_jnaio_sort_field_renames_made"
-_RENAMES_RECEIVED = "_jnaio_sort_field_renames_received"
-# New notes are made in worker threads: one word's one at a time, under its asyncio lock, but
-# different words at once, and one word's can look at another's (a ずる word at its じる note)
-_renames_lock = threading.Lock()
-_rename_order = itertools.count()
-
-
-def _renames(note: Note, attr: str) -> list[SortFieldRename]:
-    # vars(), not getattr: anki's Note answers an unknown attribute through its deprecated
-    # names lookup
-    return vars(note).setdefault(attr, [])
-
-
-def record_sort_field_rename(new_note: Note, note: Note, field_name: str, before: str) -> None:
-    """Record that preparing `new_note` changed `note`'s `field_name` from `before`."""
-    after = note[field_name]
-    if after == before:
-        return
-    with _renames_lock:
-        rename = SortFieldRename(note, field_name, before, after, next(_rename_order))
-        _renames(new_note, _RENAMES_MADE).append(rename)
-        _renames(note, _RENAMES_RECEIVED).append(rename)
-
-
-def record_renames_seen(new_note: Note, notes: Iterable[Note]) -> None:
-    """Record that `new_note` chose its markers looking at `notes`, as they are now."""
-    with _renames_lock:
-        for note in notes:
-            for rename in vars(note).get(_RENAMES_RECEIVED, ()):
-                if not any(seer is new_note for seer in rename.seen_by):
-                    rename.seen_by.append(new_note)
-
-
-def restore_renamed_sort_fields(
-    unadded_notes: Sequence[Note], notes_to_update_dict: dict[NoteId, Note]
-) -> int:
-    """Write back the sort fields that preparing the notes not added renamed.
-
-    So that the word's notes read as if those had never been prepared, except where a note
-    that was added depends on it: a rename any added note was made seeing stays. A note is
-    read as it was saved, and written back only if its field still holds what the rename
-    left: a note changed since is left alone, as a marker left over is taken off by the
-    cleanup's tidying (tidy_sort_field_markers) and a wrong rename is not. A renamed new note
-    is written back once it has been added, and needs nothing when it has not. Returns how
-    many were written back, into `notes_to_update_dict`.
-    """
-    with _renames_lock:
-        renames = [
-            (rename, list(rename.seen_by))
-            for new_note in unadded_notes
-            for rename in vars(new_note).get(_RENAMES_MADE, ())
-        ]
-    restored = 0
-    for rename, seen_by in sorted(renames, key=lambda item: item[0].order, reverse=True):
-        nid = rename.note.id
-        if not nid:
-            continue
-        log_prefix = f"Sort field of note {nid}, {rename.before!r} renamed {rename.after!r}:"
-        if any(seer.id for seer in seen_by):
-            logger.debug(f"{log_prefix} kept, a new note made seeing it was added")
-            continue
-        note = notes_to_update_dict.get(nid)
-        if note is None:
-            try:
-                note = col_get_note(nid)
-            except Exception as e:
-                logger.warning(f"{log_prefix} left, the note could not be read: {e}")
-                continue
-        current = note[rename.field_name] if rename.field_name in note else None
-        if current != rename.after:
-            logger.warning(f"{log_prefix} left, it has been changed since to {current!r}")
-            continue
-        note[rename.field_name] = rename.before
-        notes_to_update_dict[nid] = note
-        restored += 1
-    return restored
-
-
 # How many placeholders one collection search looks for. Each is a term of an OR, and SQLite
 # refuses a query whose expression tree is more than 1000 deep, which a long OR chain becomes.
 PLACEHOLDERS_PER_SEARCH = 50
@@ -408,13 +302,11 @@ def clear_unadded_note_ids(
     compared in the decoded array (match_targets.clear_placeholder_ids) leave that note be.
     A note whose add failed is not in `unadded_notes`: its placeholder is left for debugging,
     though only until the next match run, which resets it as a placeholder no note holds.
-    Then the markers preparing them put on the other notes of their words are taken back
-    (restore_renamed_sort_fields), after the clearing, so that a note both touch is written
-    once with both.
+    The markers preparing them put on the other notes of their words are the tidying's to
+    take off (tidy_sort_field_markers).
 
-    Returns the notes changed, for the cleanup to save: those with words cleared or markers
-    taken back, and any whose field turned out not to be an array, left as it is and only
-    tagged.
+    Returns the notes changed, for the cleanup to save: those with words cleared, and any
+    whose field turned out not to be an array, left as it is and only tagged.
     """
     notes_to_update_dict: dict[NoteId, Note] = {}
     if not unadded_notes:
@@ -492,12 +384,9 @@ def clear_unadded_note_ids(
             progress_updater.update_unadded_note_clearing_progress(
                 notes_cleared=notes_cleared, total_notes=total_notes
             )
-    notes_with_words_cleared = len(notes_to_update_dict)
-    restored = restore_renamed_sort_fields(unadded_notes, notes_to_update_dict)
     logger.info(
         f"Cleared {words_cleared} words linked to {total_notes} new notes not added,"
-        f" in {notes_with_words_cleared} notes; took back {restored} markers they put on"
-        " other notes"
+        f" in {len(notes_to_update_dict)} notes"
     )
     return notes_to_update_dict
 
@@ -527,10 +416,17 @@ def tidy_sort_field_markers(
 
     The cleanup's last stage, once everything else is saved, so that the notes read here are
     as the run leaves them: the (mN)/(rN)/(kun)/(on) numbering has no gap and no marker is left
-    that tells nothing apart (sort_field_markers.tidy_word_markers says how). Such markers are
-    left by a new note that was not added (cancelled, failed or dropped as a duplicate) where
-    restore_renamed_sort_fields does not take them back, and by a new reading whose meaning
-    could not be made, whose markers on the word's other notes stay in any run.
+    that tells nothing apart (sort_field_markers.tidy_word_markers says how). Preparing a new
+    note renames the word's other notes to tell it apart, and those are saved before the
+    adding decides whether the new note will exist. One not added (cancelled, failed or
+    dropped as a duplicate) leaves them, and so does a new reading whose meaning could not
+    be made, in any run.
+
+    This replaced a record of each rename, taken back for the notes a cancel left out unless
+    a note added had been made seeing it. It reached only a cancel's notes, and hung on every
+    reader passing the very object the rename was recorded on: a note another word's thread
+    renamed and replaced meanwhile was seen stale, and the rename taken back under the note
+    that had numbered itself after it. Tidying whole words from the collection needs neither.
 
     `notes` are the notes the cleanup saved and added. Only their words are tidied, and only
     those one of them carries a marker for, but each word whole: its notes the run never
@@ -1105,7 +1001,6 @@ def create_new_note_without_matching(
             " notes_to_add_dict, sort fields:"
             f" {[note[word_sort_field] for note in added_marker_notes]}"
         )
-    record_renames_seen(new_note, marker_notes)
 
     # When checking the marker notes, theres' two cases
     # Case 1: The existing notes had some (rX) number with either none or (on)/(kun)
@@ -1135,8 +1030,7 @@ def create_new_note_without_matching(
             # Ensure we edit the latest version of the note
             a_note = notes_to_update_dict[a_note.id]
 
-        prev_sort_field_value = a_note[word_sort_field]
-        sort_field_value = prev_sort_field_value.strip()
+        sort_field_value = a_note[word_sort_field].strip()
         marker_start_index = sort_field_value.find("(")
         if marker_start_index == -1:
             base_word = sort_field_value
@@ -1169,7 +1063,6 @@ def create_new_note_without_matching(
         a_note[word_sort_field] = (
             f"{base_word} {rebuilt_markers}".strip() if rebuilt_markers else base_word
         )
-        record_sort_field_rename(new_note, a_note, word_sort_field, prev_sort_field_value)
 
         # This is needed for an existing note that hasn't been edited yet
         # Don't add new notes (id == 0) to notes_to_update_dict
@@ -1444,11 +1337,9 @@ def create_new_note_from_matched_note(
     # If we're copying a note, we need to ensure the meaning number is at least 2
     # as the first meaning should be (m1)
     largest_meaning_index = max(largest_meaning_index, 2)
-    record_renames_seen(new_note, [note_to_copy, *matching_notes])
 
     # Either replace existing (mX) or add it while preserving any reading markers.
     prev_sort_field = new_note[word_sort_field]
-    prev_copied_sort_field = note_to_copy[word_sort_field]
     mxRec = re.compile(r"\(m(\d+)\)")
     # Additionally, check notes_to_add_dict for any notes we've added for this word
     # during this run, as we'll need to use the largest meaning index out of them
@@ -1480,14 +1371,12 @@ def create_new_note_from_matched_note(
             largest_meaning_index - 1,
             word,
         )
-        record_sort_field_rename(new_note, note_to_copy, word_sort_field, prev_copied_sort_field)
         if note_to_copy.id > 0 and note_to_copy.id not in notes_to_update_dict:
             notes_to_update_dict[note_to_copy.id] = note_to_copy
     # Note to copy was missing sort field somehow? Add it now + the meaning numbers
     else:
         new_note[word_sort_field] = upsert_meaning_marker("", largest_meaning_index, word)
         note_to_copy[word_sort_field] = upsert_meaning_marker("", largest_meaning_index - 1, word)
-        record_sort_field_rename(new_note, note_to_copy, word_sort_field, prev_copied_sort_field)
         if note_to_copy.id > 0 and note_to_copy.id not in notes_to_update_dict:
             notes_to_update_dict[note_to_copy.id] = note_to_copy
     notes_to_add_dict.setdefault(word, []).append(new_note)

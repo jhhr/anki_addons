@@ -1153,10 +1153,18 @@ class NewNoteHarness(unittest.TestCase):
         self.assertTrue(created)
         return self.to_add[self.WORD][-1]
 
-    def clean_up(self, search: FakeSearch, notes=None, cancel_during=None, failing: tuple = ()):
+    def clean_up(
+        self,
+        search: FakeSearch,
+        notes=None,
+        cancel_during=None,
+        failing: tuple = (),
+        tidy: bool = True,
+    ):
         """The cleanup from its first save on: the notes the run edited, then the adding, with
         Cancel pressed before the first note is added, or while `cancel_during` is (NO_CANCEL:
-        never). The notes in `failing` fail to add."""
+        never), then the marker tidying unless not `tidy`. The notes in `failing` fail to
+        add."""
         col = SearchableCollection(search, self.updater, failing)
         col.update_notes([note for note in self.to_update.values() if note.id])
         if notes is None:
@@ -1174,6 +1182,8 @@ class NewNoteHarness(unittest.TestCase):
                 filter_new_notes_op=mwtn.deduplicate_notes_list,
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
+        if tidy:
+            self.tidy(col)
         return col
 
     def tidy(self, col: "SearchableCollection") -> list:
@@ -1191,11 +1201,12 @@ class NewNoteHarness(unittest.TestCase):
 
 
 class SiblingMarkersTests(NewNoteHarness):
-    """The markers a new note puts on the other notes of its word, undone when it is not added.
+    """The markers a new note puts on the other notes of its word, gone when it is not added.
 
     A second meaning copied from a note renames that note (m1); a new reading of a word gives
     the word's other notes (r1), or (kun)/(on). They are saved with the run's other edits,
-    before the adding starts, so a cancel that leaves the new note out has to write them back.
+    before the adding starts, so a cancel that leaves the new note out has to write them back:
+    the cleanup's marker tidying does, as it tidies every word a saved note has markers for.
     """
 
     def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
@@ -1327,18 +1338,7 @@ class SiblingMarkersTests(NewNoteHarness):
 
         self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
 
-    def test_a_note_renamed_since_is_left_as_it_is(self):
-        search = FakeSearch(vocab_note(self.WORD, 2))
-        with search.patched():
-            self.new_meaning("words", search.get_note(2))
-        # Renamed again after the new note, by something the run does not record
-        self.to_update[2]["word_sort_field"] = f"{self.WORD} (m5)"
-
-        self.clean_up(search)
-
-        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (m5)")
-
-    def test_renames_by_two_notes_left_out_are_undone_newest_first(self):
+    def test_the_markers_of_two_notes_left_out_both_go(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():
             other_reading = self.new_reading("げんご", 2)
@@ -1350,7 +1350,7 @@ class SiblingMarkersTests(NewNoteHarness):
         self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
         self.assertEqual(other_reading.id, 0)
 
-    def test_only_the_rename_by_the_note_left_out_is_undone(self):
+    def test_only_the_marker_the_note_left_out_needed_goes(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():
             other_reading = self.new_reading("げんご", 2)
@@ -1360,7 +1360,7 @@ class SiblingMarkersTests(NewNoteHarness):
 
         self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
 
-    def test_a_new_note_renamed_by_one_left_out_is_written_back_once_added(self):
+    def test_a_new_note_marked_by_one_left_out_loses_the_marker_once_added(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():
             other_reading = self.new_reading("げんご", 2)
@@ -1650,8 +1650,8 @@ class TidyMarkersStageTests(unittest.TestCase):
 
 class TidyAfterAddingTests(NewNoteHarness):
     """What the match op's new notes leave of their word's markers, tidied by the cleanup's last
-    stage: what restore_renamed_sort_fields leaves (it takes back only what a cancel left
-    out), and what it cannot, a failed add or a meaning that could not be made."""
+    stage: a cancel's, a failed add's and a meaning's that could not be made. Each shows the
+    markers as the adding leaves them, then tidied."""
 
     def test_a_gap_a_failed_add_leaves_is_closed(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
@@ -1660,7 +1660,7 @@ class TidyAfterAddingTests(NewNoteHarness):
             second = self.new_meaning("words", first)
             third = self.new_meaning("speech", first, second)
 
-        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,))
+        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,), tidy=False)
         self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
         self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m3)")
 
@@ -1674,7 +1674,7 @@ class TidyAfterAddingTests(NewNoteHarness):
         with search.patched():
             second = self.new_meaning("words", search.get_note(2))
 
-        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,))
+        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,), tidy=False)
         self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
 
         self.assertEqual(self.tidy(col), [2])
@@ -1689,7 +1689,7 @@ class TidyAfterAddingTests(NewNoteHarness):
             second = self.new_meaning("words", first)
             third = self.new_meaning("speech", first, second)
 
-        col = self.clean_up(search, notes=[third, second], cancel_during=third)
+        col = self.clean_up(search, notes=[third, second], cancel_during=third, tidy=False)
         self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m3)")
 
         self.tidy(col)
@@ -1713,7 +1713,7 @@ class TidyAfterAddingTests(NewNoteHarness):
             self.failed_reading(ON_FURIGANA, 2)
         self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (kun)")
 
-        col = self.clean_up(search, notes=[])
+        col = self.clean_up(search, notes=[], tidy=False)
         self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (kun)")
 
         self.assertEqual(self.tidy(col), [2])
@@ -1727,28 +1727,27 @@ class TidyAfterAddingTests(NewNoteHarness):
         self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m2)")
         self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m1)")
 
-        col = self.clean_up(search, notes=[])
+        col = self.clean_up(search, notes=[], tidy=False)
 
         self.assertEqual(sorted(self.tidy(col)), [2, 3])
         self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m2)")
         self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m1)")
 
-    def test_what_a_cancel_left_consistent_is_left_as_it_is(self):
+    def test_the_markers_of_a_note_a_cancel_left_out_go(self):
+        """Two readings added, and a meaning of the second left out, which had numbered it."""
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():
             second = self.new_reading("げんご", 2)
             third = self.new_reading("ことのは", 2)
             self.new_meaning("words", second)
 
-        col = self.clean_up(search, cancel_during=third)
-        fields = {nid: dict(values) for nid, values in search.saved.items()}
+        col = self.clean_up(search, cancel_during=third, tidy=False)
+        self.assertEqual(self.sort_field(search, second), f"{self.WORD} (r2)(m1)")
 
-        self.assertEqual(self.tidy(col), [])
-        self.assertEqual(search.saved, fields)
+        self.assertEqual(self.tidy(col), [second.id])
         self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (r1)")
         self.assertEqual(self.sort_field(search, second), f"{self.WORD} (r2)")
         self.assertEqual(self.sort_field(search, third), f"{self.WORD} (r3)")
-
 
 class FakeCollectionOp:
     """aqt's CollectionOp, running the op at once on this thread and handing its result on."""
