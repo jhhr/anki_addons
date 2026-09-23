@@ -194,10 +194,11 @@ class MultiOpDialog(QDialog):
         self.selected_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         qconnect(self.selected_list.itemDoubleClicked, self._on_selected_double_clicked)
         qconnect(self.selected_list.currentRowChanged, lambda _row: self._update_buttons())
-        # A drop inside the list moves the item itself (QListWidget moves the row of its model,
-        # checked by a real drag under Qt 6.11), and rowsMoved fires once it has moved. The
-        # model is brought in line from the items there; the lists are not rebuilt then, as
-        # the drop is still being handled, only renumbered.
+        # A drop inside the list moves the item itself: QListWidget moves the row of its model,
+        # and rowsMoved fires once it has moved. Real drags under Qt 6.5 and 6.11, dropped
+        # onto, between, above and below the items, each emitted rowsMoved and never an insert
+        # and remove. The model is brought in line from the items there; the lists are not
+        # rebuilt then, as the drop is still being handled, only renumbered.
         model = self.selected_list.model()
         if model is not None:
             qconnect(model.rowsMoved, lambda *_args: self._on_rows_dropped())

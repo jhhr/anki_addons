@@ -288,8 +288,9 @@ class DialogTests(unittest.TestCase):
         self.assertEqual([s.key for s in dialog.chosen_specs()], ["a", "c", "b"])
 
     def test_a_drop_brings_the_order_in_line_and_renumbers(self):
-        # A drop moves the row of the list's own model, as moveRow does here (a real drag
-        # under Qt 6.11 was seen to emit exactly this rowsMoved and nothing else)
+        # A drop moves the row of the list's own model, as moveRow does here (real drags under
+        # Qt 6.5 and 6.11, at every drop position, were seen to emit exactly this rowsMoved and
+        # nothing else)
         dialog = self.make()
         for label in ("Op A", "Op B", "Op C"):
             self.click_option(dialog, label)
