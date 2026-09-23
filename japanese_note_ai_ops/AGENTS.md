@@ -200,8 +200,9 @@ models, and `log_to_console` is `true` in `config.json` while the code default i
 
 ## Shared code
 
-Declares `jp_text_processing`, `utils`, `word_array`. Uses `utils.vendor_path` and
-`utils.vendor_rebuild_ui`, `word_array.field_text`, and from the submodule `kana_highlight`,
+Declares `jp_text_processing`, `ui`, `utils`, `word_array`. Uses `utils.vendor_path` and
+`utils.vendor_rebuild_ui`, `word_array.field_text`, `ui.note_source_buttons` (the multi-op
+dialog), and from the submodule `kana_highlight`,
 `make_furigana_from_reading`, `check_word_reading_type`, `main_types`. It does not use the
 shared `utils/logger.py`, and its config access is inline `getConfig(__name__)`. General
 Japanese text logic belongs in the `jp_text_processing` repo, kept free of anything specific

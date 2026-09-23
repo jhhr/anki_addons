@@ -1,4 +1,5 @@
-"""The browser context menu's "AI helper" entries: the op registry plus two menu-only actions.
+"""The browser context menu's "AI helper" entries: the multi-op dialog, the op registry and two
+menu-only actions.
 
 Kept out of `__init__.py` so that the menu's labels, order and wiring can be tested: the
 add-on's test suite never imports `__init__.py`, which needs a running Anki.
@@ -17,6 +18,7 @@ from anki.notes import NoteId
 from aqt import mw
 from aqt.qt import QAction, QMenu, qconnect
 
+from .multi_op_dialog import show_multi_op_dialog
 from .op_registry import GROUP_ASYNC, GROUP_SYNC, OPS, OpSpec
 from .sync_local_ops.build_name_lexicon import build_name_lexicon_from_selected
 from .sync_local_ops.make_fine_tuning_data import make_kanjify_sentence_data
@@ -44,6 +46,9 @@ MENU_ONLY_ACTIONS: tuple[MenuOnlyAction, ...] = (
         after_key="deduplicate_existing_meaning_notes",
     ),
 )
+
+# First in the submenu, above a separator of its own: it is no op, it opens the dialog
+MULTI_OP_LABEL = "Run several ops..."
 
 # None is the separator between the async and the sync ops
 MenuEntry = Optional[Union[OpSpec, MenuOnlyAction]]
@@ -74,7 +79,11 @@ def _on_triggered(entry: Union[OpSpec, MenuOnlyAction], nids: Sequence[NoteId], 
 
 def add_ai_helper_actions(ai_menu: QMenu, nids: Sequence[NoteId], parent: Any) -> None:
     """Fill the "AI helper" submenu; every action runs over `nids`, the selection as it was
-    when the menu opened."""
+    when the menu opened. `parent` is the browser, which the dialog opens over."""
+    open_dialog = QAction(MULTI_OP_LABEL, mw)
+    qconnect(open_dialog.triggered, lambda: show_multi_op_dialog(parent))
+    ai_menu.addAction(open_dialog)
+    ai_menu.addSeparator()
     for entry in menu_entries():
         if entry is None:
             ai_menu.addSeparator()

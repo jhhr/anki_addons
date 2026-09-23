@@ -54,6 +54,7 @@ try:
     from .sync_local_ops.make_fine_tuning_data import make_all_test_data  # noqa: E402
     # The ops the browser menu runs, by way of the registry, which imports every op module
     from .ai_helper_menu import add_ai_helper_actions  # noqa: E402
+    from .multi_op_dialog import show_multi_op_dialog  # noqa: E402
 
     MISSING_PACKAGE: Optional[str] = None
 except ImportError as error:
@@ -96,6 +97,21 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         logger.error("Error: AI helper menu could not be created.")
         return
     add_ai_helper_actions(ai_menu, selected_nids, parent=browser)
+
+
+def add_browser_edit_menu_action(browser: Browser):
+    # The Edit menu rather than the context menu is the way in that avoids the lag: a right
+    # click on thousands of selected rows is slow, and the dialog needs only one selected row
+    # and the search
+    config = mw.addonManager.getConfig(__name__) or {}
+    menu = browser.form.menuEdit
+    menu.addSeparator()
+    action = QAction("Japanese AI ops...", browser)
+    shortcut = config.get("multi_op_dialog_shortcut", "")
+    if shortcut:
+        action.setShortcut(shortcut)
+    qconnect(action.triggered, lambda: show_multi_op_dialog(browser))
+    menu.addAction(action)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
@@ -202,6 +218,7 @@ if MISSING_PACKAGE is None:
 
     # Register to context menu initialization hook
     gui_hooks.browser_will_show_context_menu.append(on_browser_will_show_context_menu)
+    gui_hooks.browser_menus_did_init.append(add_browser_edit_menu_action)
 
     # Register to field unfocus hook
     gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)

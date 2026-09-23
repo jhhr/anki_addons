@@ -40,6 +40,7 @@ STARTUP_MODULES = [
     "word_matching_judge",
     "find_proper_nouns",
     "new_note_all_ops",
+    "op_chain",
 ]
 
 # The same, from sync_local_ops
@@ -55,6 +56,7 @@ STARTUP_ROOT_MODULES = [
     "generator_resources",
     "op_registry",
     "ai_helper_menu",
+    "multi_op_dialog",
 ]
 
 

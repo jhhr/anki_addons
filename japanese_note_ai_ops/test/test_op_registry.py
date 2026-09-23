@@ -49,8 +49,8 @@ OP_LABELS = [
 
 SEPARATOR = "---"
 
-# The whole "AI helper" submenu, separator included
-MENU_LABELS = OP_LABELS[:18] + [SEPARATOR] + [
+# The whole "AI helper" submenu, separators included
+MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:18] + [SEPARATOR] + [
     "Find missing matched note ids for selected notes",
     "Tag notes matched status",
     "Build name lexicon from selected notes",
@@ -401,6 +401,17 @@ class MenuTests(unittest.TestCase):
                 actions[label].triggered.slot()
                 every[name].assert_called_once_with(NIDS, parent=PARENT)
                 self.assertEqual([n for n, m in every.items() if m.called], [name])
+
+    def test_first_action_opens_the_dialog_over_the_browser(self):
+        menu = self.build_menu()
+        self.assertEqual(menu.items[0].label, ai_helper_menu.MULTI_OP_LABEL)
+        names = {name for name, _ in STARTS.values()}
+        mocks, stop = patch_entry_functions(op_registry, names)
+        self.addCleanup(stop)
+        with mock.patch.object(ai_helper_menu, "show_multi_op_dialog") as show:
+            menu.items[0].triggered.slot()
+        show.assert_called_once_with(PARENT)
+        self.assertEqual([n for n, m in mocks.items() if m.called], [])
 
     def test_menu_only_actions_are_no_ops_of_the_registry(self):
         registry_labels = {spec.label for spec in op_registry.OPS}
