@@ -95,7 +95,8 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
-  set for the rest of a cancelled run. A reset that could not happen, or lands after the op
+  set for the rest of a cancelled run. In a run not cancelled a set flag is a press made
+  during the edited notes' write and is kept (`keep_pressed`), so it stops the adding. A reset that could not happen, or lands after the op
   thread stopped waiting or closed the window (a generation under `_arm_lock`), arms nothing,
   so a stale first cancel is never taken for a second one. From then on a cancel
   (`cleanup_cancel_requested()`, never `run_cancelled()`) stops the adding, checked before the

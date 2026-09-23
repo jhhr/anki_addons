@@ -1300,7 +1300,12 @@ class AsyncTaskProgressUpdater:
         The adding's label is drawn in the same main-thread step, so the dialog stops saying
         "Cancelling operations" as Cancel comes back, and says Cancel stops the adding only if
         it does.
+
+        In a run that was not cancelled the flag is only reset if it is clear: set, it holds a
+        press made while the edited notes were written, which stops the adding.
         """
+        # Read here: the main thread takes part in no run
+        keep_pressed = not run_cancelled()
         landed = threading.Event()
         with self._arm_lock:
             self._arm_generation += 1
@@ -1310,7 +1315,7 @@ class AsyncTaskProgressUpdater:
             with self._arm_lock:
                 if self._arm_generation != generation:
                     return
-                if rearm_cleanup_cancel():
+                if rearm_cleanup_cancel(keep_pressed):
                     self._cleanup_cancel_armed.set()
                 # Under the lock, so this thread's give-up below sees the check-and-reset
                 # either done or not begun

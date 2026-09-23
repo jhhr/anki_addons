@@ -120,7 +120,8 @@ unanswered stay to be matched by the next run.
 Adding the new notes can itself take a while, since every added note runs the note-adding hooks
 (copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel (or
 Escape) stops the adding; a note already being added is finished first. Cancel is only live
-while notes are being added. The notes not added are dropped, the words that were linked to them
+while notes are being added, but Escape pressed while a run that was not cancelled saves its
+edits just before stops the adding too. The notes not added are dropped, the words that were linked to them
 are left to be matched again by the next run, and a numbering such as "(m1)" or "(r1)" they put
 on the word's other notes is taken back. A note that failed to add keeps its placeholder id in
 the word lists, which may help debugging, but only until the next match run over those sentences
