@@ -1498,28 +1498,25 @@ class AsyncTaskProgressUpdater:
         self._push(label, notes_added, total_notes)
 
     def _note_adding_label(self, notes_added: int, total_notes: int, failed: int) -> str:
-        elapsed_s = time.time() - self.start_time
-        elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
-        time_msg = f"<br><code>Time: {elapsed_time}</code>"
-        # A failed add took its time too, so the rate is over every note tried. The API
-        # phase's notes_done, which this used to subtract, has nothing to do with adding.
-        notes_tried = notes_added + failed
-        if notes_tried > 0:
-            avg_per_note_s = elapsed_s / notes_tried
-            eta_s = (total_notes - notes_tried) * avg_per_note_s
-            eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-            time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
-                <br><code>ETA: {eta_time}</code>"""
-        task_progress_msg = f"""<strong>Adding notes:</strong>
-                <br><strong><code>{notes_added}/{total_notes}</code></strong> notes"""
+        failed_msg = ""
         if failed > 0:
-            task_progress_msg += f""" | <strong style="color: red;">{failed} failed</strong>"""
+            failed_msg = f""" | <strong style="color: red;">{failed} failed</strong>"""
+        hint = ""
         if self._cleanup_cancel_armed.is_set():
-            time_msg += (
+            hint = (
                 '<br><small style="opacity: 0.85">Cancel stops the adding; the words of'
                 " notes not added are left to match again.</small>"
             )
-        return f"{task_progress_msg}{time_msg}"
+        # A failed add took its time too, so the rate is over every note tried. The API
+        # phase's notes_done, which this used to subtract, has nothing to do with adding.
+        return self._note_stage_label(
+            "Adding notes",
+            notes_added,
+            total_notes,
+            notes_timed=notes_added + failed,
+            after_count=failed_msg,
+            after_time=hint,
+        )
 
     def update_new_note_processing_progress(
         self,
@@ -1539,18 +1536,37 @@ class AsyncTaskProgressUpdater:
         self._push_note_stage("Unlinking notes not added", notes_cleared, total_notes)
 
     def _push_note_stage(self, label: str, notes_done: int, total_notes: int) -> None:
+        self._push(self._note_stage_label(label, notes_done, total_notes), notes_done, total_notes)
+
+    def _note_stage_label(
+        self,
+        stage: str,
+        notes_done: int,
+        total_notes: int,
+        *,
+        notes_timed: Optional[int] = None,
+        after_count: str = "",
+        after_time: str = "",
+    ) -> str:
+        """The label of one of the cleanup's note stages: its count, time, average and ETA.
+
+        `notes_timed` is how many notes the stage's time went on, when that is more than
+        `notes_done` counts (the adding's failed notes); the average and the ETA are over it.
+        `after_count` and `after_time` are HTML put after the count and after the timing.
+        """
+        timed = notes_done if notes_timed is None else notes_timed
         elapsed_s = time.time() - self.start_time
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         time_msg = f"<br><code>Time: {elapsed_time}</code>"
-        if notes_done > 0:
-            eta_s = (total_notes - notes_done) * (elapsed_s / notes_done)
+        if timed > 0:
+            avg_per_note_s = elapsed_s / timed
+            eta_s = (total_notes - timed) * avg_per_note_s
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-            avg_per_note_s = elapsed_s / notes_done
             time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
             <br><code>ETA: {eta_time}</code>"""
-        task_progress_msg = f"""<strong>{label}:</strong>
+        count_msg = f"""<strong>{stage}:</strong>
             <br><strong><code>{notes_done}/{total_notes}</code></strong> notes"""
-        self._push(f"{task_progress_msg}{time_msg}", notes_done, total_notes)
+        return f"{count_msg}{after_count}{time_msg}{after_time}"
 
 
 def make_inner_bulk_op(

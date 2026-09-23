@@ -359,6 +359,53 @@ class CleanupStageClockTests(DialogTestCase):
         self.assertEqual(updater.paused_seconds, 0.0)
         self.assertEqual(updater.start_time, self.clock.now)
 
+    def test_the_note_stages_draw_their_labels_as_they_did_before_sharing_a_formatter(self):
+        """Whole labels, whitespace collapsed as the dialog's HTML collapses it. The adding's
+        rate is over every note tried, failed ones too; the other stages' over notes done."""
+        updater = self.after_an_hour_of_api_work()
+        updater.begin_cleanup_stage()
+
+        def drawn(update, **counts) -> str:
+            updater._last_update_at = 0.0
+            update(**counts)
+            return " ".join(self.labels[-1].split())
+
+        adding = updater.update_note_adding_progress
+        self.assertEqual(
+            drawn(adding, notes_added=0, total_notes=10),
+            "<strong>Adding notes:</strong> <br><strong><code>0/10</code></strong> notes"
+            "<br><code>Time: 00:00:00</code>",
+        )
+        self.clock.advance(6)
+        updater._cleanup_cancel_armed.set()
+        self.assertEqual(
+            drawn(adding, notes_added=2, total_notes=10, failed=1),
+            "<strong>Adding notes:</strong> <br><strong><code>2/10</code></strong> notes"
+            ' | <strong style="color: red;">1 failed</strong><br><code>Time: 00:00:06</code>'
+            " | <small> Avg time per note: 2.00s</small> <br><code>ETA: 00:00:14</code>"
+            '<br><small style="opacity: 0.85">Cancel stops the adding; the words of notes not'
+            " added are left to match again.</small>",
+        )
+        self.assertEqual(self.drawn[-1]["value"], 2)
+        processing = updater.update_new_note_processing_progress
+        self.assertEqual(
+            drawn(processing, new_notes_processed=0, total_notes=4),
+            "<strong>Processing new notes:</strong> <br><strong><code>0/4</code></strong>"
+            " notes<br><code>Time: 00:00:06</code>",
+        )
+        self.assertEqual(
+            drawn(processing, new_notes_processed=3, total_notes=4),
+            "<strong>Processing new notes:</strong> <br><strong><code>3/4</code></strong>"
+            " notes<br><code>Time: 00:00:06</code> | <small> Avg time per note: 2.00s</small>"
+            " <br><code>ETA: 00:00:02</code>",
+        )
+        self.assertEqual(
+            drawn(updater.update_unadded_note_clearing_progress, notes_cleared=2, total_notes=5),
+            "<strong>Unlinking notes not added:</strong> <br><strong><code>2/5</code></strong>"
+            " notes<br><code>Time: 00:00:06</code> | <small> Avg time per note: 3.00s</small>"
+            " <br><code>ETA: 00:00:09</code>",
+        )
+
 
 class FakeButton:
     def __init__(self, text: str):
