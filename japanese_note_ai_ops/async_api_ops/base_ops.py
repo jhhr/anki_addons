@@ -1260,6 +1260,21 @@ class AsyncTaskProgressUpdater:
             self._suppressed = False
         mw.taskman.run_on_main(disable_run_controls)
 
+    def begin_cleanup_stage(self) -> None:
+        """Restart the clock for one stage of the cleanup (deduping, adding, resolving ids).
+
+        The cleanup's labels measure their time and ETA from `start_time`, which until this
+        was last set when the API phase began: after an hour of requests, adding ten notes
+        showed an hour gone and an average of minutes per note. Called by the cleanup before
+        each stage, not by the stage's own progress calls, which repeat.
+
+        The API phase's task and note counters stay as they are: no cleanup label reads them.
+        The paused time is only reset, not tracked: the cleanup cannot be paused.
+        """
+        with self._counts_lock:
+            self.start_time = time.time()
+            self.paused_seconds = 0.0
+
     def show_paused(self, detail: str = "") -> None:
         """Draw the pause into the dialog now, for a wait that nothing else redraws.
 
@@ -1382,10 +1397,13 @@ class AsyncTaskProgressUpdater:
             elapsed_s = time.time() - self.start_time
             elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
             time_msg = f"<br><code>Time: {elapsed_time}</code>"
-            if notes_added > 0:
-                eta_s = (notes_added - self.notes_done) * (elapsed_s / notes_added)
+            # A failed add took its time too, so the rate is over every note tried. The API
+            # phase's notes_done, which this used to subtract, has nothing to do with adding.
+            notes_tried = notes_added + failed
+            if notes_tried > 0:
+                avg_per_note_s = elapsed_s / notes_tried
+                eta_s = (total_notes - notes_tried) * avg_per_note_s
                 eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-                avg_per_note_s = elapsed_s / notes_added
                 time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
                 <br><code>ETA: {eta_time}</code>"""
             task_progress_msg = f"""<strong>Adding notes:</strong>
@@ -2300,6 +2318,7 @@ def add_new_notes(
     op_changes: Optional[OpChanges] = None
     updated_nids: list[NoteId] = []
     started = time.monotonic()
+    progress_updater.begin_cleanup_stage()
     # The adding phase is a phase, not `total_notes` independent events, so it gets
     # one log file for the whole of itself. `note_will_be_added` fires inside this
     # block once per note, and the hook behind it used to open a file and close the
@@ -2347,6 +2366,7 @@ def add_new_notes(
     started = log_phase("cleanup: add_note loop", started, added=added_cnt, failed=failed_cnt)
     if not new_notes_op:
         return NewNotesAdded(added_cnt, op_changes, updated_nids)
+    progress_updater.begin_cleanup_stage()
     # col.add_note mutates the note given, adding the id to it
     additional_updates_notes_dict = new_notes_op(list(notes_to_add), config, progress_updater)
     log_phase("cleanup: new_notes_op", started)
@@ -2552,6 +2572,7 @@ def selected_notes_op(
             )
 
             if notes_to_add and filter_new_notes_op:
+                progress_updater.begin_cleanup_stage()
                 notes_to_add, filtered_notes_to_update_dict = filter_new_notes_op(
                     notes_to_add,
                     config,

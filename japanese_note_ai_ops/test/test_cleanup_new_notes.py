@@ -11,7 +11,7 @@ import json
 import unittest
 from unittest import mock
 
-from addon_modules import load_ops_module, mw
+from addon_modules import FakeClock, load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 mwtn = load_ops_module("match_words_to_notes")
@@ -69,6 +69,9 @@ class FakeCollection:
 class FakeUpdater:
     def __init__(self):
         self.adding: list = []
+
+    def begin_cleanup_stage(self):
+        pass
 
     def update_note_adding_progress(self, notes_added=0, total_notes=0, failed=0):
         self.adding.append((notes_added, total_notes, failed))
@@ -163,6 +166,64 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
 
         self.assertEqual((result.added, result.updated_nids), (1, []))
         self.assertEqual(col.updated, [])
+
+
+class SlowCollection(FakeCollection):
+    def __init__(self, clock: FakeClock):
+        super().__init__()
+        self.clock = clock
+
+    def add_note(self, note, deck_id):
+        # copy_anywhere's on-add definitions run in here, which is what makes adding slow
+        self.clock.advance(2)
+        super().add_note(note, deck_id)
+
+
+class CleanupStageClockTests(unittest.TestCase):
+    """The adding and the new-note processing each time themselves, not the run before them.
+
+    With the real progress updater under a fake clock, and an hour of API work behind it.
+    """
+
+    def setUp(self):
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.drawn: list = []
+        saved_update = mw.progress.update
+        mw.progress.update = lambda **kwargs: self.drawn.append(kwargs["label"])
+        self.addCleanup(setattr, mw.progress, "update", saved_update)
+        self.clock = FakeClock()
+        saved_time = base_ops.time
+        base_ops.time = self.clock
+        self.addCleanup(setattr, base_ops, "time", saved_time)
+        self.updater = base_ops.AsyncTaskProgressUpdater(total_tasks=200, title="Matching")
+        self.updater.increment_counts(tasks_done=200, notes_done=40)
+        self.clock.advance(3600)
+        self.updater.begin_cleanup()
+
+    def test_each_stage_starts_its_own_clock_and_its_progress_calls_do_not_restart_it(self):
+        col = SlowCollection(self.clock)
+        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+
+        def new_notes_op(new_notes, config, progress_updater):
+            for processed in (1, 2):
+                self.clock.advance(5)
+                progress_updater.update_new_note_processing_progress(
+                    new_notes_processed=processed, total_notes=3
+                )
+            return {}
+
+        base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater, new_notes_op)
+
+        adding = [label for label in self.drawn if "Adding notes" in label]
+        self.assertIn("3/3", adding[-1])
+        self.assertIn("Time: 00:00:06", adding[-1])
+        self.assertIn("Avg time per note: 2.00s", adding[-1])
+        processing = [label for label in self.drawn if "Processing new notes" in label]
+        self.assertIn("2/3", processing[-1])
+        self.assertIn("Time: 00:00:10", processing[-1])
+        self.assertIn("ETA: 00:00:05", processing[-1])
 
 
 class FinalMessageTests(unittest.TestCase):

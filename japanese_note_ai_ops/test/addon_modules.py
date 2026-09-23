@@ -19,6 +19,7 @@ sys.path here instead. anki_shared has no __init__.py and resolves as a namespac
 
 import importlib.util
 import sys
+import time as real_time
 from pathlib import Path
 from types import ModuleType
 from typing import Callable
@@ -122,6 +123,14 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+    # Formatting is not time passing, so the real functions do it; with these the clock can
+    # stand in for base_ops' `time`, whose progress labels format their durations
+    def gmtime(self, seconds: float) -> real_time.struct_time:
+        return real_time.gmtime(seconds)
+
+    def strftime(self, fmt: str, moment: real_time.struct_time) -> str:
+        return real_time.strftime(fmt, moment)
 
     @property
     def total_slept(self) -> float:

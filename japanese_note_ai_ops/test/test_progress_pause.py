@@ -13,7 +13,7 @@ buttons' behaviour, which is plain Python over the run's pause.
 import time
 import unittest
 
-from addon_modules import load_ops_module, mw
+from addon_modules import FakeClock, load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 # The same module objects base_ops imported, so pausing here pauses base_ops' run
@@ -262,6 +262,78 @@ class CleanupDrawTests(DialogTestCase):
         self.draw_adding(updater, 1)
 
         self.assertIn("Adding notes", self.labels[-1])
+
+
+class CleanupStageClockTests(DialogTestCase):
+    """A cleanup stage's time, average and ETA are its own, not the API phase's before it."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = FakeClock()
+        self.replace("time", self.clock)
+
+    def after_an_hour_of_api_work(self):
+        updater = self.make_updater(total_tasks=200)
+        updater.set_total_notes(40)
+        updater.increment_counts(tasks_done=200, notes_done=40, cumulative_task_time=3000.0)
+        updater.paused_seconds = 600.0
+        self.clock.advance(3600)
+        updater.begin_cleanup()
+        return updater
+
+    def draw_adding(self, updater, notes_added: int, failed: int = 0) -> str:
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(
+            notes_added=notes_added, total_notes=10, failed=failed
+        )
+        return self.labels[-1]
+
+    def test_the_adding_is_timed_from_the_start_of_its_stage(self):
+        updater = self.after_an_hour_of_api_work()
+
+        updater.begin_cleanup_stage()
+        self.clock.advance(4)
+        label = self.draw_adding(updater, 2)
+
+        self.assertIn("Time: 00:00:04", label)
+        self.assertIn("Avg time per note: 2.00s", label)
+        # Eight notes left at two seconds each
+        self.assertIn("ETA: 00:00:16", label)
+
+    def test_a_failed_add_is_a_note_tried(self):
+        updater = self.after_an_hour_of_api_work()
+
+        updater.begin_cleanup_stage()
+        self.clock.advance(6)
+        label = self.draw_adding(updater, 2, failed=1)
+
+        self.assertIn("Avg time per note: 2.00s", label)
+        self.assertIn("ETA: 00:00:14", label)
+
+    def test_the_new_note_processing_is_timed_from_the_start_of_its_stage(self):
+        updater = self.after_an_hour_of_api_work()
+
+        updater.begin_cleanup_stage()
+        self.clock.advance(3)
+        updater._last_update_at = 0.0
+        updater.update_new_note_processing_progress(new_notes_processed=1, total_notes=4)
+
+        self.assertIn("Time: 00:00:03", self.labels[-1])
+        self.assertIn("ETA: 00:00:09", self.labels[-1])
+
+    def test_a_stage_leaves_the_api_phase_counters_alone(self):
+        """No cleanup label reads them; the paused time goes, as the stage cannot pause."""
+        updater = self.after_an_hour_of_api_work()
+
+        updater.begin_cleanup_stage()
+
+        self.assertEqual(
+            (updater.total_tasks, updater.tasks_done, updater.notes_done),
+            (200, 200, 40),
+        )
+        self.assertEqual(updater.cumulative_task_time, 3000.0)
+        self.assertEqual(updater.paused_seconds, 0.0)
+        self.assertEqual(updater.start_time, self.clock.now)
 
 
 class FakeButton:
