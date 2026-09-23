@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, Union
 
 from anki.notes import NoteId
-from aqt import mw
 from aqt.qt import QAction, QMenu, qconnect
 
 from .multi_op_dialog import show_multi_op_dialog
@@ -79,8 +78,14 @@ def _on_triggered(entry: Union[OpSpec, MenuOnlyAction], nids: Sequence[NoteId], 
 
 def add_ai_helper_actions(ai_menu: QMenu, nids: Sequence[NoteId], parent: Any) -> None:
     """Fill the "AI helper" submenu; every action runs over `nids`, the selection as it was
-    when the menu opened. `parent` is the browser, which the dialog opens over."""
-    open_dialog = QAction(MULTI_OP_LABEL, mw)
+    when the menu opened. `parent` is the browser, which the dialog opens over.
+
+    The actions belong to `ai_menu`, so they go when the browser drops its context menu. Owned
+    by `mw`, as they once were, every right-click left another set behind, each holding the
+    selection it was opened on, for as long as Anki ran. A triggered action's slot has
+    returned before the menu goes: the menu's `exec` returns only after it.
+    """
+    open_dialog = QAction(MULTI_OP_LABEL, ai_menu)
     # The selection the menu read, not read again: with thousands selected that is slow
     qconnect(open_dialog.triggered, lambda: show_multi_op_dialog(parent, nids))
     ai_menu.addAction(open_dialog)
@@ -89,6 +94,6 @@ def add_ai_helper_actions(ai_menu: QMenu, nids: Sequence[NoteId], parent: Any) -
         if entry is None:
             ai_menu.addSeparator()
             continue
-        action = QAction(entry.label, mw)
+        action = QAction(entry.label, ai_menu)
         qconnect(action.triggered, _on_triggered(entry, nids, parent))
         ai_menu.addAction(action)

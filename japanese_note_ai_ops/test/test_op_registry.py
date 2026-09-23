@@ -398,10 +398,12 @@ class MenuTests(unittest.TestCase):
         labels = [item if item == SEPARATOR else item.label for item in menu.items]
         self.assertEqual(labels, MENU_LABELS)
 
-    def test_actions_are_parented_to_the_main_window(self):
-        for item in self.build_menu().items:
+    def test_actions_are_parented_to_the_submenu_so_they_go_with_it(self):
+        # Parented to mw, every right-click kept its actions and their selection for good
+        menu = self.build_menu()
+        for item in menu.items:
             if item != SEPARATOR:
-                self.assertIs(item.parent, ai_helper_menu.mw)
+                self.assertIs(item.parent, menu)
 
     def test_each_action_runs_its_own_op_on_the_captured_selection(self):
         menu = self.build_menu()
