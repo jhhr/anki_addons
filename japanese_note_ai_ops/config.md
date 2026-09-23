@@ -222,8 +222,8 @@ You need to define
   7. `english_meaning_field`
   8. `part_of_speech_field`
   9. `new_note_id_field`
-  10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
-      file will simply not specify the deck
+  10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
+      into the "Default" deck
 
 ## test data exports
 

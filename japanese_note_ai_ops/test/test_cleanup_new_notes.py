@@ -51,7 +51,7 @@ class FakeNote:
 
 class FakeDecks:
     def id_for_name(self, name: str):
-        return 7 if name == "Vocab" else None
+        return {"Vocab": 7, "Default": 1}.get(name)
 
 
 class FakeCollection:
@@ -726,6 +726,17 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 1, 0))
         self.assertEqual(self.updater.adding[-1], (0, 1, 1))
         self.assertEqual(unlinking.handed, [])
+
+    def test_a_note_type_with_no_insert_deck_adds_to_the_default_deck(self):
+        """The key is optional, as config.md says; left out, it stopped every add."""
+        note = new_note("-1111111")
+        config = {"Word": {k: v for k, v in CONFIG["Word"].items() if k != "insert_deck"}}
+        col = FakeCollection()
+
+        result = base_ops.add_new_notes(col, [note], config, POS, self.updater)
+
+        self.assertEqual(col.added, [(note, col.decks.id_for_name("Default"))])
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 0))
 
     def test_a_cancel_during_the_dedupe_unlinks_every_note_as_prepared(self):
         """The duplicate the dedupe dropped included: an interrupted dedupe leaves some of

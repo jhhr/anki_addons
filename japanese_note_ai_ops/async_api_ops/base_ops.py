@@ -2631,7 +2631,14 @@ def _insert_deck_id(col: Collection, config: dict, note: Note) -> Optional[DeckI
     if note_type is None:
         logger.debug(f"Error: Note type for note {note.id} is None, skipping note adding")
         return None
-    insert_deck = get_field_config(config, "insert_deck", note_type)
+    model_config = config.get(note_type["name"])
+    # Optional, unlike the fields: get_field_config raises for a key left out, which stopped
+    # the adding of every note in the run. A note type not configured at all still raises.
+    insert_deck = (
+        model_config.get("insert_deck")
+        if isinstance(model_config, dict)
+        else get_field_config(config, "insert_deck", note_type)
+    )
     if insert_deck:
         insert_deck_id = col.decks.id_for_name(insert_deck)
     else:
