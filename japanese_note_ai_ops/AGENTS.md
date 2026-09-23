@@ -92,6 +92,9 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   started note after the driver returns (`flush_started_plans`): a note's own save waits for
   all its tasks, and a cancel cancels it with them, which lost the finished ones. Each op's
   flush and own save run once only, whichever comes first (the match op and the judge).
+  The notes to add are those registered before the flush, which it answers with, and the
+  cleanup adds that answer only, never the shared `notes_to_add_dict`: threads a cancel
+  abandoned go on registering notes there that no saved result links to.
   Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays

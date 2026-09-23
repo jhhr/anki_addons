@@ -2081,12 +2081,18 @@ async def bulk_nested_notes_op(
         marker = log_phase("nested op: gate.finish", marker)
         progress_updater.gate = None
 
+    # The notes to add are the ones registered by now, taken before the flush: a thread a
+    # cancel abandoned goes on registering new notes, and one registered after the flush has
+    # its placeholder in no result saved, so added it would be a note no sentence links to,
+    # and its word matched again for a duplicate. A note is registered before its placeholder
+    # goes into its result, so every one taken here is linked once flushed; one registered
+    # during the flush can leave a placeholder of a note never added, which the next match
+    # run resets. Deep: the thread appends to the word's list, not just the dict.
+    registered = {word: list(word_notes) for word, word_notes in list(notes_to_add_dict.items())}
     # Only once the driver has returned: until then a note's own save may still come. Outside
     # the finally, as a run the driver raised out of fails before cleanup and keeps nothing
     # anyway. Before on_end, which is for side effects that edit no notes and so may expect
-    # the op's results to be complete; and in any case before this returns, since cleanup takes
-    # its copy of notes_to_add_dict after that, and a new note is registered there before its
-    # placeholder is put into any result a flush saves.
+    # the op's results to be complete.
     flush_started_plans(started_plans, cancelled)
     marker = log_phase("nested op: flush", marker)
 
@@ -2095,7 +2101,7 @@ async def bulk_nested_notes_op(
         marker = log_phase("nested op: on_end", marker)
     progress_updater.stop_autoupdate()
     log_phase("nested op: stop_autoupdate", marker, threads=threading.active_count())
-    return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
+    return pos, registered, notes_to_update_dict, notes_to_remove
 
 
 def sync_bulk_notes_op(
@@ -2406,6 +2412,22 @@ async def run_op_phases(
     """
     pos: Optional[int] = None
     notes_to_remove: list[NoteId] = []
+    # The phases' answers, not the shared dict: a phase answers with the notes it wants added,
+    # which for bulk_nested_notes_op are those registered before its flush, while threads a
+    # cancel abandoned may still be registering more in the shared dict. Starting from what it
+    # was handed, and by identity under each key, as a phase answering with the shared dict
+    # repeats the earlier phases' notes.
+    to_add: dict[str, list[Note]] = {}
+    to_add_ids: set[tuple[str, int]] = set()
+
+    def fold_in(add_dict: dict[str, list[Note]]) -> None:
+        for key, added in list(add_dict.items()):
+            for note in list(added):
+                if (key, id(note)) not in to_add_ids:
+                    to_add_ids.add((key, id(note)))
+                    to_add.setdefault(key, []).append(note)
+
+    fold_in(notes_to_add_dict)
     total = len(phases)
     for index, phase in enumerate(phases):
         if index > 0 and (mw.progress.want_cancel() or run_cancelled()):
@@ -2443,11 +2465,9 @@ async def run_op_phases(
         phase_pos, phase_add_dict, phase_update_dict, phase_notes_to_remove = result
         if pos is None:
             pos = phase_pos
+        fold_in(phase_add_dict)
         # A phase is handed the shared dicts and normally returns those same objects, but it
         # is free to build its own, so fold anything new in rather than assuming identity.
-        if phase_add_dict is not notes_to_add_dict:
-            for note_type_name, added in phase_add_dict.items():
-                notes_to_add_dict.setdefault(note_type_name, []).extend(added)
         if phase_update_dict is not notes_to_update_dict:
             notes_to_update_dict.update(phase_update_dict)
         if phase_notes_to_remove:
@@ -2456,7 +2476,7 @@ async def run_op_phases(
         # Every phase bailed out. There is nothing to merge, but the cleanup still needs an
         # undo entry to merge its own writes into.
         pos = col.add_custom_undo_entry(label or "Multi-phase op")
-    return pos, notes_to_add_dict, notes_to_update_dict, notes_to_remove
+    return pos, to_add, notes_to_update_dict, notes_to_remove
 
 
 class NewNotesCounts(NamedTuple):
@@ -2973,12 +2993,16 @@ def selected_notes_op(
             # A cancelled run leaves its requests running in worker threads, and one of them
             # can still be writing into these dicts while we work through them here. Take a
             # snapshot so the cleanup sees a consistent set and can't trip over a dict that
-            # changed size mid-iteration.
-            res_notes_to_add_dict = dict(res_notes_to_add_dict)
+            # changed size mid-iteration. The notes to add are the op's answer alone, never
+            # the shared dict: bulk_nested_notes_op answers with the notes registered before
+            # its flush, and one a thread registers after it, during the edited notes' write
+            # below as likely as not, would be added with nothing linking to it.
+            res_notes_to_add_dict = {
+                word: list(word_notes) for word, word_notes in list(res_notes_to_add_dict.items())
+            }
             res_notes_to_update_dict = dict(res_notes_to_update_dict)
 
             logger.debug(f"res_notes_to_update_dict keys: {res_notes_to_update_dict.keys()}")
-            notes_to_add_dict.update(res_notes_to_add_dict)
             notes_to_update_dict.update(res_notes_to_update_dict)
             notes_to_remove.update(sanitized_notes_to_remove)
             logger.debug(f"notes_to_update_dict keys: {notes_to_update_dict.keys()}")
@@ -3045,10 +3069,9 @@ def selected_notes_op(
             # Every note saved from here on, for the marker tidying
             saved_notes: list[Note] = list(all_updated_notes)
             added_nids: set[NoteId] = set()
-            notes_to_add = []
-            if notes_to_add_dict:
-                for note_list in list(notes_to_add_dict.values()):
-                    notes_to_add.extend(list(note_list))
+            notes_to_add = [
+                note for word_notes in res_notes_to_add_dict.values() for note in word_notes
+            ]
             cleanup_started = log_phase(
                 "cleanup: merge_undo_entries", cleanup_started, to_add=len(notes_to_add)
             )

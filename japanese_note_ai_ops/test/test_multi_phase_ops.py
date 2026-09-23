@@ -295,6 +295,37 @@ class RunOpPhasesTest(unittest.TestCase):
         self.assertEqual(list(update_dict), [7])
         self.assertEqual(to_remove, [9])
 
+    def test_the_notes_to_add_are_the_phases_answers_not_the_shared_dict(self):
+        """bulk_nested_notes_op answers with the notes registered before its flush: one a
+        thread registers after that is in the shared dict only, and is not added."""
+        answered, late = FakeNote(0), FakeNote(0)
+
+        async def op(col, notes, edited_nids, progress_updater, notes_to_add_dict, **_):
+            notes_to_add_dict["Word"] = [answered]
+            answer = {"Word": [answered]}
+            notes_to_add_dict["Word"].append(late)
+            return col.add_custom_undo_entry("op"), answer, {}, []
+
+        _, add_dict, _, _ = self.run_phases([OpPhase("one", op)])
+
+        self.assertEqual(add_dict, {"Word": [answered]})
+
+    def test_phases_answering_with_the_shared_dict_add_each_note_once(self):
+        first, second = FakeNote(0), FakeNote(0)
+
+        def registering(note):
+            async def op(col, notes, edited_nids, progress_updater, notes_to_add_dict, **dicts):
+                notes_to_add_dict.setdefault("Word", []).append(note)
+                return col.add_custom_undo_entry("op"), notes_to_add_dict, {}, []
+
+            return op
+
+        _, add_dict, _, _ = self.run_phases(
+            [OpPhase("one", registering(first)), OpPhase("two", registering(second))]
+        )
+
+        self.assertEqual(add_dict, {"Word": [first, second]})
+
 
 class PhaseProgressTest(unittest.TestCase):
     """The estimate has to start over at each phase or it carries the earlier one's times."""

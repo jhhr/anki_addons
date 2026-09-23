@@ -1837,6 +1837,35 @@ class SelectedNotesOpTidyTests(unittest.TestCase):
         # The added note renamed is counted as added, not as an edited note
         self.assertEqual(self.finished, [([2], [], base_ops.NewNotesCounts(added=1))])
 
+    def test_a_note_registered_after_the_op_answered_is_not_added(self):
+        """By a thread a cancel abandoned, during the edited notes' write: its placeholder is
+        in no result saved, so added it would be a note no sentence links to."""
+        search = FakeSearch(vocab_note("言葉", 2))
+        answered, late = vocab_note("言葉 (m2)"), vocab_note("言葉 (m3)")
+        col = RunCollection(search, self.updater)
+        shared: list = []
+        write = col.update_notes
+
+        def update_notes(notes):
+            write(notes)
+            shared[0].setdefault("言葉", []).append(late)
+
+        col.update_notes = update_notes  # type: ignore[method-assign]
+
+        async def bulk_op(col, notes, notes_to_add_dict, notes_to_update_dict, **_):
+            shared.append(notes_to_add_dict)
+            notes_to_add_dict["言葉"] = [answered]
+            notes_to_update_dict[2] = vocab_note("言葉 (m1)", 2)
+            return POS, {"言葉": [answered]}, notes_to_update_dict, []
+
+        with mock.patch.object(mw, "col", col, create=True):
+            base_ops.selected_notes_op(
+                "Done", bulk_op, [2], None, self.updater, new_notes_op=Recorder()
+            )
+
+        self.assertEqual([note for note, _ in col.added], [answered])
+        self.assertIn(late, shared[0]["言葉"])
+
     def test_without_a_tidying_op_nothing_is_tidied(self):
         search = FakeSearch(vocab_note("言葉 (kun)", 2))
         edited = {2: vocab_note("言葉 (kun)", 2)}
