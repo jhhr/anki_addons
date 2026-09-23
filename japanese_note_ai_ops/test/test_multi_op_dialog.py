@@ -365,6 +365,22 @@ class DialogTests(unittest.TestCase):
         self.find_notes.assert_called_once_with("deck:x")
         self.assertEqual(dialog.note_ids, [7, 8])
 
+    def test_run_stays_open_when_the_search_fails_or_empties_by_then(self):
+        dialog = self.make(selected=(3,), found=(7, 8), use_selection=False)
+        self.click_option(dialog, "Op B")
+        self.find_notes.side_effect = RuntimeError("bad search")
+        dialog.run_button.click()
+        self.assertNotEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
+        self.assertIn("bad search", dialog.count_label.text())
+        self.assertFalse(dialog.run_button.isEnabled())
+        self.find_notes.side_effect = None
+        self.find_notes.return_value = []
+        dialog.note_source_buttons.selection_button.click()
+        dialog.note_source_buttons.search_button.click()
+        dialog.run_button.click()
+        self.assertNotEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
+        self.assertIn("0 notes", dialog.count_label.text())
+
     def test_close_rejects(self):
         dialog = self.make()
         self.click_option(dialog, "Op B")

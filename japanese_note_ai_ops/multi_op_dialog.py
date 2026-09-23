@@ -350,7 +350,16 @@ class MultiOpDialog(QDialog):
         if not self.selection.selected() or self.note_count <= 0:
             return
         # Resolved again rather than reusing the count's: the ids are fixed now, at Run
-        self.note_ids = self.note_source.note_ids(self.find_notes)
+        try:
+            note_ids = self.note_source.note_ids(self.find_notes)
+        except Exception:
+            note_ids = []
+        if not note_ids:
+            # The collection changed since the count, or the search now fails. Closing would
+            # start nothing and say nothing; staying open shows why through the count label.
+            self._update_count()
+            return
+        self.note_ids = note_ids
         self.accept()
 
 
