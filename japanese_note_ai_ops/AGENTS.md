@@ -84,7 +84,7 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
 - **A run never writes to the collection before cleanup.** `word_index`, `note_cache`,
   `sentence_cache` and `mdx_memo` all assume it.
 - On worker threads, collection reads go through `collection_access` (`find_notes`,
-  `get_note`, `get_notes`, `run_on_collection_async`); never `mw.col`. Sync ops run
+  `get_note`, `get_notes`, `run_on_collection[_async]`); never `mw.col`. Sync ops run
   sequentially on the op thread and do use `mw.col`. `collection_access` raises
   `RunCancelled` on a cancelled run, except inside `begin_cleanup_phase()`.
 - **A cancelled run still saves everything it prepared, new notes included, and its note
@@ -107,6 +107,14 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   takes back the `(mN)`/`(rN)`/`(on)`/`(kun)` markers preparing them put on other notes,
   unless an added note was made seeing them). Resolving and unlinking always run to the end;
   a resolving that raises fails the op after the unlinking.
+- **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
+  op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
+  without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
+  for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
+  without gaps, meanings then readings, dropping a marker that tells nothing apart; the rules
+  are the pure `sort_field_markers.tidy_word_markers`. A failed add, a dedupe's dropped
+  duplicate and a new reading whose meaning failed leave such markers, which the restore of
+  the unadded notes does not reach. It cannot be cancelled, and a raise only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight

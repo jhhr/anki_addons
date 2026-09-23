@@ -16,7 +16,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
-from collections.abc import Container, Sequence
+from collections.abc import Container, Iterable, Sequence
 
 from .api_client import (
     ANTHROPIC,
@@ -1535,8 +1535,18 @@ class AsyncTaskProgressUpdater:
         the new-note processing."""
         self._push_note_stage("Unlinking notes not added", notes_cleared, total_notes)
 
-    def _push_note_stage(self, label: str, notes_done: int, total_notes: int) -> None:
-        self._push(self._note_stage_label(label, notes_done, total_notes), notes_done, total_notes)
+    def update_marker_tidying_progress(self, words_done: int = 0, total_words: int = 0):
+        """Progress of tidying the sort field markers, the cleanup's last stage."""
+        self._push_note_stage("Tidying sort field markers", words_done, total_words, "word")
+
+    def _push_note_stage(
+        self, label: str, notes_done: int, total_notes: int, unit: str = "note"
+    ) -> None:
+        self._push(
+            self._note_stage_label(label, notes_done, total_notes, unit=unit),
+            notes_done,
+            total_notes,
+        )
 
     def _note_stage_label(
         self,
@@ -1547,12 +1557,14 @@ class AsyncTaskProgressUpdater:
         notes_timed: Optional[int] = None,
         after_count: str = "",
         after_time: str = "",
+        unit: str = "note",
     ) -> str:
         """The label of one of the cleanup's note stages: its count, time, average and ETA.
 
         `notes_timed` is how many notes the stage's time went on, when that is more than
         `notes_done` counts (the adding's failed notes); the average and the ETA are over it.
         `after_count` and `after_time` are HTML put after the count and after the timing.
+        `unit` is what is counted, in the singular: the marker tidying counts words.
         """
         timed = notes_done if notes_timed is None else notes_timed
         elapsed_s = time.time() - self.start_time
@@ -1562,10 +1574,10 @@ class AsyncTaskProgressUpdater:
             avg_per_note_s = elapsed_s / timed
             eta_s = (total_notes - timed) * avg_per_note_s
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-            time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
+            time_msg += f""" | <small> Avg time per {unit}: {avg_per_note_s:.2f}s</small>
             <br><code>ETA: {eta_time}</code>"""
         count_msg = f"""<strong>{stage}:</strong>
-            <br><strong><code>{notes_done}/{total_notes}</code></strong> notes"""
+            <br><strong><code>{notes_done}/{total_notes}</code></strong> {unit}s"""
         return f"{count_msg}{after_count}{time_msg}{after_time}"
 
 
@@ -2529,6 +2541,9 @@ class NewNotesAdded(NamedTuple):
     updated_nids: list[NoteId]
     # Notes filter_new_notes_op rewrote that were then saved
     filtered_nids: list[NoteId]
+    # The notes added, and the other notes saved, for the marker tidying to look at
+    added_notes: Sequence[Note] = ()
+    saved_notes: Sequence[Note] = ()
 
     @property
     def added(self) -> int:
@@ -2548,7 +2563,19 @@ def count_new_notes_edits(
     mostly outside the selection. All were once counted as selected, the added notes
     included, which read "in 50/10 selected notes" and left the other-notes line short.
     """
-    for nid in [*added.filtered_nids, *added.updated_nids]:
+    count_edits(
+        [*added.filtered_nids, *added.updated_nids], selected, edited_nids, edited_other_nids
+    )
+
+
+def count_edits(
+    nids: Iterable[NoteId],
+    selected: Container[NoteId],
+    edited_nids: list[NoteId],
+    edited_other_nids: list[NoteId],
+) -> None:
+    """Count notes the cleanup saved into the final message's two figures, each once."""
+    for nid in nids:
         if nid in selected:
             if nid not in edited_nids:
                 edited_nids.append(nid)
@@ -2624,6 +2651,7 @@ def add_new_notes(
     op_changes: Optional[OpChanges] = None
     updated_nids: list[NoteId] = []
     filtered_nids: list[NoteId] = []
+    saved_notes: list[Note] = []
     started = time.monotonic()
 
     try:
@@ -2653,6 +2681,7 @@ def add_new_notes(
                     print_error_traceback(e, logger)
                 op_changes = col.merge_undo_entries(pos)
                 filtered_nids = [note.id for note in valid_filtered_notes]
+                saved_notes.extend(valid_filtered_notes)
             started = log_phase("cleanup: filter_new_notes_op", started, kept=len(notes))
             cancelled = progress_updater.cleanup_cancel_requested()
         if cancelled:
@@ -2766,6 +2795,7 @@ def add_new_notes(
                 print_error_traceback(e, logger)
             op_changes = col.merge_undo_entries(pos)
             updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
+            saved_notes.extend(valid_notes)
 
     if unadded_notes_op and not_added:
         # After the resolving has saved its notes: the unlinking reads the arrays from the
@@ -2796,10 +2826,55 @@ def add_new_notes(
                 for note in unlinked_notes
                 if note.id not in updated_nids and note.id not in added_nids
             )
+            saved_notes.extend(unlinked_notes)
         log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
     if resolving_error is not None:
         raise resolving_error
-    return NewNotesAdded(counts, op_changes, updated_nids, filtered_nids)
+    return NewNotesAdded(
+        counts, op_changes, updated_nids, filtered_nids, list(added_notes), saved_notes
+    )
+
+
+def tidy_markers(
+    col: Collection,
+    notes: Sequence[Note],
+    config: dict,
+    pos: int,
+    progress_updater: AsyncTaskProgressUpdater,
+    tidy_markers_op: NewNotesOp,
+    notes_to_remove: Optional[set[NoteId]] = None,
+) -> tuple[Optional[OpChanges], list[NoteId]]:
+    """The cleanup's last stage: `tidy_markers_op` renames what the run left of the sort field
+    markers of `notes`' words, and the notes it renames are saved into the run's undo entry.
+
+    After everything else is saved, whether the run was cancelled or not and whether or not it
+    had notes to add: a new reading whose meaning could not be made adds nothing and still
+    leaves its markers. It cannot be cancelled, and a raise is logged and saves nothing: the
+    markers are only names, and the run's work is saved already. Returns the undo entry's
+    changes when something was saved, and the ids of the notes saved.
+    """
+    removed = notes_to_remove or set()
+    started = time.monotonic()
+    progress_updater.begin_cleanup_stage()
+    try:
+        renamed = tidy_markers_op(list(notes), config, progress_updater)
+    except Exception as e:
+        logger.error(f"Error tidying the sort field markers: {e}")
+        print_error_traceback(e, logger)
+        return None, []
+    renamed_notes = [
+        note for note in renamed.values() if note.id > 0 and note.id not in removed
+    ]
+    op_changes: Optional[OpChanges] = None
+    if renamed_notes:
+        try:
+            col.update_notes(renamed_notes)
+        except Exception as e:
+            logger.error(f"Error updating notes after tidying their markers: {e}")
+            print_error_traceback(e, logger)
+        op_changes = col.merge_undo_entries(pos)
+    log_phase("cleanup: tidy_markers_op", started, renamed=len(renamed_notes))
+    return op_changes, [note.id for note in renamed_notes]
 
 
 def selected_notes_op(
@@ -2814,12 +2889,14 @@ def selected_notes_op(
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
     on_success: Optional[Callable] = None,
     unadded_notes_op: Optional[NewNotesOp] = None,
+    tidy_markers_op: Optional[NewNotesOp] = None,
 ):
     """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
 
     A list of phases runs them in order over the same notes and finishes with the same
     cleanup as a single op - see `run_op_phases` for what they share and what they do not.
     The new notes are added by `add_new_notes`, which says what the three note ops are for.
+    `tidy_markers_op` gets every note the cleanup saved and added, last (see `tidy_markers`).
     """
     phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
     edited_nids: list[NoteId] = []
@@ -2964,6 +3041,9 @@ def selected_notes_op(
                     print_error_traceback(e, logger)
                 cleanup_started = log_phase("cleanup: remove_notes", cleanup_started)
             op_changes = mw.col.merge_undo_entries(pos)
+            # Every note saved from here on, for the marker tidying
+            saved_notes: list[Note] = list(all_updated_notes)
+            added_nids: set[NoteId] = set()
             notes_to_add = []
             if notes_to_add_dict:
                 for note_list in list(notes_to_add_dict.values()):
@@ -2988,6 +3068,29 @@ def selected_notes_op(
                 if added.op_changes is not None:
                     op_changes = added.op_changes
                 count_new_notes_edits(added, nids_set, edited_nids, edited_other_nids)
+                saved_notes.extend(added.added_notes)
+                saved_notes.extend(added.saved_notes)
+                added_nids = {note.id for note in added.added_notes}
+                cleanup_started = time.monotonic()
+            if tidy_markers_op is not None and saved_notes:
+                tidy_changes, tidied_nids = tidy_markers(
+                    mw.col,
+                    saved_notes,
+                    config,
+                    pos,
+                    progress_updater,
+                    tidy_markers_op,
+                    notes_to_remove,
+                )
+                if tidy_changes is not None:
+                    op_changes = tidy_changes
+                # An added note renamed is counted as added
+                count_edits(
+                    [nid for nid in tidied_nids if nid not in added_nids],
+                    nids_set,
+                    edited_nids,
+                    edited_other_nids,
+                )
                 cleanup_started = time.monotonic()
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes

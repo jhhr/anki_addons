@@ -75,7 +75,8 @@ from .collection_access import (
 )
 from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
-from .word_index import WordFields, WordIndex, WordIndexCache
+from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, word_key
+from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
 from .clean_meaning import clean_meaning_in_note
 from .make_all_meanings import (
     make_all_meanings_for_word,
@@ -358,10 +359,10 @@ def restore_renamed_sort_fields(
     So that the word's notes read as if those had never been prepared, except where a note
     that was added depends on it: a rename any added note was made seeing stays. A note is
     read as it was saved, and written back only if its field still holds what the rename
-    left: a note changed since is left alone, as a marker left over is harmless and a wrong
-    rename is not. A renamed new note is written back once it has been added, and needs
-    nothing when it has not. Returns how many were written back, into
-    `notes_to_update_dict`.
+    left: a note changed since is left alone, as a marker left over is taken off by the
+    cleanup's tidying (tidy_sort_field_markers) and a wrong rename is not. A renamed new note
+    is written back once it has been added, and needs nothing when it has not. Returns how
+    many were written back, into `notes_to_update_dict`.
     """
     with _renames_lock:
         renames = [
@@ -506,6 +507,91 @@ def clear_unadded_note_ids(
         " other notes"
     )
     return notes_to_update_dict
+
+
+def _marker_fields(note: Note, config: dict) -> Optional[tuple[str, str]]:
+    """The note's sort field and processed furigana field, or None if it has no sort field.
+
+    Not get_field_config, which raises for a note type or field not in the config: a note of
+    some other type among those saved must not stop the tidying of the rest.
+    """
+    note_type = note.note_type()
+    model_config = config.get(note_type["name"]) if note_type else None
+    if not isinstance(model_config, dict):
+        return None
+    sort_field = model_config.get("word_sort_field")
+    if not sort_field or sort_field not in note:
+        return None
+    return sort_field, model_config.get("word_processed_furigana_field") or ""
+
+
+def tidy_sort_field_markers(
+    notes: Sequence[Note],
+    config: dict,
+    progress_updater: AsyncTaskProgressUpdater,
+) -> dict[NoteId, Note]:
+    """Tidy the sort field markers of every word a note the cleanup saved carries markers for.
+
+    The cleanup's last stage, once everything else is saved, so that the notes read here are
+    as the run leaves them: the (mN)/(rN)/(kun)/(on) numbering has no gap and no marker is left
+    that tells nothing apart (sort_field_markers.tidy_word_markers says how). Such markers are
+    left by a new note that was not added (cancelled, failed or dropped as a duplicate) where
+    restore_renamed_sort_fields does not take them back, and by a new reading whose meaning
+    could not be made, whose markers on the word's other notes stay in any run.
+
+    `notes` are the notes the cleanup saved and added. Only their words are tidied, and only
+    those one of them carries a marker for, but each word whole: its notes the run never
+    touched are renamed too. A note whose sort field holds another marker, such as (x1), is
+    left out, as the match op leaves it out when it numbers the word.
+
+    Returns the notes renamed, for the cleanup to save.
+    """
+    renamed_notes: dict[NoteId, Note] = {}
+    # By the sort field the words are in, which is what their notes are found by
+    words_by_sort_field: dict[str, dict[str, str]] = {}
+    for note in notes:
+        fields = _marker_fields(note, config) if note.id else None
+        if fields is None:
+            continue
+        sort_field, _ = fields
+        markers = parse_sort_field(note[sort_field])
+        if markers is None or not markers.has_markers:
+            continue
+        words = words_by_sort_field.setdefault(sort_field, {})
+        words.setdefault(word_key(markers.base), markers.base)
+
+    total_words = sum(len(words) for words in words_by_sort_field.values())
+    progress_updater.update_marker_tidying_progress(total_words=total_words)
+    words_tidied = 0
+    for sort_field, words in words_by_sort_field.items():
+        nids_by_word = sort_base_note_ids(sort_field, words.values())
+        notes_by_id = {
+            note.id: note
+            for note in col_get_notes([nid for nids in nids_by_word.values() for nid in nids])
+        }
+        for key in words:
+            word_notes: list[WordNote] = []
+            for word_note in (notes_by_id.get(nid) for nid in nids_by_word.get(key, ())):
+                fields = _marker_fields(word_note, config) if word_note is not None else None
+                # A note of a type configured with another sort field is not this word's
+                if word_note is None or fields is None or fields[0] != sort_field:
+                    continue
+                reading_type = check_note_processed_furigana_field(word_note, fields[1])
+                word_notes.append(WordNote(word_note.id, word_note[sort_field], reading_type))
+            for renamed_nid, sort_value in tidy_word_markers(word_notes).items():
+                renamed_note = notes_by_id[NoteId(renamed_nid)]
+                logger.debug(
+                    f"Note {renamed_nid}'s sort field {renamed_note[sort_field]!r}"
+                    f" tidied {sort_value!r}"
+                )
+                renamed_note[sort_field] = sort_value
+                renamed_notes[renamed_note.id] = renamed_note
+            words_tidied += 1
+            progress_updater.update_marker_tidying_progress(
+                words_done=words_tidied, total_words=total_words
+            )
+    logger.info(f"Tidied the markers of {total_words} words, renaming {len(renamed_notes)} notes")
+    return renamed_notes
 
 
 def deduplicate_notes_list(
@@ -2723,6 +2809,7 @@ def match_words_to_notes_from_selected(
         new_notes_op,
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
+        tidy_markers_op=tidy_sort_field_markers,
     )
 
 
@@ -2855,4 +2942,5 @@ def match_single_word_to_notes_from_selected(
         new_notes_op,
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
+        tidy_markers_op=tidy_sort_field_markers,
     )

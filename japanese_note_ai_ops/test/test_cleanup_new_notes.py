@@ -82,6 +82,7 @@ class FakeUpdater:
     def __init__(self):
         self.adding: list = []
         self.clearing: list = []
+        self.tidying: list = []
         # The cleanup's own cancel, as armed by arm_cleanup_cancel; a test presses it
         self.cancel_pressed = False
         self.cancel_ended = False
@@ -89,6 +90,9 @@ class FakeUpdater:
         self.armed: list = []
 
     def begin_cleanup_stage(self):
+        pass
+
+    def begin_cleanup(self):
         pass
 
     def arm_cleanup_cancel(self, total_notes):
@@ -108,6 +112,9 @@ class FakeUpdater:
 
     def update_unadded_note_clearing_progress(self, notes_cleared=0, total_notes=0):
         self.clearing.append((notes_cleared, total_notes))
+
+    def update_marker_tidying_progress(self, words_done=0, total_words=0):
+        self.tidying.append((words_done, total_words))
 
 
 CONFIG = {"Word": {"insert_deck": "Vocab", **{key: key for key in mwtn.MATCH_FIELD_KEYS}}}
@@ -413,6 +420,10 @@ class FakeSearch:
         self.saved = {note.id: dict(note.fields) for note in notes}
         self.queries: list = []
         self.read: list = []
+        # What sort_base_note_ids was asked for
+        self.sort_bases: list = []
+        # The notes of another note type than "Word", by id
+        self.note_types: dict = {}
 
     def find_notes(self, query: str) -> list:
         self.queries.append(query)
@@ -425,16 +436,37 @@ class FakeSearch:
 
     def get_notes(self, nids) -> list:
         self.read.extend(nids)
-        return [FakeNote(dict(self.saved[nid]), nid) for nid in nids]
+        notes = [FakeNote(dict(self.saved[nid]), nid) for nid in nids]
+        for note in notes:
+            if note.id in self.note_types:
+                note_type = {"name": self.note_types[note.id]}
+                note.note_type = lambda note_type=note_type: note_type  # type: ignore
+        return notes
 
     def get_note(self, nid) -> FakeNote:
         return self.get_notes([nid])[0]
+
+    def sort_base_note_ids(self, sort_field: str, bases) -> dict:
+        """word_index.sort_base_note_ids: a word's notes are those whose sort field is the word
+        and then anything in brackets, found whatever the brackets hold."""
+        self.sort_bases.append((sort_field, sorted(bases)))
+        found: dict = {}
+        for base in bases:
+            key = mwtn.word_key(base)
+            for nid, fields in self.saved.items():
+                value = fields.get(sort_field, "")
+                if value and mwtn.word_key(value.split("(")[0].strip()) == key:
+                    found.setdefault(key, []).append(nid)
+        return found
 
     def patched(self):
         stack = contextlib.ExitStack()
         stack.enter_context(mock.patch.object(mwtn, "col_find_notes", self.find_notes))
         stack.enter_context(mock.patch.object(mwtn, "col_get_notes", self.get_notes))
         stack.enter_context(mock.patch.object(mwtn, "col_get_note", self.get_note))
+        stack.enter_context(
+            mock.patch.object(mwtn, "sort_base_note_ids", self.sort_base_note_ids)
+        )
         return stack
 
 
@@ -995,6 +1027,10 @@ def reading_type(processed_furigana: str) -> str:
     return ""
 
 
+# A note clean_up's Cancel is pressed during that is never added: nothing presses it
+NO_CANCEL = object()
+
+
 class FakeMarkerIndex:
     """The run's word index, asked only for the notes of a word that may carry markers."""
 
@@ -1073,10 +1109,11 @@ class NewNoteHarness(unittest.TestCase):
         self.assertTrue(created)
         return self.to_add[self.WORD][-1]
 
-    def clean_up(self, search: FakeSearch, notes=None, cancel_during=None):
+    def clean_up(self, search: FakeSearch, notes=None, cancel_during=None, failing: tuple = ()):
         """The cleanup from its first save on: the notes the run edited, then the adding, with
-        Cancel pressed before the first note is added, or while `cancel_during` is."""
-        col = SearchableCollection(search, self.updater)
+        Cancel pressed before the first note is added, or while `cancel_during` is (NO_CANCEL:
+        never). The notes in `failing` fail to add."""
+        col = SearchableCollection(search, self.updater, failing)
         col.update_notes([note for note in self.to_update.values() if note.id])
         if notes is None:
             notes = [note for word_notes in self.to_add.values() for note in word_notes]
@@ -1094,6 +1131,19 @@ class NewNoteHarness(unittest.TestCase):
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
         return col
+
+    def tidy(self, col: "SearchableCollection") -> list:
+        """The cleanup's last stage, over every note clean_up saved and added: the ids of the
+        notes it renamed."""
+        saved = [*col.updated, *(note for note, _ in col.added)]
+        with col.search.patched():
+            _, renamed = base_ops.tidy_markers(
+                col, saved, CONFIG, POS, self.updater, mwtn.tidy_sort_field_markers
+            )
+        return renamed
+
+    def sort_field(self, search: FakeSearch, note) -> str:
+        return search.saved[note if isinstance(note, int) else note.id]["word_sort_field"]
 
 
 class SiblingMarkersTests(NewNoteHarness):
@@ -1401,3 +1451,374 @@ class ReadingMarkerOrderTests(NewNoteHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TidySortFieldMarkersTests(unittest.TestCase):
+    """The marker tidying, given the notes the cleanup saved: which words it reads, and that it
+    tidies each word whole (sort_field_markers.tidy_word_markers says how)."""
+
+    WORD = "言葉"
+
+    def setUp(self):
+        self.updater = FakeUpdater()
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(mwtn, "check_word_reading_type", reading_type))
+
+    def tidy(self, search: FakeSearch, *notes) -> dict:
+        with search.patched():
+            renamed = mwtn.tidy_sort_field_markers(list(notes), CONFIG, self.updater)
+        return {nid: note["word_sort_field"] for nid, note in renamed.items()}
+
+    def test_the_word_is_tidied_whole_with_notes_the_run_never_touched(self):
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (m1)", 2),
+            vocab_note(f"{self.WORD} (m3)", 3),
+            vocab_note(f"{self.WORD} (m4)", 4),
+        )
+        added = FakeNote(dict(search.saved[4]), 4)
+
+        self.assertEqual(
+            self.tidy(search, added), {3: f"{self.WORD} (m2)", 4: f"{self.WORD} (m3)"}
+        )
+
+    def test_a_tidy_word_renames_nothing(self):
+        search = FakeSearch(vocab_note(f"{self.WORD} (m1)", 2), vocab_note(f"{self.WORD} (m2)", 3))
+
+        self.assertEqual(self.tidy(search, search.get_note(3)), {})
+
+    def test_only_the_words_a_saved_note_carries_markers_for_are_read(self):
+        search = FakeSearch(
+            vocab_note(self.WORD, 2),
+            vocab_note("言語 (r2)", 3),
+            vocab_note("単語 (m1)", 4),
+            vocab_note("単語", 5),
+        )
+
+        renamed = self.tidy(search, *search.get_notes([2, 3, 4]))
+
+        self.assertEqual(search.sort_bases, [("word_sort_field", ["単語", "言語"])])
+        self.assertEqual(renamed, {3: "言語", 4: "単語 (m2)", 5: "単語 (m1)"})
+
+    def test_with_no_markers_nothing_is_read(self):
+        search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (x1)", 3))
+
+        self.assertEqual(self.tidy(search, *search.get_notes([2, 3])), {})
+        self.assertEqual(search.sort_bases, [])
+        self.assertEqual(search.read, [2, 3])
+
+    def test_a_note_not_added_or_of_a_note_type_not_configured_is_not_looked_at(self):
+        search = FakeSearch(vocab_note(f"{self.WORD} (m1)", 2))
+        not_added = vocab_note(f"{self.WORD} (m1)")
+        unconfigured = vocab_note(f"{self.WORD} (m1)", 2)
+        unconfigured.note_type = lambda: {"name": "Sentence"}  # type: ignore[method-assign]
+
+        self.assertEqual(self.tidy(search, not_added, unconfigured), {})
+        self.assertEqual(search.sort_bases, [])
+
+    def test_an_unmarked_reading_is_of_the_kind_its_furigana_says(self):
+        kun, on = "<kun>こと</kun>ば", "<on>げん</on>ご"
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (kun)", 2, word_processed_furigana_field=kun),
+            vocab_note(self.WORD, 3, word_processed_furigana_field=on),
+        )
+        self.assertEqual(self.tidy(search, search.get_note(2)), {})
+
+        search.saved[3]["word_processed_furigana_field"] = kun
+        self.assertEqual(
+            self.tidy(search, search.get_note(2)),
+            {2: f"{self.WORD} (r1)", 3: f"{self.WORD} (r2)"},
+        )
+
+    def test_each_note_s_kind_is_read_from_its_own_note_type_s_field(self):
+        kun, on = "<kun>こと</kun>ば", "<on>げん</on>ご"
+        config = {**CONFIG, "Kana": {**CONFIG["Word"], "word_processed_furigana_field": "kana"}}
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (kun)", 2, word_processed_furigana_field=kun),
+            vocab_note(self.WORD, 3, word_processed_furigana_field=kun, kana=on),
+        )
+        search.note_types[3] = "Kana"
+
+        with search.patched():
+            renamed = mwtn.tidy_sort_field_markers(search.get_notes([2]), config, self.updater)
+
+        # Read as an on reading, so the (kun) still tells the two apart
+        self.assertEqual(renamed, {})
+
+    def test_a_note_of_a_type_with_another_sort_field_is_not_the_word_s(self):
+        config = {**CONFIG, "Other": {**CONFIG["Word"], "word_sort_field": "other_sort"}}
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (m1)", 2),
+            vocab_note(f"{self.WORD} (m2)", 3, other_sort=""),
+        )
+        search.note_types[3] = "Other"
+
+        with search.patched():
+            renamed = mwtn.tidy_sort_field_markers(search.get_notes([2]), config, self.updater)
+
+        self.assertEqual({nid: n["word_sort_field"] for nid, n in renamed.items()}, {2: self.WORD})
+
+    def test_the_progress_counts_words(self):
+        search = FakeSearch(vocab_note("言語 (r2)", 3), vocab_note("単語 (m1)", 4))
+
+        self.tidy(search, *search.get_notes([3, 4]))
+
+        self.assertEqual(self.updater.tidying, [(0, 2), (1, 2), (2, 2)])
+
+
+class TidyMarkersStageTests(unittest.TestCase):
+    """base_ops.tidy_markers, the cleanup stage that saves what the tidying renamed."""
+
+    def setUp(self):
+        self.updater = FakeUpdater()
+        self.col = FakeCollection()
+
+    def run_stage(self, op, notes=(), notes_to_remove=None):
+        return base_ops.tidy_markers(
+            self.col, list(notes), CONFIG, POS, self.updater, op, notes_to_remove
+        )
+
+    def test_the_notes_renamed_are_saved_into_the_run_s_undo_entry(self):
+        renamed = vocab_note("言葉", 2)
+        saved = [vocab_note("言葉 (m1)", 2)]
+        op = Recorder(returns={2: renamed})
+
+        changes, nids = self.run_stage(op, saved)
+
+        self.assertEqual(op.handed, [saved])
+        self.assertEqual(self.col.updated, [renamed])
+        self.assertEqual(self.col.merged, [POS])
+        self.assertEqual((changes, nids), ("changes after 1 merges", [2]))
+
+    def test_a_note_removed_by_the_run_or_without_an_id_is_not_saved(self):
+        op = Recorder(returns={2: vocab_note("言葉", 2), 0: vocab_note("言葉")})
+
+        self.assertEqual(self.run_stage(op, notes_to_remove={2}), (None, []))
+        self.assertEqual((self.col.updated, self.col.merged), ([], []))
+
+    def test_a_tidying_that_raises_saves_nothing_and_does_not_fail_the_op(self):
+        with self.assertLogs(base_ops.logger, "ERROR"):
+            result = self.run_stage(Recorder(raises=True), [vocab_note("言葉 (m1)", 2)])
+
+        self.assertEqual(result, (None, []))
+        self.assertEqual((self.col.updated, self.col.merged), ([], []))
+
+
+class TidyAfterAddingTests(NewNoteHarness):
+    """What the match op's new notes leave of their word's markers, tidied by the cleanup's last
+    stage: what restore_renamed_sort_fields leaves (it takes back only what a cancel left
+    out), and what it cannot, a failed add or a meaning that could not be made."""
+
+    def test_a_gap_a_failed_add_leaves_is_closed(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            first = search.get_note(2)
+            second = self.new_meaning("words", first)
+            third = self.new_meaning("speech", first, second)
+
+        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,))
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m3)")
+
+        self.assertEqual(self.tidy(col), [third.id])
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m2)")
+        self.assertEqual(set(col.merged), {POS})
+
+    def test_a_meaning_a_failed_add_leaves_alone_loses_its_number(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            second = self.new_meaning("words", search.get_note(2))
+
+        col = self.clean_up(search, cancel_during=NO_CANCEL, failing=(second,))
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+
+        self.assertEqual(self.tidy(col), [2])
+        self.assertEqual(self.sort_field(search, 2), self.WORD)
+
+    def test_a_gap_a_cancel_leaves_across_words_is_closed(self):
+        """A note made seeing a rename keeps it when added though the note that made it is
+        left out, which a ずる word's meaning copied from its じる note does (SiblingMarkers)."""
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            first = search.get_note(2)
+            second = self.new_meaning("words", first)
+            third = self.new_meaning("speech", first, second)
+
+        col = self.clean_up(search, notes=[third, second], cancel_during=third)
+        self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m3)")
+
+        self.tidy(col)
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, third), f"{self.WORD} (m2)")
+
+    def failed_reading(self, processed_furigana: str, *marker_nids: int) -> None:
+        """A new reading whose meaning could not be made: its markers stay on the word's
+        other notes, and nothing is added."""
+        self.processed_furigana = processed_furigana
+        with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: False):
+            created = mwtn.create_new_note_without_matching(
+                CONFIG, "", self.args("げんご", FakeMarkerIndex(*marker_nids))
+            )
+        self.assertFalse(created)
+        self.assertEqual(self.to_add, {})
+
+    def test_the_kun_marker_a_failed_reading_leaves_is_taken_off(self):
+        search = FakeSearch(vocab_note(self.WORD, 2, word_processed_furigana_field=KUN_FURIGANA))
+        with search.patched():
+            self.failed_reading(ON_FURIGANA, 2)
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (kun)")
+
+        col = self.clean_up(search, notes=[])
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (kun)")
+
+        self.assertEqual(self.tidy(col), [2])
+        self.assertEqual(self.sort_field(search, 2), self.WORD)
+
+    def test_the_reading_number_a_failed_reading_leaves_is_taken_off(self):
+        search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (m1)", 3))
+        search.saved[2]["word_sort_field"] = f"{self.WORD} (m2)"
+        with search.patched():
+            self.failed_reading("", 2, 3)
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m2)")
+        self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+
+        col = self.clean_up(search, notes=[])
+
+        self.assertEqual(sorted(self.tidy(col)), [2, 3])
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m2)")
+        self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m1)")
+
+    def test_what_a_cancel_left_consistent_is_left_as_it_is(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            second = self.new_reading("げんご", 2)
+            third = self.new_reading("ことのは", 2)
+            self.new_meaning("words", second)
+
+        col = self.clean_up(search, cancel_during=third)
+        fields = {nid: dict(values) for nid, values in search.saved.items()}
+
+        self.assertEqual(self.tidy(col), [])
+        self.assertEqual(search.saved, fields)
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (r1)")
+        self.assertEqual(self.sort_field(search, second), f"{self.WORD} (r2)")
+        self.assertEqual(self.sort_field(search, third), f"{self.WORD} (r3)")
+
+
+class FakeCollectionOp:
+    """aqt's CollectionOp, running the op at once on this thread and handing its result on."""
+
+    def __init__(self, parent, op):
+        self.op = op
+        self.on_success = None
+
+    def success(self, on_success):
+        self.on_success = on_success
+        return self
+
+    def run_in_background(self):
+        result = self.op(mw.col)
+        if self.on_success is not None:
+            self.on_success(result)
+
+
+class RunCollection(SearchableCollection):
+    """The collection a whole selected_notes_op runs against."""
+
+    def get_note(self, nid):
+        return self.search.get_note(nid)
+
+    def remove_notes(self, nids):
+        pass
+
+
+class SelectedNotesOpTidyTests(unittest.TestCase):
+    """The marker tidying runs last in selected_notes_op's cleanup, over every note it saved and
+    added, whether or not the run had notes to add."""
+
+    def setUp(self):
+        self.updater = FakeUpdater()
+        self.finished: list = []
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(base_ops, "CollectionOp", FakeCollectionOp))
+        stack.enter_context(mock.patch.object(base_ops, "install_run_controls", lambda: None))
+        stack.enter_context(
+            mock.patch.object(
+                base_ops,
+                "on_bulk_success",
+                lambda out, done, edited, other, *_, new_notes, **__: self.finished.append(
+                    (list(edited), list(other), new_notes)
+                ),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(base_ops, "phase_log", lambda _: contextlib.nullcontext())
+        )
+        addon_manager = types.SimpleNamespace(getConfig=lambda _: CONFIG)
+        stack.enter_context(mock.patch.object(mw, "addonManager", addon_manager))
+
+    def run_op(self, search, selected, edited: dict, to_add: list, tidy_op):
+        col = RunCollection(search, self.updater)
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(mw, "col", col, create=True))
+
+        async def bulk_op(col, notes, notes_to_add_dict, notes_to_update_dict, **_):
+            notes_to_update_dict.update(edited)
+            if to_add:
+                notes_to_add_dict["言葉"] = list(to_add)
+            return POS, notes_to_add_dict, notes_to_update_dict, []
+
+        with stack:
+            base_ops.selected_notes_op(
+                "Done",
+                bulk_op,
+                selected,
+                None,
+                self.updater,
+                new_notes_op=Recorder(),
+                tidy_markers_op=tidy_op,
+            )
+        return col
+
+    def test_with_nothing_to_add_the_notes_the_run_edited_are_tidied(self):
+        search = FakeSearch(vocab_note("言葉 (kun)", 2), vocab_note("単語", 3))
+        edited = {2: vocab_note("言葉 (kun)", 2)}
+        tidied = vocab_note("言葉", 2)
+        tidy_op = Recorder(returns={2: tidied})
+
+        col = self.run_op(search, [3], edited, [], tidy_op)
+
+        self.assertEqual(tidy_op.handed, [[edited[2]]])
+        self.assertEqual(col.updated[-1], tidied)
+        self.assertEqual(col.merged[-1], POS)
+        # Not selected, so an other note, counted once
+        self.assertEqual(self.finished, [([], [2], base_ops.NewNotesCounts())])
+
+    def test_after_the_adding_the_notes_added_are_tidied_too(self):
+        search = FakeSearch(vocab_note("言葉 (m1)", 2))
+        edited = {2: vocab_note("言葉 (m1)", 2)}
+        new = vocab_note("言葉 (m3)")
+        tidy_op = Recorder()
+
+        def rename_the_added_note(notes, config, updater):
+            tidy_op(notes, config, updater)
+            new["word_sort_field"] = "言葉 (m2)"
+            return {new.id: new}
+
+        col = self.run_op(search, [2], edited, [new], rename_the_added_note)
+
+        self.assertEqual([note for note, _ in col.added], [new])
+        self.assertEqual(tidy_op.handed, [[edited[2], new]])
+        self.assertIs(col.updated[-1], new)
+        # The added note renamed is counted as added, not as an edited note
+        self.assertEqual(self.finished, [([2], [], base_ops.NewNotesCounts(added=1))])
+
+    def test_without_a_tidying_op_nothing_is_tidied(self):
+        search = FakeSearch(vocab_note("言葉 (kun)", 2))
+        edited = {2: vocab_note("言葉 (kun)", 2)}
+
+        col = self.run_op(search, [2], edited, [], None)
+
+        self.assertEqual(col.updated, [edited[2]])
