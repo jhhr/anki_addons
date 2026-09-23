@@ -130,7 +130,9 @@ were left out by the cancel and how many failed.
 
 Last, after every match run, cancelled or not, the sort field markers of the words the run
 touched are tidied: a numbering with a gap ("(m1)", "(m3)") is closed up, and a "(m1)", "(r1)",
-"(kun)" or "(on)" left on a note with nothing to tell it apart from is taken off. A note that
+"(kun)" or "(on)" left on a note with nothing to tell it apart from is taken off. The numbers
+follow the order the notes were created in, so a note you add by hand to a numbered word is
+numbered after the others, and a numbering in some other order is put in that one. A note that
 failed to add, a duplicate the run dropped, or a new reading whose meaning could not be made
 leaves those behind. A note whose sort field holds any other marker, such as "(x1)", is left as
 it is.

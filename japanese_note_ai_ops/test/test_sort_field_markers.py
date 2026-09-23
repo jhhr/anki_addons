@@ -99,14 +99,19 @@ class MeaningTests(unittest.TestCase):
         word = fixture(f"{W} (m1)", f"{W} (m2)", f"{W} (m3)")
         self.assertEqual(sfm.tidy_word_markers(word), {})
 
-    def test_the_order_is_kept(self):
+    def test_meanings_are_numbered_in_the_order_they_were_created(self):
         word = fixture(f"{W} (m4)", f"{W} (m2)", f"{W} (m7)")
-        self.assertEqual(tidied(word), {1: f"{W} (m2)", 2: f"{W} (m1)", 3: f"{W} (m3)"})
+        self.assertEqual(tidied(word), {1: f"{W} (m1)", 2: f"{W} (m2)", 3: f"{W} (m3)"})
 
-    def test_an_unnumbered_meaning_comes_first(self):
-        # The note the others were copied from, whose (m1) was taken back
-        word = fixture(f"{W} (m2)", W)
-        self.assertEqual(tidied(word), {1: f"{W} (m2)", 2: f"{W} (m1)"})
+    def test_a_meaning_added_by_hand_is_numbered_after_the_older_ones(self):
+        # Unnumbered, it once came first and moved every established number up by one
+        word = fixture(f"{W} (m1)", f"{W} (m2)", W)
+        self.assertEqual(tidied(word), {1: f"{W} (m1)", 2: f"{W} (m2)", 3: f"{W} (m3)"})
+
+    def test_an_unnumbered_older_meaning_is_numbered_first(self):
+        # The note the others were copied from, whose (m1) a hand edit took off
+        word = fixture(W, f"{W} (m2)")
+        self.assertEqual(tidied(word), {1: f"{W} (m1)", 2: f"{W} (m2)"})
 
     def test_two_notes_of_one_number_are_numbered_by_id(self):
         word = fixture(f"{W} (m1)", f"{W} (m1)", f"{W} (m2)")
@@ -146,9 +151,15 @@ class ReadingTests(unittest.TestCase):
         word = fixture(f"{W} (r1)(m1)", f"{W} (r1)(m2)", f"{W} (r2)", f"{W} (r3)")
         self.assertEqual(sfm.tidy_word_markers(word), {})
 
-    def test_an_unnumbered_reading_comes_first(self):
+    def test_readings_are_numbered_in_the_order_they_were_created(self):
         word = fixture(f"{W} (r2)", W, f"{W} (r4)")
-        self.assertEqual(tidied(word), {1: f"{W} (r2)", 2: f"{W} (r1)", 3: f"{W} (r3)"})
+        self.assertEqual(tidied(word), {1: f"{W} (r1)", 2: f"{W} (r2)", 3: f"{W} (r3)"})
+
+    def test_a_reading_is_as_old_as_its_oldest_note(self):
+        word = fixture(f"{W} (r2)(m1)", f"{W} (r1)", f"{W} (r2)(m2)")
+        self.assertEqual(
+            tidied(word), {1: f"{W} (r1)(m1)", 2: f"{W} (r2)", 3: f"{W} (r1)(m2)"}
+        )
 
     def test_meanings_first_then_readings(self):
         # The reading r1 is down to one meaning, and r2 is gone: both numbers go
@@ -231,8 +242,8 @@ class LeftOutTests(unittest.TestCase):
         self.assertEqual(sfm.tidy_word_markers(word), {})
 
     def test_a_note_renamed_is(self):
-        word = fixture(f"{W} (m3) (kun)", f"{W} (kun)(m1)", f"{W} (on)", types={3: "on"})
-        self.assertEqual(sfm.tidy_word_markers(word), {1: f"{W} (kun)(m2)"})
+        word = fixture(f"{W} (kun)(m1)", f"{W} (m3) (kun)", f"{W} (on)", types={3: "on"})
+        self.assertEqual(sfm.tidy_word_markers(word), {2: f"{W} (kun)(m2)"})
 
 
 class PropertyTests(unittest.TestCase):

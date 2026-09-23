@@ -1542,7 +1542,8 @@ class TidySortFieldMarkersTests(unittest.TestCase):
         renamed = self.tidy(search, *search.get_notes([2, 3, 4]))
 
         self.assertEqual(search.sort_bases, [("word_sort_field", ["単語", "言語"])])
-        self.assertEqual(renamed, {3: "言語", 4: "単語 (m2)", 5: "単語 (m1)"})
+        # 単語 was added by hand after 単語 (m1): it comes after, rather than moving it up
+        self.assertEqual(renamed, {3: "言語", 5: "単語 (m2)"})
 
     def test_with_no_markers_nothing_is_read(self):
         search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (x1)", 3))
@@ -1720,18 +1721,19 @@ class TidyAfterAddingTests(NewNoteHarness):
         self.assertEqual(self.sort_field(search, 2), self.WORD)
 
     def test_the_reading_number_a_failed_reading_leaves_is_taken_off(self):
-        search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (m1)", 3))
-        search.saved[2]["word_sort_field"] = f"{self.WORD} (m2)"
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (m1)", 2), vocab_note(f"{self.WORD} (m2)", 3)
+        )
         with search.patched():
             self.failed_reading("", 2, 3)
-        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m2)")
-        self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+        self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m2)")
 
         col = self.clean_up(search, notes=[], tidy=False)
 
         self.assertEqual(sorted(self.tidy(col)), [2, 3])
-        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m2)")
-        self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m2)")
 
     def test_the_markers_of_a_note_a_cancel_left_out_go(self):
         """Two readings added, and a meaning of the second left out, which had numbered it."""

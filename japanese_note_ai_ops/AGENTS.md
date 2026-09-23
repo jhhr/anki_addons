@@ -112,12 +112,12 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
   without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
   for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
-  without gaps, meanings then readings, dropping a marker that tells nothing apart; the rules
-  are the pure `sort_field_markers.tidy_word_markers`. Preparing a note renames its word's
-  other notes, saved before the adding decides whether it will exist, so a note not added
-  (cancelled, failed, a dedupe's duplicate) or a new reading whose meaning failed leaves such
-  markers. This is the only thing that takes them back: there is no record of renames to
-  undo. It cannot be cancelled, and a raise only logs.
+  without gaps in creation (note id) order, meanings then readings, dropping a marker that
+  tells nothing apart; the rules are the pure `sort_field_markers.tidy_word_markers`.
+  Preparing a note renames its word's other notes, saved before the adding decides whether it
+  will exist, so a note not added (cancelled, failed, a dedupe's duplicate) or a new reading
+  whose meaning failed leaves such markers. This is the only thing that takes them back:
+  there is no record of renames to undo. It cannot be cancelled, and a raise only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight
