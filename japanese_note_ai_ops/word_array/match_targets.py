@@ -282,6 +282,23 @@ def resolve_placeholder_ids(arr: list, find_notes: Callable[[int], Sequence[int]
     return changed
 
 
+def clear_placeholder_ids(arr: list, placeholder_ids: Iterable[int]) -> int:
+    """Put every word linked to one of `placeholder_ids` back to `["match"]`, its match_quality
+    dropped, returning how many words changed. For the new notes a cancelled adding never got
+    to: no note will hold their placeholders, so the words are matched again by the next run,
+    as resolve_placeholder_ids would do there. Any other placeholder stays, a failed add's
+    included, which is kept as the trace of a note that should exist; so does every real id."""
+    cleared = frozenset(placeholder_ids)
+    changed = 0
+    for _, elem in match_flags.iter_words(arr):
+        fake_id = match_flags.matched_note_id(elem)
+        if fake_id is None or fake_id >= 0 or fake_id not in cleared:
+            continue
+        elem[4] = [match_flags.MATCH]
+        changed += 1
+    return changed
+
+
 def unlink_missing_notes(arr: list, note_exists: Callable[[int], bool]) -> list[int]:
     """Put every word linked to a note that no longer exists back to `["match"]`, to be matched
     again, returning the ids taken away. A negative id is a new note's placeholder, left for

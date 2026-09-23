@@ -186,6 +186,50 @@ class ResolvePlaceholderIdsTests(unittest.TestCase):
         self.assertFalse(match_targets.has_placeholder_ids([real, word("本", ["match"])]))
 
 
+class ClearPlaceholderIdsTests(unittest.TestCase):
+    """The placeholders of new notes a cancel left out of the adding: no note will hold them."""
+
+    def test_the_words_of_notes_not_added_are_matched_again(self):
+        rated = word("様", [-1111111, 4])
+        # two levels down, the sub-word of a sub-word
+        nested = word("本", [-1111111])
+        other_not_added = word("棚", [-3333333])
+        failed_add = word("為る", [-2222222], pos="verb")
+        longer = word("机", [-11111112])
+        real = word("椅子", [1111111])
+        arr = [
+            word("様に", ["dontmatch"], [rated, word("に", ["dontmatch"])]),
+            word("本棚", ["dontmatch"], [word("本", [], [nested])]),
+            other_not_added,
+            failed_add,
+            longer,
+            real,
+            ["。"],
+        ]
+
+        changed = match_targets.clear_placeholder_ids(arr, [-1111111, -3333333])
+
+        self.assertEqual(changed, 3)
+        self.assertEqual(
+            [e[4] for e in (rated, nested, other_not_added)], [["match"], ["match"], ["match"]]
+        )
+        # a failed add's placeholder is kept on purpose, and a longer placeholder holding the
+        # digits of a cleared one is another note's
+        self.assertEqual([failed_add[4], longer[4], real[4]], [[-2222222], [-11111112], [1111111]])
+
+    def test_a_real_id_is_never_cleared(self):
+        real = word("本", [1234567, 3])
+
+        self.assertEqual(match_targets.clear_placeholder_ids([real], [1234567]), 0)
+        self.assertEqual(real[4], [1234567, 3])
+
+    def test_nothing_to_clear(self):
+        arr = [word("本", ["match"]), word("様", []), word("棚", [-1234567])]
+
+        self.assertEqual(match_targets.clear_placeholder_ids(arr, []), 0)
+        self.assertEqual(arr[2][4], [-1234567])
+
+
 class UnlinkMissingNotesTests(unittest.TestCase):
     def test_words_linked_to_missing_notes_are_set_to_be_rematched(self):
         gone = word("様", [111, 4])

@@ -8,6 +8,7 @@ arrays. These tests drive `add_new_notes` with the flag set, against a stand-in 
 
 import contextlib
 import json
+import re
 import unittest
 from unittest import mock
 
@@ -23,6 +24,10 @@ class FakeNote:
     def __init__(self, fields: dict, note_id: int = 0):
         self.id = note_id
         self.fields = fields
+        self.tags: list = []
+
+    def add_tag(self, tag):
+        self.tags.append(tag)
 
     def note_type(self):
         return {"name": "Word"}
@@ -69,6 +74,7 @@ class FakeCollection:
 class FakeUpdater:
     def __init__(self):
         self.adding: list = []
+        self.clearing: list = []
 
     def begin_cleanup_stage(self):
         pass
@@ -78,6 +84,9 @@ class FakeUpdater:
 
     def update_new_note_processing_progress(self, **_):
         pass
+
+    def update_unadded_note_clearing_progress(self, notes_cleared=0, total_notes=0):
+        self.clearing.append((notes_cleared, total_notes))
 
 
 CONFIG = {"Word": {"insert_deck": "Vocab", **{key: key for key in mwtn.MATCH_FIELD_KEYS}}}
@@ -224,6 +233,136 @@ class CleanupStageClockTests(unittest.TestCase):
         self.assertIn("2/3", processing[-1])
         self.assertIn("Time: 00:00:10", processing[-1])
         self.assertIn("ETA: 00:00:05", processing[-1])
+
+
+def w(form: str, match_data: list, subs: tuple = ()) -> list:
+    return [form, "noun", form, "よみ", match_data, list(subs)]
+
+
+def sentence(note_id: int, *words: list) -> FakeNote:
+    fields = {"word_list_field": mwtn.format_word_array(list(words)), "new_note_id_field": ""}
+    return FakeNote(fields, note_id)
+
+
+def match_data(note: FakeNote) -> list:
+    return [elem[4] for _, elem in mwtn.match_flags.iter_words(words_of(note))]
+
+
+def words_of(note: FakeNote) -> list:
+    arr = mwtn.match_flags.decode_word_array(note["word_list_field"])
+    assert arr is not None
+    return arr
+
+
+class FakeSearch:
+    """The collection behind `col_find_notes` / `col_get_notes`, holding the notes as saved:
+    nothing the op changes reaches it, as nothing is saved until cleanup gets the notes back,
+    and each read is a fresh note. A `"field:*text*"` term is a substring search, as in Anki,
+    so a longer placeholder holding a shorter one's digits is found too."""
+
+    def __init__(self, *notes: FakeNote):
+        self.saved = {note.id: dict(note.fields) for note in notes}
+        self.queries: list = []
+        self.read: list = []
+
+    def find_notes(self, query: str) -> list:
+        self.queries.append(query)
+        terms = re.findall(r'"(\w+):\*(-\d+)\*"', query)
+        return [
+            nid
+            for nid, fields in self.saved.items()
+            if any(field in fields and text in fields[field] for field, text in terms)
+        ]
+
+    def get_notes(self, nids) -> list:
+        self.read.extend(nids)
+        return [FakeNote(dict(self.saved[nid]), nid) for nid in nids]
+
+    def patched(self):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(mwtn, "col_find_notes", self.find_notes))
+        stack.enter_context(mock.patch.object(mwtn, "col_get_notes", self.get_notes))
+        return stack
+
+
+class ClearUnaddedNoteIdsTests(unittest.TestCase):
+    """The new notes a cancel of the adding left out: the words linked to them are matched
+    again, since no note will ever hold their placeholders. A failed add keeps its own."""
+
+    def setUp(self):
+        self.updater = FakeUpdater()
+
+    def test_the_words_of_a_note_not_added_are_cleared_where_they_are_saved(self):
+        not_added = new_note("-1111111")
+        # its add was attempted and raised; not among the notes handed over
+        failed = new_note("-2222222")
+        both = sentence(2, w("様", [-1111111, 3]), w("本", [-2222222]))
+        nested = sentence(3, w("本棚", ["dontmatch"], (w("本", [-1111111]), w("棚", [444]))))
+        longer = sentence(4, w("机", [-11111112]))
+        search = FakeSearch(both, nested, longer)
+
+        with search.patched():
+            updated = mwtn.clear_unadded_note_ids([not_added], CONFIG, self.updater)
+
+        # found by the substring search, but its placeholder is another note's: not handed
+        # back to be saved
+        self.assertEqual(sorted(updated), [2, 3])
+        self.assertEqual(match_data(updated[2]), [["match"], [-2222222]])
+        self.assertEqual(match_data(updated[3]), [["dontmatch"], ["match"], [444]])
+        self.assertEqual(search.read, [2, 3, 4])
+        self.assertEqual(search.queries, ['("word_list_field:*-1111111*")'])
+        self.assertEqual((not_added.id, not_added["new_note_id_field"]), (0, "-1111111"))
+        self.assertEqual(failed["new_note_id_field"], "-2222222")
+        self.assertEqual(self.updater.clearing, [(0, 1), (1, 1)])
+
+    def test_many_placeholders_are_searched_for_together_and_a_note_is_read_once(self):
+        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        first_and_last = sentence(2, w("様", [-1111111]), w("本", [-3333333, 2]))
+        second = sentence(3, w("棚", [-2222222]))
+        search = FakeSearch(first_and_last, second)
+
+        with search.patched(), mock.patch.object(mwtn, "PLACEHOLDERS_PER_SEARCH", 2):
+            updated = mwtn.clear_unadded_note_ids(notes, CONFIG, self.updater)
+
+        self.assertEqual(
+            search.queries,
+            [
+                '("word_list_field:*-1111111*" OR "word_list_field:*-2222222*")',
+                '("word_list_field:*-3333333*")',
+            ],
+        )
+        # the second search finds the first note again, in the collection as it was saved, and
+        # takes it as the first search left it rather than reading it again
+        self.assertEqual(search.read, [2, 3])
+        self.assertEqual(sorted(updated), [2, 3])
+        self.assertEqual(match_data(updated[2]), [["match"], ["match"]])
+        self.assertEqual(match_data(updated[3]), [["match"]])
+        self.assertEqual(self.updater.clearing, [(0, 3), (2, 3), (3, 3)])
+
+    def test_a_field_that_is_no_array_is_left_as_it_is_and_tagged(self):
+        broken_text = '[["様", "noun", "様", "さま", [-1111111], ['
+        broken = FakeNote({"word_list_field": broken_text, "new_note_id_field": ""}, 5)
+        # a note of a kind the match op writes no arrays into, whatever its field holds
+        other_kind = FakeNote({"word_list_field": "-1111111"}, 6)
+        search = FakeSearch(broken, other_kind)
+
+        with search.patched():
+            updated = mwtn.clear_unadded_note_ids([new_note("-1111111")], CONFIG, self.updater)
+
+        self.assertEqual(search.read, [5, 6])
+        self.assertEqual(list(updated), [5])
+        self.assertEqual(updated[5]["word_list_field"], broken_text)
+        self.assertEqual(updated[5].tags, [mwtn.INVALID_WORD_ARRAY_TAG])
+
+    def test_a_note_holding_no_placeholder_is_not_searched_for(self):
+        search = FakeSearch(sentence(2, w("様", [42])))
+
+        with search.patched():
+            updated = mwtn.clear_unadded_note_ids(
+                [new_note(""), new_note("42")], CONFIG, self.updater
+            )
+
+        self.assertEqual((search.queries, updated), ([], {}))
 
 
 class FinalMessageTests(unittest.TestCase):

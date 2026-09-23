@@ -321,6 +321,19 @@ class CleanupStageClockTests(DialogTestCase):
         self.assertIn("Time: 00:00:03", self.labels[-1])
         self.assertIn("ETA: 00:00:09", self.labels[-1])
 
+    def test_the_unlinking_of_notes_not_added_has_its_own_label_and_clock(self):
+        updater = self.after_an_hour_of_api_work()
+
+        updater.begin_cleanup_stage()
+        self.clock.advance(2)
+        updater._last_update_at = 0.0
+        updater.update_unadded_note_clearing_progress(notes_cleared=1, total_notes=5)
+
+        self.assertIn("Unlinking notes not added", self.labels[-1])
+        self.assertIn("1/5", self.labels[-1])
+        self.assertIn("Time: 00:00:02", self.labels[-1])
+        self.assertIn("ETA: 00:00:08", self.labels[-1])
+
     def test_a_stage_leaves_the_api_phase_counters_alone(self):
         """No cleanup label reads them; the paused time goes, as the stage cannot pause."""
         updater = self.after_an_hour_of_api_work()

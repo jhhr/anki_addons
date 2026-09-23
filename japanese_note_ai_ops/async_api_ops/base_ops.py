@@ -1421,18 +1421,30 @@ class AsyncTaskProgressUpdater:
         total_notes: int = 0,
     ):
         """Update the Step 3 progress dialog for processing new notes after they have been added."""
+        self._push_note_stage("Processing new notes", new_notes_processed, total_notes)
+
+    def update_unadded_note_clearing_progress(
+        self,
+        notes_cleared: int = 0,
+        total_notes: int = 0,
+    ):
+        """Progress of unlinking the new notes a cancel of the adding left out, the stage after
+        the new-note processing."""
+        self._push_note_stage("Unlinking notes not added", notes_cleared, total_notes)
+
+    def _push_note_stage(self, label: str, notes_done: int, total_notes: int) -> None:
         elapsed_s = time.time() - self.start_time
         elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
         time_msg = f"<br><code>Time: {elapsed_time}</code>"
-        if new_notes_processed > 0:
-            eta_s = (total_notes - new_notes_processed) * (elapsed_s / new_notes_processed)
+        if notes_done > 0:
+            eta_s = (total_notes - notes_done) * (elapsed_s / notes_done)
             eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-            avg_per_note_s = elapsed_s / new_notes_processed
+            avg_per_note_s = elapsed_s / notes_done
             time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
             <br><code>ETA: {eta_time}</code>"""
-        task_progress_msg = f"""<strong>Processing new notes:</strong>
-            <br><strong><code>{new_notes_processed}/{total_notes}</code></strong> notes"""
-        self._push(f"{task_progress_msg}{time_msg}", new_notes_processed, total_notes)
+        task_progress_msg = f"""<strong>{label}:</strong>
+            <br><strong><code>{notes_done}/{total_notes}</code></strong> notes"""
+        self._push(f"{task_progress_msg}{time_msg}", notes_done, total_notes)
 
 
 def make_inner_bulk_op(

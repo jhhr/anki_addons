@@ -290,6 +290,112 @@ def update_fake_note_ids(
     return notes_to_update_dict
 
 
+# How many placeholders one collection search looks for. Each is a term of an OR, and SQLite
+# refuses a query whose expression tree is more than 1000 deep, which a long OR chain becomes.
+PLACEHOLDERS_PER_SEARCH = 50
+
+
+def clear_unadded_note_ids(
+    unadded_notes: Sequence[Note],
+    config: dict,
+    progress_updater: AsyncTaskProgressUpdater,
+) -> dict[NoteId, Note]:
+    """Put the words linked to new notes that were never added back to be matched again.
+
+    For the notes a cancel of the adding left out. Their placeholders are already in word
+    arrays saved to the collection, and no note will ever hold them. Each is found as
+    update_fake_note_ids finds one, but by one search for many placeholders; the substring
+    search also finds a longer placeholder that contains a shorter one, and the exact ids
+    compared in the decoded array (match_targets.clear_placeholder_ids) leave that note be.
+    A note whose add failed is not in `unadded_notes`: its placeholder is kept as the trace
+    of a note that should exist.
+
+    Returns the notes changed, for the cleanup to save: those with words cleared, and any
+    whose field turned out not to be an array, left as it is and only tagged.
+    """
+    notes_to_update_dict: dict[NoteId, Note] = {}
+    if not unadded_notes:
+        return notes_to_update_dict
+    if not config:
+        logger.error("Error: Missing addon configuration")
+        return notes_to_update_dict
+    # By the fields of the note type the references are in: word_list_field to search and
+    # rewrite, new_note_id_field to tell a note the match op writes arrays into, as
+    # update_fake_note_ids does
+    placeholders_by_fields: dict[tuple[str, str], list[int]] = {}
+    for note in unadded_notes:
+        note_type = note.note_type()
+        if not note_type:
+            logger.error(f"Error: A new note not added has no note type: {note.fields}")
+            continue
+        new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
+        word_list_field = get_field_config(config, "word_list_field", note_type)
+        if not new_note_id_field or not word_list_field:
+            logger.error("Error: Missing required fields in config")
+            continue
+        if new_note_id_field not in note:
+            logger.error(f"Error: A new note not added has no field {new_note_id_field}")
+            continue
+        try:
+            placeholder = int(note[new_note_id_field])
+        except ValueError:
+            placeholder = 0
+        if placeholder >= 0:
+            logger.warning(f"A new note not added holds no placeholder id: {note.fields}")
+            continue
+        placeholders = placeholders_by_fields.setdefault((word_list_field, new_note_id_field), [])
+        if placeholder not in placeholders:
+            placeholders.append(placeholder)
+
+    total_notes = sum(len(placeholders) for placeholders in placeholders_by_fields.values())
+    progress_updater.update_unadded_note_clearing_progress(total_notes=total_notes)
+    notes_cleared = 0
+    words_cleared = 0
+    for (word_list_field, new_note_id_field), placeholders in placeholders_by_fields.items():
+        cleared_ids = frozenset(placeholders)
+        for start in range(0, len(placeholders), PLACEHOLDERS_PER_SEARCH):
+            chunk = placeholders[start : start + PLACEHOLDERS_PER_SEARCH]
+            terms = " OR ".join(f'"{word_list_field}:*{placeholder}*"' for placeholder in chunk)
+            referencing_note_ids = col_find_notes(f"({terms})")
+            # A note an earlier search already changed is taken as it now is, not re-read
+            referencing_notes: list[Note] = []
+            unread_nids: list[NoteId] = []
+            for nid in referencing_note_ids:
+                if nid in notes_to_update_dict:
+                    referencing_notes.append(notes_to_update_dict[nid])
+                else:
+                    unread_nids.append(nid)
+            referencing_notes.extend(col_get_notes(unread_nids))
+            for referencing_note in referencing_notes:
+                if (
+                    word_list_field not in referencing_note
+                    or new_note_id_field not in referencing_note
+                ):
+                    continue
+                arr = decode_word_array_field(
+                    referencing_note,
+                    word_list_field,
+                    notes_to_update_dict,
+                    f"Clearing new notes not added, note.id={referencing_note.id}--",
+                )
+                if arr is None:
+                    continue
+                changed = match_targets.clear_placeholder_ids(arr, cleared_ids)
+                if changed:
+                    referencing_note[word_list_field] = format_word_array(arr)
+                    notes_to_update_dict[referencing_note.id] = referencing_note
+                    words_cleared += changed
+            notes_cleared += len(chunk)
+            progress_updater.update_unadded_note_clearing_progress(
+                notes_cleared=notes_cleared, total_notes=total_notes
+            )
+    logger.info(
+        f"Cleared {words_cleared} words linked to {total_notes} new notes not added,"
+        f" in {len(notes_to_update_dict)} notes"
+    )
+    return notes_to_update_dict
+
+
 def deduplicate_notes_list(
     notes_to_filter: list[Note],
     config: dict,
