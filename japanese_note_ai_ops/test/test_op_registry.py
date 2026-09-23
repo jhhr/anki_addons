@@ -325,6 +325,38 @@ class GeneratorResourcesChainTests(unittest.TestCase):
         self.ui["showWarning"].assert_called_once()
 
 
+    def test_a_step_that_raises_starting_after_the_download_fails_the_step(self):
+        self.resources.has_sudachipy.return_value = True
+        self.resources.missing.return_value = [mock.Mock(size_mb=80)]
+        self.ui["askUser"].return_value = True
+        self.then.side_effect = RuntimeError("no config")
+        chain, outcomes = recording_chain()
+        with mock.patch.object(generator_resources, "QueryOp") as query_op, mock.patch.object(
+            generator_resources, "show_exception"
+        ) as shown:
+            op = query_op.return_value
+            op.failure.return_value = op
+            op.with_progress.return_value = op
+            generator_resources.with_generator_resources(PARENT, self.then, chain=chain)
+            on_success = query_op.call_args.kwargs["success"]
+            # Would otherwise reach Qt from the download's handler, the chain left waiting
+            on_success(None)
+        shown.assert_called_once()
+        self.assertEqual([o.status for o in outcomes], [chain_types.STEP_FAILED])
+        self.assertIn("no config", outcomes[0].error)
+
+    def test_outside_a_chain_the_download_s_then_raises_as_before(self):
+        self.resources.has_sudachipy.return_value = True
+        self.resources.missing.return_value = [mock.Mock(size_mb=80)]
+        self.ui["askUser"].return_value = True
+        self.then.side_effect = RuntimeError("no config")
+        with mock.patch.object(generator_resources, "QueryOp") as query_op:
+            op = query_op.return_value
+            op.with_progress.return_value = op
+            generator_resources.with_generator_resources(PARENT, self.then)
+            with self.assertRaises(RuntimeError):
+                query_op.call_args.kwargs["success"](None)
+
 class FakeSignal:
     def __init__(self):
         self.slot = None

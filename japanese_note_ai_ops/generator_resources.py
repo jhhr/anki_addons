@@ -64,7 +64,19 @@ def with_generator_resources(
         show_exception(parent=parent, exception=error)
         fail_step(chain, f"Downloading the word array resources failed: {error}")
 
-    fetch_op = QueryOp(parent=parent, op=fetch, success=lambda _: then())
+    def on_fetched(_result: Any) -> None:
+        if chain is None:
+            then()
+            return
+        # `then` starts the step's run, and whatever it raises before that run exists would
+        # go to Qt from this handler, leaving the chain waiting for an on_done never sent
+        try:
+            then()
+        except Exception as error:
+            show_exception(parent=parent, exception=error)
+            fail_step(chain, f"Starting after the download failed: {error}")
+
+    fetch_op = QueryOp(parent=parent, op=fetch, success=on_fetched)
     # Only for a chain, so a run from the menu keeps aqt's own error display untouched
     if chain is not None:
         fetch_op = fetch_op.failure(on_fetch_failed)
