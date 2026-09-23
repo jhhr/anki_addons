@@ -33,6 +33,9 @@ class FakeNote:
     def add_tag(self, tag):
         self.tags.append(tag)
 
+    def set_tags_from_str(self, tags: str):
+        self.tags = tags.split()
+
     def note_type(self):
         return {"name": "Word"}
 
@@ -970,6 +973,306 @@ class DedupeCancelTests(unittest.TestCase):
         # The remapped word and the one the dedupe never reached, both unlinked
         saved = FakeNote(dict(self.search.saved[2]), 2)
         self.assertEqual(match_data(saved), [["match"], ["match"]])
+
+
+def vocab_note(sort: str, note_id: int = 0, **fields: str) -> FakeNote:
+    """A vocab note with every field the match op reads, each named after its config key."""
+    values = {key: "" for key in mwtn.MATCH_FIELD_KEYS}
+    values.update(word_sort_field=sort, meaning_field="意味", **fields)
+    return FakeNote(values, note_id)
+
+
+def meaning_number(note: FakeNote) -> int:
+    found = re.search(r"\(m(\d+)\)", note["word_sort_field"])
+    return int(found.group(1)) if found else 0
+
+
+def reading_type(processed_furigana: str) -> str:
+    """check_word_reading_type, read off the tags the stand-in kana_highlight puts in."""
+    for kind in ("kun", "on"):
+        if f"<{kind}>" in processed_furigana:
+            return kind
+    return ""
+
+
+class FakeMarkerIndex:
+    """The run's word index, asked only for the notes of a word that may carry markers."""
+
+    def __init__(self, *nids: int):
+        self.nids = list(nids)
+
+    def marker_note_ids(self, word, regex):
+        return list(self.nids)
+
+
+class SiblingMarkersTests(unittest.TestCase):
+    """The markers a new note puts on the other notes of its word, undone when it is not added.
+
+    A second meaning copied from a note renames that note (m1); a new reading of a word gives
+    the word's other notes (r1), or (kun)/(on). They are saved with the run's other edits,
+    before the adding starts, so a cancel that leaves the new note out has to write them back.
+    """
+
+    WORD = "言葉"
+
+    def setUp(self):
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+        self.to_add: dict = {}
+        self.to_update: dict = {}
+        self.current = vocab_note("", 1)
+        # What the stand-in kana_highlight makes of the next new reading's furigana
+        self.processed_furigana = ""
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, value in (
+            ("clean_meaning_in_note", lambda **_: True),
+            ("copy_into_new_note", lambda note: FakeNote(dict(note.fields))),
+            ("Note", lambda col, model: vocab_note("")),
+            ("make_furigana_from_reading", lambda word, reading: f"{word}[{reading}]"),
+            ("kana_highlight", lambda **_: self.processed_furigana),
+            ("check_word_reading_type", reading_type),
+        ):
+            stack.enter_context(mock.patch.object(mwtn, name, value))
+        stack.enter_context(mock.patch.object(mw, "col", None, create=True))
+
+    def args(self, reading: str = "ことば", index=None) -> dict:
+        return {
+            **{key: key for key in mwtn.MATCH_FIELD_KEYS},
+            "word": self.WORD,
+            "reading": reading,
+            "sentence": "",
+            "word_index": 0,
+            "part_of_speech": "noun",
+            "current_note": self.current,
+            "note_type": {"name": "Word"},
+            "notes_to_add_dict": self.to_add,
+            "notes_to_update_dict": self.to_update,
+            "all_generated_meanings_dict": {},
+            "processed_word_tuples": {},
+            "word_note_index": index,
+            "sentence_cache": None,
+            "note_cache": None,
+        }
+
+    def new_meaning(self, en_meaning: str, *matching: FakeNote) -> FakeNote:
+        """A CREATE NEW as match_single_word_in_word_tuple makes one: copied from the first of
+        the notes matched with the largest meaning number, given the number after it."""
+        matching_notes = [
+            self.to_update.get(note.id, note) if note.id else note for note in matching
+        ]
+        largest = max(meaning_number(note) for note in matching_notes)
+        note_to_copy = next(n for n in matching_notes if meaning_number(n) == largest)
+        mwtn.create_new_note_from_matched_note(
+            CONFIG, note_to_copy, matching_notes, largest + 1, "意味", en_meaning, "", self.args()
+        )
+        return self.to_add[self.WORD][-1]
+
+    def new_reading(self, reading: str, *marker_nids: int) -> FakeNote:
+        created = mwtn.create_new_note_without_matching(
+            CONFIG, "", self.args(reading, FakeMarkerIndex(*marker_nids))
+        )
+        self.assertTrue(created)
+        return self.to_add[self.WORD][-1]
+
+    def clean_up(self, search: FakeSearch, notes=None, cancel_during=None):
+        """The cleanup from its first save on: the notes the run edited, then the adding, with
+        Cancel pressed before the first note is added, or while `cancel_during` is."""
+        col = SearchableCollection(search, self.updater)
+        col.update_notes([note for note in self.to_update.values() if note.id])
+        if notes is None:
+            notes = [note for word_notes in self.to_add.values() for note in word_notes]
+        self.updater.cancel_pressed = cancel_during is None
+        col.press_cancel_during = cancel_during
+        with search.patched():
+            base_ops.add_new_notes(
+                col,
+                notes,
+                CONFIG,
+                POS,
+                self.updater,
+                mwtn.update_fake_note_ids,
+                filter_new_notes_op=mwtn.deduplicate_notes_list,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+        return col
+
+    def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            second = self.new_meaning("words", search.get_note(2))
+        self.assertEqual(second["word_sort_field"], f"{self.WORD} (m2)")
+
+        col = self.clean_up(search)
+
+        self.assertEqual(col.added, [])
+        # Saved renamed with the run's edits, then written back, into the run's undo entry
+        self.assertEqual(col.updated[0]["word_sort_field"], f"{self.WORD} (m1)")
+        self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
+        self.assertEqual(set(col.merged), {POS})
+
+    def test_a_cancel_during_the_dedupe_takes_the_rename_back_too(self):
+        """The dedupe stops before renumbering its notes then, but it renumbers only new
+        notes, and none of them is added."""
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            first = search.get_note(2)
+            second = self.new_meaning("words", first)
+            self.new_meaning("words", first, second)
+        find_notes = search.find_notes
+
+        def find_and_press(query):
+            # Pressed while the dedupe's first merge searches the collection
+            self.updater.cancel_pressed = True
+            return find_notes(query)
+
+        search.find_notes = find_and_press  # type: ignore[method-assign]
+
+        col = self.clean_up(search, cancel_during=second)
+
+        self.assertEqual(col.added, [])
+        self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
+
+    def test_the_rename_stays_when_the_second_meaning_is_added(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            first = search.get_note(2)
+            second = self.new_meaning("words", first)
+            third = self.new_meaning("speech", first, second)
+        self.assertEqual(third["word_sort_field"], f"{self.WORD} (m3)")
+
+        col = self.clean_up(search, cancel_during=second)
+
+        self.assertEqual([note for note, _ in col.added], [second])
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (m1)")
+
+    def test_notes_numbered_before_the_run_are_not_touched(self):
+        search = FakeSearch(vocab_note(f"{self.WORD} (m1)", 2), vocab_note(f"{self.WORD} (m2)", 3))
+        with search.patched():
+            third = self.new_meaning("speech", search.get_note(2), search.get_note(3))
+        self.assertEqual(third["word_sort_field"], f"{self.WORD} (m3)")
+
+        col = self.clean_up(search)
+
+        self.assertEqual(col.updated, [])
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (m1)")
+        self.assertEqual(search.saved[3]["word_sort_field"], f"{self.WORD} (m2)")
+
+    def test_a_reading_number_is_taken_back(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            other_reading = self.new_reading("げんご", 2)
+        self.assertEqual(other_reading["word_sort_field"], f"{self.WORD} (r2)")
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)")
+
+        self.clean_up(search)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
+
+    def test_a_kun_marker_is_taken_back(self):
+        search = FakeSearch(
+            vocab_note(self.WORD, 2, word_processed_furigana_field="<kun>こと</kun>ば")
+        )
+        self.processed_furigana = "<on>げん</on>ご"
+        with search.patched():
+            other_reading = self.new_reading("げんご", 2)
+        self.assertEqual(other_reading["word_sort_field"], f"{self.WORD} (on)")
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (kun)")
+
+        self.clean_up(search)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
+
+    def test_the_run_s_other_edits_of_the_renamed_note_are_kept(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            second = self.new_meaning("words", search.get_note(2))
+        placeholder = int(second["new_note_id_field"])
+        # Edited elsewhere in the run: its meaning, and its sentence linked to the new note
+        renamed = self.to_update[2]
+        renamed["meaning_field"] = "新しい意味"
+        renamed["word_list_field"] = mwtn.format_word_array([w(self.WORD, [placeholder, 3])])
+
+        self.clean_up(search)
+
+        saved = FakeNote(dict(search.saved[2]), 2)
+        self.assertEqual(saved["word_sort_field"], self.WORD)
+        self.assertEqual(saved["meaning_field"], "新しい意味")
+        self.assertEqual(match_data(saved), [["match"]])
+
+    def test_a_note_made_seeing_the_rename_keeps_it_when_added(self):
+        """The notes of one word are added in the order they were made, so one made seeing a
+        rename is left out whenever the note that made it is. Not so across words: a ずる
+        word's new meaning is copied from its じる note, and is added among the じる word's."""
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            first = search.get_note(2)
+            second = self.new_meaning("words", first)
+            third = self.new_meaning("speech", first, second)
+
+        col = self.clean_up(search, notes=[third, second], cancel_during=third)
+
+        self.assertEqual([note for note, _ in col.added], [third])
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (m1)")
+
+    def test_a_reading_made_seeing_the_numbering_keeps_it_when_added(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            second = self.new_reading("げんご", 2)
+            third = self.new_reading("ことのは", 2)
+        self.assertEqual(third["word_sort_field"], f"{self.WORD} (r3)")
+
+        self.clean_up(search, notes=[third, second], cancel_during=third)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
+
+    def test_a_note_renamed_since_is_left_as_it_is(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            self.new_meaning("words", search.get_note(2))
+        # Renamed again after the new note, by something the run does not record
+        self.to_update[2]["word_sort_field"] = f"{self.WORD} (m5)"
+
+        self.clean_up(search)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (m5)")
+
+    def test_renames_by_two_notes_left_out_are_undone_newest_first(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            other_reading = self.new_reading("げんご", 2)
+            self.new_meaning("words", search.get_note(2))
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+
+        self.clean_up(search)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], self.WORD)
+        self.assertEqual(other_reading.id, 0)
+
+    def test_only_the_rename_by_the_note_left_out_is_undone(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            other_reading = self.new_reading("げんご", 2)
+            self.new_meaning("words", search.get_note(2))
+
+        self.clean_up(search, cancel_during=other_reading)
+
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
+
+    def test_a_new_note_renamed_by_one_left_out_is_written_back_once_added(self):
+        search = FakeSearch(vocab_note(self.WORD, 2))
+        with search.patched():
+            other_reading = self.new_reading("げんご", 2)
+            second = self.new_meaning("words", other_reading)
+        self.assertEqual(other_reading["word_sort_field"], f"{self.WORD} (r2)(m1)")
+        self.assertEqual(second["word_sort_field"], f"{self.WORD} (r2)(m2)")
+
+        self.clean_up(search, cancel_during=other_reading)
+
+        self.assertEqual(search.saved[other_reading.id]["word_sort_field"], f"{self.WORD} (r2)")
+        self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
 
 
 class FinalMessageTests(unittest.TestCase):
