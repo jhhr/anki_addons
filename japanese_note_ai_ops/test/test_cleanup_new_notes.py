@@ -1005,13 +1005,9 @@ class FakeMarkerIndex:
         return list(self.nids)
 
 
-class SiblingMarkersTests(unittest.TestCase):
-    """The markers a new note puts on the other notes of its word, undone when it is not added.
-
-    A second meaning copied from a note renames that note (m1); a new reading of a word gives
-    the word's other notes (r1), or (kun)/(on). They are saved with the run's other edits,
-    before the adding starts, so a cancel that leaves the new note out has to write them back.
-    """
+class NewNoteHarness(unittest.TestCase):
+    """Makes new notes of one word through the match op's real creation paths, over a stand-in
+    collection, and runs the cleanup's adding over them."""
 
     WORD = "言葉"
 
@@ -1098,6 +1094,15 @@ class SiblingMarkersTests(unittest.TestCase):
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
         return col
+
+
+class SiblingMarkersTests(NewNoteHarness):
+    """The markers a new note puts on the other notes of its word, undone when it is not added.
+
+    A second meaning copied from a note renames that note (m1); a new reading of a word gives
+    the word's other notes (r1), or (kun)/(on). They are saved with the run's other edits,
+    before the adding starts, so a cancel that leaves the new note out has to write them back.
+    """
 
     def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
@@ -1309,6 +1314,89 @@ class FinalMessageTests(unittest.TestCase):
         self.assertIn("Added 0 of 5 new notes.", message)
         self.assertIn("5 not added", message)
         self.assertNotIn("could not be added", message)
+
+
+KUN_FURIGANA = "<kun>こと</kun>ば"
+ON_FURIGANA = "<on>げん</on>ご"
+
+
+class ReadingMarkerOrderTests(NewNoteHarness):
+    """A new reading's markers, and the ones it puts on the word's other notes, come out the
+    same whatever order the word's notes are found in.
+
+    They were once decided inside the loop over those notes, once per note from what had been
+    seen so far, and whether any kun/on note carried its marker was overwritten by each note
+    instead of added up. A rename made from half the facts stayed: the same notes gave every
+    note (r1) in one order and left them all alone in the other.
+    """
+
+    def new_reading_both_orders(self, notes: list, processed_furigana: str) -> tuple:
+        """The new note's sort field and the others' as saved, the same in both orders."""
+        results = []
+        for order in (list(notes), list(reversed(notes))):
+            self.to_add.clear()
+            self.to_update.clear()
+            search = FakeSearch(*order)
+            self.processed_furigana = processed_furigana
+            with search.patched():
+                new = self.new_reading("ことば", *(note.id for note in order))
+            others = {
+                note.id: self.to_update.get(note.id, note)["word_sort_field"] for note in notes
+            }
+            results.append((new["word_sort_field"], others))
+        self.assertEqual(results[0], results[1], "the notes' order changed the markers")
+        return results[0]
+
+    def test_an_on_note_found_last_does_not_leave_numbers_on_every_note(self):
+        W = self.WORD
+        kun = vocab_note(W, 2, word_processed_furigana_field=KUN_FURIGANA)
+        on = vocab_note(f"{W} (on)", 3, word_processed_furigana_field=ON_FURIGANA)
+
+        new, others = self.new_reading_both_orders([kun, on], KUN_FURIGANA)
+
+        self.assertEqual(new, f"{W} (kun)")
+        self.assertEqual(others, {2: W, 3: f"{W} (on)"})
+
+    def test_a_numbered_note_found_last_does_not_number_the_others(self):
+        W = self.WORD
+        plain = vocab_note(W, 2)
+        numbered = vocab_note(f"{W} (r2)", 3)
+
+        new, others = self.new_reading_both_orders([plain, numbered], "")
+
+        self.assertEqual(new, f"{W} (r3)")
+        self.assertEqual(others, {2: W, 3: f"{W} (r2)"})
+
+    def test_one_kun_note_with_its_marker_is_enough_whichever_comes_last(self):
+        W = self.WORD
+        marked = vocab_note(f"{W} (kun)", 2, word_processed_furigana_field=KUN_FURIGANA)
+        unmarked = vocab_note(W, 3, word_processed_furigana_field=KUN_FURIGANA)
+        on = vocab_note(f"{W} (on)", 4, word_processed_furigana_field=ON_FURIGANA)
+
+        new, others = self.new_reading_both_orders([marked, unmarked, on], KUN_FURIGANA)
+
+        # Another kun reading among marked kun notes: numbered, and so are they
+        self.assertEqual(new, f"{W} (kun)(r2)")
+        self.assertEqual(others[2], f"{W} (kun)(r1)")
+        self.assertEqual(others[4], f"{W} (on)")
+
+    def test_a_second_reading_numbers_both(self):
+        W = self.WORD
+        first = vocab_note(W, 2, word_processed_furigana_field=KUN_FURIGANA)
+
+        new, others = self.new_reading_both_orders([first], KUN_FURIGANA)
+
+        self.assertEqual(new, f"{W} (r2)")
+        self.assertEqual(others, {2: f"{W} (r1)"})
+
+    def test_the_first_note_of_a_word_gets_no_marker(self):
+        search = FakeSearch()
+        self.processed_furigana = KUN_FURIGANA
+        with search.patched():
+            new = self.new_reading("ことば")
+
+        self.assertEqual(new["word_sort_field"], self.WORD)
+        self.assertEqual(self.to_update, {})
 
 
 if __name__ == "__main__":

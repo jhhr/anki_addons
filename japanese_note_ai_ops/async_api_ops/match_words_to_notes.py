@@ -1116,7 +1116,9 @@ def create_new_note_without_matching(
                 marker_note, word_sort_field, word_processed_furigana_field
             )
             if marker_note_reading_type == "kun":
-                has_kun_markers = "(kun)" in marker_sort_field
+                # Any kun note marked, not the last one seen: an overwrite made the outcome
+                # depend on the order the index returned the notes in
+                has_kun_markers = has_kun_markers or "(kun)" in marker_sort_field
                 kun_marker_notes.append(marker_note)
                 if "(kun)" not in marker_sort_field and new_note_reading_type == "on":
                     logger.debug(
@@ -1130,7 +1132,7 @@ def create_new_note_without_matching(
                     update_note_reading_markers(marker_note, add_reading_type="kun")
                     has_kun_markers = True
             elif marker_note_reading_type == "on":
-                has_on_markers = "(on)" in marker_sort_field
+                has_on_markers = has_on_markers or "(on)" in marker_sort_field
                 on_marker_notes.append(marker_note)
                 if "(on)" not in marker_sort_field and new_note_reading_type == "kun":
                     logger.debug(
@@ -1152,6 +1154,12 @@ def create_new_note_without_matching(
                     largest_kun_r_number = r_number
                 if marker_note_reading_type == "on" and r_number > largest_on_r_number:
                     largest_on_r_number = r_number
+
+    # Decided once, after every note of the word has been looked at. This used to sit inside
+    # the loop, so it ran once per note from the notes seen so far, and a rename it made from
+    # half the facts stayed: with the (on) note found last, every note got (r1) that the same
+    # notes found the other way round left alone. A word with no other notes gets no marker.
+    if marker_notes:
 
         def update_marker_notes_with_r1(marker_notes_list: list[Note]):
             for marker_note in marker_notes_list:
