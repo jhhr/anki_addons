@@ -303,6 +303,24 @@ class ReArmedCancelTests(unittest.TestCase):
         self.assertEqual(seen, [(False, False)])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(2, 0, 0))
 
+    def test_an_adding_that_raises_leaves_the_cancel_disarmed(self):
+        """A Cancel left live would say the rest of the cleanup can be stopped."""
+        greyed: list = []
+        patch = mock.patch.object(base_ops, "disable_run_controls", lambda: greyed.append(True))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+        self.updater.begin_cleanup()
+        with self.assertRaisesRegex(Exception, "has not been configured"):
+            base_ops.add_new_notes(
+                FakeCollection(), [unconfigured_note("-1111111")], CONFIG, POS, self.updater
+            )
+        self.win.wantCancel = True
+
+        self.assertFalse(self.updater.cleanup_cancel_requested())
+        # begin_cleanup's and the adding's end
+        self.assertEqual(greyed, [True, True])
+
 
 class SlowCollection(FakeCollection):
     def __init__(self, clock: FakeClock):
@@ -769,6 +787,80 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 1))
         self.assertEqual(col.updated, [referencing])
         self.assertEqual(result.updated_nids, [2])
+
+
+def unconfigured_note(placeholder: str) -> FakeNote:
+    """A new note whose note type the config does not know: get_field_config raises for it."""
+    note = new_note(placeholder)
+    note.note_type = lambda: {"name": "Unconfigured"}  # type: ignore[method-assign]
+    return note
+
+
+class CleanupTailTests(unittest.TestCase):
+    """What the adding leaves for after it happens whatever raised before (review finding C5).
+
+    The adding's cancel is ended however the adding stops, and a resolving that raises does
+    not cost the unlinking: that is what puts back the words of notes that will never exist.
+    """
+
+    def setUp(self):
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+
+    def test_a_resolving_that_raises_after_a_partial_cancel_still_unlinks_then_fails(self):
+        notes = [new_note("-1111111"), new_note("-2222222")]
+        col = SearchableCollection(FakeSearch(), self.updater)
+        col.press_cancel_during = notes[0]
+        unlinked = FakeNote({"word_list_field": "[]"}, note_id=9)
+        unlinking = Recorder(returns={9: unlinked})
+
+        with (
+            self.assertRaisesRegex(Exception, "has not been configured"),
+            self.assertLogs(base_ops.logger, "ERROR") as logs,
+        ):
+            base_ops.add_new_notes(
+                col, notes, CONFIG, POS, self.updater, Recorder(raises=True),
+                unadded_notes_op=unlinking,
+            )
+
+        self.assertEqual(unlinking.handed, [[notes[1]]])
+        self.assertEqual(col.updated, [unlinked])
+        # The add, then the unlinking's save, both in the run's undo entry
+        self.assertEqual(col.merged, [POS, POS])
+        self.assertIn("Error resolving the new notes' ids", "\n".join(logs.output))
+        self.assertTrue(self.updater.cancel_ended)
+
+    def test_a_resolving_that_raises_with_nothing_to_unlink_still_fails(self):
+        with self.assertRaisesRegex(Exception, "has not been configured"), self.assertLogs(
+            base_ops.logger, "ERROR"
+        ):
+            base_ops.add_new_notes(
+                FakeCollection(), [new_note("-1111111")], CONFIG, POS, self.updater,
+                Recorder(raises=True), unadded_notes_op=Recorder(),
+            )
+
+    def test_a_raise_in_the_add_loop_still_ends_the_cancel(self):
+        notes = [new_note("-1111111"), unconfigured_note("-2222222")]
+
+        with self.assertRaisesRegex(Exception, "has not been configured"):
+            base_ops.add_new_notes(FakeCollection(), notes, CONFIG, POS, self.updater)
+
+        self.assertEqual(self.updater.armed, [2])
+        self.assertTrue(self.updater.cancel_ended)
+
+    def test_a_dedupe_that_raises_still_ends_the_cancel(self):
+        def dedupe(notes, config, progress_updater):
+            raise RuntimeError("the dedupe broke")
+
+        with self.assertRaisesRegex(RuntimeError, "the dedupe broke"):
+            base_ops.add_new_notes(
+                FakeCollection(), [new_note("-1111111")], CONFIG, POS, self.updater,
+                filter_new_notes_op=dedupe,
+            )
+
+        self.assertTrue(self.updater.cancel_ended)
 
 
 class DedupeCancelTests(unittest.TestCase):
