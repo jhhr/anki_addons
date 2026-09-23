@@ -139,11 +139,13 @@ def tidy_word_markers(notes: Sequence[WordNote]) -> dict[int, str]:
     Meanings first. The notes of one reading are its meanings. If any is numbered, one note
     alone loses its `(mN)` and two or more are numbered from 1 without gaps.
 
-    Then readings. `(kun)`/`(on)` are kept only while the word has both a kun and an on
-    reading: a reading is of the kind its marker says, or else of the kind its notes'
-    furigana says. Without both they are dropped, and the word's readings are numbered as
-    one. Within each kind (or the word, when unmarked) two or more readings are numbered from
-    1 without gaps, and a reading alone loses its `(rN)`.
+    Then readings. A reading is of the kind its marker says, or else of the kind its notes'
+    furigana says, kun, on or neither. `(kun)`/`(on)` are kept while the word has readings of
+    two kinds or more, neither counting as one: a (kun) reading and one of neither kind stay
+    told apart by the marker, rather than numbered. With a single kind they are dropped, and
+    the word's readings are numbered as one. Within each marker (or the word, when they are
+    dropped) two or more readings are numbered from 1 without gaps, and a reading alone loses
+    its `(rN)`.
 
     A marker is never added where the numbering does not need one: an unmarked kun reading
     of a word marked (kun)/(on) stays unmarked. Everything is renumbered in the order it was
@@ -205,7 +207,10 @@ def _tidy_readings(
         )
 
     kinds = {kind(reading, notes) for reading, notes in readings.items()}
-    keep_kun_on = "kun" in kinds and "on" in kinds
+    # Neither is a kind of its own: counted as the kind it is marked apart from, a note the
+    # match op marked (kun) for an on reading that was never added, next to one it left
+    # unmarked for telling no kind, came out (r1) and (r2), markers neither had before
+    keep_kun_on = len(kinds) > 1
 
     by_class: dict[str, list[tuple[str, Optional[int]]]] = {}
     for reading in readings:

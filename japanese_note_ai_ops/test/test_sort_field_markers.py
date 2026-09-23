@@ -210,8 +210,16 @@ class KunOnTests(unittest.TestCase):
         word = fixture(f"{W} (kun)", W, types={1: "kun", 2: "kun"})
         self.assertEqual(tidied(word), {1: f"{W} (r1)", 2: f"{W} (r2)"})
 
-    def test_a_reading_of_no_kind_is_neither(self):
-        word = fixture(f"{W} (on)", W, types={1: "on"})
+    def test_a_reading_of_no_kind_is_a_kind_of_its_own(self):
+        # The (kun) was put on for an on reading never added, next to a note the match op left
+        # unmarked as it tells no kind: numbering the two would add markers neither had
+        word = fixture(f"{W} (kun)", W, types={1: "kun"})
+        self.assertEqual(sfm.tidy_word_markers(word), {})
+        word = fixture(f"{W} (on)(r1)", f"{W} (on)(r2)", W, types={1: "on"})
+        self.assertEqual(sfm.tidy_word_markers(word), {})
+
+    def test_readings_of_no_kind_alone_are_numbered_as_one(self):
+        word = fixture(f"{W} (r1)", f"{W} (r3)")
         self.assertEqual(tidied(word), {1: f"{W} (r1)", 2: f"{W} (r2)"})
 
     def test_the_marker_says_the_kind_over_the_furigana(self):
