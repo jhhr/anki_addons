@@ -35,35 +35,38 @@ class NoteSource:
     Both are captured up front because the dialog is window-modal over the browser: what the
     user saw when they opened it is what they meant, and the search is resolved only when it
     is needed (`note_ids`), so a long search costs nothing until the user commits to it.
+
+    It starts on the selection, even an empty one. The search has to be picked by a click:
+    it can be thousands of notes, or with an empty search box the whole collection, and a
+    dialog that started there ran on all of them at a stray Enter.
     """
 
     def __init__(
         self,
         selected_nids: Sequence[NoteId],
         search: str,
-        use_selection: Optional[bool] = None,
+        use_selection: bool = True,
     ) -> None:
         self.selected_nids: list[NoteId] = list(selected_nids)
         self.search = search
-        # With nothing selected there is nothing for selection mode to mean, so it starts on
-        # the search; `NoteSourceButtons` also disables the selection button then.
-        self.use_selection: bool = (
-            bool(self.selected_nids) if use_selection is None else use_selection
-        )
+        self.use_selection = use_selection
 
-    def browser_query(self) -> str:
-        """A search string for the notes this source means, to combine with other terms.
+    def browser_query(self) -> Optional[str]:
+        """A search string for the notes this source means, to combine with other terms, or
+        None for no notes at all: selection mode with nothing selected.
 
-        Selection mode without ids falls back to the search: copy_anywhere has always
-        counted that way, and an empty `nid:` would be a search syntax error.
+        Not "" for that: an empty search matches every note, and an empty `nid:` is a syntax
+        error.
         """
-        if self.use_selection and self.selected_nids:
+        if self.use_selection:
+            if not self.selected_nids:
+                return None
             return f"nid:{','.join(map(str, self.selected_nids))}"
         return self.search
 
     def note_ids(self, find_notes: Callable[[str], Sequence[NoteId]]) -> list[NoteId]:
         """The ids to act on. Selection mode never widens to the search, even when empty:
-        silently running over a whole search the user did not pick is the worse failure.
+        running over a whole search the user did not pick is the worse failure.
 
         An empty `search` is passed to `find_notes` as it is; Anki matches the whole
         collection for it. `Browser.current_search()` is the search box text, which is empty
@@ -109,10 +112,6 @@ class NoteSourceButtons(QWidget):
         self.selection_button.clicked.connect(lambda: self.set_use_selection(True))
         self.search_button.clicked.connect(lambda: self.set_use_selection(False))
 
-        if not note_source.selected_nids:
-            self.selection_button.setEnabled(False)
-            note_source.use_selection = False
-
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.selection_button)
@@ -121,8 +120,6 @@ class NoteSourceButtons(QWidget):
         self._update_highlight()
 
     def set_use_selection(self, use_selection: bool) -> None:
-        if use_selection and not self.note_source.selected_nids:
-            return
         if use_selection == self.note_source.use_selection:
             return
         self.note_source.use_selection = use_selection

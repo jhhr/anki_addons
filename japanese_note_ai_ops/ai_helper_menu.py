@@ -81,7 +81,8 @@ def add_ai_helper_actions(ai_menu: QMenu, nids: Sequence[NoteId], parent: Any) -
     """Fill the "AI helper" submenu; every action runs over `nids`, the selection as it was
     when the menu opened. `parent` is the browser, which the dialog opens over."""
     open_dialog = QAction(MULTI_OP_LABEL, mw)
-    qconnect(open_dialog.triggered, lambda: show_multi_op_dialog(parent))
+    # The selection the menu read, not read again: with thousands selected that is slow
+    qconnect(open_dialog.triggered, lambda: show_multi_op_dialog(parent, nids))
     ai_menu.addAction(open_dialog)
     ai_menu.addSeparator()
     for entry in menu_entries():

@@ -136,7 +136,8 @@ exposes `kana_highlight`, `decode_word_array` and `format_word_array` to code mo
 import. The interpolation engine and most widgets this addon uses are shared with
 `related_card_disperse`; change them in `anki_shared/`, never under `shared/`, and run that
 addon's tests too. The picker's "Use selected notes" / "Use all notes from current search"
-pair is `ui.note_source_buttons`, shared with `japanese_note_ai_ops`' multi-op dialog; with
-nothing selected it starts in search mode with the selection button disabled. Several
+pair is `ui.note_source_buttons`, shared with `japanese_note_ai_ops`' multi-op dialog. It
+always starts on the selection, and with nothing selected that is no notes: the search has
+to be clicked, so a stray Enter never applies to a whole search. Several
 helpers here are generic with one owner (`utils/merge_cards`, `move_card_to_deck`,
 `duplicate_note`, the media-folder helpers): when another addon needs one, move it per [docs/shared-code.md](../docs/shared-code.md) instead of copying.

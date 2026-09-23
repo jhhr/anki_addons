@@ -130,6 +130,12 @@ def count_label_text(count: int, note_source: NoteSource, error: Optional[str] =
         return f"The browser's search could not be run: {error}"
     notes = "1 note" if count == 1 else f"{count} notes"
     if note_source.use_selection:
+        if not note_source.selected_nids:
+            # The search is never fallen back to: it has to be picked, with its button
+            return (
+                "No notes are selected in the browser: 0 notes will be processed. Select some,"
+                " or use all notes from the current search."
+            )
         return f"{notes} will be processed (the selected notes)."
     if is_whole_collection(note_source):
         return (
@@ -363,12 +369,22 @@ class MultiOpDialog(QDialog):
         self.accept()
 
 
-def show_multi_op_dialog(browser: Browser) -> None:
+def show_multi_op_dialog(
+    browser: Browser, selected_nids: Optional[Sequence[NoteId]] = None
+) -> None:
     """Open the dialog over `browser` and, if Run was pressed, start the chain once it has
-    closed, so that the chain's first progress dialog is not opened under a modal one."""
+    closed, so that the chain's first progress dialog is not opened under a modal one.
+
+    `selected_nids` is the selection when the caller has read it already, as the context menu
+    has: reading a selection of thousands again is the lag this dialog is for avoiding.
+    """
     col = mw.col
     if col is None:
         return
-    dialog = MultiOpDialog(browser, browser_note_source(browser), col.find_notes)
+    if selected_nids is None:
+        note_source = browser_note_source(browser)
+    else:
+        note_source = NoteSource(selected_nids, browser.current_search())
+    dialog = MultiOpDialog(browser, note_source, col.find_notes)
     if dialog.exec() and dialog.note_ids:
         run_op_chain(dialog.chosen_specs(), dialog.note_ids, parent=browser)

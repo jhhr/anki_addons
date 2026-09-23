@@ -224,7 +224,7 @@ class DialogTests(unittest.TestCase):
         cls.dialog_module = load_with_real_qt()
         cls.NoteSource = cls.dialog_module.NoteSource
 
-    def make(self, selected=(1, 2, 3), search="deck:x", found=(7, 8), use_selection=None):
+    def make(self, selected=(1, 2, 3), search="deck:x", found=(7, 8), use_selection=True):
         self.find_notes = mock.Mock(return_value=list(found))
         source = self.NoteSource(list(selected), search, use_selection)
         dialog = self.dialog_module.MultiOpDialog(None, source, self.find_notes, ops=OPS)
@@ -327,10 +327,16 @@ class DialogTests(unittest.TestCase):
         self.find_notes.assert_called_once_with("deck:x")
         self.assertIn("2 notes will be processed (all notes", dialog.count_label.text())
 
-    def test_nothing_selected_starts_on_the_search(self):
+    def test_nothing_selected_starts_on_the_empty_selection_not_the_search(self):
+        # A stray Enter must not run over the whole search: it has to be clicked first
         dialog = self.make(selected=(), found=(7, 8, 9))
-        self.assertFalse(dialog.note_source_buttons.selection_button.isEnabled())
+        self.click_option(dialog, "Op A")
+        self.assertIn("0 notes will be processed", dialog.count_label.text())
+        self.assertFalse(dialog.run_button.isEnabled())
+        self.find_notes.assert_not_called()
+        dialog.note_source_buttons.search_button.click()
         self.assertIn("3 notes", dialog.count_label.text())
+        self.assertTrue(dialog.run_button.isEnabled())
 
     def test_empty_search_warns_that_it_is_the_whole_collection(self):
         dialog = self.make(selected=(1,), search="", found=range(5000))
@@ -409,7 +415,7 @@ class OpenerTests(unittest.TestCase):
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
         cls.module = load_with_real_qt()
 
-    def open(self, browser, found, pick, run=True):
+    def open(self, browser, found, pick, run=True, search=False, selected_nids=None):
         """Opens the dialog as the opener does; `exec` is replaced by picking the ops by label
         and pressing Run (or Close)."""
         module = self.module
@@ -420,6 +426,8 @@ class OpenerTests(unittest.TestCase):
             for label in pick:
                 items = dialog.options_list.findItems(label, QtCore.Qt.MatchFlag.MatchExactly)
                 dialog.options_list.itemClicked.emit(items[0])
+            if search:
+                dialog.note_source_buttons.search_button.click()
             (dialog.run_button if run else dialog.close_button).click()
             return dialog.result()
 
@@ -437,7 +445,10 @@ class OpenerTests(unittest.TestCase):
             module.MultiOpDialog, "__init__", init
         ):
             mw.col = col
-            module.show_multi_op_dialog(browser)
+            if selected_nids is None:
+                module.show_multi_op_dialog(browser)
+            else:
+                module.show_multi_op_dialog(browser, selected_nids)
         return run_op_chain, col
 
     def test_run_starts_the_chain_with_the_ops_in_order_over_the_selection(self):
@@ -450,13 +461,26 @@ class OpenerTests(unittest.TestCase):
         self.assertIs(run_op_chain.call_args.kwargs["parent"], browser)
         col.find_notes.assert_not_called()
 
-    def test_with_nothing_selected_the_chain_runs_over_the_search(self):
+    def test_with_nothing_selected_run_starts_nothing_without_the_search_clicked(self):
+        # A stray Enter must not run over the whole search
         browser = FakeBrowser([], "deck:x")
         run_op_chain, col = self.open(browser, found=(7, 8), pick=["Op B"])
+        run_op_chain.assert_not_called()
+        col.find_notes.assert_not_called()
+
+    def test_the_search_clicked_runs_the_chain_over_it(self):
+        browser = FakeBrowser([], "deck:x")
+        run_op_chain, col = self.open(browser, found=(7, 8), pick=["Op B"], search=True)
         specs, nids = run_op_chain.call_args.args
         self.assertEqual([s.key for s in specs], ["b"])
         self.assertEqual(nids, [7, 8])
         col.find_notes.assert_called_with("deck:x")
+
+    def test_a_selection_handed_in_is_not_read_from_the_browser_again(self):
+        browser = FakeBrowser([], "deck:x")
+        browser.selected_notes = mock.Mock(side_effect=AssertionError("read again"))
+        run_op_chain, _ = self.open(browser, found=(), pick=["Op A"], selected_nids=[3, 4])
+        self.assertEqual(run_op_chain.call_args.args[1], [3, 4])
 
     def test_close_starts_nothing(self):
         browser = FakeBrowser([5], "deck:x")

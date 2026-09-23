@@ -50,8 +50,14 @@ def test_switching_to_the_search_recounts_over_the_search(qtbot, notes):
     assert list(dialog.definition_note_ids[0]) == [notes[0].id]
 
 
-def test_nothing_selected_counts_over_the_search(qtbot, notes):
+def test_nothing_selected_counts_nothing_until_the_search_is_clicked(qtbot, notes):
+    # A stray Enter must not apply to the whole search: it has to be picked by a click
     dialog = open_dialog(qtbot, NoteSource([], ""))
-    assert not dialog.note_source_buttons.selection_button.isEnabled()
+    assert dialog.note_source_buttons.selection_button.isEnabled()
+    assert list(dialog.definition_note_ids[0]) == []
+    assert not dialog.apply_button.isEnabled()
+
+    dialog.note_source_buttons.search_button.click()
     # An empty search box matches the whole collection; the note type narrows it.
     assert sorted(dialog.definition_note_ids[0]) == sorted(n.id for n in notes)
+    assert dialog.apply_button.isEnabled()

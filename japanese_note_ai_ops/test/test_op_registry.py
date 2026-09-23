@@ -410,7 +410,8 @@ class MenuTests(unittest.TestCase):
         self.addCleanup(stop)
         with mock.patch.object(ai_helper_menu, "show_multi_op_dialog") as show:
             menu.items[0].triggered.slot()
-        show.assert_called_once_with(PARENT)
+        # The selection the menu already read, so the dialog does not read it again
+        show.assert_called_once_with(PARENT, NIDS)
         self.assertEqual([n for n, m in mocks.items() if m.called], [])
 
     def test_menu_only_actions_are_no_ops_of_the_registry(self):

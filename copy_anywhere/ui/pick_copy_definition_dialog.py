@@ -607,7 +607,13 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
                 if note_type_names and note_type_names != "-":
                     note_type_names_list = note_type_names.strip('""').split('", "')
                     note_type_query = make_query_string("note", note_type_names_list)
-                def_note_ids = mw.col.find_notes(f"{note_type_query} {decks_query} {browser_query}")
+                if browser_query is None:
+                    # Nothing selected: no notes, not the whole search a find would give
+                    def_note_ids: Sequence[Union[int, NoteId]] = []
+                else:
+                    def_note_ids = mw.col.find_notes(
+                        f"{note_type_query} {decks_query} {browser_query}"
+                    )
 
                 self.selected_definitions_applicable_notes.update(def_note_ids)
                 self.definition_note_ids[index] = def_note_ids

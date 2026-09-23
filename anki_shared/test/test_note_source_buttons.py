@@ -48,26 +48,20 @@ class TestNoteSource:
         assert source.note_ids(find) == [7, 8]
         assert find.searches == ["deck:x"]
 
-    def test_the_mode_defaults_to_selection_when_something_is_selected(self):
+    def test_the_mode_defaults_to_selection(self):
         assert NoteSource([5], "deck:x").use_selection is True
 
-    def test_nothing_selected_starts_in_search_mode(self):
+    def test_nothing_selected_still_starts_on_the_selection_and_means_no_notes(self):
+        # The search has to be clicked: a stray Enter must not run over all of it
         source = NoteSource([], "deck:x")
-        assert source.use_selection is False
-        assert source.browser_query() == "deck:x"
-        assert source.note_ids(RecordingFind([4])) == [4]
-
-    def test_forced_selection_mode_with_nothing_selected_never_widens_to_the_search(self):
-        # The query keeps copy_anywhere's historical fallback (an empty `nid:` is a syntax
-        # error), but the ids an op would run on stay empty.
-        source = NoteSource([], "deck:x", use_selection=True)
         find = RecordingFind([4])
-        assert source.browser_query() == "deck:x"
+        assert source.use_selection is True
+        assert source.browser_query() is None
         assert source.note_ids(find) == []
         assert find.searches == []
 
     def test_an_empty_search_is_passed_on_as_it_is(self):
-        source = NoteSource([], "")
+        source = NoteSource([], "", use_selection=False)
         find = RecordingFind([1, 2])
         assert source.browser_query() == ""
         assert source.note_ids(find) == [1, 2]
@@ -90,15 +84,15 @@ class TestBrowserNoteSource:
         assert source.search == "tag:a"
         assert source.use_selection is True
 
-    def test_nothing_selected_means_search_mode(self):
+    def test_nothing_selected_still_means_selection_mode(self):
         browser = SimpleNamespace(selected_notes=lambda: [], current_search=lambda: "tag:a")
-        assert browser_note_source(browser).use_selection is False
+        assert browser_note_source(browser).use_selection is True
 
     def test_no_browser_is_an_empty_source_not_an_error(self):
         source = browser_note_source(None)
         assert source.selected_nids == []
         assert source.search == ""
-        assert source.use_selection is False
+        assert source.note_ids(RecordingFind([1])) == []
 
 
 needs_qt = pytest.mark.skipif(
@@ -146,14 +140,16 @@ class TestNoteSourceButtons:
         widget.selection_button.click()
         assert changes == []
 
-    def test_nothing_selected_disables_selection_and_highlights_search(self, qtbot):
-        source = NoteSource([], "deck:x", use_selection=True)
+    def test_nothing_selected_keeps_the_selection_live_and_the_search_a_click_away(self, qtbot):
+        source = NoteSource([], "deck:x")
         widget, changes = self.make(qtbot, source)
         assert widget.selection_button.text() == "Use selected notes (0)"
-        assert not widget.selection_button.isEnabled()
-        assert source.use_selection is False
-        assert widget.search_button.styleSheet() == ACTIVE_BUTTON_STYLE
+        assert widget.selection_button.isEnabled()
+        assert widget.selection_button.styleSheet() == ACTIVE_BUTTON_STYLE
+        assert source.use_selection is True
 
-        widget.set_use_selection(True)
+        widget.search_button.click()
         assert source.use_selection is False
-        assert changes == []
+        widget.selection_button.click()
+        assert source.use_selection is True
+        assert changes == [False, True]
