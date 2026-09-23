@@ -13,7 +13,8 @@ A note whose field holds no word array it can read is skipped, and note ids a re
 unlinked are logged, so a link lost to a bad call can be put back. Particles and the
 copula are judged `dontmatch` while planning, without a request. Once a note's requests are done
 the array is written back, keeping every word that got a decision; a word whose request failed
-stays as it was for the next run.
+stays as it was for the next run. A cancel writes back the decisions its notes had so far, as
+the plan's flush.
 """
 
 import asyncio
@@ -150,11 +151,28 @@ def plan_word_matching_judge(
 
         return handle_op_error
 
-    async def save_results(word_tasks: list[asyncio.Task]):
-        await asyncio.gather(*word_tasks)
+    array_saved = False
+
+    def save_array() -> bool:
+        # Once only: the flush may come after this note's own save or before its cancelled
+        # task is unwound. After a cancel an abandoned thread can still judge a word; the field
+        # is formatted from the array as it is now, and a word judged after that stays judged
+        # in memory only, to be asked about again next run. Each judgment replaces the whole
+        # match_data, so every word is formatted either before or after its judgment.
+        nonlocal array_saved
+        if array_saved:
+            return False
+        array_saved = True
         logger.debug(f"{log_prefix}Judged {sum(judged)} of {len(judged)} words by request")
         if plan.auto or any(judged):
             save_note()
+        return True
+
+    async def save_results(word_tasks: list[asyncio.Task]):
+        # Nothing awaited after the gather, so a cancel either stops this before save_array
+        # or not at all
+        await asyncio.gather(*word_tasks)
+        save_array()
         progress_updater.increment_counts(notes_done=1)
 
     def spawn_note_tasks(tasks: list[asyncio.Task]) -> None:
@@ -180,7 +198,7 @@ def plan_word_matching_judge(
             tasks.append(task)
         tasks.append(asyncio.create_task(save_results(word_tasks)))
 
-    return NotePlan(task_count=len(plan.asks), spawn=spawn_note_tasks)
+    return NotePlan(task_count=len(plan.asks), spawn=spawn_note_tasks, flush=save_array)
 
 
 def make_bulk_op(states: frozenset[MatchState]):
