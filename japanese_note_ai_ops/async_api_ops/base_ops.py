@@ -1113,8 +1113,14 @@ class AsyncTaskProgressUpdater:
         self._update_pending = False
         self._last_update_at = 0.0
         self._suppressed = False
-        # Set once the cleanup's cancel is re-armed, cleared once nothing is left for it to stop
+        # Set once the main thread has reset the dialog's flag for the cleanup's note adding,
+        # cleared once nothing is left for that cancel to stop
         self._cleanup_cancel_armed = threading.Event()
+        # Which re-arm the op thread still wants; bumped when it stops waiting for one or ends
+        # the adding's cancel, so a re-arm landing after that does nothing. Under _arm_lock,
+        # which the main thread's check-and-reset holds as well.
+        self._arm_lock = threading.Lock()
+        self._arm_generation = 0
         if title is None:
             title = "Processing asynchronous tasks..."
         self.set_title(title)
@@ -1258,45 +1264,83 @@ class AsyncTaskProgressUpdater:
         mw.taskman.run_on_main(disable_run_controls)
 
     def begin_cleanup(self) -> None:
-        """Let the cleanup draw its progress again, and give it a cancel of its own.
+        """Let the cleanup draw its progress again, and grey the buttons while it writes.
 
         The suppression `show_cancelling` sets is for the burst of redraws while every task
         unwinds at once; by cleanup the drivers have returned and nothing bursts. Left on, a
         cancelled run's dialog would say "Finishing up" through the whole of note adding and
         new-note processing, which a cancel of the API work does not skip.
 
+        Nothing a cancel could stop runs until the note adding, which arms a cancel of its own
+        (`arm_cleanup_cancel`), and only when there are notes to add: the edited notes' write
+        before it can be long (a translate or kanjify run over thousands of notes), and a live
+        Cancel through it would do nothing.
+        """
+        with self._ui_lock:
+            self._suppressed = False
+        mw.taskman.run_on_main(disable_run_controls)
+
+    def arm_cleanup_cancel(self, total_notes: int) -> None:
+        """Give the note adding a cancel of its own, and say so in the dialog as it goes live.
+
         Adding can be slow (every `add_note` runs the note_will_be_added hooks), so a second
         cancel stops it. The dialog's flag still holds the first, so it is reset on the main
         thread (`rearm_cleanup_cancel`), and this thread waits for that: reading the flag
         before the reset lands would take the first cancel for a second one and add nothing.
-        If the main thread does not get to it in time, `cleanup_cancel_requested` says no
-        until it has, rather than trust a flag that may be stale. Done for every run,
-        cancelled or not, so a finished run's adding can be stopped too.
+        Done for every run with notes to add, cancelled or not, so a finished run's adding can
+        be stopped too.
+
+        `cleanup_cancel_requested` hears the flag only once the main thread has really reset
+        it: without a dialog, or if the reset failed, the flag may still hold the first cancel,
+        and trusting it once dropped every prepared note. The adding just cannot be cancelled
+        then. If the main thread gets to the reset only after this thread stopped waiting, or
+        after the adding ended, it does nothing: resetting the flag then could erase a cancel
+        pressed in between, and the adding would be told of a cancel after it was over.
+
+        The adding's label is drawn in the same main-thread step, so the dialog stops saying
+        "Cancelling operations" as Cancel comes back, and says Cancel stops the adding only if
+        it does.
         """
-        with self._ui_lock:
-            self._suppressed = False
-        armed = self._cleanup_cancel_armed
+        landed = threading.Event()
+        with self._arm_lock:
+            self._arm_generation += 1
+            generation = self._arm_generation
 
         def rearm():
+            with self._arm_lock:
+                if self._arm_generation != generation:
+                    return
+                if rearm_cleanup_cancel():
+                    self._cleanup_cancel_armed.set()
+                # Under the lock, so this thread's give-up below sees the check-and-reset
+                # either done or not begun
+                landed.set()
             try:
-                rearm_cleanup_cancel()
-            finally:
-                armed.set()
+                show_dialog_label(
+                    self._note_adding_label(0, total_notes, 0), value=0, maximum=total_notes
+                )
+            except Exception as e:
+                logger.error("Error drawing the note adding progress: %s", e)
 
         mw.taskman.run_on_main(rearm)
-        if not armed.wait(CLEANUP_REARM_TIMEOUT):
-            logger.warning(
-                "The main thread did not re-arm the cancel within %.0f s; the adding cannot be"
-                " cancelled until it does",
-                CLEANUP_REARM_TIMEOUT,
-            )
+        if landed.wait(CLEANUP_REARM_TIMEOUT):
+            return
+        with self._arm_lock:
+            if landed.is_set():
+                return
+            self._arm_generation += 1
+        logger.warning(
+            "The main thread did not re-arm the cancel within %.0f s; the adding cannot be"
+            " cancelled",
+            CLEANUP_REARM_TIMEOUT,
+        )
 
     def cleanup_cancel_requested(self) -> bool:
-        """Whether the user cancelled the cleanup's note adding, since `begin_cleanup`.
+        """Whether the user cancelled the cleanup's note adding, since `arm_cleanup_cancel`.
 
         The dialog's flag only, not `run_cancelled()`, which holds the cancel of the API work
-        and stays set for the rest of the run. Only while the cancel is re-armed: before, the
-        flag may still hold that first cancel.
+        and stays set for the rest of the run. Only while the cancel is armed: until the main
+        thread has reset it, the flag may still hold that first cancel.
         """
         return self._cleanup_cancel_armed.is_set() and bool(mw.progress.want_cancel())
 
@@ -1307,7 +1351,10 @@ class AsyncTaskProgressUpdater:
         end, as they are what leaves the word arrays consistent; a live Cancel during them
         would look like it could stop them.
         """
-        self._cleanup_cancel_armed.clear()
+        with self._arm_lock:
+            # A re-arm still queued on the main thread must not arm the cancel again
+            self._arm_generation += 1
+            self._cleanup_cancel_armed.clear()
         mw.taskman.run_on_main(disable_run_controls)
 
     def begin_cleanup_stage(self) -> None:
@@ -1444,31 +1491,35 @@ class AsyncTaskProgressUpdater:
         are done.
         """
         try:
-            elapsed_s = time.time() - self.start_time
-            elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
-            time_msg = f"<br><code>Time: {elapsed_time}</code>"
-            # A failed add took its time too, so the rate is over every note tried. The API
-            # phase's notes_done, which this used to subtract, has nothing to do with adding.
-            notes_tried = notes_added + failed
-            if notes_tried > 0:
-                avg_per_note_s = elapsed_s / notes_tried
-                eta_s = (total_notes - notes_tried) * avg_per_note_s
-                eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
-                time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
-                <br><code>ETA: {eta_time}</code>"""
-            task_progress_msg = f"""<strong>Adding notes:</strong>
-                <br><strong><code>{notes_added}/{total_notes}</code></strong> notes"""
-            if failed > 0:
-                task_progress_msg += f""" | <strong style="color: red;">{failed} failed</strong>"""
-            if self._cleanup_cancel_armed.is_set():
-                time_msg += (
-                    '<br><small style="opacity: 0.85">Cancel stops the adding; the words of'
-                    " notes not added are left to match again.</small>"
-                )
+            label = self._note_adding_label(notes_added, total_notes, failed)
         except Exception as e:
             logger.error("Error updating note adding progress: %s", e)
             return
-        self._push(f"{task_progress_msg}{time_msg}", notes_added, total_notes)
+        self._push(label, notes_added, total_notes)
+
+    def _note_adding_label(self, notes_added: int, total_notes: int, failed: int) -> str:
+        elapsed_s = time.time() - self.start_time
+        elapsed_time = time.strftime("%H:%M:%S", time.gmtime(elapsed_s))
+        time_msg = f"<br><code>Time: {elapsed_time}</code>"
+        # A failed add took its time too, so the rate is over every note tried. The API
+        # phase's notes_done, which this used to subtract, has nothing to do with adding.
+        notes_tried = notes_added + failed
+        if notes_tried > 0:
+            avg_per_note_s = elapsed_s / notes_tried
+            eta_s = (total_notes - notes_tried) * avg_per_note_s
+            eta_time = time.strftime("%H:%M:%S", time.gmtime(eta_s))
+            time_msg += f""" | <small> Avg time per note: {avg_per_note_s:.2f}s</small>
+                <br><code>ETA: {eta_time}</code>"""
+        task_progress_msg = f"""<strong>Adding notes:</strong>
+                <br><strong><code>{notes_added}/{total_notes}</code></strong> notes"""
+        if failed > 0:
+            task_progress_msg += f""" | <strong style="color: red;">{failed} failed</strong>"""
+        if self._cleanup_cancel_armed.is_set():
+            time_msg += (
+                '<br><small style="opacity: 0.85">Cancel stops the adding; the words of'
+                " notes not added are left to match again.</small>"
+            )
+        return f"{task_progress_msg}{time_msg}"
 
     def update_new_note_processing_progress(
         self,
@@ -2447,10 +2498,10 @@ def add_new_notes(
     The cleanup's note adding, finished and cancelled runs alike. Every write is merged into
     the run's undo entry `pos` as it is made, so the whole run stays one undo step.
 
-    The adding has a cancel of its own (`begin_cleanup` re-arms the dialog's), honoured before
-    the dedupe, between its merges, right after it, and before each note; never inside one
-    `add_note`, whose hooks run to the end. Once it is seen the rest is not added, and the
-    notes are split three ways:
+    The adding has a cancel of its own (`arm_cleanup_cancel` re-arms the dialog's, here, when
+    there is anything to add), honoured before the dedupe, between its merges, right after it,
+    and before each note; never inside one `add_note`, whose hooks run to the end. Once it is
+    seen the rest is not added, and the notes are split three ways:
 
     - added: `new_notes_op` resolves their placeholder ids, as in a finished run;
     - failed (attempted and raised, or no note type or deck): handed to neither op, so their
@@ -2483,6 +2534,11 @@ def add_new_notes(
     filtered_nids: list[NoteId] = []
     started = time.monotonic()
 
+    if notes:
+        # First, so the label drawn as Cancel comes back shows this stage's time, not the
+        # API phase's
+        progress_updater.begin_cleanup_stage()
+        progress_updater.arm_cleanup_cancel(total_notes)
     cancelled = progress_updater.cleanup_cancel_requested()
     if filter_new_notes_op is not None and notes and not cancelled:
         progress_updater.begin_cleanup_stage()
@@ -2692,7 +2748,7 @@ def selected_notes_op(
             # though the run is cancelled. Some ops have real work left here, such as resolving
             # the ids of the notes they added. Cleared in run_bulk_op's finally.
             begin_cleanup_phase()
-            # The dialog's cancel is re-armed for the note adding; the run stays cancelled
+            # Greys the buttons: nothing here heeds a cancel until add_new_notes arms its own
             progress_updater.begin_cleanup()
             pos, res_notes_to_add_dict, res_notes_to_update_dict, res_notes_to_remove = result
 
@@ -2821,9 +2877,6 @@ def selected_notes_op(
                     [nid for nid in added.updated_nids if nid not in edited_nids]
                 )
                 cleanup_started = time.monotonic()
-            else:
-                # Nothing to add, so nothing for the re-armed Cancel to stop
-                progress_updater.end_cleanup_cancel()
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes
 

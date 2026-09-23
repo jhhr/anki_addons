@@ -79,12 +79,17 @@ class FakeUpdater:
     def __init__(self):
         self.adding: list = []
         self.clearing: list = []
-        # The cleanup's own cancel, as re-armed by begin_cleanup; a test presses it
+        # The cleanup's own cancel, as armed by arm_cleanup_cancel; a test presses it
         self.cancel_pressed = False
         self.cancel_ended = False
+        # The note count of each arm_cleanup_cancel
+        self.armed: list = []
 
     def begin_cleanup_stage(self):
         pass
+
+    def arm_cleanup_cancel(self, total_notes):
+        self.armed.append(total_notes)
 
     def cleanup_cancel_requested(self):
         return self.cancel_pressed
@@ -112,9 +117,9 @@ def new_note(placeholder: str) -> FakeNote:
 class AddNewNotesAfterCancelTests(unittest.TestCase):
     """After a cancel of the API work, which the adding does not take for its own.
 
-    The dialog's flag still holds that cancel here, as it does until begin_cleanup re-arms it
-    (the real re-arm: ReArmedCancelTests); the adding reads only the cleanup's cancel, which
-    nobody presses in these tests.
+    The dialog's flag still holds that cancel here, as it does until the adding re-arms it
+    (arm_cleanup_cancel; the real re-arm: ReArmedCancelTests); the adding reads only the
+    cleanup's cancel, which nobody presses in these tests.
     """
 
     def setUp(self):
@@ -256,6 +261,47 @@ class ReArmedCancelTests(unittest.TestCase):
         self.assertEqual([note for note, _ in col.added], [notes[0]])
         self.assertEqual(unlinking, notes[1:])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 2))
+
+    def test_a_flag_nothing_could_reset_does_not_stop_the_adding(self):
+        """Without the dialog the first cancel set, or with one the reset fails on, the flag
+        is left as it was; the adding cannot be cancelled then, but it is not stopped by the
+        cancel of the API work either."""
+        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        col = FakeCollection()
+        unlinking: list = []
+
+        self.updater.begin_cleanup()
+        with mock.patch.object(controls_module, "_dialog", lambda: None):
+            result = base_ops.add_new_notes(
+                col,
+                notes,
+                CONFIG,
+                POS,
+                self.updater,
+                unadded_notes_op=lambda notes, config, updater: unlinking.extend(notes) or {},
+            )
+
+        self.assertTrue(self.win.wantCancel)
+        self.assertEqual([note for note, _ in col.added], notes)
+        self.assertEqual(unlinking, [])
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(3, 0, 0))
+
+    def test_the_dedupe_runs_with_the_first_cancel_already_reset(self):
+        """It is the first stage the cancel stops, so the arming comes before it."""
+        notes = [new_note("-1111111"), new_note("-2222222")]
+        seen: list = []
+
+        def dedupe(notes, config, progress_updater):
+            seen.append((self.win.wantCancel, progress_updater.cleanup_cancel_requested()))
+            return notes, {}
+
+        self.updater.begin_cleanup()
+        result = base_ops.add_new_notes(
+            FakeCollection(), notes, CONFIG, POS, self.updater, filter_new_notes_op=dedupe
+        )
+
+        self.assertEqual(seen, [(False, False)])
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(2, 0, 0))
 
 
 class SlowCollection(FakeCollection):
@@ -676,6 +722,28 @@ class CancelledAddingTests(unittest.TestCase):
         self.add(FakeCollection(), notes, filter_new_notes_op=dedupe, unadded_notes_op=unlinking)
 
         self.assertEqual((dedupe.handed, unlinking.handed), ([], [notes]))
+
+    def test_the_cancel_is_armed_before_the_dedupe_with_every_note_as_prepared(self):
+        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        armed_at_dedupe: list = []
+
+        def dedupe(notes, config, progress_updater):
+            armed_at_dedupe.extend(self.updater.armed)
+            return notes[:1], {}
+
+        self.add(FakeCollection(), notes, filter_new_notes_op=dedupe, new_notes_op=None)
+
+        self.assertEqual(armed_at_dedupe, [3])
+        self.assertEqual(self.updater.armed, [3])
+
+    def test_with_nothing_to_add_the_cancel_is_never_armed(self):
+        """Arming waits on the main thread; nothing would be left for the cancel to stop."""
+        dedupe = Recorder()
+
+        result = self.add(FakeCollection(), [], filter_new_notes_op=dedupe)
+
+        self.assertEqual((self.updater.armed, dedupe.handed), ([], []))
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 0))
 
     def test_an_unlinking_that_raises_loses_nothing_else(self):
         notes = [new_note("-1111111"), new_note("-2222222")]

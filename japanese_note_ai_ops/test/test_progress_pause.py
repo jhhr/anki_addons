@@ -228,19 +228,22 @@ class ControlsRefreshTests(DialogTestCase):
 
         self.assertEqual(disabled, [True])
 
-    def test_cleanup_re_arms_the_cancel_and_greys_it_once_nothing_is_left_to_stop(self):
-        """Cancelled or not: a finished run's adding can be stopped too."""
+    def test_cleanup_greys_the_buttons_and_the_adding_re_arms_cancel_until_it_ends(self):
+        """Cancelled or not: a finished run's adding can be stopped too, and only the adding."""
         disabled: list = []
         rearmed: list = []
         self.replace("disable_run_controls", lambda: disabled.append(True))
-        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True))
+        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True) or True)
         updater = self.make_updater()
 
         updater.begin_cleanup()
-        self.assertEqual((rearmed, disabled), ([True], []))
+        self.assertEqual((rearmed, disabled), ([], [True]))
+
+        updater.arm_cleanup_cancel(total_notes=3)
+        self.assertEqual((rearmed, disabled), ([True], [True]))
 
         updater.end_cleanup_cancel()
-        self.assertEqual((rearmed, disabled), ([True], [True]))
+        self.assertEqual((rearmed, disabled), ([True], [True, True]))
 
 
 class CleanupDrawTests(DialogTestCase):
@@ -457,6 +460,11 @@ class RunControlsTests(DialogTestCase):
 class CleanupCancelTests(DialogTestCase):
     """The cleanup's own cancel: re-armed on the main thread, which the op thread waits for."""
 
+    def reset_flag(self) -> bool:
+        """rearm_cleanup_cancel over the stub's flag, which it resets"""
+        mw.progress.cancel = False
+        return True
+
     def test_the_op_thread_waits_for_the_main_thread_to_re_arm(self):
         """Reading the flag before the reset lands would take the first cancel for a second."""
         updater = self.make_updater()
@@ -465,7 +473,7 @@ class CleanupCancelTests(DialogTestCase):
 
         def rearm():
             landed.append(time.monotonic())
-            mw.progress.cancel = False
+            return self.reset_flag()
 
         self.replace("rearm_cleanup_cancel", rearm)
 
@@ -473,7 +481,7 @@ class CleanupCancelTests(DialogTestCase):
             threading.Timer(0.2, callback).start()
 
         with mock.patch.object(mw.taskman, "run_on_main", run_on_main_later):
-            updater.begin_cleanup()
+            updater.arm_cleanup_cancel(total_notes=3)
             returned = time.monotonic()
 
         self.assertEqual(len(landed), 1)
@@ -492,15 +500,46 @@ class CleanupCancelTests(DialogTestCase):
             mock.patch.object(mw.taskman, "run_on_main", lambda _callback: None),
             self.assertLogs(base_ops.logger, "WARNING") as logs,
         ):
-            updater.begin_cleanup()
+            updater.arm_cleanup_cancel(total_notes=3)
 
         self.assertIn("did not re-arm the cancel", "\n".join(logs.output))
+        self.assertFalse(updater.cleanup_cancel_requested())
+
+    def test_the_start_of_the_cleanup_neither_re_arms_nor_waits(self):
+        """Its first writes can be long, and a Cancel live through them would stop nothing;
+        a run with no notes to add never gets further than this."""
+        updater = self.make_updater()
+        self.replace("CLEANUP_REARM_TIMEOUT", 0.5)
+        rearmed: list = []
+        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True) or True)
+        queued: list = []
+
+        with mock.patch.object(mw.taskman, "run_on_main", queued.append):
+            began = time.monotonic()
+            updater.begin_cleanup()
+            waited = time.monotonic() - began
+        for callback in queued:
+            callback()
+
+        self.assertEqual(rearmed, [])
+        self.assertLess(waited, 0.25)
+
+    def test_without_a_dialog_the_stale_flag_is_never_heard(self):
+        """Nothing reset it: it may still hold the cancel of the API work, which would stop
+        the adding before it began and unlink every note."""
+        updater = self.make_updater()
+        mw.progress.cancel = True
+
+        with self.assertNoLogs(base_ops.logger, "WARNING"):
+            updater.arm_cleanup_cancel(total_notes=3)
+
         self.assertFalse(updater.cleanup_cancel_requested())
 
     def test_the_cancel_is_heard_only_until_nothing_is_left_to_stop(self):
         updater = self.make_updater()
         self.replace("disable_run_controls", lambda: None)
-        updater.begin_cleanup()
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
         mw.progress.cancel = True
         self.assertTrue(updater.cleanup_cancel_requested())
 
@@ -511,7 +550,8 @@ class CleanupCancelTests(DialogTestCase):
     def test_the_adding_says_cancel_stops_it_only_while_it_does(self):
         updater = self.make_updater()
         self.replace("disable_run_controls", lambda: None)
-        updater.begin_cleanup()
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
 
         updater._last_update_at = 0.0
         updater.update_note_adding_progress(notes_added=1, total_notes=3)
@@ -601,9 +641,144 @@ class ReArmedControlsTests(DialogTestCase):
         delattr(self.win, controls_module._CONTROLS_ATTR)
         self.win.wantCancel = True
 
-        controls_module.rearm_cleanup_cancel()
+        self.assertTrue(controls_module.rearm_cleanup_cancel())
 
         self.assertFalse(self.win.wantCancel)
+
+    def test_it_says_it_reset_the_flag_only_when_it_did(self):
+        self.win.wantCancel = True
+        self.assertTrue(controls_module.rearm_cleanup_cancel())
+
+        with mock.patch.object(mw.progress, "_win", None):
+            self.assertFalse(controls_module.rearm_cleanup_cancel())
+
+        class DeletedWindow:
+            """What a dialog Qt has deleted under us looks like to the flag's setter."""
+
+            wantCancel = property(lambda _self: True)
+
+            @wantCancel.setter
+            def wantCancel(self, value):
+                raise RuntimeError("wrapped C/C++ object has been deleted")
+
+        with (
+            mock.patch.object(mw.progress, "_win", DeletedWindow()),
+            self.assertLogs(controls_module.logger, "ERROR"),
+        ):
+            self.assertFalse(controls_module.rearm_cleanup_cancel())
+
+    def test_the_flag_reset_counts_even_if_the_buttons_then_fail(self):
+        """Escape and the close box still set the flag, so the adding can still be stopped."""
+        self.controls.cancel = None  # type: ignore[assignment]
+
+        with self.assertLogs(controls_module.logger, "ERROR"):
+            self.assertTrue(controls_module.rearm_cleanup_cancel())
+
+
+class LateReArmTests(DialogTestCase):
+    """A re-arm the main thread gets to only after the op thread stopped waiting for it, or
+    after the adding it was for is over, does nothing (the real re-arm, over a fake dialog)."""
+
+    def setUp(self):
+        super().setUp()
+        self.win = FakeWindow()
+        self.win.form = types.SimpleNamespace(verticalLayout=object())  # type: ignore[attr-defined]
+        self.controls = controls_module._RunControls(FakeButton("Pause"), FakeButton("Cancel"))
+        setattr(self.win, controls_module._CONTROLS_ATTR, self.controls)
+        patches = (
+            mock.patch.object(mw.progress, "_win", self.win, create=True),
+            mock.patch.object(mw.progress, "want_cancel", lambda: self.win.wantCancel),
+            mock.patch.object(
+                controls_module, "sip", types.SimpleNamespace(isdeleted=lambda _win: False)
+            ),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
+        self.updater = self.make_updater()
+        # What the main thread is to run, held back until the test runs it
+        self.queued: list = []
+
+    def arm_without_the_main_thread(self) -> None:
+        with (
+            mock.patch.object(mw.taskman, "run_on_main", self.queued.append),
+            self.assertLogs(base_ops.logger, "WARNING"),
+        ):
+            self.updater.arm_cleanup_cancel(total_notes=3)
+
+    def run_main_thread(self) -> None:
+        queued, self.queued[:] = list(self.queued), []
+        for callback in queued:
+            callback()
+
+    def test_after_the_wait_gave_up_it_keeps_a_cancel_pressed_meanwhile(self):
+        self.arm_without_the_main_thread()
+        self.win.wantCancel = True
+
+        self.run_main_thread()
+
+        self.assertTrue(self.win.wantCancel)
+        self.assertFalse(self.updater._cleanup_cancel_armed.is_set())
+        self.assertFalse(self.controls.cleanup)
+        # A late label would draw over the adding's own
+        self.assertFalse([label for label in self.labels if "Adding notes" in label])
+
+    def test_after_the_adding_ended_it_neither_arms_nor_brings_cancel_back(self):
+        self.arm_without_the_main_thread()
+        self.updater.end_cleanup_cancel()
+
+        self.run_main_thread()
+
+        self.assertFalse(self.updater._cleanup_cancel_armed.is_set())
+        self.assertFalse(self.updater.cleanup_cancel_requested())
+        self.assertEqual((self.controls.cleanup, self.controls.cancel.enabled), (False, False))
+
+    def test_one_landing_as_the_wait_gives_up_counts(self):
+        """The give-up and the main thread's check-and-reset are one or the other, never half
+        of each: here the re-arm lands between the wait's timeout and the give-up."""
+        run_on_main = self.queued.append
+        real_event = threading.Event
+
+        class LandsAsTheWaitEnds(real_event):
+            def wait(event_self, timeout=None):
+                for callback in self.queued:
+                    callback()
+                return False
+
+        self.win.wantCancel = True
+        with (
+            mock.patch.object(mw.taskman, "run_on_main", run_on_main),
+            mock.patch.object(base_ops.threading, "Event", LandsAsTheWaitEnds),
+            self.assertNoLogs(base_ops.logger, "WARNING"),
+        ):
+            self.updater.arm_cleanup_cancel(total_notes=3)
+
+        self.assertFalse(self.win.wantCancel)
+        self.assertFalse(self.updater.cleanup_cancel_requested())
+        self.win.wantCancel = True
+        self.assertTrue(self.updater.cleanup_cancel_requested())
+
+    def test_the_label_is_the_addings_as_cancel_comes_back(self):
+        """Not "Cancelling operations... Finishing up" with a Cancel that stops the adding."""
+        self.updater.show_cancelling()
+        self.win.wantCancel = True
+        self.updater.begin_cleanup()
+
+        self.updater.arm_cleanup_cancel(total_notes=3)
+
+        self.assertFalse(self.win.wantCancel)
+        self.assertEqual((self.controls.cleanup, self.controls.cancel.enabled), (True, True))
+        self.assertIn("Adding notes", self.labels[-1])
+        self.assertIn("0/3", self.labels[-1])
+        self.assertIn("Cancel stops the adding", self.labels[-1])
+
+    def test_without_the_flag_reset_the_label_does_not_promise_a_cancel(self):
+        with mock.patch.object(mw.progress, "_win", None):
+            self.updater.arm_cleanup_cancel(total_notes=3)
+
+        self.assertIn("Adding notes", self.labels[-1])
+        self.assertNotIn("Cancel stops", self.labels[-1])
 
 
 if __name__ == "__main__":
