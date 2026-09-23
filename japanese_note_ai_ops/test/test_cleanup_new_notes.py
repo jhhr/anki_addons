@@ -946,6 +946,13 @@ class EditedNotesCountTests(unittest.TestCase):
         self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
         self.updater = FakeUpdater()
 
+    def test_each_note_is_counted_once_whatever_was_counted_before(self):
+        edited, other = [1], [7]
+
+        base_ops.count_edits([1, 2, 2, 7, 8, 8, 3], {1, 2, 3}, edited, other)
+
+        self.assertEqual((edited, other), ([1, 2, 3], [7, 8]))
+
     def test_notes_resolved_or_unlinked_outside_the_selection_are_other_notes(self):
         added = base_ops.NewNotesAdded(
             base_ops.NewNotesCounts(1, 0, 1), None, updated_nids=[2, 9, 3], filtered_nids=[3, 8]

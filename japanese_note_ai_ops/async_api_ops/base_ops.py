@@ -2601,12 +2601,20 @@ def count_edits(
     edited_nids: list[NoteId],
     edited_other_nids: list[NoteId],
 ) -> None:
-    """Count notes the cleanup saved into the final message's two figures, each once."""
+    """Count notes the cleanup saved into the final message's two figures, each once.
+
+    Against sets of what is counted already: the lists run to thousands of notes when a run's
+    new notes are linked from thousands of sentences, and a list's `in` made that quadratic.
+    """
+    counted = set(edited_nids)
+    counted_other = set(edited_other_nids)
     for nid in nids:
         if nid in selected:
-            if nid not in edited_nids:
+            if nid not in counted:
+                counted.add(nid)
                 edited_nids.append(nid)
-        elif nid not in edited_other_nids:
+        elif nid not in counted_other:
+            counted_other.add(nid)
             edited_other_nids.append(nid)
 
 
@@ -2829,11 +2837,8 @@ def add_new_notes(
                 logger.error(f"Error updating notes after unadded_notes_op: {e}")
                 print_error_traceback(e, logger)
             op_changes = col.merge_undo_entries(pos)
-            updated_nids.extend(
-                note.id
-                for note in unlinked_notes
-                if note.id not in updated_nids and note.id not in added_nids
-            )
+            already = {*updated_nids, *added_nids}
+            updated_nids.extend(note.id for note in unlinked_notes if note.id not in already)
             saved_notes.extend(unlinked_notes)
         log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
     if resolving_error is not None:
@@ -2997,9 +3002,11 @@ def selected_notes_op(
             for nid in sanitized_notes_to_remove:
                 if nid not in nids_set:
                     edited_other_nids.append(nid)
-            edited_nids = list(filter(lambda x: x in nids, notes_to_update_dict.keys()))
+            edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
             edited_nids.extend(
-                [nid for nid in sanitized_notes_to_remove if nid in nids and nid not in edited_nids]
+                nid
+                for nid in dict.fromkeys(sanitized_notes_to_remove)
+                if nid in nids_set and nid not in notes_to_update_dict
             )
 
             if notes_to_remove:
