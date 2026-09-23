@@ -62,7 +62,6 @@ from .progress_controls import (
 from ..call_logging import bulk_op_logging, phase_log
 from ..utils import get_field_config, print_error_traceback
 
-from ..make_notes_tsv import make_tsv_from_notes, import_tsv_file
 
 logger = logging.getLogger(__name__)
 
@@ -2793,29 +2792,10 @@ def add_new_notes(
             resolving_error = e
         started = log_phase("cleanup: new_notes_op", started)
 
-        additional_updated_notes = list(additional_updates_notes_dict.values())
-        if additional_updated_notes:
-            # Skip notes where the id is still zero, something went wrong during adding
-            valid_notes = []
-            invalid_notes = []
-            for note in additional_updated_notes:
-                if note.id == 0:
-                    invalid_notes.append(note)
-                else:
-                    valid_notes.append(note)
-            if invalid_notes:
-                logger.debug(f"Invalid notes found after adding: {len(invalid_notes)}")
-                new_notes_tsv_str = make_tsv_from_notes(
-                    notes=invalid_notes,
-                    config=mw.addonManager.getConfig(__name__) or {},
-                )
-                if new_notes_tsv_str:
-                    # Write the TSV to the media folder
-                    import_tsv_file(
-                        "new_notes.tsv",
-                        new_notes_tsv_str,
-                        do_import=False,
-                    )
+        # Every note the op is given has an id, and so has every note it rewrites; a failed
+        # add is given to no op, and keeps no record but its placeholder
+        valid_notes = list(additional_updates_notes_dict.values())
+        if valid_notes:
             try:
                 col.update_notes(valid_notes)
             except Exception as e:

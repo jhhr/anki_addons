@@ -208,7 +208,8 @@ def update_fake_note_ids(
     rather than emptied. That id is what the card and its popovers read to know which word
     of a sentence belongs to the note under review -- the reviewer has no other way to ask.
 
-    paran: new_notes (Sequence[Note]): The notes to update.
+    paran: new_notes (Sequence[Note]): The notes added, each with its id. A note whose add
+        failed is never given here (add_new_notes), so its placeholder stays where it is.
     paran: config (dict): The addon configuration.
     paran: progress_updater (AsyncTaskProgressUpdater): Progress reporter.
     returns: dict[NoteId, Note]: A dictionary mapping the original note IDs to the updated notes.
@@ -233,12 +234,6 @@ def update_fake_note_ids(
         if not new_note_id_field or not word_list_field:
             logger.error("Error: Missing required fields in config")
             return notes_to_update_dict
-        if not new_note.id:
-            # Not added (add_note failed, or no deck to add it to). Its references used to be
-            # rewritten to this 0, which points at nothing and loses the word's link for good;
-            # left as the placeholder they stay recognisable and can be resolved or rematched.
-            logger.warning(f"New note was not added, its placeholder is kept: {new_note.fields}")
-            continue
         if new_note_id_field in new_note and word_list_field in new_note:
             # Find other notes whose word_list_field contains the fake note ID. Only a
             # placeholder is worth searching for: once this has run the field holds the note's
@@ -273,8 +268,7 @@ def update_fake_note_ids(
             # The note's own id says the references have been updated, where a placeholder says
             # they have not. Written even when nothing referenced the note, which is how a new
             # note no other sentence linked used to be left holding its placeholder for good.
-            if new_note.id:
-                new_note[new_note_id_field] = str(new_note.id)
+            new_note[new_note_id_field] = str(new_note.id)
             progress_updater.update_new_note_processing_progress(
                 total_notes=total_notes,
                 new_notes_processed=index + 1,
@@ -285,7 +279,6 @@ def update_fake_note_ids(
         if (
             new_note_id_field in new_note
             and new_note[new_note_id_field] == str(new_note.id)
-            and new_note.id != 0
             and new_note.id not in notes_to_update_dict
         ):
             notes_to_update_dict[new_note.id] = new_note
