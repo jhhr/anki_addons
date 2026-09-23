@@ -344,9 +344,13 @@ def sort_base_note_ids(sort_field: str, bases: "Iterable[str]") -> "dict[str, li
     """The notes whose `sort_field` holds each of `bases` followed by nothing or by markers,
     by `index_key(base)`, read from the collection as it is now.
 
-    For the cleanup, which reads the notes after the run's writes and so cannot ask the run's
-    index. One pass over the notes table, as the index is built: as searches, a word's notes
-    would be a regex over the sort field of every note, once per word.
+    For the cleanup's marker tidying, which renames notes of a word the run never touched, so
+    reads them as they are now. The run's own index would save the pass, given the added notes
+    and less the deleted ones, but it is as old as the run's first word, and a run can spend
+    minutes on API calls while the notes are edited by hand; the pass costs in the order of a
+    second per 100k notes, next to that. One pass over the notes table, as the index is built:
+    as searches, a word's notes would be a regex over the sort field of every note, once per
+    word.
     """
     wanted = {index_key(base) for base in bases}
     if not wanted:
