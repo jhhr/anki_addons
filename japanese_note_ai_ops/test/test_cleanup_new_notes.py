@@ -222,9 +222,7 @@ class ReArmedCancelTests(unittest.TestCase):
         self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
         # Anki's dialog, reduced to the flag Escape, the close box and Cancel set
         self.win = types.SimpleNamespace(wantCancel=True)
-        self.run_was_cancelled = True
         patches = (
-            mock.patch.object(base_ops, "run_cancelled", lambda: self.run_was_cancelled),
             mock.patch.object(mw.progress, "_win", self.win, create=True),
             mock.patch.object(mw.progress, "want_cancel", lambda: self.win.wantCancel),
             mock.patch.object(mw.progress, "update", lambda **_: None),
@@ -275,37 +273,16 @@ class ReArmedCancelTests(unittest.TestCase):
         self.assertEqual(unlinking, notes[1:])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 2))
 
-    def test_in_a_run_not_cancelled_a_press_during_the_write_stops_the_adding(self):
-        """The buttons are greyed while the edited notes are written, but Escape and the close
-        box still set the flag: with no cancel of the API work for it to hold, that is a press
-        to stop the adding, which the re-arm used to erase."""
-        self.run_was_cancelled = False
-        notes = [new_note("-1111111"), new_note("-2222222")]
-        col = FakeCollection()
-        unlinking: list = []
-
-        self.updater.begin_cleanup()
-        result = base_ops.add_new_notes(
-            col,
-            notes,
-            CONFIG,
-            POS,
-            self.updater,
-            unadded_notes_op=lambda notes, config, updater: unlinking.extend(notes) or {},
-        )
-
-        self.assertEqual(col.added, [])
-        self.assertEqual(unlinking, notes)
-        self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 2))
-
-    def test_in_a_run_not_cancelled_a_clear_flag_is_left_clear(self):
-        self.run_was_cancelled = False
-        self.win.wantCancel = False
+    def test_in_a_run_not_cancelled_a_press_after_the_api_work_is_the_run_s_cancel(self):
+        """Pressed while the results were flushed or the edited notes written, with Cancel
+        saying it cancels the run: as a press during the API work, it keeps the notes prepared,
+        where stopping the adding would drop every one the run paid for."""
         notes = [new_note("-1111111"), new_note("-2222222")]
         col = FakeCollection()
 
-        self.updater.begin_cleanup()
-        result = base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater)
+        with mock.patch.object(base_ops, "run_cancelled", lambda: False):
+            self.updater.begin_cleanup()
+            result = base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater)
 
         self.assertEqual([note for note, _ in col.added], notes)
         self.assertEqual(result.counts, base_ops.NewNotesCounts(2, 0, 0))

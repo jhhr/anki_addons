@@ -189,7 +189,7 @@ def refresh_run_controls() -> None:
     install_run_controls()
 
 
-def rearm_cleanup_cancel(keep_pressed: bool = False) -> bool:
+def rearm_cleanup_cancel() -> bool:
     """Give the cleanup a cancel of its own, to stop its note adding. Main thread.
 
     The dialog's flag cannot tell a second press from the first: once a cancel of the API work
@@ -198,11 +198,6 @@ def rearm_cleanup_cancel(keep_pressed: bool = False) -> bool:
     means the adding is to stop. The flag is reset even when the buttons could not be built,
     since Escape still sets it. The run's own cancel (`run_cancelled()`) stays as it is.
 
-    `keep_pressed` is for a run that was not cancelled: a flag set then was set by Escape or
-    the close box since, while the edited notes were written with the buttons greyed, and is
-    left set, so that press stops the adding as it did before the cleanup had a cancel of its
-    own. Reset, it was lost, and every note was added.
-
     Returns whether the flag was reset. When it was not (no dialog, or not the one expected)
     the caller must not read the flag as a cancel of the adding: it may still hold the first.
     """
@@ -210,8 +205,7 @@ def rearm_cleanup_cancel(keep_pressed: bool = False) -> bool:
         win = _dialog()
         if win is None:
             return False
-        if not (keep_pressed and win.wantCancel):
-            win.wantCancel = False
+        win.wantCancel = False
     except Exception as e:
         logger.error("Could not reset the cancel for the cleanup: %s", e)
         return False

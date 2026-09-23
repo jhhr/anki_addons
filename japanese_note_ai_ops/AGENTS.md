@@ -95,13 +95,14 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
-  set for the rest of a cancelled run. In a run not cancelled a set flag is a press made
-  during the edited notes' write and is kept (`keep_pressed`), so it stops the adding. A reset that could not happen, or lands after the op
-  thread stopped waiting or closed the window (a generation under `_arm_lock`), arms nothing,
-  so a stale first cancel is never taken for a second one. From then on a cancel
-  (`cleanup_cancel_requested()`, never `run_cancelled()`) stops the adding, checked before the
-  dedupe, between its merges, after it and before each `add_note` - never inside one, where
-  copy_anywhere's on-add definitions run. `end_cleanup_cancel()` closes it in a `finally`.
+  set for the rest of a cancelled run. It is reset in a run not cancelled too: a press before
+  Cancel says it stops the adding is the run's cancel, which keeps every prepared note. A
+  reset that could not happen, or lands after the op thread stopped waiting or closed the
+  window (a generation under `_arm_lock`), arms nothing, so a stale first cancel is never
+  taken for a second one. From then on a cancel (`cleanup_cancel_requested()`, never
+  `run_cancelled()`) stops the adding, checked before the dedupe, between its merges, after it
+  and before each `add_note` - never inside one, where copy_anywhere's on-add definitions run.
+  `end_cleanup_cancel()` closes it in a `finally`.
   The notes split three ways: added (placeholders resolved by `update_fake_note_ids`),
   failed (placeholders kept, a debugging hint the next match run's `resolve_placeholder_ids`
   resets), not added (words put back to `["match"]` by `clear_unadded_note_ids`). The

@@ -1312,11 +1312,13 @@ class AsyncTaskProgressUpdater:
         "Cancelling operations" as Cancel comes back, and says Cancel stops the adding only if
         it does.
 
-        In a run that was not cancelled the flag is only reset if it is clear: set, it holds a
-        press made while the edited notes were written, which stops the adding.
+        The flag is reset in a run that was not cancelled too. Set then, it holds a press made
+        after the API work, while the results were flushed or the edited notes written, with
+        Cancel still live for part of it and saying it cancels the run. Kept, it stopped the
+        adding and dropped every note the run had paid for, where the same press a moment
+        earlier cancels the run and adds them all: a press is the run's cancel until Cancel
+        says it stops the adding.
         """
-        # Read here: the main thread takes part in no run
-        keep_pressed = not run_cancelled()
         # The label rearm draws, for end_cleanup_cancel to take the hint off: a cancel before
         # the first note is added leaves it the adding's last
         self._adding_counts = (0, total_notes, 0)
@@ -1329,7 +1331,7 @@ class AsyncTaskProgressUpdater:
             with self._arm_lock:
                 if self._arm_generation != generation:
                     return
-                if rearm_cleanup_cancel(keep_pressed):
+                if rearm_cleanup_cancel():
                     self._cleanup_cancel_armed.set()
                 # Under the lock, so this thread's give-up below sees the check-and-reset
                 # either done or not begun

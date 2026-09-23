@@ -767,17 +767,6 @@ class ReArmedControlsTests(DialogTestCase):
         self.assert_enabled(False, False)
         self.assertFalse(self.win.wantCancel)
 
-    def test_a_press_is_kept_when_asked_and_still_counts_as_re_armed(self):
-        """For a run that was not cancelled, where a set flag is a press made since."""
-        self.win.wantCancel = True
-
-        self.assertTrue(controls_module.rearm_cleanup_cancel(keep_pressed=True))
-
-        self.assertTrue(self.win.wantCancel)
-        # Greyed at the next redraw, as after any press in the cleanup
-        controls_module.refresh_run_controls()
-        self.assert_enabled(False, False)
-
     def test_the_flag_is_reset_even_in_a_dialog_without_the_buttons(self):
         """Escape still cancels there, and the first cancel must not stop the adding."""
         del self.win.form  # type: ignore[attr-defined]
@@ -839,8 +828,6 @@ class LateReArmTests(DialogTestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
-        # A cancelled run, whose first cancel the dialog's flag holds
-        self.replace("run_cancelled", lambda: True)
         self.updater = self.make_updater()
         # What the main thread is to run, held back until the test runs it
         self.queued: list = []
