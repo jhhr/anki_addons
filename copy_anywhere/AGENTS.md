@@ -110,7 +110,8 @@ root `testpaths`. Reuse, do not reinvent:
 
 These are characterization tests: they pin current behaviour, including behaviour that
 looks odd. A test that fails after your change is a behaviour change to justify, not a test
-to update. Not covered at all: everything in `ui/`, `migrate_config`, the `Config` CRUD
+to update. Not covered at all: everything in `ui/` except the picker's note counts
+(`test/test_pick_dialog_note_source.py`), `migrate_config`, the `Config` CRUD
 methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`.
 
 ## Known rough edges
