@@ -13,6 +13,7 @@ maps are built from plain rows, so everything above `_read_notes` is a pure func
 
 import asyncio
 import unittest
+from unittest import mock
 from typing import TYPE_CHECKING
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
@@ -417,6 +418,52 @@ class ReadNotesTests(unittest.TestCase):
         )
         self.assertEqual(read_rows, rows)
         self.assertEqual(len(col.db.queries), 1)
+
+
+class SortBaseNoteIdsTests(unittest.TestCase):
+    """The notes of a few words by their sort field, which the cleanup's marker tidying reads
+    once the run's writes are in: the same pass over the notes table, asked another question."""
+
+    def setUp(self):
+        saved_col = getattr(mw, "col", None)
+        self.addCleanup(setattr, mw, "col", saved_col)
+        patcher = mock.patch.object(wi, "run_on_collection", lambda what, fn: fn())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def read(self, bases, rows=()):
+        notetypes = [
+            ReadNotesTests.notetype(
+                VOCAB_MID, "vocab-key", "vocab", "vocab-kana", "vocab-kanjified"
+            ),
+            # Another notetype with a field of the name, which a field search would span too
+            ReadNotesTests.notetype(600, "Back", "vocab-key"),
+        ]
+        mw.col = ReadNotesTests.FakeCollection(notetypes, list(rows))
+        return wi.sort_base_note_ids("vocab-key", bases), mw.col
+
+    def test_a_word_s_notes_are_found_whatever_markers_follow_it(self):
+        found, _ = self.read(
+            ["言葉", "OK"],
+            [
+                vocab_row(1, "言葉", "言葉", "ことば", "言葉"),
+                vocab_row(2, "言葉", "言葉", "げんご", "言葉 (kun)(r2)(m1)"),
+                vocab_row(3, "言葉", "言葉", "ことば", "言葉(x1)"),
+                vocab_row(4, "言葉遣い", "言葉遣い", "ことばづかい", "言葉遣い (m1)"),
+                vocab_row(5, "ok", "ok", "おーけー", "ok (m2)"),
+                (6, 600, wi.FIELD_SEPARATOR.join(["", "言葉 (m3)"])),
+            ],
+        )
+        self.assertEqual(found, {"言葉": [1, 2, 3, 6], wi.index_key("OK"): [5]})
+
+    def test_a_word_with_no_notes_is_left_out(self):
+        found, _ = self.read(["単語"], [vocab_row(1, "言葉", "言葉", "ことば", "言葉")])
+        self.assertEqual(found, {})
+
+    def test_no_words_read_nothing(self):
+        found, col = self.read([])
+        self.assertEqual(found, {})
+        self.assertEqual(col.db.queries, [])
 
 
 class CacheTests(unittest.TestCase):

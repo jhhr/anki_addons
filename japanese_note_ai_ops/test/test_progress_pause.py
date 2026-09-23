@@ -233,7 +233,7 @@ class ControlsRefreshTests(DialogTestCase):
         disabled: list = []
         rearmed: list = []
         self.replace("disable_run_controls", lambda: disabled.append(True))
-        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True) or True)
+        self.replace("rearm_cleanup_cancel", lambda *_: rearmed.append(True) or True)
         updater = self.make_updater()
 
         updater.begin_cleanup()
@@ -507,7 +507,7 @@ class RunControlsTests(DialogTestCase):
 class CleanupCancelTests(DialogTestCase):
     """The cleanup's own cancel: re-armed on the main thread, which the op thread waits for."""
 
-    def reset_flag(self) -> bool:
+    def reset_flag(self, *_) -> bool:
         """rearm_cleanup_cancel over the stub's flag, which it resets"""
         mw.progress.cancel = False
         return True
@@ -518,7 +518,7 @@ class CleanupCancelTests(DialogTestCase):
         mw.progress.cancel = True
         landed: list = []
 
-        def rearm():
+        def rearm(*_):
             landed.append(time.monotonic())
             return self.reset_flag()
 
@@ -558,7 +558,7 @@ class CleanupCancelTests(DialogTestCase):
         updater = self.make_updater()
         self.replace("CLEANUP_REARM_TIMEOUT", 0.5)
         rearmed: list = []
-        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True) or True)
+        self.replace("rearm_cleanup_cancel", lambda *_: rearmed.append(True) or True)
         queued: list = []
 
         with mock.patch.object(mw.taskman, "run_on_main", queued.append):
@@ -608,6 +608,62 @@ class CleanupCancelTests(DialogTestCase):
         updater._last_update_at = 0.0
         updater.update_note_adding_progress(notes_added=2, total_notes=3)
         self.assertNotIn("Cancel stops", self.labels[-1])
+
+
+    def test_the_adding_s_last_label_loses_the_hint_as_its_cancel_ends(self):
+        """With nothing drawn after it, a later stage's draw was all that took it away."""
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(notes_added=3, total_notes=3)
+        self.assertIn("Cancel stops the adding", self.labels[-1])
+        # Its redraw still queued on the main thread
+        updater._update_pending = True
+
+        updater.end_cleanup_cancel()
+
+        self.assertNotIn("Cancel stops", self.labels[-1])
+        self.assertIn("3/3", self.labels[-1])
+
+    def test_ending_a_cancel_nothing_was_added_under_draws_nothing(self):
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        before = len(self.drawn)
+
+        updater.end_cleanup_cancel()
+
+        self.assertEqual(len(self.drawn), before)
+
+
+class CleanupStageLabelTests(DialogTestCase):
+    """Each stage of the cleanup draws its first label at once."""
+
+    def test_over_the_throttle_and_a_queued_redraw_of_the_stage_before(self):
+        updater = self.make_updater()
+        updater.begin_cleanup()
+        updater.update_unadded_note_clearing_progress(notes_cleared=1, total_notes=2)
+        # Just drawn, and its next redraw queued on the main thread
+        updater._last_update_at = time.time()
+        updater._update_pending = True
+
+        updater.begin_cleanup_stage()
+        updater.update_marker_tidying_progress(total_words=4)
+
+        self.assertIn("Tidying sort field markers", self.labels[-1])
+        self.assertIn("0/4</code></strong> words", self.labels[-1])
+
+    def test_only_the_first_label_of_a_stage(self):
+        updater = self.make_updater()
+        updater.begin_cleanup()
+        updater.begin_cleanup_stage()
+        updater.update_marker_tidying_progress(total_words=4)
+        before = len(self.drawn)
+
+        updater.update_marker_tidying_progress(words_done=1, total_words=4)
+
+        self.assertEqual(len(self.drawn), before)
 
 
 class ReArmedControlsTests(DialogTestCase):
@@ -682,6 +738,17 @@ class ReArmedControlsTests(DialogTestCase):
         self.assert_enabled(False, False)
         self.assertFalse(self.win.wantCancel)
 
+    def test_a_press_is_kept_when_asked_and_still_counts_as_re_armed(self):
+        """For a run that was not cancelled, where a set flag is a press made since."""
+        self.win.wantCancel = True
+
+        self.assertTrue(controls_module.rearm_cleanup_cancel(keep_pressed=True))
+
+        self.assertTrue(self.win.wantCancel)
+        # Greyed at the next redraw, as after any press in the cleanup
+        controls_module.refresh_run_controls()
+        self.assert_enabled(False, False)
+
     def test_the_flag_is_reset_even_in_a_dialog_without_the_buttons(self):
         """Escape still cancels there, and the first cancel must not stop the adding."""
         del self.win.form  # type: ignore[attr-defined]
@@ -743,6 +810,8 @@ class LateReArmTests(DialogTestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
+        # A cancelled run, whose first cancel the dialog's flag holds
+        self.replace("run_cancelled", lambda: True)
         self.updater = self.make_updater()
         # What the main thread is to run, held back until the test runs it
         self.queued: list = []

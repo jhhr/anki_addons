@@ -613,39 +613,6 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(searched, [])
         self.assertEqual(new_note["new_note_id_field"], "42")
 
-    def test_a_note_that_was_not_added_keeps_its_placeholder_everywhere(self):
-        """Its references used to be rewritten to its id, 0, which points at nothing and
-        loses the word's link for good; a placeholder is at least recognisable as one."""
-        arr = [word("様", [-1234567, 3]), word("本", [-7654321])]
-        fields = {"word_list_field": json.dumps(arr), "new_note_id_field": ""}
-        referencing = FakeNote(fields, note_id=2)
-        not_added = FakeNote({"word_list_field": "", "new_note_id_field": "-1234567"}, 0)
-        added = FakeNote({"word_list_field": "", "new_note_id_field": "-7654321"}, 99)
-        with (
-            mock.patch.object(self.mwtn, "col_find_notes", lambda _: [2]),
-            mock.patch.object(self.mwtn, "col_get_notes", lambda _: [referencing]),
-        ):
-            updated = self.mwtn.update_fake_note_ids([not_added, added], self.config, Progress())
-        saved = json.loads(referencing["word_list_field"])
-        self.assertEqual([saved[0][4], saved[1][4]], [[-1234567, 3], [99]])
-        self.assertEqual(not_added["new_note_id_field"], "-1234567")
-        # the note that was added is rewritten as before; the one that was not is not saved
-        self.assertEqual(added["new_note_id_field"], "99")
-        self.assertEqual(set(updated), {2, 99})
-
-    def test_a_note_that_was_not_added_is_not_searched_for(self):
-        searched = []
-        not_added = FakeNote({"word_list_field": "", "new_note_id_field": "-1234567"}, 0)
-        with (
-            mock.patch.object(
-                self.mwtn, "col_find_notes", lambda query: searched.append(query) or []
-            ),
-            mock.patch.object(self.mwtn, "col_get_notes", lambda _: []),
-        ):
-            updated = self.mwtn.update_fake_note_ids([not_added], self.config, Progress())
-        self.assertEqual((searched, updated), ([], {}))
-        self.assertEqual(not_added["new_note_id_field"], "-1234567")
-
 
 class CountingNote(FakeNote):
     """Counts the writes of its word array, so that saving one array twice shows."""

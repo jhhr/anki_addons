@@ -255,6 +255,11 @@ def _run_on_collection(what: str, fn: "Callable[[], T]") -> T:
     return job.result()
 
 
+def run_on_collection(what: str, fn: "Callable[[], T]") -> T:
+    """Take the collection for one call that is not a search or a fetch, blocking the thread."""
+    return _run_on_collection(what, fn)
+
+
 async def run_on_collection_async(what: str, fn: "Callable[[], T]") -> T:
     """Take the collection for one call, from the event loop, without blocking it.
 

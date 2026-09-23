@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Iterable, NamedTuple, Optional, Sequence, cast
 
 from aqt import mw
 
-from .collection_access import run_on_collection_async
+from .collection_access import run_on_collection, run_on_collection_async
 
 if TYPE_CHECKING:
     from anki.notes import NoteId
@@ -338,6 +338,25 @@ async def build_word_index(fields: WordFields) -> WordIndex:
         read - started,
     )
     return index
+
+
+def sort_base_note_ids(sort_field: str, bases: "Iterable[str]") -> "dict[str, list[NoteId]]":
+    """The notes whose `sort_field` holds each of `bases` followed by nothing or by markers,
+    by `index_key(base)`, read from the collection as it is now.
+
+    For the cleanup, which reads the notes after the run's writes and so cannot ask the run's
+    index. One pass over the notes table, as the index is built: as searches, a word's notes
+    would be a regex over the sort field of every note, once per word.
+    """
+    wanted = {index_key(base) for base in bases}
+    if not wanted:
+        return {}
+    fields = WordFields(kanjified="", normal="", reading="", sort=sort_field)
+    ords_by_mid, rows = run_on_collection(
+        f"word_index: notes by {sort_field}", lambda: _read_notes(fields)
+    )
+    by_sort_base = WordIndex.from_rows(fields, ords_by_mid, rows).by_sort_base
+    return {key: list(by_sort_base[key]) for key in wanted if key in by_sort_base}
 
 
 class WordIndexCache:
