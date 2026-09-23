@@ -60,6 +60,7 @@ from .base_ops import (
     BulkOpResult,
     CancelState,
     NotePlan,
+    run_once,
     bulk_nested_notes_op,
     get_response,
     make_inner_bulk_op,
@@ -2373,15 +2374,10 @@ def plan_word_array_matching(
 
         return handle_op_error
 
-    array_saved = False
-
-    def save_array() -> bool:
-        # Once only: match_targets.save_results writes into the array's elements, and the
-        # flush may come after this note's own save or before its cancelled task is unwound
-        nonlocal array_saved
-        if array_saved:
-            return False
-        array_saved = True
+    def save_finished() -> bool:
+        # Once only (run_once): match_targets.save_results writes into the array's elements,
+        # and the flush may come after this note's own save or before its cancelled task is
+        # unwound.
         # Copies, since after a cancel an abandoned worker thread can still be writing a
         # result. Results first: a match_quality is put in before its result, so every
         # result copied has its quality in the later copy.
@@ -2395,7 +2391,10 @@ def plan_word_array_matching(
         )
         if saved or rated:
             save_note()
-        return True
+            return True
+        return False
+
+    save_array = run_once(save_finished)
 
     async def save_results(word_tasks: list[asyncio.Task]):
         # Nothing awaited after the gather, so a cancel either stops this before save_array

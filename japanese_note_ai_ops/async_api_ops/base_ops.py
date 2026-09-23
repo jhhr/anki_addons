@@ -1795,16 +1795,36 @@ class NotePlan(NamedTuple):
     prompt for as long as they live - still exist only a window at a time.
 
     `flush`, for a note whose tasks save it together once they are all done: runs that save
-    with what the finished tasks left, returning True, or returns False if it has run already.
-    A cancel cancels the saving task along with the unfinished ones, which lost the finished
-    ones' paid work; bulk_nested_notes_op flushes every started note once the driver returns.
-    The save must run once only, whichever comes first, and must copy anything a worker
-    thread the cancel abandoned can still be writing.
+    with what the finished tasks left, returning whether it saved the note - False when the
+    finished tasks left nothing to save, or when it has run already. A cancel cancels the
+    saving task along with the unfinished ones, which lost the finished ones' paid work;
+    bulk_nested_notes_op flushes every started note once the driver returns. The save must run
+    once only, whichever comes first (`run_once` builds both from one save), and must copy
+    anything a worker thread the cancel abandoned can still be writing.
     """
 
     task_count: int
     spawn: Callable[[list[asyncio.Task]], None]
     flush: Optional[Callable[[], bool]] = None
+
+
+def run_once(save: Callable[[], bool]) -> Callable[[], bool]:
+    """`save` made to run once only, whichever of a note's own save and its `NotePlan.flush`
+    comes first; a later call returns False, having saved nothing.
+
+    `save` returns whether it saved the note. Both callers run on the op's event-loop thread
+    (the note's saving task, then the flush after the driver returns), so a flag is enough.
+    """
+    done = False
+
+    def once() -> bool:
+        nonlocal done
+        if done:
+            return False
+        done = True
+        return save()
+
+    return once
 
 
 async def run_plans_rolling(
@@ -1962,7 +1982,7 @@ async def run_plans_rolling(
 
 def flush_started_plans(started_plans: "Sequence[NotePlan]", cancelled: bool) -> int:
     """Run the flush of every started plan that has one, returning how many notes it saved
-    that their own tasks had not.
+    that their own tasks had not. A flush that found nothing to save counts as none.
 
     Each flush in its own try: one note's error must not keep the others' results from
     cleanup. A flush that raised counts as left unsaved.

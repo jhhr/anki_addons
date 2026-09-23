@@ -44,6 +44,7 @@ from .base_ops import (
     AsyncTaskProgressUpdater,
     CancelState,
     NotePlan,
+    run_once,
     bulk_nested_notes_op,
     get_response,
     make_inner_bulk_op,
@@ -152,22 +153,19 @@ def plan_word_matching_judge(
 
         return handle_op_error
 
-    array_saved = False
-
-    def save_array() -> bool:
-        # Once only: the flush may come after this note's own save or before its cancelled
-        # task is unwound. After a cancel an abandoned thread can still judge a word; the field
-        # is formatted from the array as it is now, and a word judged after that stays judged
-        # in memory only, to be asked about again next run. Each judgment replaces the whole
-        # match_data, so every word is formatted either before or after its judgment.
-        nonlocal array_saved
-        if array_saved:
-            return False
-        array_saved = True
+    def save_finished() -> bool:
+        # Once only (run_once): the flush may come after this note's own save or before its
+        # cancelled task is unwound. After a cancel an abandoned thread can still judge a word;
+        # the field is formatted from the array as it is now, and a word judged after that
+        # stays judged in memory only, to be asked about again next run. Each judgment replaces
+        # the whole match_data, so every word is formatted either before or after its judgment.
         logger.debug(f"{log_prefix}Judged {sum(judged)} of {len(judged)} words by request")
         if plan.auto or any(judged):
             save_note()
-        return True
+            return True
+        return False
+
+    save_array = run_once(save_finished)
 
     async def save_results(word_tasks: list[asyncio.Task]):
         # Nothing awaited after the gather, so a cancel either stops this before save_array
