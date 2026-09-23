@@ -32,13 +32,16 @@ _CONTROLS_ATTR = "_japanese_note_ai_ops_run_controls"
 
 
 class _RunControls:
-    __slots__ = ("toggle", "cancel", "disabled")
+    __slots__ = ("toggle", "cancel", "disabled", "cleanup")
 
     def __init__(self, toggle: QPushButton, cancel: QPushButton) -> None:
         self.toggle = toggle
         self.cancel = cancel
         # Once the run is being cancelled; a later refresh must not bring the buttons back
         self.disabled = False
+        # Once the cleanup has re-armed Cancel to stop its note adding (rearm_cleanup_cancel):
+        # only Cancel is live then, whatever the run's pause says
+        self.cleanup = False
 
 
 def _progress_window() -> Optional[tuple[Any, Any]]:
@@ -51,17 +54,25 @@ def _progress_window() -> Optional[tuple[Any, Any]]:
     or drops any of them, the dialog simply shows no buttons: the run still pauses itself at
     a usage limit and resumes at the reset time, and Escape still cancels.
     """
-    win = getattr(mw.progress, "_win", None)
+    win = _dialog()
     if win is None:
         return None
     layout = getattr(getattr(win, "form", None), "verticalLayout", None)
-    if layout is None or not hasattr(win, "wantCancel"):
+    if layout is None:
+        return None
+    return win, layout
+
+
+def _dialog() -> Any:
+    """The progress dialog and its cancel flag, or None; its layout may not be as expected."""
+    win = getattr(mw.progress, "_win", None)
+    if win is None or not hasattr(win, "wantCancel"):
         return None
     # ProgressManager.finish deletes the dialog later rather than at once, so a redraw queued
     # before it can still find the Python object of a dialog Qt has already destroyed
     if sip.isdeleted(win):
         return None
-    return win, layout
+    return win
 
 
 def _controls_of(win: Any) -> Optional[_RunControls]:
@@ -99,6 +110,12 @@ def _refresh(win: Any, controls: _RunControls) -> None:
         # Escape or the close box: the run is being cancelled, and a Resume now would only
         # look like it undid that
         _disable(controls)
+        return
+    if controls.cleanup:
+        # Cancel now stops the note adding. Pause stays grey: the cleanup never waits for a
+        # resume, so a Pause would only look like it held the adding.
+        controls.toggle.setEnabled(False)
+        controls.cancel.setEnabled(True)
         return
     pause = pause_state()
     if pause is None:
@@ -172,8 +189,33 @@ def refresh_run_controls() -> None:
     install_run_controls()
 
 
+def rearm_cleanup_cancel() -> None:
+    """Give the cleanup a cancel of its own, to stop its note adding. Main thread.
+
+    The dialog's flag cannot tell a second press from the first: once a cancel of the API work
+    has set it, it stays set for the rest of the run, so a cleanup reading it would stop adding
+    before it began. It is reset here, and Cancel enabled again, so that from now on the flag
+    means the adding is to stop. The flag is reset even when the buttons could not be built,
+    since Escape still sets it. The run's own cancel (`run_cancelled()`) stays as it is.
+    """
+    try:
+        win = _dialog()
+        if win is None:
+            return
+        win.wantCancel = False
+        controls = _controls_of(win)
+        if controls is not None:
+            controls.cleanup = True
+            # The latch the first cancel set; a later cancel of the adding sets it again
+            controls.disabled = False
+            _refresh(win, controls)
+    except Exception as e:
+        logger.error("Could not re-arm the cancel for the cleanup: %s", e)
+
+
 def disable_run_controls() -> None:
-    """Grey the buttons out for good, once the run is being cancelled. Main thread."""
+    """Grey the buttons out for good, once the run is being cancelled, or once the cleanup has
+    nothing left that a cancel stops. Main thread."""
     try:
         found = _progress_window()
         if found is None:

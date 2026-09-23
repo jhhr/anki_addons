@@ -10,8 +10,11 @@ Anki and is not tested here. What is: that it keeps quiet without that dialog, a
 buttons' behaviour, which is plain Python over the run's pause.
 """
 
+import threading
 import time
+import types
 import unittest
+from unittest import mock
 
 from addon_modules import FakeClock, load_ops_module, mw
 
@@ -225,14 +228,19 @@ class ControlsRefreshTests(DialogTestCase):
 
         self.assertEqual(disabled, [True])
 
-    def test_cleanup_disables_the_buttons_of_a_run_that_was_not_cancelled(self):
+    def test_cleanup_re_arms_the_cancel_and_greys_it_once_nothing_is_left_to_stop(self):
+        """Cancelled or not: a finished run's adding can be stopped too."""
         disabled: list = []
+        rearmed: list = []
         self.replace("disable_run_controls", lambda: disabled.append(True))
+        self.replace("rearm_cleanup_cancel", lambda: rearmed.append(True))
         updater = self.make_updater()
 
         updater.begin_cleanup()
+        self.assertEqual((rearmed, disabled), ([True], []))
 
-        self.assertEqual(disabled, [True])
+        updater.end_cleanup_cancel()
+        self.assertEqual((rearmed, disabled), ([True], [True]))
 
 
 class CleanupDrawTests(DialogTestCase):
@@ -444,6 +452,158 @@ class RunControlsTests(DialogTestCase):
 
         self.assertFalse(controls.toggle.enabled)
         self.assertFalse(controls.cancel.enabled)
+
+
+class CleanupCancelTests(DialogTestCase):
+    """The cleanup's own cancel: re-armed on the main thread, which the op thread waits for."""
+
+    def test_the_op_thread_waits_for_the_main_thread_to_re_arm(self):
+        """Reading the flag before the reset lands would take the first cancel for a second."""
+        updater = self.make_updater()
+        mw.progress.cancel = True
+        landed: list = []
+
+        def rearm():
+            landed.append(time.monotonic())
+            mw.progress.cancel = False
+
+        self.replace("rearm_cleanup_cancel", rearm)
+
+        def run_on_main_later(callback):
+            threading.Timer(0.2, callback).start()
+
+        with mock.patch.object(mw.taskman, "run_on_main", run_on_main_later):
+            updater.begin_cleanup()
+            returned = time.monotonic()
+
+        self.assertEqual(len(landed), 1)
+        self.assertLessEqual(landed[0], returned)
+        self.assertFalse(updater.cleanup_cancel_requested())
+        mw.progress.cancel = True
+        self.assertTrue(updater.cleanup_cancel_requested())
+
+    def test_a_re_arm_that_never_lands_leaves_the_stale_flag_unheard(self):
+        updater = self.make_updater()
+        self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
+        # The cancel of the API work, which the main thread never gets to reset
+        mw.progress.cancel = True
+
+        with (
+            mock.patch.object(mw.taskman, "run_on_main", lambda _callback: None),
+            self.assertLogs(base_ops.logger, "WARNING") as logs,
+        ):
+            updater.begin_cleanup()
+
+        self.assertIn("did not re-arm the cancel", "\n".join(logs.output))
+        self.assertFalse(updater.cleanup_cancel_requested())
+
+    def test_the_cancel_is_heard_only_until_nothing_is_left_to_stop(self):
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        updater.begin_cleanup()
+        mw.progress.cancel = True
+        self.assertTrue(updater.cleanup_cancel_requested())
+
+        updater.end_cleanup_cancel()
+
+        self.assertFalse(updater.cleanup_cancel_requested())
+
+    def test_the_adding_says_cancel_stops_it_only_while_it_does(self):
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        updater.begin_cleanup()
+
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(notes_added=1, total_notes=3)
+        self.assertIn("Cancel stops the adding", self.labels[-1])
+
+        updater.end_cleanup_cancel()
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(notes_added=2, total_notes=3)
+        self.assertNotIn("Cancel stops", self.labels[-1])
+
+
+class ReArmedControlsTests(DialogTestCase):
+    """The buttons once the cleanup has re-armed the cancel: Cancel live, Pause grey."""
+
+    def setUp(self):
+        super().setUp()
+        self.win = FakeWindow()
+        # The designer form's layout; the buttons are already in it
+        self.win.form = types.SimpleNamespace(verticalLayout=object())  # type: ignore[attr-defined]
+        self.controls = controls_module._RunControls(FakeButton("Pause"), FakeButton("Cancel"))
+        setattr(self.win, controls_module._CONTROLS_ATTR, self.controls)
+        patches = (
+            mock.patch.object(mw.progress, "_win", self.win, create=True),
+            mock.patch.object(
+                controls_module, "sip", types.SimpleNamespace(isdeleted=lambda _win: False)
+            ),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def assert_enabled(self, toggle: bool, cancel: bool) -> None:
+        self.assertEqual(
+            (self.controls.toggle.enabled, self.controls.cancel.enabled), (toggle, cancel)
+        )
+
+    def test_after_a_cancel_of_the_api_work_only_cancel_comes_back(self):
+        controls_module._on_cancel(self.win)
+        self.assert_enabled(False, False)
+
+        controls_module.rearm_cleanup_cancel()
+
+        self.assertFalse(self.win.wantCancel)
+        self.assert_enabled(False, True)
+
+    def test_a_redraw_keeps_cancel_live_and_pause_grey_even_while_paused(self):
+        controls_module.rearm_cleanup_cancel()
+        api.pause_run("paused by user")
+
+        # What runs after every redraw
+        controls_module.refresh_run_controls()
+
+        self.assert_enabled(False, True)
+        self.assertEqual(self.controls.toggle.text(), "Pause")
+
+    def test_a_cancel_of_the_adding_greys_it_again_for_good(self):
+        controls_module._on_cancel(self.win)
+        controls_module.rearm_cleanup_cancel()
+
+        controls_module._on_cancel(self.win)
+        self.assertTrue(self.win.wantCancel)
+        self.assert_enabled(False, False)
+
+        controls_module.refresh_run_controls()
+        self.assert_enabled(False, False)
+
+    def test_escape_in_the_cleanup_greys_it_at_the_next_redraw(self):
+        controls_module.rearm_cleanup_cancel()
+
+        self.win.wantCancel = True
+        controls_module.refresh_run_controls()
+
+        self.assert_enabled(False, False)
+
+    def test_the_end_of_what_a_cancel_stops_greys_it(self):
+        controls_module.rearm_cleanup_cancel()
+
+        controls_module.disable_run_controls()
+        controls_module.refresh_run_controls()
+
+        self.assert_enabled(False, False)
+        self.assertFalse(self.win.wantCancel)
+
+    def test_the_flag_is_reset_even_in_a_dialog_without_the_buttons(self):
+        """Escape still cancels there, and the first cancel must not stop the adding."""
+        del self.win.form  # type: ignore[attr-defined]
+        delattr(self.win, controls_module._CONTROLS_ATTR)
+        self.win.wantCancel = True
+
+        controls_module.rearm_cleanup_cancel()
+
+        self.assertFalse(self.win.wantCancel)
 
 
 if __name__ == "__main__":

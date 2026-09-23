@@ -414,9 +414,10 @@ def deduplicate_notes_list(
 
     param: notes_to_filter: Notes to filter (new or existing).
     param: config: The addon configuration.
-    param: progress_updater: Progress reporter.
+    param: progress_updater: Progress reporter; a cancel of the cleanup's adding stops the merges.
     param: notes_to_update_dict: Optional dict of already-updated existing notes to reuse and fill.
-    returns: The filtered list of notes and a dict of existing notes updated by this process.
+    returns: The filtered list of notes and a dict of existing notes updated by this process;
+        once cancelled, every note given, with the references remapped so far in the dict.
     """
     if notes_to_update_dict is None:
         notes_to_update_dict = {}
@@ -640,6 +641,16 @@ def deduplicate_notes_list(
     filtered_notes = [note for note in notes_to_filter if id(note) not in deleted_note_obj_ids]
     processed_note_ids = {note.id for note in notes_to_filter if note.id > 0}
     for index, (dup_ref, keep_ref, word_list_field) in enumerate(merge_mappings):
+        # The cleanup's cancel of its note adding, which runs this first: no note is added
+        # after it, so the rest of the merging would be for nothing. Every note comes back,
+        # the duplicates included: a caller that adds them anyway leaves no reference
+        # unresolved, as some still point at duplicates. What was remapped so far is in
+        # notes_to_update_dict, to be saved; it points at the notes kept.
+        if progress_updater is not None and progress_updater.cleanup_cancel_requested():
+            logger.info(
+                f"{log_prefix} Cancelled after {index} of {total} merges, no notes dropped"
+            )
+            return list(notes_to_filter), notes_to_update_dict
         dup_ref_pattern = rf'"?{re.escape(dup_ref)}"?'
         for ref_note in filtered_notes:
             if word_list_field in ref_note and dup_ref in ref_note[word_list_field]:
@@ -2635,6 +2646,7 @@ def match_words_to_notes_from_selected(
         progress_updater,
         new_notes_op,
         filter_new_notes_op,
+        unadded_notes_op=clear_unadded_note_ids,
     )
 
 
@@ -2766,4 +2778,5 @@ def match_single_word_to_notes_from_selected(
         progress_updater,
         new_notes_op,
         filter_new_notes_op,
+        unadded_notes_op=clear_unadded_note_ids,
     )
