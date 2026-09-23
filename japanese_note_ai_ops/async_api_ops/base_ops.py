@@ -2509,35 +2509,15 @@ def on_bulk_success(
     edited_other_nids: Sequence[NoteId],
     nids: Sequence[NoteId],
     parent: Browser,
-    # notes_to_add_dict: Optional[dict[str, list[Note]]] = None,
     extra_callback=None,
     new_notes: NewNotesCounts = NewNotesCounts(),
 ):
     success_started = time.monotonic()
     logger.debug("[phase] on_bulk_success reached, closing progress")
     mw.taskman.run_on_main(lambda: mw.progress.finish())
-    # if DEBUG:
-    # print("on_bulk_success", out, notes_to_add_dict)
     if extra_callback:
         extra_callback()
         log_phase("success: extra_callback", success_started)
-    # if notes_to_add_dict:
-    #     new_notes: list[Note] = []
-    #     for note_list in notes_to_add_dict.values():
-    #         new_notes.extend(note_list)
-    #     if new_notes:
-    #         new_notes_tsv_str = make_tsv_from_notes(
-    #             notes=new_notes,
-    #             config=mw.addonManager.getConfig(__name__) or {},
-    #         )
-    #         if new_notes_tsv_str:
-    #             # Write the TSV to the media folder
-    #             import_tsv_file(
-    #                 "new_notes.tsv",
-    #                 new_notes_tsv_str,
-    #             )
-    # Show a tooltip after the import call as otherwise the import dialog would close the tooltip
-    # immediately after it had appeared
     message = f"{done_text} in {len(edited_nids)}/{len(nids)} selected notes."
     if edited_other_nids:
         message += f"<br>Edited {len(edited_other_nids)} other notes not among the selection."
@@ -3201,7 +3181,6 @@ def selected_notes_op(
             edited_other_nids,
             nids,
             parent,
-            # notes_to_add_dict,
             on_success,
             new_notes=new_notes,
         )
