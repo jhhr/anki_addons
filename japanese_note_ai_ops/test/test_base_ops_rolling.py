@@ -17,7 +17,14 @@ import asyncio
 import logging
 import unittest
 
-from addon_modules import load_ops_module, mw
+from addon_modules import (
+    RunCollection,
+    RunProgress,
+    load_ops_module,
+    mw,
+    patch_nested_run,
+    wait_until,
+)
 
 base_ops = load_ops_module("base_ops")
 concurrency = load_ops_module("concurrency")
@@ -585,6 +592,111 @@ class RollingDriverCancelTest(unittest.TestCase):
             self.assertTrue(gate.aborted)
 
         asyncio.run(main())
+
+
+class FlushStartedPlansTests(unittest.TestCase):
+    """A note whose tasks save it together, once all are done, lost the finished ones' work to a
+    cancel, which cancels the saving task too. bulk_nested_notes_op flushes the notes it
+    started; each op's flush saves once and says whether its own save had run."""
+
+    def setUp(self):
+        mw.progress.cancel = False
+        self.addCleanup(setattr, mw.progress, "cancel", False)
+
+    def test_a_cancelled_run_flushes_the_started_notes_before_on_end(self):
+        events = []
+        saved = [False, False, False]
+        releases = []
+
+        def plan_note(config, index, **_):
+            def save():
+                if saved[index]:
+                    return False
+                saved[index] = True
+                return True
+
+            def flush():
+                events.append(("flush", index))
+                return save()
+
+            async def work(release):
+                await release
+                save()
+
+            def spawn(tasks):
+                release = asyncio.get_running_loop().create_future()
+                releases.append(release)
+                tasks.append(asyncio.create_task(work(release)))
+
+            return NotePlan(task_count=1, spawn=spawn, flush=flush)
+
+        progress = RunProgress()
+
+        async def main():
+            runner = asyncio.ensure_future(
+                base_ops.bulk_nested_notes_op(
+                    message="test",
+                    config={},
+                    bulk_inner_op=plan_note,
+                    col=RunCollection(),
+                    notes=[0, 1, 2],
+                    edited_nids=[],
+                    progress_updater=progress,
+                    notes_to_add_dict={},
+                    notes_to_update_dict={},
+                    model="model",
+                    on_end=lambda: events.append(("on_end",)),
+                )
+            )
+            # A budget of one task: note 1 starts only once note 0 is done, and note 2 waits
+            # for note 1, which never finishes
+            self.assertTrue(await wait_until(lambda: len(releases) == 1))
+            releases[0].set_result(None)
+            self.assertTrue(await wait_until(lambda: len(releases) == 2))
+            await settle()
+            mw.progress.cancel = True
+            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
+            runner.result()
+
+        with patch_nested_run(base_ops):
+            asyncio.run(main())
+
+        # note 0 saved itself and its flush says so; note 2 never started, so never flushed
+        self.assertEqual(events, [("flush", 0), ("flush", 1), ("on_end",)])
+        self.assertEqual(saved, [True, True, False])
+
+    def test_each_flush_runs_whatever_the_one_before_did(self):
+        calls = []
+
+        def flush(name, outcome):
+            def run():
+                calls.append(name)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+            return run
+
+        plans = [
+            NotePlan(task_count=1, spawn=lambda tasks: None, flush=flush("failing", ValueError())),
+            NotePlan(task_count=1, spawn=lambda tasks: None),
+            NotePlan(task_count=1, spawn=lambda tasks: None, flush=flush("saved", False)),
+            NotePlan(task_count=1, spawn=lambda tasks: None, flush=flush("unsaved", True)),
+        ]
+        logging.disable(logging.NOTSET)
+        try:
+            with self.assertLogs(base_ops.logger, level=logging.ERROR) as logs:
+                self.assertEqual(base_ops.flush_started_plans(plans, cancelled=False), 2)
+            # a run that was not cancelled leaves nothing unsaved unless something went wrong
+            self.assertIn("not cancelled", logs.output[-1])
+            with self.assertLogs(base_ops.logger, level=logging.INFO) as logs:
+                self.assertEqual(base_ops.flush_started_plans(plans[1:], cancelled=True), 1)
+            self.assertIn("cancel left unsaved", logs.output[-1])
+            with self.assertNoLogs(base_ops.logger, level=logging.INFO):
+                self.assertEqual(base_ops.flush_started_plans(plans[1:3], cancelled=False), 0)
+        finally:
+            logging.disable(logging.WARNING)
+        self.assertEqual(calls, ["failing", "saved", "unsaved", "saved", "unsaved", "saved"])
 
 
 if __name__ == "__main__":

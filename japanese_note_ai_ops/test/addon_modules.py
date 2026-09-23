@@ -157,3 +157,100 @@ class PausingClock(FakeClock):
         if len(self.slept) > self.max_sleeps:
             raise AssertionError(f"Still waiting after {self.max_sleeps} sleeps")
         self.on_sleep(len(self.slept))
+
+
+class RunGate:
+    """The gate as bulk_nested_notes_op and run_plans_rolling use it, letting every task
+    through. A limit of 0 is a budget of one API task, so the rolling driver starts a plan only
+    once the one before has all but finished: a test can leave the later notes never started."""
+
+    limit = 0
+    max_limit = 1
+
+    async def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+    def note_live_tasks(self, _):
+        pass
+
+    def abort(self):
+        pass
+
+    def start_adapting(self):
+        pass
+
+    def begin_measuring(self, _):
+        pass
+
+    def finish(self):
+        pass
+
+
+class RunProgress:
+    """What bulk_nested_notes_op, make_inner_bulk_op and the rolling driver ask of the progress
+    updater, with the done counts kept for a test to wait on."""
+
+    gate = None
+
+    def __init__(self):
+        self.notes_done = 0
+        self.tasks_done = 0
+
+    def increment_counts(self, notes_done=0, tasks_done=0, **_):
+        self.notes_done += notes_done
+        self.tasks_done += tasks_done
+
+    # Drawing only
+    def set_total_notes(self, _):
+        pass
+
+    def set_total_tasks(self, _):
+        pass
+
+    def update_preparation_progress(self, **_):
+        pass
+
+    def start_autoupdate(self):
+        pass
+
+    def stop_autoupdate(self):
+        pass
+
+    def update_progress(self):
+        pass
+
+    def show_cancelling(self):
+        pass
+
+    def update_new_note_processing_progress(self, **_):
+        pass
+
+
+class RunCollection:
+    def add_custom_undo_entry(self, _):
+        return 1
+
+
+def patch_nested_run(base_ops: ModuleType):
+    """Patches for running the real bulk_nested_notes_op: a RunGate for the gate, and no thread
+    or connection pool resizing. Use as a context manager."""
+    from contextlib import ExitStack
+    from unittest import mock
+
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(base_ops, "ConcurrencyGate", lambda *a, **k: RunGate()))
+    stack.enter_context(mock.patch.object(base_ops, "size_pools_to_ceiling", lambda _: None))
+    return stack
+
+
+async def wait_until(condition: Callable[[], bool], seconds: float = 5.0) -> bool:
+    import asyncio
+
+    for _ in range(int(seconds / 0.01)):
+        if condition():
+            return True
+        await asyncio.sleep(0.01)
+    return False

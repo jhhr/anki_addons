@@ -5,7 +5,14 @@ import json
 import unittest
 from unittest import mock
 
-from addon_modules import load_ops_module, mw
+from addon_modules import (
+    RunCollection,
+    RunProgress,
+    load_ops_module,
+    mw,
+    patch_nested_run,
+    wait_until,
+)
 
 match_flags = load_ops_module("match_flags", subdir="word_array")
 match_targets = load_ops_module("match_targets", subdir="word_array")
@@ -653,58 +660,11 @@ class CountingNote(FakeNote):
         super().__setitem__(field, value)
 
 
-class RunProgress(Progress):
-    """What make_inner_bulk_op and the rolling driver ask of the progress updater."""
-
-    gate = None
-
-    def __init__(self):
-        super().__init__()
-        self.tasks_done = 0
-
-    def increment_counts(self, notes_done=0, tasks_done=0, **_):
-        super().increment_counts(notes_done)
-        self.tasks_done += tasks_done
-
-    def update_progress(self):
-        pass
-
-    def show_cancelling(self):
-        pass
-
-
-class RunGate:
-    """Lets every task through. A limit of 0 is a budget of one API task, so the rolling driver
-    starts a plan only once the one before has all but finished."""
-
-    limit = 0
-
-    async def acquire(self):
-        pass
-
-    def release(self):
-        pass
-
-    def note_live_tasks(self, _):
-        pass
-
-    def abort(self):
-        pass
-
-
 def passthrough_inner_bulk_op(config, op, **_):
     async def process(**op_args):
         return await op(config, **op_args)
 
     return process
-
-
-async def wait_until(condition, seconds=5.0):
-    for _ in range(int(seconds / 0.01)):
-        if condition():
-            return True
-        await asyncio.sleep(0.01)
-    return False
 
 
 class CancelledMatchRunTests(unittest.TestCase):
@@ -723,8 +683,8 @@ class CancelledMatchRunTests(unittest.TestCase):
         self.addCleanup(setattr, mw.progress, "cancel", False)
 
     def test_a_cancelled_run_saves_each_notes_finished_words(self):
-        """Through bulk_match_words_to_notes and the rolling driver, with a real cancel; only
-        bulk_nested_notes_op's gate and dialog upkeep is left out."""
+        """Through bulk_match_words_to_notes, the real bulk_nested_notes_op and rolling driver,
+        with a real cancel; only the gate and the dialog are fakes."""
 
         def note(note_id, arr):
             fields = {
@@ -761,62 +721,44 @@ class CancelledMatchRunTests(unittest.TestCase):
                 args["processed_word_tuples"][index] = ("箱", "よみ", "箱", 555)
             return True
 
-        async def nested_op(bulk_inner_op, notes, config, **kwargs):
-            base_ops = load_ops_module("base_ops")
-            gate = RunGate()
-            cancel_state = base_ops.CancelState()
-            plans = [
-                bulk_inner_op(
-                    config,
-                    n,
-                    edited_nids=edited_nids,
-                    notes_to_add_dict=notes_to_add,
-                    notes_to_update_dict=updates,
-                    progress_updater=progress,
-                    cancel_state=cancel_state,
-                    gate=gate,
-                )
-                for n in notes
-            ]
-            runner = asyncio.ensure_future(
-                base_ops.run_plans_rolling(
-                    plans,
-                    gate=gate,
-                    progress_updater=progress,
-                    cancel_state=cancel_state,
-                    label="test",
-                )
-            )
-            # 箱, 本 and 様's rating done; 棚 waiting
-            self.assertTrue(await wait_until(lambda: progress.tasks_done == 3))
-            mw.progress.cancel = True
-            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
-            self.assertTrue(runner.result())
-            return 1, notes_to_add, updates, []
-
         fake_mw = mock.MagicMock()
         fake_mw.progress = mw.progress
         fake_mw.addonManager.getConfig.return_value = self.config
         fake_mw.pm.profileFolder.return_value = "/nonexistent-profile"
 
         async def run():
-            await self.mwtn.bulk_match_words_to_notes(
-                col=None,
-                notes=[finished, cancelled, never_started],
-                edited_nids=edited_nids,
-                progress_updater=progress,
-                notes_to_add_dict=notes_to_add,
-                notes_to_update_dict=updates,
+            runner = asyncio.ensure_future(
+                self.mwtn.bulk_match_words_to_notes(
+                    col=RunCollection(),
+                    notes=[finished, cancelled, never_started],
+                    edited_nids=edited_nids,
+                    progress_updater=progress,
+                    notes_to_add_dict=notes_to_add,
+                    notes_to_update_dict=updates,
+                )
             )
+            # 箱, 本 and 様's rating done; 棚 waiting
+            self.assertTrue(await wait_until(lambda: progress.tasks_done == 3))
+            mw.progress.cancel = True
+            self.assertTrue(await wait_until(runner.done), "the run did not notice the cancel")
+            runner.result()
             writes = cancelled.array_writes
             # Let the cancelled tasks unwind: the note's own save must not run as well
             for _ in range(50):
                 await asyncio.sleep(0)
             return writes
 
+        # on_end writes the generated meanings; the flush comes before it
+        writes_at_on_end = []
+
         with (
+            patch_nested_run(load_ops_module("base_ops")),
+            mock.patch.object(
+                self.mwtn,
+                "write_meanings_dict_to_file",
+                lambda _: writes_at_on_end.append(cancelled.array_writes),
+            ),
             mock.patch.object(self.mwtn, "mw", fake_mw),
-            mock.patch.object(self.mwtn, "bulk_nested_notes_op", nested_op),
             mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
             mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
             mock.patch.object(self.mwtn, "get_response", lambda *a, **k: {"match_quality": 4}),
@@ -828,6 +770,7 @@ class CancelledMatchRunTests(unittest.TestCase):
         # the rating that finished
         self.assertEqual([w[4] for w in saved], [[-1234567, 3], ["match"], [111, 4]])
         self.assertEqual((writes_at_flush, cancelled.array_writes), (1, 1))
+        self.assertEqual(writes_at_on_end, [1])
         self.assertIs(updates[1], cancelled)
         self.assertEqual(notes_to_add, {"Word": [new_note]})
         # the note that finished was saved by its own task, and only then
@@ -858,7 +801,7 @@ class CancelledMatchRunTests(unittest.TestCase):
                 args["processed_word_tuples"][args["word_index"]] = ("本", "よみ", "本", 555)
             return True
 
-        progress, updates, edited_nids, unsaved = Progress(), {}, [], {}
+        progress, updates, edited_nids = Progress(), {}, []
         plan = self.mwtn.plan_word_array_matching(
             config=self.config,
             note=note,
@@ -878,20 +821,18 @@ class CancelledMatchRunTests(unittest.TestCase):
             sentence_cache=None,
             limit_words_and_readings=None,
             log_prefix="",
-            unsaved_arrays=unsaved,
         )
-        # The placeholder the note holds itself was resolved and saved while planning, and the
-        # save waits only once the tasks are started
-        self.assertEqual((note.array_writes, edited_nids, unsaved), (1, [1], {}))
+        # The placeholder the note holds itself was resolved and saved while planning
+        self.assertEqual((note.array_writes, edited_nids), (1, [1]))
 
         async def run():
             tasks = []
             plan.spawn(tasks)
-            self.assertEqual(len(unsaved), 1)
             self.assertTrue(await wait_until(lambda: len(release) == 1))
             await asyncio.sleep(0)
-            self.assertEqual(self.mwtn.flush_unsaved_arrays(unsaved, cancelled=True), 1)
-            self.assertEqual(unsaved, {})
+            # As bulk_nested_notes_op flushes a started note after a cancel
+            self.assertTrue(plan.flush())
+            self.assertFalse(plan.flush())
             release[0].set_result(None)
             await asyncio.gather(*tasks)
 
@@ -907,24 +848,6 @@ class CancelledMatchRunTests(unittest.TestCase):
         self.assertEqual((updates, edited_nids), ({1: note}, [1]))
         # the note's own task still counts it done
         self.assertEqual(progress.notes_done, 1)
-
-    def test_an_array_left_unsaved_by_a_finished_run_is_an_error_and_still_saved(self):
-        calls = []
-
-        def failing():
-            calls.append("failing")
-            raise ValueError("boom")
-
-        def fine():
-            calls.append("fine")
-
-        unsaved = {id(failing): failing, id(fine): fine}
-        with self.assertLogs(self.mwtn.logger, level="ERROR") as logs:
-            self.assertEqual(self.mwtn.flush_unsaved_arrays(unsaved, cancelled=False), 2)
-        self.assertIn("not cancelled", logs.output[0])
-        # one note's error does not keep the next one's results from cleanup
-        self.assertEqual(calls, ["failing", "fine"])
-        self.assertEqual(self.mwtn.flush_unsaved_arrays({}, cancelled=False), 0)
 
 
 if __name__ == "__main__":

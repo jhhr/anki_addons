@@ -1718,10 +1718,18 @@ class NotePlan(NamedTuple):
     `spawn` creates those tasks, appending them to the window's task list. It is called only
     when the note's window comes up, so the tasks themselves - which each hold a note and a
     prompt for as long as they live - still exist only a window at a time.
+
+    `flush`, for a note whose tasks save it together once they are all done: runs that save
+    with what the finished tasks left, returning True, or returns False if it has run already.
+    A cancel cancels the saving task along with the unfinished ones, which lost the finished
+    ones' paid work; bulk_nested_notes_op flushes every started note once the driver returns.
+    The save must run once only, whichever comes first, and must copy anything a worker
+    thread the cancel abandoned can still be writing.
     """
 
     task_count: int
     spawn: Callable[[list[asyncio.Task]], None]
+    flush: Optional[Callable[[], bool]] = None
 
 
 async def run_plans_rolling(
@@ -1730,6 +1738,7 @@ async def run_plans_rolling(
     progress_updater: AsyncTaskProgressUpdater,
     cancel_state: CancelState,
     label: str,
+    started_plans: "Optional[list[NotePlan]]" = None,
 ) -> bool:
     """Run every plan, keeping the task budget full instead of processing fixed windows.
 
@@ -1751,6 +1760,10 @@ async def run_plans_rolling(
 
     Shared per-run state (word locks, generated meanings) lives in the caller's closure and is
     unaffected by which plans happen to be in flight together.
+
+    Every plan whose spawn has run is appended to `started_plans`, if given: after a cancel
+    those are the only notes that can have unsaved results, and a note never started must be
+    left exactly as it was.
 
     Returns True if the run was cancelled.
     """
@@ -1779,6 +1792,8 @@ async def run_plans_rolling(
             index += 1
             spawned: "list[asyncio.Task]" = []
             plan.spawn(spawned)
+            if started_plans is not None:
+                started_plans.append(plan)
             if not spawned:
                 continue
             # A plan with no API tasks of its own still creates the bookkeeping tasks that
@@ -1868,6 +1883,33 @@ async def run_plans_rolling(
             threads=threading.active_count(),
         )
     return cancelled
+
+
+def flush_started_plans(started_plans: "Sequence[NotePlan]", cancelled: bool) -> int:
+    """Run the flush of every started plan that has one, returning how many notes it saved
+    that their own tasks had not.
+
+    Each flush in its own try: one note's error must not keep the others' results from
+    cleanup. A flush that raised counts as left unsaved.
+    """
+    unsaved = 0
+    for plan in started_plans:
+        if plan.flush is None:
+            continue
+        try:
+            if plan.flush():
+                unsaved += 1
+        except Exception as e:
+            unsaved += 1
+            logger.error(f"Error saving a note's finished results: {e}")
+            print_error_traceback(e, logger)
+    if unsaved and cancelled:
+        logger.info("Saved the finished results of %d notes the cancel left unsaved", unsaved)
+    elif unsaved:
+        # A finished run leaves one only when a task raised past process_op, so the gather in
+        # the note's saving task did too and the save never ran; drain_task_errors logged why
+        logger.error("%d notes were left unsaved by a run that was not cancelled", unsaved)
+    return unsaved
 
 
 async def bulk_nested_notes_op(
@@ -1972,23 +2014,35 @@ async def bulk_nested_notes_op(
     # would have been traced for nothing had measuring started with the adapt loop.
     gate.begin_measuring(planned_tasks)
 
+    started_plans: list[NotePlan] = []
     try:
         # Every task holds onto its note, prompt and config for as long as it lives, so they
         # are not all created up front: a plan is only the closure that will create one when
         # the rolling driver has room for it.
-        if await run_plans_rolling(
+        cancelled = await run_plans_rolling(
             plans,
             gate=gate,
             progress_updater=progress_updater,
             cancel_state=cancel_state,
             label="nested op",
-        ):
+            started_plans=started_plans,
+        )
+        if cancelled:
             logger.debug("Bulk operation was cancelled, returning results so far")
     finally:
         marker = time.monotonic()
         gate.finish()
         marker = log_phase("nested op: gate.finish", marker)
         progress_updater.gate = None
+
+    # Only once the driver has returned: until then a note's own save may still come. Outside
+    # the finally, as a run the driver raised out of fails before cleanup and keeps nothing
+    # anyway. Before on_end, which is for side effects that edit no notes and so may expect
+    # the op's results to be complete; and in any case before this returns, since cleanup takes
+    # its copy of notes_to_add_dict after that, and a new note is registered there before its
+    # placeholder is put into any result a flush saves.
+    flush_started_plans(started_plans, cancelled)
+    marker = log_phase("nested op: flush", marker)
 
     if on_end:
         on_end()
