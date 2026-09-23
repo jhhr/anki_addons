@@ -37,8 +37,8 @@ class NoteSource:
     is needed (`note_ids`), so a long search costs nothing until the user commits to it.
 
     It starts on the selection, even an empty one. The search has to be picked by a click:
-    it can be thousands of notes, or with an empty search box the whole collection, and a
-    dialog that started there ran on all of them at a stray Enter.
+    it can be thousands of notes, or the whole collection, and a dialog that started there
+    ran on all of them at a stray Enter.
     """
 
     def __init__(
@@ -57,25 +57,44 @@ class NoteSource:
 
         Not "" for that: an empty search matches every note, and an empty `nid:` is a syntax
         error.
+
+        The search is grouped in parentheses: Anki reads `note:X tag:a or tag:b` as
+        `(note:X tag:a) or tag:b`, so an ungrouped `or` let in notes the caller's terms were
+        meant to keep out. An empty search is left empty, since `()` is a syntax error.
         """
         if self.use_selection:
             if not self.selected_nids:
                 return None
             return f"nid:{','.join(map(str, self.selected_nids))}"
-        return self.search
+        if not self.search.strip():
+            return ""
+        return f"({self.search})"
 
     def note_ids(self, find_notes: Callable[[str], Sequence[NoteId]]) -> list[NoteId]:
         """The ids to act on. Selection mode never widens to the search, even when empty:
         running over a whole search the user did not pick is the worse failure.
 
         An empty `search` is passed to `find_notes` as it is; Anki matches the whole
-        collection for it. `Browser.current_search()` is the search box text, which is empty
-        while the browser shows its default search, so callers that act on the ids should
-        check what they got.
+        collection for it. `browser_search` gives one only when aqt kept no last search and
+        an empty search box stood in: aqt stores an empty search it ran as `deck:*`.
         """
         if self.use_selection:
             return list(self.selected_nids)
         return list(find_notes(self.search))
+
+
+def browser_search(browser: Browser) -> str:
+    """The search the browser last ran, which is what its rows show.
+
+    Not `Browser.current_search()`, the search box text: that is what the user has typed,
+    Enter or not, and it is empty while the browser shows its default search (the current
+    deck), where `find_notes("")` is every note in the collection. `_lastSearchTxt` is
+    private to aqt, which keeps it to refresh with; the box text stands in if it goes.
+    """
+    last = getattr(browser, "_lastSearchTxt", None)
+    if isinstance(last, str):
+        return last
+    return browser.current_search()
 
 
 def browser_note_source(browser: Optional[Browser]) -> NoteSource:
@@ -83,7 +102,7 @@ def browser_note_source(browser: Optional[Browser]) -> NoteSource:
     empty search, rather than an error, since the dialogs can be opened without one."""
     if not browser:
         return NoteSource([], "")
-    return NoteSource(browser.selected_notes(), browser.current_search())
+    return NoteSource(browser.selected_notes(), browser_search(browser))
 
 
 class NoteSourceButtons(QWidget):

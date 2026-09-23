@@ -201,10 +201,12 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
 - **A run without a chain behaves as before the chain existed**: its tooltip or stop warning,
   and no `.failure` handler, so aqt shows an exception itself. Only with a chain is one set,
   and `failed_step_outcome` then shows the error with aqt's `show_exception`.
-- **An empty browser search is the whole collection.** `Browser.current_search()` is `""`
-  while the browser shows its default search, and `find_notes("")` matches every note. The
-  dialog's count says so in red; anything else resolving a `NoteSource` in search mode must
-  deal with it too.
+- **The search is the one the browser ran, not the search box text.**
+  `note_source_buttons.browser_search` reads aqt's private `_lastSearchTxt`, which is what the
+  rows show. `Browser.current_search()` is the box: text typed without Enter, or `""` under
+  the default search, where `find_notes("")` is every note. The box stands in only if aqt
+  drops `_lastSearchTxt`, and the dialog's count then says in red that an empty search is
+  every note in the collection.
 - These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`,
   `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An `aqt`
   import in one of them takes the test suite offline (`test/addon_modules.py` says so).

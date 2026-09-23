@@ -138,6 +138,8 @@ import. The interpolation engine and most widgets this addon uses are shared wit
 addon's tests too. The picker's "Use selected notes" / "Use all notes from current search"
 pair is `ui.note_source_buttons`, shared with `japanese_note_ai_ops`' multi-op dialog. It
 always starts on the selection, and with nothing selected that is no notes: the search has
-to be clicked, so a stray Enter never applies to a whole search. Several
+to be clicked, so a stray Enter never applies to a whole search. The search is the one the
+browser last ran, not the box text, and `browser_query()` groups it in parentheses so that an
+`or` in it cannot escape the definition's note type and deck terms. Several
 helpers here are generic with one owner (`utils/merge_cards`, `move_card_to_deck`,
 `duplicate_note`, the media-folder helpers): when another addon needs one, move it per [docs/shared-code.md](../docs/shared-code.md) instead of copying.

@@ -17,6 +17,7 @@ from anki_shared.ui.note_source_buttons import (
     NoteSource,
     NoteSourceButtons,
     browser_note_source,
+    browser_search,
 )
 
 
@@ -44,7 +45,7 @@ class TestNoteSource:
     def test_search_mode_queries_and_finds_by_the_search(self):
         source = NoteSource([3, 1], "deck:x", use_selection=False)
         find = RecordingFind((7, 8))
-        assert source.browser_query() == "deck:x"
+        assert source.browser_query() == "(deck:x)"
         assert source.note_ids(find) == [7, 8]
         assert find.searches == ["deck:x"]
 
@@ -60,10 +61,20 @@ class TestNoteSource:
         assert source.note_ids(find) == []
         assert find.searches == []
 
+    def test_the_search_is_grouped_so_its_or_cannot_escape_the_terms_it_joins(self):
+        # Anki reads `note:X tag:a or tag:b` as `(note:X tag:a) or tag:b`
+        source = NoteSource([], "tag:a or tag:b", use_selection=False)
+        assert source.browser_query() == "(tag:a or tag:b)"
+        find = RecordingFind([1])
+        source.note_ids(find)
+        assert find.searches == ["tag:a or tag:b"]
+
     def test_an_empty_search_is_passed_on_as_it_is(self):
+        # Not grouped: `()` is a syntax error to Anki
         source = NoteSource([], "", use_selection=False)
         find = RecordingFind([1, 2])
         assert source.browser_query() == ""
+        assert NoteSource([], "  ", use_selection=False).browser_query() == ""
         assert source.note_ids(find) == [1, 2]
         assert find.searches == [""]
 
@@ -77,12 +88,31 @@ class TestNoteSource:
 class TestBrowserNoteSource:
     def test_it_captures_selection_and_search(self):
         browser = SimpleNamespace(
-            selected_notes=lambda: (10, 11), current_search=lambda: "tag:a"
+            selected_notes=lambda: (10, 11), _lastSearchTxt="tag:a", current_search=lambda: "tag:a"
         )
         source = browser_note_source(browser)
         assert source.selected_nids == [10, 11]
         assert source.search == "tag:a"
         assert source.use_selection is True
+
+    def test_the_search_is_what_the_browser_ran_not_what_the_box_holds(self):
+        # Typed but not entered: the rows on screen are still those of the last search
+        browser = SimpleNamespace(
+            selected_notes=lambda: [], _lastSearchTxt="tag:a", current_search=lambda: "tag:b"
+        )
+        assert browser_note_source(browser).search == "tag:a"
+
+    def test_the_default_search_is_the_current_deck_not_the_empty_box(self):
+        # An empty default search shows the current deck under an empty box; `find_notes("")`
+        # would have been every note in the collection
+        browser = SimpleNamespace(
+            selected_notes=lambda: [], _lastSearchTxt="deck:current", current_search=lambda: ""
+        )
+        assert browser_search(browser) == "deck:current"
+
+    def test_without_the_last_search_the_box_text_is_used(self):
+        browser = SimpleNamespace(selected_notes=lambda: [], current_search=lambda: "tag:b")
+        assert browser_search(browser) == "tag:b"
 
     def test_nothing_selected_still_means_selection_mode(self):
         browser = SimpleNamespace(selected_notes=lambda: [], current_search=lambda: "tag:a")

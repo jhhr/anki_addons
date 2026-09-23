@@ -67,6 +67,14 @@ def test_nothing_selected_counts_nothing_until_the_search_is_clicked(qtbot, note
     assert dialog.apply_button.isEnabled()
 
 
+def test_an_or_in_the_search_stays_inside_the_definition_s_note_type(qtbot, notes):
+    # Unless grouped, `note:X ... nid:1 or note:Basic` is `(note:X ... nid:1) or note:Basic`,
+    # and every Basic note would be counted for a definition over the vocab type
+    source = NoteSource([], f"nid:{notes[0].id} or note:Basic", use_selection=False)
+    dialog = open_dialog(qtbot, source)
+    assert list(dialog.definition_note_ids[0]) == [notes[0].id]
+
+
 def test_a_definition_without_note_types_counts_without_a_type_filter(qtbot, notes):
     # The editor saves a definition with no note types; checking it raised UnboundLocalError
     untyped = d.within_note("untyped")

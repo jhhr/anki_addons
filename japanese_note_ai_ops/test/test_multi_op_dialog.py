@@ -396,15 +396,19 @@ class DialogTests(unittest.TestCase):
 
 
 class FakeBrowser:
-    def __init__(self, selected, search):
+    """`search` is the one the browser ran, `box` what its search box holds (the same unless
+    given)."""
+
+    def __init__(self, selected, search, box=None):
         self._selected = selected
-        self._search = search
+        self._lastSearchTxt = search
+        self._box = search if box is None else box
 
     def selected_notes(self):
         return list(self._selected)
 
     def current_search(self):
-        return self._search
+        return self._box
 
 
 @unittest.skipUnless(HAVE_QT, "needs PyQt6")
@@ -475,6 +479,18 @@ class OpenerTests(unittest.TestCase):
         self.assertEqual([s.key for s in specs], ["b"])
         self.assertEqual(nids, [7, 8])
         col.find_notes.assert_called_with("deck:x")
+
+    def test_the_search_run_on_is_what_the_browser_shows_not_the_box_text(self):
+        # The default search shows the current deck under an empty box; the box text would
+        # have been every note in the collection
+        for selected_nids in (None, [3]):
+            with self.subTest(selected_nids=selected_nids):
+                browser = FakeBrowser([], "deck:current", box="")
+                run_op_chain, col = self.open(
+                    browser, found=(7,), pick=["Op A"], search=True, selected_nids=selected_nids
+                )
+                col.find_notes.assert_called_with("deck:current")
+                self.assertEqual(run_op_chain.call_args.args[1], [7])
 
     def test_a_selection_handed_in_is_not_read_from_the_browser_again(self):
         browser = FakeBrowser([], "deck:x")

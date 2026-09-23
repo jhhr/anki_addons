@@ -37,7 +37,12 @@ from aqt.qt import (
 
 from .async_api_ops.op_chain import run_op_chain
 from .op_registry import OPS, OpSpec
-from .shared.ui.note_source_buttons import NoteSource, NoteSourceButtons, browser_note_source
+from .shared.ui.note_source_buttons import (
+    NoteSource,
+    NoteSourceButtons,
+    browser_note_source,
+    browser_search,
+)
 
 if TYPE_CHECKING:
     from aqt.browser import Browser
@@ -118,9 +123,11 @@ def numbered_label(position: int, label: str) -> str:
 def is_whole_collection(note_source: NoteSource) -> bool:
     """Whether the notes to run on are every note in the collection.
 
-    `Browser.current_search()` is the search box text, which is empty while the browser
-    shows its default search - the current deck, say - and an empty search matches every
-    note there is. What the browser shows is then not what would be run on.
+    The search is the one the browser ran (`browser_search`), and aqt stores an empty one as
+    `deck:*`, so it is empty only when aqt no longer keeps it and the search box text stood
+    in. The box is empty while the browser shows its default search - the current deck, say
+    - and an empty search matches every note there is. What the browser shows is then not
+    what would be run on.
     """
     return not note_source.use_selection and not note_source.search.strip()
 
@@ -384,7 +391,7 @@ def show_multi_op_dialog(
     if selected_nids is None:
         note_source = browser_note_source(browser)
     else:
-        note_source = NoteSource(selected_nids, browser.current_search())
+        note_source = NoteSource(selected_nids, browser_search(browser))
     dialog = MultiOpDialog(browser, note_source, col.find_notes)
     if dialog.exec() and dialog.note_ids:
         run_op_chain(dialog.chosen_specs(), dialog.note_ids, parent=browser)
