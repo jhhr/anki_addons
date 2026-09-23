@@ -610,6 +610,62 @@ class CleanupCancelTests(DialogTestCase):
         self.assertNotIn("Cancel stops", self.labels[-1])
 
 
+    def test_the_adding_s_last_label_loses_the_hint_as_its_cancel_ends(self):
+        """With nothing drawn after it, a later stage's draw was all that took it away."""
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
+        updater._last_update_at = 0.0
+        updater.update_note_adding_progress(notes_added=3, total_notes=3)
+        self.assertIn("Cancel stops the adding", self.labels[-1])
+        # Its redraw still queued on the main thread
+        updater._update_pending = True
+
+        updater.end_cleanup_cancel()
+
+        self.assertNotIn("Cancel stops", self.labels[-1])
+        self.assertIn("3/3", self.labels[-1])
+
+    def test_ending_a_cancel_nothing_was_added_under_draws_nothing(self):
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        before = len(self.drawn)
+
+        updater.end_cleanup_cancel()
+
+        self.assertEqual(len(self.drawn), before)
+
+
+class CleanupStageLabelTests(DialogTestCase):
+    """Each stage of the cleanup draws its first label at once."""
+
+    def test_over_the_throttle_and_a_queued_redraw_of_the_stage_before(self):
+        updater = self.make_updater()
+        updater.begin_cleanup()
+        updater.update_unadded_note_clearing_progress(notes_cleared=1, total_notes=2)
+        # Just drawn, and its next redraw queued on the main thread
+        updater._last_update_at = time.time()
+        updater._update_pending = True
+
+        updater.begin_cleanup_stage()
+        updater.update_marker_tidying_progress(total_words=4)
+
+        self.assertIn("Tidying sort field markers", self.labels[-1])
+        self.assertIn("0/4</code></strong> words", self.labels[-1])
+
+    def test_only_the_first_label_of_a_stage(self):
+        updater = self.make_updater()
+        updater.begin_cleanup()
+        updater.begin_cleanup_stage()
+        updater.update_marker_tidying_progress(total_words=4)
+        before = len(self.drawn)
+
+        updater.update_marker_tidying_progress(words_done=1, total_words=4)
+
+        self.assertEqual(len(self.drawn), before)
+
+
 class ReArmedControlsTests(DialogTestCase):
     """The buttons once the cleanup has re-armed the cancel: Cancel live, Pause grey."""
 

@@ -1112,6 +1112,10 @@ class AsyncTaskProgressUpdater:
         self._ui_lock = threading.Lock()
         self._update_pending = False
         self._last_update_at = 0.0
+        # Set by begin_cleanup_stage: the next label is the stage's first (see _push)
+        self._stage_starting = False
+        # The adding's last counts, for end_cleanup_cancel to redraw without the Cancel hint
+        self._adding_counts: Optional[tuple[int, int, int]] = None
         self._suppressed = False
         # Set once the main thread has reset the dialog's flag for the cleanup's note adding,
         # cleared once nothing is left for that cancel to stop
@@ -1226,6 +1230,14 @@ class AsyncTaskProgressUpdater:
         with self._ui_lock:
             if self._suppressed and not force:
                 return
+            if self._stage_starting:
+                # A cleanup stage's first label, drawn even right after the stage before's
+                # last and over a redraw of it still queued, which then draws first. Dropped,
+                # the dialog showed the stage before through the whole of a slow first step:
+                # the first add_note's hooks under "Processing new notes".
+                self._stage_starting = False
+                self._update_pending = False
+                force = True
             if self._update_pending:
                 return
             now = time.time()
@@ -1360,6 +1372,13 @@ class AsyncTaskProgressUpdater:
             # A re-arm still queued on the main thread must not arm the cancel again
             self._arm_generation += 1
             self._cleanup_cancel_armed.clear()
+        counts, self._adding_counts = self._adding_counts, None
+        if counts is not None:
+            # Its last label said Cancel stops the adding, and stays up until a later stage
+            # draws, which a run with nothing to resolve or unlink may not have
+            with self._ui_lock:
+                self._update_pending = False
+            self._push(self._note_adding_label(*counts), counts[0], counts[1], force=True)
         mw.taskman.run_on_main(disable_run_controls)
 
     def begin_cleanup_stage(self) -> None:
@@ -1368,7 +1387,8 @@ class AsyncTaskProgressUpdater:
         The cleanup's labels measure their time and ETA from `start_time`, which until this
         was last set when the API phase began: after an hour of requests, adding ten notes
         showed an hour gone and an average of minutes per note. Called by the cleanup before
-        each stage, not by the stage's own progress calls, which repeat.
+        each stage, not by the stage's own progress calls, which repeat. The stage's first label
+        is drawn whatever the redraw throttle says (`_push`).
 
         The API phase's task and note counters stay as they are: no cleanup label reads them.
         The paused time is only reset, not tracked: the cleanup cannot be paused.
@@ -1376,6 +1396,8 @@ class AsyncTaskProgressUpdater:
         with self._counts_lock:
             self.start_time = time.time()
             self.paused_seconds = 0.0
+        with self._ui_lock:
+            self._stage_starting = True
 
     def show_paused(self, detail: str = "") -> None:
         """Draw the pause into the dialog now, for a wait that nothing else redraws.
@@ -1495,6 +1517,7 @@ class AsyncTaskProgressUpdater:
         Update the Step 2 progress dialog for note adding operations occuring after async tasks
         are done.
         """
+        self._adding_counts = (notes_added, total_notes, failed)
         try:
             label = self._note_adding_label(notes_added, total_notes, failed)
         except Exception as e:
