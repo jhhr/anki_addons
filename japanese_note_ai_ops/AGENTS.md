@@ -95,9 +95,9 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   `run_cancelled()`) stops the adding, checked before the dedupe, between its merges, after it
   and before each `add_note` - never inside one, where copy_anywhere's on-add definitions run.
   `add_new_notes` splits the notes three ways: added (placeholders resolved by
-  `update_fake_note_ids`), failed (kept as placeholders, the trace of a note that should
-  exist), not added (words put back to `["match"]` by `clear_unadded_note_ids`). Resolving and
-  unlinking always run to the end. The match op saves each started note's finished words
+  `update_fake_note_ids`), failed (placeholders kept, a debugging hint the next match run's
+  `resolve_placeholder_ids` resets), not added (words put back to `["match"]` by
+  `clear_unadded_note_ids`). Resolving and unlinking always run to the end. The match op saves each started note's finished words
   after a cancel (`flush_unsaved_arrays`), before cleanup copies `notes_to_add_dict`, so every
   placeholder it saves belongs to a note cleanup is handed.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never

@@ -120,8 +120,9 @@ Adding the new notes can itself take a while, since every added note runs the no
 hooks (copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel
 (or Escape) stops the adding; a note already being added is finished first. The notes not
 added are dropped, and the words that were linked to them are left to be matched again by the
-next run. A note that failed to add keeps its placeholder id in the word lists, as a trace to
-debug from. The end message says how many new notes were added, how many were left out by the
+next run. A note that failed to add keeps its placeholder id in the word lists, which may help
+debugging, but only until the next match run over those sentences puts the words back to be
+matched. The end message says how many new notes were added, how many were left out by the
 cancel and how many failed.
 
 ### terminal- models (claude CLI)

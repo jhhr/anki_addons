@@ -287,7 +287,7 @@ def clear_placeholder_ids(arr: list, placeholder_ids: Iterable[int]) -> int:
     dropped, returning how many words changed. For the new notes a cancelled adding never got
     to: no note will hold their placeholders, so the words are matched again by the next run,
     as resolve_placeholder_ids would do there. Any other placeholder stays, a failed add's
-    included, which is kept as the trace of a note that should exist; so does every real id."""
+    included (a debugging hint until that next run resets it too), and so does every real id."""
     cleared = frozenset(placeholder_ids)
     changed = 0
     for _, elem in match_flags.iter_words(arr):

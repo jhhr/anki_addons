@@ -307,8 +307,8 @@ def clear_unadded_note_ids(
     update_fake_note_ids finds one, but by one search for many placeholders; the substring
     search also finds a longer placeholder that contains a shorter one, and the exact ids
     compared in the decoded array (match_targets.clear_placeholder_ids) leave that note be.
-    A note whose add failed is not in `unadded_notes`: its placeholder is kept as the trace
-    of a note that should exist.
+    A note whose add failed is not in `unadded_notes`: its placeholder is left for debugging,
+    though only until the next match run, which resets it as a placeholder no note holds.
 
     Returns the notes changed, for the cleanup to save: those with words cleared, and any
     whose field turned out not to be an array, left as it is and only tagged.

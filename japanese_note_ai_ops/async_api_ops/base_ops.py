@@ -2297,7 +2297,8 @@ class NewNotesCounts(NamedTuple):
 
     added: int = 0
     # Attempted and raised, or skipped with no note type or deck. The arrays keep their
-    # placeholders, the trace of a note that should exist.
+    # placeholders until the next match run puts them back to be matched: a short-lived
+    # hint for debugging, not a record to rely on.
     failed: int = 0
     # Never attempted, because the adding was cancelled first. Their words were unlinked.
     not_added: int = 0
@@ -2453,7 +2454,8 @@ def add_new_notes(
 
     - added: `new_notes_op` resolves their placeholder ids, as in a finished run;
     - failed (attempted and raised, or no note type or deck): handed to neither op, so their
-      placeholders stay in the arrays as the trace of a note that should exist;
+      placeholders stay in the arrays, a hint for debugging that lasts only until the next
+      match run resets them (match_targets.resolve_placeholder_ids);
     - not added (never attempted): `unadded_notes_op` puts the words linked to them back to
       be matched again, since no note will ever hold their placeholders.
 
