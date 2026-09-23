@@ -1,11 +1,12 @@
 """The chain runner: several ops, one after another, over the same notes.
 
 A chain that starts a step from inside the previous one's `on_done` runs it inside aqt's
-success handler, or recurses when a step fails synchronously; one that starts it while a
-progress dialog is still closing has that dialog's late cleanup close the new step's. So these
-drive `OpChain` with fake ops and a scheduler the test runs by hand, and check that a step
-starts only from the scheduler and only when nothing is busy, that each step gets the ids that
-still exist, that a stopped step stops the chain, and what the summary says.
+success handler, or recurses when a step fails synchronously. A chain whose steps each had a
+progress dialog of their own would leave a gap between two with nothing modal on screen. So
+these drive `OpChain` with fake ops and a scheduler the test runs by hand, and check that a
+step starts only from the scheduler, that one progress is held from before the first step to
+after the last, that each step gets the ids that still exist, that a stopped step stops the
+chain, and what the summary says.
 
 The suite runs on the Anki stand-ins, with no database behind `mw.col`, so `existing_note_ids`
 is checked against a table in an in-memory sqlite database holding the same `notes.id` column.
@@ -54,7 +55,8 @@ class Harness:
 
     def __init__(self, nids=(1, 2, 3)):
         self.existing = set(nids)
-        self.busy = False
+        # What the chain did, in order: "hold", "release", ("start", key), ("summary", ...)
+        self.events: list = []
         self.pending: list = []
         self.summaries: list = []
         self.errors: list = []
@@ -68,10 +70,15 @@ class Harness:
             self.parent,
             existing_ids=lambda ids: [n for n in ids if n in self.existing],
             schedule=self.pending.append,
-            is_busy=lambda: self.busy,
+            hold_progress=lambda: self.events.append("hold"),
+            release_progress=lambda: self.events.append("release"),
             failed_outcome=self.failed_outcome,
-            show_summary=lambda text, stopped: self.summaries.append((text, stopped)),
+            show_summary=self.show_summary,
         )
+
+    def show_summary(self, text, stopped):
+        self.summaries.append((text, stopped))
+        self.events.append("summary")
 
     def failed_outcome(self, error):
         self.errors.append(error)
@@ -131,30 +138,28 @@ class StepOrderTests(unittest.TestCase):
         self.h.run_scheduled()
         self.assertEqual(len(self.specs[1].calls), 1)
 
-    def test_the_next_step_waits_while_busy(self):
+    def test_one_progress_is_held_from_before_the_first_step_to_after_the_last(self):
+        for spec in self.specs:
+            spec.on_start = lambda chain, key=spec.key: self.h.events.append(("start", key))
         self.chain.start(no_resources)
+        self.assertEqual(self.h.events, ["hold"])
         self.h.run_scheduled()
-        self.h.busy = True
-        self.specs[0].chain.on_done(StepOutcome(COMPLETED))
-        for _ in range(10):
-            self.h.pending.pop(0)()
-        self.assertEqual(self.specs[1].calls, [])
-        self.h.busy = False
-        self.h.run_scheduled()
-        self.assertEqual(len(self.specs[1].calls), 1)
+        for spec in self.specs:
+            spec.chain.on_done(StepOutcome(COMPLETED))
+            # Never let go between two steps: the browser would be usable in the gap
+            self.assertNotIn("release", self.h.events)
+            self.h.run_scheduled()
+        self.assertEqual(
+            self.h.events,
+            ["hold", ("start", "a"), ("start", "b"), ("start", "c"), "release", "summary"],
+        )
 
-    def test_one_idle_look_between_two_busy_ones_is_not_enough(self):
-        # The two closings of one step's dialog land separately
+    def test_a_stopped_chain_lets_go_of_its_progress_before_the_summary(self):
         self.chain.start(no_resources)
         self.h.run_scheduled()
-        self.specs[0].chain.on_done(StepOutcome(COMPLETED))
-        looks = iter([True, False, True, False, False])
-        self.chain._is_busy = lambda: next(looks)
-        for _ in range(4):
-            self.h.pending.pop(0)()
-            self.assertEqual(self.specs[1].calls, [])
-        self.h.pending.pop(0)()
-        self.assertEqual(len(self.specs[1].calls), 1)
+        self.specs[0].chain.on_done(StepOutcome(CANCELLED))
+        self.h.run_scheduled()
+        self.assertEqual(self.h.events, ["hold", "release", "summary"])
 
     def test_a_second_on_done_is_ignored(self):
         self.chain.start(no_resources)
@@ -219,8 +224,16 @@ class StopTests(unittest.TestCase):
 
     def test_a_cancelled_step_stops_the_chain(self):
         text = self.run_until_step_two_ends(StepOutcome(CANCELLED, message="1 note edited"))
-        self.assertIn("<b>Step 2/3: Op b</b> (cancelled)<br>1 note edited", text)
-        self.assertIn("stopped at Step 2/3 (Op b): it was cancelled.", text)
+        self.assertIn(
+            "<b>Step 2/3: Op b</b> (cancelled; what it had finished is saved)<br>1 note edited",
+            text,
+        )
+        # Plain that part of the chain was done
+        self.assertIn(
+            "stopped at Step 2/3 (Op b): it was cancelled. The 1 step before it ran to the end."
+            " What the cancelled step had finished is saved",
+            text,
+        )
 
     def test_a_stopped_step_stops_the_chain_and_says_why(self):
         text = self.run_until_step_two_ends(
@@ -271,7 +284,6 @@ class SynchronousEndTests(unittest.TestCase):
         ]
         chain = h.make(specs)
         chain.start(no_resources)
-        h.pending.pop(0)()
         h.pending.pop(0)()
         self.assertEqual(len(specs[0].calls), 1)
         self.assertEqual(specs[1].calls, [])
@@ -330,18 +342,15 @@ class SummaryTests(unittest.TestCase):
             "<b>Step 2/2: Op b</b><br>1 note<br>added",
         )
 
-    def test_the_summary_waits_for_the_scheduler_and_for_idle(self):
+    def test_the_summary_waits_for_the_scheduler(self):
         h = Harness()
         specs = [FakeSpec("a")]
         chain = h.make(specs)
         chain.start(no_resources)
         h.run_scheduled()
-        h.busy = True
         specs[0].chain.on_done(StepOutcome(COMPLETED))
-        for _ in range(5):
-            h.pending.pop(0)()
+        # Not from inside on_done, which is aqt's success handler
         self.assertEqual(h.summaries, [])
-        h.busy = False
         h.run_scheduled()
         self.assertEqual(len(h.summaries), 1)
 
@@ -386,6 +395,8 @@ class GeneratorResourceTests(unittest.TestCase):
         self.assertEqual(h.resource_checks, [h.parent])
         self.assertEqual([s.calls for s in specs], [[], []])
         self.assertEqual(h.summaries, [])
+        # Nor any progress held for a chain that never began
+        self.assertEqual(h.events, [])
 
     def test_the_real_check_with_sudachipy_missing_starts_nothing(self):
         generator_resources = load_ops_module("generator_resources", subdir="")

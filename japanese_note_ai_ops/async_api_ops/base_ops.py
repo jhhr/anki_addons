@@ -64,9 +64,9 @@ from .diagnostics import (
 )
 from .progress_controls import (
     disable_run_controls,
-    install_run_controls,
     rearm_cleanup_cancel,
     refresh_run_controls,
+    start_run_controls,
 )
 
 from ..call_logging import bulk_op_logging, phase_log
@@ -2573,13 +2573,10 @@ def on_bulk_success(
     goes to `chain.on_done` instead. Its status is `stopped` for a stop reason, else
     `cancelled` when `selected_notes_op` saw the run cancelled on the op thread.
     """
-    logger.debug("[phase] on_bulk_success reached, closing progress")
-    # On the main thread, as this is, run_on_main runs the closure before it returns, so this
-    # finish is called before on_done. aqt's finish still puts off closing a dialog shown
-    # less than half a second ago to a background task, and a step started before that lands
-    # would get no dialog of its own and lose the old one: a chain starts its next step only
-    # once mw.progress.busy() is 0.
-    mw.taskman.run_on_main(lambda: mw.progress.finish())
+    logger.debug("[phase] on_bulk_success reached")
+    # No mw.progress.finish() here: aqt's with_progress finished the progress before calling
+    # this. A second one ended whichever progress was open by then, which in a chain is the
+    # chain's own, held across its steps, and closed its dialog between two steps.
     if chain is not None:
         try:
             message, stop_reason = bulk_success_message(
@@ -3363,8 +3360,9 @@ def selected_notes_op(
     # run_in_background opens the progress dialog before it returns (taskman.with_progress
     # calls progress.start on this, the main thread), so the buttons can go in now, before
     # the dialog is first shown. The op thread's redraws cannot overtake this: they are run
-    # on this thread, after this function returns.
-    install_run_controls()
+    # on this thread, after this function returns. A chain step's dialog is the chain's, which
+    # the step before left with its buttons greyed; start_run_controls brings them back.
+    start_run_controls()
     if chain is not None:
-        # The title set before the start went to no dialog; this one goes to the new one
+        # A step's title is drawn into the chain's dialog, which the start reused
         progress_updater.show_title()

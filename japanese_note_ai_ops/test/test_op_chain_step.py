@@ -106,7 +106,7 @@ class ChainStepTest(unittest.TestCase):
             mock.patch.object(mw.progress, "finish", self.finish_progress),
             mock.patch.object(mw.progress, "set_title", self.set_title),
             mock.patch.object(base_ops, "CollectionOp", self.make_op),
-            mock.patch.object(base_ops, "install_run_controls", lambda: None),
+            mock.patch.object(base_ops, "start_run_controls", lambda: None),
             mock.patch.object(
                 base_ops,
                 "tooltip",

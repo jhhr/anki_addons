@@ -1786,7 +1786,7 @@ class SelectedNotesOpTidyTests(unittest.TestCase):
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.object(base_ops, "CollectionOp", FakeCollectionOp))
-        stack.enter_context(mock.patch.object(base_ops, "install_run_controls", lambda: None))
+        stack.enter_context(mock.patch.object(base_ops, "start_run_controls", lambda: None))
         stack.enter_context(
             mock.patch.object(
                 base_ops,

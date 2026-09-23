@@ -1,9 +1,14 @@
 """Running several ops one after another over the same notes: a chain.
 
-Each step is a full, ordinary run of its op through `selected_notes_op`, with its own progress
-dialog, cleanup and undo entry; nothing is merged across steps. The chain only sequences them:
-it starts a step, waits for the step's `ChainStep.on_done`, and starts the next one or stops,
-and once it is over it shows one summary of every step instead of each step's own tooltip.
+Each step is a full, ordinary run of its op through `selected_notes_op`, with its own cleanup
+and undo entry; nothing is merged across steps. The chain only sequences them: it starts a step,
+waits for the step's `ChainStep.on_done`, and starts the next one or stops, and once it is over
+it shows one summary of every step instead of each step's own tooltip.
+
+The progress dialog is the chain's, not the steps': the chain holds a progress level open from
+before its first step to after its last, so each step's `CollectionOp` nests in it and reuses
+its dialog. Were each step to open and close its own, the application-modal dialog would be gone
+between two steps, and the browser the chain runs over could be closed or edited in that gap.
 
 `OpChain` is the sequencing, with everything that needs Anki handed in as a callable, so the
 order, the stops and the summary can be tested with fake ops and no Qt. `run_op_chain` wires in
@@ -19,10 +24,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from anki.notes import NoteId
 from aqt import mw
+from aqt.qt import QTimer
 from aqt.utils import showInfo, showWarning
 
 from ..generator_resources import with_generator_resources
 from .base_ops import failed_step_outcome
+from .progress_controls import install_idle_run_controls
 from .chain_types import (
     STEP_CANCELLED,
     STEP_FAILED,
@@ -44,16 +51,6 @@ SUMMARY_TITLE = "Japanese AI ops"
 # builds), and ints cannot inject anything. Chunking keeps each statement small even for a
 # chain over a whole collection.
 EXISTING_IDS_CHUNK = 500
-
-# How often the chain looks whether the previous step has let go of the progress dialog.
-POLL_MS = 100
-# How many looks in a row must find nothing busy. A step's progress is finished twice (aqt's
-# with_progress and on_bulk_success's own), and a dialog shown less than half a second ago is
-# closed by each finish from a background task, so the two closings land separately, close
-# together in time. A step started between them would have its fresh dialog closed by the
-# second; one look later both have landed.
-IDLE_POLLS = 2
-
 
 def existing_note_ids(col: Any, nids: Sequence[NoteId]) -> list[NoteId]:
     """`nids` without the ids whose notes no longer exist, in the order given.
@@ -79,14 +76,16 @@ class OpChain:
     The hooks:
     - `existing_ids(nids)`: those of `nids` whose notes still exist, order kept.
     - `schedule(func)`: call `func` later, from a fresh main-loop turn.
-    - `is_busy()`: whether a progress dialog is still open or closing.
+    - `hold_progress()` / `release_progress()`: open the chain's progress dialog before the
+      first step, and let it go after the last (see the module docstring).
     - `failed_outcome(error)`: show `error` to the user and return the failed step's outcome.
-    - `show_summary(text, stopped_early)`: show the rich-text summary.
+    - `show_summary(text, stopped_early)`: show the rich-text summary once the progress dialog
+      has gone.
 
     A step's `on_done` can come synchronously from inside `spec.start` (`fail_step`), and a
     run's comes from inside aqt's success handler, before aqt has finished with the operation.
-    So nothing is started from inside `on_done`: the next step and the summary both go through
-    `schedule`, and only once nothing is busy.
+    So nothing is started from inside `on_done`: the next step and the end both go through
+    `schedule`.
     """
 
     def __init__(
@@ -97,7 +96,8 @@ class OpChain:
         *,
         existing_ids: Callable[[Sequence[NoteId]], list[NoteId]],
         schedule: Callable[[Callable[[], None]], None],
-        is_busy: Callable[[], bool],
+        hold_progress: Callable[[], None],
+        release_progress: Callable[[], None],
         failed_outcome: Callable[[Exception], StepOutcome],
         show_summary: Callable[[str, bool], None],
     ):
@@ -108,7 +108,9 @@ class OpChain:
         self.parent = parent
         self._existing_ids = existing_ids
         self._schedule = schedule
-        self._is_busy = is_busy
+        self._hold_progress = hold_progress
+        self._release_progress = release_progress
+        self._holding = False
         self._failed_outcome = failed_outcome
         self._show_summary = show_summary
         # (step index, outcome) of every step that was started, in order
@@ -136,33 +138,18 @@ class OpChain:
             self.ended = True
             return
         if any(spec.needs_generator for spec in self.specs):
-            with_resources(self.parent, lambda: self._when_idle(lambda: self._run_step(0)))
+            # The download has a progress dialog of its own, done before the chain's opens
+            with_resources(self.parent, self._begin)
         else:
-            # The first step waits like the others: a progress dialog may still be closing when
-            # the chain is started (a finished download's, one the user started)
-            self._when_idle(lambda: self._run_step(0))
+            self._begin()
+
+    def _begin(self) -> None:
+        self._hold_progress()
+        self._holding = True
+        self._schedule(lambda: self._run_step(0))
 
     def label(self, index: int) -> str:
         return f"Step {index + 1}/{len(self.specs)}"
-
-    def _when_idle(self, func: Callable[[], None]) -> None:
-        # No cap on the wait: a step's dialog is always closed eventually, and a progress the
-        # user started meanwhile (another op from the menu) is one the next step must not
-        # share. A look every POLL_MS costs nothing.
-        idle_polls = 0
-
-        def poll() -> None:
-            nonlocal idle_polls
-            if self._is_busy():
-                idle_polls = 0
-            else:
-                idle_polls += 1
-                if idle_polls >= IDLE_POLLS:
-                    func()
-                    return
-            self._schedule(poll)
-
-        self._schedule(poll)
 
     def _run_step(self, index: int) -> None:
         spec = self.specs[index]
@@ -198,16 +185,22 @@ class OpChain:
             if outcome.stops_chain or index + 1 >= len(self.specs):
                 self._end()
             else:
-                self._when_idle(lambda: self._run_step(index + 1))
+                self._schedule(lambda: self._run_step(index + 1))
 
         return on_done
 
     def _end(self) -> None:
         self.ended = True
         text, stopped_early = self.summary()
-        # Not from inside on_done either: the summary is modal, and the step's progress dialog
-        # may still be on its way out
-        self._when_idle(lambda: self._show_summary(text, stopped_early))
+
+        def finish() -> None:
+            if self._holding:
+                self._holding = False
+                self._release_progress()
+            self._show_summary(text, stopped_early)
+
+        # Not from inside on_done either: that is aqt's success handler, or a step's start
+        self._schedule(finish)
 
     def summary(self) -> tuple[str, bool]:
         """The rich-text summary, and whether the chain stopped before its last step."""
@@ -216,7 +209,7 @@ class OpChain:
         for index, outcome in self.outcomes:
             head = f"<b>{esc(self.label(index))}: {esc(self.specs[index].label)}</b>"
             if outcome.status == STEP_CANCELLED:
-                head += " (cancelled)"
+                head += " (cancelled; what it had finished is saved)"
             elif outcome.status == STEP_STOPPED:
                 head += " (stopped)"
             elif outcome.status == STEP_FAILED:
@@ -239,6 +232,16 @@ class OpChain:
             stop = f"The chain stopped at {esc(self.label(index))} ({esc(self.specs[index].label)})"
             if outcome.status == STEP_CANCELLED:
                 stop += ": it was cancelled."
+                done = [o for i, o in self.outcomes if i < index]
+                if done:
+                    stop += (
+                        f" The {len(done)} step{'s' if len(done) > 1 else ''} before it"
+                        " ran to the end."
+                    )
+                stop += (
+                    " What the cancelled step had finished is saved, as its own undo entry"
+                    " like every step's."
+                )
             elif outcome.status == STEP_STOPPED:
                 stop += f": {esc(outcome.stop_reason or 'it stopped itself')}"
             else:
@@ -263,14 +266,23 @@ def run_op_chain(specs: Sequence[OpSpec], nids: Sequence[NoteId], parent: Any) -
     """Run `specs` in order over `nids`, each as a step of one chain, and sum them up at the
     end. Returns at once; the steps run later, from the main loop."""
     def schedule(func: Callable[[], None]) -> None:
-        # aqt's timer holds a call back while a progress dialog is open, and drops it once the
-        # collection is closed: a chain left waiting then ends without a summary, with the
-        # profile it ran on
-        mw.progress.single_shot(POLL_MS, func)
+        # Not aqt's single_shot, which holds a call back for as long as a progress is open:
+        # the chain's own is, from its first step to its last
+        QTimer.singleShot(0, func)
+
+    def hold_progress() -> None:
+        mw.progress.start(parent=parent, immediate=True, title=SUMMARY_TITLE)
+        # Greyed until a step's run brings them in, so Escape cannot cancel the gap before it
+        install_idle_run_controls()
 
     def show_summary(text: str, stopped_early: bool) -> None:
-        show = showWarning if stopped_early else showInfo
-        show(text, parent=parent, title=SUMMARY_TITLE, textFormat="rich")
+        def show() -> None:
+            show_dialog = showWarning if stopped_early else showInfo
+            show_dialog(text, parent=parent, title=SUMMARY_TITLE, textFormat="rich")
+
+        # aqt's timer this time: it fires once no progress is open, so the summary is not
+        # shown under the chain's dialog while that is still closing
+        mw.progress.single_shot(0, show)
 
     OpChain(
         specs,
@@ -278,7 +290,8 @@ def run_op_chain(specs: Sequence[OpSpec], nids: Sequence[NoteId], parent: Any) -
         parent,
         existing_ids=lambda ids: existing_note_ids(mw.col, ids),
         schedule=schedule,
-        is_busy=lambda: mw.progress.busy() > 0,
+        hold_progress=hold_progress,
+        release_progress=mw.progress.finish,
         failed_outcome=lambda error: failed_step_outcome(parent, error),
         show_summary=show_summary,
     ).start(with_generator_resources)

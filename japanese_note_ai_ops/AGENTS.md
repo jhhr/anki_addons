@@ -100,15 +100,19 @@ after `exec()` returns, so its first progress dialog is not under a modal one.
 
 `run_op_chain(specs, nids, parent)`, per step:
 
-- One full, ordinary run: its own `selected_notes_op`, progress dialog titled
-  `"Step i/n: ..."`, cleanup and undo entry. Cleanup commits (added notes included) before
+- One full, ordinary run: its own `selected_notes_op`, cleanup and undo entry, and the title
+  `"Step i/n: ..."`. The progress dialog is the chain's: it holds a progress level from
+  before step 1 to after the last, each step's `CollectionOp` nests in it, and the modal
+  dialog never leaves the screen between steps, so the browser cannot be closed or edited
+  mid-chain. Cleanup commits (added notes included) before
   the next step starts, so a later step that queries the collection sees added notes, but
   they never join the chain's ids. `OpPhase` does not join steps: that would share one undo
   entry and hold the added notes back.
 - Before it, the ids fixed at Run are re-filtered by `existing_note_ids` (a cleanup can remove
   notes; `selected_notes_op` raises on a removed id). None left stops the chain.
 - A cancelled, stopped or failed step, or a `start` that raises, stops the chain; a
-  cancelled step still saves what it did.
+  cancelled step still saves what it did, and the summary says so and that the steps before
+  it ran to the end.
 - No tooltip per step. One summary at the end: `showInfo`, or `showWarning` when stopped
   early, naming the step, why, and the steps that did not run.
 - If any op `needs_generator`, the downloads are asked about once, before step 1; declined,
@@ -140,8 +144,11 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
-  set for the rest of a cancelled run. In a run not cancelled a set flag is a press made
-  during the edited notes' write and is kept (`keep_pressed`), so it stops the adding. A reset that could not happen, or lands after the op
+  set for the rest of a cancelled run. While Cancel is grey, Escape and the close box do
+  nothing either (`progress_controls.swallows_cancel`, an event filter on Anki's dialog), so
+  a press during the edited notes' write, the resolving or the unlinking is dropped; without
+  the buttons such a press is kept (`keep_pressed`) and stops the adding. A reset that could
+  not happen, or lands after the op
   thread stopped waiting or closed the window (a generation under `_arm_lock`), arms nothing,
   so a stale first cancel is never taken for a second one. From then on a cancel
   (`cleanup_cancel_requested()`, never `run_cancelled()`) stops the adding, checked before the
@@ -180,12 +187,17 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   `RunCancelled`, and `fail_step` for an entry function that gives up before running. A
   second call is ignored with a warning; a missing one leaves the chain waiting forever
   (there is no timeout). `fail_step`'s call is synchronous, from inside `spec.start`.
-- **Nothing is started from inside `on_done`.** The next step, the first one and the summary
-  wait until `mw.progress.busy()` is 0 on two looks in a row (`mw.progress.single_shot(100)`
-  polls, no cap). A step's progress is finished twice (aqt's and `on_bulk_success`'s), and
-  each finish closes a dialog shown under 0.5 s ago from a background task; a step started
-  between the two closings gets no dialog of its own (`progress.start` returns None at
-  levels > 1) and has the shared one closed under it. One `single_shot(0)` is not enough.
+- **Nothing is started from inside `on_done`.** The next step and the end go through a
+  `QTimer.singleShot(0)`, not aqt's `single_shot`, which holds a call back while any progress
+  is open and the chain's always is. The summary does use `single_shot`, after the chain lets
+  go of its progress, so it is not shown under a dialog still closing.
+- **`on_bulk_success` never finishes the progress.** aqt's `with_progress` has done that
+  before the success handler; a second `finish()` ended whichever progress was open by then,
+  which in a chain is the chain's own, and closed its dialog between steps.
+- **Escape and the close box cancel only while Cancel is enabled** (see the cancel invariant
+  above). A chain's dialog gets greyed buttons before its first step
+  (`install_idle_run_controls`), and each step's `start_run_controls` brings them back
+  after the step before left them greyed.
 - **A run without a chain behaves as before the chain existed**: its tooltip or stop warning,
   and no `.failure` handler, so aqt shows an exception itself. Only with a chain is one set,
   and `failed_step_outcome` then shows the error with aqt's `show_exception`.
