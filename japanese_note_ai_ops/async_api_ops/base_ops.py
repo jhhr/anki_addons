@@ -2691,13 +2691,12 @@ def add_new_notes(
 
     try:
         if notes:
-            # First, so the label drawn as Cancel comes back shows this stage's time, not the
-            # API phase's
+            # First, so the label drawn as Cancel comes back, and the dedupe's after it, show
+            # this stage's time, not the API phase's: one stage, whose arming takes moments
             progress_updater.begin_cleanup_stage()
             progress_updater.arm_cleanup_cancel(total_notes)
         cancelled = progress_updater.cleanup_cancel_requested()
         if filter_new_notes_op is not None and notes and not cancelled:
-            progress_updater.begin_cleanup_stage()
             notes, filtered_notes_to_update_dict = filter_new_notes_op(
                 list(notes), config, progress_updater
             )
