@@ -163,7 +163,8 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
 
         self.assertEqual(col.updated, [referencing, notes[0]])
         self.assertEqual(col.merged, [POS, POS])
-        self.assertEqual(result.updated_nids, [2, 501])
+        # The added note is saved but counted as added, not as a note edited
+        self.assertEqual(result.updated_nids, [2])
 
     def test_a_note_that_fails_to_add_keeps_its_placeholder_where_it_is_referenced(self):
         failing = new_note("-1111111")
@@ -861,6 +862,51 @@ class CleanupTailTests(unittest.TestCase):
             )
 
         self.assertTrue(self.updater.cancel_ended)
+
+
+class EditedNotesCountTests(unittest.TestCase):
+    """How the final message counts the notes the note adding saved (review finding C6): a
+    selected note as one of the selection edited, any other as an other note, each once."""
+
+    def setUp(self):
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+
+    def test_notes_resolved_or_unlinked_outside_the_selection_are_other_notes(self):
+        added = base_ops.NewNotesAdded(
+            base_ops.NewNotesCounts(1, 0, 1), None, updated_nids=[2, 9, 3], filtered_nids=[3, 8]
+        )
+        # What the run's own writes already counted
+        edited, other = [2], [8]
+
+        base_ops.count_new_notes_edits(added, {1, 2, 3}, edited, other)
+
+        self.assertEqual((edited, other), ([2, 3], [8, 9]))
+
+    def test_through_a_cancelled_adding_the_added_notes_are_not_counted_as_edited(self):
+        """They are counted as added; the notes rewritten for them are what was edited."""
+        added_note, left_out = new_note("-1111111"), new_note("-2222222")
+        selected = sentence(2, w("様", [-1111111]))
+        not_selected = sentence(9, w("本", [-2222222, 3]))
+        search = FakeSearch(selected, not_selected)
+        col = SearchableCollection(search, self.updater)
+        col.press_cancel_during = added_note
+
+        with search.patched():
+            result = base_ops.add_new_notes(
+                col, [added_note, left_out], CONFIG, POS, self.updater,
+                mwtn.update_fake_note_ids, unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+        edited: list = []
+        other: list = []
+        base_ops.count_new_notes_edits(result, {2}, edited, other)
+
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 1))
+        # The added note was saved too, with its own id written in
+        self.assertIn(added_note, col.updated)
+        self.assertEqual((edited, other), ([2], [9]))
 
 
 class DedupeCancelTests(unittest.TestCase):

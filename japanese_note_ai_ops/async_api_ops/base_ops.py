@@ -16,7 +16,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 
 from .api_client import (
     ANTHROPIC,
@@ -2454,7 +2454,8 @@ class NewNotesAdded(NamedTuple):
     counts: NewNotesCounts
     # The last merge into the run's undo entry; None when nothing was written
     op_changes: Optional[OpChanges]
-    # Notes new_notes_op or unadded_notes_op rewrote that were then saved
+    # Notes new_notes_op or unadded_notes_op rewrote that were then saved, bar the added notes
+    # themselves (their own id written in), which the counts have as added
     updated_nids: list[NoteId]
     # Notes filter_new_notes_op rewrote that were then saved
     filtered_nids: list[NoteId]
@@ -2462,6 +2463,27 @@ class NewNotesAdded(NamedTuple):
     @property
     def added(self) -> int:
         return self.counts.added
+
+
+def count_new_notes_edits(
+    added: NewNotesAdded,
+    selected: Container[NoteId],
+    edited_nids: list[NoteId],
+    edited_other_nids: list[NoteId],
+) -> None:
+    """Count the notes the note adding saved into the final message's two figures, each once:
+    a selected note as one of the selection edited, any other as an other note.
+
+    The resolving and the unlinking rewrite whichever sentences link to the new notes, often
+    mostly outside the selection. All were once counted as selected, the added notes
+    included, which read "in 50/10 selected notes" and left the other-notes line short.
+    """
+    for nid in [*added.filtered_nids, *added.updated_nids]:
+        if nid in selected:
+            if nid not in edited_nids:
+                edited_nids.append(nid)
+        elif nid not in edited_other_nids:
+            edited_other_nids.append(nid)
 
 
 def _insert_deck_id(col: Collection, config: dict, note: Note) -> Optional[DeckId]:
@@ -2622,6 +2644,8 @@ def add_new_notes(
             f"The adding was cancelled: {len(not_added)} of {counts.prepared} new notes not added"
         )
 
+    # The added notes are counted as added; updated_nids holds the notes edited for them
+    added_nids = {note.id for note in added_notes}
     resolving_error: Optional[Exception] = None
     if new_notes_op and added_notes:
         progress_updater.begin_cleanup_stage()
@@ -2671,7 +2695,7 @@ def add_new_notes(
                 logger.error(f"Error updating valid notes after new_notes_op: {e}")
                 print_error_traceback(e, logger)
             op_changes = col.merge_undo_entries(pos)
-            updated_nids = [note.id for note in valid_notes]
+            updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
 
     if unadded_notes_op and not_added:
         # After the resolving has saved its notes: the unlinking reads the arrays from the
@@ -2697,7 +2721,11 @@ def add_new_notes(
                 logger.error(f"Error updating notes after unadded_notes_op: {e}")
                 print_error_traceback(e, logger)
             op_changes = col.merge_undo_entries(pos)
-            updated_nids.extend(note.id for note in unlinked_notes if note.id not in updated_nids)
+            updated_nids.extend(
+                note.id
+                for note in unlinked_notes
+                if note.id not in updated_nids and note.id not in added_nids
+            )
         log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
     if resolving_error is not None:
         raise resolving_error
@@ -2889,15 +2917,7 @@ def selected_notes_op(
                 new_notes = added.counts
                 if added.op_changes is not None:
                     op_changes = added.op_changes
-                for nid in added.filtered_nids:
-                    if nid in nids_set:
-                        if nid not in edited_nids:
-                            edited_nids.append(nid)
-                    elif nid not in edited_other_nids:
-                        edited_other_nids.append(nid)
-                edited_nids.extend(
-                    [nid for nid in added.updated_nids if nid not in edited_nids]
-                )
+                count_new_notes_edits(added, nids_set, edited_nids, edited_other_nids)
                 cleanup_started = time.monotonic()
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes
