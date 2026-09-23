@@ -14,6 +14,7 @@ from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 from aqt import mw
 from aqt.browser import Browser
+from aqt.errors import show_exception
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
 from collections.abc import Container, Sequence
@@ -36,12 +37,21 @@ from .api_client import (
     post_with_retry,
     rate_limit_tracker,
     run_cancelled,
+    run_is_cancelled,
     run_paused,
     set_connection_pool_size,
     take_stop_reason,
     wait_while_paused,
 )
 from .terminal_client import get_response_from_terminal, is_terminal_model
+from .chain_types import (
+    STEP_CANCELLED,
+    STEP_COMPLETED,
+    STEP_FAILED,
+    STEP_STOPPED,
+    ChainStep,
+    StepOutcome,
+)
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
 from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size
 from .diagnostics import (
@@ -1121,6 +1131,10 @@ class AsyncTaskProgressUpdater:
         # which the main thread's check-and-reset holds as well.
         self._arm_lock = threading.Lock()
         self._arm_generation = 0
+        # Put before every title this updater shows, phase titles included; see set_title_prefix
+        self.title_prefix = ""
+        # What the dialog was last told to show, prefix included, for show_title
+        self._shown_title = ""
         if title is None:
             title = "Processing asynchronous tasks..."
         self.set_title(title)
@@ -1183,8 +1197,30 @@ class AsyncTaskProgressUpdater:
         self.title = title
         self._show_title(title)
 
-    def _show_title(self, title: str) -> None:
+    def set_title_prefix(self, prefix: str) -> None:
+        """Start every title shown from now on with `prefix` (a chain's "Step 2/5: ").
+
+        Kept apart from the title so that it outlives whatever titles the dialog later: a
+        multi-phase op's `begin_phase` titles each phase from `title`, and so would anything
+        that calls `set_title` during the run.
+        """
+        self.title_prefix = prefix
+        self._show_title(self.title)
+
+    def show_title(self) -> None:
+        """Draw the last title again. Main thread, once the progress dialog exists.
+
+        The op modules build their updater before `selected_notes_op` starts the progress
+        dialog, and aqt's `set_title` does nothing while there is no dialog, so the title
+        given to the constructor is never seen unless it is drawn again after the start.
+        """
+        title = self._shown_title
         mw.taskman.run_on_main(lambda: mw.progress.set_title(title))
+
+    def _show_title(self, title: str) -> None:
+        shown = self.title_prefix + title
+        self._shown_title = shown
+        mw.taskman.run_on_main(lambda: mw.progress.set_title(shown))
 
     def begin_phase(self, index: int, total: int, name: str = "") -> None:
         """Start one phase of a multi-phase op: title it, and reset the per-run counters.
@@ -2468,10 +2504,69 @@ def on_bulk_success(
     # notes_to_add_dict: Optional[dict[str, list[Note]]] = None,
     extra_callback=None,
     new_notes: NewNotesCounts = NewNotesCounts(),
+    chain: Optional[ChainStep] = None,
+    cancelled: bool = False,
 ):
-    success_started = time.monotonic()
+    """End a run that returned: close the progress, then say how it went.
+
+    From the menu that is a tooltip, or a warning for a run that stopped itself. As a step of
+    a chain nothing is shown - the chain sums its steps up once it is over - and the message
+    goes to `chain.on_done` instead. Its status is `stopped` for a stop reason, else
+    `cancelled` when `selected_notes_op` saw the run cancelled on the op thread.
+    """
     logger.debug("[phase] on_bulk_success reached, closing progress")
+    # On the main thread, as this is, run_on_main runs the closure before it returns, so this
+    # finish is called before on_done. aqt's finish still puts off closing a dialog shown
+    # less than half a second ago to a background task, and a step started before that lands
+    # would get no dialog of its own and lose the old one: a chain starts its next step only
+    # once mw.progress.busy() is 0.
     mw.taskman.run_on_main(lambda: mw.progress.finish())
+    if chain is not None:
+        try:
+            message, stop_reason = bulk_success_message(
+                done_text, edited_nids, edited_other_nids, nids, extra_callback, new_notes
+            )
+            if stop_reason:
+                status = STEP_STOPPED
+            elif cancelled:
+                status = STEP_CANCELLED
+            else:
+                status = STEP_COMPLETED
+            outcome = StepOutcome(status, message, stop_reason=stop_reason)
+        except Exception as e:
+            # Raised here, it would reach Qt's handler and the chain would wait forever
+            outcome = failed_step_outcome(parent, e)
+        chain.on_done(outcome)
+        return
+    message, stop_reason = bulk_success_message(
+        done_text, edited_nids, edited_other_nids, nids, extra_callback, new_notes
+    )
+    if stop_reason:
+        # A tooltip would be gone before the user looks: the rest of the notes were not done
+        message += f"<br><br><b>Stopped early.</b> {html.escape(stop_reason)}"
+        showWarning(message, parent=parent, textFormat="rich")
+        return
+    tooltip(
+        message,
+        parent=parent,
+        period=5000,
+    )
+
+
+def bulk_success_message(
+    done_text: str,
+    edited_nids: Sequence[NoteId],
+    edited_other_nids: Sequence[NoteId],
+    nids: Sequence[NoteId],
+    extra_callback=None,
+    new_notes: NewNotesCounts = NewNotesCounts(),
+) -> tuple[str, Optional[str]]:
+    """Run `extra_callback`, then return the end message and the stop reason, which it takes.
+
+    One message for a run from the menu and for a step of a chain alike. The stop reason is
+    not in the message: each of the two words it in its own way.
+    """
+    success_started = time.monotonic()
     # if DEBUG:
     # print("on_bulk_success", out, notes_to_add_dict)
     if extra_callback:
@@ -2498,16 +2593,25 @@ def on_bulk_success(
     if edited_other_nids:
         message += f"<br>Edited {len(edited_other_nids)} other notes not among the selection."
     message += new_notes_message(new_notes)
-    stop_reason = take_stop_reason()
-    if stop_reason:
-        # A tooltip would be gone before the user looks: the rest of the notes were not done
-        message += f"<br><br><b>Stopped early.</b> {html.escape(stop_reason)}"
-        showWarning(message, parent=parent, textFormat="rich")
-        return
-    tooltip(
-        message,
-        parent=parent,
-        period=5000,
+    return message, take_stop_reason()
+
+
+def failed_step_outcome(parent: Browser, error: Exception) -> StepOutcome:
+    """Show `error` as aqt shows an op's exception, and say the step failed.
+
+    A `CollectionOp` given a failure handler calls it instead of showing the error itself.
+    """
+    try:
+        show_exception(parent=parent, exception=error)
+    except Exception as e:
+        # Still a failed step: the chain has to hear of it whether or not the dialog opened
+        logger.error("Could not show the error of a chain step: %s", e)
+    detail = str(error)
+    return StepOutcome(
+        STEP_FAILED,
+        # Not left for the next run to find; a run that raised may still have set one
+        stop_reason=take_stop_reason(),
+        error=f"{type(error).__name__}: {detail}" if detail else type(error).__name__,
     )
 
 
@@ -2814,12 +2918,18 @@ def selected_notes_op(
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
     on_success: Optional[Callable] = None,
     unadded_notes_op: Optional[NewNotesOp] = None,
+    chain: Optional[ChainStep] = None,
 ):
     """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
 
     A list of phases runs them in order over the same notes and finishes with the same
     cleanup as a single op - see `run_op_phases` for what they share and what they do not.
     The new notes are added by `add_new_notes`, which says what the three note ops are for.
+
+    With `chain`, the run is one step of a chain: its dialog title starts with the step's
+    label, it shows no end message, and `chain.on_done` hears how it went, exactly once, on
+    the main thread, after the progress is finished - on success, cancel, stop and exception
+    alike. Without one, nothing here differs from a run from the menu.
     """
     phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
     edited_nids: list[NoteId] = []
@@ -2830,9 +2940,13 @@ def selected_notes_op(
     new_notes = NewNotesCounts()
     config = mw.addonManager.getConfig(__name__) or {}
     nids_set = set(nids)
+    # Whether the run was cancelled, for a chain step's outcome. Set on the op thread, read by
+    # the success handler on the main thread once the op has returned.
+    cancelled = False
 
     # Create a wrapper function that handles the async operation
     def run_bulk_op(col: Collection) -> OpChanges:
+        nonlocal cancelled
         # Every operation enters here, which makes this the only place that can promise a run
         # starts uncancelled. bulk_notes_op and bulk_nested_notes_op used to do the clearing,
         # but an op is free to read the collection before it gets that far - the single-word
@@ -2847,7 +2961,7 @@ def selected_notes_op(
         clear_cancel_time()
 
         async def async_wrapper():
-            nonlocal edited_nids, edited_other_nids, new_notes
+            nonlocal edited_nids, edited_other_nids, new_notes, cancelled
             # Loaded once and handed to every phase, so a later phase sees the earlier
             # ones' writes and each note is written back to the collection only in cleanup
             notes = [mw.col.get_note(nid) for nid in nids]
@@ -2861,6 +2975,12 @@ def selected_notes_op(
                 notes_to_update_dict=notes_to_update_dict,
                 label=done_text,
             )
+            # Read before the cleanup, whose note adding resets the dialog's flag to give
+            # itself a cancel of its own. A sync op, or the gap between two phases, stops on
+            # that flag alone without ever cancelling the run, so run_is_cancelled is not
+            # enough.
+            if mw.progress.want_cancel():
+                cancelled = True
             cleanup_started = time.monotonic()
             logger.debug("[phase] bulk op returned, starting cleanup")
             # From here on this thread is saving what the run managed to do, which is the whole
@@ -3059,6 +3179,11 @@ def selected_notes_op(
             # the run it is ending.
             if pause_state() is not None:
                 cancel_run()
+            # After that cancel, which counts: a run that ended paused did not finish its
+            # notes. The flag catches a cancel of the cleanup's note adding. Before end_run,
+            # which forgets the run on this thread (run_cancelled would then say no).
+            if run_is_cancelled(run) or mw.progress.want_cancel():
+                cancelled = True
             # Last, so everything above still logs as part of the run it belongs to. This
             # thread is Anki's and goes back to a pool that runs other work, including our own
             # single-note ops, so its membership of this run must not outlive it: leaving it
@@ -3068,7 +3193,7 @@ def selected_notes_op(
             # ones that must keep seeing the cancellation.
             end_run()
 
-    CollectionOp(
+    collection_op = CollectionOp(
         parent=parent,
         op=run_bulk_op,
     ).success(
@@ -3082,10 +3207,27 @@ def selected_notes_op(
             # notes_to_add_dict,
             on_success,
             new_notes=new_notes,
+            chain=chain,
+            cancelled=cancelled,
         )
-    ).run_in_background()
+    )
+    if chain is not None:
+        step = chain
+
+        # Only for a chain: given a failure handler, aqt no longer shows the error itself,
+        # so failed_step_outcome does. By then aqt has finished the progress.
+        def on_failure(error: Exception) -> None:
+            step.on_done(failed_step_outcome(parent, error))
+
+        collection_op.failure(on_failure)
+        # Before the start, so the phase titles the op thread draws have it from the first
+        progress_updater.set_title_prefix(f"{chain.label}: ")
+    collection_op.run_in_background()
     # run_in_background opens the progress dialog before it returns (taskman.with_progress
     # calls progress.start on this, the main thread), so the buttons can go in now, before
     # the dialog is first shown. The op thread's redraws cannot overtake this: they are run
     # on this thread, after this function returns.
     install_run_controls()
+    if chain is not None:
+        # The title set before the start went to no dialog; this one goes to the new one
+        progress_updater.show_title()
