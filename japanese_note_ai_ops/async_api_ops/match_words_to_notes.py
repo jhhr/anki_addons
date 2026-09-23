@@ -316,8 +316,9 @@ def clear_unadded_note_ids(
         return notes_to_update_dict
     # By the fields of the note type the references are in: word_list_field to search and
     # rewrite, new_note_id_field to tell a note the match op writes arrays into, as
-    # update_fake_note_ids does
-    placeholders_by_fields: dict[tuple[str, str], list[int]] = {}
+    # update_fake_note_ids does. Each a dict as an ordered set: a cancel can leave thousands
+    # of notes, too many for list lookups, and the searches go in the order they were prepared
+    placeholders_by_fields: dict[tuple[str, str], dict[int, None]] = {}
     for note in unadded_notes:
         note_type = note.note_type()
         if not note_type:
@@ -338,15 +339,15 @@ def clear_unadded_note_ids(
         if placeholder >= 0:
             logger.warning(f"A new note not added holds no placeholder id: {note.fields}")
             continue
-        placeholders = placeholders_by_fields.setdefault((word_list_field, new_note_id_field), [])
-        if placeholder not in placeholders:
-            placeholders.append(placeholder)
+        fields = (word_list_field, new_note_id_field)
+        placeholders_by_fields.setdefault(fields, {})[placeholder] = None
 
     total_notes = sum(len(placeholders) for placeholders in placeholders_by_fields.values())
     progress_updater.update_unadded_note_clearing_progress(total_notes=total_notes)
     notes_cleared = 0
     words_cleared = 0
-    for (word_list_field, new_note_id_field), placeholders in placeholders_by_fields.items():
+    for (word_list_field, new_note_id_field), placeholder_set in placeholders_by_fields.items():
+        placeholders = list(placeholder_set)
         cleared_ids = frozenset(placeholders)
         for start in range(0, len(placeholders), PLACEHOLDERS_PER_SEARCH):
             chunk = placeholders[start : start + PLACEHOLDERS_PER_SEARCH]
