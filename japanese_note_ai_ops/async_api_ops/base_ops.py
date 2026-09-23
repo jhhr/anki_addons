@@ -1317,6 +1317,9 @@ class AsyncTaskProgressUpdater:
         """
         # Read here: the main thread takes part in no run
         keep_pressed = not run_cancelled()
+        # The label rearm draws, for end_cleanup_cancel to take the hint off: a cancel before
+        # the first note is added leaves it the adding's last
+        self._adding_counts = (0, total_notes, 0)
         landed = threading.Event()
         with self._arm_lock:
             self._arm_generation += 1
@@ -1569,6 +1572,8 @@ class AsyncTaskProgressUpdater:
     def _push_note_stage(
         self, label: str, notes_done: int, total_notes: int, unit: str = "note"
     ) -> None:
+        # Another stage's label is up, and end_cleanup_cancel has no hint to take off
+        self._adding_counts = None
         self._push(
             self._note_stage_label(label, notes_done, total_notes, unit=unit),
             notes_done,
