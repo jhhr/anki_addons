@@ -114,9 +114,15 @@ buttons may be missing; Escape still cancels.
 
 A cancelled run keeps what it finished: edited notes are saved, and the new notes a match run
 prepared are added and linked from their sentences as after a full run, so the meanings already
-paid for are not lost. Words still unanswered stay to be matched by the next run. Once the run is
-saving and adding notes, both buttons are greyed out; that part is local and finishes on its own.
-The end message says how many new notes were added.
+paid for are not lost. Words still unanswered stay to be matched by the next run.
+
+Adding the new notes can itself take a while, since every added note runs the note-adding
+hooks (copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel
+(or Escape) stops the adding; a note already being added is finished first. The notes not
+added are dropped, and the words that were linked to them are left to be matched again by the
+next run. A note that failed to add keeps its placeholder id in the word lists, as a trace to
+debug from. The end message says how many new notes were added, how many were left out by the
+cancel and how many failed.
 
 ### terminal- models (claude CLI)
 

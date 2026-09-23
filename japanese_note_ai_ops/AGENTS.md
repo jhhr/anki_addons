@@ -86,13 +86,20 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   `get_note`, `get_notes`, `run_on_collection_async`); never `mw.col`. Sync ops run
   sequentially on the op thread and do use `mw.col`. `collection_access` raises
   `RunCancelled` on a cancelled run, except inside `begin_cleanup_phase()`.
-- **A cancelled run still saves everything it prepared, new notes included.** Cleanup's
-  `add_new_notes` never checks for a cancel: the dialog's flag stays set for the rest of a
-  cancelled run, and a check there once meant no new note (and no paid-for meaning) survived
-  one. A note that could not be added keeps its placeholder id in the arrays;
-  `update_fake_note_ids` skips it rather than writing `0`. The match op saves each started
-  note's finished words after a cancel (`flush_unsaved_arrays`), before cleanup copies
-  `notes_to_add_dict`, so every placeholder it saves belongs to a note cleanup adds.
+- **A cancelled run still saves everything it prepared, new notes included, and its note
+  adding has a cancel of its own.** A cancel of the API work leads into cleanup as usual;
+  `AsyncTaskProgressUpdater.begin_cleanup()` then re-arms the dialog
+  (`progress_controls.rearm_cleanup_cancel`, main thread, waited for): the dialog's flag
+  stays set for the rest of a cancelled run, so without the reset a cleanup reading it
+  stopped before adding anything. From then on a cancel (`cleanup_cancel_requested()`, never
+  `run_cancelled()`) stops the adding, checked before the dedupe, between its merges, after it
+  and before each `add_note` - never inside one, where copy_anywhere's on-add definitions run.
+  `add_new_notes` splits the notes three ways: added (placeholders resolved by
+  `update_fake_note_ids`), failed (kept as placeholders, the trace of a note that should
+  exist), not added (words put back to `["match"]` by `clear_unadded_note_ids`). Resolving and
+  unlinking always run to the end. The match op saves each started note's finished words
+  after a cancel (`flush_unsaved_arrays`), before cleanup copies `notes_to_add_dict`, so every
+  placeholder it saves belongs to a note cleanup is handed.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight
