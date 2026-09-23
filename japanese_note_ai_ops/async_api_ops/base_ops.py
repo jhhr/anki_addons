@@ -2234,8 +2234,9 @@ def sync_bulk_notes_op(
     if on_end:
         on_end()
 
-    # The dialog is not closed here: on_bulk_success does it once the whole operation is over.
-    # Closing it at the end of this op left the note-adding phase of the cleanup drawing
+    # The dialog is not closed here, nor in on_bulk_success: aqt's with_progress finishes the
+    # progress once the whole operation is over (a chain's own level keeps the window up
+    # until its last step). Closing it here left the note-adding phase of the cleanup drawing
     # progress into a window that was already gone, and as a phase of a multi-phase op it
     # would have taken the cancel button away from every phase after this one.
 
@@ -2566,7 +2567,7 @@ def on_bulk_success(
     chain: Optional[ChainStep] = None,
     cancelled: bool = False,
 ):
-    """End a run that returned: close the progress, then say how it went.
+    """End a run that returned: say how it went. aqt has finished the progress by now.
 
     From the menu that is a tooltip, or a warning for a run that stopped itself. As a step of
     a chain nothing is shown - the chain sums its steps up once it is over - and the message
