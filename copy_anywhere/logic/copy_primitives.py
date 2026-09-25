@@ -17,6 +17,7 @@ import time
 from typing import Any, Optional, Sequence, Tuple, Union
 
 from anki.cards import Card
+from anki.consts import MODEL_CLOZE
 from anki.notes import Note
 from aqt import mw
 
@@ -474,7 +475,8 @@ def card_actions_by_template(
     the addon could hear.
 
     By ordinal rather than by name because that is what the cards themselves are keyed on:
-    once the template is found, `card.ord` is the only thing that has to match.
+    once the template is found, the card's template ordinal is the only thing that has to
+    match -- see `_template_ord` for why that is not always `card.ord`.
     """
     by_ord: dict = {}
     note_type = note.note_type()
@@ -563,6 +565,20 @@ def apply_card_action_to_card(
     return edited
 
 
+def _template_ord(card: Card, note_type: Any) -> int:
+    """The ordinal of the template a card was made from.
+
+    For a standard note type that is `card.ord`. A cloze note type has one template and
+    makes every cloze card from it, so there `card.ord` is the cloze number less one while
+    the template's ordinal is 0 for all of them: an action set on the cloze card type is
+    one action for every cloze card of the note, as it was when actions were matched by
+    template name.
+    """
+    if note_type and note_type.get("type") == MODEL_CLOZE:
+        return 0
+    return card.ord
+
+
 def apply_card_actions_by_template(
     card_actions: Sequence[CardAction],
     note: Note,
@@ -575,9 +591,10 @@ def apply_card_actions_by_template(
     card type named by an action the note has no card for is simply not reached.
     """
     by_ord = card_actions_by_template(card_actions, note)
+    note_type = note.note_type()
     edited: list[Card] = []
     for card in cards:
-        card_action = by_ord.get(card.ord, None)
+        card_action = by_ord.get(_template_ord(card, note_type), None)
         if card_action is None:
             continue
         if apply_card_action_to_card(card_action, card, note):

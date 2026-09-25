@@ -46,7 +46,7 @@ from copy_anywhere.ui.stage_triggers_editor import selected_names
 
 from copy_anywhere.configuration import CARD_TYPE_SEPARATOR
 
-from conftest import KANJI, VOCAB
+from conftest import CLOZE, KANJI, VOCAB
 
 
 @pytest.fixture
@@ -1655,6 +1655,27 @@ class TestChangingTheTriggerNoteType:
                 "name": vocab,
             }
         ]
+
+    def action_for(self, dialog, note_type_name, card_type_name):
+        dialog.triggers_editor.note_types_box.setCurrentText(f'"{note_type_name}"')
+        dialog.refresh_status()
+        self.dialog_with_an_edit_stage(dialog)
+        actions = self.edit_note_editor(dialog).card_actions
+        name = f"{note_type_name}{CARD_TYPE_SEPARATOR}{card_type_name}"
+        actions.card_type_selector.setCurrentText(name)
+        actions.add_new_action()
+        return actions.action_ui_components[name]
+
+    def test_a_cloze_card_type_says_its_action_reaches_every_cloze(self, col, qapp, dialog):
+        # One card type makes every cloze card, so the action set here lands on c1, c2 and
+        # c3 alike; nothing on the card type's name says so.
+        note = self.action_for(dialog, CLOZE, "Cloze")["cloze_note"]
+
+        assert note is not None
+        assert "every cloze card" in note.text()
+
+    def test_an_ordinary_card_type_says_nothing_about_clozes(self, col, qapp, dialog):
+        assert self.action_for(dialog, VOCAB, "Recognition")["cloze_note"] is None
 
     def test_an_action_for_a_card_type_the_new_note_type_does_not_have_is_dropped(
         self, col, qapp, dialog

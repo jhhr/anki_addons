@@ -177,6 +177,12 @@ outer list plus `store` is how a loop reports anything back.
   right-hand side once per source note, and so did a write whose field was already filled,
   and a raising one failed the definition, discarding the writes that would have been
   applied.
+* **A card action on a cloze card type reaches every cloze card.** A cloze note type has one
+  card type and makes every cloze card from it, so an Edit Note stage's action for that card
+  type applies to c1, c2, c3 and the rest alike, and there is one action to set, not one per
+  cloze. The card action editor says so under the card type. To act on one cloze, loop over
+  a Card Query and use an Edit Card stage: either narrow the query (`card:2` is the c2 card)
+  or branch on `return card.ord == 1` in code, since `card.ord` is the cloze number less one.
 * **Add-note compatibility is a flag, not an inspection.** While a note is being added the
   add can still be cancelled, so a definition may edit only that note: its fields and its
   tags. Writing to any other note, acting on a card that already exists, or writing a file

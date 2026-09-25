@@ -2,6 +2,7 @@ import html
 from typing import Optional, Dict
 import uuid
 
+from anki.consts import MODEL_CLOZE
 from aqt import mw
 from aqt.qt import (
     QWidget,
@@ -43,6 +44,7 @@ from ..logic.object_refs import (
     card_type_resolves,
     normalize_card_type_ref,
     not_found_label,
+    resolve_card_type,
     split_card_type_name,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
@@ -62,6 +64,12 @@ source_to_destinations_description = (
 )
 destination_to_sources_description = (
     "<p><small>Note: Card actions are performed on the trigger note's cards.</small></p>"
+)
+cloze_card_type_note = (
+    "<p><small>Note: this is a cloze note type, whose one card type makes every cloze card."
+    " The action applies to every cloze card of the note (c1, c2, c3 ...) alike. To act on"
+    " one cloze only, use a Card Query with a For Each Card loop and an Edit Card stage;"
+    " the loop's <code>card.ord</code> is the cloze number less one.</small></p>"
 )
 
 
@@ -501,6 +509,14 @@ class CardActionsEditor(QWidget):
             return card_action_card_type(existing)
         return normalize_card_type_ref(card_type_name)
 
+    def _is_cloze_card_type(self, card_type_name: str, action: CardAction) -> bool:
+        if mw is None or mw.col is None:
+            return False
+        model, _template = resolve_card_type(
+            self._card_type_ref_for(card_type_name, action), mw.col
+        )
+        return bool(model and model.get("type") == MODEL_CLOZE)
+
     def create_action_editor(self, card_type_name: str, action: CardAction):
         """Create the UI for editing a single CardAction and add it inline"""
         # Don't create if already exists
@@ -522,6 +538,14 @@ class CardActionsEditor(QWidget):
             frame,
         )
         frame_layout.addWidget(header)
+
+        # A cloze card type is one action for every cloze card, which nothing else on this
+        # frame says; the name alone reads as though it were one card.
+        cloze_note = None
+        if not self.single_card_mode and self._is_cloze_card_type(card_type_name, action):
+            cloze_note = QLabel(cloze_card_type_note, frame)
+            cloze_note.setWordWrap(True)
+            frame_layout.addWidget(cloze_note)
 
         # Code mode toggle
         use_code_toggle = ToggleSwitch("Execute as Python code")
@@ -721,6 +745,7 @@ class CardActionsEditor(QWidget):
             "dr_number_input": dr_number_input,
             "dr_string_input": dr_string_input,
             "code_editor": code_editor,
+            "cloze_note": cloze_note,
         }
 
     def save_action(self, card_type_name: str):
