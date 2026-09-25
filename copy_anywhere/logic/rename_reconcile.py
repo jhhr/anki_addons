@@ -265,8 +265,14 @@ def _search_expressions(stage: dict) -> Iterator[dict]:
             yield stage["predicate"]
 
 
-def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> None:
-    """What every search in this definition names that the collection does not have."""
+def stale_terms_in_searches(definition: dict, col: Any) -> list[StaleName]:
+    """What every search in this definition names that the collection does not have.
+
+    Asked of the collection as it is now, one entry per name however many searches spell
+    it, so the definition list can show it as the list is drawn as well as the pass
+    reporting it.
+    """
+    found: list[StaleName] = []
     for stage in walk_stages(definition.get("stages") or []):
         for expression in _search_expressions(stage):
             if expression.get("mode") == MODE_CODE:
@@ -275,8 +281,15 @@ def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> 
                 continue
             for term in stale_search_terms(expression.get("text"), col):
                 stale = _stale(definition, term.kind, term.name)
-                if stale not in result.stale_terms:
-                    result.stale_terms.append(stale)
+                if stale not in found:
+                    found.append(stale)
+    return found
+
+
+def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> None:
+    for stale in stale_terms_in_searches(definition, col):
+        if stale not in result.stale_terms:
+            result.stale_terms.append(stale)
 
 
 # Step 1: what the collection no longer has -------------------------------------------------
@@ -869,6 +882,15 @@ def broken_by_rename_messages(definition: Any) -> list[str]:
     return messages
 
 
+def broken_by_rename_tooltip(messages: list[str]) -> str:
+    """The marked lines as a list reads them where a definition is offered to be run.
+
+    The definition list and the browser's menu both refuse a marked definition and say why
+    in the same words, so a user who meets it in one recognises it in the other.
+    """
+    return "\n".join(["This definition is not run until it is fixed:"] + messages + [BROKEN_ADVICE])
+
+
 def broken_by_rename_explanation(messages: list[str]) -> str:
     """The stored messages as one explanation: each unchanged, then what to do about it."""
     text = "; ".join(messages)
@@ -1113,6 +1135,7 @@ __all__ = [
     "ReconcileResult",
     "StaleName",
     "broken_by_rename_explanation",
+    "broken_by_rename_tooltip",
     "broken_by_rename_messages",
     "build_name_snapshot",
     "definitions_hold_references",
@@ -1121,6 +1144,7 @@ __all__ = [
     "referenced_object_ids",
     "refresh_all_breakage",
     "refresh_breakage",
+    "stale_terms_in_searches",
     "still_names",
     "unresolved_references",
 ]

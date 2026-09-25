@@ -376,16 +376,23 @@ you already look:
   saw deleted is added for as long as the definition still names it -- in a field slot or
   an unfocus list, a `{{trigger....}}` token, a card action, or anywhere in code, where
   any mention counts -- and only until the next pass, which no longer knows it was deleted
-  (see "Deleted" above). A field named only inside a search is left to that query stage's
-  own note;
+  (see "Deleted" above). A name inside a search has its own mark, next;
+- the definition list also marks a definition whose searches name something the collection
+  does not have -- the same terms the query stage's note lists, from every query stage and
+  every search condition -- with a blue ⓘ after its name, the names in its tooltip. The
+  definition still runs; that part of the search just matches nothing, which is why the
+  mark is neither the triangle nor the ✖;
 - a definition marked as broken (above) shows a red ✖ after its name, and its checkbox is
   cleared and cannot be ticked. Both carry the same tooltip: that it is not run until it is
   fixed, the marked lines, and the three ways out. Edit, Duplicate and Delete still work.
+  The browser's "Copy anywhere" context menu lists it the same way: disabled, with the same
+  tooltip.
 
-Both marks follow an edit made from the definition list: when you save a definition there,
-its row is redrawn from the definition as saved, so a fix clears the triangle or the ✖ --
-and a cleared ✖ gives back a checkbox you can tick -- while a definition that still names
-something missing, or still spells a field one of its note types lacks, keeps it.
+All three marks follow an edit made from the definition list: when you save a definition
+there, its row is redrawn from the definition as saved, so a fix clears the triangle, the ⓘ
+or the ✖ -- and a cleared ✖ gives back a checkbox you can tick -- while a definition that
+still names something missing, or still spells a field one of its note types lacks, keeps
+it.
 
 A sort field is still not rewritten and still sorts a note that lacks it as empty -- a
 query legitimately mixes note types -- but a run where *no* selected note had the field
@@ -615,6 +622,10 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `logic/execution/runner.py` | one definition against one trigger note |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress |
 | `logic/preview.py` | a read-only run, its trace, and the trigger-note search |
+| `logic/object_refs.py` | note type, deck and card type references: id first, name after it |
+| `logic/rename_reconcile.py` | the reconcile pass, the name snapshot, the broken-by-rename mark |
+| `logic/query_terms.py` | the names a search spells that the collection does not have |
+| `hooks/rename_hooks.py` | when the pass runs, and the dialog after a note type operation |
 | `configuration.py` | the config, the trigger accessors, and the startup migration |
 | `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
 | `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
@@ -626,3 +637,4 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `ui/stage_exports_editor.py` | the definition-level exports panel |
 | `ui/stage_preview.py` | the preview pane: note picker, run control, trace |
 | `ui/edit_staged_definition_dialog.py` | the dialog, and what blocks a save |
+| `ui/pick_copy_definition_dialog.py` | the definition list, and its three marks |

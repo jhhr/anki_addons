@@ -178,6 +178,8 @@ class DefinitionRow(QWidget):
         self.layout.addWidget(self.broken_marker)
         self.stale_marker = QLabel("", self)
         self.layout.addWidget(self.stale_marker)
+        self.search_marker = QLabel("", self)
+        self.layout.addWidget(self.search_marker)
         self.refresh(definition)
 
         # Add stretch to push buttons to the right
@@ -204,7 +206,7 @@ class DefinitionRow(QWidget):
         )
 
     def refresh(self, definition) -> None:
-        """Show this row as `definition` deserves: its name, its two markers, its checkbox.
+        """Show this row as `definition` deserves: its name, its three markers, its checkbox.
 
         Called when the row is built and again when the definition is saved from this
         picker, because a save can fix a definition or leave it wanting, and the row has to
@@ -216,6 +218,7 @@ class DefinitionRow(QWidget):
         self.checkbox.setText(definition.get("definition_name", ""))
         self._mark_if_broken()
         self._mark_if_stale()
+        self._mark_stale_search_terms()
 
     def _mark_if_broken(self) -> None:
         """Mark, and refuse to select, a definition a field rename left marked as broken.
@@ -226,7 +229,7 @@ class DefinitionRow(QWidget):
         still shows its tooltip. Edit, Duplicate and Delete stay, since editing is one of
         the ways out.
         """
-        from ..logic.rename_reconcile import BROKEN_ADVICE, broken_by_rename_messages
+        from ..logic.rename_reconcile import broken_by_rename_messages, broken_by_rename_tooltip
 
         messages = broken_by_rename_messages(self.definition)
         if not messages:
@@ -235,9 +238,7 @@ class DefinitionRow(QWidget):
             self.checkbox.setToolTip("")
             self.checkbox.setEnabled(True)
             return
-        explanation = "\n".join(
-            ["This definition is not run until it is fixed:"] + messages + [BROKEN_ADVICE]
-        )
+        explanation = broken_by_rename_tooltip(messages)
         self.checkbox.setChecked(False)
         self.checkbox.setEnabled(False)
         self.checkbox.setToolTip(explanation)
@@ -288,6 +289,33 @@ class DefinitionRow(QWidget):
         self.stale_marker.setToolTip(
             "This definition names something this collection does not have:\n"
             + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
+        )
+
+    def _mark_stale_search_terms(self) -> None:
+        """Mark a definition whose searches name something this collection does not have.
+
+        The same scan the query stage's own note under its search runs
+        (`query_terms.stale_search_terms`), so a definition list is where a stale search is
+        found without opening every definition. Its own icon, apart from the two above: a
+        search is Anki's grammar and is never rewritten, a name in it may be one the user
+        has not made yet, and the definition still runs -- the term just matches nothing.
+        Asked of the collection as the row is drawn, like the unresolved references.
+        """
+        from ..logic.rename_reconcile import stale_terms_in_searches
+
+        stale = []
+        if mw is not None and mw.col is not None:
+            stale = stale_terms_in_searches(self.definition, mw.col)
+        if not stale:
+            self.search_marker.setText("")
+            self.search_marker.setToolTip("")
+            return
+        self.search_marker.setText("<span style='color: #2471a3'>&#9432;</span>")
+        self.search_marker.setToolTip(
+            "A search in this definition names something this collection does not have:\n"
+            + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
+            + "\nThe definition still runs, but that part of the search matches nothing."
+            " A search is left alone when something is renamed, so check it by hand."
         )
 
     def dragEnterEvent(self, event):

@@ -602,13 +602,8 @@ class TestThePickerMarksADefinition:
         assert "Note" in row.stale_marker.toolTip()
 
 
-class TestThePickerRefusesADefinitionBrokenByARename:
-    """A definition a field rename left marked is shown broken and cannot be selected.
-
-    It would not run anyway (`copy_for_single_trigger_note` refuses it and logs the stored
-    message), so the picker says so where the user picks, and editing it whole from there
-    gives the checkbox back.
-    """
+class ADefinitionBrokenByARename:
+    """The `broken` fixture and a picker over it, shared by the picker and menu tests."""
 
     OTHER = "CA Vocab B"
 
@@ -648,6 +643,15 @@ class TestThePickerRefusesADefinitionBrokenByARename:
 
         config.data["copy_definitions"] += list(more)
         return PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), None, None)
+
+
+class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename):
+    """A definition a field rename left marked is shown broken and cannot be selected.
+
+    It would not run anyway (`copy_for_single_trigger_note` refuses it and logs the stored
+    message), so the picker says so where the user picks, and editing it whole from there
+    gives the checkbox back.
+    """
 
     def test_its_row_shows_the_icon_with_each_message(self, broken, qapp, widget_parent):
         config, definition = broken
@@ -729,6 +733,139 @@ class TestThePickerRefusesADefinitionBrokenByARename:
         assert row.checkbox.text() == "still both"
         assert row.broken_marker.text() != ""
         assert not row.checkbox.isEnabled()
+
+
+class TestTheBrowserMenuRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename):
+    """The browser's "Copy anywhere" menu offers a marked definition as the picker does.
+
+    Listed, so the user still finds it, but disabled, with the picker's tooltip: running it
+    would only log the same message.
+    """
+
+    def menu_actions(self, stub_mw, config, widget_parent):
+        from aqt.qt import QMenu
+
+        from copy_anywhere.hooks.browser_hooks import on_browser_will_show_context_menu
+
+        stub_mw.addonManager.configs[ADDON_TAG] = config.data
+        menu = QMenu(widget_parent)
+        on_browser_will_show_context_menu(widget_parent, menu)
+        copy_menu = next(
+            action.menu() for action in menu.actions() if action.text() == "Copy anywhere"
+        )
+        return copy_menu, {action.text(): action for action in copy_menu.actions()}
+
+    def test_a_marked_definition_is_listed_disabled_and_says_why(
+        self, broken, stub_mw, qapp, widget_parent
+    ):
+        from copy_anywhere.logic.rename_reconcile import broken_by_rename_tooltip
+
+        config, definition = broken
+        config.data["copy_definitions"].append(d.staged("whole", note_types=[VOCAB]))
+
+        copy_menu, actions = self.menu_actions(stub_mw, config, widget_parent)
+
+        assert not actions["both"].isEnabled()
+        assert actions["both"].toolTip() == broken_by_rename_tooltip(
+            broken_by_rename_messages(definition)
+        )
+        assert actions["whole"].isEnabled()
+        assert copy_menu.toolTipsVisible()
+
+    def test_its_tooltip_is_the_pickers(self, broken, stub_mw, qapp, widget_parent):
+        config, _definition = broken
+        row = self.dialog(widget_parent, config).definition_ui_components["def-both"]["widget"]
+
+        _copy_menu, actions = self.menu_actions(stub_mw, config, widget_parent)
+
+        assert actions["both"].toolTip() == row.broken_marker.toolTip()
+
+
+class TestThePickerMarksAStaleSearch:
+    """A search naming something the collection lacks gets its own icon in the list.
+
+    The query stage says the same under its search, but only once the definition is
+    opened. The definition still runs -- the term just matches nothing -- so the mark is
+    neither the refusal nor the unresolved-reference triangle.
+    """
+
+    def row(self, widget_parent, definition):
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        return DefinitionRow(widget_parent, definition, 0)
+
+    def searching(self, query, **extra):
+        return d.staged(
+            "searching",
+            note_types=[VOCAB],
+            stages=[d.note_query("found", query, **extra)],
+        )
+
+    def test_a_deck_the_collection_lacks_marks_the_row(self, col, qapp, widget_parent):
+        row = self.row(widget_parent, self.searching('deck:"Gone deck" Word:neko'))
+
+        assert row.search_marker.text() != ""
+        lines = row.search_marker.toolTip().splitlines()
+        assert "deck 'Gone deck'" in lines
+        assert "still runs" in row.search_marker.toolTip()
+
+    def test_it_is_neither_the_refusal_nor_the_triangle(self, col, qapp, widget_parent):
+        row = self.row(widget_parent, self.searching("deck:Nonsuch"))
+
+        assert row.checkbox.isEnabled()
+        assert row.broken_marker.text() == ""
+        assert row.stale_marker.text() == ""
+        assert row.search_marker.text() not in ("", row.stale_marker.text())
+
+    def test_a_field_the_collection_lacks_marks_the_row(self, col, qapp, widget_parent):
+        row = self.row(widget_parent, self.searching("Nonsuch:neko"))
+
+        assert "field 'Nonsuch'" in row.search_marker.toolTip().splitlines()
+
+    def test_a_search_naming_only_live_things_is_not_marked(self, col, qapp, widget_parent):
+        row = self.row(widget_parent, self.searching('deck:"JP vocab" Word:neko'))
+
+        assert row.search_marker.text() == ""
+        assert row.search_marker.toolTip() == ""
+
+    def test_a_condition_search_is_read_too(self, col, qapp, widget_parent):
+        definition = d.staged(
+            "condition",
+            note_types=[VOCAB],
+            stages=[
+                d.condition(
+                    d.text("deck:Nonsuch"),
+                    [d.edit_note("trigger", fields=[d.write("Note", d.text("x"))])],
+                    predicate_kind="note_query",
+                )
+            ],
+        )
+
+        row = self.row(widget_parent, definition)
+
+        assert "deck 'Nonsuch'" in row.search_marker.toolTip().splitlines()
+
+    def test_saving_a_fixed_search_through_the_picker_clears_it(
+        self, col, stub_mw, qapp, widget_parent, monkeypatch
+    ):
+        from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
+
+        stub_mw.addonManager.configs[ADDON_TAG] = dict(DEFAULT_CONFIG)
+        config = Config()
+        config.load()
+        definition = self.searching("deck:Nonsuch")
+        config.data["copy_definitions"] = [definition]
+        dialog = PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), None, None)
+        row = dialog.definition_ui_components[definition["guid"]]["widget"]
+        assert row.search_marker.text() != ""
+        fixed = copy.deepcopy(definition)
+        fixed["stages"][0]["query"]["text"] = 'deck:"JP vocab"'
+        monkeypatch.setattr(dialog, "run_definition_editor", lambda _d, _c: copy.deepcopy(fixed))
+
+        dialog.edit_definition_by_guid(definition["guid"])
+
+        assert dialog.definition_ui_components[definition["guid"]]["widget"] is row
+        assert row.search_marker.text() == ""
 
 
 class TestTheCardActionsEditorBindsACardTypeByTheResolver:
