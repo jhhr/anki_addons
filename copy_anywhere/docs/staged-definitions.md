@@ -340,7 +340,8 @@ had views of its own with other card properties. In Source-to-destinations the e
 in a loop whose item is `note`, so field and file code that read the trigger as `note` now
 reads the destination; Destination-to-sources loops over the sources under that name, which
 is the note format 1 gave its code there. Code that reached for a note by `note`, or by any
-other means, is yours to check by hand; the README's section for an AI agent lists what
+other means, is yours to check by hand; the user guide's section for an AI agent
+([`ADDON_README.md`](../ADDON_README.md#for-an-ai-agent-rewriting-converted-code)) lists what
 every name means in each migrated shape. Card-action code is not affected: it runs as
 format 1 ran it. A config an earlier version already staged is rewritten in place by the
 `0.4.0` config migration.

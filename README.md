@@ -40,6 +40,9 @@ python build.py install
 | `python build.py check` | fail if an addon imports a shared package it did not declare |
 | `python build.py dist [addon...]` | write `dist/<addon>-<version>.ankiaddon` |
 
+An addon's `README.md` is for whoever works on it. When the addon also has an
+`ADDON_README.md`, that is the user guide, and `dist` ships it in place of `README.md`.
+
 ## Tests
 
 One command runs every suite, from the repo root:

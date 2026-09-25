@@ -168,7 +168,7 @@ runs, and every note in a bulk run would pay for the rewrite.
 every binding in scope under its own name, `note` meaning the stage's note or the loop's,
 and read-only facades in place of the note object format 1 handed it. References inside the
 code are rewritten, but nothing else is, so code that reached for a note by some other means
-is the user's to check by hand -- which the README says, in the section about migrating.
+is the user's to check by hand -- which the user guide (`ADDON_README.md`) says, in the section about migrating.
 With a handful of installs and one of them the author's, that was judged cheaper than
 keeping an interpreter for the old language alive to serve it.
 
