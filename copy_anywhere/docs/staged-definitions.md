@@ -152,7 +152,12 @@ outer list plus `store` is how a loop reports anything back.
   note, so when two trigger notes of one run write the same note, or edit the same card, the
   later one's copy replaces the earlier one's and the earlier edit is lost, as in format 1.
   A trigger note that writes a note but leaves its card alone does not undo another one's
-  edit of that card. The bulk-run test in `follow-ups.md` would point such definitions out.
+  edit of that card. This is an accepted limitation: saving after every trigger note was far
+  slower and made the result depend on their order, and merging two copies of a note or a
+  card edit by edit is more than is worth maintaining. A definition that gathers many notes
+  into one is better written from the one note's side -- a query and a loop over the others
+  -- so that only one trigger note writes it. The bulk-run test in `follow-ups.md` would point
+  such definitions out.
 * **Counts are what a trigger note committed.** The destinations and cards a run reports
   are the distinct notes and cards it handed over for that trigger note, so a note two
   stages wrote counts once and a card three actions changed counts once. Across trigger

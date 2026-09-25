@@ -319,6 +319,9 @@ def copy_fields(
             # the same note, all changes are saved
             # Because of this, if multiple ops use the same note data as a source, the final result
             # depends on the order of the ops
+            # Within one op nothing is saved until every trigger note has run, so two trigger
+            # notes writing the same note or card leave only the later copy: an accepted
+            # limitation, see "Only edited cards are handed over" in docs/staged-definitions.md
             mw.col.update_notes(copied_into_notes)
             # Update all edited cards so far, then remove the edited flag
             # This must be done after each operation, so that if subsequent use card data as source,
