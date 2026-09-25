@@ -1,12 +1,13 @@
 """Characterization tests for Step 3 of `copy_for_single_trigger_note`: the copy condition.
 
-The condition is a search run as `f"{interpolated} nid:{trigger_note.id}"`, which makes it a
+The condition is a search run as `f"({interpolated}) nid:{trigger_note.id}"`, which makes it a
 per-note gate rather than a note selector -- and gives it two failure modes that look alike
 from the outside but are not: a condition that does not match is benign and returns `True`,
 while a condition that cannot be interpolated returns `False` and stops the caller's bulk
-loop dead. This file pins that split, the `nid:` scoping (including what it does to a
-not-yet-added note), the `condition_only_on_sync` escape hatch, and the fact that variables
-are resolved before any of it happens.
+loop dead. This file pins that split, the `nid:` scoping (and that a not-yet-added note,
+which `nid:0` cannot find, is judged without the collection instead), the
+`condition_only_on_sync` escape hatch, and the fact that variables are resolved before any of
+it happens.
 """
 
 import time
@@ -94,16 +95,25 @@ class TestTheQueryIsScopedToTheTriggerNote:
         copy_for_single_trigger_note(definition, note)
         assert note["Note"] == "neko"
 
-    def test_a_new_note_never_matches_because_its_nid_is_zero(self, col, logger):
-        # A note that has not been added yet has id 0, so `nid:0` matches nothing no matter
-        # what the rest of the condition says. Every conditional definition is therefore
-        # silently skipped on add -- the note here would match "Word:neko" once it existed.
+    def test_a_new_note_is_judged_without_the_collection(self, col, logger):
+        # A note that has not been added yet has id 0, and `nid:0` matches nothing, so the
+        # search is judged against the note itself -- the answer the collection gives once
+        # the note is saved. It used to be searched anyway, which skipped every conditional
+        # definition on add.
         new_note = col.new_note(col.models.by_name(VOCAB))
         new_note["Word"] = "neko"
         definition = copy_note_field(copy_condition_query="Word:neko")
         assert copy_for_single_trigger_note(definition, new_note) is True
+        assert new_note["Note"] == "neko"
+        assert logger.errors == []
+
+    def test_a_new_note_the_condition_does_not_fit_is_skipped_benignly(self, col, logger):
+        new_note = col.new_note(col.models.by_name(VOCAB))
+        new_note["Word"] = "neko"
+        definition = copy_note_field(copy_condition_query="Word:inu")
+        assert copy_for_single_trigger_note(definition, new_note) is True
         assert new_note["Note"] == ""
-        assert logger.has_debug("did not match for note id 0")
+        assert logger.has_debug("did not match the note being added")
 
     def test_the_same_new_note_is_copied_into_when_there_is_no_condition(self, col):
         new_note = col.new_note(col.models.by_name(VOCAB))

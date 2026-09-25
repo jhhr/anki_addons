@@ -347,8 +347,9 @@ class TestACardActionFollowsARenamedCardType:
             definition, note, copied_into_cards_dict=copied_into_cards
         )
 
+        # Only a card an action edited is handed over, so the untouched Recall card is not.
         flags = {card.template()["name"]: card.flags for card in copied_into_cards.values()}
-        assert flags == {"Reading card": 2, "Recall": 0}
+        assert flags == {"Reading card": 2}
         assert logger.errors == []
 
     def test_a_card_type_that_cannot_be_resolved_at_all_is_reported(self, col, logger):

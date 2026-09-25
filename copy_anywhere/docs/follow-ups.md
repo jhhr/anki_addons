@@ -389,3 +389,72 @@ renamed here. `selection.sort_field` is still not rewritten and a note without t
 still sorts as empty -- a query legitimately mixes note types, and the characterization
 suites pin that fallback -- but a run where no selected note had the field logs one warning,
 because then the sort did nothing at all.
+
+## A bulk-run test
+
+**The problem.** In a bulk run every trigger note starts from the saved notes and cards, and
+the caller saves a definition's notes and cards once, after every trigger note has run. So
+when two trigger notes write the same note, or edit the same card, the later one's copy
+replaces the earlier one's and the earlier write is lost, while the run reports success.
+That is kept on purpose (decision 5 of the PR 14 review):
+`test_copy_fields_op.py::TestOneDestinationFromSeveralTriggerNotes::test_the_first_trigger_notes_write_is_lost`
+pins it, and its comment says why -- saving after every trigger note was far slower, and made
+the result depend on the order of the trigger notes. Since that review only a card a card
+action edited is handed over, so a trigger note that merely writes a card's note no longer
+undoes another one's edit of the card; what is left is the real double write, and nothing
+tells the user a definition does one.
+
+**The decision** (the user's design). A test the user runs from the editor, over a sample of
+trigger notes from their own collection, that says what to fix.
+
+1. A new log level, `problem`, that is written when `log_level` is `debug` and not when it is
+   `warning` or `error` (where `info` falls is not decided). The runtime logs a `problem`
+   when it sees such a thing -- first of all, a note or card that an earlier trigger note
+   in the same bulk run already wrote being written again. Only the bulk loop in
+   `copy_fields` sees every trigger note's output, so that is where it is noticed: the same
+   note id arriving twice in `copied_into_notes`, or an edited card replacing one already in
+   `copied_into_cards_dict`.
+2. A "Run bulk-run test" button in the preview pane runs a preview bulk run over the sample:
+   real searches and code, nothing committed, nothing written to the media folder. The
+   preview then reads its own log file and looks for problems, and perhaps errors.
+3. A report element, a dialog or inline in the pane, whichever fits, says for each kind of
+   problem found what to change in the definition -- for the double write, that only the
+   last trigger note's write is kept, and that a narrower query or a Destination-to-sources
+   definition reading many notes into one would avoid it -- rather than showing the log
+   lines.
+
+That button and the report are the only new UI.
+
+**What there is to build on.** A preview runs one trigger note through `PreviewCommitter`,
+which publishes into its own run rather than into shared lists, so a bulk preview needs the
+lists the bulk loop keeps without its saves. The pane collects a preview's errors in memory
+today (`preview.py`, `_MessageCollector`), not from a file; operation logs are files under
+`user_files/logs/` (`logging_setup.py`).
+
+**decision: agreed, not built**
+
+## Open points left by the PR 14 review fixes
+
+Small things the fixes found and deliberately did not settle. None is a regression.
+
+* **A `)` in an interpolated value can close a search condition's group early.** The
+  condition is searched as `({search}) nid:{id}` so that an `OR` stays scoped to the note,
+  but a field value interpolated into it -- `Word:{{trigger.Word}}` with a word containing
+  `) OR (` -- can still end the group, and the search then reaches other notes. The text is
+  the author's data, and the add path's matcher adds the same parentheses, so the two paths
+  agree. Whether to escape interpolated values is not decided: a search may interpolate
+  search syntax on purpose.
+* **The add-path search matcher does not port Anki's tag rewriting.** A note whose tags Anki
+  would rewrite on save (whitespace, control characters, empty `::` parts) cannot be judged
+  for a `tag:` term, which fails the definition naming the term. Anki's unification of a
+  tag's case with an existing tag is ignored, which is harmless while tag search ignores
+  case.
+* **The warning about unjudgeable search terms is partial.** The editor warns only about a
+  trigger search condition whose literal text it can parse (no `{{...}}`, no code, no
+  process chain) in the definition being edited: a condition in a called definition is not
+  warned about, and a definition nobody opens in the editor gets no warning at all. The run
+  still fails naming the term, so the gap is only in how early the user hears.
+* **Some card reads still fetch per read.** Code mode's `cards` is fetched once per
+  evaluation, but `note.cards` on a facade fetches on every read, and card-action code
+  (which runs with format 1's names, without the stage's bindings) fetches its note's
+  cards on every run.

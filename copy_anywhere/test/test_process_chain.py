@@ -714,12 +714,13 @@ class TestFatalProcessError:
             definition, note, copied_into_notes=copied_into_notes
         )
 
-        # The abort is whole-definition, not per-field: the write before the failure is in
-        # the note object, but the one after it never ran and neither did the tag step below
-        # them -- and nothing is handed to the caller to save, so none of it is persisted.
+        # The abort is whole-definition, not per-field: the write after the failure never ran
+        # and neither did the tag step below them, nothing is handed to the caller to save,
+        # and the write before it is taken back out of the note object too -- the trigger is
+        # the caller's own object, which an editor or the Add dialog would go on to save.
         assert succeeded is False
         assert copied_into_notes == []
-        assert note["Reading"] == "neko"
+        assert note["Reading"] == ""
         assert note["Note"] == ""
         assert note["Freq"] == ""
         assert not note.has_tag("processed")

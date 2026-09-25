@@ -42,7 +42,7 @@ def test_a_card_action_whose_card_type_was_renamed_says_so(col, logger):
     # The field write still lands, so the run looks like a success from the outside.
     assert ok is True
     assert note["Note"] == "neko"
-    # The flag the definition asks for is not set on either card -- and now something says
-    # why.
-    assert [card.flags for card in copied_into_cards.values()] == [0, 0]
+    # The flag the definition asks for is set on neither card -- no card is handed over to
+    # be saved at all -- and now something says why.
+    assert copied_into_cards == {}
     assert logger.errors or logger.warnings

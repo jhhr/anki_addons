@@ -38,9 +38,11 @@ def run(note, **kwargs):
     """Run these pieces against `note` as the within-note definition they describe.
 
     Returns what `copy_into_single_note()` used to return, minus the file flag no caller
-    reads: whether the note was written into, and the cards the card actions touched. A note
+    reads: whether the note was written into, and the cards the card actions edited. A note
     is "written into" exactly when the executor hands it to the caller to save, which is the
-    same thing the old boolean meant.
+    same thing the old boolean meant. Format 1 also returned the note's other cards; the
+    executor hands over only edited ones, so an action that changed nothing leaves its card
+    out of the list, and that is how the no-op cases below tell.
     """
     field_only = kwargs.pop("field_only", None)
     definition = d.within_note(**kwargs)
@@ -328,6 +330,11 @@ def card_named(cards, template_name):
     return next(card for card in cards if card.template()["name"] == template_name)
 
 
+def handed_over(cards) -> list[str]:
+    """The card types of the cards a run handed to the caller to save."""
+    return sorted(card.template()["name"] for card in cards)
+
+
 class TestCardActions:
     def test_a_card_type_name_without_the_separator_is_skipped_and_the_rest_still_run(
         self, note, logger
@@ -340,13 +347,13 @@ class TestCardActions:
         )
         assert logger.has_error("Invalid card type name")
         assert card_named(cards, "Recall").user_flag() == 2
-        assert card_named(cards, "Recognition").user_flag() == 0
+        assert handed_over(cards) == ["Recall"]
 
     def test_an_action_for_another_note_type_is_skipped(self, note):
         _, cards = run(
             note, card_actions=[d.card_action("Some Other Type", "Recognition", set_flag=1)]
         )
-        assert card_named(cards, "Recognition").user_flag() == 0
+        assert handed_over(cards) == []
 
     def test_two_actions_for_one_template_leave_only_the_later_one(self, note):
         # They are collected into a dict keyed by template name, so the second overwrites.
@@ -372,12 +379,10 @@ class TestCardActions:
 
     @pytest.mark.parametrize("value", [None, "-", 0])
     def test_change_deck_no_ops(self, col, note, value):
-        before = note.cards()[0].did
         _, cards = run(
             note, card_actions=[d.card_action(VOCAB, "Recognition", change_deck=value)]
         )
-        assert card_named(cards, "Recognition").did == before
-        assert not hasattr(card_named(cards, "Recognition"), "edited")
+        assert handed_over(cards) == []
 
     def test_change_deck_to_a_name_that_does_not_exist_is_logged_and_does_nothing(
         self, note, logger
@@ -424,9 +429,8 @@ class TestCardActions:
         _, cards = run(
             note, card_actions=[d.card_action(VOCAB, "Recognition", bury=True)]
         )
-        buried = next(c for c in cards if c.template()["name"] == "Recognition")
-        assert buried.queue == -1
-        assert not hasattr(buried, "edited")
+        assert handed_over(cards) == []
+        assert card_named(note.cards(), "Recognition").queue == -1
 
     def test_burying_an_unsuspended_card_works(self, note):
         _, cards = run(
@@ -448,9 +452,7 @@ class TestCardActions:
         _, cards = run(
             note, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=flag)]
         )
-        card = next(c for c in cards if c.template()["name"] == "Recognition")
-        assert card.user_flag() == 0
-        assert not hasattr(card, "edited")
+        assert handed_over(cards) == []
 
     def test_set_flag_true_is_accepted_as_flag_one(self, note):
         # `isinstance(True, int)` is True and the guard does not exclude bool, unlike
@@ -496,14 +498,14 @@ class TestDesiredRetention:
             note,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention="dr")],
         )
-        assert self._card(cards).desired_retention is None
+        assert handed_over(cards) == []
 
     def test_empty_custom_data_sets_nothing(self, note):
         _, cards = run(
             note,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention="dr")],
         )
-        assert self._card(cards).desired_retention is None
+        assert handed_over(cards) == []
 
     @pytest.mark.parametrize("value", [0, 1.0, True])
     def test_out_of_range_and_boolean_values_are_ignored(self, note, value):
@@ -512,7 +514,7 @@ class TestDesiredRetention:
             note,
             card_actions=[d.card_action(VOCAB, "Recognition", set_desired_retention=value)],
         )
-        assert self._card(cards).desired_retention is None
+        assert handed_over(cards) == []
 
 
 class TestCardActionCode:
@@ -525,8 +527,7 @@ class TestCardActionCode:
                 )
             ],
         )
-        card = next(c for c in cards if c.template()["name"] == "Recognition")
-        assert card.user_flag() == 0
+        assert handed_over(cards) == []
 
     def test_code_returning_a_dict_replaces_the_configured_action(self, note):
         _, cards = run(
@@ -565,10 +566,12 @@ class TestCardActionCode:
 
 class TestEditedFlag:
     def test_an_untouched_card_gets_no_edited_attribute(self, note):
-        # The dynamic `edited` attribute is what drives the progress counts and the filter
-        # that decides which cards are handed to update_cards, so its absence matters.
-        _, cards = run(note, card_actions=[])
-        assert all(not hasattr(card, "edited") for card in cards)
+        # The dynamic `edited` attribute is what the executor collects the cards to hand over
+        # by, and what the caller's filter for update_cards reads, so a card no action
+        # changed must not carry it -- here, by never being handed over at all.
+        written, cards = run(note, field_to_field_defs=[d.field_to_field("Note", "x")])
+        assert written
+        assert cards == []
 
     def test_a_touched_card_is_marked_edited(self, note):
         _, cards = run(

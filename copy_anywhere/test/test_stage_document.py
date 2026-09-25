@@ -481,6 +481,69 @@ def test_a_definition_with_no_add_trigger_is_not_warned_about():
     assert doc.warnings() == []
 
 
+def searching(search, guid="c", **extra):
+    """A search condition on the trigger, the only kind a note being added judges itself."""
+    condition = default_stage(STAGE_CONDITION, guid)
+    condition["predicate_kind"] = "note_query"
+    condition["predicate"] = value_expression(text=search)
+    condition["predicate_target"] = {"binding": "trigger"}
+    condition.update(extra)
+    return condition
+
+
+def test_a_search_condition_the_note_being_added_cannot_answer_is_named():
+    doc = document(searching("Word:neko is:due"))
+    doc.definition["triggers"]["on_add"] = True
+    (warning,) = doc.warnings()
+    assert "search condition on Condition" in warning
+    assert "'is:due'" in warning
+    assert "not added yet" in warning
+
+
+def test_the_same_warning_for_an_add_dialog_unfocus_trigger():
+    doc = document(searching("prop:due>1"))
+    doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
+    (warning,) = doc.warnings()
+    assert "'prop:due>1'" in warning
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        # Answerable from the note and the deck it goes into.
+        searching('Word:neko tag:jp deck:"JP vocab" -note:x'),
+        # What is searched is only known at run time.
+        searching("{{trigger.Word}} is:due"),
+        # Never checked outside a sync, and adding is not one.
+        searching("is:due", only_on_sync=True),
+        # A note from a query or loop is a saved one.
+        searching("is:due", predicate_target={"binding": "note"}),
+        # Refused everywhere, not just while adding; the run says so.
+        searching("is:due)"),
+    ],
+    ids=["answerable", "interpolated", "only-on-sync", "other-note", "syntax-error"],
+)
+def test_a_search_condition_warns_only_when_as_written_it_cannot_be_answered(stage):
+    doc = document(stage)
+    doc.definition["triggers"]["on_add"] = True
+    assert doc.warnings() == []
+
+
+def test_a_search_condition_is_not_warned_about_without_an_add_trigger():
+    doc = document(searching("is:due"))
+    doc.definition["triggers"]["on_unfocus"] = {"edit_fields": ["Word"], "add_fields": []}
+    assert doc.warnings() == []
+
+
+def test_an_unfocus_only_definition_skipped_while_adding_is_not_warned_about_its_search():
+    # It reaches beyond the note, so the Add dialog skips it and never judges the search;
+    # the only thing to say is the existing "skipped there" warning.
+    doc = document(searching("is:due"), writing_a_file())
+    doc.definition["triggers"]["on_unfocus"] = {"edit_fields": [], "add_fields": ["Word"]}
+    (warning,) = doc.warnings()
+    assert "skipped there" in warning
+
+
 def test_an_add_note_trigger_is_fine_for_a_trigger_only_definition():
     edit = default_stage(STAGE_EDIT_NOTE, "e")
     edit["fields"] = [

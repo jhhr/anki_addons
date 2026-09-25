@@ -26,7 +26,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from conftest import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic.copy_fields import (
     CacheResults,
     ProgressUpdater,
@@ -53,6 +53,11 @@ def summary(results: CacheResults) -> str:
 def copy_word_into_note(**extra):
     """A Within-note definition that writes Word into Note, so a run leaves a trace."""
     return d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")], **extra)
+
+
+def this_card_action(guid, **action):
+    """A card action for an `edit_card` stage: no card type, it acts on the card in hand."""
+    return {**d.card_action(VOCAB, "Recognition", **action), "card_type_name": "", "guid": guid}
 
 
 def flag_cards(col, note, fc):
@@ -711,10 +716,88 @@ class TestCounterArithmeticThroughTheLoop:
 
         results = run_bulk(definition, cards=cards)
 
-        # Both of the note's cards are collected for the later `update_cards`, but the counter
-        # only follows the `edited` marker, so it reports the one that changed.
+        # Only the card the action changed is handed over for the later `update_cards`, and
+        # the count is taken from what was handed over.
         assert "1 cards" in summary(results)
-        assert len(cards) == 2
+        assert len(cards) == 1
+
+    def test_two_stages_writing_one_note_count_it_once(self, col):
+        notes = [real_anki.add_note(col, VOCAB, {"Word": w}) for w in ("a", "b", "c")]
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("1"))]),
+            d.edit_note("trigger", [d.write("Meaning", d.text("2"))]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id for note in notes])
+
+        # Counted from what the trigger's commit publishes, not once per stage that wrote.
+        assert "3 destinations" in summary(results)
+
+    def test_a_migrated_within_note_definition_counts_one_per_note(self, col):
+        # Format 1 counted each destination note once, however many fields and tags it wrote.
+        notes = [real_anki.add_note(col, VOCAB, {"Word": w}) for w in ("a", "b", "c")]
+        definition = d.within_note(
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}"),
+                d.field_to_field("Meaning", "{{Word}}"),
+            ],
+            add_tags="t",
+        )
+
+        results = run_bulk(definition, note_ids=[note.id for note in notes])
+
+        assert "3 destinations" in summary(results)
+
+    def test_one_destination_written_by_two_trigger_notes_counts_once_per_trigger(self, col):
+        # Per trigger, as format 1 counted: each trigger note's run did write the note, even
+        # though only the last write lands (`test_copy_fields_op.py`,
+        # `TestOneDestinationFromSeveralTriggerNotes`).
+        real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        real_anki.add_note(col, SENTENCE, {"Sentence": "s1", "Vocab": "neko"})
+        real_anki.add_note(col, SENTENCE, {"Sentence": "s2", "Vocab": "neko"})
+        definition = d.source_to_destinations(
+            note_types=[SENTENCE],
+            copy_from_cards_query='note:"CA Vocab"',
+            select_card_count="0",
+            field_to_field_defs=[d.field_to_field("Note", "{{Sentence}}")],
+        )
+
+        results = run_bulk(definition)
+
+        assert "2 destinations" in summary(results)
+
+    def test_an_edit_card_stage_with_three_actions_counts_one_card(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        definition = d.staged(stages=[
+            d.card_query("cards", f"nid:{note.id} card:Recognition"),
+            d.for_each_card("cards", [
+                d.edit_card("card", [
+                    this_card_action("a1", set_flag=2),
+                    this_card_action("a2", suspend=True),
+                    this_card_action("a3", bury=True),
+                ]),
+            ]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id])
+
+        assert "1 cards" in summary(results)
+
+    def test_a_card_edited_by_a_note_stage_and_a_card_stage_counts_once(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        definition = d.staged(stages=[
+            d.edit_note("trigger", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]),
+            d.card_query("cards", f"nid:{note.id} card:Recognition"),
+            d.for_each_card("cards", [
+                d.edit_card("card", [this_card_action("a1", suspend=True)]),
+            ]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id])
+
+        assert "1 cards" in summary(results)
+        # A stage that only acted on cards wrote no field or tag, so no destination either.
+        assert "destinations" not in summary(results)
 
     def test_a_note_with_no_sources_does_not_count_its_destination(self, col):
         # The "no sources found" early return copies nothing, so it must not count the

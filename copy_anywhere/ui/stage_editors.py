@@ -97,6 +97,12 @@ IF_MISSING_LABELS = {
     "error": "fail the definition",
 }
 
+#: Said under both file stages' name box (`normalize_media_filename` adds the prefix).
+MEDIA_PREFIX_NOTE = (
+    "A leading '_' is added if the name has none: no note refers to the file, and the '_'"
+    " keeps Anki's Check Media from deleting it as unused."
+)
+
 SELECTION_LABELS = {
     "all": "all of them",
     "first": "the first",
@@ -325,6 +331,10 @@ class StageEditor(QWidget):
 
     def set_context(self, context: StageEditorContext) -> None:
         self.context = context
+        # The reused format-1 widgets read their menus off the state, and a stage with no
+        # value editor (Edit Card) has nothing else that would move it to the new scope.
+        # First, so the callbacks fired below already see it.
+        self.state.set_context(context)
         # The trigger note type is chosen at the top of the same dialog, and the card types
         # a stage editing the trigger offers are that note type's own.
         self.state.set_selected_models(list(self.environment.note_types_for("trigger") or []))
@@ -716,6 +726,7 @@ class EditNoteStageEditor(StageEditor):
         super().set_context(context)
         for row in self.field_rows:
             row.set_context(context)
+        self.card_actions.update_code_editor_options()
 
 
 class EditCardStageEditor(StageEditor):
@@ -751,6 +762,10 @@ class EditCardStageEditor(StageEditor):
         self.stage["target"] = {"binding": self.target.currentText()}
         self.stage["card_actions"] = self.card_actions.get_card_actions()
 
+    def set_context(self, context):
+        super().set_context(context)
+        self.card_actions.update_code_editor_options()
+
 
 class ReadFileStageEditor(StageEditor):
     def __init__(self, parent, stage, context, environment):
@@ -761,7 +776,10 @@ class ReadFileStageEditor(StageEditor):
         self.filename = self.expression_editor(
             stage.setdefault("filename", value_expression()),
             "File in the media folder",
-            description="Path separators and '..' are refused; the file must be UTF-8.",
+            description=(
+                "Path separators and '..' are refused; the file must be UTF-8."
+                f" {MEDIA_PREFIX_NOTE}"
+            ),
             process_names=ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,
         )
         self.form.addRow(self.filename)
@@ -785,7 +803,7 @@ class WriteFileStageEditor(StageEditor):
             "File in the media folder",
             description=(
                 "Leave this empty only if the content is code that returns its own"
-                " (filename, content) pairs."
+                f" (filename, content) pairs. {MEDIA_PREFIX_NOTE}"
             ),
             is_required=False,
             process_names=ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,

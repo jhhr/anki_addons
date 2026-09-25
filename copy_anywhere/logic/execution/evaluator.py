@@ -361,6 +361,13 @@ def execute_definition(
     default_index = legacy.get("query_note_index_default")
     if default_index is not None:
         frame.runtime_values[QUERY_NOTE_INDEX] = default_index
+    # `_run_call` pushes each callee's guid, but the root has no call stage of its own, so
+    # it is pushed here. Without it a definition calling itself ran once more before the
+    # check fired, and A -> B -> A reported the cycle starting from B. Doing it for the
+    # depth-0 frame covers the real run and the preview alike, which both enter here.
+    root_guid = frame.definition.get("guid") if frame.depth == 0 else None
+    if root_guid:
+        frame.session.call_stack.append(root_guid)
     try:
         execute_block(frame.definition.get("stages") or [], env, frame, parent_event)
     except SkipBlock:
@@ -372,6 +379,11 @@ def execute_definition(
         # only swallowed for a nested call.
         if frame.depth == 0:
             raise
+    finally:
+        # Whatever ended the run -- a skip, a stage error, a cancel -- the stack is left as
+        # it was found, the way `_run_call` leaves it after a callee.
+        if root_guid:
+            frame.session.call_stack.pop()
 
     exported: dict = {}
     for export in frame.definition.get("exports") or []:

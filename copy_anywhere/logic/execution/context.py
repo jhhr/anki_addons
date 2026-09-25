@@ -15,7 +15,6 @@ have run, and a preview could not match a real run.
 
 from __future__ import annotations
 
-import base64
 import re
 import time
 from typing import Any, Callable, Optional, Sequence, Union
@@ -236,11 +235,14 @@ class ExecutionSession:
         self.file_overlay: dict[str, str] = {}
 
         self.modified_notes: dict[NoteKey, Note] = {}
-        self.touched_cards: dict[int, Card] = {}
         self.edited_cards: dict[int, Card] = {}
         self.pending_files: list[dict] = []
 
-        self.query_cache: dict[str, list[int]] = {}
+        #: The trigger note's fields and tags as the run found them, for `discard` to put
+        #: back. Set by `remember_trigger` before the first stage runs.
+        self._trigger_snapshot: Optional[tuple[Note, list[str], list[str]]] = None
+
+        self.query_cache: dict[tuple[str, str], list[int]] = {}
         self.call_stack: list[str] = []
         self.trace: list[TraceEvent] = []
         #: The event of the stage currently running, so an action can say what it planned
@@ -304,18 +306,8 @@ class ExecutionSession:
         self.cards[card_id] = card
         return card
 
-    def touch_cards(self, cards: Sequence[Card]) -> None:
-        """Record cards a stage looked at.
-
-        Format 1 handed the caller every card of every destination note, edited or not,
-        because the sync path writes its `fc` custom-data flag onto all of them.
-        """
-        for card in cards:
-            self.touched_cards[card.id] = card
-
     def mark_card_edited(self, card: Card) -> None:
         self.edited_cards[card.id] = card
-        self.touched_cards[card.id] = card
 
     # -- files ------------------------------------------------------------------------
 
@@ -373,15 +365,32 @@ class ExecutionSession:
             return self.file_overlay[name]
         return read_media_file(name)
 
+    def remember_trigger(self, note: Note) -> None:
+        """Keep the trigger note's fields and tags as they are now, for `discard` to restore.
+
+        The trigger is the one working note the session does not fetch for itself: it is the
+        caller's own object, and on the add and editor paths the caller saves that object
+        whatever the run's result -- the Add dialog adds it, the editor reloads and later
+        saves it. Every other working note is fetched here and reaches the collection only
+        through a commit, so it needs no snapshot.
+        """
+        self._trigger_snapshot = (note, list(note.fields), list(note.tags))
+
     def discard(self) -> None:
         """Throw this trigger's pending plan away without committing any of it.
 
         Used when a definition fails, is cancelled, or turns out not to apply to the note:
-        the working note objects keep whatever was written into them in memory, but nothing
-        is handed to `update_notes()` and no file reaches the disk.
+        nothing is handed to `update_notes()`, no file reaches the disk, and the trigger note
+        gets back the fields and tags `remember_trigger` recorded, so a failed or refused
+        run leaves the note the caller will save as it was. Other working notes keep what was
+        written into them in memory, but nothing ever publishes them.
         """
+        if self._trigger_snapshot is not None:
+            note, fields, tags = self._trigger_snapshot
+            # Copies, so a second discard still has the originals to restore from.
+            note.fields = list(fields)
+            note.tags = list(tags)
         self.modified_notes.clear()
-        self.touched_cards.clear()
         self.edited_cards.clear()
         self.pending_files.clear()
         self.file_overlay.clear()
@@ -395,7 +404,7 @@ class ExecutionSession:
         return self._cached_search("cards", query)
 
     def _cached_search(self, kind: str, query: str) -> list[int]:
-        key = base64.b64encode(f"{kind}{query}".encode()).decode()
+        key = (kind, query)
         cached = self.query_cache.get(key)
         if cached is None:
             finder = mw.col.find_notes if kind == "notes" else mw.col.find_cards

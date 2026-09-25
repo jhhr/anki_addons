@@ -313,6 +313,22 @@ class CardActionsEditor(QWidget):
                     self._discard_action(card_type_name)
         self.update_card_type_options()
 
+    def update_code_editor_options(self):
+        """Give every action's code editor the menu and validation the state has now.
+
+        Each code editor is handed the state's menu when its row is built. The stage above
+        replaces the state's context whenever an edit anywhere in the dialog moves the
+        stage's scope -- a variable renamed or added upstream, say -- and a row already
+        built would go on offering, and validating against, the names it was built with.
+        A row built later reads the state as it is then, so rows still in the staged load
+        need nothing.
+        """
+        for ui_components in self.action_ui_components.values():
+            ui_components["code_editor"].update_options(
+                self.state.post_query_menu_options_dict,
+                self.state.post_query_text_edit_validate_dict,
+            )
+
     def _offered_card_types(self) -> Optional[set[str]]:
         """The card types the selector lists, or None when it lists every one there is."""
         if self.single_card_mode or self.state.copy_mode == COPY_MODE_ACROSS_NOTES:

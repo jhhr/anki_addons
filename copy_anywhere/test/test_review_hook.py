@@ -857,9 +857,9 @@ class TestACardActionOnAnotherCard:
     def test_only_cards_a_definition_actually_edited_are_written(
         self, col, set_definitions, updates
     ):
-        # Every destination note's cards land in `copied_into_cards_dict`, edited or not; the
-        # `edited` attribute the card actions set is what narrows the write down. The last
-        # entry is the handler's own closing `update_card`, which arrives without one.
+        # Only the cards a card action edited land in `copied_into_cards_dict`: "plain" writes
+        # into the note and hands over none of its cards. The last entry is the handler's own
+        # closing `update_card`, which arrives without an `edited` attribute.
         note, reviewed = review(col)
         sibling = note.cards()[1]
         set_definitions(

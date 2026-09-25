@@ -183,16 +183,12 @@ class TestAcceptanceScenario:
         # second call saw the first one's line.
         assert (media_dir / "_acceptance.txt").read_bytes() == b"<n1>\n<n2>\n"
 
-        # Both of the trigger's cards moved. The other notes' cards are in the dict too --
-        # every note a definition edits hands its cards over, because the sync path stamps
-        # its flag onto all of them -- but none of them moved.
+        # Both of the trigger's cards moved, and they are the only cards handed over: the
+        # found note the definition wrote hands over none, since no card action changed them.
         target_deck = col.decks.id_for_name("JP vocab")
-        trigger_cards = [card for card in cards.values() if card.nid == trigger.id]
-        assert len(trigger_cards) == 2
-        assert {card.did for card in trigger_cards} == {target_deck}
-        assert all(
-            card.did != target_deck for card in cards.values() if card.nid != trigger.id
-        )
+        assert len(cards) == 2
+        assert {card.nid for card in cards.values()} == {trigger.id}
+        assert {card.did for card in cards.values()} == {target_deck}
 
         # Nothing reached the database: the caller is the one that saves.
         assert col.get_note(trigger.id)["Note"] == ""

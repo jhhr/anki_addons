@@ -53,13 +53,17 @@ class CollectionCommitter:
             result.notes.append(note)
             if copied_into_notes is not None:
                 copied_into_notes.append(note)
-        for card in session.touched_cards.values():
+        # Only the cards a card action changed. The caller's dict outlives this trigger note,
+        # so an unchanged copy of a card put there would replace the copy an earlier trigger
+        # note edited, and that edit would be lost. Format 1 handed over every card of every
+        # note it wrote, for the sync tail's `fc` flag; the tail's second sweep searches for
+        # every card still waiting, so it needs none of them from here.
+        for card in session.edited_cards.values():
             result.cards.append(card)
             if copied_into_cards_dict is not None:
                 copied_into_cards_dict[card.id] = card
         self.write_files(session, result)
         session.modified_notes.clear()
-        session.touched_cards.clear()
         session.edited_cards.clear()
         session.pending_files.clear()
         # Cleared whether or not every file made it: the overlay is what a later read sees
@@ -127,7 +131,6 @@ class PreviewCommitter(CollectionCommitter):
         self.planned_files.extend(dict(pending) for pending in session.pending_files)
         result.files = [pending["filename"] for pending in session.pending_files]
         session.modified_notes.clear()
-        session.touched_cards.clear()
         session.edited_cards.clear()
         session.pending_files.clear()
         session.file_overlay.clear()

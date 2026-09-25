@@ -195,7 +195,8 @@ returns the value instead:
 ![A code value](docs/images/value-code.png)
 
 Code gets read-only views of the notes and cards in scope, plus `find_notes`, `find_cards`,
-`get_note` and `get_card`. Assigning through one of those views raises: every change a
+`get_note` and `get_card`. `note` is the note the stage is on (inside a loop, the loop's
+note) and `cards` are that note's cards. Assigning through one of those views raises: every change a
 definition makes goes through a stage, which is what keeps it visible to the preview and to
 the undo entry. After either form, the optional **Extra processing** chain runs — the same
 regex and text processes as before.
@@ -285,9 +286,24 @@ That gives three rules:
 - **Reading is always fine.** Reading the trigger's card values on a note that has no cards
   answers with a new card's defaults rather than failing, exactly as it always did.
 
+A **search condition** on the note being added cannot ask the collection, which does not
+have the note yet. It is judged against the note itself instead — its fields, tags and note
+type as they stand, and for `deck:` the deck it is being added to — with Anki's own rules,
+so it gives the answer Anki would give once the note is saved. A term that needs something a
+new note does not have yet — cards, review history, an id, such as `is:due`, `card:`,
+`prop:`, `rated:`, `flag:`, `nid:`, or a regular-expression search — fails the definition,
+and the log names the term. (Format 1 searched the collection for a note with id 0, so the
+note being added never matched.)
+
+If a definition fails, is refused, or its condition does not match, the note it ran for is
+left exactly as it was before that definition started — the note being added here, the note
+being edited in the editor — so the Add dialog adds it without half-made edits. What earlier
+definitions wrote to it stays.
+
 The editor says where a definition stands, under the stage list: *Can run while a note is
-being added: **yes** / **no***, with up to two amber notes. They are independent — a
-definition can earn both, one or neither — and neither of them stops you saving.
+being added: **yes** / **no***, with amber notes when there is something to say. They are
+independent — a definition can earn several, one or none — and none of them stops you
+saving.
 
 The first is about what is **impossible**:
 
@@ -312,6 +328,9 @@ the impossible one, in a definition that earns both:
 
 ![Both warnings at once](docs/images/add-note-both.png)
 
+A third kind names a search condition, on the trigger, that uses a term the note being
+added cannot answer, and says the definition will fail there.
+
 ## 6. What the editor checks
 
 Every edit re-reads the whole definition, and **Save** is disabled while anything is wrong.
@@ -330,9 +349,10 @@ menu does not offer is marked in red underneath as you type:
 
 ![An unknown reference](docs/images/value-unknown-reference.png)
 
-That marker is the only warning you get. A name nothing in scope answers to is looked up as a
-note or card value when the stage runs, and if there is no such value either, the stage
-writes nothing and says so in the log.
+The same check runs when the definition is re-read: a name nothing in scope answers to, and
+that is not a value the run supplies (`index`, `count`, ...), is listed as a problem and
+blocks **Save**. A definition that reaches the run with one anyway -- written by hand, say --
+fails at that stage, and the log names the reference.
 
 Alongside that, saving records what each definition *does* — whether it edits the trigger
 note, other notes, the trigger's cards, other cards, whether it reads or writes files,
@@ -357,11 +377,14 @@ see every stage of every note. The newest fifty files are kept.
 
 **Write File** replaces one file in your collection's media folder, and **Read File** reads
 one back. Both take a filename as a value like any other, so it can be built from the note.
-[`archive-to-a-file.json`](docs/examples/archive-to-a-file.json) writes
-`archive-{{trigger.Word}}.txt`.
+[`archive-to-a-file.json`](docs/examples/archive-to-a-file.json) names its file
+`archive-{{trigger.Word}}.txt`, so for the word *neko* it writes `_archive-neko.txt`.
 
 What to know before using them:
 
+- Every file name starts with `_`: one is added to a name that has none, for reading as for
+  writing, and in the error that says a file is missing. No note refers to these files, and
+  the `_` is what keeps Anki's Check Media from deleting them as unused.
 - Files are written as UTF-8, with no byte-order mark and no newline translation.
 - A filename resolves inside the media folder. A path separator or a `..` segment is refused.
 - There is no append. Read the file, build the new content, write it back with *overwrite*.
@@ -407,11 +430,147 @@ else the stage fails and the log says which name it was.
 
 **The one thing to check by hand** is values written as Python code. Their references are
 rewritten the same way, but the code around them now runs as current code: `note` is the
-note the stage is on — inside a loop, the note the loop is on — every other binding in scope
-is there under its own name, and the notes and cards are read-only views, so code that
-assigned to a field raises instead of writing. Open each converted definition that has
-**Execute content as Python code** ticked, read what the code does, and run the definition
-on one note before you let it loose on a selection.
+note the stage is on — inside a loop, the note the loop is on — and `cards` are that note's
+cards, every other binding in scope is there under its own name, and the cards are
+read-only views with fewer properties than before. In a converted *Source to destinations*
+definition that moves `note` from the note the definition ran for to the note being written.
+Open each converted definition that has **Execute content as Python code** ticked, read what
+the code does, and run the definition on one note before you let it loose on a selection.
+The next section says exactly what changed where; it is written to be handed to an AI agent
+along with your config.
+
+### For an AI agent: rewriting converted code
+
+You have been asked to update a user's converted CopyAnywhere definitions where the
+conversion could not. Only Python code can need it: a value whose `"mode"` is `"code"`, and a
+card action with `"use_code": true`. Text values, searches and copy conditions were converted
+completely, and format 1 had no code form of a search or a condition, so leave those alone.
+Leave the `{{...}}` references inside code alone too: the conversion already rewrote them
+(`{{Word}}` to `{{trigger.Word}}`, `{{__Dest__Word}}` to `{{note.Word}}`, and so on), and
+they are substituted into the code as text before it runs, as in format 1. What you may have
+to change is the Python around them. Change as little as you can.
+
+**Where things are.** The addon config (Tools → Add-ons → CopyAnywhere → Config, or the
+`config` key of `meta.json` in the addon's folder, edited with Anki closed) holds:
+
+- `copy_definitions`: the format-2 definitions, which are what runs. The full specification
+  is [`docs/staged-definitions.md`](docs/staged-definitions.md). Do not edit `effects`; it is
+  derived.
+- `pre_stage_migration_copy_definitions`: the format-1 originals, as they were before the
+  conversion. Written once and never touched again; do not edit it. Compare every piece of
+  code you change with its original here. A converted definition keeps its original's
+  `guid`, and so does the stage made from each field write, file write and variable; the
+  stages the conversion invented have guids `<definition guid>::<role>`.
+
+| format-1 code | where it is now |
+| --- | --- |
+| `field_to_field_defs[i].copy_as_code` | *Within note*, *Source to destinations*: `fields[i].value.code` of the `edit_note` stage. *Destination to sources*: `value.code` of the `store` stage `<guid>::join-store-<n>` (`n` counts the field writes from 1); the write itself now reads the joined `{{legacy_joined_<n>}}` |
+| `field_to_file_defs[i].copy_as_code` | `content.code` of the `write_file` stage with that def's guid |
+| `field_to_variable_defs[i].copy_as_code` | `value.code` of the `variable` stage with that def's guid, at the top |
+| `card_actions[i].action_code` | the same action, unchanged, in the `edit_note` stage's `card_actions` |
+
+The shapes: *Within note* is one `edit_note` on `trigger` and the file writes after it.
+*Source to destinations* is a `note_query` into `legacy_query_notes` and a `for_each_note`
+over it whose item binding is `note`, holding the `edit_note` on `note` and the file writes.
+*Destination to sources* is the same query, then per field write a list, a loop (item
+`note`) with the `store`, and a join, then the `edit_note` on `trigger`, and per code file
+write a loop (item `note`) holding it. The variables come first; a copy condition wraps
+everything after them.
+
+**What the names mean.** Format-1 field, file and variable code got one note, `note`: the
+note the value was read from. Format 2 code gets every binding in scope under its own name
+(`trigger`, each variable, a loop's `note`, `index` and `count`, `legacy_query_notes`),
+plus `note`, `cards` and `destination`, the helpers `find_notes` and `find_cards` (id lists
+from the saved collection), `get_note(id)` and `get_card(id)`, and `get_card_last_reps`,
+`re`, `json`, `html` and `print`, as format 1 did. `trigger` is always the note the definition
+runs for.
+
+| code in | `note` in format 1 | `note` now | `destination` now | `index`, `count` |
+| --- | --- | --- | --- | --- |
+| a variable, any shape | the trigger | the trigger | the trigger | not defined |
+| *Within note*, field write | the trigger, as the stage started | the same | the same | not defined |
+| *Within note*, file write | the trigger before the field writes | the trigger after them | the trigger | not defined |
+| *Source to destinations*, field write | **the trigger** | **the note being written**, as the stage started | the note being written | its place among the found notes, their number |
+| *Source to destinations*, file write | **the trigger** | **the found note the loop is on** | the trigger | the same |
+| *Destination to sources*, field write | the source note | the source note | the trigger | its place among the sources, their number |
+| *Destination to sources*, file write | the source note | the source note | the trigger | the same |
+
+`cards` is the cards of whatever `note` is, as it was in format 1, so it changed exactly
+where `note` did.
+
+**The trap is *Source to destinations*.** Its edits run inside a loop whose item is called
+`note`, and `note` means the loop's note there. Format-1 code that read the note the
+definition ran for as `note` now reads the found note it is writing: `return
+note['Word'].upper()` now writes each destination's own *Word*, uppercased, and a file write
+names and fills its file from the destination too. Nothing fails; the values are just wrong.
+Rewrite `note` to `trigger` and `cards` to `trigger.cards` in that code. *Destination to
+sources* is not affected: it loops over the source notes with the same item name, and format
+1 ran that code once per source note with that note as `note`, so the name still means the
+same note. *Within note* and variables are not affected either, except that a Within-note
+file write now sees the field writes made just before it.
+
+Before, a *Source to destinations* write into each found note's *Meaning*:
+
+```python
+word = note['Word']
+return word.upper() + ' / ' + '{{__Dest__Meaning}}'
+```
+
+After the conversion, which rewrote the reference but not the Python, so `word` is now the
+destination's own *Word*:
+
+```python
+word = note['Word']
+return word.upper() + ' / ' + '{{note.Meaning}}'
+```
+
+What it should be:
+
+```python
+word = trigger['Word']
+return word.upper() + ' / ' + '{{note.Meaning}}'
+```
+
+**Other differences in field, file and variable code.**
+
+- Notes and cards are read-only views, as before: assigning to a field raises. A note has
+  `note['Field']`, `keys()`, `values()`, `items()`, `in`, `id`, `guid`, `mid`,
+  `note_type_id`, `note_type_name`, `is_cloze`, `tags`, `has_tag()`, `mod`, `usn`,
+  `sort_field` and `cards`.
+- A card has `id`, `nid`, `note`, `did`, `odid`, `deck_id`, `deck_name`,
+  `original_deck_name`, `ord`, `template_name`, `type`, `queue`, `due`, `odue`, `ivl`,
+  `factor`, `ease`, `reps`, `lapses`, `left`, `flag`, `custom_data`, `desired_retention`,
+  `stability`, `difficulty`, `mod`, `suspended` and `buried`, and nothing else. Gone:
+  `created`, `first_review_time`, `latest_review_time`, `average_review_time`,
+  `total_review_time` and anything else a raw Anki card had (`card.note()`,
+  `card.template()`). `card.note` is a property, and `template_name` no longer adds the
+  cloze number. For the review times, put a card-value reference in the code as a string,
+  such as `'{{trigger.Recognition__Card_First_Review}}'`.
+- A variable can use the variables above it by name. In format 1 it could not.
+- A list, tuple, note or card that code returns is no longer turned into text. A *Within
+  note* or *Source to destinations* field write fails on one, and a variable keeps it,
+  which a `{{...}}` reference to the variable then refuses; format 1 wrote its `str()` in
+  both. Return `str(...)` where the text is what was meant. (A *Destination to sources*
+  field write still joins each value's `str()`.)
+
+**Card-action code needs no change.** It runs through the same function as in format 1,
+with the same names: `note` is the note the `edit_note` stage writes (a found note in
+*Source to destinations*, the trigger otherwise), after that stage's field writes, as a view
+offering only `note['Field']` and `note.keys()`, and `cards` is that note's cards read from
+the collection, as format 1's card views (`created` and the review times are still there).
+It also gets `find_notes`, `find_cards`, `get_card_last_reps`, `re`, `json`, `html` and
+`print`. It gets no `trigger`, `destination`, variables, `index` or
+`get_note`, `{{...}}` in it is not substituted, and it runs once per card of the card type
+it names without being told which card.
+
+**Checking the result.** Ask the user to open each definition you changed (browser, **Edit
+→ Copy anywhere...**). The editor re-checks the `{{...}}` references, though not the Python,
+and will not save a definition with a broken one. Then pick one trigger note in the preview
+pane on the right and press **Run preview**. For *Source to destinations*, pick one whose
+search finds at least one note. Selecting the `edit_note` stage in the trace, once per loop
+pass, shows which note it would change and how; a `write_file` stage shows the file's name.
+A code error, with its traceback, is shown under the summary and on the stage it failed in.
+Nothing is committed and no file is written.
 
 ## Where the details are
 

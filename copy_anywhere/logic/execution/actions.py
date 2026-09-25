@@ -20,7 +20,7 @@ from anki.notes import Note
 
 from ...shared.interpolate.interpolate_fields import TARGET_NOTES_COUNT
 from ...utils.duplicate_note import duplicate_note
-from ...utils.media_files import MediaFileError
+from ...utils.media_files import MediaFileError, normalize_media_filename
 from ..copy_primitives import (
     CopyFailedException,
     apply_card_action_to_card,
@@ -30,6 +30,7 @@ from ..copy_primitives import (
 )
 from ..definition_schema import expression_is_code
 from ..execute_code_wrappers import execute_code_for_files
+from ..unsaved_note_search import SearchSyntaxError, UnjudgeableSearch, matches
 from .context import Cancelled, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
 
@@ -404,13 +405,8 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
 
     if modified:
         session.mark_note_modified(target)
-        session.update_counts(processed_destinations_inc=1)
         _record_note_changes(session, snapshot, target)
 
-    cards = session.cards_of_note(target)
-    # Format 1 handed every card of every destination note to the caller, edited or not: the
-    # sync path writes its `fc` flag onto all of them.
-    session.touch_cards(cards)
     card_actions = stage.get("card_actions") or []
     if card_actions and not target.id:
         # A note being added has no cards until the add creates them, and nothing runs this
@@ -422,10 +418,9 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
             stage.get("name") or stage.get("type"),
         )
     elif card_actions:
+        cards = session.cards_of_note(target)
         try:
-            apply_card_actions_by_template(
-                card_actions, target, cards, session.progress_updater
-            )
+            apply_card_actions_by_template(card_actions, target, cards)
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
         for card in cards:
@@ -450,10 +445,8 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
             raise frame.error(str(error), stage) from error
         if edited:
             session.mark_card_edited(card)
-            session.update_counts(processed_cards_inc=1)
             if session.recording:
                 session.record_mutation(f"card {card.id}: {describe_card(card)}")
-    session.touch_cards([card])
 
 
 # --------------------------------------------------------------------------------------
@@ -465,18 +458,22 @@ def run_read_file(stage: dict, env: dict, frame) -> str:
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
     filename = evaluate_text(stage.get("filename"), ctx)
     try:
-        content = frame.session.read_file(filename)
+        # The messages name the file actually looked for, with the leading `_` the read
+        # adds: a user told "'dictionary.txt' does not exist" while looking at it in the
+        # media folder has been told nothing.
+        name = normalize_media_filename(filename)
+        content = frame.session.read_file(name)
     except MediaFileError as error:
         raise frame.error(str(error), stage) from error
     except UnicodeDecodeError as error:
-        raise frame.error(f"File '{filename}' is not valid UTF-8: {error}", stage) from error
-    frame.session.record_detail("filename", filename)
+        raise frame.error(f"File '{name}' is not valid UTF-8: {error}", stage) from error
+    frame.session.record_detail("filename", name)
     if content is not None:
         return content
     frame.session.record_detail("missing", True)
     if_missing = stage.get("if_missing", "empty")
     if if_missing == "error":
-        raise frame.error(f"File '{filename}' does not exist", stage)
+        raise frame.error(f"File '{name}' does not exist", stage)
     if if_missing == "skip_block":
         raise SkipBlock()
     return ""
@@ -557,12 +554,56 @@ def _queue_file(
 # --------------------------------------------------------------------------------------
 
 
+def _unsaved_note_matches(
+    stage: dict, frame, target: Note, raw_query: str, interpolated: str
+) -> bool:
+    """A search condition asked of a note that is being added, so has no row to search.
+
+    `nid:0` finds nothing, so the search is judged in Python against the note as it stands
+    and the deck it is being added to, which is what Anki would answer once it is saved. A
+    term that answer depends on something this note does not have yet -- its cards, its
+    review history, its id -- fails the definition naming the term, rather than guessing
+    and silently running or skipping it.
+    """
+    session = frame.session
+    # The same parentheses as the collection's search, so an unbalanced `)` or a newline in
+    # the resolved text reads the same way on both paths.
+    search = f"({interpolated})"
+    session.record_detail("query", search)
+    session.record_detail("judged", "without the collection: the note is not added yet")
+    try:
+        matched = matches(search, target, session.deck_id)
+    except UnjudgeableSearch as error:
+        raise frame.error(
+            f"Error in copy fields: Condition query '{raw_query}': the search term"
+            f" '{error.term}' cannot be judged for a note that is not added yet"
+            f" ({error.reason})",
+            stage,
+        ) from error
+    except SearchSyntaxError as error:
+        # On a saved note the collection's search raises for the same text; this names the
+        # condition as well.
+        raise frame.error(
+            f"Error in copy fields: Condition query '{raw_query}' cannot be judged for a note"
+            f" that is not added yet, because Anki would refuse the search: {error}",
+            stage,
+        ) from error
+    session.record_detail("found", 1 if matched else 0)
+    if not matched:
+        logger.debug(
+            "copy_for_single_trigger_note: Condition query '%s' did not match the note being"
+            " added",
+            interpolated,
+        )
+    return matched
+
+
 def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
     """Whether the condition's `then` branch runs.
 
     A condition matched as an Anki search is scoped to one note, which is how format 1 ran
-    the copy condition a migration produced; any other is boolean code or a scalar the
-    branch takes the truthiness of.
+    the copy condition a migration produced (a note not added yet is judged without the
+    collection); any other is boolean code or a scalar the branch takes the truthiness of.
     """
     session = frame.session
     if stage.get("only_on_sync") and not session.is_sync:
@@ -590,17 +631,24 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
         # in the executor gets: the resolution the expression's own references ask for.
         interpolated = _search_text(evaluate_text(expression, ctx))
         if not interpolated:
-            # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
-            # trigger whatever the condition says, so every one of them would read true.
+            # Unparenthesised, an empty query reached `find_notes(f" nid:{id}")`, which
+            # matches the trigger whatever the condition says, so every one of them read
+            # true; parenthesised, Anki refuses the empty group without naming the condition.
             raise frame.error(
                 f"Error in copy fields: Condition query '{raw_query}' resolved to"
                 f" nothing for note id {target.id}",
                 stage,
             )
+        if not target.id:
+            # A note being added: the add hook's, or the Add dialog's on unfocus.
+            return _unsaved_note_matches(stage, frame, target, raw_query, interpolated)
         # Through the session, like a query stage's search: the same predicate asked of the
         # same note twice costs one trip to the collection, and the preview pane -- the one
         # a user opens to see why a branch did not run -- gets the search it actually made.
-        search = f"{interpolated} nid:{target.id}"
+        # The parentheses keep the note scope on the whole predicate: Anki binds `OR` looser
+        # than the implicit AND, so `a OR b nid:X` is `a OR (b nid:X)` and would match any
+        # note `a` finds.
+        search = f"({interpolated}) nid:{target.id}"
         note_ids = session.find_notes(search)
         session.record_detail("query", search)
         session.record_detail("found", len(note_ids))

@@ -309,7 +309,7 @@ class TestTheQueryCache:
         finally:
             col.find_notes = original
 
-        assert searches == [f"Word:trigger nid:{trigger.id}"]
+        assert searches == [f"(Word:trigger) nid:{trigger.id}"]
 
 
 class TestARefusedQueryDoesNotWipeTheDestination:

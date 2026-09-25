@@ -79,7 +79,10 @@ class TestPreviewRun:
         assert any("trigger settings" in message for message in run.messages)
 
     def test_a_called_definition_runs_inside_the_preview(self, col, note):
+        # A name of its own gives the callee a guid of its own: the builder derives the guid
+        # from the name, and a callee sharing the caller's guid is a call to itself.
         callee = d.staged(
+            "callee",
             stages=[d.variable("H", d.text("from the callee"))],
             exports=[{"name": "H", "stage_guid": None}],
         )
@@ -155,8 +158,28 @@ class TestTrace:
         run = run_preview(definition, preview_note(note.id))
 
         details = run.trace[0].details
-        assert details["query"] == f"Word:neko nid:{note.id}"
+        assert details["query"] == f"(Word:neko) nid:{note.id}"
         assert details["found"] == 1
+
+    def test_a_search_condition_on_a_note_not_added_yet_says_how_it_was_judged(self, col):
+        # `nid:0` would find nothing, so the search is answered without the collection, and
+        # the trace says so rather than showing a search nobody ran.
+        definition = d.staged(stages=[
+            d.condition(
+                d.text("Word:{{trigger.Word}}"),
+                [d.variable("M", d.text("matched"))],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+            ),
+        ])
+        unsaved = col.new_note(col.models.by_name(VOCAB))
+        unsaved["Word"] = "neko"
+        run = run_preview(definition, unsaved, deck_id=col.decks.id("JP vocab"))
+
+        details = run.trace[0].details
+        assert details["query"] == "(Word:neko)"
+        assert details["found"] == 1
+        assert "without the collection" in details["judged"]
 
     def test_a_file_write_records_the_name_it_would_write(self, col, note, media_dir):
         definition = d.staged(stages=[d.write_file("out.txt", d.text("body"))])
@@ -216,7 +239,7 @@ class TestTrace:
         assert "Nope" in (run.trace[1].error or "")
 
     def test_a_called_definitions_stages_are_children_of_the_call(self, col, note):
-        callee = d.staged(stages=[d.variable("H", d.text("hi"))])
+        callee = d.staged("callee", stages=[d.variable("H", d.text("hi"))])
         definition = d.staged(stages=[d.call_definition(callee["guid"])])
         run = run_preview(definition, preview_note(note.id), definitions_for_calls=[callee])
 

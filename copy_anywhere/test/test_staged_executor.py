@@ -508,6 +508,33 @@ class TestASearchConditionThatDoesNotMatch:
         assert [n.id for n in copied] == [keep.id]
         assert col.get_note(drop.id)["Note"] == ""
 
+    def test_a_skip_after_a_trigger_edit_leaves_the_trigger_as_it_was(self, note, logger):
+        # The migrator's marker, but not as the outermost stage: the skip discards what the
+        # stage before it queued, and the trigger note object -- the one an editor or the
+        # Add dialog would go on to save -- gets its fields and tags back as well.
+        note.tags = ["kept"]
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.text("written"))],
+                tags={"add": ["tagged"], "remove": ["kept"]},
+            ),
+            d.condition(
+                d.text("tag:nothing-has-this"),
+                [],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+                unmatched_skips_trigger=True,
+            ),
+        ])
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert copied == []
+        assert note["Note"] == ""
+        assert note["Meaning"] == "cat"
+        assert note.tags == ["kept"]
+
 
 class TestASearchConditionsPredicate:
     """What resolves a predicate matched as an Anki search.
@@ -571,9 +598,9 @@ class TestASearchConditionsPredicate:
         assert logger.has_error("nowhere")
 
     def test_a_predicate_that_resolves_to_nothing_is_refused(self, col):
-        # The guard that must survive any rewrite: an empty query reaches
-        # `find_notes(" nid:<id>")`, which matches the trigger whatever it says, so every
-        # condition would read as true.
+        # The guard that must survive any rewrite: before the search was parenthesised, an
+        # empty query reached `find_notes(" nid:<id>")`, which matches the trigger whatever
+        # it says, so every condition read as true.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": ""})
 
         ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
@@ -587,6 +614,29 @@ class TestASearchConditionsPredicate:
         ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
 
         assert ok is False
+
+    def test_an_or_in_the_predicate_stays_scoped_to_the_trigger(self, col, logger):
+        # Anki binds `OR` looser than the implicit AND, so `tag:tag_a OR tag:tag_b nid:<id>`
+        # is `tag:tag_a OR (tag:tag_b nid:<id>)`: it found the other note, and the branch
+        # ran for a trigger that carries neither tag.
+        other = real_anki.add_note(col, VOCAB, {"Word": "other"})
+        col.tags.bulk_add([other.id], "tag_a")
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("tag:tag_a OR tag:tag_b")]), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == ""
+
+    def test_either_half_of_an_or_still_matches_the_trigger(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        col.tags.bulk_add([note.id], "tag_b")
+        note.load()
+
+        ok, _copied = run(d.staged(stages=[self.gate("tag:tag_a OR tag:tag_b")]), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "matched"
 
     def test_a_migrated_predicate_still_reads_the_note_the_old_way(self, col):
         # The path this must not disturb: a migrated copy condition carries
@@ -615,10 +665,11 @@ class TestASearchConditionsPredicate:
         assert copied == []
 
     def test_a_migrated_predicate_resolving_to_whitespace_is_refused(self, col, logger):
-        # `find_notes("  nid:<id>")` matches the note, so a migrated condition that is one
-        # reference to a field holding a space read true and ran the copy. It is as empty as
-        # a field holding nothing, and it is refused. Migration names the note the reference
-        # meant, so the refusal is the one message every predicate gets (§11).
+        # Unparenthesised, `find_notes("  nid:<id>")` matched the note, so a migrated
+        # condition that is one reference to a field holding a space read true and ran the
+        # copy. It is as empty as a field holding nothing, and it is refused. Migration names
+        # the note the reference meant, so the refusal is the one message every predicate
+        # gets (§11).
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "   "})
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Meaning", "ran")],
@@ -1200,6 +1251,68 @@ class TestFiles:
         assert logger.has_error("not valid UTF-8")
 
 
+class TestTheFileAReadLooksFor:
+    """A read looks for the name with a leading `_`, and its messages say so.
+
+    The prefix is intended (SPEC decision 7): CopyAnywhere's files are text files no note
+    field refers to, and the `_` is what keeps Anki's Check Media from deleting them as
+    unused. A `dictionary.txt` put in the media folder by hand is not the file a stage
+    reading "dictionary.txt" reads. The error used to name the file as typed, so the user
+    was told "File 'dictionary.txt' does not exist" while looking straight at it.
+    """
+
+    def reading(self, filename, **kwargs):
+        return d.staged(stages=[
+            d.read_file("content", filename, **kwargs),
+            d.edit_note("trigger", [d.write("Note", d.text("[{{content}}]"))]),
+        ])
+
+    def test_a_plain_name_reads_the_underscored_file(self, col, note, media_dir, logger):
+        (media_dir / "dictionary.txt").write_text("the user's", encoding="utf-8")
+        (media_dir / "_dictionary.txt").write_text("owned", encoding="utf-8")
+
+        ok, _ = run(self.reading("dictionary.txt"), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "[owned]"
+
+    def test_the_missing_file_error_names_the_file_looked_for(
+        self, col, note, media_dir, logger
+    ):
+        (media_dir / "dictionary.txt").write_text("the user's", encoding="utf-8")
+
+        ok, _ = run(self.reading("dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_dictionary.txt' does not exist"), logger.errors
+
+    def test_a_name_that_already_has_the_underscore_is_named_as_it_is(
+        self, col, note, media_dir, logger
+    ):
+        ok, _ = run(self.reading("_dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_dictionary.txt' does not exist"), logger.errors
+
+    def test_the_utf8_error_names_the_file_read(self, col, note, media_dir, logger):
+        (media_dir / "_log.txt").write_bytes(b"\xff\xfe not utf 8")
+
+        ok, _ = run(self.reading("log.txt"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_log.txt' is not valid UTF-8"), logger.errors
+
+    def test_an_invalid_name_is_still_refused_as_typed(self, col, note, media_dir, logger):
+        # Normalizing is what refuses it, so the message is the refusal, naming what was
+        # typed -- there is no file that was looked for.
+        ok, _ = run(self.reading("sub/dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error(
+            "Filename 'sub/dictionary.txt' must not contain a path separator"
+        ), logger.errors
+
+
 class TestCalls:
     def child(self, guid="child-guid"):
         producer = d.variable("H1", d.text("from {{trigger.Word}}"))
@@ -1460,6 +1573,64 @@ class TestCalls:
         assert ok is False
         assert logger.has_error("call cycle")
 
+    @pytest.fixture
+    def nested_runs(self, monkeypatch):
+        """The (guid, depth) of every called definition that started running.
+
+        `_run_call` reaches `execute_definition` through the evaluator module, so patching
+        it there sees every callee; the root run is entered through the runner's own import
+        and is not recorded.
+        """
+        from copy_anywhere.logic.execution import evaluator
+
+        seen: list = []
+        real = evaluator.execute_definition
+
+        def spy(frame, parent_event=None):
+            seen.append((frame.definition["guid"], frame.depth))
+            return real(frame, parent_event)
+
+        monkeypatch.setattr(evaluator, "execute_definition", spy)
+        return seen
+
+    def test_a_definition_calling_itself_is_refused_before_it_runs_again(
+        self, col, note, logger, nested_runs
+    ):
+        # The root used not to be on the call stack, so the check only fired once the
+        # definition had run a second time as its own callee.
+        a = d.staged("a", guid="a", stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("x"))]),
+            d.call_definition("a"),
+        ])
+        ok, copied = run(a, note, definitions_for_calls=[a])
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("call cycle: a -> a")
+        assert nested_runs == []
+
+    def test_a_cycle_back_to_the_root_is_named_from_the_root(
+        self, col, note, logger, nested_runs
+    ):
+        a = d.staged("a", guid="a", stages=[d.call_definition("b")])
+        b = d.staged("b", guid="b", stages=[d.call_definition("a")])
+        ok, _copied = run(a, note, definitions_for_calls=[a, b])
+        assert ok is False
+        assert logger.has_error("call cycle: a -> b -> a")
+        assert nested_runs == [("b", 1)]
+
+    @pytest.mark.parametrize("calls_itself", [False, True])
+    def test_the_root_leaves_the_call_stack_when_its_run_ends(self, col, note, calls_itself):
+        stages = [d.edit_note("trigger", [d.write("Note", d.text("x"))])]
+        if calls_itself:
+            stages.append(d.call_definition("a"))
+        a = d.staged("a", guid="a", stages=stages)
+        session = ExecutionSession(definition_lookup={"a": a}.get)
+
+        ok = run_definition_for_trigger_note(a, note, session)
+
+        assert ok is not calls_itself
+        assert session.call_stack == []
+
 
 
     def test_a_callee_skipped_by_its_copy_condition_fails_its_caller(
@@ -1615,6 +1786,105 @@ class TestFacades:
         assert [n["Word"] for n in copied] == ["a"]
 
 
+class TestCodeModesCardsAreTheCardsOfItsNote:
+    """Code mode's `cards` is the cards of whatever `note` means where the code runs.
+
+    Outside a loop that is the expression's own note, the trigger. Inside a loop that binds
+    `note` it is the loop's note, as `note` is: `cards` used to stay the trigger's there, so
+    `len(cards)` in a loop over other notes answered the trigger's count every time round.
+    The trigger here has two cards and every other note one, so the two cannot be mistaken.
+    """
+
+    @pytest.fixture
+    def kanji(self, col):
+        return [
+            real_anki.add_note(col, KANJI, {"Kanji": k, "Keyword": "found"}) for k in "ab"
+        ]
+
+    def test_outside_a_loop_they_are_the_triggers_cards(self, note, logger):
+        definition = d.staged(stages=[
+            d.variable("seen", d.code("return f'{cards[0].nid}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == f"{note.id}:2"
+
+    def test_in_a_loop_over_notes_they_are_the_loop_notes_cards(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.note_query("found", "Keyword:found"),
+            d.list_variable("seen"),
+            d.for_each_note(
+                "found", [d.store("seen", d.code("return f'{cards[0].nid}:{len(cards)}'"))]
+            ),
+            d.join("seen", "joined"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert sorted(note["Note"].split(", ")) == sorted(f"{k.id}:1" for k in kanji)
+
+    def test_in_a_card_loop_they_are_the_cards_of_the_cards_note(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.card_query("found", f"nid:{kanji[0].id}"),
+            d.for_each_card(
+                "found",
+                [d.edit_note("trigger", [d.write("Note", d.code("return str(len(cards))"))])],
+            ),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "1"
+
+    def test_a_binding_called_note_that_is_not_a_note_leaves_them_the_triggers(
+        self, note, logger
+    ):
+        # A text named `note` says nothing about which cards are meant, so `cards` keeps
+        # meaning the expression's own note's rather than becoming empty.
+        definition = d.staged(stages=[
+            d.variable("note", d.text("just text")),
+            d.variable("seen", d.code("return f'{note}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "just text:2"
+
+    def test_a_binding_called_cards_is_what_the_code_gets(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.card_query("cards", f"nid:{kanji[0].id}"),
+            d.variable("seen", d.code("return f'{cards[0].nid}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == f"{kanji[0].id}:1"
+
+    def test_a_card_action_an_earlier_stage_queued_is_visible_through_them(
+        self, note, logger
+    ):
+        # Nothing is saved until the run commits, so the flag can only come from the working
+        # card the earlier stage edited, not from a fresh read of the collection.
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=3)]
+            ),
+            d.variable(
+                "seen",
+                d.code("return ','.join(f'{c.template_name}={c.flag}' for c in cards)"),
+            ),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "Recognition=3,Recall=0"
+
+    def test_they_can_be_sliced_and_returned_as_a_card_list(self, note, logger):
+        definition = d.staged(stages=[
+            d.variable("first", d.code("return cards[:1]")),
+            d.for_each_card(
+                "first",
+                [d.edit_note("trigger", [d.write("Note", d.text("{{card.template_name}}"))])],
+            ),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "Recognition"
+
+
 class TestPreview:
     def test_preview_computes_the_same_values_and_persists_nothing(
         self, col, note, media_dir, logger
@@ -1698,6 +1968,25 @@ class TestCancellation:
         assert ok is True
         assert searches == []
         assert copied == []
+
+    def test_a_cancel_after_a_trigger_edit_leaves_the_trigger_as_it_was(self, col, note):
+        note.tags = ["kept"]
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.text("touched"))],
+                tags={"add": ["tagged"], "remove": ["kept"]},
+            ),
+            d.note_query("found", "Word:neko"),
+        ])
+        session = ExecutionSession(want_cancel=lambda: True)
+        copied: list = []
+        ok = run_definition_for_trigger_note(definition, note, session, copied_into_notes=copied)
+
+        assert ok is True
+        assert copied == []
+        assert note["Note"] == ""
+        assert note.tags == ["kept"]
 
 
 class TestAddNoteCompatibility:

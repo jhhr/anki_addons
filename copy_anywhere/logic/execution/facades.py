@@ -330,6 +330,37 @@ class CardListFacade(_ListFacade):
     _member = CardFacade
 
 
+class NoteCardsFacade(CardListFacade):
+    """One note's working cards, fetched the first time something reads them.
+
+    This is code mode's `cards`. Most code never reads it, and building it is a query -- in a
+    loop, one per iteration -- so nothing is fetched until the code asks for its length, an
+    item or an iteration, and the list is then kept for the rest of that evaluation.
+    """
+
+    __slots__ = ("_note",)
+
+    def __init__(self, note: Note, session: ExecutionSession) -> None:
+        object.__setattr__(self, "_items", None)
+        object.__setattr__(self, "_session", session)
+        object.__setattr__(self, "_note", note)
+
+    def _raw_items(self) -> list:
+        items = object.__getattribute__(self, "_items")
+        if items is None:
+            session = object.__getattribute__(self, "_session")
+            items = list(session.cards_of_note(object.__getattribute__(self, "_note")))
+            object.__setattr__(self, "_items", items)
+        return items
+
+    def __getitem__(self, index: Union[int, slice]):
+        if isinstance(index, slice):
+            # A slice is a list already in hand, not a note to fetch.
+            session = object.__getattribute__(self, "_session")
+            return CardListFacade(self._raw_items()[index], session)
+        return super().__getitem__(index)
+
+
 def to_facade(value: Any, session: ExecutionSession) -> Any:
     """Wrap notes, cards and lists of them; leave anything else alone."""
     if isinstance(value, Note):
@@ -356,7 +387,7 @@ def from_facade(value: Any) -> Any:
     if isinstance(value, CardFacade):
         return object.__getattribute__(value, "_card")
     if isinstance(value, (NoteListFacade, CardListFacade)):
-        return list(object.__getattribute__(value, "_items"))
+        return list(value._raw_items())
     if isinstance(value, (list, tuple)):
         unwrapped = [from_facade(item) for item in value]
         kinds = {type(item) for item in unwrapped}

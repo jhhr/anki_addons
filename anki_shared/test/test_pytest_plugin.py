@@ -7,17 +7,28 @@ status, which every real-Anki run in this repo already is.
 
 from types import SimpleNamespace
 
+import pytest
+
 from anki_shared.testing.pytest_plugin import (
     DEFAULT_XDIST_DISTRIBUTION,
     choose_xdist_distribution,
 )
 
 
-def config(numprocesses=None, dist="no", args=()):
+def config(numprocesses=None, dist="no", args=(), addopts=()):
     return SimpleNamespace(
         option=SimpleNamespace(numprocesses=numprocesses, dist=dist),
         invocation_params=SimpleNamespace(args=tuple(args)),
+        # `getini("addopts")` is already split into a list, the way pytest returns it.
+        getini=lambda name: list(addopts) if name == "addopts" else [],
     )
+
+
+@pytest.fixture(autouse=True)
+def no_addopts_from_the_environment(monkeypatch):
+    # The function reads `PYTEST_ADDOPTS` itself, so one set for the run that is testing it
+    # would change every answer below.
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
 
 
 def test_a_parallel_run_is_distributed_by_file():
@@ -56,6 +67,38 @@ def test_a_distribution_that_is_not_the_default_is_left_alone():
 
     assert choose_xdist_distribution(cfg) is False
     assert cfg.option.dist == "loadscope"
+
+
+# `addopts` and `PYTEST_ADDOPTS` reach `config.option.dist` like the command line does, but
+# not `invocation_params.args`, so each of these used to be moved to `loadfile` regardless.
+
+
+@pytest.mark.parametrize(
+    "addopts",
+    [("--dist", "load"), ("--dist=load",), ("-d",), ("-n", "4", "--dist", "load")],
+)
+def test_an_explicit_distribution_in_ini_addopts_wins(addopts):
+    cfg = config(numprocesses=4, dist="load", args=("-n", "4"), addopts=addopts)
+
+    assert choose_xdist_distribution(cfg) is False
+    assert cfg.option.dist == "load"
+
+
+@pytest.mark.parametrize("value", ["--dist load", "--dist=load", "-d", "-n 4 --dist load"])
+def test_an_explicit_distribution_in_pytest_addopts_wins(monkeypatch, value):
+    monkeypatch.setenv("PYTEST_ADDOPTS", value)
+    cfg = config(numprocesses=4, dist="load", args=("-n", "4"))
+
+    assert choose_xdist_distribution(cfg) is False
+    assert cfg.option.dist == "load"
+
+
+def test_addopts_without_a_distribution_still_get_the_default(monkeypatch):
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q -p no:cacheprovider")
+    cfg = config(numprocesses=4, dist="load", args=(), addopts=("-n", "4", "-ra"))
+
+    assert choose_xdist_distribution(cfg) is True
+    assert cfg.option.dist == DEFAULT_XDIST_DISTRIBUTION
 
 
 class TestTheGuardWhenPyQtsHandlerCannotBeFound:

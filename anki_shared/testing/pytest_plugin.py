@@ -62,6 +62,7 @@ import atexit
 import gc
 import logging
 import os
+import shlex
 import sys
 import types
 from typing import Any, Optional
@@ -97,14 +98,20 @@ def choose_xdist_distribution(config: Any) -> bool:
     file on one worker is enough to avoid it, and costs nothing here: the suites are spread
     over enough files to keep four workers busy either way.
 
-    Only the default is moved. `--dist` on the command line is the user saying what they
-    want, including `--dist load` to see the crash.
+    Only the default is moved: an explicit `--dist` (or `-d`) is left alone, whether it is
+    on the command line, in an ini file's `addopts` or in `PYTEST_ADDOPTS`. Each is the user
+    saying what they want, including `--dist load` to see the crash.
     """
     if not getattr(config.option, "numprocesses", None):
         return False
     if getattr(config.option, "dist", "no") != "load":
         return False
-    args = getattr(getattr(config, "invocation_params", None), "args", ())
+    args = list(getattr(getattr(config, "invocation_params", None), "args", ()))
+    # pytest parses `addopts` and `PYTEST_ADDOPTS` along with the command line, but
+    # `invocation_params.args` holds only what was typed, so a `--dist` written there looked
+    # like no choice at all and was overridden.
+    args += config.getini("addopts")
+    args += shlex.split(os.environ.get("PYTEST_ADDOPTS", ""))
     if any(arg == "-d" or arg == "--dist" or arg.startswith("--dist=") for arg in args):
         return False
     config.option.dist = DEFAULT_XDIST_DISTRIBUTION
