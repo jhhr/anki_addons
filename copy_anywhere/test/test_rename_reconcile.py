@@ -1114,6 +1114,7 @@ class TestTheWarningAfterAFieldsSave:
         assert len(warnings) == 1
         assert "both &lt;&amp;&gt;" in warnings[0]
         assert "no longer present on both note types" in warnings[0]
+        assert "not run until that is fixed" in warnings[0]
 
     def test_a_deck_operation_does_not(self, marked, warnings):
         # Answering a card reports a deck change; a dialog per answer is not a warning.

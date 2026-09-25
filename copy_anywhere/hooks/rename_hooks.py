@@ -85,7 +85,9 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
 
     One line per marked field, under the definition's name, so the user sees which of the
     three ways out -- rename the field in the other note types too, undo the rename, or
-    rework the definition -- fits each one.
+    rework the definition -- fits each one. It says the definitions are not run meanwhile
+    (`copy_fields.copy_for_single_trigger_note`), since this dialog is where the user
+    learns that.
     """
     if not result.broken:
         return None
@@ -94,12 +96,13 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     ]
     return (
         "These copy definitions trigger on several note types and spell a field that is"
-        " not on all of them any more, so the field rename was not followed into them:"
+        " not on all of them any more, so the field rename was not followed into them"
+        " and they are not run until that is fixed:"
         "<br><br>"
         + "<br>".join(lines)
         + "<br><br>Rename the field in the other note types too, undo the rename, or edit"
-        " the definition. A definition is updated by itself once its note types agree"
-        " again."
+        " the definition. A definition is updated by itself, and runs again, once its note"
+        " types agree again."
     )
 
 
