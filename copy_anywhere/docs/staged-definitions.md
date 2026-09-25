@@ -85,6 +85,20 @@ lists from the saved collection) and `get_note`, `get_card` (ids to facades). As
 through a facade raises: every change goes through a stage, which is what keeps it visible
 to the preview and the commit.
 
+Every binding in scope is a name in the code. Besides them, `note` is the stage's own note
+-- the note an `edit_note` writes, as the stage started; the trigger for every other stage
+-- unless a binding is called `note`, as a loop's item is, which then wins. `cards` is the
+cards of whichever note `note` turned out to be, so inside a loop over notes it is the loop
+note's; a binding called `note` that holds no note leaves it the stage's note's, and a
+binding called `cards` wins. They are fetched only if the code reads them, once per
+evaluation. `destination` is the note an `edit_note` writes, as the stage started, and the
+trigger everywhere else, a `write_file` included.
+
+A card action's code is older and runs apart from all this, exactly as format 1 ran it:
+`note` is a view of the note the stage writes offering only `note[field]` and `keys()`,
+`cards` that note's cards read from the collection, and no bindings, no `destination`, no
+`get_note`, and no `{{...}}` substitution.
+
 ## Stage types
 
 | type | what it does |
@@ -124,9 +138,33 @@ outer list plus `store` is how a loop reports anything back.
   write that fails (a full disk, a read-only folder) fails the run and names the file: the
   note and card changes are kept, the files queued before it are on disk, and it and the
   files queued after it are not written.
+* **A run that commits nothing leaves the trigger note as it was.** The trigger is the one
+  note the run edits in place: it is the caller's own object, and the Add dialog and the
+  editor save that object whatever the run's result. So a run that fails, is cancelled, is
+  skipped by a copy condition or is refused by the add-note backstop puts the trigger's
+  fields and tags back to what they were when this definition started; an earlier
+  definition's writes to it stay. A run that commits never restores, the media failure above
+  included.
+* **Only edited cards are handed over, and a later trigger note's edit wins.** A run hands
+  its caller the notes it wrote and the cards a card action changed; a card it only looked
+  at, or whose note it wrote, is not handed over. A bulk run saves those once per
+  definition, after every trigger note has run, and each trigger note starts from the saved
+  note, so when two trigger notes of one run write the same note, or edit the same card, the
+  later one's copy replaces the earlier one's and the earlier edit is lost, as in format 1.
+  A trigger note that writes a note but leaves its card alone does not undo another one's
+  edit of that card. The bulk-run test in `follow-ups.md` would point such definitions out.
+* **Counts are what a trigger note committed.** The destinations and cards a run reports
+  are the distinct notes and cards it handed over for that trigger note, so a note two
+  stages wrote counts once and a card three actions changed counts once. Across trigger
+  notes they add up, as format 1 counted: a note two trigger notes wrote counts twice.
 * **Files are UTF-8, no BOM, no newline translation**, and a filename resolves inside the
   media folder -- a path separator or a `..` segment is refused. There is no append mode:
   `read_file`, build the new content, `write_file` with `overwrite: true`.
+* **Every file name starts with `_`.** Reading and writing both add one to a name that has
+  none -- a stage's filename and each name file code returns -- and a missing-file error
+  names the file actually looked for. CopyAnywhere's files are text files no note field
+  refers to, so the prefix is what keeps Anki's unused-media check from deleting them; a
+  file without it is not one CopyAnywhere reads or writes. Both file stage editors say so.
 * **A file this run has queued counts as already there.** Both `skip_if_exists` and
   `overwrite: false` ask about the pending write as well as the media folder, so a second
   stage naming a file an earlier one wrote skips or refuses rather than replacing it. Asking
@@ -135,8 +173,11 @@ outer list plus `store` is how a loop reports anything back.
 * **A called definition is isolated.** It gets its trigger note and nothing else of the
   caller's -- no variables, no lists, no loop bindings. It shares the working notes, cards
   and files, and returns only what it declares in `exports`. Call cycles are refused, and a
-  chain deeper than 32 is refused whatever the guids say. A disabled call stage, or one under
-  a disabled stage, does not close a cycle: disabling the call is how a user breaks one.
+  chain deeper than 32 is refused whatever the guids say. The definition the run started
+  with is on the call stack too, so one that calls itself is refused before it runs a
+  second time, and the message names the cycle from that definition: `call cycle: a -> b ->
+  a`, by guid. A disabled call stage, or one under a disabled stage, does not close a
+  cycle: disabling the call is how a user breaks one.
 * **`skip_block` names the block the stage is in.** In a loop body it ends that iteration
   and the loop carries on; in a `then` or `else` branch it ends the branch and the stage
   after the condition runs; at the root it ends the definition, and what ran before it still
@@ -157,6 +198,27 @@ outer list plus `store` is how a loop reports anything back.
   exports from itself on, exactly as the two `skip_block` policies do -- and unlike them it
   is not scoped to its block: marked inside a loop body or a branch it still ends the whole
   definition, so the root stage that holds it is the one exports are refused from.
+* **A search condition is asked of one note, as a whole.** For a saved note it is
+  `find_notes(f"({search}) nid:{id}")`, through the session's cache, and like any query it
+  reads the saved collection, not this run's pending edits. The parentheses matter: Anki
+  binds `OR` looser than the implicit AND, so without them `a OR b` matched whenever `a`
+  found any note at all. An empty search fails the stage, naming the condition.
+* **A search condition on a note being added is judged against that note.** It has id 0
+  and no row, so `nid:0` would never find it. `logic/unsaved_note_search.py`, a port of
+  Anki 25.9's search parser and SQL writer checked against real searches, judges the same
+  parenthesised text against the note as it stands -- its fields, tags and note type,
+  including this run's earlier writes -- and `deck:` against the deck it is being added to,
+  subdecks included as Anki does. A term whose answer needs what the note does not have yet
+  fails the definition with a message naming the term: anything about cards, reviews, ids
+  or collection state (`is:`, `card:`, `flag:`, `prop:`, `rated:`, `added:`, `nid:`,
+  `cid:`, `dupe:`, `preset:` and the rest), the regex and accent forms (`re:`, `nc:`, `w:`,
+  `sc:`, `field:re:`, `tag:re:`), `deck:current` and `deck:filtered`, any other `deck:`
+  but `deck:*` when the caller handed over no deck, the deck is filtered, or the note type
+  sends some cards to a deck of its own, and `tag:` when one of the note's tags is one Anki
+  would rewrite on save. A term refused for its key or form is refused even where the rest
+  of the search would already decide; a search Anki itself would refuse fails the same
+  way. The editor warns about a term it can see in the literal text of a trigger's search
+  condition, in a definition that runs for the note being added.
 * **A stage that only feeds one migrated field write shares its gates.** Migrating
   Destination-to-sources moves each write's per-source read in front of it, into a list, a
   loop and a reduce, and that is where the work is -- the code or the process chain runs once
@@ -230,6 +292,12 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   is selected once. `select_card_by: None` becomes `first` and follows search order rather
   than the reverse of the card search.
 * `Least_reps` is gone; it migrates to `random` and the migrator says so.
+* In Source-to-destinations code, `note` and `cards` are the destination's rather than the
+  trigger's (see *What migration does to a format-1 expression* below).
+* A copy condition is judged against a note being added. Format 1 searched `nid:0`, which
+  never found it, so such a definition was skipped on add (unless an unscoped `OR` found
+  some other note); it now runs when the condition matches, or fails naming the term it
+  cannot judge.
 * File writes no longer translate newlines on Windows.
 * A definition with no copy mode is reported rather than raising out of the whole operation.
 * Trigger filtering runs before any stage, so a note the deck whitelist rejects no longer
@@ -262,9 +330,14 @@ migrated expression is shown, edited and judged exactly as an authored one: the 
 menu offers the stage's scope, and what the menu offers is what is already in the box.
 Code is rewritten the same way, but only its `{{...}}` references: the code itself then
 runs as format-2 code does, with every binding in scope under its own name, `note` meaning
-the stage's note or the loop's, and read-only facades where format 1 handed it the note
-object. Code that reached for a note by some other means, or wrote through one, is yours to
-check by hand. A config an earlier version already staged is rewritten in place by the
+the stage's note or the loop's, `cards` that note's cards, and the facades where format 1
+had views of its own with other card properties. In Source-to-destinations the edits sit
+in a loop whose item is `note`, so field and file code that read the trigger as `note` now
+reads the destination; Destination-to-sources loops over the sources under that name, which
+is the note format 1 gave its code there. Code that reached for a note by `note`, or by any
+other means, is yours to check by hand; the README's section for an AI agent lists what
+every name means in each migrated shape. Card-action code is not affected: it runs as
+format 1 ran it. A config an earlier version already staged is rewritten in place by the
 `0.4.0` config migration.
 
 **What a migrated field write keeps.** Format 1 asked three questions per field write that
@@ -343,14 +416,16 @@ run, then the exports.
   under the stage list with the path of the stage each one belongs to. Warnings (several
   trigger note types, file writes outside undo) do not block a save.
 * The same panel says whether the definition can run while a note is being added, which is
-  the flag stored in `effects` and the one the add hook checks, and it has up to two amber
-  notes to go with it. One is about what is *impossible*: a card action on the note being
+  the flag stored in `effects` and the one the add hook checks, and it has amber notes to
+  go with it. One is about what is *impossible*: a card action on the note being
   added has no card to reach, so it will not run for that note and nothing runs it later --
-  the stage is named. The other is about what is *forbidden*: an edit to another note, to a
-  card that already exists, or to a file would outlive a cancelled add, so that work
-  happens after the add rather than as part of it (or, for an unfocus-only trigger, not at
-  all), and the stages responsible are listed after "Because of". They are independent: a
-  definition can earn both, one, or neither, and neither of them blocks the save.
+  the stage is named. One is about what is *unanswerable*: a trigger search condition using
+  a term the note being added cannot answer, one note per condition, naming the term, for a
+  definition that runs for that note. The last is about what is *forbidden*: an edit to
+  another note, to a card that already exists, or to a file would outlive a cancelled add,
+  so that work happens after the add rather than as part of it (or, for an unfocus-only
+  trigger, not at all), and the stages responsible are listed after "Because of". They are
+  independent: a definition can earn any of them or none, and none of them blocks the save.
 
 ## The preview
 
