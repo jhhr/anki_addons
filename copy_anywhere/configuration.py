@@ -838,14 +838,23 @@ class Config:
         The snapshot records which collection it was taken of, so a save made in one profile
         cannot be read as a rename in the next: this config is shared by all of them, and the
         ids in it are not.
+
+        A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is re-checked here
+        too, so the editor save that reworks it clears the mark then rather than at the next
+        note type operation.
         """
         from .logic.flow_analysis import refresh_effects
-        from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot
+        from .logic.rename_reconcile import (
+            SNAPSHOT_KEY,
+            build_name_snapshot,
+            refresh_all_breakage,
+        )
 
         definitions = self.data["copy_definitions"] or []
         refresh_effects(definitions)
         if mw.col is not None:
             self.data[SNAPSHOT_KEY] = build_name_snapshot(definitions, mw.col)
+            refresh_all_breakage(definitions, mw.col)
         self.save()
 
     def add_definition(self, definition: CopyDefinition):

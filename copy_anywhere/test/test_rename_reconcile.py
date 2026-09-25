@@ -13,6 +13,7 @@ definition's field slots and its `{{trigger....}}` tokens, and everything it wil
 rewrite -- a search term, code, a deleted field -- is reported instead.
 """
 
+import copy
 import shutil
 from contextlib import contextmanager
 
@@ -25,6 +26,7 @@ from conftest import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
 from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
 from copy_anywhere.logic.rename_reconcile import (
+    BROKEN_KEY,
     SNAPSHOT_KEY,
     definitions_hold_references,
     reconcile,
@@ -590,6 +592,239 @@ class TestACardTypeOfTheTriggerNoteTypeIsRenamed:
         reconcile(config, mw.col)
 
         assert action["card_type"]["name"] == f"{VOCAB}<::>Reading card"
+
+
+class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
+    """A definition triggering on several note types spells a field once for all of them.
+
+    Renaming it in one of them breaks the definition whatever it spells: the old name is
+    gone from the renamed note type, the new one was never on the others. So the pass
+    leaves it as it is and marks it, and follows the rename only once every trigger note
+    type has the new name -- which is where renaming the others too, undoing the rename,
+    or reworking the definition all end up.
+    """
+
+    OTHER = "CA Vocab B"
+
+    @pytest.fixture
+    def other(self, col):
+        real_anki.make_note_type(
+            col, self.OTHER, ["Word", "Meaning"], [("Card 1", "{{Word}}", "{{Meaning}}")]
+        )
+        return self.OTHER
+
+    def definition(self, *note_types):
+        return d.staged(
+            definition_name="both",
+            note_types=list(note_types),
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
+            ],
+            on_unfocus={"edit_fields": ["Word"], "add_fields": []},
+        )
+
+    def spelled(self, definition):
+        return (
+            definition["stages"][0]["fields"][0]["value"]["text"],
+            definition["triggers"]["on_unfocus"]["edit_fields"],
+        )
+
+    @pytest.fixture
+    def marked(self, col, config, other):
+        definition = self.definition(VOCAB, other)
+        store(config, definition)
+        reconcile(config, mw.col)
+        rename_field(col, VOCAB, "Word", "Term")
+        return definition, reconcile(config, mw.col)
+
+    def test_a_rename_in_one_of_them_is_not_followed(self, marked):
+        definition, result = marked
+
+        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
+        assert result.rewritten == []
+
+    def test_the_definition_is_marked_with_why(self, marked, stub_mw):
+        definition, result = marked
+        message = f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
+
+        assert definition[BROKEN_KEY] == [{"field": "Word", "message": message}]
+        assert [(stale.name, stale.message) for stale in result.broken] == [("Word", message)]
+        stored = stub_mw.addonManager.configs[ADDON_TAG]["copy_definitions"][0]
+        assert stored[BROKEN_KEY] == definition[BROKEN_KEY]
+
+    def test_a_later_pass_still_reports_it(self, marked, config):
+        definition, _ = marked
+
+        result = reconcile(config, mw.col)
+
+        assert [stale.name for stale in result.broken] == ["Word"]
+        assert result.changed is False
+
+    def test_renaming_the_others_too_follows_it_and_clears_the_mark(self, col, marked, config):
+        definition, _ = marked
+
+        rename_field(col, self.OTHER, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
+        assert BROKEN_KEY not in definition
+        assert result.broken == []
+
+    def test_undoing_the_rename_clears_the_mark(self, col, marked, config):
+        definition, _ = marked
+
+        rename_field(col, VOCAB, "Term", "Word")
+        result = reconcile(config, mw.col)
+
+        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
+        assert BROKEN_KEY not in definition
+        assert result.broken == []
+
+    def test_saving_a_reworked_definition_clears_the_mark(self, col, marked, config):
+        definition, _ = marked
+        reworked = copy.deepcopy(definition)
+        reworked["triggers"]["note_types"] = [d.object_ref(self.OTHER)]
+
+        config.update_definition_by_index(0, reworked)
+
+        assert BROKEN_KEY not in config.copy_definitions[0]
+
+    def test_saving_it_unchanged_keeps_the_mark(self, marked, config):
+        definition, _ = marked
+
+        config.update_definition_by_index(0, copy.deepcopy(definition))
+
+        assert [entry["field"] for entry in config.copy_definitions[0][BROKEN_KEY]] == ["Word"]
+
+    def test_the_same_rename_in_all_of_them_at_once_is_followed(self, col, config, other):
+        definition = self.definition(VOCAB, other)
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        rename_field(col, other, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
+        assert BROKEN_KEY not in definition and result.broken == []
+
+    def test_opposite_renames_in_one_pass_rewrite_nothing(self, col, config, other):
+        model = col.models.by_name(other)
+        model["flds"][0]["name"] = "Term"
+        col.models.update_dict(model)
+        definition = d.staged(
+            definition_name="both",
+            note_types=[VOCAB, other],
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Meaning", d.text("{{trigger.Word}}|{{trigger.Term}}"))],
+                )
+            ],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        rename_field(col, other, "Term", "Word")
+        result = reconcile(config, mw.col)
+
+        text = definition["stages"][0]["fields"][0]["value"]["text"]
+        assert text == "{{trigger.Word}}|{{trigger.Term}}"
+        assert sorted(stale.name for stale in result.broken) == ["Term", "Word"]
+
+    def test_a_field_the_definition_does_not_spell_marks_nothing(self, col, config, other):
+        definition = self.definition(VOCAB, other)
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Reading", "Kana")
+        result = reconcile(config, mw.col)
+
+        assert BROKEN_KEY not in definition and result.broken == []
+
+    def test_a_single_trigger_note_type_is_followed_as_before(self, col, config):
+        definition = self.definition(VOCAB)
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        reconcile(config, mw.col)
+
+        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
+        assert BROKEN_KEY not in definition
+
+    def test_three_note_types_are_named_in_the_message(self, col, config, other):
+        definition = self.definition(VOCAB, other, KANJI)
+        # KANJI has no 'Word'; give it one so the definition starts out whole.
+        model = col.models.by_name(KANJI)
+        col.models.add_field(model, col.models.new_field("Word"))
+        col.models.update_dict(model)
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_field(col, VOCAB, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert [stale.message for stale in result.broken] == [
+            f'Field "Word" is no longer present on all of the note types "{VOCAB}",'
+            f' "{self.OTHER}" & "{KANJI}"'
+        ]
+
+
+class TestTheWarningAfterAFieldsSave:
+    """A marked definition is said so in a dialog after a note type operation.
+
+    The log is not read at the default level, and the user who just saved the Fields
+    dialog is the one who can choose between the three ways out.
+    """
+
+    @pytest.fixture
+    def warnings(self, monkeypatch):
+        from copy_anywhere.hooks import rename_hooks
+
+        shown: list = []
+        monkeypatch.setattr(
+            rename_hooks, "showWarning", lambda text, **kwargs: shown.append(text)
+        )
+        return shown
+
+    @pytest.fixture
+    def marked(self, col, config):
+        real_anki.make_note_type(
+            col, "CA Vocab B", ["Word"], [("Card 1", "{{Word}}", "{{Word}}")]
+        )
+        definition = d.staged(
+            definition_name="both <&>",
+            note_types=[VOCAB, "CA Vocab B"],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
+            ],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+        rename_field(col, VOCAB, "Word", "Term")
+        return definition
+
+    def test_a_note_type_operation_shows_it(self, marked, warnings):
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert len(warnings) == 1
+        assert "both &lt;&amp;&gt;" in warnings[0]
+        assert "no longer present on both note types" in warnings[0]
+
+    def test_a_deck_operation_does_not(self, marked, warnings):
+        # Answering a card reports a deck change; a dialog per answer is not a warning.
+        on_operation_did_execute(FakeChanges(notetype=False, deck=True), None)
+
+        assert warnings == []
+
+    def test_nothing_marked_shows_nothing(self, col, config, warnings):
+        store(config, d.staged(note_types=[VOCAB]))
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert warnings == []
 
 
 class TestAnActionThatNamesNoCardType:

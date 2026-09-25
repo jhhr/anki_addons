@@ -234,7 +234,17 @@ and the everything-changed operation a sync ends with. It:
    field slots -- a field write on the trigger, the unfocus lists, each write's trigger
    fields -- and into every `{{trigger.Word}}` and `{{trigger.Recognition__Card_Due}}` token
    in an expression's **text**. The whole rename map is applied in one step, so two fields
-   that swap names swap correctly;
+   that swap names swap correctly.
+
+   A definition that triggers on **several** note types spells each field once for all of
+   them, so a field renamed in only some of them breaks it whichever name it spells. Such a
+   rename is followed only when every trigger note type has the new name; until then the
+   definition is left as it was and marked (`broken_by_rename`, with a line such as
+   `Field "Word" is no longer present on both note types "A" & "B"`), and a dialog after
+   the note type operation lists every marked definition. Renaming the field in the other
+   note types too makes the rename followable, and it is followed then; undoing the rename,
+   or editing the definition so it no longer spells the name or no longer triggers on the
+   note type that lacks it, clears the mark as well;
 4. **reports** everything else: a reference that resolves to nothing, an object that has been
    deleted, a field or template with no id (note types saved before Anki 23.10 can have
    them, and nothing can follow a name with no id behind it), and code that still mentions

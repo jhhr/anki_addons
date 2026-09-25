@@ -28,6 +28,7 @@ rename this pass follows back.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
@@ -75,6 +76,13 @@ _TRIGGER_NOTE_TYPE = "trigger note type"
 #: machine, while every id in it belongs to the one collection that issued it.
 SNAPSHOT_KEY = "name_snapshot"
 
+#: Where a definition keeps the field renames this pass would not follow into it, each with
+#: the one sentence that says why. A definition triggering on several note types spells a
+#: field once for all of them, so a rename in only some of them leaves it wrong whichever
+#: name it spells: it is left as it was and marked, until the note types agree again or
+#: the user reworks it. See "Following a rename in Anki" in `docs/staged-definitions.md`.
+BROKEN_KEY = "broken_by_rename"
+
 
 @dataclass(frozen=True)
 class StaleName:
@@ -84,6 +92,8 @@ class StaleName:
     definition_name: str
     kind: str
     name: str
+    #: Why, for the entries that have more to say than their kind and name.
+    message: str = ""
 
 
 @dataclass
@@ -114,6 +124,10 @@ class ReconcileResult:
     #: than only after a rename: a query can go stale on another device, and nothing else
     #: ever looks inside search text (`query_terms.py`).
     stale_terms: list[StaleName] = dataclass_field(default_factory=list)
+    #: A field this definition spells that is not on every note type it triggers on, after
+    #: a rename the pass did not follow for that reason (`BROKEN_KEY`). Listed for as long
+    #: as the definition stays marked, not only on the pass that marked it.
+    broken: list[StaleName] = dataclass_field(default_factory=list)
     #: The one line a pass on a collection other than the snapshot's has to say: nothing
     #: was followed, because nothing in the snapshot was about this collection.
     collection_changed: Optional[str] = None
@@ -593,6 +607,157 @@ def _rewrite_expression(
     return count
 
 
+# Step 5: a rename only some trigger note types made ----------------------------------------
+
+
+class _FieldRecorder(_Renames):
+    """A rename that renames nothing and remembers every field name it was asked about.
+
+    Run through `_rewrite` it visits exactly the slots a rename would be followed into, so
+    what "the fields this definition spells for its trigger" means cannot drift from what
+    the rewrite touches.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: set[str] = set()
+
+    def new_field_name(self, name: Any) -> Optional[str]:
+        if isinstance(name, str) and name:
+            self.seen.add(name.lower())
+        return None
+
+
+def _trigger_field_names(definition: dict) -> set[str]:
+    """Every field name the definition spells for its trigger note, folded to lower case."""
+    recorder = _FieldRecorder()
+    # On a copy: the walk writes each slot back, and a reference it re-serialises is not
+    # guaranteed to come back byte for byte.
+    _rewrite(deepcopy(definition), recorder, ReconcileResult())
+    return recorder.seen
+
+
+def _trigger_models(definition: dict, col: Any) -> list[dict]:
+    models: list[dict] = []
+    triggers = definition.get("triggers")
+    for value in (triggers.get("note_types") or []) if isinstance(triggers, dict) else []:
+        model = resolve_note_type(value, col)
+        if model is not None and all(model["id"] != other["id"] for other in models):
+            models.append(model)
+    return models
+
+
+def _has_field(model: dict, name: str) -> bool:
+    """As the interpolation reads a field name: without regard to case."""
+    lowered = name.lower()
+    return any(entry.get("name", "").lower() == lowered for entry in model.get("flds") or [])
+
+
+def _split_followable(
+    definition: dict, renamed: _Renames, col: Any
+) -> tuple[_Renames, list[str]]:
+    """The renames that leave this definition working, and the old names of the rest.
+
+    A rename is followed when every note type the definition triggers on has the new name.
+    With one trigger note type that is always so. With several, a rename made in only some
+    of them breaks the definition either way -- the old name is missing from the renamed
+    note types and the new one from the others -- so nothing is rewritten and the old name
+    is returned for the definition to be marked with. Once the others are renamed too, the
+    same test passes and the rename is followed then.
+    """
+    spelled = _trigger_field_names(definition)
+    models = _trigger_models(definition, col)
+    followable = _Renames(templates=dict(renamed.templates))
+    withheld: list[str] = []
+    for old_name, new_name in renamed.fields.items():
+        if old_name.lower() in spelled and not all(
+            _has_field(model, new_name) for model in models
+        ):
+            withheld.append(old_name)
+        else:
+            followable.fields[old_name] = new_name
+    return followable, withheld
+
+
+def _quoted_list(names: list[str]) -> str:
+    quoted = [f'"{name}"' for name in names]
+    if len(quoted) < 2:
+        return "".join(quoted)
+    return ", ".join(quoted[:-1]) + " & " + quoted[-1]
+
+
+def breakage_message(field_name: str, models: list[dict]) -> str:
+    """The sentence a marked definition carries: which field, and which note types."""
+    names = [str(model.get("name", "")) for model in models]
+    if len(names) == 1:
+        return f'Field "{field_name}" is no longer present on note type {_quoted_list(names)}'
+    both = "both" if len(names) == 2 else "all of the"
+    return f'Field "{field_name}" is no longer present on {both} note types {_quoted_list(names)}'
+
+
+def refresh_breakage(definition: dict, col: Any, withheld: Optional[list[str]] = None) -> bool:
+    """Bring a definition's `BROKEN_KEY` up to date; say whether it changed.
+
+    A marked name stays marked while the definition still spells it and some trigger note
+    type lacks it. It is cleared by any of the three ways out: the other note types were
+    renamed as well (and the rename followed), the rename was undone, or the definition was
+    reworked so it no longer spells the name or no longer triggers on the note type that
+    lacks it. The message is derived afresh each time, so it names the note types as they
+    are called now.
+    """
+    stored = definition.get(BROKEN_KEY)
+    entries = stored if isinstance(stored, list) else []
+    names: list[str] = []
+    for name in [entry.get("field") for entry in entries if isinstance(entry, dict)] + list(
+        withheld or []
+    ):
+        if isinstance(name, str) and name and name.lower() not in {n.lower() for n in names}:
+            names.append(name)
+    if not names:
+        if BROKEN_KEY in definition:
+            del definition[BROKEN_KEY]
+            return True
+        return False
+
+    spelled = _trigger_field_names(definition)
+    models = _trigger_models(definition, col)
+    refreshed = [
+        {"field": name, "message": breakage_message(name, models)}
+        for name in names
+        if name.lower() in spelled and not all(_has_field(model, name) for model in models)
+    ]
+    if refreshed == stored:
+        return False
+    if refreshed:
+        definition[BROKEN_KEY] = refreshed
+    else:
+        definition.pop(BROKEN_KEY, None)
+    return True
+
+
+def _report_broken(definition: dict, result: ReconcileResult) -> None:
+    for entry in definition.get(BROKEN_KEY) or []:
+        if isinstance(entry, dict):
+            result.broken.append(
+                StaleName(
+                    definition_guid=definition.get("guid", ""),
+                    definition_name=definition.get("definition_name", ""),
+                    kind=KIND_FIELD,
+                    name=str(entry.get("field", "")),
+                    message=str(entry.get("message", "")),
+                )
+            )
+
+
+def refresh_all_breakage(definitions: Any, col: Any) -> bool:
+    """`refresh_breakage` over every marked definition, for a save made outside the pass."""
+    changed = False
+    for definition in definitions or []:
+        if isinstance(definition, dict) and BROKEN_KEY in definition:
+            changed |= refresh_breakage(definition, col)
+    return changed
+
+
 # The snapshot -------------------------------------------------------------------------------
 
 
@@ -720,9 +885,20 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         _report_stale_terms(definition, col, result)
 
     renames = _diff(snapshot, col, referenced, result)
+    withheld: dict[int, list[str]] = {}
     for note_type_id, renamed in renames.items():
         for definition in referenced.get((_TRIGGER_NOTE_TYPE, note_type_id)) or []:
-            changed |= _rewrite(definition, renamed, result)
+            followable, names_withheld = _split_followable(definition, renamed, col)
+            if names_withheld:
+                withheld.setdefault(id(definition), []).extend(names_withheld)
+            changed |= _rewrite(definition, followable, result)
+
+    # After every rewrite, not per note type: a rename in one note type is what can make a
+    # definition marked by a rename in another whole again.
+    for definition in definitions:
+        if id(definition) in withheld or BROKEN_KEY in definition:
+            changed |= refresh_breakage(definition, col, withheld.get(id(definition)))
+        _report_broken(definition, result)
 
     refreshed_snapshot = build_name_snapshot(definitions, col)
     if refreshed_snapshot != (stored_snapshot or _empty_snapshot(col)):
@@ -783,6 +959,12 @@ def log_result(result: ReconcileResult) -> None:
             stale.kind,
             stale.name,
         )
+    for stale in result.broken:
+        logger.warning(
+            "Rename reconcile: not rewritten: '%s' triggers on several note types: %s",
+            stale.definition_name,
+            stale.message,
+        )
     for stale in result.stale_terms:
         logger.warning(
             "Rename reconcile: not rewritten: a search in '%s' names %s '%s', which this"
@@ -794,6 +976,7 @@ def log_result(result: ReconcileResult) -> None:
 
 
 __all__ = [
+    "BROKEN_KEY",
     "KIND_CARD_TYPE",
     "KIND_DECK",
     "KIND_FIELD",
@@ -806,5 +989,7 @@ __all__ = [
     "log_result",
     "reconcile",
     "referenced_object_ids",
+    "refresh_all_breakage",
+    "refresh_breakage",
     "unresolved_references",
 ]

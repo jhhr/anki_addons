@@ -360,6 +360,8 @@ class CopyDefinitionV2(TypedDict, total=False):
     stages: list[Stage]
     exports: list[Export]
     effects: Effects
+    #: Field renames the reconcile pass would not follow, with why (`rename_reconcile.py`).
+    broken_by_rename: list[dict]
 
 
 EMPTY_EFFECTS: Effects = {
