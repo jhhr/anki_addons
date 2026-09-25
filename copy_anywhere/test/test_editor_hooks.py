@@ -1451,3 +1451,121 @@ class TestNonModifyingDefinitionsDiscardTheirNoteList:
         assert hook_logger.levels == ["debug"]
         assert hook_logger.has_error("not found in note")
         assert "not found in note" not in capsys.readouterr().out
+
+
+class TestAFailedDefinitionLeavesTheEditorsNoteAlone:
+    """A definition that fails leaves the editor's note as it found it.
+
+    The stages write into the editor's own `Note` object, and the editor saves that object
+    whatever the definition's result -- so without the fields and tags put back, a
+    definition that wrote the note and then failed had its half-done edit saved anyway,
+    while the log said it failed.
+    """
+
+    def failing(self, *extra_stages, name="failing", if_missing="error"):
+        """Writes `Meaning` and the tags, then fails on a missing file."""
+        return d.staged(
+            name,
+            on_unfocus={"edit_fields": ["Word"], "add_fields": ["Word"]},
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+                *extra_stages,
+                d.read_file("x", "nope.txt", if_missing=if_missing),
+            ],
+        )
+
+    def test_an_existing_note_keeps_its_fields_and_tags(self, col, set_definitions, hook_logger):
+        set_definitions(self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note.tags = ["kept"]
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+        assert note.tags == ["kept"]
+        # Nothing moved, so there is nothing for the editor to show.
+        assert editor.loads == 0
+
+    def test_so_the_editors_save_writes_what_was_typed(self, col, set_definitions):
+        set_definitions(self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note["Word"] = "typed"
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        # What the editor does with its note afterwards.
+        col.update_note(note)
+
+        saved = col.get_note(note.id)
+        assert (saved["Word"], saved["Meaning"]) == ("typed", "cat")
+        assert "tagged" not in saved.tags
+
+    def test_a_note_being_added_keeps_its_fields_and_tags(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.failing())
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == ""
+        assert note.tags == ["kept"]
+
+    def test_an_earlier_definitions_write_survives_and_is_shown(
+        self, col, set_definitions, hook_logger
+    ):
+        # The failed run goes back to where it started, which is after the definition that
+        # ran before it and committed.
+        set_definitions(within("ok", field="Note"), self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Note"] == "neko"
+        assert note["Meaning"] == "cat"
+        assert editor.loads == 1
+
+    def test_the_copy_fields_branch_leaves_it_too(
+        self, col, set_definitions, hook_logger, copies
+    ):
+        # A definition reaching other notes runs through `copy_fields`, which is handed the
+        # editor's note object as the trigger -- so the same restore has to reach it there.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.failing(
+                d.note_query("found", "Word:inu"),
+                d.for_each_note("found", [d.edit_note("note", [d.write("Note", d.text("x"))])]),
+            )
+        )
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert copies.count() == 1
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+        assert note.tags == []
+        assert col.get_note(other.id)["Note"] == ""
+
+    def test_a_definition_that_succeeds_still_writes(self, col, set_definitions, hook_logger):
+        set_definitions(self.failing(name="succeeding", if_missing="empty"))
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note.tags = ["kept"]
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.errors == []
+        assert note["Meaning"] == "written"
+        assert note.tags == ["tagged"]
+        assert editor.loads == 1

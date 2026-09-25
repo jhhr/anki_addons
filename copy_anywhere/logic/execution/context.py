@@ -239,6 +239,10 @@ class ExecutionSession:
         self.edited_cards: dict[int, Card] = {}
         self.pending_files: list[dict] = []
 
+        #: The trigger note's fields and tags as the run found them, for `discard` to put
+        #: back. Set by `remember_trigger` before the first stage runs.
+        self._trigger_snapshot: Optional[tuple[Note, list[str], list[str]]] = None
+
         self.query_cache: dict[tuple[str, str], list[int]] = {}
         self.call_stack: list[str] = []
         self.trace: list[TraceEvent] = []
@@ -372,13 +376,31 @@ class ExecutionSession:
             return self.file_overlay[name]
         return read_media_file(name)
 
+    def remember_trigger(self, note: Note) -> None:
+        """Keep the trigger note's fields and tags as they are now, for `discard` to restore.
+
+        The trigger is the one working note the session does not fetch for itself: it is the
+        caller's own object, and on the add and editor paths the caller saves that object
+        whatever the run's result -- the Add dialog adds it, the editor reloads and later
+        saves it. Every other working note is fetched here and reaches the collection only
+        through a commit, so it needs no snapshot.
+        """
+        self._trigger_snapshot = (note, list(note.fields), list(note.tags))
+
     def discard(self) -> None:
         """Throw this trigger's pending plan away without committing any of it.
 
         Used when a definition fails, is cancelled, or turns out not to apply to the note:
-        the working note objects keep whatever was written into them in memory, but nothing
-        is handed to `update_notes()` and no file reaches the disk.
+        nothing is handed to `update_notes()`, no file reaches the disk, and the trigger note
+        gets back the fields and tags `remember_trigger` recorded, so a failed or refused
+        run leaves the note the caller will save as it was. Other working notes keep what was
+        written into them in memory, but nothing ever publishes them.
         """
+        if self._trigger_snapshot is not None:
+            note, fields, tags = self._trigger_snapshot
+            # Copies, so a second discard still has the originals to restore from.
+            note.fields = list(fields)
+            note.tags = list(tags)
         self.modified_notes.clear()
         self.touched_cards.clear()
         self.edited_cards.clear()

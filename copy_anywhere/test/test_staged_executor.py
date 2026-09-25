@@ -508,6 +508,33 @@ class TestASearchConditionThatDoesNotMatch:
         assert [n.id for n in copied] == [keep.id]
         assert col.get_note(drop.id)["Note"] == ""
 
+    def test_a_skip_after_a_trigger_edit_leaves_the_trigger_as_it_was(self, note, logger):
+        # The migrator's marker, but not as the outermost stage: the skip discards what the
+        # stage before it queued, and the trigger note object -- the one an editor or the
+        # Add dialog would go on to save -- gets its fields and tags back as well.
+        note.tags = ["kept"]
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.text("written"))],
+                tags={"add": ["tagged"], "remove": ["kept"]},
+            ),
+            d.condition(
+                d.text("tag:nothing-has-this"),
+                [],
+                predicate_kind="note_query",
+                predicate_target={"binding": "trigger"},
+                unmatched_skips_trigger=True,
+            ),
+        ])
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert copied == []
+        assert note["Note"] == ""
+        assert note["Meaning"] == "cat"
+        assert note.tags == ["kept"]
+
 
 class TestASearchConditionsPredicate:
     """What resolves a predicate matched as an Anki search.
@@ -1750,6 +1777,25 @@ class TestCancellation:
         assert ok is True
         assert searches == []
         assert copied == []
+
+    def test_a_cancel_after_a_trigger_edit_leaves_the_trigger_as_it_was(self, col, note):
+        note.tags = ["kept"]
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.text("touched"))],
+                tags={"add": ["tagged"], "remove": ["kept"]},
+            ),
+            d.note_query("found", "Word:neko"),
+        ])
+        session = ExecutionSession(want_cancel=lambda: True)
+        copied: list = []
+        ok = run_definition_for_trigger_note(definition, note, session, copied_into_notes=copied)
+
+        assert ok is True
+        assert copied == []
+        assert note["Note"] == ""
+        assert note.tags == ["kept"]
 
 
 class TestAddNoteCompatibility:

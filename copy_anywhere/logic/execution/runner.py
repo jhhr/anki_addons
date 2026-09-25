@@ -54,11 +54,15 @@ def run_definition_for_trigger_note(
         return False
 
     frame = DefinitionFrame(staged, session.working_note(trigger_note), session)
+    # Before the first stage, and of the object the stages will edit. Every `discard` below
+    # puts it back; a run that commits never does, or the writes it just made would be lost.
+    session.remember_trigger(frame.trigger_note)
     try:
         execute_definition(frame)
     except TriggerSkipped:
         # The deck whitelist or a copy condition said this note is not one the definition
-        # applies to. Benign: nothing is written, nothing is committed, the loop goes on.
+        # applies to. Benign: nothing is written, nothing is committed, the loop goes on. A
+        # skip raised after a stage already edited the trigger undoes that edit too.
         session.update_counts(skipped_note_cnt_inc=1)
         session.discard()
         return True

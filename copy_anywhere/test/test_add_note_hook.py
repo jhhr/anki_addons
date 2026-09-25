@@ -869,3 +869,111 @@ class TestCardActionsWhileTheNoteHasNoCards:
 
         assert hook_logger.errors == []
         assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 3
+
+
+class TestAFailedOrRefusedDefinitionLeavesTheNoteAlone:
+    """A definition that does not commit leaves the note being added as it found it.
+
+    The stages write into the very `Note` object the Add dialog is about to save, so throwing
+    the run's plan away is not enough on this path: without putting the fields and tags back,
+    a definition that failed half-way -- or that the add backstop refused, logging that
+    nothing was written -- still had its trigger edits saved by the add.
+    """
+
+    def refused_claim(self):
+        """Writes a file while its stored effects claim it is add-note compatible."""
+        definition = d.staged(
+            "refused",
+            on_add=True,
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+                d.write_file("log.txt", d.text("x")),
+            ],
+        )
+        assert definition["effects"]["add_note_compatible"] is False
+        # What a hand-edited or stale stored flag would say.
+        definition["effects"]["add_note_compatible"] = True
+        definition["effects"]["writes_files"] = False
+        return definition
+
+    def failing(self, name="failing", if_missing="error"):
+        """Add-note compatible, and fails on a missing file after writing the trigger."""
+        definition = d.staged(
+            name,
+            on_add=True,
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+                d.read_file("x", "nope.txt", if_missing=if_missing),
+            ],
+        )
+        assert definition["effects"]["add_note_compatible"] is True
+        return definition
+
+    def test_a_refused_definition_leaves_the_fields_and_tags_alone(
+        self, col, set_definitions, hook_logger, media_dir
+    ):
+        set_definitions(self.refused_claim())
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.has_error("nothing was written"), hook_logger.errors
+        assert not (media_dir / "_log.txt").exists()
+        assert note["Meaning"] == ""
+        assert note.tags == ["kept"]
+
+    def test_so_the_add_saves_the_note_as_it_was_typed(self, col, set_definitions, media_dir):
+        set_definitions(self.refused_claim())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        col.add_note(note, deck(col))
+
+        saved = col.get_note(note.id)
+        assert saved["Word"] == "neko"
+        assert saved["Meaning"] == ""
+        assert "tagged" not in saved.tags
+
+    def test_a_failed_compatible_definition_leaves_the_fields_and_tags_alone(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.failing())
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == ""
+        assert note.tags == ["kept"]
+
+    def test_an_earlier_definitions_write_survives_a_later_ones_failure(
+        self, col, set_definitions, hook_logger
+    ):
+        # The failed run is put back to where *it* started, not to where the add started:
+        # the definition before it committed, and undoing that would lose a write.
+        set_definitions(within("ok", field="Note", add_tags="from-ok"), self.failing())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Note"] == "neko"
+        assert note["Meaning"] == ""
+        assert note.tags == ["from-ok"]
+
+    def test_a_definition_that_succeeds_still_writes(self, col, set_definitions, hook_logger):
+        # The same stages, but a missing file reads as empty instead of failing the run.
+        set_definitions(self.failing("succeeding", if_missing="empty"))
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.errors == []
+        assert note["Meaning"] == "written"
+        assert note.tags == ["tagged"]
