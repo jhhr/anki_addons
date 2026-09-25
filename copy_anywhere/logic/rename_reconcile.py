@@ -243,12 +243,27 @@ def _deleted_objects(snapshot: dict, col: Any) -> dict[tuple, str]:
     nothing is left to say whether the user deleted the object it named or whether this
     collection never had it. That is the difference between `gone` and `unresolved`, and
     the snapshot is the only thing that knows it.
+
+    A template removed from a note type that is still here is a deletion too, and the only
+    one a card action can suffer without its note type going. It is keyed by both ids,
+    `(KIND_CARD_TYPE, note_type_id, template_id)`, because a template id is only unique
+    within its note type. A deleted note type's templates are not listed: the note type
+    is what was deleted, and that is reported once.
     """
     deleted: dict[tuple, str] = {}
     for key, entry in (snapshot.get("note_types") or {}).items():
         note_type_id = _as_int(key)
-        if note_type_id is not None and col.models.get(note_type_id) is None:
+        if note_type_id is None:
+            continue
+        model = col.models.get(note_type_id)
+        if model is None:
             deleted[(KIND_NOTE_TYPE, note_type_id)] = entry.get("name", "")
+            continue
+        live_templates = _live_names_by_id(model.get("tmpls"))
+        for template_key, name in (entry.get("templates") or {}).items():
+            template_id = _as_int(template_key)
+            if template_id is not None and template_id not in live_templates:
+                deleted[(KIND_CARD_TYPE, note_type_id, template_id)] = name
     for key, name in (snapshot.get("decks") or {}).items():
         deck_id = _as_int(key)
         if deck_id is not None and col.decks.name_if_exists(deck_id) is None:
@@ -309,7 +324,18 @@ def _bind(
         card_action["card_type"] = reference
         model, template = resolve_card_type(reference, col)
         if model is None or template is None:
-            result.unresolved.append(_stale(definition, KIND_CARD_TYPE, reference["name"]))
+            # Named by the reference's own cached name, not the snapshot's: the pass
+            # refreshed it while the card type was live, and it is what a live check of the
+            # same reference (`unresolved_references`) spells, so the two read as one.
+            stale = _stale(definition, KIND_CARD_TYPE, reference["name"])
+            if (KIND_NOTE_TYPE, reference["note_type_id"]) in deleted or (
+                KIND_CARD_TYPE,
+                reference["note_type_id"],
+                reference["template_id"],
+            ) in deleted:
+                result.gone.append(stale)
+            else:
+                result.unresolved.append(stale)
             continue
         _remember(referenced, (KIND_NOTE_TYPE, model["id"]), definition)
         live_name = card_type_live_name(model, template)

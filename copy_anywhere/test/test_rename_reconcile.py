@@ -29,7 +29,9 @@ from copy_anywhere.logic.rename_reconcile import (
     BROKEN_KEY,
     SNAPSHOT_KEY,
     definitions_hold_references,
+    log_result,
     reconcile,
+    unresolved_references,
 )
 
 ADDON_TAG = "copy_anywhere"
@@ -240,6 +242,144 @@ class TestAnObjectTheSnapshotKnewAndTheCollectionNoLongerHas:
             {"id": col.models.by_name(KANJI)["id"], "name": KANJI}
         ]
         assert names(result.gone) == [] and names(result.unresolved) == []
+
+
+class TestACardTypeTheSnapshotKnewAndTheCollectionNoLongerHas:
+    """The same distinction for a card action, whose card type can go two ways.
+
+    The note type can be deleted, taking every template with it, or kept and the one
+    template removed from it. Either way the snapshot recorded the template's id under its
+    note type's, so the pass knows the user deleted it. The note type here is named only by
+    the card action -- the definition triggers on another -- because a trigger note type's
+    templates are already watched for the definition's own slots (`_diff`), and this is the
+    reference nothing else would report.
+    """
+
+    @pytest.fixture
+    def extra(self, col):
+        return real_anki.make_note_type(
+            col,
+            "CA Extra",
+            ["F"],
+            [("Card 1", "{{F}}", "{{F}}"), ("Card 2", "{{F}}x", "{{F}}")],
+        )
+
+    def a_definition_flagging(self, config, model, template):
+        definition = d.staged(
+            definition_name="flags extra",
+            note_types=[VOCAB],
+            stages=[
+                d.edit_note(
+                    "trigger", card_actions=[d.card_action_ref(model, template, set_flag=1)]
+                )
+            ],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+        return definition
+
+    def test_a_deleted_note_type_is_reported_gone_once(self, col, config, extra):
+        self.a_definition_flagging(config, extra, extra["tmpls"][1])
+
+        col.models.remove(extra["id"])
+        result = reconcile(config, mw.col)
+
+        # Once, though the template went with it: the note type is the one that was deleted.
+        assert names(result.gone) == ["CA Extra<::>Card 2"]
+        assert names(result.unresolved) == []
+        assert result.gone[0].definition_name == "flags extra"
+        assert result.gone[0].kind == "card type"
+
+    def test_a_template_deleted_from_a_live_note_type_is_reported_gone(
+        self, col, config, extra
+    ):
+        self.a_definition_flagging(config, extra, extra["tmpls"][1])
+
+        model = col.models.get(extra["id"])
+        col.models.remove_template(model, model["tmpls"][1])
+        col.models.update_dict(model)
+        result = reconcile(config, mw.col)
+
+        assert names(result.gone) == ["CA Extra<::>Card 2"]
+        assert names(result.unresolved) == []
+
+    def test_the_name_reported_is_the_last_one_it_had(self, col, config, extra):
+        definition = self.a_definition_flagging(config, extra, extra["tmpls"][1])
+        rename_template(col, "CA Extra", "Card 2", "Reverse")
+        reconcile(config, mw.col)
+
+        model = col.models.get(extra["id"])
+        col.models.remove_template(model, model["tmpls"][1])
+        col.models.update_dict(model)
+        result = reconcile(config, mw.col)
+
+        # The reference's own cached name, refreshed by the pass before: it is what the
+        # picker's live check spells too, so the two show as one entry.
+        assert names(result.gone) == ["CA Extra<::>Reverse"]
+        assert unresolved_references(definition, col)[0].name == "CA Extra<::>Reverse"
+
+    def test_the_log_says_it_has_been_deleted(self, col, config, extra, logger):
+        self.a_definition_flagging(config, extra, extra["tmpls"][1])
+        col.models.remove(extra["id"])
+
+        log_result(reconcile(config, mw.col))
+
+        assert any(
+            "card type 'CA Extra<::>Card 2'" in line and "has been deleted" in line
+            for line in logger.warnings
+        )
+
+    def test_the_editor_still_refuses_to_save_it(self, col, config, extra):
+        definition = self.a_definition_flagging(config, extra, extra["tmpls"][1])
+
+        col.models.remove(extra["id"])
+        reconcile(config, mw.col)
+
+        # Gone is what the report says; the reference still names nothing all the same.
+        assert names(unresolved_references(definition, col)) == ["CA Extra<::>Card 2"]
+
+    def test_a_card_type_the_snapshot_never_knew_is_still_unresolved(
+        self, col, config, extra
+    ):
+        action = d.card_action_ref(extra, extra["tmpls"][1], set_flag=1)
+        action["card_type"] = {
+            "note_type_id": extra["id"],
+            "template_id": None,
+            "name": "CA Extra<::>Card 3",
+        }
+        store(
+            config,
+            d.staged(note_types=[VOCAB], stages=[d.edit_note("trigger", card_actions=[action])]),
+        )
+        reconcile(config, mw.col)
+
+        result = reconcile(config, mw.col)
+
+        assert names(result.unresolved) == ["CA Extra<::>Card 3"]
+        assert names(result.gone) == []
+
+    @pytest.mark.parametrize("deleted", ["note type", "template"])
+    def test_a_deletion_in_another_collection_is_unresolved(
+        self, col, config, extra, stub_mw, tmp_path, deleted
+    ):
+        """The other collection shares the ids, but the snapshot is not about it, so
+        nothing in it is evidence that the user deleted anything there."""
+        self.a_definition_flagging(config, extra, extra["tmpls"][1])
+
+        other = a_copy_of(col, tmp_path / "second.anki2")
+        if deleted == "note type":
+            other.models.remove(extra["id"])
+        else:
+            model = other.models.get(extra["id"])
+            other.models.remove_template(model, model["tmpls"][1])
+            other.models.update_dict(model)
+        with opened(stub_mw, other):
+            result = reconcile(config, other)
+        other.close()
+
+        assert result.collection_changed is not None
+        assert names(result.unresolved) == ["CA Extra<::>Card 2"]
+        assert names(result.gone) == []
 
 
 # A pass on another collection --------------------------------------------------------------
