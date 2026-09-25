@@ -1221,6 +1221,68 @@ class TestFiles:
         assert logger.has_error("not valid UTF-8")
 
 
+class TestTheFileAReadLooksFor:
+    """A read looks for the name with a leading `_`, and its messages say so.
+
+    The prefix is intended (SPEC decision 7): CopyAnywhere's files are text files no note
+    field refers to, and the `_` is what keeps Anki's Check Media from deleting them as
+    unused. A `dictionary.txt` put in the media folder by hand is not the file a stage
+    reading "dictionary.txt" reads. The error used to name the file as typed, so the user
+    was told "File 'dictionary.txt' does not exist" while looking straight at it.
+    """
+
+    def reading(self, filename, **kwargs):
+        return d.staged(stages=[
+            d.read_file("content", filename, **kwargs),
+            d.edit_note("trigger", [d.write("Note", d.text("[{{content}}]"))]),
+        ])
+
+    def test_a_plain_name_reads_the_underscored_file(self, col, note, media_dir, logger):
+        (media_dir / "dictionary.txt").write_text("the user's", encoding="utf-8")
+        (media_dir / "_dictionary.txt").write_text("owned", encoding="utf-8")
+
+        ok, _ = run(self.reading("dictionary.txt"), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "[owned]"
+
+    def test_the_missing_file_error_names_the_file_looked_for(
+        self, col, note, media_dir, logger
+    ):
+        (media_dir / "dictionary.txt").write_text("the user's", encoding="utf-8")
+
+        ok, _ = run(self.reading("dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_dictionary.txt' does not exist"), logger.errors
+
+    def test_a_name_that_already_has_the_underscore_is_named_as_it_is(
+        self, col, note, media_dir, logger
+    ):
+        ok, _ = run(self.reading("_dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_dictionary.txt' does not exist"), logger.errors
+
+    def test_the_utf8_error_names_the_file_read(self, col, note, media_dir, logger):
+        (media_dir / "_log.txt").write_bytes(b"\xff\xfe not utf 8")
+
+        ok, _ = run(self.reading("log.txt"), note)
+
+        assert ok is False
+        assert logger.has_error("File '_log.txt' is not valid UTF-8"), logger.errors
+
+    def test_an_invalid_name_is_still_refused_as_typed(self, col, note, media_dir, logger):
+        # Normalizing is what refuses it, so the message is the refusal, naming what was
+        # typed -- there is no file that was looked for.
+        ok, _ = run(self.reading("sub/dictionary.txt", if_missing="error"), note)
+
+        assert ok is False
+        assert logger.has_error(
+            "Filename 'sub/dictionary.txt' must not contain a path separator"
+        ), logger.errors
+
+
 class TestCalls:
     def child(self, guid="child-guid"):
         producer = d.variable("H1", d.text("from {{trigger.Word}}"))

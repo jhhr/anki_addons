@@ -27,11 +27,14 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_FOR_EACH_NOTE,
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
+    STAGE_READ_FILE,
     STAGE_REDUCE,
     STAGE_VARIABLE,
+    STAGE_WRITE_FILE,
     new_definition,
     value_expression,
 )
+from copy_anywhere.ui import edit_extra_processing_dialog as processing
 from copy_anywhere.ui.stage_document import StageDocument, default_stage
 from copy_anywhere.ui.stage_editor_context import build_contexts, make_note_types_for
 from copy_anywhere.ui.stage_editors import (
@@ -1955,3 +1958,251 @@ class TestAFieldTheTriggerNoteTypeDoesNotHave:
         dialog.refresh_status()
 
         assert any("Word" in blocker for blocker in dialog.document.save_blockers())
+
+
+class TestACallbackWhoseWidgetIsGone:
+    """A callback registered by a widget Qt has since deleted is dropped, not called.
+
+    A regex process's dialog is built the first time its Edit button is clicked, and it
+    registers `update_field_options` on the state's note type registry. Removing the
+    process, or the whole field row it sits in, `deleteLater`s the dialog and leaves the
+    callback registered. The next change of the trigger note type fired it, and
+    `refresh_contexts` raised "wrapped C/C++ object of type PasteableTextEdit has been
+    deleted" -- out of an ordinary edit at the top of the dialog.
+
+    Only that case is dropped. Format 1 swallowed every exception a callback raised, which
+    would hide a real bug in one that is still alive.
+    """
+
+    def edit_note_with_regex(self):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["target"] = {"binding": "trigger"}
+        expression = value_expression(text="{{trigger.Word}}")
+        expression["process_chain"] = [
+            dict(processing.NEW_PROCESS_DEFAULTS[processing.REGEX_PROCESS], guid="rx")
+        ]
+        stage["fields"] = [{"field": "Note", "value": expression, "write_if": "always"}]
+        return stage
+
+    def open_regex_dialog(self, editor, monkeypatch):
+        monkeypatch.setattr(processing.RegexProcessDialog, "exec", lambda self: 0)
+        widget = editor.field_rows[0].value.process_widget
+        widget.process_ui_components["rx"]["edit_button"].click()
+        dialog = widget.process_ui_components["rx"]["dialog_holder"]["dialog"]
+        assert dialog.update_field_options in editor.state.selected_model_callbacks
+        return widget, dialog
+
+    def flush_deletes(self, qapp):
+        from aqt.qt import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+        qapp.processEvents()
+
+    def change_the_trigger_note_type(self, tree):
+        tree.document.definition["triggers"]["note_types"] = [KANJI]
+        tree.refresh_contexts()
+
+    def listener(self):
+        """A live Qt object whose bound method is a callback, and the calls it heard."""
+        from aqt.qt import QObject
+
+        class Listener(QObject):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            def heard(self):
+                self.calls += 1
+
+            def fails(self):
+                raise RuntimeError("a real bug in a live callback")
+
+        return Listener()
+
+    def tree_with_a_deleted_regex_dialog(self, col, qapp, monkeypatch):
+        from aqt.qt import sip
+
+        tree = tree_for(col, self.edit_note_with_regex())
+        editor = tree.rows["e"].editor
+        widget, dialog = self.open_regex_dialog(editor, monkeypatch)
+        widget.process_ui_components["rx"]["remove_button"].click()
+        self.flush_deletes(qapp)
+        assert sip.isdeleted(dialog)
+        return tree, editor, dialog
+
+    def test_changing_the_trigger_note_type_after_deleting_the_process(
+        self, col, qapp, monkeypatch
+    ):
+        tree, editor, dialog = self.tree_with_a_deleted_regex_dialog(col, qapp, monkeypatch)
+
+        self.change_the_trigger_note_type(tree)
+
+        assert dialog.update_field_options not in editor.state.selected_model_callbacks
+
+    def test_changing_the_trigger_note_type_after_removing_the_field_row(
+        self, col, qapp, monkeypatch
+    ):
+        from aqt.qt import sip
+
+        tree = tree_for(col, self.edit_note_with_regex())
+        editor = tree.rows["e"].editor
+        _widget, dialog = self.open_regex_dialog(editor, monkeypatch)
+        editor.field_rows[0].removed.emit(editor.field_rows[0])
+        self.flush_deletes(qapp)
+        assert sip.isdeleted(dialog)
+
+        self.change_the_trigger_note_type(tree)
+
+        assert dialog.update_field_options not in editor.state.selected_model_callbacks
+
+    def test_the_live_callbacks_still_run(self, col, qapp, monkeypatch):
+        tree, editor, _dialog = self.tree_with_a_deleted_regex_dialog(col, qapp, monkeypatch)
+        # Registered after the dead one, so it only runs if the dead one did not stop the
+        # loop; bound to a live Qt object, so it shows the check does not drop those.
+        listener = self.listener()
+        editor.state.add_selected_model_callback(listener.heard)
+
+        self.change_the_trigger_note_type(tree)
+
+        assert listener.calls == 1
+        assert listener.heard in editor.state.selected_model_callbacks
+        # The card actions editor's own callback, registered before either.
+        assert offered_card_note_types(editor) == {KANJI}
+
+    def test_an_error_in_a_live_callback_is_not_swallowed(self, col, qapp):
+        tree = tree_for(col, self.edit_note_with_regex())
+        editor = tree.rows["e"].editor
+        listener = self.listener()
+        editor.state.add_selected_model_callback(listener.fails)
+
+        with pytest.raises(RuntimeError, match="a real bug"):
+            self.change_the_trigger_note_type(tree)
+        assert listener.fails in editor.state.selected_model_callbacks
+
+
+class TestCardActionCodeEditorsFollowTheScope:
+    """A card action's code editor offers the names in scope now, not when it was built.
+
+    `CardActionsEditor` hands each action's code editor the state's menu once, when the
+    action's row is built. Renaming or adding a variable upstream moves the stage's scope
+    and `refresh_contexts` gives the stage its new context, but the code editors went on
+    offering -- and validating against -- the old names. An Edit Card stage was worse off:
+    it has no value editor, and only a value editor passed the new context on to the state,
+    so even an action added after the rename got the menu the stage was opened with.
+    """
+
+    def edit_card_tree(self, col, variable_name="before"):
+        query = default_stage(STAGE_CARD_QUERY, "cq")
+        query["result"] = "C1"
+        query["query"] = value_expression(text="deck:Default")
+        edit = default_stage(STAGE_EDIT_CARD, "ec")
+        edit["target"] = {"binding": "card"}
+        edit["card_actions"] = [self.code_action("")]
+        loop = default_stage(STAGE_FOR_EACH_CARD, "loop")
+        loop["input"] = {"binding": "C1"}
+        loop["body"] = [edit]
+        return tree_for(col, variable("v", variable_name), query, loop)
+
+    def edit_note_tree(self, col, variable_name="before"):
+        edit = default_stage(STAGE_EDIT_NOTE, "e")
+        edit["target"] = {"binding": "trigger"}
+        edit["card_actions"] = [self.code_action(f"{VOCAB}{CARD_TYPE_SEPARATOR}Recognition")]
+        return tree_for(col, variable("v", variable_name), edit)
+
+    def code_action(self, card_type_name):
+        return {
+            "guid": "a",
+            "card_type_name": card_type_name,
+            "change_deck": None,
+            "set_flag": None,
+            "suspend": None,
+            "bury": None,
+            "set_desired_retention": None,
+            "use_code": True,
+            "action_code": "return {}",
+        }
+
+    def code_editors(self, editor):
+        actions = editor.card_actions
+        actions.finish_loading_initial_actions()
+        return [ui["code_editor"] for ui in actions.action_ui_components.values()]
+
+    def offered_variables(self, code_editor):
+        # What the editor's right-click menu is built from.
+        return set((code_editor.text_edit.options_dict.get("Variables") or {}).keys())
+
+    def rename_the_variable(self, tree, name):
+        # Through the widget: `refresh_contexts` writes the widgets back into the stages.
+        tree.rows["v"].editor.result.setText(name)
+        tree.apply_editors()
+        tree.refresh_contexts()
+
+    def test_a_renamed_variable_reaches_an_edit_card_code_editor(self, col, qapp):
+        tree = self.edit_card_tree(col)
+        (code_editor,) = self.code_editors(tree.rows["ec"].editor)
+        assert "before" in self.offered_variables(code_editor)
+
+        self.rename_the_variable(tree, "after")
+
+        assert "after" in self.offered_variables(code_editor)
+        assert "before" not in self.offered_variables(code_editor)
+
+    def test_a_renamed_variable_reaches_an_edit_note_code_editor(self, col, qapp):
+        tree = self.edit_note_tree(col)
+        (code_editor,) = self.code_editors(tree.rows["e"].editor)
+        assert "before" in self.offered_variables(code_editor)
+
+        self.rename_the_variable(tree, "after")
+
+        assert "after" in self.offered_variables(code_editor)
+        assert "before" not in self.offered_variables(code_editor)
+
+    def test_the_validation_follows_the_rename_too(self, col, qapp):
+        tree = self.edit_card_tree(col)
+        (code_editor,) = self.code_editors(tree.rows["ec"].editor)
+        code_editor.set_text("x = '{{after}}'\nreturn {}")
+        assert "Not a valid field" in code_editor.error_label.text()
+
+        self.rename_the_variable(tree, "after")
+
+        assert code_editor.error_label.text() == ""
+
+    def test_an_action_added_after_the_rename_offers_it(self, col, qapp):
+        tree = self.edit_card_tree(col)
+        actions = tree.rows["ec"].editor.card_actions
+        self.rename_the_variable(tree, "after")
+
+        actions.add_new_action()
+
+        new = [ui for key, ui in actions.action_ui_components.items() if key != "a"]
+        assert len(new) == 1
+        assert "after" in self.offered_variables(new[0]["code_editor"])
+
+    def test_the_edit_card_stages_state_follows_its_context(self, col, qapp):
+        tree = self.edit_card_tree(col)
+
+        self.rename_the_variable(tree, "after")
+
+        editor = tree.rows["ec"].editor
+        assert editor.state.context is tree.contexts["ec"]
+
+
+class TestTheFileStagesSayWhatNameTheFileGets:
+    """Both file stages store the file under a name with a leading `_`, and say so.
+
+    A file CopyAnywhere reads or writes is a text file no note field refers to, so Anki's
+    Check Media lists it as unused and offers to delete it -- unless its name starts with
+    `_`. `normalize_media_filename` adds the prefix to a name that lacks one, so a
+    `dictionary.txt` put in the media folder by hand is never the file a stage reads. That
+    is the user's to fix; the editor says so where the name is typed.
+    """
+
+    @pytest.mark.parametrize("stage_type", [STAGE_READ_FILE, STAGE_WRITE_FILE])
+    def test_the_name_box_says_a_leading_underscore_is_added(self, col, qapp, stage_type):
+        tree = tree_for(col, default_stage(stage_type, "f"))
+        filename = tree.rows["f"].editor.filename
+
+        description = filename.text_layout.optional_description.text()
+
+        assert "leading '_' is added" in description
+        assert "Check Media" in description

@@ -20,7 +20,7 @@ from anki.notes import Note
 
 from ...shared.interpolate.interpolate_fields import TARGET_NOTES_COUNT
 from ...utils.duplicate_note import duplicate_note
-from ...utils.media_files import MediaFileError
+from ...utils.media_files import MediaFileError, normalize_media_filename
 from ..copy_primitives import (
     CopyFailedException,
     apply_card_action_to_card,
@@ -439,18 +439,22 @@ def run_read_file(stage: dict, env: dict, frame) -> str:
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
     filename = evaluate_text(stage.get("filename"), ctx)
     try:
-        content = frame.session.read_file(filename)
+        # The messages name the file actually looked for, with the leading `_` the read
+        # adds: a user told "'dictionary.txt' does not exist" while looking at it in the
+        # media folder has been told nothing.
+        name = normalize_media_filename(filename)
+        content = frame.session.read_file(name)
     except MediaFileError as error:
         raise frame.error(str(error), stage) from error
     except UnicodeDecodeError as error:
-        raise frame.error(f"File '{filename}' is not valid UTF-8: {error}", stage) from error
-    frame.session.record_detail("filename", filename)
+        raise frame.error(f"File '{name}' is not valid UTF-8: {error}", stage) from error
+    frame.session.record_detail("filename", name)
     if content is not None:
         return content
     frame.session.record_detail("missing", True)
     if_missing = stage.get("if_missing", "empty")
     if if_missing == "error":
-        raise frame.error(f"File '{filename}' does not exist", stage)
+        raise frame.error(f"File '{name}' does not exist", stage)
     if if_missing == "skip_block":
         raise SkipBlock()
     return ""

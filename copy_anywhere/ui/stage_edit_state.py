@@ -14,6 +14,7 @@ two dozen fields about a definition-wide mode that a stage does not have.
 from typing import Callable, Optional
 
 from anki.models import NotetypeDict
+from aqt.qt import sip
 
 from ..configuration import (
     COPY_MODE_ACROSS_NOTES,
@@ -124,7 +125,19 @@ class StageEditState:
 
     @staticmethod
     def _fire(callbacks: list[Callback]) -> None:
+        """Call every callback, dropping those whose widget Qt has already deleted.
+
+        The registries outlive what registers on them: a regex dialog registers when its
+        Edit button is first clicked and is `deleteLater`'d when its process or its whole
+        field row is removed, and nothing takes the callback back out. Calling it then
+        raises "wrapped C/C++ object ... has been deleted". Only that case is dropped;
+        format 1's `call_callbacks` swallowed every exception, which would also hide a real
+        bug in a live callback.
+        """
         for callback in list(callbacks):
+            if _owner_is_deleted(callback):
+                callbacks.remove(callback)
+                continue
             callback()
 
     # -- callback registries -------------------------------------------------------------
@@ -140,3 +153,9 @@ class StageEditState:
 
     def add_copy_on_sync_callback(self, callback: Callback) -> None:
         self.copy_on_sync_callbacks.append(callback)
+
+
+def _owner_is_deleted(callback: Callback) -> bool:
+    """Whether `callback` is a method of a Qt object whose C++ side is gone."""
+    owner = getattr(callback, "__self__", None)
+    return isinstance(owner, sip.simplewrapper) and sip.isdeleted(owner)
