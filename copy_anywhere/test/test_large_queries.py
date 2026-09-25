@@ -14,6 +14,7 @@ change of complexity can cross it.
 import time
 
 import pytest
+from anki.notes import Note
 
 import definitions as d
 from anki_shared.testing import real_anki
@@ -67,6 +68,35 @@ class Counter:
             return original(*args, **kwargs)
 
         return counted
+
+
+@pytest.fixture
+def card_fetches(monkeypatch):
+    """The ids of the notes whose cards were fetched, one entry per `Note.cards` call."""
+    calls: list = []
+    original = Note.cards
+
+    def counted(self, *args, **kwargs):
+        calls.append(self.id)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Note, "cards", counted)
+    return calls
+
+
+@pytest.fixture
+def revlog_queries(col, monkeypatch):
+    """The review-history queries a run makes, which card values read with `db.first`."""
+    calls: list = []
+    original = col.db.first
+
+    def counted(sql, *args, **kwargs):
+        if "revlog" in sql:
+            calls.append(sql)
+        return original(sql, *args, **kwargs)
+
+    monkeypatch.setattr(col.db, "first", counted)
+    return calls
 
 
 def run(definition, trigger, logger):
@@ -167,6 +197,88 @@ class TestFetching:
         # `w1` is in both results and converges on one working note (§7.1), so the fetches
         # are the distinct notes rather than the sum of the two result sizes.
         assert counter.counts["get_note"] == POOL
+
+
+class TestCodeModesCards:
+    def test_code_that_does_not_read_cards_fetches_none(
+        self, col, trigger, pool, logger, card_fetches
+    ):
+        # `cards` is in every code expression's namespace. Built up front it cost a query per
+        # evaluation -- two, as the sandbox fetched its own list for the caller's to replace --
+        # so this definition made 2 + 2 * POOL of them to read nothing but a field.
+        definition = d.staged(stages=[
+            d.variable("v", d.code("return 'x'")),
+            d.note_query("found", "tag:pool"),
+            d.list_variable("words"),
+            d.for_each_note("found", [d.store("words", d.code("return note['Word']"))]),
+        ])
+
+        card_fetches.clear()
+        run(definition, trigger, logger)
+
+        assert card_fetches == []
+
+    def test_code_that_reads_cards_fetches_them_once_per_evaluation(
+        self, col, trigger, pool, logger, card_fetches
+    ):
+        # Read three ways in one evaluation, still one fetch; and each one is of the loop
+        # note's cards, since `cards` follows `note`, rather than of the trigger's.
+        definition = d.staged(stages=[
+            d.note_query("found", "tag:pool"),
+            d.list_variable("seen"),
+            d.for_each_note(
+                "found",
+                [d.store("seen", d.code(
+                    "return f'{len(cards)}:{cards[0].id}:{[c.ord for c in cards]}'"
+                ))],
+            ),
+        ])
+
+        card_fetches.clear()
+        run(definition, trigger, logger)
+
+        assert sorted(card_fetches) == sorted(note.id for note in pool)
+
+
+class TestCardValues:
+    def test_three_review_time_values_of_one_card_share_one_query(
+        self, col, trigger, logger, revlog_queries
+    ):
+        # The four review-time values are one aggregate over the revlog, kept by the card's
+        # `CardValues`. Building a new one per reference threw that away, so three references
+        # to one card ran the same query three times.
+        definition = d.staged(stages=[
+            d.card_query("found", f"nid:{trigger.id} card:Recognition"),
+            d.for_each_card("found", [
+                d.edit_note("note", [d.write("Note", d.text(
+                    "{{card.__Card_First_Review}}|{{card.__Card_Latest_Review}}"
+                    "|{{card.__Card_Average_Time}}"
+                ))]),
+            ]),
+        ])
+
+        revlog_queries.clear()
+        run(definition, trigger, logger)
+
+        assert trigger["Note"] == "-|-|-"
+        assert len(revlog_queries) == 1
+
+    def test_each_expression_reads_the_card_again(self, col, trigger, logger, revlog_queries):
+        # Shared within one expression only: a `CardValues` computes most of its values when
+        # it is built, so it is a snapshot of the card, and a later stage may have changed it.
+        definition = d.staged(stages=[
+            d.card_query("found", f"nid:{trigger.id} card:Recognition"),
+            d.for_each_card("found", [
+                d.edit_note("note", [d.write("Note", d.text("{{card.__Card_First_Review}}"))]),
+                d.edit_note("note", [d.write("Meaning", d.text("{{card.__Card_Total_Time}}"))]),
+            ]),
+        ])
+
+        revlog_queries.clear()
+        run(definition, trigger, logger)
+
+        assert (trigger["Note"], trigger["Meaning"]) == ("-", "-")
+        assert len(revlog_queries) == 2
 
 
 class TestItStaysLinear:

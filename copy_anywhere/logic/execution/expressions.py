@@ -22,6 +22,7 @@ from anki.notes import Note
 
 from ...shared.interpolate.execute_code import execute_code_core
 from ...shared.interpolate.interpolate_fields import (
+    CardValues,
     extract_cloze_patterns,
     get_card_value,
     interpolate_from_text,
@@ -36,7 +37,7 @@ from ..definition_schema import (
 from .context import ExecutionSession, StageError
 from .facades import (
     CardFacade,
-    CardListFacade,
+    NoteCardsFacade,
     NoteFacade,
     code_helpers,
     from_facade,
@@ -164,7 +165,9 @@ def _note_reference(note: Note, rest: str, ctx: ExpressionContext) -> str:
     return value or ""
 
 
-def _card_reference(card: Card, rest: str, ctx: ExpressionContext) -> str:
+def _card_reference(
+    card: Card, rest: str, ctx: ExpressionContext, card_values: dict[int, CardValues]
+) -> str:
     facade = CardFacade(card, ctx.session)
     if rest in CARD_PROPERTY_NAMES:
         return str(getattr(facade, rest))
@@ -175,9 +178,16 @@ def _card_reference(card: Card, rest: str, ctx: ExpressionContext) -> str:
         # card in hand to re-derive it from its note, which cannot name one cloze card (they
         # share a template) and which a definition spanning several note types refuses
         # outright (the prefix is not allowed there). Neither question arises here.
+        #
+        # One `CardValues` per card for the whole expression, so its four review-time values
+        # share one revlog query however many of them the text names. Keyed by the object,
+        # which the entry keeps alive, because the values are read off that object.
         note = ctx.session.note_by_id(card.nid)
+        values = card_values.get(id(card))
+        if values is None:
+            values = card_values[id(card)] = CardValues(card, note)
         try:
-            value = get_card_value(card, note, rest)
+            value = get_card_value(card, note, rest, card_values=values)
         except KeyError:
             raise ctx.error(f"'{rest}' is not a card value") from None
         # A getter with nothing to say answers None -- custom data another add-on left
@@ -186,10 +196,20 @@ def _card_reference(card: Card, rest: str, ctx: ExpressionContext) -> str:
     raise ctx.error(f"'{rest}' is not a card property")
 
 
-def resolve_references(text: str, ctx: ExpressionContext) -> str:
-    """Substitute every `{{...}}` in a format-2 expression with the value it names."""
+def resolve_references(
+    text: str, ctx: ExpressionContext, card_values: Optional[dict[int, CardValues]] = None
+) -> str:
+    """Substitute every `{{...}}` in a format-2 expression with the value it names.
+
+    `card_values` is passed only by the cloze recursion below, which is still the same
+    expression: the `CardValues` built so far, one per card. They live no longer than one
+    expression because a `CardValues` is a snapshot of its card, and a later stage may have
+    changed the card.
+    """
     if not text:
         return text or ""
+    if card_values is None:
+        card_values = {}
 
     # Cloze markers are not references. Their content is, so it is resolved on its own and
     # the marker put back around the result.
@@ -197,7 +217,9 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
     placeholders: dict[str, str] = {}
     for index, (start, end, cloze_num, content) in enumerate(reversed(cloze_patterns)):
         placeholder = f"\x00CLOZE{index}\x00"
-        placeholders[placeholder] = f"{{{{c{cloze_num}::{resolve_references(content, ctx)}}}}}"
+        placeholders[placeholder] = (
+            f"{{{{c{cloze_num}::{resolve_references(content, ctx, card_values)}}}}}"
+        )
         text = text[:start] + placeholder + text[end:]
 
     def replace(match: "re.Match[str]") -> str:
@@ -208,7 +230,7 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
             if isinstance(value, Note):
                 return _note_reference(value, rest, ctx)
             if isinstance(value, Card):
-                return _card_reference(value, rest, ctx)
+                return _card_reference(value, rest, ctx, card_values)
             if value is None:
                 raise ctx.error(f"'{head}' is not a binding in scope")
             raise ctx.error(f"'{head}' is not a note or card, so '{reference}' has no value")
@@ -237,18 +259,23 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
 def code_globals(ctx: ExpressionContext) -> dict:
     """The names a format-2 code expression runs with: every binding, as a facade."""
     globals_dict: dict[str, Any] = dict(code_helpers(ctx.session))
-    # `note` and `cards` mean the expression's own source note, as they always have -- but
-    # only where nothing in scope is called that. Inside a loop the loop's own binding is
-    # what `note` has to mean, or a predicate would silently read the trigger instead of the
-    # note being iterated.
+    # `note` means the expression's own source note, as it always has -- but only where
+    # nothing in scope is called that. Inside a loop the loop's own binding is what `note`
+    # has to mean, or a predicate would silently read the trigger instead of the note being
+    # iterated.
     globals_dict["note"] = NoteFacade(ctx.source_note, ctx.session)
-    globals_dict["cards"] = CardListFacade(
-        ctx.session.cards_of_note(ctx.source_note), ctx.session
-    )
     if ctx.destination_note is not None:
         globals_dict["destination"] = NoteFacade(ctx.destination_note, ctx.session)
     for name, value in ctx.environment.items():
         globals_dict[name] = to_facade(value, ctx.session)
+    if "cards" not in ctx.environment:
+        # `cards` are the cards of whichever note `note` turned out to be, so inside a loop
+        # they are the loop note's rather than the trigger's. A binding called `note` that
+        # holds something other than a note says nothing about which cards are meant, so
+        # `cards` stays the source note's then. Fetched only if the code reads it.
+        in_scope = ctx.environment.get("note")
+        cards_note = in_scope if isinstance(in_scope, Note) else ctx.source_note
+        globals_dict["cards"] = NoteCardsFacade(cards_note, ctx.session)
     return globals_dict
 
 

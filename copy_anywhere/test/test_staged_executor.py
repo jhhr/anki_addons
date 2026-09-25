@@ -1694,6 +1694,105 @@ class TestFacades:
         assert [n["Word"] for n in copied] == ["a"]
 
 
+class TestCodeModesCardsAreTheCardsOfItsNote:
+    """Code mode's `cards` is the cards of whatever `note` means where the code runs.
+
+    Outside a loop that is the expression's own note, the trigger. Inside a loop that binds
+    `note` it is the loop's note, as `note` is: `cards` used to stay the trigger's there, so
+    `len(cards)` in a loop over other notes answered the trigger's count every time round.
+    The trigger here has two cards and every other note one, so the two cannot be mistaken.
+    """
+
+    @pytest.fixture
+    def kanji(self, col):
+        return [
+            real_anki.add_note(col, KANJI, {"Kanji": k, "Keyword": "found"}) for k in "ab"
+        ]
+
+    def test_outside_a_loop_they_are_the_triggers_cards(self, note, logger):
+        definition = d.staged(stages=[
+            d.variable("seen", d.code("return f'{cards[0].nid}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == f"{note.id}:2"
+
+    def test_in_a_loop_over_notes_they_are_the_loop_notes_cards(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.note_query("found", "Keyword:found"),
+            d.list_variable("seen"),
+            d.for_each_note(
+                "found", [d.store("seen", d.code("return f'{cards[0].nid}:{len(cards)}'"))]
+            ),
+            d.join("seen", "joined"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert sorted(note["Note"].split(", ")) == sorted(f"{k.id}:1" for k in kanji)
+
+    def test_in_a_card_loop_they_are_the_cards_of_the_cards_note(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.card_query("found", f"nid:{kanji[0].id}"),
+            d.for_each_card(
+                "found",
+                [d.edit_note("trigger", [d.write("Note", d.code("return str(len(cards))"))])],
+            ),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "1"
+
+    def test_a_binding_called_note_that_is_not_a_note_leaves_them_the_triggers(
+        self, note, logger
+    ):
+        # A text named `note` says nothing about which cards are meant, so `cards` keeps
+        # meaning the expression's own note's rather than becoming empty.
+        definition = d.staged(stages=[
+            d.variable("note", d.text("just text")),
+            d.variable("seen", d.code("return f'{note}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "just text:2"
+
+    def test_a_binding_called_cards_is_what_the_code_gets(self, note, kanji, logger):
+        definition = d.staged(stages=[
+            d.card_query("cards", f"nid:{kanji[0].id}"),
+            d.variable("seen", d.code("return f'{cards[0].nid}:{len(cards)}'")),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == f"{kanji[0].id}:1"
+
+    def test_a_card_action_an_earlier_stage_queued_is_visible_through_them(
+        self, note, logger
+    ):
+        # Nothing is saved until the run commits, so the flag can only come from the working
+        # card the earlier stage edited, not from a fresh read of the collection.
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=3)]
+            ),
+            d.variable(
+                "seen",
+                d.code("return ','.join(f'{c.template_name}={c.flag}' for c in cards)"),
+            ),
+            d.edit_note("trigger", [d.write("Note", d.text("{{seen}}"))]),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "Recognition=3,Recall=0"
+
+    def test_they_can_be_sliced_and_returned_as_a_card_list(self, note, logger):
+        definition = d.staged(stages=[
+            d.variable("first", d.code("return cards[:1]")),
+            d.for_each_card(
+                "first",
+                [d.edit_note("trigger", [d.write("Note", d.text("{{card.template_name}}"))])],
+            ),
+        ])
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "Recognition"
+
+
 class TestPreview:
     def test_preview_computes_the_same_values_and_persists_nothing(
         self, col, note, media_dir, logger
