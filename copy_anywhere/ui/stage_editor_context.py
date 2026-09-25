@@ -277,14 +277,15 @@ def build_contexts(
     if note_types_for is None:
         note_types_for = make_note_types_for(document.definition)
     analysis = document.analysis
-    cache: dict[int, tuple[dict, dict, bool]] = {}
+    cache: dict[frozenset, tuple[dict, dict, bool]] = {}
     contexts: dict[str, StageEditorContext] = {}
 
     def options_for(scope: Mapping[str, Binding]) -> tuple[dict, dict, bool]:
-        # Sibling stages in one block share a scope object often enough that building the
-        # menu once per distinct scope is worth the identity cache: each rebuild walks
-        # every note type in the collection.
-        key = id(scope)
+        # Built once per distinct scope, because each build walks every note type in the
+        # collection. Keyed by what the scope holds rather than by the dict: the analyser
+        # records a copy per stage, but a stage that declares nothing passes the very same
+        # `Binding` objects on, so sibling stages after it compare equal here.
+        key = frozenset(scope.items())
         if key not in cache:
             options, mixed = scope_options_dict(scope, note_types_for)
             cache[key] = (options, make_validate_dict(options), mixed)
