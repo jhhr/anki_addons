@@ -97,6 +97,14 @@ def run_definition_for_trigger_note(
         # Destination-to-sources, where the query result was the source list.
         session.update_counts(processed_sources_inc=1)
     result = committer.commit(session, copied_into_notes, copied_into_cards_dict)
+    # Counted from what the commit published rather than as stages ran, so a note two stages
+    # wrote is one destination and a card three actions changed is one card. Per trigger
+    # note, as format 1 counted: a note two trigger notes both wrote counts twice. Counted
+    # before the file check, because those notes and cards are the caller's either way.
+    session.update_counts(
+        processed_destinations_inc=len(result.notes),
+        processed_cards_inc=len(result.cards),
+    )
     if result.file_error:
         # The notes and cards are already in the caller's lists and stay there. The failure
         # is reported the way a stage error is: logged, and the bulk loop stops here.

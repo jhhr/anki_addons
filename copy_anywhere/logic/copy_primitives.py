@@ -14,7 +14,7 @@ import html
 import json
 import logging
 import time
-from typing import Any, Optional, Sequence, Tuple, Union
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from anki.cards import Card
 from anki.notes import Note
@@ -489,7 +489,7 @@ def apply_card_action_to_card(
     """Apply one card action to one card, in memory. Returns whether the card changed.
 
     The card is marked with an `edited` attribute, which is what the caller's batched
-    `update_cards()` looks for; the attribute is removed again once the update has run.
+    `update_cards()` looks for; `take_edited_cards` removes it again as it collects the card.
     """
     action_code = card_action.get("action_code", None)
     if card_action.get("use_code", False) and action_code and action_code.strip():
@@ -544,11 +544,23 @@ def apply_card_action_to_card(
     return edited
 
 
+def take_edited_cards(cards_by_id: Mapping[int, Card]) -> list[Card]:
+    """The cards in `cards_by_id` marked `edited`, for `update_cards()`, with the mark removed.
+
+    Removing it is what saves each edit once: the callers keep one dict across several
+    definitions and save after each, and a card saved after an earlier definition stays in
+    the dict, unmarked, until a later definition edits it again and puts a marked copy there.
+    """
+    edited_cards = [card for card in cards_by_id.values() if getattr(card, "edited", False)]
+    for card in edited_cards:
+        del card.edited
+    return edited_cards
+
+
 def apply_card_actions_by_template(
     card_actions: Sequence[CardAction],
     note: Note,
     cards: Sequence[Card],
-    progress_updater: Any = None,
 ) -> list[Card]:
     """Apply note-level card actions to the note's cards, matching by card type name.
 
@@ -564,6 +576,4 @@ def apply_card_actions_by_template(
             continue
         if apply_card_action_to_card(card_action, card, note):
             edited.append(card)
-            if progress_updater is not None:
-                progress_updater.update_counts(processed_cards_inc=1)
     return edited

@@ -385,13 +385,8 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
 
     if modified:
         session.mark_note_modified(target)
-        session.update_counts(processed_destinations_inc=1)
         _record_note_changes(session, snapshot, target)
 
-    cards = session.cards_of_note(target)
-    # Format 1 handed every card of every destination note to the caller, edited or not: the
-    # sync path writes its `fc` flag onto all of them.
-    session.touch_cards(cards)
     card_actions = stage.get("card_actions") or []
     if card_actions and not target.id:
         # A note being added has no cards until the add creates them, and nothing runs this
@@ -403,10 +398,9 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
             stage.get("name") or stage.get("type"),
         )
     elif card_actions:
+        cards = session.cards_of_note(target)
         try:
-            apply_card_actions_by_template(
-                card_actions, target, cards, session.progress_updater
-            )
+            apply_card_actions_by_template(card_actions, target, cards)
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
         for card in cards:
@@ -431,10 +425,8 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
             raise frame.error(str(error), stage) from error
         if edited:
             session.mark_card_edited(card)
-            session.update_counts(processed_cards_inc=1)
             if session.recording:
                 session.record_mutation(f"card {card.id}: {describe_card(card)}")
-    session.touch_cards([card])
 
 
 # --------------------------------------------------------------------------------------

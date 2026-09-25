@@ -40,6 +40,7 @@ from .copy_primitives import (
     get_variable_values_for_note,
     int_sort_by_field_value,
     sort_by_field_value,
+    take_edited_cards,
 )
 from .definition_migration import MigrationError
 from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
@@ -322,14 +323,7 @@ def copy_fields(
             # Update all edited cards so far, then remove the edited flag
             # This must be done after each operation, so that if subsequent use card data as source,
             # the final result depends on the order of the ops
-            edited_cards = [
-                card
-                for card in copied_into_cards_dict.values()
-                if hasattr(card, "edited") and card.edited
-            ]
-            for card in edited_cards:
-                del card.edited
-            mw.col.update_cards(edited_cards)
+            mw.col.update_cards(take_edited_cards(copied_into_cards_dict))
             # undo_entry has to be updated after every undoable op or the last_step will
             # increment causing an "target undo op not found" error!
             results.changes = mw.col.merge_undo_entries(undo_entry)
@@ -342,8 +336,8 @@ def copy_fields(
                 write_custom_data(card, key="fc", value=1)
             mw.col.update_cards(copied_into_cards)
             results.changes = mw.col.merge_undo_entries(undo_entry)
-            # Ensure that all fc flags are reset in the DB, if the notes/cards were not
-            # modified during the copy operations
+            # Ensure that all fc flags are reset in the DB on the cards no card action edited,
+            # which includes the other cards of the notes the definitions copied into
             rest_cards = [
                 mw.col.get_card(cid) for cid in mw.col.find_cards("prop:cdn:fc=-1 OR prop:cdn:fc=0")
             ]
@@ -422,7 +416,7 @@ def copy_fields_in_background(
     Function run to copy stuff into many notes at once.
     :param copy_definition: The definition of what to copy, includes process chains
     :param copied_into_cards_dict: An initially empty dictionary of cards that will be appended to with the
-        cards of the notes that were copied into
+        cards a card action edited
     :param copied_into_notes: An initially empty list of notes that will be appended to with the
         notes that were copied into
     :param results: The results object to update with the final result text
@@ -655,8 +649,8 @@ def copy_for_single_trigger_note(
     :param is_sync: whether this is a sync operation, which some conditions only apply to
     :param copied_into_notes: appended with the notes that were written into, for the
         caller's batched `update_notes()`. Omit when nothing needs saving.
-    :param copied_into_cards_dict: filled with the cards of every note the definition
-        touched, keyed by card id, for the caller's batched `update_cards()`
+    :param copied_into_cards_dict: filled with the cards a card action edited, keyed by
+        card id and marked `edited`, for the caller's batched `update_cards()`
     :param field_only: limits field writes to those the named editor field triggers
     :param unfocus_is_add: whether that unfocus is happening in the Add dialog
     :param deck_id: the deck a not-yet-added note's cards will go into, since it has none

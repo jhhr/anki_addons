@@ -38,6 +38,7 @@ from ..logic.copy_fields import (
     copy_fields,
     make_copy_fields_undo_text,
 )
+from ..logic.copy_primitives import take_edited_cards
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +70,6 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
         copy_definitions.append(copy_definition)
 
     return copy_definitions
-
-
-def _edited_cards_for_update(copied_into_cards_dict: dict[int, Card]) -> list[Card]:
-    edited_cards = [
-        card
-        for card in copied_into_cards_dict.values()
-        if hasattr(card, "edited") and card.edited
-    ]
-    for card in edited_cards:
-        del card.edited
-    return edited_cards
 
 
 def run_copy_fields_on_add(note: Note, deck_id: int):
@@ -141,7 +131,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             # query, which can't find the unsaved note. Still, an id 0 note would make
             # mw.col.update_notes fail, so keep it out regardless
             copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-            edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+            edited_cards = take_edited_cards(copied_into_cards_dict)
             if not copied_into_notes and not edited_cards:
                 # Nothing was written into other notes (the query matched nothing or the deck
                 # whitelist rejected the note), and no card action changed a card either, so
@@ -269,19 +259,12 @@ def run_copy_fields_on_review(card: Card):
             # operate on the latest data
             # update_note adds a new undo entry Update note
             mw.col.update_notes(copied_into_notes)
-            edited_cards = [
-                card
-                for card in copied_into_cards_dict.values()
-                if hasattr(card, "edited") and card.edited
-            ]
+            edited_cards = take_edited_cards(copied_into_cards_dict)
             for c in edited_cards:
                 if c.id == card.id:
                     # Merge all changes to the reviewed card so that the final update_card call
                     # doesn't overwrite the changes done here
-                    # Note, edited attribute is not merged as it's not a real card attribute, we don't
-                    # need it after this, as edit the card regardless
                     merge_cards(card, c)
-                del c.edited
             # update_card adds a new undo entry Update cards
             mw.col.update_cards(edited_cards)
             # merge all undo entries into the original Answer card undo entry. This also folds in
@@ -434,7 +417,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                         # is what a hand-edited claim runs into (§8).
                         add_note_compatible_only=is_new_note,
                     )
-                    edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+                    edited_cards = take_edited_cards(copied_into_cards_dict)
                     if edited_cards:
                         mw.col.update_cards(edited_cards)
                 continue
@@ -484,7 +467,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     # that note may be committed.
                     add_note_compatible_only=is_new_note,
                 )
-                edited_cards = _edited_cards_for_update(copied_into_cards_dict)
+                edited_cards = take_edited_cards(copied_into_cards_dict)
                 if edited_cards:
                     mw.col.update_cards(edited_cards)
 

@@ -235,7 +235,6 @@ class ExecutionSession:
         self.file_overlay: dict[str, str] = {}
 
         self.modified_notes: dict[NoteKey, Note] = {}
-        self.touched_cards: dict[int, Card] = {}
         self.edited_cards: dict[int, Card] = {}
         self.pending_files: list[dict] = []
 
@@ -307,18 +306,8 @@ class ExecutionSession:
         self.cards[card_id] = card
         return card
 
-    def touch_cards(self, cards: Sequence[Card]) -> None:
-        """Record cards a stage looked at.
-
-        Format 1 handed the caller every card of every destination note, edited or not,
-        because the sync path writes its `fc` custom-data flag onto all of them.
-        """
-        for card in cards:
-            self.touched_cards[card.id] = card
-
     def mark_card_edited(self, card: Card) -> None:
         self.edited_cards[card.id] = card
-        self.touched_cards[card.id] = card
 
     # -- files ------------------------------------------------------------------------
 
@@ -402,7 +391,6 @@ class ExecutionSession:
             note.fields = list(fields)
             note.tags = list(tags)
         self.modified_notes.clear()
-        self.touched_cards.clear()
         self.edited_cards.clear()
         self.pending_files.clear()
         self.file_overlay.clear()
