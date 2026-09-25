@@ -27,9 +27,11 @@ def test_unfocus_persists_staged_card_edits_without_writing_note_edits(col):
     note = existing_note(col, Word="neko")
     recognition = card_named(note, "Recognition")
     definition = d.staged(
-        definition_name="cards-only",
+        definition_name="fill-and-flag",
         on_unfocus={"edit_fields": ["Word"], "add_fields": []},
         stages=[
+            # A trigger field write, so there is a note edit the hook could wrongly save.
+            d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Word}}"))]),
             d.card_query("cards", "nid:{{trigger.__Note_ID}}"),
             d.for_each_card(
                 "cards",
@@ -54,4 +56,7 @@ def test_unfocus_persists_staged_card_edits_without_writing_note_edits(col):
     run_copy_fields_on_unfocus_field(False, note, WORD)
 
     assert col.get_card(recognition.id).user_flag() == 4
+    # The write reaches the editor's note object, which the editor saves itself; the hook
+    # leaves the database copy alone.
+    assert note["Note"] == "neko"
     assert col.get_note(note.id)["Note"] == ""

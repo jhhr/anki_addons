@@ -703,6 +703,32 @@ class TestANewNoteEditsOnlyItself:
         assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 0
         assert hook_logger.has_error("another note, card or file"), hook_logger.errors
 
+    def test_a_card_edit_the_stored_effects_hid_is_refused_too(
+        self, col, set_definitions, hook_logger
+    ):
+        # A card of another note, and nothing else of it: no other note is modified, so
+        # only the edited cards can tell the backstop the run reached past the new note.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.fill_and_flag(
+                d.card_query("found", "Word:inu"),
+                d.for_each_card(
+                    "found",
+                    [d.edit_card("card", [dict(self.flag(), card_type_name="")])],
+                ),
+                edits_other_notes=False,
+                edits_other_cards=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 0
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+        # Refused as a whole, so the new note's own write is taken back as well.
+        assert note["Meaning"] == ""
+
 
 class TestWhichFieldFiresADefinition:
     def test_a_field_that_is_no_definitions_trigger_runs_nothing(
@@ -780,6 +806,60 @@ class TestWhichFieldFiresADefinition:
         # so a trigger naming a field that was renamed away is silently inert.
         set_definitions(within(trigger="Renamed"))
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+        assert ran.names() == []
+
+
+class TestWhichFieldFiresAStagedDefinition:
+    """A staged definition names its fields once, per mode, in `on_unfocus` (§8)."""
+
+    @staticmethod
+    def watching(edit_fields, add_fields):
+        return d.staged(
+            "watching",
+            on_unfocus={"edit_fields": edit_fields, "add_fields": add_fields},
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Word}}"))])],
+        )
+
+    def test_an_unwatched_field_runs_nothing(self, col, set_definitions, ran):
+        set_definitions(self.watching(["Word"], ["Word"]))
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, MEANING)
+
+        assert ran.names() == []
+        assert note["Note"] == ""
+
+    def test_the_watched_field_runs_it(self, col, set_definitions, ran):
+        set_definitions(self.watching(["Word"], ["Word"]))
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == ["watching"]
+        assert note["Note"] == "neko"
+
+    def test_editing_reads_the_edit_fields_and_adding_the_add_fields(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(self.watching(["Word"], ["Meaning"]))
+        existing = existing_note(col, Word="neko", Meaning="cat")
+        adding = new_note(col, Word="inu", Meaning="dog")
+
+        run_copy_fields_on_unfocus_field(False, existing, MEANING)
+        run_copy_fields_on_unfocus_field(False, adding, WORD)
+        assert ran.names() == []
+
+        run_copy_fields_on_unfocus_field(False, existing, WORD)
+        run_copy_fields_on_unfocus_field(False, adding, MEANING)
+        assert ran.names() == ["watching", "watching"]
+
+    def test_no_fields_for_a_mode_means_it_never_runs_in_that_mode(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(self.watching([], ["Word"]))
+
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+
         assert ran.names() == []
 
 

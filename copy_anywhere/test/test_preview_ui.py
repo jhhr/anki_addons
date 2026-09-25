@@ -207,7 +207,8 @@ class TestStaleness:
         assert pane.stale is False
         assert pane.stale_label.text() == ""
 
-    def test_an_edit_after_a_run_raises_the_badge(self, pane):
+    def test_being_marked_stale_after_a_run_raises_the_badge(self, pane):
+        # The pane's side only: what marks it stale is the dialog's, and is tested there.
         pane.run_preview()
 
         pane.mark_stale()
@@ -245,13 +246,17 @@ class TestInsideTheDialog:
         assert dialog.splitter.count() == 2
         assert dialog.splitter.widget(1) is dialog.preview
 
-    def test_editing_the_definition_marks_the_preview_stale(self, dialog):
+    def test_editing_a_stage_marks_the_preview_stale(self, dialog, qtbot):
         dialog.preview.run_preview()
         assert dialog.preview.stale is False
+        guid = dialog.document.definition["stages"][0]["guid"]
+        dialog.stage_tree.rows[guid].expand_button.click()
 
-        dialog.refresh_status()
+        # A real edit in the stage list, and the dialog's own debounce timer after it.
+        dialog.stage_tree.rows[guid].editor.result.setText("Renamed")
 
-        assert dialog.preview.stale is True
+        qtbot.waitUntil(lambda: dialog.preview.stale, timeout=5000)
+        assert dialog.preview.stale_label.text() == STALE_TEXT
 
     def test_opening_a_stage_shows_its_trace_row(self, dialog):
         dialog.preview.run_preview()
@@ -267,8 +272,13 @@ class TestInsideTheDialog:
         row = dialog.stage_tree.rows[guid]
         assert guid not in dialog.stage_tree.expanded
 
-        dialog.preview.show_stage(guid)
-        dialog.focus_stage(guid)
+        # Chosen the way a click chooses it: by selecting the row in the trace.
+        (item,) = [
+            dialog.preview.trace_tree.topLevelItem(index)
+            for index in range(dialog.preview.trace_tree.topLevelItemCount())
+            if dialog.preview.trace_tree.topLevelItem(index).data(0, UserRole) == guid
+        ]
+        item.setSelected(True)
 
         assert guid in dialog.stage_tree.expanded
         assert not row.body.isHidden()

@@ -6,6 +6,8 @@ on Qt's offscreen platform plugin -- no display, no pixels read -- because every
 is ordinary logic that happens to live in widgets.
 """
 
+import copy
+
 import pytest
 
 from copy_anywhere.configuration import (
@@ -600,18 +602,24 @@ def test_renaming_a_result_in_the_dialog_keeps_its_export_and_the_save(dialog):
 
 
 def test_an_export_of_a_deleted_stage_is_not_resurrected_as_a_row(col, qapp, widget_parent):
-    # Deleting is the case where the stage really is gone, and `remove_stage` drops the
-    # export with it; nothing should put a row back for one that was never stored.
+    # `remove_stage` drops a deleted stage's export, so the panel only ever meets one that
+    # names a missing stage in a stored definition -- hand-edited, or saved before that
+    # drop existed. Such an export is refused by the analyser and belongs to nothing the
+    # user can see; a row for it would write it back on every apply.
     definition = new_definition("d", "A definition", stages=[variable("v", "M")])
     document = StageDocument(definition)
-    document.set_exports([{"name": "M", "stage_guid": "v", "result": "M"}])
-    document.remove_stage("v")
+    document.set_exports([
+        {"name": "M", "stage_guid": "v", "result": "M"},
+        {"name": "Gone", "stage_guid": "deleted", "result": "Gone"},
+    ])
 
     from copy_anywhere.ui.stage_exports_editor import ExportsEditor
 
     panel = ExportsEditor(widget_parent, document)
 
-    assert panel.rows == []
+    assert [(guid, result) for guid, result, _keep, _name in panel.rows] == [("v", "M")]
+    panel.apply()
+    assert document.exports() == [{"name": "M", "stage_guid": "v", "result": "M"}]
 
 
 # -- tags -----------------------------------------------------------------------------
@@ -1388,24 +1396,26 @@ class TestACallStageWhoseCalleeCannotBeResolved:
 
 
 class TestEditsThatDoNotReachTheDefinition:
-    """Three controls in the Edit Note editor that never say they changed.
+    """Three controls in the Edit Note editor that once never said they changed.
 
     Everything else in the dialog reports an edit: a field combo, an expression editor, a
     binding combo and a name box all connect to `changed`, which reaches `contents_changed`,
     which folds the open editors back into the stage dicts, re-analyses, and marks the
     preview's trace stale.
 
-    The tag editor, the card actions editor and a field write's "write if" combo connect to
-    nothing. So an edit to any of them stays in the widget: `apply_editors()` has not run, so
-    the definition still holds the old value, and `run_preview()` reads
-    `self.definition` directly without applying anything first. The preview therefore runs
-    the definition as it was before the edit, and -- because nothing marked it stale -- it
-    presents that result as current. The user changes a tag, runs the preview to check it,
-    and sees a trace that does not include the change, with no indication why.
+    The tag editor, the card actions editor and a field write's "write if" combo connected to
+    nothing. So an edit to any of them stayed in the widget: `apply_editors()` had not run,
+    so the definition still held the old value, and `run_preview()` reads `self.definition`
+    directly without applying anything first. The preview ran the definition as it was
+    before the edit and -- because nothing marked it stale -- presented that result as
+    current.
 
-    Saving is not affected: `accept()` applies the editors first. That is what makes this
-    specifically a preview-and-analysis problem rather than lost data, and it is also why it
-    survives casual use -- the change is really there once you close the dialog.
+    So each test asks, at the moment `definition_changed` fires, that the stage in the
+    document already holds the edit -- and, where the edit shows there, that the row's
+    summary and the next stage's scope were worked out from it. Those are built by
+    `contents_changed` before it announces anything, so an edit folded in only afterwards
+    (`refresh_contexts` writes the widgets back again once its menus are relisted) leaves
+    them describing the definition as it was.
     """
 
     def edit_note_editor(self, col):
@@ -1416,9 +1426,21 @@ class TestEditsThatDoNotReachTheDefinition:
         tree = tree_for(col, stage)
         return tree, tree.rows["e"].editor
 
-    def changes_from(self, tree, act):
+    def stage_when_changed(self, tree, guid, act):
+        """The stage as the document held it each time `definition_changed` fired."""
         seen = []
-        tree.definition_changed.connect(lambda: seen.append(True))
+        tree.definition_changed.connect(
+            lambda: seen.append(copy.deepcopy(tree.document.stage(guid)))
+        )
+        act()
+        return seen
+
+    def summary_when_changed(self, tree, guid, act):
+        """The stage row's summary each time `definition_changed` fired."""
+        seen = []
+        tree.definition_changed.connect(
+            lambda: seen.append(tree.rows[guid].summary.text())
+        )
         act()
         return seen
 
@@ -1426,9 +1448,11 @@ class TestEditsThatDoNotReachTheDefinition:
         tree, editor = self.edit_note_editor(col)
         row = editor.field_rows[0]
 
-        seen = self.changes_from(tree, lambda: row.write_if.setCurrentIndex(1))
+        seen = self.stage_when_changed(tree, "e", lambda: row.write_if.setCurrentIndex(1))
 
         assert seen
+        assert seen[-1]["fields"][0]["write_if"] == row.write_if.currentData()
+        assert seen[-1]["fields"][0]["write_if"] != "always"
 
     def test_changing_a_tag_reports_the_change(self, col, qapp):
         from anki_shared.testing import real_anki
@@ -1437,12 +1461,15 @@ class TestEditsThatDoNotReachTheDefinition:
         real_anki.add_note(col, VOCAB, {"Word": "neko"}, tags=["known"])
         tree, editor = self.edit_note_editor(col)
 
-        seen = self.changes_from(tree, lambda: tick_first(editor.tag_editor.add_tags_combo_box))
+        summaries = self.summary_when_changed(
+            tree, "e", lambda: tick_first(editor.tag_editor.add_tags_combo_box)
+        )
 
-        assert seen
-        assert tags_to_list(editor.tag_editor.get_add_tags()) == ["known"]
+        assert summaries
+        assert "tags" in summaries[-1]
+        assert tree.document.stage("e")["tags"]["add"] == ["known"]
 
-    def test_adding_a_card_action_reports_the_change(self, col, qapp):
+    def test_a_card_action_reports_the_change(self, col, qapp):
         # An Edit Card stage, because that is where "Add Card Action" needs no card type
         # chosen first; the editor class is the same one an Edit Note stage embeds.
         edit = default_stage(STAGE_EDIT_CARD, "ec")
@@ -1456,20 +1483,49 @@ class TestEditsThatDoNotReachTheDefinition:
         tree = tree_for(col, query, loop)
         actions = tree.rows["ec"].editor.card_actions
 
-        seen = self.changes_from(tree, actions.add_new_action)
+        def add_and_flag():
+            actions.add_new_action()
+            # An action that does nothing is not kept, so the edit is choosing its flag.
+            (ui,) = actions.action_ui_components.values()
+            flag = next(
+                button
+                for button in ui["flag_group"].buttons()
+                if button.property("flag_value") == 2
+            )
+            flag.setChecked(True)
 
-        assert seen
-        assert len(actions.card_actions) == 1
+        summaries = self.summary_when_changed(tree, "ec", add_and_flag)
+
+        assert summaries
+        assert summaries[-1].endswith("1 card action")
+        assert [action["set_flag"] for action in tree.document.stage("ec")["card_actions"]] == [2]
 
     def test_a_field_combo_reports_the_change(self, col, qapp):
-        # The guard: this is the wiring the three above are missing, on a control beside them
-        # in the same row.
+        # The guard: the wiring the three above were missing, on a control beside them in
+        # the same row.
         tree, editor = self.edit_note_editor(col)
         row = editor.field_rows[0]
 
-        seen = self.changes_from(tree, lambda: row.field.setCurrentText("Meaning"))
+        summaries = self.summary_when_changed(
+            tree, "e", lambda: row.field.setCurrentText("Meaning")
+        )
 
-        assert seen
+        assert summaries
+        assert "Meaning" in summaries[-1]
+
+    def test_a_renamed_result_is_in_the_next_stages_scope_when_announced(self, col, qapp):
+        # The scope a later stage's menus are built from is analysed from the stage dicts,
+        # so it is only as current as the edit folded in before the analysis ran.
+        edit = default_stage(STAGE_EDIT_NOTE, "e")
+        tree = tree_for(col, variable("v", "M"), edit)
+        scopes = []
+        tree.definition_changed.connect(lambda: scopes.append(set(tree.contexts["e"].scope)))
+
+        tree.rows["v"].editor.result.setText("Renamed")
+
+        assert scopes
+        assert "Renamed" in scopes[-1]
+        assert "M" not in scopes[-1]
 
 
 def test_a_field_picker_built_with_a_field_does_not_ask_for_one(col, qapp):

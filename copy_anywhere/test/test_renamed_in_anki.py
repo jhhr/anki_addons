@@ -8,8 +8,11 @@ template name, so after a rename the action matches no card and the run goes on 
 the definition never had one. Nothing is logged at any level the user sees.
 
 The pin is xfail rather than a characterization test because it is an open item, not a wart
-worth keeping: see "Following a rename in Anki" in `docs/follow-ups.md`. Whichever tier is
-built, the run stops being silent, and this turns green.
+worth keeping: see "Following a rename in Anki" in `docs/follow-ups.md`. It turns green only
+when *this run* says so and still hands over no card, which none of that section's tiers
+does as written: (a) reports stale names when the collection loads, not during a run, and
+(b) and (c) make the action follow the rename, so a card is handed over. Whichever is built
+has to rewrite this pin to ask what that tier promises; strict, so it cannot be forgotten.
 """
 
 import pytest
@@ -20,7 +23,7 @@ from conftest import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 
 
-@pytest.mark.xfail(reason="no tier of the rename follow-up is built yet", strict=True)
+@pytest.mark.xfail(reason="a run does not report a card type it cannot find", strict=True)
 def test_a_card_action_whose_card_type_was_renamed_says_so(col, logger):
     note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
     definition = d.within_note(
