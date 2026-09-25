@@ -379,9 +379,15 @@ is invisible at the default log level, so the three findings a user can act on w
 where they already look. A structured reference that resolves to nothing is shown in the
 editor under the name it was written with, marked `(not found)`, and blocks the save; a
 query stage carries an amber note listing what its search spells that the collection does
-not have; and the definition picker marks a definition the last pass left `unresolved` or
-`gone`, with the names in its tooltip. The search scan (`logic/query_terms.py`) checks
-`deck:`, `note:` and `card:` terms and field searches by exact name only -- a term holding
+not have; and the definition picker marks a definition that names something unresolved,
+with the names in its tooltip -- its references checked live as the picker is drawn, the
+last pass's `gone` entries only while the definition still names them
+(`rename_reconcile.still_names`), and redrawn when a definition is saved from the picker.
+A definition marked `broken_by_rename` is not run on any run path (the editor's preview
+still runs it), and the picker shows it with its own icon and a checkbox that cannot be
+ticked (`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
+(`logic/query_terms.py`) checks `deck:`, `note:` and `card:` terms and field searches by
+exact name only -- a term holding
 a wildcard, a regex or an unresolved `{{...}}` reference is skipped rather than guessed at,
 because a scan that cried wolf over a working query would be ignored. The same scan runs in
 the pass, so a query that went stale on another device is reported without anything being

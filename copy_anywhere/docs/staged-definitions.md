@@ -302,34 +302,90 @@ and the everything-changed operation a sync ends with. It:
    them, so a field renamed in only some of them breaks it whichever name it spells. Such a
    rename is followed only when every trigger note type has the new name; until then the
    definition is left as it was and marked (`broken_by_rename`, with a line such as
-   `Field "Word" is no longer present on both note types "A" & "B"`), and a dialog after
-   the note type operation lists every marked definition. Renaming the field in the other
-   note types too makes the rename followable, and it is followed then; undoing the rename,
-   or editing the definition so it no longer spells the name or no longer triggers on the
-   note type that lacks it, clears the mark as well;
+   `Field "Word" is no longer present on both note types "A" & "B"`), a marked definition
+   is not run (below), and a dialog after the note type operation lists every marked
+   definition. Renaming the field in the other note types too makes the rename followable,
+   and it is followed then; undoing the rename, or editing the definition so it no longer
+   spells the name or no longer triggers on the note type that lacks it, clears the mark as
+   well. The mark is checked again whenever definitions are saved, so a reworked definition
+   is cleared as it is saved, not at the next note type operation;
 4. **reports** everything else: a reference that resolves to nothing, an object that has been
    deleted, a field or template with no id (note types saved before Anki 23.10 can have
    them, and nothing can follow a name with no id behind it), and code that still mentions
    an old name.
+
+   *Deleted* means the snapshot (below) knew the object's id and the collection no longer
+   has it: a trigger note type or deck, a field or card type of a trigger note type, or the
+   card type a card action names -- whether its note type was deleted or only that card
+   type. The log says it "has been deleted". A name the snapshot never knew -- a typo, a
+   note type you have not made yet, a definition imported from another collection -- is
+   one "this collection does not have" instead. The difference lasts one pass: the pass
+   rebuilds the snapshot from what is still there, so from the next pass on a note type,
+   deck or card type reference left naming a deleted object reads as one this collection
+   does not have, and a deleted field or card type of a trigger note type is not reported
+   again.
 
 What it never rewrites is a search term, `selection.sort_field`, or code. A query is free
 text read by Anki's own grammar -- `col.replace_in_search_node` swaps every term of a kind
 and so cannot rename one deck inside a query naming two -- and `note['Word']` is a spelling
 of a field name that no `{{...}}` rewrite can see. Those are reported and fixed by hand.
 
+**A definition marked as broken is not run.** Whichever name it spells, one of the note
+types it triggers on lacks it, so it would fail on that note type's notes and go on writing
+into the others' as if nothing had happened. So every run refuses it before it does
+anything to a note -- from the definition list, the browser's menu, the add, review and
+unfocus hooks and a sync alike -- and logs one error per marked field: the definition's
+name, the marked line exactly as stored, and what to do.
+
+    Error in copy fields: 'both' was not run: Field "Word" is no longer present on both
+    note types "A" & "B". Rename the field in the other note types too, undo the rename,
+    or edit the definition.
+
+It is an error, not a quiet skip, so a run you start from the definition list or the
+browser's menu opens the log on it, and a run over many notes stops after that one line
+instead of repeating it for every note; the other definitions of that run still run. A run
+the addon starts by itself -- as a note is added, a card answered or a field left, and
+during a sync -- writes the same line into its log file but does not open it, except when
+leaving a field runs a definition that writes other notes, which reports like a run you
+start. The note being added is still added, and the other definitions still run on it. For
+those runs, the definition list and the dialog after the note type operation are what say
+that a definition is not being run.
+
+A definition that calls a marked one fails at its `call_definition` stage with the same
+explanation, and its run on that note writes nothing -- not even what it changed before the
+call -- rather than running the rest of a chain around the gap. The editor still opens and
+saves a marked definition, since editing it is one of the ways out, and its preview still
+runs it, so a fix can be tried before it is saved; a call to a marked definition fails in
+the preview too.
+
 **Where the report reaches you.** The pass writes all of it into one operation log, which
-you only see with the log level turned up, so the three things you can act on are also put
-where you already look:
+you only see with the log level turned up, so the things you can act on are also put where
+you already look:
 
 - a reference that resolves to nothing is shown in the editor under the name it was
   written with, marked `(not found)`, and **blocks the save** until you pick another or
-  remove it. Picking a live entry from the same box clears it;
+  remove it. Picking a live entry from the same box clears it. A card action whose card
+  type was deleted is one of these;
 - a query stage shows an amber note under the search naming what it spells that this
   collection does not have -- `deck:`, `note:` and `card:` terms and field searches, exact
   names only: a term with a wildcard, a regex or a `{{...}}` reference in it is left alone.
   It is a note, not a blocker: a query may name something you have not made yet;
-- the definition list marks a definition the last pass could not resolve, with the names in
-  its tooltip.
+- the definition list marks a definition that names something the collection does not
+  have with an amber triangle after its name, the names in its tooltip. Its references are
+  resolved against the collection as the list is drawn. A field or card type the last pass
+  saw deleted is added for as long as the definition still names it -- in a field slot or
+  an unfocus list, a `{{trigger....}}` token, a card action, or anywhere in code, where
+  any mention counts -- and only until the next pass, which no longer knows it was deleted
+  (see "Deleted" above). A field named only inside a search is left to that query stage's
+  own note;
+- a definition marked as broken (above) shows a red ✖ after its name, and its checkbox is
+  cleared and cannot be ticked. Both carry the same tooltip: that it is not run until it is
+  fixed, the marked lines, and the three ways out. Edit, Duplicate and Delete still work.
+
+Both marks follow an edit made from the definition list: when you save a definition there,
+its row is redrawn from the definition as saved, so a fix clears the triangle or the ✖ --
+and a cleared ✖ gives back a checkbox you can tick -- while a definition that still names
+something missing, or still spells a field one of its note types lacks, keeps it.
 
 A sort field is still not rewritten and still sorts a note that lacks it as empty -- a
 query legitimately mixes note types -- but a run where *no* selected note had the field
