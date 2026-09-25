@@ -373,42 +373,19 @@ def fill_in_missing_guids(definitions: Sequence[dict]) -> list[dict]:
     for definition in definitions:
         if "guid" not in definition:
             definition["guid"] = str(uuid.uuid4())
-        new_field_to_fields = []
-        for field_to_field in definition.get("field_to_field_defs") or []:
-            if "guid" not in field_to_field:
-                field_to_field["guid"] = str(uuid.uuid4())
-            new_processes = []
-            for process in field_to_field.get("process_chain") or []:
-                if "guid" not in process:
-                    process["guid"] = str(uuid.uuid4())
-                new_processes.append(process)
-            field_to_field["process_chain"] = new_processes
-            new_field_to_fields.append(field_to_field)
-        definition["field_to_field_defs"] = new_field_to_fields
-        new_field_to_files = []
-        for field_to_file in definition.get("field_to_file_defs") or []:
-            if "guid" not in field_to_file:
-                field_to_file["guid"] = str(uuid.uuid4())
-            new_processes = []
-            for process in field_to_file.get("process_chain") or []:
-                if "guid" not in process:
-                    process["guid"] = str(uuid.uuid4())
-                new_processes.append(process)
-            field_to_file["process_chain"] = new_processes
-            new_field_to_files.append(field_to_file)
-        definition["field_to_file_defs"] = new_field_to_files
-        new_field_to_variables = []
-        for field_to_variable in definition.get("field_to_variable_defs") or []:
-            if "guid" not in field_to_variable:
-                field_to_variable["guid"] = str(uuid.uuid4())
-            new_processes = []
-            for process in field_to_variable.get("process_chain") or []:
-                if "guid" not in process:
-                    process["guid"] = str(uuid.uuid4())
-                new_processes.append(process)
-            field_to_variable["process_chain"] = new_processes
-            new_field_to_variables.append(field_to_variable)
-        definition["field_to_variable_defs"] = new_field_to_variables
+        for key in ("field_to_field_defs", "field_to_file_defs", "field_to_variable_defs"):
+            new_defs = []
+            for nested_def in definition.get(key) or []:
+                if "guid" not in nested_def:
+                    nested_def["guid"] = str(uuid.uuid4())
+                new_processes = []
+                for process in nested_def.get("process_chain") or []:
+                    if "guid" not in process:
+                        process["guid"] = str(uuid.uuid4())
+                    new_processes.append(process)
+                nested_def["process_chain"] = new_processes
+                new_defs.append(nested_def)
+            definition[key] = new_defs
         updated_definitions.append(definition)
     return updated_definitions
 

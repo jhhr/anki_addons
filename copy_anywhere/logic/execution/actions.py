@@ -571,8 +571,9 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
         # in the executor gets: the resolution the expression's own references ask for.
         interpolated = _search_text(evaluate_text(expression, ctx))
         if not interpolated:
-            # An empty query would reach `find_notes(f" nid:{id}")`, which matches the
-            # trigger whatever the condition says, so every one of them would read true.
+            # Unparenthesised, an empty query reached `find_notes(f" nid:{id}")`, which
+            # matches the trigger whatever the condition says, so every one of them read
+            # true; parenthesised, Anki refuses the empty group without naming the condition.
             raise frame.error(
                 f"Error in copy fields: Condition query '{raw_query}' resolved to"
                 f" nothing for note id {target.id}",
@@ -581,7 +582,10 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
         # Through the session, like a query stage's search: the same predicate asked of the
         # same note twice costs one trip to the collection, and the preview pane -- the one
         # a user opens to see why a branch did not run -- gets the search it actually made.
-        search = f"{interpolated} nid:{target.id}"
+        # The parentheses keep the note scope on the whole predicate: Anki binds `OR` looser
+        # than the implicit AND, so `a OR b nid:X` is `a OR (b nid:X)` and would match any
+        # note `a` finds.
+        search = f"({interpolated}) nid:{target.id}"
         note_ids = session.find_notes(search)
         session.record_detail("query", search)
         session.record_detail("found", len(note_ids))

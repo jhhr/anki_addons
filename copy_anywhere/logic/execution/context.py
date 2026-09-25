@@ -15,7 +15,6 @@ have run, and a preview could not match a real run.
 
 from __future__ import annotations
 
-import base64
 import re
 import time
 from typing import Any, Callable, Optional, Sequence, Union
@@ -240,7 +239,7 @@ class ExecutionSession:
         self.edited_cards: dict[int, Card] = {}
         self.pending_files: list[dict] = []
 
-        self.query_cache: dict[str, list[int]] = {}
+        self.query_cache: dict[tuple[str, str], list[int]] = {}
         self.call_stack: list[str] = []
         self.trace: list[TraceEvent] = []
         #: The event of the stage currently running, so an action can say what it planned
@@ -395,7 +394,7 @@ class ExecutionSession:
         return self._cached_search("cards", query)
 
     def _cached_search(self, kind: str, query: str) -> list[int]:
-        key = base64.b64encode(f"{kind}{query}".encode()).decode()
+        key = (kind, query)
         cached = self.query_cache.get(key)
         if cached is None:
             finder = mw.col.find_notes if kind == "notes" else mw.col.find_cards

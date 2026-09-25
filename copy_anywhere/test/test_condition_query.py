@@ -1,6 +1,6 @@
 """Characterization tests for Step 3 of `copy_for_single_trigger_note`: the copy condition.
 
-The condition is a search run as `f"{interpolated} nid:{trigger_note.id}"`, which makes it a
+The condition is a search run as `f"({interpolated}) nid:{trigger_note.id}"`, which makes it a
 per-note gate rather than a note selector -- and gives it two failure modes that look alike
 from the outside but are not: a condition that does not match is benign and returns `True`,
 while a condition that cannot be interpolated returns `False` and stops the caller's bulk

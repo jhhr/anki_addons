@@ -571,9 +571,9 @@ class TestASearchConditionsPredicate:
         assert logger.has_error("nowhere")
 
     def test_a_predicate_that_resolves_to_nothing_is_refused(self, col):
-        # The guard that must survive any rewrite: an empty query reaches
-        # `find_notes(" nid:<id>")`, which matches the trigger whatever it says, so every
-        # condition would read as true.
+        # The guard that must survive any rewrite: before the search was parenthesised, an
+        # empty query reached `find_notes(" nid:<id>")`, which matches the trigger whatever
+        # it says, so every condition read as true.
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": ""})
 
         ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
@@ -587,6 +587,29 @@ class TestASearchConditionsPredicate:
         ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
 
         assert ok is False
+
+    def test_an_or_in_the_predicate_stays_scoped_to_the_trigger(self, col, logger):
+        # Anki binds `OR` looser than the implicit AND, so `tag:tag_a OR tag:tag_b nid:<id>`
+        # is `tag:tag_a OR (tag:tag_b nid:<id>)`: it found the other note, and the branch
+        # ran for a trigger that carries neither tag.
+        other = real_anki.add_note(col, VOCAB, {"Word": "other"})
+        col.tags.bulk_add([other.id], "tag_a")
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+
+        ok, _copied = run(d.staged(stages=[self.gate("tag:tag_a OR tag:tag_b")]), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == ""
+
+    def test_either_half_of_an_or_still_matches_the_trigger(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        col.tags.bulk_add([note.id], "tag_b")
+        note.load()
+
+        ok, _copied = run(d.staged(stages=[self.gate("tag:tag_a OR tag:tag_b")]), note)
+
+        assert ok is True, logger.errors
+        assert note["Note"] == "matched"
 
     def test_a_migrated_predicate_still_reads_the_note_the_old_way(self, col):
         # The path this must not disturb: a migrated copy condition carries
@@ -615,10 +638,11 @@ class TestASearchConditionsPredicate:
         assert copied == []
 
     def test_a_migrated_predicate_resolving_to_whitespace_is_refused(self, col, logger):
-        # `find_notes("  nid:<id>")` matches the note, so a migrated condition that is one
-        # reference to a field holding a space read true and ran the copy. It is as empty as
-        # a field holding nothing, and it is refused. Migration names the note the reference
-        # meant, so the refusal is the one message every predicate gets (§11).
+        # Unparenthesised, `find_notes("  nid:<id>")` matched the note, so a migrated
+        # condition that is one reference to a field holding a space read true and ran the
+        # copy. It is as empty as a field holding nothing, and it is refused. Migration names
+        # the note the reference meant, so the refusal is the one message every predicate
+        # gets (§11).
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": "   "})
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Meaning", "ran")],
@@ -1429,6 +1453,64 @@ class TestCalls:
         ok, _copied = run(a, note, definitions_for_calls=[a, b, c])
         assert ok is False
         assert logger.has_error("call cycle")
+
+    @pytest.fixture
+    def nested_runs(self, monkeypatch):
+        """The (guid, depth) of every called definition that started running.
+
+        `_run_call` reaches `execute_definition` through the evaluator module, so patching
+        it there sees every callee; the root run is entered through the runner's own import
+        and is not recorded.
+        """
+        from copy_anywhere.logic.execution import evaluator
+
+        seen: list = []
+        real = evaluator.execute_definition
+
+        def spy(frame, parent_event=None):
+            seen.append((frame.definition["guid"], frame.depth))
+            return real(frame, parent_event)
+
+        monkeypatch.setattr(evaluator, "execute_definition", spy)
+        return seen
+
+    def test_a_definition_calling_itself_is_refused_before_it_runs_again(
+        self, col, note, logger, nested_runs
+    ):
+        # The root used not to be on the call stack, so the check only fired once the
+        # definition had run a second time as its own callee.
+        a = d.staged("a", guid="a", stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("x"))]),
+            d.call_definition("a"),
+        ])
+        ok, copied = run(a, note, definitions_for_calls=[a])
+        assert ok is False
+        assert copied == []
+        assert logger.has_error("call cycle: a -> a")
+        assert nested_runs == []
+
+    def test_a_cycle_back_to_the_root_is_named_from_the_root(
+        self, col, note, logger, nested_runs
+    ):
+        a = d.staged("a", guid="a", stages=[d.call_definition("b")])
+        b = d.staged("b", guid="b", stages=[d.call_definition("a")])
+        ok, _copied = run(a, note, definitions_for_calls=[a, b])
+        assert ok is False
+        assert logger.has_error("call cycle: a -> b -> a")
+        assert nested_runs == [("b", 1)]
+
+    @pytest.mark.parametrize("calls_itself", [False, True])
+    def test_the_root_leaves_the_call_stack_when_its_run_ends(self, col, note, calls_itself):
+        stages = [d.edit_note("trigger", [d.write("Note", d.text("x"))])]
+        if calls_itself:
+            stages.append(d.call_definition("a"))
+        a = d.staged("a", guid="a", stages=stages)
+        session = ExecutionSession(definition_lookup={"a": a}.get)
+
+        ok = run_definition_for_trigger_note(a, note, session)
+
+        assert ok is not calls_itself
+        assert session.call_stack == []
 
 
 
