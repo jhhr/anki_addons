@@ -627,6 +627,35 @@ class CleanupCancelTests(DialogTestCase):
         self.assertNotIn("Cancel stops", self.labels[-1])
         self.assertIn("3/3", self.labels[-1])
 
+    def test_a_cancel_before_the_first_note_takes_the_hint_off_too(self):
+        """The label drawn as Cancel came back was the adding's last: nothing else drew."""
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
+        self.assertIn("Cancel stops the adding", self.labels[-1])
+
+        updater.end_cleanup_cancel()
+
+        self.assertNotIn("Cancel stops", self.labels[-1])
+        self.assertIn("0/3", self.labels[-1])
+
+    def test_a_later_stage_s_label_is_not_drawn_over(self):
+        """The dedupe drew after the adding's label went up, and a cancel of it ended the
+        adding: its label, without the hint, stays."""
+        updater = self.make_updater()
+        self.replace("disable_run_controls", lambda: None)
+        self.replace("rearm_cleanup_cancel", self.reset_flag)
+        updater.arm_cleanup_cancel(total_notes=3)
+        updater._last_update_at = 0.0
+        updater.update_new_note_processing_progress(total_notes=2)
+        drawn = len(self.drawn)
+
+        updater.end_cleanup_cancel()
+
+        self.assertEqual(len(self.drawn), drawn)
+        self.assertIn("Processing new notes", self.labels[-1])
+
     def test_ending_a_cancel_nothing_was_added_under_draws_nothing(self):
         updater = self.make_updater()
         self.replace("disable_run_controls", lambda: None)
@@ -738,17 +767,6 @@ class ReArmedControlsTests(DialogTestCase):
         self.assert_enabled(False, False)
         self.assertFalse(self.win.wantCancel)
 
-    def test_a_press_is_kept_when_asked_and_still_counts_as_re_armed(self):
-        """For a run that was not cancelled, where a set flag is a press made since."""
-        self.win.wantCancel = True
-
-        self.assertTrue(controls_module.rearm_cleanup_cancel(keep_pressed=True))
-
-        self.assertTrue(self.win.wantCancel)
-        # Greyed at the next redraw, as after any press in the cleanup
-        controls_module.refresh_run_controls()
-        self.assert_enabled(False, False)
-
     def test_the_flag_is_reset_even_in_a_dialog_without_the_buttons(self):
         """Escape still cancels there, and the first cancel must not stop the adding."""
         del self.win.form  # type: ignore[attr-defined]
@@ -810,8 +828,6 @@ class LateReArmTests(DialogTestCase):
             patch.start()
             self.addCleanup(patch.stop)
         self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
-        # A cancelled run, whose first cancel the dialog's flag holds
-        self.replace("run_cancelled", lambda: True)
         self.updater = self.make_updater()
         # What the main thread is to run, held back until the test runs it
         self.queued: list = []

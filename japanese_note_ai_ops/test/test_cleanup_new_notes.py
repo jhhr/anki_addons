@@ -51,7 +51,7 @@ class FakeNote:
 
 class FakeDecks:
     def id_for_name(self, name: str):
-        return 7 if name == "Vocab" else None
+        return {"Vocab": 7, "Default": 1}.get(name)
 
 
 class FakeCollection:
@@ -222,9 +222,7 @@ class ReArmedCancelTests(unittest.TestCase):
         self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
         # Anki's dialog, reduced to the flag Escape, the close box and Cancel set
         self.win = types.SimpleNamespace(wantCancel=True)
-        self.run_was_cancelled = True
         patches = (
-            mock.patch.object(base_ops, "run_cancelled", lambda: self.run_was_cancelled),
             mock.patch.object(mw.progress, "_win", self.win, create=True),
             mock.patch.object(mw.progress, "want_cancel", lambda: self.win.wantCancel),
             mock.patch.object(mw.progress, "update", lambda **_: None),
@@ -275,37 +273,16 @@ class ReArmedCancelTests(unittest.TestCase):
         self.assertEqual(unlinking, notes[1:])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 2))
 
-    def test_in_a_run_not_cancelled_a_press_during_the_write_stops_the_adding(self):
-        """The buttons are greyed while the edited notes are written, but Escape and the close
-        box still set the flag: with no cancel of the API work for it to hold, that is a press
-        to stop the adding, which the re-arm used to erase."""
-        self.run_was_cancelled = False
-        notes = [new_note("-1111111"), new_note("-2222222")]
-        col = FakeCollection()
-        unlinking: list = []
-
-        self.updater.begin_cleanup()
-        result = base_ops.add_new_notes(
-            col,
-            notes,
-            CONFIG,
-            POS,
-            self.updater,
-            unadded_notes_op=lambda notes, config, updater: unlinking.extend(notes) or {},
-        )
-
-        self.assertEqual(col.added, [])
-        self.assertEqual(unlinking, notes)
-        self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 2))
-
-    def test_in_a_run_not_cancelled_a_clear_flag_is_left_clear(self):
-        self.run_was_cancelled = False
-        self.win.wantCancel = False
+    def test_in_a_run_not_cancelled_a_press_after_the_api_work_is_the_run_s_cancel(self):
+        """Pressed while the results were flushed or the edited notes written, with Cancel
+        saying it cancels the run: as a press during the API work, it keeps the notes prepared,
+        where stopping the adding would drop every one the run paid for."""
         notes = [new_note("-1111111"), new_note("-2222222")]
         col = FakeCollection()
 
-        self.updater.begin_cleanup()
-        result = base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater)
+        with mock.patch.object(base_ops, "run_cancelled", lambda: False):
+            self.updater.begin_cleanup()
+            result = base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater)
 
         self.assertEqual([note for note, _ in col.added], notes)
         self.assertEqual(result.counts, base_ops.NewNotesCounts(2, 0, 0))
@@ -749,6 +726,17 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 1, 0))
         self.assertEqual(self.updater.adding[-1], (0, 1, 1))
         self.assertEqual(unlinking.handed, [])
+
+    def test_a_note_type_with_no_insert_deck_adds_to_the_default_deck(self):
+        """The key is optional, as config.md says; left out, it stopped every add."""
+        note = new_note("-1111111")
+        config = {"Word": {k: v for k, v in CONFIG["Word"].items() if k != "insert_deck"}}
+        col = FakeCollection()
+
+        result = base_ops.add_new_notes(col, [note], config, POS, self.updater)
+
+        self.assertEqual(col.added, [(note, col.decks.id_for_name("Default"))])
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 0))
 
     def test_a_cancel_during_the_dedupe_unlinks_every_note_as_prepared(self):
         """The duplicate the dedupe dropped included: an interrupted dedupe leaves some of
@@ -1542,7 +1530,8 @@ class TidySortFieldMarkersTests(unittest.TestCase):
         renamed = self.tidy(search, *search.get_notes([2, 3, 4]))
 
         self.assertEqual(search.sort_bases, [("word_sort_field", ["単語", "言語"])])
-        self.assertEqual(renamed, {3: "言語", 4: "単語 (m2)", 5: "単語 (m1)"})
+        # 単語 was added by hand after 単語 (m1): it comes after, rather than moving it up
+        self.assertEqual(renamed, {3: "言語", 5: "単語 (m2)"})
 
     def test_with_no_markers_nothing_is_read(self):
         search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (x1)", 3))
@@ -1720,18 +1709,19 @@ class TidyAfterAddingTests(NewNoteHarness):
         self.assertEqual(self.sort_field(search, 2), self.WORD)
 
     def test_the_reading_number_a_failed_reading_leaves_is_taken_off(self):
-        search = FakeSearch(vocab_note(self.WORD, 2), vocab_note(f"{self.WORD} (m1)", 3))
-        search.saved[2]["word_sort_field"] = f"{self.WORD} (m2)"
+        search = FakeSearch(
+            vocab_note(f"{self.WORD} (m1)", 2), vocab_note(f"{self.WORD} (m2)", 3)
+        )
         with search.patched():
             self.failed_reading("", 2, 3)
-        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m2)")
-        self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+        self.assertEqual(self.to_update[2]["word_sort_field"], f"{self.WORD} (r1)(m1)")
+        self.assertEqual(self.to_update[3]["word_sort_field"], f"{self.WORD} (r1)(m2)")
 
         col = self.clean_up(search, notes=[], tidy=False)
 
         self.assertEqual(sorted(self.tidy(col)), [2, 3])
-        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m2)")
-        self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, 2), f"{self.WORD} (m1)")
+        self.assertEqual(self.sort_field(search, 3), f"{self.WORD} (m2)")
 
     def test_the_markers_of_a_note_a_cancel_left_out_go(self):
         """Two readings added, and a meaning of the second left out, which had numbered it."""
@@ -1857,6 +1847,35 @@ class SelectedNotesOpTidyTests(unittest.TestCase):
         self.assertIs(col.updated[-1], new)
         # The added note renamed is counted as added, not as an edited note
         self.assertEqual(self.finished, [([2], [], base_ops.NewNotesCounts(added=1))])
+
+    def test_a_note_registered_after_the_op_answered_is_not_added(self):
+        """By a thread a cancel abandoned, during the edited notes' write: its placeholder is
+        in no result saved, so added it would be a note no sentence links to."""
+        search = FakeSearch(vocab_note("言葉", 2))
+        answered, late = vocab_note("言葉 (m2)"), vocab_note("言葉 (m3)")
+        col = RunCollection(search, self.updater)
+        shared: list = []
+        write = col.update_notes
+
+        def update_notes(notes):
+            write(notes)
+            shared[0].setdefault("言葉", []).append(late)
+
+        col.update_notes = update_notes  # type: ignore[method-assign]
+
+        async def bulk_op(col, notes, notes_to_add_dict, notes_to_update_dict, **_):
+            shared.append(notes_to_add_dict)
+            notes_to_add_dict["言葉"] = [answered]
+            notes_to_update_dict[2] = vocab_note("言葉 (m1)", 2)
+            return POS, {"言葉": [answered]}, notes_to_update_dict, []
+
+        with mock.patch.object(mw, "col", col, create=True):
+            base_ops.selected_notes_op(
+                "Done", bulk_op, [2], None, self.updater, new_notes_op=Recorder()
+            )
+
+        self.assertEqual([note for note, _ in col.added], [answered])
+        self.assertIn(late, shared[0]["言葉"])
 
     def test_without_a_tidying_op_nothing_is_tidied(self):
         search = FakeSearch(vocab_note("言葉 (kun)", 2))

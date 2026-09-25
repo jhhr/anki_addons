@@ -31,7 +31,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
-| `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login stops it); cancel watchdog and stack dumps |
+| `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login or unusable model stops it); cancel watchdog and stack dumps |
 | `async_api_ops/chain_types.py` | `ChainStep(label, on_done)`, `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
 | `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
@@ -141,16 +141,19 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   started note after the driver returns (`flush_started_plans`): a note's own save waits for
   all its tasks, and a cancel cancels it with them, which lost the finished ones. Each op's
   flush and own save run once only, whichever comes first (the match op and the judge).
+  The notes to add are those registered before the flush, which it answers with, and the
+  cleanup adds that answer only, never the shared `notes_to_add_dict`: threads a cancel
+  abandoned go on registering notes there that no saved result links to.
   Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
-  set for the rest of a cancelled run. While Cancel is grey, Escape and the close box do
-  nothing either (`progress_controls.swallows_cancel`, an event filter on Anki's dialog), so
-  a press during the edited notes' write, the resolving or the unlinking is dropped; without
-  the buttons such a press is kept (`keep_pressed`) and stops the adding. A reset that could
-  not happen, or lands after the op
-  thread stopped waiting or closed the window (a generation under `_arm_lock`), arms nothing,
-  so a stale first cancel is never taken for a second one. From then on a cancel
+  set for the rest of a cancelled run. It is reset in a run not cancelled too: a press before
+  Cancel says it stops the adding is the run's cancel, which keeps every prepared note. While
+  Cancel is grey, Escape and the close box do nothing either
+  (`progress_controls.swallows_cancel`, an event filter on Anki's dialog), so a press during
+  the edited notes' write, the resolving or the unlinking is dropped. A reset that could not happen, or lands after the op thread
+  stopped waiting or closed the window (a generation under `_arm_lock`), arms nothing, so a
+  stale first cancel is never taken for a second one. From then on a cancel
   (`cleanup_cancel_requested()`, never `run_cancelled()`) stops the adding, checked before the
   dedupe, between its merges, after it and before each `add_note` - never inside one, where
   copy_anywhere's on-add definitions run. `end_cleanup_cancel()` closes it in a `finally`.
@@ -164,12 +167,12 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
   without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
   for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
-  without gaps, meanings then readings, dropping a marker that tells nothing apart; the rules
-  are the pure `sort_field_markers.tidy_word_markers`. Preparing a note renames its word's
-  other notes, saved before the adding decides whether it will exist, so a note not added
-  (cancelled, failed, a dedupe's duplicate) or a new reading whose meaning failed leaves such
-  markers. This is the only thing that takes them back: there is no record of renames to
-  undo. It cannot be cancelled, and a raise only logs.
+  without gaps in creation (note id) order, meanings then readings, dropping a marker that
+  tells nothing apart; the rules are the pure `sort_field_markers.tidy_word_markers`.
+  Preparing a note renames its word's other notes, saved before the adding decides whether it
+  will exist, so a note not added (cancelled, failed, a dedupe's duplicate) or a new reading
+  whose meaning failed leaves such markers. This is the only thing that takes them back:
+  there is no record of renames to undo. It cannot be cancelled, and a raise only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight

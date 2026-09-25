@@ -12,6 +12,8 @@ maps are built from plain rows, so everything above `_read_notes` is a pure func
 """
 
 import asyncio
+import sqlite3
+import unicodedata
 import unittest
 from unittest import mock
 from typing import TYPE_CHECKING
@@ -431,6 +433,22 @@ class SortBaseNoteIdsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    class SqliteDb:
+        """The notes table in SQLite, as the query's filter has to really run."""
+
+        def __init__(self, rows):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.execute("create table notes (id integer, mid integer, flds text)")
+            self.conn.executemany("insert into notes values (?, ?, ?)", rows)
+            self.queries: list = []
+            self.returned: list = []
+
+        def all(self, sql, *args):
+            self.queries.append(sql)
+            rows = self.conn.execute(sql, args).fetchall()
+            self.returned.append([row[0] for row in rows])
+            return rows
+
     def read(self, bases, rows=()):
         notetypes = [
             ReadNotesTests.notetype(
@@ -439,7 +457,8 @@ class SortBaseNoteIdsTests(unittest.TestCase):
             # Another notetype with a field of the name, which a field search would span too
             ReadNotesTests.notetype(600, "Back", "vocab-key"),
         ]
-        mw.col = ReadNotesTests.FakeCollection(notetypes, list(rows))
+        mw.col = ReadNotesTests.FakeCollection(notetypes, [])
+        mw.col.db = self.SqliteDb(list(rows))
         return wi.sort_base_note_ids("vocab-key", bases), mw.col
 
     def test_a_word_s_notes_are_found_whatever_markers_follow_it(self):
@@ -459,6 +478,42 @@ class SortBaseNoteIdsTests(unittest.TestCase):
     def test_a_word_with_no_notes_is_left_out(self):
         found, _ = self.read(["単語"], [vocab_row(1, "言葉", "言葉", "ことば", "言葉")])
         self.assertEqual(found, {})
+
+    def test_a_few_words_without_case_read_only_the_notes_holding_them(self):
+        """A single-word match tidies one word, and used to split every note's fields."""
+        rows = [
+            vocab_row(1, "言葉", "言葉", "ことば", "言葉 (m1)"),
+            vocab_row(2, "単語", "単語", "たんご", "単語"),
+            # Held in another field only: read, and left out by the sort field
+            vocab_row(3, "言葉", "言葉", "ことば", "語"),
+        ]
+        found, col = self.read(["言葉"], rows)
+
+        self.assertEqual(found, {"言葉": [1]})
+        self.assertEqual(col.db.returned, [[1, 3]])
+
+    def test_a_word_in_either_composition_is_found(self):
+        nfd = unicodedata.normalize("NFD", "がくせい")
+        rows = [
+            vocab_row(1, "学生", "学生", "がくせい", "がくせい (m1)"),
+            vocab_row(2, "学生", "学生", "がくせい", f"{nfd} (m2)"),
+        ]
+        found, _ = self.read(["がくせい"], rows)
+        self.assertEqual(found, {"がくせい": [1, 2]})
+
+    def test_a_word_with_case_or_many_words_read_every_note(self):
+        """instr compares code points, where the notes of a word are found case-folded."""
+        rows = [
+            vocab_row(1, "ok", "ok", "おーけー", "ok (m2)"),
+            vocab_row(2, "単語", "単語", "たんご", "単語"),
+        ]
+        found, col = self.read(["OK"], rows)
+        self.assertEqual(found, {wi.index_key("OK"): [1]})
+        self.assertEqual(col.db.returned, [[1, 2]])
+
+        many = [f"語{i}" for i in range(wi._FEW_WORDS + 1)]
+        _, col = self.read(many, rows)
+        self.assertEqual(col.db.returned, [[1, 2]])
 
     def test_no_words_read_nothing(self):
         found, col = self.read([])

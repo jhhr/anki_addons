@@ -10,8 +10,9 @@ far more than a connection - a couple of seconds of startup and a few hundred MB
 running at once has its own cap, `terminal_max_concurrent_requests`, on top of the gate.
 
 The subscription's usage limit pauses a bulk run until the reset time the CLI states, and every
-request that hit the limit is retried after it; an expired login, which only the user can fix,
-stops the run. Outside a bulk run (an editor hook) either one only fails the request.
+request that hit the limit is retried after it; an expired login or a model the CLI cannot use,
+which only the user can fix, stops the run. Outside a bulk run (an editor hook) any of them only
+fails the request.
 """
 
 import json
@@ -94,6 +95,13 @@ AUTH_FAILURE_RE = re.compile(
     re.I,
 )
 AUTH_STATUSES = frozenset({401, 403})
+# A model the CLI cannot use, which fails every request alike: a name it doesn't know, seen as
+# a 404 "There's an issue with the selected model (claude-nope)", or one newer than the
+# installed CLI, seen as a 400 "Claude Code 2.1.268 does not support this model; version
+# 2.1.280 or newer is required. Run 'claude update'". Both print this tag on stderr.
+UNUSABLE_MODEL_RE = re.compile(
+    r"issue with the selected model|does not support this model|unrecognized_model", re.I
+)
 
 
 def is_terminal_model(model: str) -> bool:
@@ -136,6 +144,8 @@ class CliAction:
     EXHAUSTED = "exhausted"
     # The CLI's login expired: nothing will go through until the user logs in again
     UNAUTHENTICATED = "unauthenticated"
+    # The configured model is unknown to the CLI or needs a newer CLI
+    UNUSABLE_MODEL = "unusable_model"
     FAIL = "fail"
 
 
@@ -144,6 +154,9 @@ class CliAction:
 # The usage limit is not one: it clears at its reset time, and the run pauses until then.
 STOP_REASONS = {
     CliAction.UNAUTHENTICATED: "login has expired - run `claude` in a terminal to log in again",
+    CliAction.UNUSABLE_MODEL: (
+        "cannot use the configured model - fix the operation's model name or run `claude update`"
+    ),
 }
 
 
@@ -179,6 +192,10 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
             return CliOutcome(CliAction.OK, structured, text)
         return CliOutcome(CliAction.OK, None, text)
 
+    # Before the status checks: the 404 and 400 it comes as would otherwise fail only this
+    # request, and a run of thousands failed every one of them before it was noticed
+    if UNUSABLE_MODEL_RE.search(text) or UNUSABLE_MODEL_RE.search(stderr or ""):
+        return CliOutcome(CliAction.UNUSABLE_MODEL, None, text or stderr.strip()[-500:], status)
     if USAGE_LIMIT_RE.search(text):
         return CliOutcome(CliAction.EXHAUSTED, None, text, status)
     if AUTH_FAILURE_RE.search(text) or status in AUTH_STATUSES:

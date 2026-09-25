@@ -665,6 +665,58 @@ class FlushStartedPlansTests(unittest.TestCase):
         self.assertEqual(events, [("flush", 0), ("flush", 1), ("on_end",)])
         self.assertEqual(saved, [True, True, False])
 
+    def test_the_notes_to_add_are_those_registered_before_the_flush(self):
+        """A thread a cancel abandoned goes on registering new notes. One registered once the
+        results are being flushed has its placeholder in no result saved, so it is left out
+        of the notes to add, whose lists are copies the thread's appends do not reach."""
+        shared: dict = {}
+        early, late, later = object(), object(), object()
+        releases = []
+
+        def plan_note(config, index, **_):
+            def flush():
+                shared["word"].append(late)
+                shared.setdefault("other", []).append(late)
+                return False
+
+            async def work(release):
+                await release
+                shared.setdefault("word", []).append(early)
+
+            def spawn(tasks):
+                release = asyncio.get_running_loop().create_future()
+                releases.append(release)
+                tasks.append(asyncio.create_task(work(release)))
+
+            return NotePlan(task_count=1, spawn=spawn, flush=flush)
+
+        async def main():
+            runner = asyncio.ensure_future(
+                base_ops.bulk_nested_notes_op(
+                    message="test",
+                    config={},
+                    bulk_inner_op=plan_note,
+                    col=RunCollection(),
+                    notes=[0],
+                    edited_nids=[],
+                    progress_updater=RunProgress(),
+                    notes_to_add_dict=shared,
+                    notes_to_update_dict={},
+                    model="model",
+                    on_end=lambda: shared["word"].append(later),
+                )
+            )
+            self.assertTrue(await wait_until(lambda: len(releases) == 1))
+            releases[0].set_result(None)
+            self.assertTrue(await wait_until(runner.done), "the run did not finish")
+            return runner.result()
+
+        with patch_nested_run(base_ops):
+            _, to_add, _, _ = asyncio.run(main())
+
+        self.assertEqual(to_add, {"word": [early]})
+        self.assertEqual(shared["word"], [early, late, later])
+
     def test_each_flush_runs_whatever_the_one_before_did(self):
         calls = []
 

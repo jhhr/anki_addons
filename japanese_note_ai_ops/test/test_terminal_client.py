@@ -40,6 +40,15 @@ BAD_MODEL = cli_json(
     api_error_status=404,
     result="There's an issue with the selected model (claude-nope).",
 )
+# add_note_20260923_023309.log: a model newer than the installed CLI, 9129 requests of it
+OLD_CLI = cli_json(
+    subtype="success",
+    is_error=True,
+    api_error_status=400,
+    result="API Error: 400 Claude Code 2.1.268 does not support this model; version 2.1.280 or"
+    " newer is required. Run 'claude update', or update the Claude desktop app, then try again.",
+)
+OLD_CLI_STDERR = '[claude-code:unrecognized_model] {"model":"claude-opus-5-5"}'
 RATE_LIMITED = cli_json(is_error=True, api_error_status=429, result="Rate limited")
 USAGE_LIMIT = cli_json(
     is_error=True, api_error_status=429, result="You've hit your session limit · resets 5pm"
@@ -75,9 +84,9 @@ class FakeProcess:
         if self.killed:
             self.returncode = 1
             return b"", b""
-        exit_code, stdout = self.outcome
+        exit_code, stdout, *stderr = self.outcome
         self.returncode = exit_code
-        return stdout.encode("utf-8"), b""
+        return stdout.encode("utf-8"), "".join(stderr).encode("utf-8")
 
     def kill(self):
         self.killed = True
@@ -181,7 +190,9 @@ class PureTests(unittest.TestCase):
         cases = [
             ((0, SUCCESS), tc.CliAction.OK),
             ((0, TEXT_ONLY), tc.CliAction.OK),
-            ((1, BAD_MODEL), tc.CliAction.FAIL),
+            ((1, BAD_MODEL), tc.CliAction.UNUSABLE_MODEL),
+            ((1, OLD_CLI), tc.CliAction.UNUSABLE_MODEL),
+            ((1, cli_json(is_error=True, api_error_status=400)), tc.CliAction.FAIL),
             ((1, RATE_LIMITED), tc.CliAction.RETRY),
             ((1, cli_json(is_error=True, api_error_status=529)), tc.CliAction.RETRY),
             ((1, USAGE_LIMIT), tc.CliAction.EXHAUSTED),
@@ -199,6 +210,12 @@ class PureTests(unittest.TestCase):
         # A login failure the CLI printed instead of returning is still a dead end, not a crash
         self.assertEqual(
             tc.classify_result(1, "", "Authentication failed").action, tc.CliAction.UNAUTHENTICATED
+        )
+        # Only stderr names the problem: still the model, whatever the result text says
+        self.assertEqual(
+            tc.classify_result(1, cli_json(is_error=True, api_error_status=400), OLD_CLI_STDERR)
+            .action,
+            tc.CliAction.UNUSABLE_MODEL,
         )
         self.assertEqual(tc.classify_result(0, SUCCESS, "").result, {"decision": "match"})
         self.assertEqual(
@@ -434,8 +451,21 @@ class RequestTests(ClockTestCase):
         self.assertIsNone(self.ask(later))
         self.assertEqual(later.calls, [])
 
+    def test_unusable_model_stops_the_run(self):
+        api.begin_run()
+        self.addCleanup(api.end_run)
+        self.assertIsNone(self.ask(FakePopen((1, OLD_CLI, OLD_CLI_STDERR))))
+        self.assertTrue(api.run_cancelled())
+        reason = api.take_stop_reason()
+        self.assertIn("cannot use the configured model", reason)
+        self.assertIn("2.1.280 or newer is required", reason)
+
+        later = FakePopen((0, SUCCESS))
+        self.assertIsNone(self.ask(later))
+        self.assertEqual(later.calls, [])
+
     def test_dead_ends_outside_a_run_only_fail(self):
-        for outcome in ((1, USAGE_LIMIT), (1, EXPIRED_LOGIN)):
+        for outcome in ((1, USAGE_LIMIT), (1, EXPIRED_LOGIN), (1, OLD_CLI)):
             with self.subTest(outcome=outcome[1][:40]):
                 self.assertIsNone(self.ask(FakePopen(outcome)))
                 self.assertFalse(api.run_cancelled())

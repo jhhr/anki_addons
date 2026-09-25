@@ -113,18 +113,18 @@ class WordNote(NamedTuple):
     reading_type: str
 
 
-def _numbering(
-    numbers: Sequence[Optional[int]], tiebreaks: Sequence[int]
-) -> list[Optional[int]]:
-    """1..n for n >= 2 items, keeping their order: unnumbered first (the note numbered
-    against is the older one), then by number, then by `tiebreaks` (note ids). None for one."""
-    if len(numbers) < 2:
-        return [None] * len(numbers)
-    order = sorted(
-        range(len(numbers)),
-        key=lambda i: (numbers[i] is not None, numbers[i] or 0, tiebreaks[i]),
-    )
-    renumbered: list[Optional[int]] = [None] * len(numbers)
+def _numbering(created: Sequence[int]) -> list[Optional[int]]:
+    """1..n for n >= 2 items in the order they were created, by `created` (note ids, which
+    are creation times). None for one.
+
+    Not in the order of the numbers they had: a note added by hand to a numbered word has none,
+    and ordering the unnumbered first shifted every established note's number up by one, in
+    every run that tidied the word. The match op numbers a new note after the ones it sees, so
+    for its own numbering the two orders agree."""
+    if len(created) < 2:
+        return [None] * len(created)
+    order = sorted(range(len(created)), key=lambda i: created[i])
+    renumbered: list[Optional[int]] = [None] * len(created)
     for position, i in enumerate(order, start=1):
         renumbered[i] = position
     return renumbered
@@ -139,15 +139,17 @@ def tidy_word_markers(notes: Sequence[WordNote]) -> dict[int, str]:
     Meanings first. The notes of one reading are its meanings. If any is numbered, one note
     alone loses its `(mN)` and two or more are numbered from 1 without gaps.
 
-    Then readings. `(kun)`/`(on)` are kept only while the word has both a kun and an on
-    reading: a reading is of the kind its marker says, or else of the kind its notes'
-    furigana says. Without both they are dropped, and the word's readings are numbered as
-    one. Within each kind (or the word, when unmarked) two or more readings are numbered from
-    1 without gaps, and a reading alone loses its `(rN)`.
+    Then readings. A reading is of the kind its marker says, or else of the kind its notes'
+    furigana says, kun, on or neither. `(kun)`/`(on)` are kept while the word has readings of
+    two kinds or more, neither counting as one: a (kun) reading and one of neither kind stay
+    told apart by the marker, rather than numbered. With a single kind they are dropped, and
+    the word's readings are numbered as one. Within each marker (or the word, when they are
+    dropped) two or more readings are numbered from 1 without gaps, and a reading alone loses
+    its `(rN)`.
 
     A marker is never added where the numbering does not need one: an unmarked kun reading
     of a word marked (kun)/(on) stays unmarked. Everything is renumbered in the order it was
-    in, so tidy markers are left as they are, and tidying twice changes nothing more.
+    created, a reading by its oldest note, so tidying twice changes nothing more.
     """
     parsed: dict[int, SortMarkers] = {}
     by_word: dict[str, list[WordNote]] = {}
@@ -179,11 +181,10 @@ def _tidy_meanings(
 ) -> dict[int, SortMarkers]:
     tidied: dict[int, SortMarkers] = {}
     for meanings in _by_reading(word_notes, parsed).values():
-        numbers = [parsed[note.nid].meaning_number for note in meanings]
-        if all(number is None for number in numbers):
+        if all(parsed[note.nid].meaning_number is None for note in meanings):
             # Unnumbered notes of one reading are no numbering of the match op's to tidy
             continue
-        renumbered = _numbering(numbers, [note.nid for note in meanings])
+        renumbered = _numbering([note.nid for note in meanings])
         for note, number in zip(meanings, renumbered):
             tidied[note.nid] = replace(parsed[note.nid], meaning_number=number)
     return tidied
@@ -206,7 +207,10 @@ def _tidy_readings(
         )
 
     kinds = {kind(reading, notes) for reading, notes in readings.items()}
-    keep_kun_on = "kun" in kinds and "on" in kinds
+    # Neither is a kind of its own: counted as the kind it is marked apart from, a note the
+    # match op marked (kun) for an on reading that was never added, next to one it left
+    # unmarked for telling no kind, came out (r1) and (r2), markers neither had before
+    keep_kun_on = len(kinds) > 1
 
     by_class: dict[str, list[tuple[str, Optional[int]]]] = {}
     for reading in readings:
@@ -215,8 +219,7 @@ def _tidy_readings(
     tidied: dict[int, SortMarkers] = {}
     for kun_on, class_readings in by_class.items():
         renumbered = _numbering(
-            [reading[1] for reading in class_readings],
-            [min(note.nid for note in readings[reading]) for reading in class_readings],
+            [min(note.nid for note in readings[reading]) for reading in class_readings]
         )
         for reading, number in zip(class_readings, renumbered):
             for note in readings[reading]:

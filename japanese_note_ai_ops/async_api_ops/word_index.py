@@ -286,8 +286,11 @@ class WordIndex:
         return sorted(matching)
 
 
-def _read_notes(fields: WordFields) -> "tuple[dict[int, FieldOrds], list[tuple[int, int, str]]]":
-    """One turn with the collection: the notetype ordinals, then every note that can match.
+def _read_notes(
+    fields: WordFields, containing: "Sequence[str]" = ()
+) -> "tuple[dict[int, FieldOrds], list[tuple[int, int, str]]]":
+    """One turn with the collection: the notetype ordinals, then every note that can match,
+    or only those whose fields hold one of `containing` somewhere.
 
     Runs on the collection worker, so both statements happen under a single turn rather than
     letting every other waiting caller in between.
@@ -316,9 +319,12 @@ def _read_notes(fields: WordFields) -> "tuple[dict[int, FieldOrds], list[tuple[i
         # unmatched, and the run would create a duplicate note for each of them.
         raise RuntimeError("Cannot build the word index, the collection is closed")
     mids = ",".join(str(mid) for mid in ords_by_mid)
+    where = f"mid in ({mids})"
+    if containing:
+        where += " and (" + " or ".join("instr(flds, ?) > 0" for _ in containing) + ")"
     rows = cast(
         "list[tuple[int, int, str]]",
-        db.all(f"select id, mid, flds from notes where mid in ({mids})"),
+        db.all(f"select id, mid, flds from notes where {where}", *containing),
     )
     return ords_by_mid, rows
 
@@ -344,19 +350,49 @@ def sort_base_note_ids(sort_field: str, bases: "Iterable[str]") -> "dict[str, li
     """The notes whose `sort_field` holds each of `bases` followed by nothing or by markers,
     by `index_key(base)`, read from the collection as it is now.
 
-    For the cleanup, which reads the notes after the run's writes and so cannot ask the run's
-    index. One pass over the notes table, as the index is built: as searches, a word's notes
-    would be a regex over the sort field of every note, once per word.
+    For the cleanup's marker tidying, which renames notes of a word the run never touched, so
+    reads them as they are now. The run's own index would save the pass, given the added notes
+    and less the deleted ones, but it is as old as the run's first word, and a run can spend
+    minutes on API calls while the notes are edited by hand; the pass costs in the order of a
+    second per 100k notes, next to that, though not next to a single word's match; see
+    _containing. One pass over the notes table, as the index is built: as searches, a word's
+    notes would be a regex over the sort field of every note, once per word.
     """
+    bases = list(bases)
     wanted = {index_key(base) for base in bases}
     if not wanted:
         return {}
     fields = WordFields(kanjified="", normal="", reading="", sort=sort_field)
+    containing = _containing(bases)
     ords_by_mid, rows = run_on_collection(
-        f"word_index: notes by {sort_field}", lambda: _read_notes(fields)
+        f"word_index: notes by {sort_field}", lambda: _read_notes(fields, containing)
     )
     by_sort_base = WordIndex.from_rows(fields, ords_by_mid, rows).by_sort_base
     return {key: list(by_sort_base[key]) for key in wanted if key in by_sort_base}
+
+
+# The most words sort_base_note_ids has SQLite look for, two parameters each
+_FEW_WORDS = 20
+
+
+def _containing(bases: "Sequence[str]") -> "Sequence[str]":
+    """The strings a note must hold one of to be a note of `bases`, or none to read them all.
+
+    Splitting every note's fields in Python is most of the pass, and a single-word match paid
+    it whole to tidy one word. SQLite's instr drops the other notes first, but compares code
+    points: a word with a cased letter could be spelled otherwise in a note index_key matches,
+    so it is read in full, as are many words. Both compositions are looked for, as index_key
+    matches either.
+    """
+    if len(bases) > _FEW_WORDS:
+        return ()
+    containing: dict[str, None] = {}
+    for base in bases:
+        if any(char.lower() != char or char.upper() != char for char in base):
+            return ()
+        for form in ("NFC", "NFD"):
+            containing[unicodedata.normalize(form, base)] = None
+    return list(containing)
 
 
 class WordIndexCache:
