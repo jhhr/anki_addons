@@ -25,9 +25,16 @@ from anki_shared.testing import real_anki
 from conftest import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
 from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
+from copy_anywhere.logic.copy_fields import (
+    CacheResults,
+    copy_fields_in_background,
+    copy_for_single_trigger_note,
+)
 from copy_anywhere.logic.rename_reconcile import (
+    BROKEN_ADVICE,
     BROKEN_KEY,
     SNAPSHOT_KEY,
+    broken_by_rename_messages,
     definitions_hold_references,
     log_result,
     reconcile,
@@ -910,6 +917,161 @@ class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
             f'Field "Word" is no longer present on all of the note types "{VOCAB}",'
             f' "{self.OTHER}" & "{KANJI}"'
         ]
+
+
+class TestADefinitionBrokenByARenameIsNotRun:
+    """A marked definition is refused on every run path, and says why in the log.
+
+    Run as it stands it would read or write a field some note type it triggers on no longer
+    has. The note type that still has it is the realistic case: a run on its notes would
+    succeed and quietly keep writing what the user may be about to rework, so the refusal
+    has to be the mark itself, not a failure the missing field happens to cause.
+    """
+
+    OTHER = "CA Vocab B"
+
+    @pytest.fixture
+    def marked(self, col, config):
+        real_anki.make_note_type(
+            col, self.OTHER, ["Word", "Meaning"], [("Card 1", "{{Word}}", "{{Meaning}}")]
+        )
+        definition = d.staged(
+            definition_name="both",
+            guid="both-guid",
+            note_types=[VOCAB, self.OTHER],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
+            ],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+        rename_field(col, VOCAB, "Word", "Term")
+        reconcile(config, mw.col)
+        assert definition.get(BROKEN_KEY), "the pass did not mark the definition"
+        return definition
+
+    def other_note(self, col, word="neko"):
+        """A note of the note type that still has the field, so only the mark can stop it."""
+        return real_anki.add_note(col, self.OTHER, {"Word": word, "Meaning": "cat"})
+
+    def message(self) -> str:
+        return f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
+
+    def test_a_run_on_one_note_writes_nothing_and_logs_the_message(self, col, marked, logger):
+        note = self.other_note(col)
+        copied: list = []
+
+        ok = copy_for_single_trigger_note(marked, note, copied_into_notes=copied)
+
+        assert ok is False
+        assert copied == []
+        assert note["Meaning"] == "cat"
+        assert logger.errors == [
+            f"Error in copy fields: 'both' was not run: {self.message()}. {BROKEN_ADVICE}"
+        ]
+
+    def test_a_bulk_run_logs_it_once_not_once_per_note(self, col, marked, logger):
+        self.other_note(col, "neko")
+        self.other_note(col, "inu")
+        copied: list = []
+
+        copy_fields_in_background(
+            copy_definition=marked,
+            copied_into_cards_dict={},
+            copied_into_notes=copied,
+            results=CacheResults(result_text="", changes=None),
+        )
+
+        assert copied == []
+        assert logger.errors == [
+            f"Error in copy fields: 'both' was not run: {self.message()}. {BROKEN_ADVICE}"
+        ]
+
+    def test_a_caller_of_it_fails_with_the_message_and_writes_nothing(
+        self, col, marked, logger
+    ):
+        note = self.other_note(col)
+        caller = d.staged(
+            "caller",
+            guid="caller-guid",
+            note_types=[self.OTHER],
+            stages=[
+                # Written before the call: a failed run discards what it staged, so this
+                # must not reach the note either.
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("before the call"))]),
+                d.call_definition("both-guid"),
+            ],
+        )
+        copied: list = []
+
+        ok = copy_for_single_trigger_note(
+            caller, note, copied_into_notes=copied, definitions_for_calls=[marked, caller]
+        )
+
+        assert ok is False
+        assert copied == []
+        assert note["Meaning"] == "cat"
+        assert col.get_note(note.id)["Meaning"] == "cat"
+        assert logger.errors == [
+            f"calls definition 'both', which was not run: {self.message()}. {BROKEN_ADVICE}"
+        ]
+
+    def test_it_runs_again_once_the_mark_is_cleared(self, col, marked, config, logger):
+        note = self.other_note(col)
+        rename_field(col, self.OTHER, "Word", "Term")
+        reconcile(config, mw.col)
+        note = col.get_note(note.id)
+
+        assert BROKEN_KEY not in marked
+        assert copy_for_single_trigger_note(marked, note) is True
+        assert note["Meaning"] == "neko"
+        assert logger.errors == []
+
+    def test_every_message_of_a_definition_marked_twice_is_logged(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        definition = d.staged(
+            definition_name="twice",
+            stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("x"))])],
+        )
+        definition[BROKEN_KEY] = [
+            {"field": "Word", "message": "first."},
+            {"field": "Meaning", "message": "second"},
+        ]
+
+        assert copy_for_single_trigger_note(definition, note) is False
+        assert logger.errors == [
+            f"Error in copy fields: 'twice' was not run: first. {BROKEN_ADVICE}",
+            f"Error in copy fields: 'twice' was not run: second. {BROKEN_ADVICE}",
+        ]
+        assert note["Note"] == ""
+
+    @pytest.mark.parametrize(
+        "stored, messages",
+        [
+            ([{"field": "Word", "message": "gone"}], ["gone"]),
+            ([{"field": "Word", "message": "gone"}, "junk", {"field": "X"}], ["gone"]),
+            ([{"field": "Word", "message": ""}, {"message": 3}], []),
+            ({"field": "Word", "message": "not in a list"}, []),
+            ("gone", []),
+            (None, []),
+        ],
+    )
+    def test_only_well_formed_entries_with_a_message_count(self, stored, messages):
+        definition = d.staged(stages=[])
+        definition[BROKEN_KEY] = stored
+
+        assert broken_by_rename_messages(definition) == messages
+
+    def test_a_mark_with_nothing_to_say_does_not_stop_the_run(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        definition = d.staged(
+            stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("ran"))])],
+        )
+        definition[BROKEN_KEY] = ["junk"]
+
+        assert copy_for_single_trigger_note(definition, note) is True
+        assert note["Note"] == "ran"
+        assert logger.errors == []
 
 
 class TestTheWarningAfterAFieldsSave:

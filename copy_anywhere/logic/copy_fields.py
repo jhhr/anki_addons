@@ -48,6 +48,7 @@ from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 from .object_refs import resolve_deck_id, resolve_note_type
+from .rename_reconcile import broken_by_rename_explanation, broken_by_rename_messages
 
 # Re-exported: these moved out into `copy_primitives` when the executor was split, and
 # everything that has always imported them from here keeps working.
@@ -681,6 +682,21 @@ def copy_for_single_trigger_note(
         staged_definition = as_format_2(copy_definition)
     except MigrationError as error:
         logger.error(str(error))
+        return False
+
+    # A rename left this definition spelling a field that some note type it triggers on
+    # lacks (`rename_reconcile.BROKEN_KEY`), so whatever it wrote would go wrong somewhere.
+    # A failure rather than a benign skip: the error is what opens the log that tells the
+    # user to fix it, and False stops a bulk run after one line instead of one per note.
+    # Before the deck whitelist, so a run over notes the whitelist skips still says so.
+    broken = broken_by_rename_messages(staged_definition)
+    if broken:
+        for message in broken:
+            logger.error(
+                "Error in copy fields: '%s' was not run: %s",
+                staged_definition.get("definition_name", ""),
+                broken_by_rename_explanation([message]),
+            )
         return False
 
     # `or {}` rather than a default: the key can be present and null in a hand-edited or

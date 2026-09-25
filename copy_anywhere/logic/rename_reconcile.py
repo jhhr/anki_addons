@@ -775,6 +775,45 @@ def _report_broken(definition: dict, result: ReconcileResult) -> None:
             )
 
 
+#: What the user can do about a definition marked `BROKEN_KEY`: the three ways out
+#: `refresh_breakage` recognises, said after the stored message wherever a run refuses it.
+BROKEN_ADVICE = (
+    "Rename the field in the other note types too, undo the rename, or edit the definition."
+)
+
+
+def broken_by_rename_messages(definition: Any) -> list[str]:
+    """The stored messages of a definition a rename left marked, or none if it is whole.
+
+    A marked definition is not run: whichever name it spells, some note type it triggers on
+    lacks it, so it would fail on that note type's notes and go on writing into the others
+    as if nothing had happened, while the user still has to decide what it should say. The
+    mark is read as stored rather than re-derived, because the pass and every definition
+    save keep it current, and a run has no business second-guessing them per note. A mark
+    that has been mangled by hand -- not a list, entries that are not dicts, no message --
+    counts only for its well-formed entries: one with nothing to say does not stop the run,
+    and the next pass or save derives it afresh anyway.
+    """
+    if not isinstance(definition, dict):
+        return []
+    stored = definition.get(BROKEN_KEY)
+    if not isinstance(stored, list):
+        return []
+    messages: list[str] = []
+    for entry in stored:
+        message = entry.get("message") if isinstance(entry, dict) else None
+        if isinstance(message, str) and message.strip():
+            messages.append(message)
+    return messages
+
+
+def broken_by_rename_explanation(messages: list[str]) -> str:
+    """The stored messages as one explanation: each unchanged, then what to do about it."""
+    text = "; ".join(messages)
+    end = "" if text.rstrip().endswith((".", "!", "?")) else "."
+    return f"{text}{end} {BROKEN_ADVICE}"
+
+
 def refresh_all_breakage(definitions: Any, col: Any) -> bool:
     """`refresh_breakage` over every marked definition, for a save made outside the pass."""
     changed = False
@@ -1002,6 +1041,7 @@ def log_result(result: ReconcileResult) -> None:
 
 
 __all__ = [
+    "BROKEN_ADVICE",
     "BROKEN_KEY",
     "KIND_CARD_TYPE",
     "KIND_DECK",
@@ -1010,6 +1050,8 @@ __all__ = [
     "SNAPSHOT_KEY",
     "ReconcileResult",
     "StaleName",
+    "broken_by_rename_explanation",
+    "broken_by_rename_messages",
     "build_name_snapshot",
     "definitions_hold_references",
     "log_result",
