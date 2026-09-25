@@ -330,14 +330,10 @@ def copy_fields(
             if mw.progress.want_cancel():
                 break
         if is_sync:
-            # Update all card custom-data after all ops are complete
-            copied_into_cards = list(copied_into_cards_dict.values())
-            for card in copied_into_cards:
-                write_custom_data(card, key="fc", value=1)
-            mw.col.update_cards(copied_into_cards)
-            results.changes = mw.col.merge_undo_entries(undo_entry)
-            # Ensure that all fc flags are reset in the DB on the cards no card action edited,
-            # which includes the other cards of the notes the definitions copied into
+            # Mark every card still waiting for a sync run as handled. One search covers them
+            # all: the cards a card action edited were saved above, still carrying the `fc` of
+            # 0 or -1 that made them wait, so they are found alongside the ones nothing
+            # touched. A card with no `fc`, or one at 1, was never waiting and is left alone.
             rest_cards = [
                 mw.col.get_card(cid) for cid in mw.col.find_cards("prop:cdn:fc=-1 OR prop:cdn:fc=0")
             ]

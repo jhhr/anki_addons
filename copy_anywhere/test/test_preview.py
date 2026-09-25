@@ -215,6 +215,35 @@ class TestTrace:
         # And the card in the collection kept the deck it was in.
         assert run.cards and col.get_card(run.cards[0]["card_id"]).did != run.cards[0]["deck_id"]
 
+    def test_a_card_an_earlier_stage_changed_is_not_listed_again_by_a_later_one(
+        self, col, note
+    ):
+        # A card keeps its `edited` mark until the run is committed, so an Edit Note stage
+        # that listed every card still carrying the mark claimed the earlier stage's change
+        # as its own, and the pane said the second stage flagged Recognition.
+        recognition, recall = note.cards()
+        first = d.edit_note(
+            "trigger", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+        )
+        second = d.edit_note(
+            "trigger", card_actions=[d.card_action(VOCAB, "Recall", set_flag=3)]
+        )
+        definition = d.staged(stages=[first, second])
+
+        run = run_preview(definition, preview_note(note.id))
+
+        assert run.succeeded is True
+        cards_in = {
+            stage["guid"]: [
+                line.split(":")[0] for line in run.events_for(stage["guid"])[0].mutations
+            ]
+            for stage in (first, second)
+        }
+        assert cards_in == {
+            first["guid"]: [f"card {recognition.id}"],
+            second["guid"]: [f"card {recall.id}"],
+        }
+
     def test_a_loop_body_leaves_one_event_per_iteration(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "other"})
         edit = d.edit_note("note", [d.write("Note", d.text("{{index}}"))])

@@ -401,14 +401,16 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     elif card_actions:
         cards = session.cards_of_note(target)
         try:
-            apply_card_actions_by_template(card_actions, target, cards)
+            edited = apply_card_actions_by_template(card_actions, target, cards)
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
-        for card in cards:
-            if getattr(card, "edited", False):
-                session.mark_card_edited(card)
-                if session.recording:
-                    session.record_mutation(f"card {card.id}: {describe_card(card)}")
+        # What this stage changed, not every card still carrying `edited`: the mark stays on
+        # a card until the run is committed, so an earlier stage's change would otherwise be
+        # listed again as this one's.
+        for card in edited:
+            session.mark_card_edited(card)
+            if session.recording:
+                session.record_mutation(f"card {card.id}: {describe_card(card)}")
 
 
 def run_edit_card(stage: dict, env: dict, frame) -> None:
