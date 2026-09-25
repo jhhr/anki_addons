@@ -30,6 +30,7 @@ from ..copy_primitives import (
 )
 from ..definition_schema import expression_is_code
 from ..execute_code_wrappers import execute_code_for_files
+from ..unsaved_note_search import SearchSyntaxError, UnjudgeableSearch, matches
 from .context import Cancelled, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
 
@@ -530,12 +531,56 @@ def _queue_file(
 # --------------------------------------------------------------------------------------
 
 
+def _unsaved_note_matches(
+    stage: dict, frame, target: Note, raw_query: str, interpolated: str
+) -> bool:
+    """A search condition asked of a note that is being added, so has no row to search.
+
+    `nid:0` finds nothing, so the search is judged in Python against the note as it stands
+    and the deck it is being added to, which is what Anki would answer once it is saved. A
+    term that answer depends on something this note does not have yet -- its cards, its
+    review history, its id -- fails the definition naming the term, rather than guessing
+    and silently running or skipping it.
+    """
+    session = frame.session
+    # The same parentheses as the collection's search, so an unbalanced `)` or a newline in
+    # the resolved text reads the same way on both paths.
+    search = f"({interpolated})"
+    session.record_detail("query", search)
+    session.record_detail("judged", "without the collection: the note is not added yet")
+    try:
+        matched = matches(search, target, session.deck_id)
+    except UnjudgeableSearch as error:
+        raise frame.error(
+            f"Error in copy fields: Condition query '{raw_query}': the search term"
+            f" '{error.term}' cannot be judged for a note that is not added yet"
+            f" ({error.reason})",
+            stage,
+        ) from error
+    except SearchSyntaxError as error:
+        # On a saved note the collection's search raises for the same text; this names the
+        # condition as well.
+        raise frame.error(
+            f"Error in copy fields: Condition query '{raw_query}' cannot be judged for a note"
+            f" that is not added yet, because Anki would refuse the search: {error}",
+            stage,
+        ) from error
+    session.record_detail("found", 1 if matched else 0)
+    if not matched:
+        logger.debug(
+            "copy_for_single_trigger_note: Condition query '%s' did not match the note being"
+            " added",
+            interpolated,
+        )
+    return matched
+
+
 def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
     """Whether the condition's `then` branch runs.
 
     A condition matched as an Anki search is scoped to one note, which is how format 1 ran
-    the copy condition a migration produced; any other is boolean code or a scalar the
-    branch takes the truthiness of.
+    the copy condition a migration produced (a note not added yet is judged without the
+    collection); any other is boolean code or a scalar the branch takes the truthiness of.
     """
     session = frame.session
     if stage.get("only_on_sync") and not session.is_sync:
@@ -571,6 +616,9 @@ def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
                 f" nothing for note id {target.id}",
                 stage,
             )
+        if not target.id:
+            # A note being added: the add hook's, or the Add dialog's on unfocus.
+            return _unsaved_note_matches(stage, frame, target, raw_query, interpolated)
         # Through the session, like a query stage's search: the same predicate asked of the
         # same note twice costs one trip to the collection, and the preview pane -- the one
         # a user opens to see why a branch did not run -- gets the search it actually made.

@@ -1569,3 +1569,98 @@ class TestAFailedDefinitionLeavesTheEditorsNoteAlone:
         assert note["Meaning"] == "written"
         assert note.tags == ["tagged"]
         assert editor.loads == 1
+
+
+class TestASearchConditionWhileTheNoteIsBeingAdded:
+    """In the Add dialog a search condition is judged against the note being typed.
+
+    The note has id 0, so `nid:0` would never find it; the executor answers the search from
+    the note itself and from the deck the Add dialog's chooser is on, as the add hook does
+    with the deck it is given.
+    """
+
+    @staticmethod
+    def gated(search, *before):
+        """Writes `Note` when `search` holds for the trigger; fires on `Word` while adding."""
+        return d.staged(
+            "gated",
+            on_unfocus={"edit_fields": [], "add_fields": ["Word"]},
+            stages=[
+                *before,
+                d.condition(
+                    d.text(search),
+                    [d.edit_note("trigger", [d.write("Note", d.text("matched"))])],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                ),
+            ],
+        )
+
+    def add_dialog(self, col, note, deck_name="JP vocab"):
+        editor = FakeEditor(EditorMode.ADD_CARDS, note, col.decks.id(deck_name))
+        on_editor_did_load_note(editor)
+        return editor
+
+    def test_a_matching_search_condition_runs_and_is_shown(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:neko"))
+        note = new_note(col, Word="neko")
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.errors == []
+        assert note["Note"] == "matched"
+        assert editor.loads == 1
+
+    def test_a_search_condition_that_does_not_hold_writes_nothing(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:inu"))
+        note = new_note(col, Word="neko")
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.errors == []
+        assert note["Note"] == ""
+        assert editor.loads == 0
+
+    def test_a_term_that_needs_the_cards_fails_the_definition_by_name(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(
+            self.gated(
+                "is:new Word:neko",
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+            )
+        )
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.has_error(
+            "the search term 'is:new' cannot be judged for a note that is not added yet"
+        ), hook_logger.errors
+        assert (note["Meaning"], note["Note"]) == ("", "")
+        assert note.tags == ["kept"]
+        assert editor.loads == 0
+
+    def test_a_deck_condition_reads_the_add_dialogs_deck(self, col, set_definitions):
+        set_definitions(self.gated('deck:"JP vocab"'))
+        into_subdeck = new_note(col, Word="neko")
+        self.add_dialog(col, into_subdeck, "JP vocab::10-80")
+        run_copy_fields_on_unfocus_field(False, into_subdeck, WORD)
+        elsewhere = new_note(col, Word="neko")
+        self.add_dialog(col, elsewhere, "Other")
+        run_copy_fields_on_unfocus_field(False, elsewhere, WORD)
+
+        assert into_subdeck["Note"] == "matched"
+        assert elsewhere["Note"] == ""

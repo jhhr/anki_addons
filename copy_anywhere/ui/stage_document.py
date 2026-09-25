@@ -37,6 +37,7 @@ from ..logic.definition_schema import (
     Stage,
     TEXT,
     CopyDefinitionV2,
+    expression_is_code,
     is_format_2,
     new_definition,
     stage_body_blocks,
@@ -45,6 +46,7 @@ from ..logic.definition_schema import (
     walk_stages,
 )
 from ..logic.flow_analysis import AnalysisResult, analyze_definition
+from ..logic.unsaved_note_search import UnjudgeableSearch, UnsavedNoteSearchError, parse_search
 
 #: Human labels for the Add Stage menu and the stage row headers, in menu order (§10).
 STAGE_TYPE_LABELS: dict[str, str] = {
@@ -549,14 +551,18 @@ class StageDocument:
     def add_note_warnings(self) -> list[str]:
         """What running while a note is being added means for this definition.
 
-        Two different things can be worth saying, and one definition can deserve both, so
-        they are two messages rather than one sentence bent around whichever applies.
+        Different things can be worth saying, and one definition can deserve several, so
+        they are separate messages rather than one sentence bent around whichever applies.
 
         *Impossible.* A card action on the note being added has no card to reach -- the
         note has id 0 and no cards until the add goes through -- so the executor skips it
         with a log line and nothing runs it later. The stage is named so the user knows
         which action that is. It is not a reason to hold the definition back: a skipped
         action leaves nothing behind.
+
+        *Unanswerable.* A search condition on the note being added is judged against that
+        note, and a term that needs its cards or history (`is:due`) fails the definition
+        there; see `unjudgeable_trigger_conditions`.
 
         *Forbidden.* An edit to another note, to a card that already exists, or to a file
         would outlive a cancelled add, so a definition doing any of those may not run as
@@ -580,9 +586,19 @@ class StageDocument:
                 + " needs a card the note being added does not have yet, so it will not"
                 " run for that note, and nothing runs it later."
             )
+        on_add = bool((self.definition.get("triggers", {}) or {}).get("on_add"))
+        if on_add or self.add_note_compatible():
+            # Only a definition that runs for the note being added judges a search there;
+            # an unfocus-only one that reaches beyond the note is skipped in the Add dialog.
+            for path, error in self.unjudgeable_trigger_conditions():
+                messages.append(
+                    f"The search condition on {path} uses '{error.term}', which cannot be"
+                    f" judged for a note that is not added yet ({error.reason}), so the"
+                    " definition fails there while a note is being added."
+                )
         if self.add_note_compatible():
             return messages
-        if (self.definition.get("triggers", {}) or {}).get("on_add"):
+        if on_add:
             message = (
                 "This definition runs when a note is added, and it reaches beyond the note"
                 " being added — another note, a card that already exists, or a file. That"
@@ -619,6 +635,46 @@ class StageDocument:
             if (stage.get("target") or {}).get("binding") == "trigger":
                 paths.append(self.path_of(stage.get("guid", "")))
         return paths
+
+    def unjudgeable_trigger_conditions(self) -> list[tuple[str, UnjudgeableSearch]]:
+        """The trigger's search conditions that a note being added cannot answer, by path.
+
+        A note being added has id 0, so its search conditions are judged against the note
+        itself, and a term that needs cards, review history or an id fails the definition.
+        Only a search that is already that way as written is listed: once a `{{...}}` part or
+        a process chain is in it, what is searched is known only at run time. A condition
+        checked only on sync, or on another binding's note, is never judged for the note
+        being added.
+        """
+        found: list[tuple[str, UnjudgeableSearch]] = []
+        for stage in walk_stages(self.root_block(), include_disabled=False):
+            if stage.get("type") != STAGE_CONDITION:
+                continue
+            if stage.get("predicate_kind") != "note_query" or stage.get("only_on_sync"):
+                continue
+            target = stage.get("predicate_target")
+            if isinstance(target, dict) and target.get("binding") not in (None, "", "trigger"):
+                continue
+            predicate = stage.get("predicate")
+            if not isinstance(predicate, dict):
+                continue
+            text = (predicate.get("text") or "").strip()
+            if (
+                expression_is_code(predicate)
+                or predicate.get("process_chain")
+                or not text
+                or "{{" in text
+            ):
+                continue
+            try:
+                # The same parentheses the executor judges it in.
+                parse_search(f"({text})")
+            except UnjudgeableSearch as error:
+                found.append((self.path_of(stage.get("guid", "")), error))
+            except UnsavedNoteSearchError:
+                # A search Anki would refuse fails everywhere, not just while adding.
+                continue
+        return found
 
     def incompatible_stage_paths(self) -> list[str]:
         """The stages that keep this definition out of the add hook's trigger-only pile, by path.

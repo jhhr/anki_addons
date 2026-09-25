@@ -22,9 +22,10 @@ definitions by assigning that dict's `"copy_definitions"` key -- what `set_defin
 The handler re-reads the config on every call, so definitions can be swapped mid-test.
 
 Two things about the note being added shape almost everything below: its `id` is `0` and it
-has no cards yet. The first makes every `nid:` search vacuous and interpolates `__Note_ID` as
-`"0"`; the second means the deck whitelist has nothing to read a deck from, which is what the
-`deck_id` argument exists to supply.
+has no cards yet. The first makes a query stage's `nid:` search vacuous and interpolates
+`__Note_ID` as `"0"` -- a search *condition*, which would be `nid:0` too, is judged against the
+note itself instead; the second means the deck whitelist, and a condition's `deck:` term, have
+nothing to read a deck from, which is what the `deck_id` argument exists to supply.
 """
 
 from contextlib import contextmanager
@@ -470,43 +471,210 @@ class TestTheNoteIdIsZeroThroughout:
         run_copy_fields_on_add(note, deck(col))
         assert note["Note"] == "id=0"
 
-    def test_a_condition_query_can_never_match_so_the_definition_is_skipped(
-        self, col, set_definitions
+    def test_a_format_1_condition_query_is_judged_against_the_note_being_added(
+        self, col, set_definitions, hook_logger
     ):
-        # The condition is checked with `<query> nid:0`, and no note has id 0, so a
-        # definition that carries any condition at all is dead on the add path -- even one
-        # that plainly holds, as this one does.
+        # Searched as `(<query>) nid:0` the condition could never match, and every
+        # definition carrying one was dead on the add path. The migrated condition is judged
+        # against the unsaved note instead, so one that plainly holds, as this one does, runs.
         set_definitions(within(copy_condition_query="Word:neko"))
         note = new_note(col, Word="neko")
         run_copy_fields_on_add(note, deck(col))
+        assert hook_logger.errors == []
+        assert note["Note"] == "neko"
+
+    def test_a_format_1_condition_query_that_does_not_hold_still_skips(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(within(copy_condition_query="Word:inu"))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        assert hook_logger.errors == []
         assert note["Note"] == ""
 
     def test_the_same_condition_matches_once_the_note_really_exists(self, col, set_definitions):
-        # The contrast: the query itself is fine, it is `nid:0` that kills it.
+        # The contrast: the collection's own search gives the same answer once the note is
+        # saved, which is the answer the add path has to give before it is.
         from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"}, deck_name="Other")
         copy_for_single_trigger_note(within(copy_condition_query="Word:neko"), note)
         assert note["Note"] == "neko"
 
-    def test_condition_only_on_sync_sidesteps_the_dead_condition(self, col, set_definitions):
+    def test_condition_only_on_sync_leaves_the_condition_unchecked_on_add(
+        self, col, set_definitions
+    ):
         # `is_sync` is left at its default False here, so this flag turns the check off and
-        # the definition runs -- the only way to keep a condition and still copy on add.
-        set_definitions(within(copy_condition_query="Word:neko", condition_only_on_sync=True))
+        # the definition runs, although the condition does not hold for this note.
+        set_definitions(within(copy_condition_query="Word:inu", condition_only_on_sync=True))
         note = new_note(col, Word="neko")
         run_copy_fields_on_add(note, deck(col))
+        assert note["Note"] == "neko"
+
+    def test_condition_only_on_sync_is_also_how_to_keep_an_unjudgeable_condition(
+        self, col, set_definitions, hook_logger
+    ):
+        # `is:new` needs the note's cards, which fails the definition on add (see
+        # `TestASearchConditionOnTheNoteBeingAdded`); unchecked, it is never judged at all.
+        set_definitions(within(copy_condition_query="is:new", condition_only_on_sync=True))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        assert hook_logger.errors == []
         assert note["Note"] == "neko"
 
     def test_a_cards_query_interpolating_the_note_id_searches_for_nid_zero(
         self, col, set_definitions
     ):
-        # Not skipped, unlike the condition query: `-nid:0` is a real search that excludes
+        # A query stage's search goes to the collection as written -- only a condition is
+        # judged against the note itself -- and `-nid:0` is a real search that excludes
         # nothing, which is the only reason the usual "exclude myself" idiom still works.
         real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": "cat"}, deck_name="Other")
         set_definitions(to_sources(query="-nid:{{__Note_ID}} Kanji:neko"))
         note = new_note(col, Word="neko")
         run_copy_fields_on_add(note, deck(col))
         assert note["Note"] == "cat"
+
+
+class TestASearchConditionOnTheNoteBeingAdded:
+    """A format-2 search condition is judged against the note being added.
+
+    `nid:0` finds nothing, so the executor answers the search from the unsaved note's fields,
+    tags and note type and from the deck the add goes into -- the answer the collection gives
+    once the note is saved. A term that needs what the note does not have yet (cards, review
+    history, an id) fails the definition by name, and the note is left as it was typed.
+    """
+
+    @staticmethod
+    def gated(search, *before, name="gated"):
+        """Writes `Note` when `search` holds for the trigger, after the `before` stages."""
+        return d.staged(
+            name,
+            on_add=True,
+            stages=[
+                *before,
+                d.condition(
+                    d.text(search),
+                    [d.edit_note("trigger", [d.write("Note", d.text("matched"))])],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                ),
+            ],
+        )
+
+    def test_a_matching_search_condition_runs_on_add(self, col, set_definitions, hook_logger):
+        set_definitions(self.gated("Word:neko"))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col, "JP vocab"))
+        assert hook_logger.errors == []
+        assert note["Note"] == "matched"
+
+    def test_the_answer_is_the_one_the_saved_note_gets(self, col, set_definitions):
+        search = 'Word:ne* tag:jp note:"CA Vocab" -Meaning:dog'
+        set_definitions(self.gated(search))
+        note = new_note(col, Word="neko", Meaning="cat")
+        note.tags = ["jp::n5"]
+        run_copy_fields_on_add(note, deck(col, "JP vocab"))
+        assert note["Note"] == "matched"
+
+        col.add_note(note, deck(col, "JP vocab"))
+        assert list(col.find_notes(f"({search}) nid:{note.id}")) == [note.id]
+
+    def test_a_search_condition_that_does_not_hold_skips_on_add(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:inu"))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        assert hook_logger.errors == []
+        assert note["Note"] == ""
+
+    def test_a_term_that_needs_the_cards_fails_the_definition_by_name(
+        self, col, set_definitions, hook_logger
+    ):
+        # The write before the condition is undone with the rest of the failed run, so the
+        # add saves the note as it was typed.
+        set_definitions(
+            self.gated(
+                "Word:neko is:due",
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+            )
+        )
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_add(note, deck(col))
+
+        assert hook_logger.has_error(
+            "the search term 'is:due' cannot be judged for a note that is not added yet"
+        ), hook_logger.errors
+        assert (note["Meaning"], note["Note"]) == ("", "")
+        assert note.tags == ["kept"]
+
+    def test_a_search_anki_would_refuse_fails_the_definition_saying_so(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:neko)"))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, deck(col))
+        assert hook_logger.has_error("Anki would refuse the search"), hook_logger.errors
+        assert note["Note"] == ""
+
+    def test_a_deck_condition_reads_the_deck_being_added_to(self, col, set_definitions):
+        # Subdecks included, as Anki's `deck:` search does.
+        set_definitions(self.gated('deck:"JP vocab"'))
+        into_subdeck = new_note(col, Word="neko")
+        run_copy_fields_on_add(into_subdeck, deck(col, "JP vocab::10-80::x"))
+        elsewhere = new_note(col, Word="neko")
+        run_copy_fields_on_add(elsewhere, deck(col, "Other"))
+
+        assert into_subdeck["Note"] == "matched"
+        assert elsewhere["Note"] == ""
+
+    def test_a_deck_condition_with_no_deck_to_read_fails_the_definition(
+        self, col, set_definitions, hook_logger
+    ):
+        # A caller of the handler that gives no deck (see
+        # `test_no_deck_id_at_all_defeats_the_whitelist_entirely`): nothing says where the
+        # note goes, so a `deck:` term has no answer. Other terms are still judged.
+        set_definitions(self.gated('deck:"JP vocab"'), self.gated("Word:neko", name="other"))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_add(note, None)  # type: ignore[arg-type]
+        assert hook_logger.has_error("the deck the note goes into is not known")
+        assert note["Note"] == "matched"
+
+    def test_the_deck_reaches_a_definition_that_also_edits_other_notes(
+        self, col, set_definitions
+    ):
+        # Such a definition runs in the handler's second, undoable pile, which is handed the
+        # same `deck_id`.
+        other = real_anki.add_note(col, VOCAB, {"Word": "inu"}, deck_name="Other")
+        definition = d.staged(
+            "reaching",
+            on_add=True,
+            stages=[
+                d.condition(
+                    d.text('deck:"JP vocab"'),
+                    [
+                        d.note_query("found", "Word:inu"),
+                        d.for_each_note(
+                            "found", [d.edit_note("note", [d.write("Note", d.text("x"))])]
+                        ),
+                    ],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                ),
+            ],
+        )
+        assert definition["effects"]["add_note_compatible"] is False
+        set_definitions(definition)
+
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col, "Other"))
+        assert col.get_note(other.id)["Note"] == ""
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col, "JP vocab"))
+        assert col.get_note(other.id)["Note"] == "x"
 
 
 class TestTheDeferredOtherNotesBranch:
