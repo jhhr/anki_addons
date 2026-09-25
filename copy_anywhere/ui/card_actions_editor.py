@@ -45,7 +45,6 @@ from ..logic.object_refs import (
     normalize_card_type_ref,
     not_found_label,
     resolve_card_type,
-    split_card_type_name,
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
@@ -513,14 +512,15 @@ class CardActionsEditor(QWidget):
         editor is the one place with a collection at hand and a name the user just picked.
         A name the collection does not have keeps whatever reference the action arrived
         with, rather than losing an id that would find it again.
+
+        The name is looked up by the one resolver every reader of a card type goes through,
+        so what the editor binds is what the run and the pass would find for it.
         """
-        halves = split_card_type_name(card_type_name)
-        if halves is not None and mw is not None and mw.col is not None:
-            model = mw.col.models.by_name(halves[0])
-            if model is not None:
-                for template in model.get("tmpls", []):
-                    if template.get("name") == halves[1]:
-                        return card_type_ref(model, template)
+        if mw is not None and mw.col is not None:
+            reference = normalize_card_type_ref(card_type_name)
+            model, template = resolve_card_type(reference, mw.col)
+            if model is not None and template is not None:
+                return card_type_ref(model, template)
         if existing:
             return card_action_card_type(existing)
         return normalize_card_type_ref(card_type_name)

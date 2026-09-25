@@ -207,6 +207,53 @@ def unresolved_references(definition: dict, col: Any) -> list[StaleName]:
     return stale
 
 
+def still_names(definition: dict, stale: StaleName) -> bool:
+    """Whether this definition names what a pass reported about it, as it stands now.
+
+    A pass's report outlives the definitions it was about: it is kept until the next pass
+    (`rename_hooks.last_reconcile_result`), and saving a definition does not start one, so
+    a deleted field the user has since taken out of the definition would still be said to
+    be in it. And a deleted field or template is reported to every definition triggering on
+    its note type, whether it spells that one or not. So the picker asks here before it
+    marks a row with an entry.
+
+    Named means what the pass itself reads: a note type or a deck among the trigger
+    references, a card type among the card actions' references, a field or card type in a
+    slot a rename would be followed into (`_rewrite`), or a mention in code -- the pass
+    reports those without rewriting them, and a substring errs on the side of the mark. A
+    kind this does not know about is kept.
+    """
+    if stale.kind in (KIND_NOTE_TYPE, KIND_DECK):
+        triggers = definition.get("triggers")
+        key = "note_types" if stale.kind == KIND_NOTE_TYPE else "deck_names"
+        stored = triggers.get(key) if isinstance(triggers, dict) else None
+        return any(
+            normalize_ref(value)["name"] == stale.name
+            for value in (stored if isinstance(stored, list) else [])
+        )
+    if stale.kind not in (KIND_FIELD, KIND_CARD_TYPE):
+        return True
+    recorded = _recorded_names(definition)
+    if stale.kind == KIND_FIELD:
+        spelled = stale.name.lower() in recorded.fields_seen
+    else:
+        spelled = stale.name in recorded.templates_seen or any(
+            normalize_card_type_ref(card_action["card_type"])["name"] == stale.name
+            for card_action in _card_type_refs(definition)
+        )
+    return spelled or _code_mentions(definition, stale.name)
+
+
+def _code_mentions(definition: dict, name: str) -> bool:
+    """Whether any expression's code holds this name, as the pass looks for one there."""
+    lowered = name.lower()
+    return bool(lowered) and any(
+        isinstance(expression.get("code"), str) and lowered in expression["code"].lower()
+        for stage in walk_stages(definition.get("stages") or [])
+        for expression in _expressions(stage)
+    )
+
+
 def _search_expressions(stage: dict) -> Iterator[dict]:
     """The expressions of one stage whose text is an Anki search rather than a value."""
     stage_type = stage.get("type", "")
@@ -407,6 +454,10 @@ class _Renames:
                 return new_name
         return None
 
+    def new_template_name(self, name: str) -> Optional[str]:
+        """What this card type is called now, matched exactly (see `new_field_name`)."""
+        return self.templates.get(name)
+
 
 def _live_names_by_id(entries: Any) -> dict[int, str]:
     return {
@@ -512,7 +563,7 @@ def _rewrite_reference(reference: str, renamed: _Renames) -> str:
     # name happens to contain a double underscore is not read as one.
     match = CARD_VALUE_RE.match(rest)
     if match and match.group(2) in CARD_VALUES_DICT:
-        new_template = renamed.templates.get(match.group(1))
+        new_template = renamed.new_template_name(match.group(1))
         if new_template is not None:
             return f"{head}.{new_template}{rest[len(match.group(1)):]}"
     return reference
@@ -636,31 +687,42 @@ def _rewrite_expression(
 # Step 5: a rename only some trigger note types made ----------------------------------------
 
 
-class _FieldRecorder(_Renames):
-    """A rename that renames nothing and remembers every field name it was asked about.
+class _NameRecorder(_Renames):
+    """A rename that renames nothing and remembers every name it was asked about.
 
     Run through `_rewrite` it visits exactly the slots a rename would be followed into, so
     what "the fields this definition spells for its trigger" means cannot drift from what
-    the rewrite touches.
+    the rewrite touches. Field names are kept folded to lower case, as they are matched;
+    card type names as spelled.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self.seen: set[str] = set()
+        self.fields_seen: set[str] = set()
+        self.templates_seen: set[str] = set()
 
     def new_field_name(self, name: Any) -> Optional[str]:
         if isinstance(name, str) and name:
-            self.seen.add(name.lower())
+            self.fields_seen.add(name.lower())
         return None
+
+    def new_template_name(self, name: str) -> Optional[str]:
+        if name:
+            self.templates_seen.add(name)
+        return None
+
+
+def _recorded_names(definition: dict) -> _NameRecorder:
+    recorder = _NameRecorder()
+    # On a copy: the walk writes each slot back, and a reference it re-serialises is not
+    # guaranteed to come back byte for byte.
+    _rewrite(deepcopy(definition), recorder, ReconcileResult())
+    return recorder
 
 
 def _trigger_field_names(definition: dict) -> set[str]:
     """Every field name the definition spells for its trigger note, folded to lower case."""
-    recorder = _FieldRecorder()
-    # On a copy: the walk writes each slot back, and a reference it re-serialises is not
-    # guaranteed to come back byte for byte.
-    _rewrite(deepcopy(definition), recorder, ReconcileResult())
-    return recorder.seen
+    return _recorded_names(definition).fields_seen
 
 
 def _trigger_models(definition: dict, col: Any) -> list[dict]:
@@ -1059,5 +1121,6 @@ __all__ = [
     "referenced_object_ids",
     "refresh_all_breakage",
     "refresh_breakage",
+    "still_names",
     "unresolved_references",
 ]

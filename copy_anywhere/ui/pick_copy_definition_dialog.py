@@ -174,9 +174,11 @@ class DefinitionRow(QWidget):
         self.checkbox.setSizePolicy(QSizePolicyFixed, QSizePolicyFixed)
         self.layout.addWidget(self.checkbox)
 
+        self.broken_marker = QLabel("", self)
+        self.layout.addWidget(self.broken_marker)
         self.stale_marker = QLabel("", self)
         self.layout.addWidget(self.stale_marker)
-        self._mark_if_stale()
+        self.refresh(definition)
 
         # Add stretch to push buttons to the right
         self.layout.addStretch()
@@ -201,6 +203,47 @@ class DefinitionRow(QWidget):
             lambda: parent_dialog.remove_definition_by_guid(self.definition_guid)
         )
 
+    def refresh(self, definition) -> None:
+        """Show this row as `definition` deserves: its name, its two markers, its checkbox.
+
+        Called when the row is built and again when the definition is saved from this
+        picker, because a save can fix a definition or leave it wanting, and the row has to
+        say which without the dialog being reopened. The picker holds the Browser's window
+        modal, so no note type can be renamed while it is open: the user's own edit is the
+        only thing that changes a row's answer here.
+        """
+        self.definition = definition
+        self.checkbox.setText(definition.get("definition_name", ""))
+        self._mark_if_broken()
+        self._mark_if_stale()
+
+    def _mark_if_broken(self) -> None:
+        """Mark, and refuse to select, a definition a field rename left marked as broken.
+
+        Such a definition is not run (`copy_fields.copy_for_single_trigger_note`): a run
+        would only log the same message. So the checkbox is unticked and disabled rather
+        than offered, and both it and the icon beside it say why -- a disabled checkbox
+        still shows its tooltip. Edit, Duplicate and Delete stay, since editing is one of
+        the ways out.
+        """
+        from ..logic.rename_reconcile import BROKEN_ADVICE, broken_by_rename_messages
+
+        messages = broken_by_rename_messages(self.definition)
+        if not messages:
+            self.broken_marker.setText("")
+            self.broken_marker.setToolTip("")
+            self.checkbox.setToolTip("")
+            self.checkbox.setEnabled(True)
+            return
+        explanation = "\n".join(
+            ["This definition is not run until it is fixed:"] + messages + [BROKEN_ADVICE]
+        )
+        self.checkbox.setChecked(False)
+        self.checkbox.setEnabled(False)
+        self.checkbox.setToolTip(explanation)
+        self.broken_marker.setText("<span style='color: #c0392b'>&#10006;</span>")
+        self.broken_marker.setToolTip(explanation)
+
     def _mark_if_stale(self) -> None:
         """Mark a definition that names something this collection cannot resolve.
 
@@ -214,25 +257,32 @@ class DefinitionRow(QWidget):
         collection load, so a definition the user has just fixed in the editor, or one an
         import has just made stale, would otherwise carry the pass's answer until the next
         one. What the pass alone knows -- a field or a template that was *deleted*, which
-        takes the snapshot to tell from a rename -- still comes from its result.
+        takes the snapshot to tell from a rename -- still comes from its result, but only
+        for as long as the definition still names it (`rename_reconcile.still_names`): a
+        deleted field the user has since taken out of it is not a problem any more.
+
+        Cleared when nothing is stale, since a refresh after a save can find it fixed.
         """
         from ..hooks.rename_hooks import last_reconcile_result
-        from ..logic.rename_reconcile import unresolved_references
+        from ..logic.rename_reconcile import StaleName, still_names, unresolved_references
 
-        if mw is None or mw.col is None:
-            return
-        stale = unresolved_references(self.definition, mw.col)
-        # A deleted note type or deck is in both -- the pass reports it gone, and the
-        # reference it left behind resolves to nothing here -- and the tooltip is a list of
-        # names, not of reasons, so it says each one once.
-        named = {(item.kind, item.name) for item in stale}
-        stale += [
-            item
-            for item in last_reconcile_result().gone
-            if item.definition_guid == self.definition_guid
-            and (item.kind, item.name) not in named
-        ]
+        stale: list[StaleName] = []
+        if mw is not None and mw.col is not None:
+            stale = unresolved_references(self.definition, mw.col)
+            # A deleted note type or deck is in both -- the pass reports it gone, and the
+            # reference it left behind resolves to nothing here -- and the tooltip is a
+            # list of names, not of reasons, so it says each one once.
+            named = {(item.kind, item.name) for item in stale}
+            stale += [
+                item
+                for item in last_reconcile_result().gone
+                if item.definition_guid == self.definition_guid
+                and (item.kind, item.name) not in named
+                and still_names(self.definition, item)
+            ]
         if not stale:
+            self.stale_marker.setText("")
+            self.stale_marker.setToolTip("")
             return
         self.stale_marker.setText("<span style='color: #b8860b'>&#9888;</span>")
         self.stale_marker.setToolTip(
@@ -638,15 +688,12 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
                 # Update local list
                 self.copy_definitions[index] = copy_definition
 
-                # Update UI component text if GUID exists in tracking
-                if old_guid and old_guid in self.definition_ui_components:
-                    ui_components = self.definition_ui_components[old_guid]
-                    checkbox = ui_components["checkbox"]
-                    checkbox.setText(copy_definition["definition_name"])
-
             # Always reload configuration to ensure we have the latest definitions
             config.load()
             self.copy_definitions = config.copy_definitions
+
+            if index is not None:
+                self._refresh_row(copy_definition["guid"])
 
             # Update card counts without rebuilding UI
             self.update_card_counts_for_all_cards()
@@ -654,6 +701,25 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         else:
             # "Cancel" was pressed
             return -1
+
+    def _refresh_row(self, definition_guid: str) -> None:
+        """Show the saved definition in its existing row, markers and all.
+
+        The one the save stored, taken from the reloaded list: the save brings the stored
+        copy up to date (`Config._save_definitions` re-derives the broken mark, for one),
+        and the dict the editor handed back is not guaranteed to be that copy.
+        """
+        row = self.definition_ui_components.get(definition_guid, {}).get("widget")
+        saved = next(
+            (
+                definition
+                for definition in self.copy_definitions
+                if definition.get("guid") == definition_guid
+            ),
+            None,
+        )
+        if row is not None and saved is not None:
+            row.refresh(saved)
 
     def toggle_card_selected_button(self, selected_button):
         # reset styles
