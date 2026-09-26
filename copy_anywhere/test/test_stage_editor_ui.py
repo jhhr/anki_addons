@@ -307,6 +307,66 @@ def test_a_stage_summary_says_what_it_does(col, qapp):
     assert tree.rows["a"].summary.text() == "A = {{trigger.Word}}"
 
 
+# -- opening size ---------------------------------------------------------------------
+
+
+def _screen(width, height):
+    from aqt.qt import QRect
+
+    return QRect(0, 0, width, height)
+
+
+def test_the_dialog_opens_short_enough_for_its_title_bar_and_buttons():
+    from copy_anywhere.ui.edit_staged_definition_dialog import (
+        TITLE_BAR_ALLOWANCE,
+        initial_size,
+    )
+
+    # As tall as the free area, the title bar above it pushed Save and Cancel off the screen.
+    size = initial_size(_screen(1920, 1040), 870, 325, 20)
+    assert size.height == 1040 - TITLE_BAR_ALLOWANCE
+
+
+def test_the_stage_list_gets_the_width_it_needs_before_the_preview_grows():
+    from copy_anywhere.ui.edit_staged_definition_dialog import initial_size
+
+    # 70% of 1920 split 3:2 gave the list 806 of the 870 it needed, and a horizontal scroll
+    # bar, with half the screen's width still free.
+    size = initial_size(_screen(1920, 1040), 870, 325, 20)
+    assert size.stages_width >= 870
+    assert size.width <= 1920
+    assert size.width - 20 - size.stages_width >= 325
+
+
+def test_a_small_definition_still_opens_at_most_of_the_screen():
+    from copy_anywhere.ui.edit_staged_definition_dialog import MIN_WIDTH_SHARE, initial_size
+
+    size = initial_size(_screen(1920, 1040), 400, 300, 20)
+    assert size.width == int(1920 * MIN_WIDTH_SHARE)
+    assert size.stages_width >= 400
+
+
+def test_on_a_narrow_screen_the_dialog_fits_and_the_preview_keeps_its_width():
+    from copy_anywhere.ui.edit_staged_definition_dialog import initial_size
+
+    size = initial_size(_screen(1000, 700), 870, 325, 20)
+    assert size.width == 1000
+    assert size.stages_width == 1000 - 20 - 325
+
+
+def test_the_open_dialog_fits_on_its_screen(dialog):
+    from aqt.qt import QGuiApplication
+
+    from copy_anywhere.ui.edit_staged_definition_dialog import TITLE_BAR_ALLOWANCE
+
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    assert dialog.height() <= available.height() - TITLE_BAR_ALLOWANCE
+    assert dialog.width() <= available.width()
+    assert available.left() <= dialog.x() and dialog.x() + dialog.width() <= available.right() + 1
+
+
 # -- saving ---------------------------------------------------------------------------
 
 

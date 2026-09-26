@@ -15,13 +15,14 @@ is far too expensive to run on a keystroke -- so an edit marks it stale and the 
 it when they want the answer.
 """
 
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 from aqt.qt import (
     QGridLayout,
     QGuiApplication,
     QLabel,
     QPushButton,
+    QRect,
     QSplitter,
     QTimer,
     QVBoxLayout,
@@ -52,6 +53,44 @@ else:  # pragma: no cover -- Anki 2.1.49 and older
 #: cheap, but rebuilding an interpolation menu walks every note type, so it is not free
 #: enough to do on every character.
 REANALYSE_DELAY_MS = 300
+
+#: Room left below the dialog for its title bar and frame, which sit outside the size
+#: `resize` sets. Without it a dialog as tall as the screen put Save and Cancel below the
+#: screen's edge.
+TITLE_BAR_ALLOWANCE = 64
+
+#: The narrowest the dialog starts at, as a share of the screen: a definition whose stages
+#: need little room still gets a preview wide enough to read a trace in.
+MIN_WIDTH_SHARE = 0.7
+
+
+class InitialSize(NamedTuple):
+    width: int
+    height: int
+    #: How much of the width goes to the stage list, the rest going to the preview.
+    stages_width: int
+
+
+def initial_size(
+    available: QRect, stages_width: int, preview_width: int, chrome_width: int
+) -> InitialSize:
+    """The size the dialog opens at on a screen whose free area is `available`.
+
+    `stages_width` is what the stage list needs to show its widest row without a horizontal
+    scroll bar, `preview_width` what the preview asks for, `chrome_width` the margins and
+    splitter handle around them. The stage list gets what it needs before the preview gets
+    more than it asks for: a width taken from the screen share alone left the list scrolling
+    sideways with room to spare on the screen.
+    """
+    height = max(available.height() - TITLE_BAR_ALLOWANCE, 0)
+    wanted = stages_width + preview_width + chrome_width
+    width = min(max(wanted, int(available.width() * MIN_WIDTH_SHARE)), available.width())
+    inside = width - chrome_width
+    # On a screen too narrow for both, the preview keeps what it asks for and the stage list
+    # scrolls; the preview is what shows the run, and it has no scroll bar of its own for
+    # width.
+    stages = min(max(stages_width, inside - preview_width), inside - min(preview_width, inside))
+    return InitialSize(width, height, max(stages, 0))
 
 
 class EditStagedDefinitionDialog(ScrollableQDialog):
@@ -138,14 +177,33 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         self.main_layout.insertWidget(0, self.splitter)
 
         self.refresh_status()
+        self._fit_to_screen()
 
-        screen = QGuiApplication.primaryScreen()
-        if screen:
-            geometry = screen.availableGeometry()
-            self.resize(
-                max(self.sizeHint().width(), int(geometry.width() * 0.7)),
-                int(min(self.sizeHint().height() * 1.5, geometry.height())),
-            )
+    def _fit_to_screen(self) -> None:
+        parent = self.parentWidget()
+        screen = (parent.screen() if parent is not None else None) or (
+            QGuiApplication.primaryScreen()
+        )
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        vertical_bar = self.scroll_area.verticalScrollBar()
+        stages_width = (
+            self.inner_widget.sizeHint().width()
+            + (vertical_bar.sizeHint().width() if vertical_bar is not None else 0)
+            + 2 * self.scroll_area.frameWidth()
+        )
+        margins = self.main_layout.contentsMargins()
+        chrome_width = margins.left() + margins.right() + self.splitter.handleWidth()
+        size = initial_size(
+            available, stages_width, self.preview.sizeHint().width(), chrome_width
+        )
+        self.resize(size.width, size.height)
+        self.splitter.setSizes([size.stages_width, size.width - chrome_width - size.stages_width])
+        # Placed rather than left to Qt, which centres a dialog on its parent: over a parent
+        # near a screen edge, a dialog this big would hang off that edge. `move` places the
+        # frame, so the top of the free area leaves the title bar inside the allowance.
+        self.move(available.x() + (available.width() - size.width) // 2, available.y())
 
     # -- keeping the analysis current -------------------------------------------------------
 
