@@ -214,6 +214,8 @@ class TestSourceToDestinations:
 
 class TestDestinationToSources:
     def build(self, **extra):
+        # Three source notes: one is TestDestinationToOneSource's shape, with no join.
+        extra.setdefault("select_card_count", "3")
         return migrate_definition_v1_to_v2(
             d.destination_to_sources(
                 copy_from_cards_query="Word:a",
@@ -249,6 +251,7 @@ class TestDestinationToSources:
         process = d.regex_process("a", "b")
         migrated = migrate_definition_v1_to_v2(
             d.destination_to_sources(
+                select_card_count="3",
                 copy_from_cards_query="Word:a",
                 field_to_field_defs=[
                     d.field_to_field("Note", "{{Word}}", process_chain=[process])
@@ -262,6 +265,7 @@ class TestDestinationToSources:
     def test_each_field_gets_its_own_join(self):
         migrated = migrate_definition_v1_to_v2(
             d.destination_to_sources(
+                select_card_count="3",
                 copy_from_cards_query="Word:a",
                 field_to_field_defs=[
                     d.field_to_field("Note", "{{Word}}"),
@@ -280,6 +284,7 @@ class TestDestinationToSources:
         # skips its body.
         migrated = migrate_definition_v1_to_v2(
             d.destination_to_sources(
+                select_card_count="3",
                 copy_from_cards_query="Word:a",
                 field_to_field_defs=[
                     d.field_to_field("Note", "{{Word}}"),
@@ -309,6 +314,73 @@ class TestDestinationToSources:
             "continue"
         )
 
+
+
+class TestDestinationToOneSource:
+    """A Destination to sources definition that reads one note needs no join (§11).
+
+    The found note is picked by a Select Note stage and bound as `note`, the name the
+    join's loop gave each source, so the write reads it directly.
+    """
+
+    def build(self, field_to_field_defs=None, **extra):
+        return migrate_definition_v1_to_v2(
+            d.destination_to_sources(
+                copy_from_cards_query="Word:a",
+                field_to_field_defs=field_to_field_defs
+                or [d.field_to_field("Note", "{{Word}} for {{__Dest__Word}}")],
+                **{"select_card_count": "1", **extra},
+            )
+        )
+
+    def test_the_one_note_is_selected_rather_than_joined(self):
+        assert stage_types(self.build()["stages"]) == ["note_query", "select_note", "edit_note"]
+
+    def test_the_selected_note_is_the_first_found_one_and_is_called_note(self):
+        select = self.build()["stages"][1]
+        assert select["input"] == {"binding": "legacy_query_notes"}
+        assert select["index"]["text"] == "0"
+        assert select["result"] == "note"
+
+    def test_the_write_reads_the_selected_note_and_the_trigger_as_before(self):
+        edit = self.build()["stages"][-1]
+        assert edit["target"] == {"binding": "trigger"}
+        assert edit["fields"][0]["value"]["text"] == "{{note.Word}} for {{trigger.Word}}"
+
+    def test_a_bare_field_called_note_is_still_a_field(self):
+        # The selected note's name is not a name a bare reference can mean: `{{Note}}` was
+        # the field Note, and stays it.
+        edit = self.build(
+            field_to_field_defs=[d.field_to_field("Meaning", "{{Note}}")]
+        )["stages"][-1]
+        assert edit["fields"][0]["value"]["text"] == "{{note.Note}}"
+
+    def test_a_file_write_reads_the_selected_note(self):
+        migrated = self.build(field_to_file_defs=[d.field_to_file("f-{{__Dest__Word}}.txt", "{{Word}}")])
+        write = migrated["stages"][-1]
+        assert write["type"] == "write_file"
+        assert write["filename"]["text"] == "f-{{trigger.Word}}.txt"
+        assert write["content"]["text"] == "{{note.Word}}"
+
+    def test_it_validates_and_analyses_clean(self):
+        migrated = self.build()
+        assert validate_definition_structure(migrated) == []
+        assert analyze_definition(migrated).problems == []
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"select_card_count": "2"},
+            {"select_card_count": "0"},
+            {"run_also_if_no_sources_found": True},
+            {"select_card_by": "Most_reps"},
+        ],
+        ids=["two notes", "every note", "run also with none", "unusable strategy"],
+    )
+    def test_anything_but_exactly_one_note_keeps_the_join(self, extra):
+        # With no source, `run_also_if_no_sources_found` wrote empty joined text and ran no
+        # field code; a bound "no note" would run the code once.
+        assert "select_note" not in stage_types(self.build(**extra)["stages"])
 
 class TestSelection:
     def selection(self, **extra):

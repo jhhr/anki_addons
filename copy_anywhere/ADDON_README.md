@@ -480,7 +480,7 @@ to change is the Python around them. Change as little as you can.
 
 | format-1 code | where it is now |
 | --- | --- |
-| `field_to_field_defs[i].copy_as_code` | *Within note*, *Source to destinations*: `fields[i].value.code` of the `edit_note` stage. *Destination to sources*: `value.code` of the `store` stage `<guid>::join-store-<n>` (`n` counts the field writes from 1); the write itself now reads the joined `{{legacy_joined_<n>}}` |
+| `field_to_field_defs[i].copy_as_code` | *Within note*, *Source to destinations*, and *Destination to sources* reading one note: `fields[i].value.code` of the `edit_note` stage. *Destination to sources* reading more: `value.code` of the `store` stage `<guid>::join-store-<n>` (`n` counts the field writes from 1); the write itself now reads the joined `{{legacy_joined_<n>}}` |
 | `field_to_file_defs[i].copy_as_code` | `content.code` of the `write_file` stage with that def's guid |
 | `field_to_variable_defs[i].copy_as_code` | `value.code` of the `variable` stage with that def's guid, at the top |
 | `card_actions[i].action_code` | the same action, unchanged, in the `edit_note` stage's `card_actions` |
@@ -490,8 +490,10 @@ The shapes: *Within note* is one `edit_note` on `trigger` and the file writes af
 over it whose item binding is `note`, holding the `edit_note` on `note` and the file writes.
 *Destination to sources* is the same query, then per field write a list, a loop (item
 `note`) with the `store`, and a join, then the `edit_note` on `trigger`, and per code file
-write a loop (item `note`) holding it. The variables come first; a copy condition wraps
-everything after them.
+write a loop (item `note`) holding it. When it reads exactly one note (a count of 1, and no
+`run_also_if_no_sources_found`), it is the query, a `select_note` that binds the found note
+as `note`, the `edit_note` on `trigger` reading it directly, and the file writes. The
+variables come first; a copy condition wraps everything after them.
 
 **What the names mean.** Format-1 field, file and variable code got one note, `note`: the
 note the value was read from. Format 2 code gets every binding in scope under its own name
@@ -520,9 +522,9 @@ definition ran for as `note` now reads the found note it is writing: `return
 note['Word'].upper()` now writes each destination's own *Word*, uppercased, and a file write
 names and fills its file from the destination too. Nothing fails; the values are just wrong.
 Rewrite `note` to `trigger` and `cards` to `trigger.cards` in that code. *Destination to
-sources* is not affected: it loops over the source notes with the same item name, and format
-1 ran that code once per source note with that note as `note`, so the name still means the
-same note. *Within note* and variables are not affected either, except that a Within-note
+sources* is not affected: it loops over the source notes with the same item name, or, reading
+one note, binds that note as `note`, and format 1 ran that code once per source note with
+that note as `note`, so the name still means the same note. *Within note* and variables are not affected either, except that a Within-note
 file write now sees the field writes made just before it.
 
 Before, a *Source to destinations* write into each found note's *Meaning*:
@@ -566,7 +568,8 @@ return word.upper() + ' / ' + '{{note.Meaning}}'
   note* or *Source to destinations* field write fails on one, and a variable keeps it,
   which a `{{...}}` reference to the variable then refuses; format 1 wrote its `str()` in
   both. Return `str(...)` where the text is what was meant. (A *Destination to sources*
-  field write still joins each value's `str()`.)
+  field write reading more than one note still joins each value's `str()`; one reading a
+  single note is an ordinary write and fails on one too.)
 
 **Card-action code needs no change.** It runs through the same function as in format 1,
 with the same names: `note` is the note the `edit_note` stage writes (a found note in

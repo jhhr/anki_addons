@@ -13,6 +13,7 @@ import definitions as d
 from anki_shared.testing import real_anki
 from note_types import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
+from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.definition_schema import validate_definition_structure
 from copy_anywhere.logic.flow_analysis import analyze_definition
 
@@ -225,3 +226,52 @@ class TestWhatTheEditorChecks:
             del stage["index"]
         definition = d.staged(stages=[d.note_query("found", "x"), stage])
         assert any(message in problem.message for problem in validate_definition_structure(definition))
+
+
+class TestMigratedDestinationToOneSource:
+    """A migrated Destination to sources definition that reads one note does what the join
+    shape did: each is run on its own copy of the same notes and they are compared."""
+
+    def run(self, col, monkeypatch, field_to_field_defs, join: bool, **extra) -> str:
+        from copy_anywhere.logic import definition_migration
+
+        if join:
+            monkeypatch.setattr(definition_migration, "_takes_one_source", lambda *_: False)
+        trigger = real_anki.add_note(col, VOCAB, {"Word": "trigger", "Note": "untouched"})
+        definition = migrate_definition_v1_to_v2(
+            d.destination_to_sources(
+                copy_from_cards_query="tag:pool",
+                field_to_field_defs=field_to_field_defs,
+                select_card_count="1",
+                **extra,
+            )
+        )
+        uses_select = "select_note" in [stage["type"] for stage in definition["stages"]]
+        assert uses_select is not join
+        assert copy_for_single_trigger_note(definition, trigger, copied_into_notes=[]) is True
+        monkeypatch.undo()
+        return trigger["Note"]
+
+    @pytest.mark.parametrize(
+        "field_def",
+        [
+            d.field_to_field("Note", "{{Word}} for {{__Dest__Word}}"),
+            d.field_to_field(
+                "Note", copy_as_code="return note['Meaning'] + destination['Word']",
+                use_code=True,
+            ),
+            d.field_to_field("Note", "{{Meaning}}", copy_if_empty=True),
+        ],
+        ids=["text", "code", "copy if empty"],
+    )
+    @pytest.mark.parametrize("sort_by_field", ["Freq", None])
+    def test_it_writes_what_the_join_wrote(self, col, pool, monkeypatch, field_def, sort_by_field):
+        one = self.run(col, monkeypatch, [field_def], join=False, sort_by_field=sort_by_field)
+        joined = self.run(col, monkeypatch, [field_def], join=True, sort_by_field=sort_by_field)
+        assert one == joined
+        assert one != "untouched" or field_def.get("copy_if_empty")
+
+    def test_no_note_found_leaves_the_trigger_alone(self, col, monkeypatch, logger):
+        assert self.run(
+            col, monkeypatch, [d.field_to_field("Note", "{{Word}}")], join=False
+        ) == "untouched"

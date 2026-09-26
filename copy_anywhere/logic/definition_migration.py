@@ -77,6 +77,7 @@ from .definition_schema import (
     Triggers,
     ValueExpression,
     is_format_2,
+    result_reserved_names_allowed,
     stage_body_blocks,
     stage_result_names,
     value_expression,
@@ -673,7 +674,10 @@ def _destination_to_sources_stages(
     if separator is None:
         separator = DEFAULT_SELECT_CARD_SEPARATOR
     stages: list[Stage] = [_note_query_stage(definition, definition_guid, warnings)]
-    _warn_about_reading_all_notes(definition, stages[0].get("selection") or {}, warnings)
+    selection = stages[0].get("selection") or {}
+    _warn_about_reading_all_notes(definition, selection, warnings)
+    if _takes_one_source(definition, selection):
+        return stages + _one_source_stages(definition, definition_guid)
 
     join_index = 0
     field_writes = _field_writes(definition, modifies_other_notes=False)
@@ -741,6 +745,53 @@ def _destination_to_sources_stages(
         stages.append(file_stage)
 
     return stages
+
+
+def _takes_one_source(definition: dict, selection: Selection) -> bool:
+    """Whether a Destination to sources definition reads exactly one source note.
+
+    Such a definition needs none of the list, loop, store and join a field write gets
+    otherwise: joining one value is that value. `run_also_if_no_sources_found` rules it
+    out, because with no source format 1 still wrote each field its joined empty text and
+    ran no field code at all, while one bound "no note" would run the code once.
+    """
+    return (
+        selection.get("strategy") in ("first", "random")
+        and selection.get("count") == 1
+        and not selection.get("selection_error")
+        and not definition.get("run_also_if_no_sources_found", False)
+    )
+
+
+def _one_source_stages(definition: dict, definition_guid: str) -> list[Stage]:
+    """The one found note, bound as `note`, and the writes that read it directly.
+
+    It is bound under the name the join's loop gave each source note, so the writes'
+    references and code mean the note they always meant: `{{Word}}` becomes
+    `{{note.Word}}`, and in code a binding called `note` is what `note` is. The query
+    before it skips the rest when it finds nothing, so the index always has a note.
+    """
+    select: Stage = {
+        "guid": _child_guid(definition_guid, "select-source"),
+        "type": STAGE_SELECT_NOTE,
+        "name": "The found note",
+        "enabled": True,
+        "input": {"binding": LEGACY_QUERY_RESULT},
+        "index": value_expression(text="0"),
+        "if_missing": "empty",
+        "result": LEGACY_ITEM_BINDING,
+    }
+    edit = _edit_note_stage(
+        definition,
+        guid=_child_guid(definition_guid, "edit-trigger"),
+        target_binding="trigger",
+        source_binding=LEGACY_ITEM_BINDING,
+        field_writes=_field_writes(definition, modifies_other_notes=False),
+    )
+    files = _write_file_stages(
+        definition, source_binding=LEGACY_ITEM_BINDING, destination_binding="trigger"
+    )
+    return [select, edit, *files]
 
 
 def _triggers(definition: dict) -> Triggers:
@@ -1163,8 +1214,8 @@ def _known_names(definition: Any) -> list[str]:
     """The bare names a promoted expression keeps as they are: the bindings with names.
 
     Every stage result -- a variable's, a query's, a synthesized join's -- plus the export
-    names. The loop and reduce bindings (`note`, `item`, `accumulator`) are deliberately
-    left out although they are bindings too: format 1 had no way to name them, so a bare
+    names. The loop and reduce bindings (`note`, `item`, `accumulator`), and a Select Note
+    result that takes one of those reserved names, are deliberately left out although they are bindings too: format 1 had no way to name them, so a bare
     `{{Note}}` in a migrated expression is the field `Note`, which is what it has always
     meant, and reading it as the loop's note would turn a common field name into a stage
     error in every migrated across-notes definition.
@@ -1178,7 +1229,13 @@ def _known_names(definition: Any) -> list[str]:
     """
     names: list[str] = []
     for stage in walk_stages(definition.get("stages") or []):
-        names.extend(stage_result_names(stage))
+        # A Select Note stage may bind a reserved name -- the migrated one-source shape
+        # binds `note` -- and that is the loop's `note` in all but name, so it is left out
+        # for the same reason.
+        allowed_reserved = result_reserved_names_allowed(stage)
+        names.extend(
+            name for name in stage_result_names(stage) if name not in allowed_reserved
+        )
     for export in definition.get("exports") or []:
         if isinstance(export, dict) and isinstance(export.get("name"), str):
             names.append(export["name"])

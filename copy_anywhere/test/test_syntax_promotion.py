@@ -503,6 +503,8 @@ class TestPromoteDefinition:
             d.destination_to_sources(
                 copy_from_cards_query="Word:a",
                 field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+                # More than one source: one is read directly, with no join to keep names.
+                select_card_count="3",
             )
         )
         promoted = promote_definition(migrated)
