@@ -443,12 +443,13 @@ class ExistingNoteIdsTests(unittest.TestCase):
         col, _ = self.col([10, 20, 30])
         self.assertEqual(op_chain.existing_note_ids(col, [30, 99, 10, 20]), [30, 10, 20])
 
-    def test_queries_in_chunks(self):
-        chunk = op_chain.EXISTING_IDS_CHUNK
-        ids = list(range(1, 2 * chunk + 2))
+    def test_a_whole_collection_is_one_query(self):
+        # The ids are inlined, so SQLite's bound-variable limit does not apply; a statement
+        # over 100k note ids is ~1.4 MB, far under SQLite's default statement length limit
+        ids = [1_600_000_000_000 + i for i in range(100_000)]
         col, db = self.col(ids[::2])
         self.assertEqual(op_chain.existing_note_ids(col, list(reversed(ids))), ids[::2][::-1])
-        self.assertEqual(len(db.queries), 3)
+        self.assertEqual(len(db.queries), 1)
 
     def test_no_ids_asks_nothing(self):
         col, db = self.col([1])

@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from anki.notes import NoteId
+from anki.utils import ids2str
 from aqt import mw
 from aqt.qt import QTimer
 from aqt.utils import showInfo, showWarning
@@ -47,27 +48,23 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_TITLE = "Japanese AI ops"
 
-# The ids are inlined, not bound: a bound list hits SQLite's variable limit (999 in older
-# builds), and ints cannot inject anything. Chunking keeps each statement small even for a
-# chain over a whole collection.
-EXISTING_IDS_CHUNK = 500
 
 def existing_note_ids(col: Any, nids: Sequence[NoteId]) -> list[NoteId]:
     """`nids` without the ids whose notes no longer exist, in the order given.
 
     A step's cleanup can remove notes (the match op's duplicate-meaning cleanup), and
     `selected_notes_op` gets every id's note, which raises for a removed one.
+
+    One statement with the ids inlined by `ids2str`, as the rest of the repo does: inlined
+    ids are not bound variables, so SQLite's variable limit does not apply, and a whole
+    collection's ids (~1.4 MB for 100k notes) are far under its default statement length
+    limit (1e9 bytes).
     """
     ids = list(nids)
-    found: set[int] = set()
-    for start in range(0, len(ids), EXISTING_IDS_CHUNK):
-        chunk = ids[start : start + EXISTING_IDS_CHUNK]
-        found.update(
-            col.db.list(
-                f"select id from notes where id in ({','.join(str(int(n)) for n in chunk)})"
-            )
-        )
-    return [nid for nid in ids if int(nid) in found]
+    if not ids:
+        return []
+    found = set(col.db.list(f"select id from notes where id in {ids2str(ids)}"))
+    return [nid for nid in ids if nid in found]
 
 
 class OpChain:
