@@ -3380,6 +3380,7 @@ def selected_notes_op(
     # on this thread, after this function returns. A chain step's dialog is the chain's, which
     # the step before left with its buttons greyed; start_run_controls brings them back.
     start_run_controls()
-    if chain is not None:
-        # A step's title is drawn into the chain's dialog, which the start reused
-        progress_updater.show_title()
+    # A run from the menu built its updater, and set its title, before the start opened the
+    # dialog, so that title was dropped. A chain step's dialog is the chain's and already had
+    # it; drawing it again there costs nothing.
+    progress_updater.show_title()

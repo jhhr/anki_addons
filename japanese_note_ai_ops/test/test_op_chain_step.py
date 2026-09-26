@@ -322,6 +322,13 @@ class ChainStepTest(unittest.TestCase):
         self.assertIn(("tooltip", "Did the thing in 1/2 selected notes."), self.events)
         self.assertTrue(all(not title.startswith("Step") for title in self.titles()))
 
+    def test_without_a_chain_the_title_is_drawn_once_the_dialog_exists(self):
+        """A run from the menu builds its updater before its dialog, as a chain step does."""
+        op = self.start(self.edits_one, chain=False)
+
+        self.assertEqual(self.titles(), [TITLE])
+        op.finish()
+
     def test_without_a_chain_a_stop_is_a_warning(self):
         self.run_step(self.stops_itself, chain=False)
 
