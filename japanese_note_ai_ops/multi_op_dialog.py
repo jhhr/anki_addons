@@ -153,7 +153,8 @@ def count_label_text(count: int, note_source: NoteSource, error: Optional[str] =
 
 
 class MultiOpDialog(QDialog):
-    """Options on the left, the run order on the right, the note source and Run below.
+    """Options on the left, the run order on the right, the note source and the count below,
+    and a footer of Run (bottom left) and Close (bottom right, the default button).
 
     Accepting it leaves the ops in `chosen_specs()` and the note ids, fixed when Run was
     pressed, in `note_ids`; the caller starts the chain once the dialog has closed.
@@ -216,8 +217,13 @@ class MultiOpDialog(QDialog):
         self.count_label.setWordWrap(True)
         self.note_source_buttons = NoteSourceButtons(note_source, on_change=self._update_count)
         self.run_button = QPushButton("Run")
-        self.run_button.setDefault(True)
+        # Enter belongs to Close. A list ignores Enter after emitting `activated`, so the
+        # dialog presses its default button, and with Run default an Enter meant for a list
+        # started a chain. Run is not autoDefault either: focused, it would become the default
+        # and take Enter (Space, the usual key for a focused button, still presses it).
+        self.run_button.setAutoDefault(False)
         self.close_button = QPushButton("Close")
+        self.close_button.setDefault(True)
         qconnect(self.run_button.clicked, self._run)
         qconnect(self.close_button.clicked, self.reject)
 
@@ -245,14 +251,19 @@ class MultiOpDialog(QDialog):
         lists.addLayout(selected_column, 1)
         lists.addLayout(order_buttons)
 
+        note_source_row = QHBoxLayout()
+        note_source_row.addWidget(self.note_source_buttons)
+        note_source_row.addStretch()
+
+        # Run and Close at opposite corners, so neither is pressed for the other
         footer = QHBoxLayout()
-        footer.addWidget(self.note_source_buttons)
-        footer.addStretch()
         footer.addWidget(self.run_button)
+        footer.addStretch()
         footer.addWidget(self.close_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(lists, 1)
+        layout.addLayout(note_source_row)
         layout.addWidget(self.count_label)
         layout.addLayout(footer)
 

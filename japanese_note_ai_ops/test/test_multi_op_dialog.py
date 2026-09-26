@@ -395,6 +395,54 @@ class DialogTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Rejected)
         self.assertEqual(dialog.note_ids, [])
 
+    def test_close_is_the_default_button_and_run_never_takes_enter(self):
+        dialog = self.make()
+        self.assertTrue(dialog.close_button.isDefault())
+        self.assertFalse(dialog.run_button.isDefault())
+        self.assertFalse(dialog.run_button.autoDefault())
+
+    def test_enter_in_either_list_closes_without_running(self):
+        # Enter in a list reaches the dialog (the view ignores it after `activated`), which
+        # presses its default button: that was Run, so an Enter meant for a list started a
+        # chain over every chosen op
+        for which in ("options_list", "selected_list"):
+            with self.subTest(which):
+                dialog = self.make()
+                self.click_option(dialog, "Op A")
+                self.click_option(dialog, "Op B")
+                dialog.show()
+                view = getattr(dialog, which)
+                view.setFocus()
+                view.setCurrentRow(0)
+                self.assertTrue(dialog.run_button.isEnabled())
+                QTest.keyClick(view, QtCore.Qt.Key.Key_Return)
+                self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Rejected)
+                self.assertFalse(dialog.isVisible())
+                self.assertEqual(dialog.note_ids, [])
+
+    def test_enter_on_a_focused_run_closes_without_running(self):
+        # Space still presses it, as any focused button; Enter is the dialog's, and closes
+        dialog = self.make()
+        self.click_option(dialog, "Op A")
+        dialog.show()
+        dialog.run_button.setFocus()
+        QTest.keyClick(dialog.run_button, QtCore.Qt.Key.Key_Return)
+        self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Rejected)
+        self.assertEqual(dialog.note_ids, [])
+
+    def test_run_is_bottom_left_and_close_bottom_right(self):
+        dialog = self.make()
+        dialog.resize(800, 500)
+        dialog.show()
+        run = dialog.run_button.mapTo(dialog, QtCore.QPoint(0, 0))
+        close = dialog.close_button.mapTo(dialog, QtCore.QPoint(0, 0))
+        self.assertEqual(run.y(), close.y())
+        self.assertLess(run.x(), dialog.width() // 4)
+        self.assertGreater(close.x() + dialog.close_button.width(), dialog.width() * 3 // 4)
+        # The footer is the lowest row
+        for widget in (dialog.note_source_buttons, dialog.count_label, dialog.options_list):
+            self.assertLess(widget.mapTo(dialog, QtCore.QPoint(0, 0)).y(), run.y())
+
 
 class FakeBrowser:
     """`search` is the one the browser ran, `box` what its search box holds (the same unless

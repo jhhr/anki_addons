@@ -95,8 +95,11 @@ ops..." (`__init__.add_browser_edit_menu_action` on `browser_menus_did_init`; sh
 the top of the "AI helper" submenu. A click on an available op moves it to the end of the
 numbered run order (each op once); drag, Up/Down, Remove, double-click and Clear edit it.
 Below: the shared `NoteSourceButtons` and a count of the notes (`find_notes` on opening and
-on each mode switch). Run needs one op and one note, fixes the ids, and the chain starts
-after `exec()` returns, so its first progress dialog is not under a modal one.
+on each mode switch). Footer: Run bottom left, Close bottom right. Close is the default
+button and Run has `autoDefault` off, so Enter anywhere (a list ignores it and the dialog
+takes it) closes rather than starts a chain. Run needs one op and one note, fixes the ids,
+and the chain starts after `exec()` returns, so its first progress dialog is not under a
+modal one.
 
 `run_op_chain(specs, nids, parent)`, per step:
 
