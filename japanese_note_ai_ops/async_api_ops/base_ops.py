@@ -79,8 +79,9 @@ MAX_TOKENS_VALUE = 8000
 # Shortest gap between progress dialog redraws. Redraws run on Anki's main thread, so this is
 # what keeps a burst of finishing tasks from starving the UI.
 PROGRESS_UPDATE_INTERVAL = 0.15
-# How long the cleanup waits for the main thread to re-arm the dialog's cancel. The main thread
-# is idle during a run, so this is only reached if it is stuck on something else.
+# How long the cleanup waits for the main thread to grey the run controls, and to re-arm the
+# dialog's cancel. The main thread is idle during a run, so this is only reached if it is stuck
+# on something else.
 CLEANUP_REARM_TIMEOUT = 2.0
 DEFAULT_SYSTEM_INSTRUCTION = (
     "You are a helpful assistant for processing Japanese text. You are a"
@@ -1322,10 +1323,30 @@ class AsyncTaskProgressUpdater:
         (`arm_cleanup_cancel`), and only when there are notes to add: the edited notes' write
         before it can be long (a translate or kanjify run over thousands of notes), and a live
         Cancel through it would do nothing.
+
+        Returns once the grey has landed on the main thread, so that the caller's read of the
+        dialog's flag hears every press made while Cancel still said it cancels the run, and
+        none after (a greyed Cancel takes no clicks, and `swallows_cancel` drops Escape). Read
+        before the grey, a press in between was counted by a run with nothing to add and lost
+        by one whose adding reset the flag. The wait gives up after CLEANUP_REARM_TIMEOUT.
         """
         with self._ui_lock:
             self._suppressed = False
-        mw.taskman.run_on_main(disable_run_controls)
+        greyed = threading.Event()
+
+        def grey() -> None:
+            try:
+                disable_run_controls()
+            finally:
+                greyed.set()
+
+        mw.taskman.run_on_main(grey)
+        if not greyed.wait(CLEANUP_REARM_TIMEOUT):
+            logger.warning(
+                "The main thread did not grey the run controls within %.0f s; a cancel pressed"
+                " before it does may be lost",
+                CLEANUP_REARM_TIMEOUT,
+            )
 
     def arm_cleanup_cancel(self, total_notes: int) -> None:
         """Give the note adding a cancel of its own, and say so in the dialog as it goes live.
@@ -3096,12 +3117,6 @@ def selected_notes_op(
                 notes_to_update_dict=notes_to_update_dict,
                 label=done_text,
             )
-            # Read before the cleanup, whose note adding resets the dialog's flag to give
-            # itself a cancel of its own. A sync op, or the gap between two phases, stops on
-            # that flag alone without ever cancelling the run, so run_is_cancelled is not
-            # enough.
-            if mw.progress.want_cancel():
-                cancelled = True
             cleanup_started = time.monotonic()
             logger.debug("[phase] bulk op returned, starting cleanup")
             # From here on this thread is saving what the run managed to do, which is the whole
@@ -3109,8 +3124,16 @@ def selected_notes_op(
             # though the run is cancelled. Some ops have real work left here, such as resolving
             # the ids of the notes they added. Cleared in run_bulk_op's finally.
             begin_cleanup_phase()
-            # Greys the buttons: nothing here heeds a cancel until add_new_notes arms its own
+            # Greys the buttons, and waits for that: nothing here heeds a cancel until
+            # add_new_notes arms its own
             progress_updater.begin_cleanup()
+            # Read once Cancel is grey, so every press made while it said it cancels the run
+            # counts as the run's cancel, and before the note adding, which resets the flag to
+            # give itself a cancel of its own. A sync op, or the gap between two phases, stops
+            # on that flag alone without ever cancelling the run, so run_is_cancelled is not
+            # enough.
+            if mw.progress.want_cancel():
+                cancelled = True
             pos, res_notes_to_add_dict, res_notes_to_update_dict, res_notes_to_remove = result
 
             sanitized_notes_to_remove: list[NoteId] = []
@@ -3332,7 +3355,8 @@ def selected_notes_op(
             if pause_state() is not None:
                 cancel_run()
             # After that cancel, which counts: a run that ended paused did not finish its
-            # notes. The flag catches a cancel of the cleanup's note adding. Before end_run,
+            # notes. The flag catches a cancel of the cleanup's note adding: once the cleanup has
+            # greyed Cancel, nothing else sets it. Before end_run,
             # which forgets the run on this thread (run_cancelled would then say no).
             if run_is_cancelled(run) or mw.progress.want_cancel():
                 cancelled = True

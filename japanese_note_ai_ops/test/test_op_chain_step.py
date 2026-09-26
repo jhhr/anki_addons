@@ -253,6 +253,35 @@ class ChainStepTest(unittest.TestCase):
 
         self.assert_one_outcome("cancelled")
 
+    def pressed_as_the_cleanup_greys_cancel(self):
+        """The main thread handles a Cancel press queued ahead of the cleanup's grey."""
+
+        def grey():
+            mw.progress.cancel = True
+
+        return mock.patch.object(base_ops, "disable_run_controls", grey)
+
+    def test_a_press_before_cancel_greys_is_the_run_s_cancel_with_notes_to_add(self):
+        """Cancel was live and said it cancels the run; the adding's re-arm must not lose it."""
+
+        def rearm(pos):
+            mw.progress.cancel = False
+            return "changes"
+
+        with (
+            self.pressed_as_the_cleanup_greys_cancel(),
+            mock.patch.object(mw.col, "merge_undo_entries", rearm),
+        ):
+            self.run_step(self.edits_one)
+
+        self.assert_one_outcome("cancelled")
+
+    def test_a_press_before_cancel_greys_is_the_run_s_cancel_with_nothing_to_add(self):
+        with self.pressed_as_the_cleanup_greys_cancel():
+            self.run_step(self.edits_one)
+
+        self.assert_one_outcome("cancelled")
+
     def test_a_run_that_ends_paused_is_cancelled(self):
         """Teardown cancels a run left paused; its notes were not all done."""
         self.run_step(self.ends_paused)

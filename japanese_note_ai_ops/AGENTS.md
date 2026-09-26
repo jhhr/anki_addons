@@ -144,7 +144,9 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   The notes to add are those registered before the flush, which it answers with, and the
   cleanup adds that answer only, never the shared `notes_to_add_dict`: threads a cancel
   abandoned go on registering notes there that no saved result links to.
-  Cleanup's `begin_cleanup()` only greys the buttons; `add_new_notes` re-arms the dialog
+  Cleanup's `begin_cleanup()` only greys the buttons, and waits for that on the main thread
+  so the op thread's read of the flag right after it counts every press made while Cancel
+  said it cancels the run as the run's cancel; `add_new_notes` re-arms the dialog
   (`arm_cleanup_cancel`, only when there are notes to add, reset on the main thread by
   `progress_controls.rearm_cleanup_cancel` and waited for), because the dialog's flag stays
   set for the rest of a cancelled run. It is reset in a run not cancelled too: a press before
