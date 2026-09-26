@@ -30,6 +30,7 @@ from ..configuration import (
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .discard import discard_widget
+from .labels import wrapping
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .outline import outline_frame
 from .stage_edit_state import StageEditState
@@ -115,7 +116,7 @@ class CardActionsEditor(QWidget):
         self.setLayout(self.vbox)
 
         # Add description label
-        self.description_label = QLabel(self)
+        self.description_label = wrapping(QLabel(self))
         self.vbox.addWidget(self.description_label)
 
         # Container for all action editors (displayed inline)
@@ -478,11 +479,13 @@ class CardActionsEditor(QWidget):
         self.actions_layout.addWidget(frame)
 
         # Header
-        header = QLabel(
-            "<h3>Card action</h3>"
-            if self.single_card_mode
-            else f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
-            frame,
+        header = wrapping(
+            QLabel(
+                "<h3>Card action</h3>"
+                if self.single_card_mode
+                else f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
+                frame,
+            )
         )
         frame_layout.addWidget(header)
 

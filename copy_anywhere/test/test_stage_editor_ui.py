@@ -9,6 +9,7 @@ is ordinary logic that happens to live in widgets.
 import copy
 
 import pytest
+from aqt.qt import QLabel
 
 from copy_anywhere.configuration import (
     definition_deck_names,
@@ -187,6 +188,61 @@ def test_the_card_action_loading_note_is_gone_once_the_actions_load(col, qapp):
     actions._process_load_queue()
     assert actions.loading_indicator is None
     assert indicator.isHidden()
+
+
+def test_a_long_stage_summary_is_cut_off_rather_than_widening_its_row(col, qapp):
+    # A summary listing a dozen field names on one line made the row, and with it the whole
+    # stage list, as wide as the text: the list scrolled sideways past its half of the dialog.
+    def edit_note_row(field_names):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["fields"] = [
+            {"field": name, "value": value_expression(text="x"), "write_if": "always"}
+            for name in field_names
+        ]
+        tree = tree_for(col, stage)
+        tree.rows["e"].set_expanded(False, announce=False)
+        return tree.rows["e"]
+
+    short = edit_note_row(["Word"])
+    long = edit_note_row([f"sentence-{n}-kanjified-furigana-processed" for n in range(12)])
+    assert len(long.summary.text()) > 300
+    # It needed 3333px on one line. Cut off with "…" where the row ends, it asks for no
+    # more than a short one, and says the rest on hover.
+    assert long.minimumSizeHint().width() == short.minimumSizeHint().width()
+
+
+def test_an_elided_label_shows_what_fits_and_says_the_rest_on_hover(qapp):
+    from copy_anywhere.ui.labels import ElidedLabel
+
+    text = "trigger: " + ", ".join(f"field-{n}" for n in range(40))
+    label = ElidedLabel(text)
+    # Shown, because a hidden widget is sent its resize events only when it is shown.
+    label.show()
+    label.resize(200, label.height())
+
+    shown = QLabel.text(label)
+    assert shown.endswith("…") and len(shown) < len(text)
+    assert label.text() == text
+    assert label.toolTip() == text
+
+    label.resize(label.sizeHint().width() + 10, label.height())
+
+    assert QLabel.text(label) == text
+    assert label.toolTip() == ""
+    label.close()
+
+
+def test_the_editor_s_help_text_wraps_rather_than_widening_it(dialog):
+    # On one line, the Exports panel's help alone set the editor's minimum width to 684px,
+    # and the card actions' to 769px.
+    from aqt.qt import QLabel
+
+    help_texts = [
+        label for label in dialog.inner_widget.findChildren(QLabel)
+        if label.text().startswith("<small>")
+    ]
+    assert len(help_texts) >= 4
+    assert [label.text()[:40] for label in help_texts if not label.wordWrap()] == []
 
 
 # -- reorder --------------------------------------------------------------------------

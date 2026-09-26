@@ -23,12 +23,14 @@ from aqt.qt import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    Qt,
     pyqtSignal,
     qtmajor,
 )
 
 from ..logic.definition_schema import Stage, stage_body_blocks
 from .discard import discard_widget
+from .labels import ElidedLabel
 from .stage_document import (
     BODY_KEY_LABELS,
     STAGE_TYPE_ICONS,
@@ -49,9 +51,11 @@ from .stage_editors import StageEditorEnvironment, make_stage_editor
 if qtmajor > 5:
     QSizePolicyPreferred = QSizePolicy.Policy.Preferred
     QSizePolicyMinimum = QSizePolicy.Policy.Minimum
+    PlainText = Qt.TextFormat.PlainText
 else:  # pragma: no cover -- Anki 2.1.49 and older
     QSizePolicyPreferred = QSizePolicy.Preferred  # type: ignore[attr-defined]
     QSizePolicyMinimum = QSizePolicy.Minimum  # type: ignore[attr-defined]
+    PlainText = Qt.PlainText  # type: ignore[attr-defined]
 
 #: How far one nesting level is indented, in pixels.
 INDENT = 18
@@ -91,10 +95,13 @@ class StageRow(QFrame):
 
         stage_type = stage.get("type", "")
         header.addWidget(QLabel(STAGE_TYPE_ICONS.get(stage_type, "•"), self))
+        # The title stays on one line; a wrapped label reports a narrow preferred width, and
+        # the layout then broke even a two-word stage name.
         self.title = QLabel(f"<b>{stage_label(stage)}</b>", self)
         header.addWidget(self.title)
-        self.summary = QLabel(stage_summary(stage), self)
+        self.summary = ElidedLabel(stage_summary(stage), self)
         self.summary.setStyleSheet("color: palette(mid);")
+        self.summary.setTextFormat(PlainText)
         self.summary.setSizePolicy(QSizePolicyPreferred, QSizePolicyMinimum)
         header.addWidget(self.summary, 1)
 

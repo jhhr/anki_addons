@@ -34,6 +34,7 @@ from aqt.utils import showInfo
 from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from ..logic.flow_analysis import find_call_cycles, make_lookup
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
+from .labels import wrapping
 from .stage_document import StageDocument
 from .stage_editor_context import known_fields_for, make_note_types_for
 from .stage_editors import StageEditorEnvironment
@@ -132,10 +133,12 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
 
         self.body.addWidget(QLabel("<h2>Stages</h2>", self.inner_widget))
         self.body.addWidget(
-            QLabel(
-                "<small>They run in this order. Each one can use anything named above"
-                " it.</small>",
-                self.inner_widget,
+            wrapping(
+                QLabel(
+                    "<small>They run in this order. Each one can use anything named above"
+                    " it.</small>",
+                    self.inner_widget,
+                )
             )
         )
         environment = StageEditorEnvironment(

@@ -27,6 +27,7 @@ from aqt.qt import (
 from ..logic.definition_schema import CopyDefinitionV2, Triggers
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_text_input import RequiredLineEdit
+from .labels import wrapping
 
 
 def quoted_items(names) -> list[str]:
@@ -138,10 +139,12 @@ class TriggersEditor(QWidget):
         form.addRow(QLabel("<h4>Trigger deck limit</h4>", self), self.decks_box)
         form.addRow(
             "",
-            QLabel(
-                "<small>Cards belong to decks, not notes. A note passes the limit when any"
-                " of its cards is in a listed deck.</small>",
-                self,
+            wrapping(
+                QLabel(
+                    "<small>Cards belong to decks, not notes. A note passes the limit when"
+                    " any of its cards is in a listed deck.</small>",
+                    self,
+                )
             ),
         )
 
@@ -168,6 +171,8 @@ class TriggersEditor(QWidget):
         unfocus = triggers.setdefault("on_unfocus", {"edit_fields": [], "add_fields": []})
         self.unfocus_edit = MultiComboBox(self, placeholder_text="No fields (never)")
         self.unfocus_edit.currentTextChanged.connect(self._on_changed)
+        # The labels in this form's left column stay on one line: QFormLayout does not give
+        # a wrapped label the height its extra lines need, so the end of it was cut off.
         form.addRow(
             QLabel("<h4>Run when leaving a field, editing a note</h4>", self),
             self.unfocus_edit,
@@ -179,10 +184,12 @@ class TriggersEditor(QWidget):
         )
         form.addRow(
             "",
-            QLabel(
-                "<small>Unfocus runs the whole definition, not just the stages that mention"
-                " the field you left.</small>",
-                self,
+            wrapping(
+                QLabel(
+                    "<small>Unfocus runs the whole definition, not just the stages that"
+                    " mention the field you left.</small>",
+                    self,
+                )
             ),
         )
         # What the user has chosen, as opposed to what the boxes can currently offer. The
