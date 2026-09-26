@@ -14,7 +14,6 @@ from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 from aqt import mw
 from aqt.browser import Browser
-from aqt.errors import show_exception
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
 from collections.abc import Container, Iterable, Sequence
@@ -47,7 +46,6 @@ from .terminal_client import get_response_from_terminal, is_terminal_model
 from .chain_types import (
     STEP_CANCELLED,
     STEP_COMPLETED,
-    STEP_FAILED,
     STEP_STOPPED,
     ChainStep,
     StepOutcome,
@@ -68,6 +66,7 @@ from .progress_controls import (
     refresh_run_controls,
     start_run_controls,
 )
+from .step_failure import failed_step_outcome
 
 from ..call_logging import bulk_op_logging, phase_log
 from ..utils import get_field_config, print_error_traceback
@@ -2639,7 +2638,7 @@ def on_bulk_success(
             outcome = StepOutcome(status, message, stop_reason=stop_reason)
         except Exception as e:
             # Raised here, it would reach Qt's handler and the chain would wait forever
-            outcome = failed_step_outcome(parent, e)
+            outcome = failed_step_outcome(parent, e, chain.title)
         chain.on_done(outcome)
         return
     message, stop_reason = bulk_success_message(
@@ -2679,25 +2678,6 @@ def bulk_success_message(
         message += f"<br>Edited {len(edited_other_nids)} other notes not among the selection."
     message += new_notes_message(new_notes)
     return message, take_stop_reason()
-
-
-def failed_step_outcome(parent: Browser, error: Exception) -> StepOutcome:
-    """Show `error` as aqt shows an op's exception, and say the step failed.
-
-    A `CollectionOp` given a failure handler calls it instead of showing the error itself.
-    """
-    try:
-        show_exception(parent=parent, exception=error)
-    except Exception as e:
-        # Still a failed step: the chain has to hear of it whether or not the dialog opened
-        logger.error("Could not show the error of a chain step: %s", e)
-    detail = str(error)
-    return StepOutcome(
-        STEP_FAILED,
-        # Not left for the next run to find; a run that raised may still have set one
-        stop_reason=take_stop_reason(),
-        error=f"{type(error).__name__}: {detail}" if detail else type(error).__name__,
-    )
 
 
 NewNotesOp = Callable[[list[Note], dict, AsyncTaskProgressUpdater], dict[NoteId, Note]]
@@ -3390,9 +3370,10 @@ def selected_notes_op(
         step = chain
 
         # Only for a chain: given a failure handler, aqt no longer shows the error itself,
-        # so failed_step_outcome does. By then aqt has finished the progress.
+        # so failed_step_outcome does. By then aqt has finished the step's progress, and in the
+        # chain's dialog, still open, the error goes to its pane.
         def on_failure(error: Exception) -> None:
-            step.on_done(failed_step_outcome(parent, error))
+            step.on_done(failed_step_outcome(parent, error, step.title))
 
         collection_op.failure(on_failure)
         # Before the start, so the phase titles the op thread draws have it from the first

@@ -12,11 +12,11 @@ import logging
 from typing import Any, Callable, Optional
 
 from anki.collection import Collection
-from aqt.errors import show_exception
 from aqt.operations import QueryOp
 from aqt.utils import askUser, showWarning
 
 from .async_api_ops.chain_types import ChainStep, fail_step
+from .async_api_ops.step_failure import failed_step_outcome
 from .word_array import resources
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,13 @@ def with_generator_resources(
         resources.ensure(lambda step: logger.info(f"Word array resources: {step}"))
 
     def on_fetch_failed(error: Exception) -> None:
-        # Given a failure handler, aqt no longer shows the error itself
-        show_exception(parent=parent, exception=error)
-        fail_step(chain, f"Downloading the word array resources failed: {error}")
+        # Set only with a chain; given a failure handler, aqt no longer shows the error itself
+        assert chain is not None
+        chain.on_done(
+            failed_step_outcome(
+                parent, error, chain.title, context="downloading the word array resources"
+            )
+        )
 
     def on_fetched(_result: Any) -> None:
         if chain is None:
@@ -73,8 +77,11 @@ def with_generator_resources(
         try:
             then()
         except Exception as error:
-            show_exception(parent=parent, exception=error)
-            fail_step(chain, f"Starting after the download failed: {error}")
+            chain.on_done(
+                failed_step_outcome(
+                    parent, error, chain.title, context="starting after the download"
+                )
+            )
 
     fetch_op = QueryOp(parent=parent, op=fetch, success=on_fetched)
     # Only for a chain, so a run from the menu keeps aqt's own error display untouched

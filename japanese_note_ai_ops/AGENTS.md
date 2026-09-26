@@ -32,7 +32,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
 | `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login or unusable model stops it); cancel watchdog and stack dumps |
-| `async_api_ops/chain_types.py` | `ChainStep(label, on_done)`, `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
+| `async_api_ops/chain_types.py` | `ChainStep(label, on_done, op_label)` (`.title` is "Step i/n: <op>"), `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
+| `async_api_ops/step_failure.py` | `failed_step_outcome(parent, error, title, context=None)`: the one way a step is failed on an exception; shows it (pane, else `show_exception`), takes the stop reason, never raises |
 | `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box |
@@ -120,6 +121,13 @@ one.
 - A cancelled, stopped or failed step, or a `start` that raises, stops the chain; a
   cancelled step still saves what it did, and the summary says so and that the steps before
   it ran to the end.
+- Every exception that fails a step (the op's run, its success handler, a raising `start`,
+  the step's word array download or the start after it) goes through
+  `step_failure.failed_step_outcome`. The chain's dialog is still open then, so the error and
+  its traceback go to its pane (`report_run_error`), titled with `ChainStep.title`; only if
+  that returns False does aqt's `show_exception` box open. The dialog closes right after,
+  since a failed step stops the chain, so the summary is where the user reads it: it names the
+  step and carries `StepOutcome.error` (message only, escaped); the traceback is logged.
 - No tooltip per step. One summary at the end: `showInfo`, or `showWarning` when stopped
   early, naming the step, why, and the steps that did not run.
 - If any op `needs_generator`, the downloads are asked about once, before step 1; declined,
@@ -212,7 +220,7 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   after the step before left them greyed.
 - **A run without a chain behaves as before the chain existed**: its tooltip or stop warning,
   and no `.failure` handler, so aqt shows an exception itself. Only with a chain is one set,
-  and `failed_step_outcome` then shows the error with aqt's `show_exception`.
+  and `failed_step_outcome` then shows the error, in the chain dialog's pane.
 - **The search is the one the browser ran, not the search box text.**
   `note_source_buttons.browser_search` reads aqt's private `_lastSearchTxt`, which is what the
   rows show. `Browser.current_search()` is the box: text typed without Enter, or `""` under

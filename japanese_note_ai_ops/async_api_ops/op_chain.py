@@ -29,8 +29,8 @@ from aqt.qt import QTimer
 from aqt.utils import showInfo, showWarning
 
 from ..generator_resources import with_generator_resources
-from .base_ops import failed_step_outcome
 from .progress_controls import install_idle_run_controls
+from .step_failure import failed_step_outcome
 from .chain_types import (
     STEP_CANCELLED,
     STEP_FAILED,
@@ -75,7 +75,8 @@ class OpChain:
     - `schedule(func)`: call `func` later, from a fresh main-loop turn.
     - `hold_progress()` / `release_progress()`: open the chain's progress dialog before the
       first step, and let it go after the last (see the module docstring).
-    - `failed_outcome(error)`: show `error` to the user and return the failed step's outcome.
+    - `failed_outcome(error, title)`: show `error`, raised by the step `title` names, and return
+      the failed step's outcome.
     - `show_summary(text, stopped_early)`: show the rich-text summary once the progress dialog
       has gone.
 
@@ -95,7 +96,7 @@ class OpChain:
         schedule: Callable[[Callable[[], None]], None],
         hold_progress: Callable[[], None],
         release_progress: Callable[[], None],
-        failed_outcome: Callable[[Exception], StepOutcome],
+        failed_outcome: Callable[[Exception, str], StepOutcome],
         show_summary: Callable[[str, bool], None],
     ):
         self.specs = list(specs)
@@ -150,6 +151,7 @@ class OpChain:
 
     def _run_step(self, index: int) -> None:
         spec = self.specs[index]
+        step = ChainStep(self.label(index), self._on_done_for(index), spec.label)
         self._awaiting = index
         try:
             # Step 1 as well: the multi-op dialog's ids are as old as its count, and it is
@@ -160,16 +162,16 @@ class OpChain:
                 self.notes_gone_at = index
                 self._end()
                 return
-            spec.start(ids, self.parent, ChainStep(self.label(index), self._on_done_for(index)))
+            spec.start(ids, self.parent, step)
         except Exception as e:
             if self._awaiting == index:
                 # Nothing reported this step, and nothing of it will run now
-                self._on_done_for(index)(self._failed_outcome(e))
+                step.on_done(self._failed_outcome(e, step.title))
             else:
                 # The step had already said how it ended (a `fail_step` before raising); what
                 # comes of that stands, but the error is not swallowed
-                logger.exception("%s raised after it reported its end", self.label(index))
-                self._failed_outcome(e)
+                logger.warning("%s raised after it reported its end", self.label(index))
+                self._failed_outcome(e, step.title)
 
     def _on_done_for(self, index: int) -> Callable[[StepOutcome], None]:
         def on_done(outcome: StepOutcome) -> None:
@@ -291,6 +293,6 @@ def run_op_chain(specs: Sequence[OpSpec], nids: Sequence[NoteId], parent: Any) -
         schedule=schedule,
         hold_progress=hold_progress,
         release_progress=mw.progress.finish,
-        failed_outcome=lambda error: failed_step_outcome(parent, error),
+        failed_outcome=lambda error, title: failed_step_outcome(parent, error, title),
         show_summary=show_summary,
     ).start(with_generator_resources)

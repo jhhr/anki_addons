@@ -18,6 +18,7 @@ base_ops = load_ops_module("base_ops")
 # The same module objects base_ops imported, so cancelling here cancels base_ops' run
 api = load_ops_module("api_client")
 collection_access = load_ops_module("collection_access")
+step_failure = load_ops_module("step_failure")
 
 TITLE = "Async AI op: Doing the thing"
 
@@ -96,6 +97,8 @@ class ChainStepTest(unittest.TestCase):
         self.ops: list = []
         # aqt's set_title does nothing while there is no progress dialog
         self.dialog_open = False
+        # Whether report_run_error finds a dialog to put its pane in
+        self.pane_open = False
         mw.progress.cancel = False
         self.addCleanup(setattr, mw.progress, "cancel", False)
         patches = [
@@ -118,16 +121,24 @@ class ChainStepTest(unittest.TestCase):
                 lambda message, **_: self.events.append(("warning", message)),
             ),
             mock.patch.object(
-                base_ops,
+                step_failure,
                 "show_exception",
                 lambda parent, exception: self.events.append(("error", exception)),
             ),
+            # No progress dialog to put a pane in, unless a test says there is one
+            mock.patch.object(step_failure, "report_run_error", self.report_run_error),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
         # A run ended by a test must not leave a stop reason for the next one
         self.addCleanup(api.take_stop_reason)
+
+    def report_run_error(self, title, text):
+        if not self.pane_open:
+            return False
+        self.events.append(("pane", title, text))
+        return True
 
     def finish_progress(self):
         self.dialog_open = False
@@ -148,7 +159,7 @@ class ChainStepTest(unittest.TestCase):
 
     def start(self, bulk_op, chain=True, on_success=None):
         """Start the op as `selected_notes_op` would from a menu or a chain, not yet run."""
-        step = base_ops.ChainStep("Step 2/3", self.on_done) if chain else None
+        step = base_ops.ChainStep("Step 2/3", self.on_done, "Did the thing") if chain else None
         updater = base_ops.AsyncTaskProgressUpdater(title=TITLE)
         base_ops.selected_notes_op(
             "Did the thing",
@@ -320,6 +331,19 @@ class ChainStepTest(unittest.TestCase):
 
         outcome = self.assert_one_outcome("failed")
         self.assertEqual(outcome.error, "RuntimeError: callback broke")
+
+    def test_an_exception_goes_to_the_pane_of_the_chains_dialog_when_it_is_open(self):
+        # The chain's dialog outlives the step's progress, so the pane takes the error
+        self.pane_open = True
+        self.run_step(self.raises)
+
+        outcome = self.assert_one_outcome("failed")
+        self.assertEqual(outcome.error, "ValueError: boom")
+        [(_, title, text)] = [e for e in self.events if isinstance(e, tuple) and e[0] == "pane"]
+        self.assertEqual(title, "Step 2/3: Did the thing")
+        self.assertTrue(text.startswith("ValueError: boom\n\nTraceback"), text)
+        self.assertEqual([e for e in self.events if isinstance(e, tuple) and e[0] == "error"], [])
+        self.assertIsNone(self.ops[0].shown_by_aqt)
 
     # --- Title -------------------------------------------------------------------------
 

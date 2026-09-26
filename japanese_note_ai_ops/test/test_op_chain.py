@@ -60,6 +60,7 @@ class Harness:
         self.pending: list = []
         self.summaries: list = []
         self.errors: list = []
+        self.error_titles: list = []
         self.resource_checks: list = []
         self.parent = object()
 
@@ -80,8 +81,9 @@ class Harness:
         self.summaries.append((text, stopped))
         self.events.append("summary")
 
-    def failed_outcome(self, error):
+    def failed_outcome(self, error, title):
         self.errors.append(error)
+        self.error_titles.append(title)
         return StepOutcome(FAILED, error=f"{type(error).__name__}: {error}")
 
     def run_scheduled(self, limit=50):
@@ -121,6 +123,7 @@ class StepOrderTests(unittest.TestCase):
             self.assertEqual(nids, [1, 2, 3])
             self.assertIs(parent, self.h.parent)
             self.assertEqual(chain.label, f"Step {index + 1}/3")
+            self.assertEqual(chain.title, f"Step {index + 1}/3: Op {spec.key}")
             self.assertEqual(self.specs[index + 1].calls if index < 2 else [], [])
             chain.on_done(StepOutcome(COMPLETED, message=f"done {spec.key}"))
             self.h.run_scheduled()
@@ -313,9 +316,16 @@ class SynchronousEndTests(unittest.TestCase):
         h.run_scheduled()
         self.assertEqual(specs[1].calls, [])
         self.assertEqual(len(h.errors), 1)
+        # Named as the chain lists it, for the error pane
+        self.assertEqual(h.error_titles, ["Step 1/2: Op a"])
         [(text, stopped)] = h.summaries
         self.assertTrue(stopped)
-        self.assertIn("it failed with ValueError: bad &lt;input&gt;", text)
+        # The dialog, and its pane, are gone by now: the summary names the step and the error
+        self.assertIn("<b>Step 1/2: Op a</b> (failed)", text)
+        self.assertIn(
+            "The chain stopped at Step 1/2 (Op a): it failed with ValueError: bad &lt;input&gt;",
+            text,
+        )
 
     def test_a_start_that_raises_after_failing_its_step_counts_once(self):
         h = Harness()

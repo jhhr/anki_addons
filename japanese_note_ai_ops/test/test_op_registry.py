@@ -20,6 +20,8 @@ chain_types = load_ops_module("chain_types")
 op_registry = load_ops_module("op_registry", subdir="")
 ai_helper_menu = load_ops_module("ai_helper_menu", subdir="")
 generator_resources = load_ops_module("generator_resources", subdir="")
+step_failure = load_ops_module("step_failure")
+api = load_ops_module("api_client")
 match_flags = load_ops_module("match_flags", subdir="word_array")
 
 # The ops D7 of the spec lists, in the menu's order
@@ -267,7 +269,11 @@ class GeneratorResourcesChainTests(unittest.TestCase):
         self.ui = patcher.start()
         self.addCleanup(patcher.stop)
         self.resources = mock.patch.object(generator_resources, "resources").start()
+        self.shown = mock.patch.object(step_failure, "show_exception").start()
+        # No progress dialog open, unless a test says otherwise
+        self.pane = mock.patch.object(step_failure, "report_run_error", return_value=False).start()
         self.addCleanup(mock.patch.stopall)
+        self.addCleanup(api.take_stop_reason)
 
     def test_missing_sudachipy_fails_the_step(self):
         self.resources.has_sudachipy.return_value = False
@@ -301,7 +307,7 @@ class GeneratorResourcesChainTests(unittest.TestCase):
         for chain, outcomes in (recording_chain(), (None, None)):
             with self.subTest(chain=chain), mock.patch.object(
                 generator_resources, "QueryOp"
-            ) as query_op, mock.patch.object(generator_resources, "show_exception") as shown:
+            ) as query_op:
                 op = query_op.return_value
                 op.failure.return_value = op
                 op.with_progress.return_value = op
@@ -313,7 +319,7 @@ class GeneratorResourcesChainTests(unittest.TestCase):
                     continue
                 on_failure = op.failure.call_args.args[0]
                 on_failure(OSError("no network"))
-                shown.assert_called_once()
+                self.shown.assert_called_once()
                 self.then.assert_not_called()
                 self.assertEqual([o.status for o in outcomes], [chain_types.STEP_FAILED])
                 self.assertIn("no network", outcomes[0].error)
@@ -331,9 +337,7 @@ class GeneratorResourcesChainTests(unittest.TestCase):
         self.ui["askUser"].return_value = True
         self.then.side_effect = RuntimeError("no config")
         chain, outcomes = recording_chain()
-        with mock.patch.object(generator_resources, "QueryOp") as query_op, mock.patch.object(
-            generator_resources, "show_exception"
-        ) as shown:
+        with mock.patch.object(generator_resources, "QueryOp") as query_op:
             op = query_op.return_value
             op.failure.return_value = op
             op.with_progress.return_value = op
@@ -341,9 +345,55 @@ class GeneratorResourcesChainTests(unittest.TestCase):
             on_success = query_op.call_args.kwargs["success"]
             # Would otherwise reach Qt from the download's handler, the chain left waiting
             on_success(None)
-        shown.assert_called_once()
+        self.shown.assert_called_once()
         self.assertEqual([o.status for o in outcomes], [chain_types.STEP_FAILED])
-        self.assertIn("no config", outcomes[0].error)
+        self.assertEqual(
+            outcomes[0].error, "RuntimeError: no config (while starting after the download)"
+        )
+
+    def failed_download(self, chain):
+        """Start the step's download and fail it, as aqt's QueryOp would."""
+        self.resources.has_sudachipy.return_value = True
+        self.resources.missing.return_value = [mock.Mock(size_mb=80)]
+        self.ui["askUser"].return_value = True
+        with mock.patch.object(generator_resources, "QueryOp") as query_op:
+            op = query_op.return_value
+            op.failure.return_value = op
+            op.with_progress.return_value = op
+            generator_resources.with_generator_resources(PARENT, self.then, chain=chain)
+            try:
+                raise OSError("no network")
+            except OSError as error:
+                op.failure.call_args.args[0](error)
+
+    def test_a_failed_download_in_the_chains_dialog_goes_to_its_pane(self):
+        self.pane.return_value = True
+        outcomes: list = []
+        self.failed_download(chain_types.ChainStep("Step 2/3", outcomes.append, "Extract words"))
+        self.shown.assert_not_called()
+        [(title, text)] = [c.args for c in self.pane.call_args_list]
+        self.assertEqual(title, "Step 2/3: Extract words")
+        self.assertIn("OSError: no network (while downloading the word array resources)", text)
+        self.assertIn("Traceback", text)
+        self.assertEqual(
+            [o.error for o in outcomes],
+            ["OSError: no network (while downloading the word array resources)"],
+        )
+
+    def test_a_failed_download_whose_error_box_breaks_still_fails_the_step(self):
+        # It used to raise out of the handler before the chain heard of the step's end
+        self.shown.side_effect = RuntimeError("box broke")
+        chain, outcomes = recording_chain()
+        self.failed_download(chain)
+        self.assertEqual([o.status for o in outcomes], [chain_types.STEP_FAILED])
+
+    def test_a_failed_download_takes_a_stop_reason_left_behind(self):
+        # As a failed run does: not left for the next step's run to find as its own
+        api._stop_reason = "the login expired"
+        chain, outcomes = recording_chain()
+        self.failed_download(chain)
+        self.assertEqual(outcomes[0].stop_reason, "the login expired")
+        self.assertIsNone(api.take_stop_reason())
 
     def test_outside_a_chain_the_download_s_then_raises_as_before(self):
         self.resources.has_sudachipy.return_value = True

@@ -22,7 +22,7 @@ STEP_CANCELLED = "cancelled"
 # The run's own work stopped it (take_stop_reason: a usage limit, an expired login). Wins over
 # cancelled: such a stop cancels the run too, and the reason is what the user needs to see.
 STEP_STOPPED = "stopped"
-# An exception came out of the op; aqt's error dialog has been shown for it.
+# An exception came out of the op, or out of what starts it; `step_failure` has shown it.
 STEP_FAILED = "failed"
 
 
@@ -33,7 +33,8 @@ class StepOutcome:
     # "Stopped early" line: the stop reason is in `stop_reason`, for the chain to word itself.
     message: str = ""
     stop_reason: Optional[str] = None
-    # "<exception type>: <message>" for a failed step
+    # "<exception type>: <message>" for a failed step, and " (while <what it was doing>)" when
+    # that was not the op's run itself. Plain text; the summary escapes it.
     error: Optional[str] = None
 
     @property
@@ -49,6 +50,13 @@ class ChainStep:
     # Nothing of the step is left to run after it apart from aqt's own bookkeeping for the
     # operation, so the next step must be started from a later main-loop turn, not from here.
     on_done: Callable[[StepOutcome], None]
+    # The op's own label, as the chain lists it
+    op_label: str = ""
+
+    @property
+    def title(self) -> str:
+        """How the chain names the step where one of its errors is shown: "Step i/n: <op>"."""
+        return f"{self.label}: {self.op_label}" if self.op_label else self.label
 
 
 def fail_step(chain: Optional[ChainStep], error: str) -> None:
