@@ -158,6 +158,28 @@ class MDXDictionary:
                 e,
             )
 
+    def _select(self, sql: str, params: tuple = ()) -> list[tuple]:
+        """Every row of one query against the index, on a connection closed before returning.
+
+        Every read of the index goes through here, because the one read that did not close its
+        connection cost a run its memory. `with sqlite3.connect(...)` - what the vendored
+        library and the old `_find_keys_containing_all_words` both used - commits a
+        transaction; it does not close anything. And a connection is not freed when its last
+        reference goes: on Python 3.13 it sits in a reference cycle with its own statement
+        cache, so only the cycle collector frees it. Anki runs with automatic collection off, and its 15-minute `gc.collect()`
+        skips every turn while a progress dialog is up - which is the whole of a bulk run. So
+        each connection lived until the run ended, holding the page cache its query had
+        filled: a `LIKE '%word%'` scan fills it, about 2.2MB. One 74-minute run made 2,478 of
+        those scans and grew 5,454MB, 2.20MB a scan in every five-minute window, until the
+        concurrency gate had cut the run to 4 tasks for want of memory that cutting could not
+        free.
+        """
+        conn = sqlite3.connect(self.builder._mdx_db)
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
     def _lookup_indexes(self, keyword: str, ignorecase: bool) -> list[dict]:
         """`IndexBuilder.lookup_indexes`, with the keyword bound as a parameter.
 
@@ -171,24 +193,13 @@ class MDXDictionary:
         `lib/` update would silently revert anything put in it - the same reason the
         `lower(key_text)` index is created from this file. The SQL is otherwise the shipped
         query verbatim, `SELECT *` included, so the column order below is the one
-        `get_data_by_index` expects.
-
-        The connection is closed rather than left to `with sqlite3.connect(...)`, which is what
-        the shipped function does: that context manager commits a transaction, it does not close
-        anything. A connection carries its own page cache, this runs once per lookup on a
-        283 MB index, and page cache is exactly the memory a tracemalloc-based fit cannot see -
-        so a connection left to the garbage collector is the wrong kind of thing to leave lying
-        around on the machine where memory is the constraint.
+        `get_data_by_index` expects. Through `_select`, so the connection is closed.
         """
         if ignorecase:
             sql = "SELECT * FROM MDX_INDEX WHERE lower(key_text) = lower(?)"
         else:
             sql = "SELECT * FROM MDX_INDEX WHERE key_text = ?"
-        conn = sqlite3.connect(self.builder._mdx_db)
-        try:
-            rows = conn.execute(sql, (keyword,)).fetchall()
-        finally:
-            conn.close()
+        rows = self._select(sql, (keyword,))
         return [
             {
                 "file_pos": row[1],
@@ -474,48 +485,36 @@ class MDXDictionary:
             if not os.path.exists(db_path):
                 return []
 
-            with sqlite3.connect(db_path) as conn:
-                if match_whole_word:
-                    # Get candidate keys using LIKE for initial filtering
-                    conditions = " AND ".join(["key_text LIKE ?"] * len(words))
-                    sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
-                    params = tuple(f"%{word}%" for word in words)
+            # LIKE for the candidates, a whole-table scan: the page cache it fills is why this
+            # goes through `_select`, which closes the connection
+            conditions = " AND ".join(["key_text LIKE ?"] * len(words))
+            sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
+            params = tuple(f"%{word}%" for word in words)
+            candidate_keys = [row[0] for row in self._select(sql, params)]
+            if not match_whole_word:
+                return candidate_keys
 
-                    cursor = conn.execute(sql, params)
-                    candidate_keys = [row[0] for row in cursor.fetchall()]
+            # Filter to only keys where each word appears as a complete unit
+            # A word is complete if it's not preceded or followed by other word characters
+            filtered_keys = []
+            for key in candidate_keys:
+                all_words_match = True
+                for word in words:
+                    # Create pattern that matches word with word boundaries
+                    # Word boundary = start/end of string or non-alphanumeric character
+                    # Escape special regex characters in the word
+                    escaped_word = re.escape(word)
+                    # Match word that is either at boundaries or surrounded by non-word chars
+                    # Using lookahead/lookbehind for zero-width boundary assertions
+                    pattern = f"(?<![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯]){escaped_word}(?![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯])"
+                    if not re.search(pattern, key):
+                        all_words_match = False
+                        break
 
-                    # Filter to only keys where each word appears as a complete unit
-                    # A word is complete if it's not preceded or followed by other word characters
-                    import re
+                if all_words_match:
+                    filtered_keys.append(key)
 
-                    filtered_keys = []
-                    for key in candidate_keys:
-                        all_words_match = True
-                        for word in words:
-                            # Create pattern that matches word with word boundaries
-                            # Word boundary = start/end of string or non-alphanumeric character
-                            # Escape special regex characters in the word
-                            escaped_word = re.escape(word)
-                            # Match word that is either at boundaries or surrounded by non-word chars
-                            # Using lookahead/lookbehind for zero-width boundary assertions
-                            pattern = f"(?<![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯]){escaped_word}(?![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯])"
-                            if not re.search(pattern, key):
-                                all_words_match = False
-                                break
-
-                        if all_words_match:
-                            filtered_keys.append(key)
-
-                    return filtered_keys
-                else:
-                    # Standard partial matching with LIKE
-                    conditions = " AND ".join(["key_text LIKE ?"] * len(words))
-                    sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
-                    params = tuple(f"%{word}%" for word in words)
-
-                    cursor = conn.execute(sql, params)
-                    keys = [row[0] for row in cursor.fetchall()]
-                    return keys
+            return filtered_keys
         except Exception as e:
             logger.error(f"Error searching for keys containing all words {words}: {e}")
             raise MDXLookupError(
@@ -549,10 +548,7 @@ class MDXDictionary:
             keys = self._keys_in_prefix_range(prefix, max_results)
             if keys is not None:
                 return keys
-            # Use wildcard pattern for prefix search
-            pattern = f"{prefix}*"
-            keys = self.builder.get_mdx_keys(pattern)
-            return keys[:max_results] if keys else []
+            return self._keys_like_prefix(prefix)[:max_results]
         except Exception as e:
             logger.error(f"Error getting keys by prefix '{prefix}': {e}")
             raise MDXLookupError(
@@ -577,15 +573,25 @@ class MDXDictionary:
         db_path = self.builder._mdx_db
         if not db_path or not os.path.exists(db_path):
             return []
-        conn = sqlite3.connect(db_path)
-        try:
-            cursor = conn.execute(
-                "SELECT key_text FROM MDX_INDEX WHERE key_text >= ? AND key_text < ? LIMIT ?",
-                (prefix, upper, max_results),
-            )
-            return [row[0] for row in cursor.fetchall()]
-        finally:
-            conn.close()
+        rows = self._select(
+            "SELECT key_text FROM MDX_INDEX WHERE key_text >= ? AND key_text < ? LIMIT ?",
+            (prefix, upper, max_results),
+        )
+        return [row[0] for row in rows]
+
+    def _keys_like_prefix(self, prefix: str) -> list[str]:
+        """`IndexBuilder.get_mdx_keys(f"{prefix}*")`, for the prefixes a range cannot answer.
+
+        The shipped query verbatim - every `*` becomes `%`, and LIKE folds ASCII case - but
+        through `_select`, so the connection is closed rather than left to `with`, and with the
+        pattern bound rather than pasted between double quotes.
+        """
+        db_path = self.builder._mdx_db
+        if not db_path or not os.path.exists(db_path):
+            return []
+        pattern = f"{prefix}*".replace("*", "%")
+        rows = self._select("SELECT key_text FROM MDX_INDEX WHERE key_text LIKE ?", (pattern,))
+        return [row[0] for row in rows]
 
     def query_multiple(
         self,

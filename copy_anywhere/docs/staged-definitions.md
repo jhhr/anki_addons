@@ -74,7 +74,14 @@ had.
 
 References are qualified: `{{trigger.Word}}`, `{{note.Meaning}}`, `{{card.deck_name}}`,
 `{{M}}` for a result. The note-value and card-value keys format 1 used are read through the
-note that holds them -- `{{trigger.__Note_ID}}`, `{{note.Recognition__Card_Due}}`. A bare
+note that holds them -- `{{trigger.__Note_ID}}`, `{{note.Recognition__Card_Due}}`. A card
+value names its card type in front (`Cloze 2__Card_Due` for a cloze card), or none to read
+the note's only card (`{{note.__Card_Due}}`), which fails the stage on a note with several;
+the spelling says which is meant, whatever note types the definition triggers on. Through a
+card binding there is no card type to name: `{{card.__Card_Due}}`, or one of the card
+properties code sees. The references inside a cloze (`{{c1::{{trigger.Word}}}}`) are
+references like any other; the cloze marker is kept around what they resolve to, and one
+that is never closed is refused. A bare
 name is a result, or one of the two values the run itself supplies
 (`{{__Target_Notes_Count}}`, `{{__Query_Note_Index}}`), and anything else fails the stage
 saying which name it was: a reference that resolves to nothing is a mistake, not an empty
@@ -504,7 +511,9 @@ menu offers the stage's scope, and what the menu offers is what is already in th
 Code is rewritten the same way, but only its `{{...}}` references: the code itself then
 runs as format-2 code does, with every binding in scope under its own name, `note` meaning
 the stage's note or the loop's, `cards` that note's cards, and the facades where format 1
-had views of its own with other card properties. In Source-to-destinations the edits sit
+had views of its own. A card facade has the properties format 1's card view had, the cloze
+number on `template_name` and the creation and review times included, so code reading a
+card keeps working unchanged. In Source-to-destinations the edits sit
 in a loop whose item is `note`, so field and file code that read the trigger as `note` now
 reads the destination; Destination-to-sources loops over the sources under that name, which
 is the note format 1 gave its code there. Code that reached for a note by `note`, or by any

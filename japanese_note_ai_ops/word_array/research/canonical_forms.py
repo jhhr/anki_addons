@@ -11,7 +11,7 @@ import argparse
 from collections import Counter
 
 from _bootstrap import ADDON_ROOT, load
-from migrate_fit import CORPORA, export_name_lexicon, read_export
+from corpora import CORPORA, export_name_lexicon, read_export
 
 generator = load("generator")
 

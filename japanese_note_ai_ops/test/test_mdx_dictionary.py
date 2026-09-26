@@ -163,8 +163,18 @@ class LookupIndexesTests(MDXDictionaryTestCase):
             ],
         )
 
-    def test_the_lookup_leaves_no_connection_open(self):
-        """A connection carries a page cache, and this runs once per lookup."""
+
+class ConnectionTests(MDXDictionaryTestCase):
+    """Every read of the index closes the connection it opened.
+
+    Not a tidiness rule. Anki runs with automatic garbage collection off and skips its periodic
+    `gc.collect()` while a progress dialog is up, and a connection is only freed by the cycle
+    collector - so one left to `with sqlite3.connect(...)` lives until the run ends, holding
+    the page cache its query filled. The whole-table LIKE in `_find_keys_containing_all_words`
+    did exactly that, 2.2MB a scan, and grew one run by 5.4GB.
+    """
+
+    def connections_opened_by(self, read) -> list:
         opened = []
         real_connect = sqlite3.connect
 
@@ -175,13 +185,52 @@ class LookupIndexesTests(MDXDictionaryTestCase):
 
         sqlite3.connect = tracking_connect
         try:
-            self.dictionary._lookup_indexes("ご飯", False)
+            read()
         finally:
             sqlite3.connect = real_connect
+        return opened
 
-        self.assertEqual(len(opened), 1)
-        with self.assertRaises(sqlite3.ProgrammingError):
-            opened[0].execute("SELECT 1")
+    def test_no_read_leaves_its_connection_open(self):
+        reads = {
+            "exact lookup": lambda: self.dictionary._lookup_indexes("ご飯", False),
+            "whole-word keys": lambda: self.dictionary._find_keys_containing_all_words(
+                ["食べる"], match_whole_word=True
+            ),
+            "partial keys": lambda: self.dictionary._find_keys_containing_all_words(["食べ"]),
+            "prefix range": lambda: self.dictionary.get_keys_by_prefix("た"),
+            "prefix LIKE fallback": lambda: self.dictionary.get_keys_by_prefix("apple"),
+        }
+        for name, read in reads.items():
+            with self.subTest(read=name):
+                opened = self.connections_opened_by(read)
+                self.assertEqual(len(opened), 1)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    opened[0].execute("SELECT 1")
+
+
+class FindKeysContainingAllWordsTests(MDXDictionaryTestCase):
+    """Strategy 1 of `query_japanese`: keys holding every word, optionally as whole words."""
+
+    def test_partial_matching_finds_every_key_containing_the_words(self):
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べ"]), ["食べる", "食べ物"]
+        )
+
+    def test_whole_word_matching_rejects_a_word_inside_a_longer_one(self):
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べ"], match_whole_word=True), []
+        )
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べる"], match_whole_word=True),
+            ["食べる"],
+        )
+
+    def test_every_word_has_to_be_in_the_key(self):
+        self.assertEqual(self.dictionary._find_keys_containing_all_words(["ご", "飯"]), ["ご飯"])
+
+    def test_a_missing_database_is_not_an_error(self):
+        self.dictionary.builder._mdx_db = str(Path(self.dir.name) / "gone.mdx.db")
+        self.assertEqual(self.dictionary._find_keys_containing_all_words(["食べ"]), [])
 
 
 class PrefixRangeTests(MDXDictionaryTestCase):

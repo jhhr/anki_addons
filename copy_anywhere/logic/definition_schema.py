@@ -54,6 +54,44 @@ UNKNOWN = "Unknown"
 #: The types whose values interpolation is allowed to stringify (§4.1).
 SCALAR_TYPE_NAMES = (TEXT, NUMBER, BOOLEAN)
 
+#: `{{card.<name>}}` properties, resolved on the card facade rather than through the
+#: `<template>__Card_*` keys format 1 used. The same names code reads off a card, which are
+#: the ones format 1's code saw, so converted code keeps working.
+CARD_PROPERTY_NAMES = frozenset({
+    "id",
+    "nid",
+    "did",
+    "odid",
+    "deck_id",
+    "deck_name",
+    "original_deck_name",
+    "ord",
+    "template_name",
+    "type",
+    "queue",
+    "due",
+    "odue",
+    "ivl",
+    "factor",
+    "ease",
+    "reps",
+    "lapses",
+    "left",
+    "flag",
+    "custom_data",
+    "desired_retention",
+    "stability",
+    "difficulty",
+    "mod",
+    "suspended",
+    "buried",
+    "created",
+    "first_review_time",
+    "latest_review_time",
+    "average_review_time",
+    "total_review_time",
+})
+
 
 class ValueType:
     """A runtime value type. `List` carries its item type; every other kind is atomic."""
@@ -155,6 +193,28 @@ def names_are_relaxed(definition: Any) -> bool:
     holds in neither and a migrated definition cannot even be opened to rename the variable.
     """
     return isinstance(definition, dict) and definition.get("migrated_from_format") == 1
+
+
+#: How an unclosed cloze starts once the match has taken off its `{{`.
+_UNCLOSED_CLOZE_RE = re.compile(r"^c(\d+)::")
+
+
+def unclosed_reference_problem(reference: str) -> Optional[str]:
+    """What is wrong with a `{{...}}` reference that holds another `{{`, or None.
+
+    A reference runs up to the first `}}`, so a `{{` that is never closed swallows the
+    reference after it: `{{c1::abc {{trigger.Word}}` is matched as one reference named
+    `c1::abc {{trigger.Word`, and splitting that on its dot names no binding anyone wrote.
+    A closed cloze never gets here; it is taken apart before references are read. The
+    phrase follows what the caller says it is checking: "field Note has ...".
+    """
+    if "{{" not in reference:
+        return None
+    cloze = _UNCLOSED_CLOZE_RE.match(reference)
+    if cloze:
+        return f"has a cloze '{{{{c{cloze.group(1)}::' that is never closed"
+    before = reference[: reference.index("{{")].strip()
+    return f"has a '{{{{' that is never closed, before '{before}'"
 
 
 def result_name_problem(

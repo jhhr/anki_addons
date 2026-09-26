@@ -240,10 +240,11 @@ def _on_worker() -> bool:
     return threading.current_thread() is _worker
 
 
-def _run_on_collection(what: str, fn: "Callable[[], T]") -> T:
+def run_on_collection(what: str, fn: "Callable[[], T]") -> T:
     """Take the collection for one call, or give up if the run was cancelled.
 
-    Blocks the calling thread. Callers on the event loop want run_on_collection_async instead.
+    Blocks the calling thread. Callers on the event loop want run_on_collection_async instead,
+    and a search or a fetch find_notes, get_note or get_notes below.
     """
     if _on_worker():
         return fn()
@@ -275,7 +276,7 @@ async def run_on_collection_async(what: str, fn: "Callable[[], T]") -> T:
 
 def find_notes(query: str) -> "Sequence[NoteId]":
     """mw.col.find_notes, serialised and abandonable."""
-    return _run_on_collection(f"find_notes: {query}", lambda: mw.col.find_notes(query))
+    return run_on_collection(f"find_notes: {query}", lambda: mw.col.find_notes(query))
 
 
 async def find_notes_async(query: str) -> "Sequence[NoteId]":
@@ -287,7 +288,7 @@ async def find_notes_async(query: str) -> "Sequence[NoteId]":
 
 def get_note(note_id: "NoteId") -> "Note":
     """mw.col.get_note, serialised and abandonable."""
-    return _run_on_collection("get_note", lambda: mw.col.get_note(note_id))
+    return run_on_collection("get_note", lambda: mw.col.get_note(note_id))
 
 
 def _fetch_notes(ids: "list[NoteId]", run: "Optional[Run]", exempt: bool) -> "list[Note]":
@@ -313,7 +314,7 @@ def get_notes(note_ids: "Iterable[NoteId]") -> "list[Note]":
     if not ids:
         return []
     run, exempt = current_run(), bool(getattr(_exempt, "on", False))
-    return _run_on_collection(
+    return run_on_collection(
         f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
     )
 

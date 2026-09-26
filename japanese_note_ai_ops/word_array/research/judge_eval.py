@@ -43,15 +43,15 @@ RESULTS = ADDON_ROOT / "output" / "word_matching_judge_eval_results.jsonl"
 NO_EXPECTATION_POS = ("particle", "copula")
 
 
-def label_array(word_lists: dict, arr: list, migrate, match_flags) -> list:
+def label_array(word_lists: dict, arr: list, old_word_lists, match_flags) -> list:
     """The expected judgement of every word of `arr`, in `iter_words` order: "match" where an
     old entry fits the word, "dontmatch" where none does, None where nothing is expected."""
     elements = [elem for _, elem in match_flags.iter_words(arr)]
     found: set[int] = set()
-    entries, _ = migrate.read_word_lists(word_lists)
+    entries, _ = old_word_lists.read_word_lists(word_lists)
     for entry in entries:
         if entry.word and entry.reading:
-            hits, _ = migrate._find(entry, elements)
+            hits, _ = old_word_lists.find_elements(entry, elements)
             found.update(id(elem) for elem in hits)
     expected: list = []
     for elem in elements:
@@ -67,12 +67,13 @@ def label_array(word_lists: dict, arr: list, migrate, match_flags) -> list:
 
 
 def build(args) -> int:
-    import migrate_fit
+    import corpora
+    from _bootstrap import load
 
-    migrate, match_flags = migrate_fit.migrate, migrate_fit.migrate.match_flags
+    old_word_lists, match_flags = load("research.old_word_lists"), load("match_flags")
     invalid: Counter[str] = Counter()
-    corpus = migrate_fit.read_export(migrate_fit.CORPORA["checked"], invalid)
-    lexicon = migrate_fit.export_name_lexicon()
+    corpus = corpora.read_export(corpora.CORPORA["checked"], invalid)
+    lexicon = corpora.export_name_lexicon()
     hand_by_sentence: dict[str, list[dict]] = {}
     for hand_label in hand_labels.read_labels():
         hand_by_sentence.setdefault(hand_label["sentence"], []).append(hand_label)
@@ -95,16 +96,16 @@ def build(args) -> int:
         rows.append(row)
 
     for raw_sentence, word_lists in corpus:
-        sentence = migrate_fit.html_stripping.strip_context_sentences(raw_sentence)
+        sentence = corpora.html_stripping.strip_context_sentences(raw_sentence)
         if not sentence.strip():
             invalid["no sentence once the context is stripped"] += 1
             continue
-        arr = migrate_fit.generator.generate(sentence, lexicon)
-        add_row(sentence, arr, label_array(word_lists, arr, migrate, match_flags))
+        arr = corpora.generator.generate(sentence, lexicon)
+        add_row(sentence, arr, label_array(word_lists, arr, old_word_lists, match_flags))
     checked_rows = len(rows)
     # Sentences judged by hand outside the checked export expect only what was judged
     for sentence in list(hand_by_sentence):
-        arr = migrate_fit.generator.generate(sentence, lexicon)
+        arr = corpora.generator.generate(sentence, lexicon)
         add_row(sentence, arr, [None] * len(list(match_flags.iter_words(arr))))
     if hand:
         print(

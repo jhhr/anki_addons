@@ -1,10 +1,9 @@
 # What the test suites need, for every addon in the repo. The versions are the ones the
 # full run was last verified against; bump them together and rerun `python -m pytest`.
 #
-# Install into the interpreter the tests run on -- the system Python 3.10 here, the same one
-# .vscode/settings.json and pyrightconfig.json point at, and the one to run `python -m mypy`
-# with: mypy reads anki/aqt out of whichever interpreter it runs on. The repo's .venv is a
-# different interpreter holding japanese_note_ai_ops' runtime libraries and has no Anki.
+# Install into one interpreter and use that same one for `python -m pytest`, `python -m mypy`
+# and the editor's type checker: all three read anki/aqt out of whichever interpreter they run
+# on. Python 3.10 or newer; mypy.ini checks against 3.10.
 #
 #   python -m pip install -r requirements-dev.txt
 #   python -m pip install --no-deps -r requirements-dev-nodeps.txt
@@ -14,11 +13,20 @@
 # The real `anki` package backs the default (real-collection) mode; `aqt` pulls in PyQt6
 # and QtWebEngine. aqt's own `qt` extras pin older Qt releases than the ones below, so Qt
 # is named here directly rather than through an extra.
-anki==25.9.4
-aqt==25.9.4
+anki==26.9.2
+aqt==26.9.2
 PyQt6==6.11.0
 PyQt6-WebEngine==6.11.0
 
-pytest==8.3.3
+# 8.4 is the oldest that anki_shared/jp_text_processing's suite imports under: its conftest
+# annotates with `pytest.TerminalReporter`, which 8.3 does not export, so on 8.3 that whole
+# suite fails at collection.
+pytest==8.4.2
 # Provides `qtbot` to pytest-anki, and reads `qt_api = pyqt6` from pytest.ini.
 pytest-qt==4.5.0
+
+# Pinned because the error count `python -m mypy .` reports is compared across runs, and a
+# new mypy release moves it on its own. So does the platform: mypy only checks the
+# `sys.platform` branches of the one it runs on, so a Linux run counts errors that a Windows
+# run never sees, and the reverse.
+mypy==2.3.1

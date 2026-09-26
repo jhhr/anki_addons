@@ -8,6 +8,11 @@ on stdout. Switching a job back to an API model is only a config edit.
 Like every other provider this is called from a worker thread and blocks it. A process costs
 far more than a connection - a couple of seconds of startup and a few hundred MB - so the number
 running at once has its own cap, `terminal_max_concurrent_requests`, on top of the gate.
+
+The subscription's usage limit pauses a bulk run until the reset time the CLI states, and every
+request that hit the limit is retried after it; an expired login or a model the CLI cannot use,
+which only the user can fix, stops the run. Outside a bulk run (an editor hook) any of them only
+fails the request.
 """
 
 import json
@@ -20,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -33,7 +39,10 @@ from .api_client import (
     cancel_run,
     current_run,
     is_cancelled,
+    pause_run,
     rate_limit_tracker,
+    run_paused,
+    wait_while_paused,
 )
 
 try:
@@ -49,14 +58,50 @@ DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_TIMEOUT = 180
 # Windows caps a whole command line at 32767 characters; longer instructions go in a file
 MAX_INLINE_INSTRUCTIONS = 8000
-# The process runs here, so it never picks up a project's CLAUDE.md or settings from Anki's cwd
-WORK_DIR = Path(__file__).resolve().parent.parent / "user_files" / "terminal_cwd"
-# The API path sends no thinking; with it on Haiku takes twice as long per call
-CLI_ENV = {"MAX_THINKING_TOKENS": "0"}
+# The process runs here, so it never picks up a project's CLAUDE.md or settings from Anki's cwd.
+# Not under the addon's user_files: an addon linked in from a git checkout resolves into that
+# repo, and the CLI then runs git over the whole repo at every start, a fifth of its CPU.
+WORK_DIR = Path(tempfile.gettempdir()) / "anki_claude_terminal_cwd"
+CLI_ENV = {
+    # The API path sends no thinking; with it on Haiku takes twice as long per call
+    "MAX_THINKING_TOKENS": "0",
+    # Telemetry, update checks and error reports each cost startup CPU in every process;
+    # together they were about a quarter of a request's CPU
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_TELEMETRY": "1",
+}
 RETRY_STATUSES = frozenset({429, 529})
-# Wording of the subscription usage limit, which no retry within a run can clear. Not seen in a
-# real response yet, only in the CLI's strings: "You've hit your ... limit", "resets ...".
+# Wording of the subscription usage limit, which no retry clears before its reset time, so the
+# run pauses until then. Not seen in a real response yet, only in the CLI's strings: "You've
+# hit your ... limit", "resets ...".
 USAGE_LIMIT_RE = re.compile(r"hit your .*limit|usage limit|limit reached|limit will reset", re.I)
+# The reset time in that message: "resets 5pm", "resets 5:30pm", "resets at 5 pm",
+# "resets 17:00". A timezone after it, "(Europe/Helsinki)", is ignored: the CLI prints the
+# user's own local time. A bare number ("resets 5") is not taken for an hour.
+USAGE_LIMIT_RESET_RE = re.compile(
+    r"\bresets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?m\.?)?(?![\w:])", re.I
+)
+DEFAULT_USAGE_LIMIT_RETRY_MINUTES = 15
+# A reset time further ahead than this is not believed. It is read as the next occurrence of a
+# time of day, so a request that was in flight across the reset and comes back limited just
+# after it ("resets 5pm" received at 17:00:30) would otherwise pause the run until 5pm
+# tomorrow. The session limit resets within hours; past this the fallback interval is used.
+MAX_USAGE_LIMIT_PAUSE_SECONDS = 20 * 60 * 60
+# Wording of an expired or missing login, which no retry can clear either: seen as
+# "Failed to authenticate: OAuth session expired and could not be refreshed".
+AUTH_FAILURE_RE = re.compile(
+    r"failed to authenticate|authentication (?:failed|error)|oauth|invalid api key"
+    r"|/login|not logged in|unauthorized",
+    re.I,
+)
+AUTH_STATUSES = frozenset({401, 403})
+# A model the CLI cannot use, which fails every request alike: a name it doesn't know, seen as
+# a 404 "There's an issue with the selected model (claude-nope)", or one newer than the
+# installed CLI, seen as a 400 "Claude Code 2.1.268 does not support this model; version
+# 2.1.280 or newer is required. Run 'claude update'". Both print this tag on stderr.
+UNUSABLE_MODEL_RE = re.compile(
+    r"issue with the selected model|does not support this model|unrecognized_model", re.I
+)
 
 
 def is_terminal_model(model: str) -> bool:
@@ -94,9 +139,25 @@ def build_command(
 class CliAction:
     OK = "ok"
     RETRY = "retry"
-    # The subscription's usage limit: nothing more will go through until it resets
+    # The subscription's usage limit: nothing more will go through until it resets, so a bulk
+    # run pauses until then and the request is retried
     EXHAUSTED = "exhausted"
+    # The CLI's login expired: nothing will go through until the user logs in again
+    UNAUTHENTICATED = "unauthenticated"
+    # The configured model is unknown to the CLI or needs a newer CLI
+    UNUSABLE_MODEL = "unusable_model"
     FAIL = "fail"
+
+
+# The dead ends: what went wrong for the whole run, not for this one request, and that no
+# waiting will clear, so the run stops instead of spending its remaining notes on the same wall.
+# The usage limit is not one: it clears at its reset time, and the run pauses until then.
+STOP_REASONS = {
+    CliAction.UNAUTHENTICATED: "login has expired - run `claude` in a terminal to log in again",
+    CliAction.UNUSABLE_MODEL: (
+        "cannot use the configured model - fix the operation's model name or run `claude update`"
+    ),
+}
 
 
 class CliOutcome(NamedTuple):
@@ -115,8 +176,10 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
     except (ValueError, TypeError):
         body = None
     if not isinstance(body, dict):
-        # A crash or a kill leaves no JSON: this process's problem, worth another try
         tail = (stderr or stdout or "").strip()[-500:]
+        if AUTH_FAILURE_RE.search(tail):
+            return CliOutcome(CliAction.UNAUTHENTICATED, None, tail)
+        # A crash or a kill leaves no JSON: this process's problem, worth another try
         return CliOutcome(CliAction.RETRY, None, f"exit {exit_code}, no JSON output: {tail}")
 
     text = body.get("result")
@@ -129,8 +192,14 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
             return CliOutcome(CliAction.OK, structured, text)
         return CliOutcome(CliAction.OK, None, text)
 
+    # Before the status checks: the 404 and 400 it comes as would otherwise fail only this
+    # request, and a run of thousands failed every one of them before it was noticed
+    if UNUSABLE_MODEL_RE.search(text) or UNUSABLE_MODEL_RE.search(stderr or ""):
+        return CliOutcome(CliAction.UNUSABLE_MODEL, None, text or stderr.strip()[-500:], status)
     if USAGE_LIMIT_RE.search(text):
         return CliOutcome(CliAction.EXHAUSTED, None, text, status)
+    if AUTH_FAILURE_RE.search(text) or status in AUTH_STATUSES:
+        return CliOutcome(CliAction.UNAUTHENTICATED, None, text, status)
     if status is not None and (status in RETRY_STATUSES or status >= 500):
         return CliOutcome(CliAction.RETRY, None, text, status)
     return CliOutcome(CliAction.FAIL, None, text or stdout.strip()[-500:], status)
@@ -343,15 +412,70 @@ def _text(data: Optional[bytes]) -> str:
     return data.decode("utf-8", errors="replace") if data else ""
 
 
-def stop_run_for_usage_limit(message: str) -> None:
-    """Cancel the run: every request after this one would hit the same limit.
+def stop_run_for_dead_end(reason: str, message: str) -> None:
+    """Cancel the run: every request after this one would hit the same wall.
 
     The processes still running are killed and nothing more is spawned; the op's end message
     says why. A request outside a bulk run (an editor hook) only fails.
     """
     if current_run() is None:
         return
-    cancel_run(reason=f"The claude CLI usage limit was reached: {message.strip()}")
+    cancel_run(reason=f"The claude CLI {reason}: {message.strip()}")
+
+
+def usage_limit_resume_time(message: str, now: float) -> Optional[float]:
+    """When the usage limit `message` reports resets, as a time.time() value; None if unstated.
+
+    The message gives a time of day and no date: it is read as local time today, or tomorrow
+    if that time is not after `now`.
+    """
+    found = USAGE_LIMIT_RESET_RE.search(message)
+    if not found:
+        return None
+    hour, minute = int(found.group(1)), int(found.group(2) or 0)
+    meridiem = (found.group(3) or "").lower()
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if meridiem == "p" else 0)
+    elif found.group(2) is None:
+        return None
+    if hour > 23 or minute > 59:
+        return None
+    reset = datetime.fromtimestamp(now).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset.timestamp() <= now:
+        reset += timedelta(days=1)
+    return reset.timestamp()
+
+
+def pause_for_usage_limit(message: str, config: dict, now: Optional[float] = None) -> bool:
+    """Pause the run until the usage limit `message` reports resets. False outside a run.
+
+    Every request that hits the limit calls this. The first one's pause stands (pause_run keeps
+    it) and the others only wait for it to end. When no reset time can be read, or none worth
+    believing, the pause lasts `terminal_usage_limit_retry_minutes`, and the retry after it
+    finds out whether the limit has cleared.
+    """
+    # This thread's own run rather than the one in progress: a thread outside the run is never
+    # held by its pause, so it would retry into the limit at once, over and over
+    if current_run() is None:
+        return False
+    if now is None:
+        now = time.time()
+    resume_at = usage_limit_resume_time(message, now)
+    if resume_at is None or resume_at - now > MAX_USAGE_LIMIT_PAUSE_SECONDS:
+        minutes = config.get("terminal_usage_limit_retry_minutes")
+        # Never under a minute: a pause that ends on its first poll would send every waiting
+        # request straight back into the limit, round and round
+        resume_at = now + 60 * max(1.0, float(minutes or DEFAULT_USAGE_LIMIT_RETRY_MINUTES))
+    message = message.strip()
+    if pause_run(f"usage limit was reached: {message}", resume_at):
+        logger.warning(
+            "claude CLI usage limit was reached, pausing the run until %s: %s",
+            datetime.fromtimestamp(resume_at).strftime("%H:%M"),
+            message,
+        )
+    return True
 
 
 def get_response_from_terminal(
@@ -420,15 +544,31 @@ def _run_with_retry(
     max_retry_wait = float(config.get("max_retry_wait_seconds", DEFAULT_MAX_RETRY_WAIT_SECONDS))
     semaphore = process_semaphore(config)
 
-    for attempt in range(max_retries + 1):
+    # Counted by hand rather than by a for loop: a request that hit the usage limit is retried
+    # after the pause without spending an attempt, since nothing was wrong with it
+    attempt = 0
+    while True:
         if is_cancelled(cancel_state):
             logger.info("Skipping request to %s, the run was cancelled", key)
             return None
-        cooldown = rate_limit_tracker.wait_time(key)
-        if cooldown > 0 and not _sleep_cancellable(cooldown, cancel_state):
+        # A paused run spawns nothing new, retries included; a cancel during the pause ends it
+        if not wait_while_paused(cancel_state):
             return None
+        cooldown = rate_limit_tracker.wait_time(key)
+        if cooldown > 0:
+            if not _sleep_cancellable(cooldown, cancel_state):
+                return None
+            # The run may have been paused while this request sat out the cooldown
+            if not wait_while_paused(cancel_state):
+                return None
         if not _acquire_cancellable(semaphore, cancel_state):
             return None
+        if run_paused():
+            # Paused while this request queued for a process slot. When the usage limit lands,
+            # every worker queued behind the full semaphore is in here, and each would spawn a
+            # process straight into the limit. Give the slot back and wait above.
+            semaphore.release()
+            continue
         sent_at = time.monotonic()
         try:
             finished = run_process(cmd, prompt, timeout, cancel_state, popen)
@@ -453,8 +593,17 @@ def _run_with_retry(
                 return outcome.result
             return decode_text_result(outcome.message, json_result_corrector)
         if outcome.action == CliAction.EXHAUSTED:
-            logger.error("claude CLI usage limit reached for %s: %s", key, outcome.message)
-            stop_run_for_usage_limit(outcome.message)
+            if not pause_for_usage_limit(outcome.message, config):
+                logger.error("claude CLI usage limit was reached for %s: %s", key, outcome.message)
+                return None
+            # The same attempt again once the pause ends, which the top of the loop waits for.
+            # Every request that hit the limit retries, not only the one that paused the run:
+            # they were all only early.
+            continue
+        if outcome.action in STOP_REASONS:
+            reason = STOP_REASONS[outcome.action]
+            logger.error("claude CLI %s, stopping %s: %s", reason, key, outcome.message)
+            stop_run_for_dead_end(reason, outcome.message)
             return None
         if outcome.action == CliAction.FAIL:
             # Full output, so a failure this classifier doesn't know yet can be taught to it
@@ -476,4 +625,4 @@ def _run_with_retry(
             rate_limit_tracker.note_rate_limited(key, delay)
         if not _sleep_cancellable(delay, cancel_state):
             return None
-    return None
+        attempt += 1

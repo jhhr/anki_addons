@@ -12,7 +12,7 @@ import itertools
 from collections import Counter
 
 from _bootstrap import load, load_root
-from migrate_fit import CORPORA, read_export
+from corpora import CORPORA, read_export
 
 generator = load("generator")
 html_stripping = load_root("html_stripping")

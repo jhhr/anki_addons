@@ -14,7 +14,7 @@ from aqt.qt import QAction, qconnect, QMenu
 from .shared.utils.vendor_path import add_vendor_paths, vendor_health  # noqa: E402
 
 ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
-ADDON_NAME = "Simple Anki AI Prompts"
+ADDON_NAME = "Japanese Note AI Ops"
 
 add_vendor_paths(ADDON_DIR)
 
@@ -64,9 +64,6 @@ try:
         extract_words_op,
         regenerate_words_from_selected_notes,
     )
-    from .async_api_ops.migrate_compound_verbs import (  # noqa: E402
-        migrate_compound_verbs_from_selected_notes,
-    )
     from .async_api_ops.match_words_to_notes import (  # noqa: E402
         match_words_to_notes_from_selected,
         match_single_word_to_notes_from_selected,
@@ -103,7 +100,6 @@ try:
     )
     from .sync_local_ops.make_fine_tuning_data import (  # noqa: E402
         make_kanjify_sentence_data,
-        make_extract_words_migration_data,
         make_all_test_data,
     )
 
@@ -148,7 +144,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     extract_words_action = QAction("Extract words", mw)
     extract_words_and_judge_action = QAction("Extract words + Judge matchability", mw)
     regenerate_words_action = QAction("Regenerate words over the current array", mw)
-    migrate_compound_verbs_action = QAction("Migrate compound verbs to prefix/suffix verbs", mw)
     find_proper_nouns_action = QAction("Find proper nouns in word arrays", mw)
     judge_words_action = QAction("Judge words matchability", mw)
     rejudge_matched_words_action = QAction("Re-judge matched words", mw)
@@ -166,7 +161,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     build_name_lexicon_action = QAction("Build name lexicon from selected notes", mw)
     deduplicate_existing_meaning_notes_action = QAction("Deduplicate existing meaning notes", mw)
     export_kanjify_ft_action = QAction("Export kanjify test data", mw)
-    export_migration_data_action = QAction("Export extract-words migration test data", mw)
     make_all_meanings_action = QAction("Generate all meanings for selected notes", mw)
     merge_meanings_action = QAction("Merge existing meanings for selected notes", mw)
     new_note_all_ops_action = QAction("Run all ops for new notes", mw)
@@ -200,10 +194,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     qconnect(
         regenerate_words_action.triggered,
         lambda: regenerate_words_from_selected_notes(selected_nids, parent=browser),
-    )
-    qconnect(
-        migrate_compound_verbs_action.triggered,
-        lambda: migrate_compound_verbs_from_selected_notes(selected_nids, parent=browser),
     )
     qconnect(
         find_proper_nouns_action.triggered,
@@ -281,10 +271,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
         export_kanjify_ft_action.triggered,
         lambda: make_kanjify_sentence_data(selected_nids, parent=browser),
     )
-    qconnect(
-        export_migration_data_action.triggered,
-        lambda: make_extract_words_migration_data(selected_nids, parent=browser),
-    )
 
     ai_menu = menu.addMenu("AI helper")
     if ai_menu is None:
@@ -300,7 +286,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(extract_words_action)
     ai_menu.addAction(extract_words_and_judge_action)
     ai_menu.addAction(regenerate_words_action)
-    ai_menu.addAction(migrate_compound_verbs_action)
     ai_menu.addAction(find_proper_nouns_action)
     ai_menu.addAction(judge_words_action)
     ai_menu.addAction(rejudge_matched_words_action)
@@ -319,7 +304,6 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     ai_menu.addAction(build_name_lexicon_action)
     ai_menu.addAction(deduplicate_existing_meaning_notes_action)
     ai_menu.addAction(export_kanjify_ft_action)
-    ai_menu.addAction(export_migration_data_action)
 
 
 def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):

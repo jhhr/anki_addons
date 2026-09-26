@@ -18,7 +18,16 @@ from anki.cards import Card
 from anki.consts import MODEL_CLOZE
 from anki.notes import Note
 
-from ...shared.interpolate.interpolate_fields import get_card_type_as_string
+from ...shared.interpolate.interpolate_fields import (
+    CardTimeValues,
+    get_card_time_values,
+    get_card_type_as_string,
+    get_formatted_average_time,
+    get_formatted_card_created_time,
+    get_formatted_first_review_time,
+    get_formatted_latest_review_time,
+    get_formatted_total_time,
+)
 from .context import ExecutionSession
 
 READ_ONLY_MESSAGE = (
@@ -142,14 +151,27 @@ class NoteFacade(_Immutable):
 class CardFacade(_Immutable):
     """Every read-only attribute of a card, including its note."""
 
-    __slots__ = ("_card", "_session")
+    __slots__ = ("_card", "_session", "_time_values")
 
     def __init__(self, card: Card, session: ExecutionSession) -> None:
         object.__setattr__(self, "_card", card)
         object.__setattr__(self, "_session", session)
+        object.__setattr__(self, "_time_values", None)
 
     def _raw(self) -> Card:
         return object.__getattribute__(self, "_card")
+
+    def _times(self) -> CardTimeValues:
+        # One revlog aggregate answers all four review-time properties, so it is read on
+        # the first of them and kept for the rest.
+        time_values = object.__getattribute__(self, "_time_values")
+        if time_values is None:
+            card_id = self._raw().id
+            time_values = (
+                get_card_time_values(card_id) if card_id else (None, None, None, None)
+            )
+            object.__setattr__(self, "_time_values", time_values)
+        return time_values
 
     @property
     def id(self) -> int:
@@ -197,8 +219,16 @@ class CardFacade(_Immutable):
 
     @property
     def template_name(self) -> str:
-        template = self._raw().template()
-        return template["name"] if template else ""
+        # A cloze note's cards all share one template, so its name alone cannot tell them
+        # apart: the cloze number goes after it, as in the note's card values ("Cloze 2")
+        # and as format 1's code saw it.
+        card = self._raw()
+        template = card.template()
+        name = template["name"] if template else ""
+        note_type = card.note_type()
+        if note_type and note_type.get("type") == MODEL_CLOZE:
+            return f"{name} {card.ord + 1}"
+        return name
 
     @property
     def type(self) -> str:
@@ -265,6 +295,27 @@ class CardFacade(_Immutable):
     @property
     def mod(self) -> int:
         return self._raw().mod
+
+    @property
+    def created(self) -> str:
+        return get_formatted_card_created_time(self._raw().id)
+
+    @property
+    def first_review_time(self) -> str:
+        return get_formatted_first_review_time(self._times()[0])
+
+    @property
+    def latest_review_time(self) -> str:
+        return get_formatted_latest_review_time(self._times()[1])
+
+    @property
+    def average_review_time(self) -> str:
+        _first, _latest, count, total = self._times()
+        return get_formatted_average_time(total, count)
+
+    @property
+    def total_review_time(self) -> str:
+        return get_formatted_total_time(self._times()[3])
 
     @property
     def suspended(self) -> bool:

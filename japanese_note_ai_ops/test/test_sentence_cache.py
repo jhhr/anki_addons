@@ -282,9 +282,9 @@ class HighlightedSentenceTests(GetSentencesForNoteTests):
         new_note = array_note(0, cat_array(["match"], ["match"]))
         self.assertEqual(self.sentences(new_note)[0]["jp_sentence"], "<b>猫</b>と猫")
 
-    def test_an_old_word_list_note_keeps_its_sentence_as_it_is(self):
+    def test_a_broken_array_note_keeps_its_sentence_as_it_is(self):
         note = FakeNote(1, "<b>猫</b>と猫", "this")
-        note.fields["sentence-vocab-list"] = '{"nouns": []}'
+        note.fields["sentence-vocab-list"] = '[["猫", "noun", "猫", "ねこ", [1], []]'
         self.found = []
         self.assertEqual(self.sentences(note)[0]["jp_sentence"], "猫と猫")
 

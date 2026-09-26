@@ -48,8 +48,8 @@ from ..shared.interpolate.interpolate_fields import (
     FROM_TEXT_FIELD_REGEX,
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
-    extract_cloze_patterns,
     intr_format,
+    map_outside_clozes,
 )
 from .definition_schema import (
     CARD_TYPE_SEPARATOR,
@@ -930,21 +930,12 @@ def rewrite_references(text: str, rewrite: Callable[[str], str]) -> str:
     """
     if not text:
         return text or ""
-    placeholders: dict[str, str] = {}
-    for index, (start, end, cloze_num, content) in enumerate(
-        reversed(extract_cloze_patterns(text))
-    ):
-        placeholder = f"\x00CLOZE{index}\x00"
-        rewritten = rewrite_references(content, rewrite)
-        placeholders[placeholder] = f"{{{{c{cloze_num}::{rewritten}}}}}"
-        text = text[:start] + placeholder + text[end:]
-
-    text = FROM_TEXT_FIELD_REGEX.sub(
-        lambda match: intr_format(rewrite(match.group(1))), text
+    return map_outside_clozes(
+        text,
+        lambda part: FROM_TEXT_FIELD_REGEX.sub(
+            lambda match: intr_format(rewrite(match.group(1))), part
+        ),
     )
-    for placeholder, cloze in placeholders.items():
-        text = text.replace(placeholder, cloze)
-    return text
 
 
 def _promote_reference(

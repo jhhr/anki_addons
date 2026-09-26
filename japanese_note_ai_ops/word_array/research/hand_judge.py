@@ -39,7 +39,7 @@ from urllib.parse import urlparse
 
 import anki_connect
 import hand_labels
-import migrate_fit
+import corpora
 import note_edits
 from _bootstrap import load
 
@@ -148,7 +148,7 @@ class Edit(NamedTuple):
 
 
 def _stripped(raw: str) -> str:
-    return migrate_fit.html_stripping.strip_context_sentences(raw)
+    return corpora.html_stripping.strip_context_sentences(raw)
 
 
 class Session:
@@ -179,7 +179,7 @@ class Session:
         # Context-stripped sentence → its notes, and each note's raw sentence field
         self.nids = nids or {}
         self.raws = raws or {}
-        self.generate = generate or migrate_fit.generator.generate
+        self.generate = generate or corpora.generator.generate
         # Writes to Anki, latest last: the notes of one un-kanjified span each
         self.edits: list[list[Edit]] = []
         self.lock = threading.Lock()
@@ -212,7 +212,7 @@ class Session:
     def _generate(self, sentence: str) -> list[Candidate]:
         try:
             arr = self.generate(sentence, self.lexicon)
-        except Exception as exc:  # a crash here is migrate_fit's business, not the GUI's
+        except Exception as exc:  # a crash here is the generator's business, not the GUI's
             print(f"generate failed: {exc!r}: {sentence}", file=sys.stderr)
             return []
         self.arrays[sentence] = arr
@@ -675,7 +675,7 @@ def make_handler(session: Session, anki=None, config=None, paths=()):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--corpus", choices=sorted(migrate_fit.CORPORA), default="export")
+    parser.add_argument("--corpus", choices=sorted(corpora.CORPORA), default="export")
     parser.add_argument("--per-word", type=int, default=1, help="labels per word, group, parent")
     parser.add_argument("--seed", type=int, default=None, help="sentence order")
     parser.add_argument("--labels", default=str(hand_labels.HAND_LABELS), help="label file")
@@ -685,19 +685,19 @@ def main() -> int:
     parser.add_argument("--anki-connect", default=anki_connect.URL, help="AnkiConnect's URL")
     args = parser.parse_args()
 
-    corpus = migrate_fit.read_export(migrate_fit.CORPORA[args.corpus], Counter())
-    stripped = (migrate_fit.html_stripping.strip_context_sentences(s) for s, _ in corpus)
+    corpus = corpora.read_export(corpora.CORPORA[args.corpus], Counter())
+    stripped = (corpora.html_stripping.strip_context_sentences(s) for s, _ in corpus)
     sentences = list(dict.fromkeys(s for s in stripped if s.strip()))
     random.Random(args.seed).shuffle(sentences)
     # The checked subset has no note ids: its sentences find theirs in the export
     nids: dict[str, list[int]] = {}
     raws: dict[int, str] = {}
-    for raw, ids in hand_labels.read_export_nids(migrate_fit.CORPORA["export"]).items():
-        found = nids.setdefault(migrate_fit.html_stripping.strip_context_sentences(raw), [])
+    for raw, ids in hand_labels.read_export_nids(corpora.CORPORA["export"]).items():
+        found = nids.setdefault(corpora.html_stripping.strip_context_sentences(raw), [])
         found.extend(nid for nid in ids if nid not in found)
         raws.update((nid, raw) for nid in ids)
-    # Names come out as the migration op makes them: whole, from the collection's lexicon
-    lexicon = migrate_fit.export_name_lexicon()
+    # Names come out as extract_words makes them: whole, from the collection's lexicon
+    lexicon = corpora.export_name_lexicon()
     session = Session(
         sentences, lexicon, hand_labels.Path(args.labels), args.per_word, nids=nids, raws=raws
     )
@@ -707,7 +707,7 @@ def main() -> int:
     threading.Thread(target=session.generate_all, daemon=True).start()
 
     anki = anki_connect.AnkiConnect(args.anki_connect)
-    paths = [migrate_fit.CORPORA["export"], migrate_fit.CORPORA["checked"]]
+    paths = [corpora.CORPORA["export"], corpora.CORPORA["checked"]]
     # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server (Anki
     # Connect) holds without error, and the browser then reaches that server instead.
     HTTPServer.allow_reuse_address = False

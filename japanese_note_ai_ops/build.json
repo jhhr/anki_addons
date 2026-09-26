@@ -1,7 +1,6 @@
 {
-  "package": "simple_anki_ai_prompts",
-  "name": "Simple Anki AI Prompts",
-  "dev_dir_name": "simple_anki_ai_prompts",
+  "package": "japanese_note_ai_ops",
+  "name": "Japanese Note AI Ops",
   "human_version": "1.0.0",
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [

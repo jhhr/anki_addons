@@ -23,7 +23,6 @@ say -- which fields the note types it triggers on actually have. It answers four
 
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..shared.interpolate.interpolate_fields import (
@@ -34,8 +33,11 @@ from ..shared.interpolate.interpolate_fields import (
     NOTE_VALUES,
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
+    get_fields_from_text,
+    split_card_value_reference,
 )
 from .definition_schema import (
+    CARD_PROPERTY_NAMES,
     LIST,
     STAGE_CALL_DEFINITION,
     STAGE_CARD_QUERY,
@@ -72,6 +74,7 @@ from .definition_schema import (
     names_are_relaxed,
     result_name_problem,
     stage_result_name,
+    unclosed_reference_problem,
     validate_definition_structure,
     value_type_from_name,
 )
@@ -79,10 +82,6 @@ from .definition_schema import (
 #: Refuse a call chain deeper than this even when no guid repeats, so hand-edited JSON
 #: cannot drive the evaluator into a recursion limit (§5.9).
 MAX_CALL_DEPTH = 32
-
-#: `{{...}}` references in a text expression. Cloze markers are skipped by the caller.
-INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
-CLOZE_REF_RE = re.compile(r"^c\d+::")
 
 TRIGGER_BINDING = "trigger"
 
@@ -103,14 +102,25 @@ def names_a_note_or_card_value(reference: str) -> bool:
     note_match = NOTE_VALUE_RE.match(reference)
     if note_match and note_match.group(1) in NOTE_VALUES:
         return True
-    # The prefixed spelling and the one a definition spanning several note types uses, which
-    # drops the card type name. Which of the two applies is not known until the run, so a
-    # key that either of them can reach is accepted.
+    # Named with its card type in front, or without one to read the note's only card. The
+    # run takes either, telling them apart by the spelling; whether the note has one card
+    # or which card types it has is not known until then.
     for pattern, key_group in ((CARD_VALUE_RE, 2), (MULTI_CARD_VALUE_RE, 1)):
         card_match = pattern.match(reference)
         if card_match and card_match.group(key_group) in CARD_VALUES_DICT:
             return True
     return False
+
+
+def names_a_card_property_or_value(reference: str) -> bool:
+    """Whether `<card>.X` names something a card answers to, as `_card_reference` reads it:
+    a card property, or a card value key with no card type in front -- the binding is the
+    card, so there is none to name.
+    """
+    if reference in CARD_PROPERTY_NAMES:
+        return True
+    key, _arg = split_card_value_reference(reference)
+    return key in CARD_VALUES_DICT
 
 
 class Binding:
@@ -307,9 +317,12 @@ class _Analyzer:
         stage: Stage,
         what: str,
     ) -> None:
-        for match in INTERPOLATION_RE.finditer(expression_source(expression)):
-            reference = match.group(1)
-            if CLOZE_REF_RE.match(reference):
+        # The references inside a cloze too, which is what the run resolves; the cloze
+        # marker itself is not one.
+        for reference in get_fields_from_text(expression_source(expression)):
+            unclosed = unclosed_reference_problem(reference)
+            if unclosed:
+                self.problem(f"{what} {unclosed}", stage)
                 continue
             head, _dot, rest = reference.partition(".")
             binding = scope.get(head)
@@ -333,6 +346,12 @@ class _Analyzer:
                     )
                 elif binding.type == T_NOTE:
                     self.check_note_field(head, rest, reference, stage, what)
+                elif binding.type == T_CARD and not names_a_card_property_or_value(rest):
+                    self.problem(
+                        f"{what} reads '{reference}', but '{rest}' is not a card property"
+                        " or card value",
+                        stage,
+                    )
                 continue
             if binding.type.is_listy or binding.type in (T_NOTE, T_CARD):
                 # There is no implicit list-to-text conversion: how values are combined is

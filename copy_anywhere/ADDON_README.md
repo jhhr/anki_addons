@@ -540,12 +540,11 @@ return word.upper() + ' / ' + '{{note.Meaning}}'
 - A card has `id`, `nid`, `note`, `did`, `odid`, `deck_id`, `deck_name`,
   `original_deck_name`, `ord`, `template_name`, `type`, `queue`, `due`, `odue`, `ivl`,
   `factor`, `ease`, `reps`, `lapses`, `left`, `flag`, `custom_data`, `desired_retention`,
-  `stability`, `difficulty`, `mod`, `suspended` and `buried`, and nothing else. Gone:
-  `created`, `first_review_time`, `latest_review_time`, `average_review_time`,
-  `total_review_time` and anything else a raw Anki card had (`card.note()`,
-  `card.template()`). `card.note` is a property, and `template_name` no longer adds the
-  cloze number. For the review times, put a card-value reference in the code as a string,
-  such as `'{{trigger.Recognition__Card_First_Review}}'`.
+  `stability`, `difficulty`, `mod`, `suspended`, `buried`, `created`,
+  `first_review_time`, `latest_review_time`, `average_review_time` and
+  `total_review_time`, and nothing else. Gone: anything else a raw Anki card had
+  (`card.note()`, `card.template()`). `card.note` is a property. `template_name` still
+  adds the cloze number (`Cloze 2`).
 - A variable can use the variables above it by name. In format 1 it could not.
 - A list, tuple, note or card that code returns is no longer turned into text. A *Within
   note* or *Source to destinations* field write fails on one, and a variable keeps it,

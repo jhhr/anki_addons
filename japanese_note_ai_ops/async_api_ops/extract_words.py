@@ -14,16 +14,15 @@ matchability". This op replaced the one that asked a model for the whole word li
 prompt; the word array is built by rules instead (see `word_array/README.md`).
 
 A note whose word list field already holds an array is skipped, so re-running over a selection
-costs nothing. A note still holding an **old** extract_words word list is skipped too:
-overwriting it would throw away the note ids of the words already matched. The migration op
-that carried those over has been removed now that the collection is migrated, so such a note
-is simply left as it is.
+costs nothing. A note whose field holds something that does not parse as an array is skipped
+too: overwriting it would throw away the note ids of the words already matched, so it is left
+for a person to repair.
 
 "Regenerate words" (`overwrite=True`) is the way past the first of those two guards, for the
 note whose sentence had a mistake in it: it generates over the array the note holds and merges
 the two, so that only the rows the correction reached are replaced and every other row keeps
-its judgement and its note id (`word_array/merge.py`). The old word list guard stands either
-way - the migration that could read those is gone. Both steps above run first, on the whole
+its judgement and its note id (`word_array/merge.py`). The broken array guard stands either
+way - there is nothing to merge with. Both steps above run first, on the whole
 sentence: the correction can change how the words around it are read, and a name can appear in
 what it changed.
 
@@ -49,7 +48,7 @@ from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import merge, names, resources
-from ..word_array.match_flags import JUDGE_NEW, decode_word_array, format_word_array
+from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
 from .base_ops import (
     AsyncTaskProgressUpdater,
     OpPhase,
@@ -90,12 +89,14 @@ def extract_words_in_note(
         return False
 
     current = note[word_list_field].strip()
-    existing = decode_word_array(current) if current else None
-    if current and existing is None:
-        # Generating over it would drop the note ids of its matched words, and only the
-        # migration could carry those over
-        logger.info(
-            f"{log_prefix}Left alone: the field holds an old word list, migrate it instead"
+    existing, problem = read_word_array(current)
+    if problem is not None:
+        # A broken array, usually a bracket lost in a hand edit. Generating over it would drop
+        # the note ids of its matched words, which merge_arrays can only carry over from an
+        # array it can read
+        logger.error(
+            f"{log_prefix}Left alone: the field holds no valid word array, {problem};"
+            " fix it by hand"
         )
         return False
     if existing is not None and not overwrite:
