@@ -15,7 +15,6 @@ rewrite -- a search term, code, a deleted field -- is reported instead.
 
 import copy
 import shutil
-import time
 from contextlib import contextmanager
 
 import pytest
@@ -384,7 +383,7 @@ class TestACardTypeTheSnapshotKnewAndTheCollectionNoLongerHas:
         nothing in it is evidence that the user deleted anything there."""
         self.a_definition_flagging(config, extra, extra["tmpls"][1])
 
-        other = made_on_another_day(a_copy_of(col, tmp_path / "second.anki2"))
+        other = a_copy_of(col, tmp_path / "second.anki2")
         if deleted == "note type":
             other.models.remove(extra["id"])
         else:
@@ -404,27 +403,17 @@ class TestACardTypeTheSnapshotKnewAndTheCollectionNoLongerHas:
 
 
 def a_copy_of(collection, path):
-    """The same collection opened at a second path: what another desktop syncing it has.
+    """The same collection opened at a second path: a backup restored as another profile.
 
-    A copy keeps the *ids* and the creation time, so it is the same collection to the pass.
-    The checkpoint is because Anki writes through a WAL, so the file on its own is the
-    collection without its last few operations in it.
+    What a copy keeps is the *ids*, which is the case a config shared by every profile
+    cannot tell from a rename on its own: the second collection answers to the first's note
+    type, deck and field ids, under whatever names it has been given since. The checkpoint
+    is because Anki writes through a WAL, so the file on its own is the collection without
+    its last few operations in it.
     """
     collection.db.execute("pragma wal_checkpoint(TRUNCATE)")
     shutil.copyfile(collection.path, path)
     return real_anki.open_collection(path)
-
-
-def made_on_another_day(collection):
-    """Give a collection another creation time, which is what makes it another collection.
-
-    A copy made so (a backup restored as another profile) still answers to the first's note
-    type, deck and field ids, under whatever names it has been given since: the case a
-    config shared by every profile cannot tell from a rename on its own. Anki rounds the
-    creation time to the day, so a collection made in the same test is no different.
-    """
-    collection.crt = collection.crt - 30 * 86400
-    return collection
 
 
 class TestAPassOnAnotherCollection:
@@ -435,7 +424,7 @@ class TestAPassOnAnotherCollection:
     another collection's ids and a snapshot of names that were never this collection's.
     Read as a rename, that rewrites a definition's field slots and `{{trigger....}}` tokens
     against the wrong collection, and switching back does it again. So the snapshot records
-    which collection it came from, by creation time, and a pass that finds another one
+    which collection it came from, by its path, and a pass that finds another one
     re-binds by the one rule, replaces the snapshot, rewrites nothing and says so once.
     """
 
@@ -451,11 +440,13 @@ class TestAPassOnAnotherCollection:
     def test_a_field_renamed_in_the_other_collection_is_not_a_rename(
         self, col, config, stub_mw, tmp_path
     ):
+        """A copy at another path is another collection, even when it is the same one synced
+        to another desktop: the known cost of identifying collections by path."""
         definition = self.a_definition_reading_word()
         store(config, definition)
         reconcile(config, mw.col)
 
-        other = made_on_another_day(a_copy_of(col, tmp_path / "second.anki2"))
+        other = a_copy_of(col, tmp_path / "second.anki2")
         rename_field(other, VOCAB, "Word", "Term")
         with opened(stub_mw, other):
             result = reconcile(config, other)
@@ -470,16 +461,14 @@ class TestAPassOnAnotherCollection:
         store(config, self.a_definition_reading_word())
         reconcile(config, mw.col)
 
-        other = made_on_another_day(a_copy_of(col, tmp_path / "second.anki2"))
+        other = a_copy_of(col, tmp_path / "second.anki2")
         rename_field(other, VOCAB, "Word", "Term")
         with opened(stub_mw, other):
             reconcile(config, other)
         snapshot = config.data[SNAPSHOT_KEY]
-        other_crt = other.crt
         other.close()
 
-        assert snapshot["collection_crt"] == other_crt != col.crt
-        assert "collection" not in snapshot
+        assert snapshot["collection"] == other.path
         entry = snapshot["note_types"][str(col.models.by_name(VOCAB)["id"])]
         assert sorted(entry["fields"].values()) == sorted(
             ["Term" if name == "Word" else name for name in VOCAB_FIELDS]
@@ -491,16 +480,15 @@ class TestAPassOnAnotherCollection:
         store(config, self.a_definition_reading_word())
         reconcile(config, mw.col)
 
-        other = made_on_another_day(a_copy_of(col, tmp_path / "second.anki2"))
+        other = a_copy_of(col, tmp_path / "second.anki2")
         with opened(stub_mw, other):
             result = reconcile(config, other)
             again = reconcile(config, other)
-        other_crt = other.crt
         other.close()
 
         assert result.collection_changed is not None
-        for crt in (col.crt, other_crt):
-            assert time.strftime("%Y-%m-%d", time.localtime(crt)) in result.collection_changed
+        assert col.path in result.collection_changed
+        assert other.path in result.collection_changed
         assert again.collection_changed is None
 
     def test_the_same_collection_still_follows_its_own_renames(self, col, config):
@@ -529,7 +517,7 @@ class TestAPassOnAnotherCollection:
         store(config, definition)
         reconcile(config, mw.col)
 
-        other = made_on_another_day(real_anki.open_collection(tmp_path / "separate.anki2"))
+        other = real_anki.open_collection(tmp_path / "separate.anki2")
         theirs = real_anki.make_note_type(other, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES)
         with opened(stub_mw, other):
             result = reconcile(config, other)
@@ -545,69 +533,30 @@ class TestAPassOnAnotherCollection:
         }
         assert names(result.unresolved) == []
 
-    def test_a_copy_of_the_same_collection_follows_a_rename_made_in_it(
-        self, col, config, stub_mw, tmp_path
-    ):
-        """What a config synced from another desktop meets: the same collection at another
-        path, renamed there. Stamped with the path, every such config was another
-        collection's, and no rename made on the second desktop was ever followed."""
-        definition = self.a_definition_reading_word()
-        store(config, definition)
-        reconcile(config, mw.col)
-
-        other = a_copy_of(col, tmp_path / "second.anki2")
-        rename_field(other, VOCAB, "Word", "Term")
-        with opened(stub_mw, other):
-            result = reconcile(config, other)
-        other.close()
-
-        assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Term}}"
-        assert result.collection_changed is None
-
-    def a_path_stamped_snapshot(self, config, path) -> None:
-        """Turn the stored snapshot back into the shape it had before `collection_crt`."""
-        snapshot = config.data[SNAPSHOT_KEY]
-        del snapshot["collection_crt"]
-        snapshot["collection"] = str(path)
-
-    def test_a_path_stamped_snapshot_of_this_path_is_kept_and_restamped(
+    def test_a_snapshot_stamped_with_a_creation_time_is_this_collections_and_restamped(
         self, col, config, stub_mw
     ):
+        """A version of this addon stamped snapshots with `collection_crt` and no path. Such
+        a snapshot is read as this collection's, as one with no stamp is, and the first pass
+        restamps it with the path even when nothing else changed, or it would be read so
+        in every profile for good."""
         definition = self.a_definition_reading_word()
         store(config, definition)
         reconcile(config, mw.col)
-        self.a_path_stamped_snapshot(config, col.path)
+        snapshot = config.data[SNAPSHOT_KEY]
+        del snapshot["collection"]
+        snapshot["collection_crt"] = col.crt - 30 * 86400
         written = saves(stub_mw)
 
-        rename_field(col, VOCAB, "Word", "Term")
-        result = reconcile(config, mw.col)
-
-        assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Term}}"
-        assert result.collection_changed is None
-        assert saves(stub_mw) > written
-        assert config.data[SNAPSHOT_KEY]["collection_crt"] == col.crt
-        assert "collection" not in config.data[SNAPSHOT_KEY]
-
-    def test_a_path_stamped_snapshot_of_another_path_is_dropped_once_and_restamped(
-        self, col, config, stub_mw, tmp_path
-    ):
-        """Compared by path the one time it is read, as it was written: that pass cannot
-        know whether the path was another profile's or another desktop's, and following
-        a rename from another collection is the worse mistake. The restamp is what lets
-        the next rename be followed."""
-        definition = self.a_definition_reading_word()
-        store(config, definition)
-        reconcile(config, mw.col)
-        self.a_path_stamped_snapshot(config, tmp_path / "elsewhere" / "collection.anki2")
-
-        dropped = reconcile(config, mw.col)
+        restamp = reconcile(config, mw.col)
         restamped = dict(config.data[SNAPSHOT_KEY])
         rename_field(col, VOCAB, "Word", "Term")
         followed = reconcile(config, mw.col)
 
-        assert dropped.collection_changed is not None
-        assert restamped["collection_crt"] == col.crt
-        assert "collection" not in restamped
+        assert restamp.collection_changed is None
+        assert saves(stub_mw) > written
+        assert restamped["collection"] == col.path
+        assert "collection_crt" not in restamped
         assert followed.collection_changed is None
         assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Term}}"
 

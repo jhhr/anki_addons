@@ -878,10 +878,9 @@ class Config:
         type nothing had referenced before has to bring that note type's field and template
         names with it or the next rename of one has no old name to be recognised by. There
         is no collection to read at import time, and a save then leaves the snapshot alone.
-        The snapshot records which collection it was taken of (by creation time, which is
-        the same on every device that syncs it), so a save made in one profile cannot be
-        read as a rename in the next: this config is shared by all of them, and the ids in
-        it are not.
+        The snapshot records which collection it was taken of (by its path), so a save made
+        in one profile cannot be read as a rename in the next: this config is shared by all
+        of them, and the ids in it are not.
 
         A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is re-checked here
         too, so the editor save that reworks it clears the mark then rather than at the next
