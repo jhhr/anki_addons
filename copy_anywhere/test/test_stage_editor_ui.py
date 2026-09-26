@@ -173,6 +173,22 @@ def test_each_block_with_its_own_remove_button_is_boxed(col, qapp, qtbot):
             assert frame.styleSheet() == f"QFrame#{name} {{ {OUTLINE_STYLE} }}"
 
 
+def test_the_card_action_loading_note_is_gone_once_the_actions_load(col, qapp):
+    # It was removed with a bare deleteLater, which inside the definition editor never ran
+    # (the delete waits for the event loop outside the editor's), so "Loading card
+    # actions..." stayed on screen under the first card action's header. The load is driven
+    # here by hand, with no event processing, which is where that delete would wait.
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["card_actions"] = [{"card_type_name": f"{VOCAB}{CARD_TYPE_SEPARATOR}Recall"}]
+    tree = tree_for(col, stage)
+    actions = tree.rows["e"].editor.card_actions
+    indicator = actions.loading_indicator
+    assert indicator is not None and not indicator.isHidden()
+    actions._process_load_queue()
+    assert actions.loading_indicator is None
+    assert indicator.isHidden()
+
+
 # -- reorder --------------------------------------------------------------------------
 
 
