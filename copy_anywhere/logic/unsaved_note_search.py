@@ -9,19 +9,23 @@ unsaved note's fields and tags, its note type, and the deck it is being added to
 The answer has to be the one Anki would give once the note is saved, so everything here is a
 port of Anki 25.9's own search code (`rslib/src/search/parser.rs`, `sqlwriter.rs`, `text.rs`)
 rather than a reading of the manual, and each rule was established against a real collection;
-`test_unsaved_note_search.py` holds the differential tests that prove it. What cannot be ported
-faithfully is refused: a term that needs cards, review history, ids or collection state
-(`is:`, `card:`, `prop:`, `rated:`, `nid:`, ...), a regular expression or accent-folding form
-(`re:`, `nc:`, `w:`, `sc:`, `field:re:`), and a few things only this note makes unknowable (a
-`deck:` search with no deck, a tag Anki would rewrite on save), all raise `UnjudgeableSearch`
-naming the term. A guessed answer would silently run or skip a definition; a refusal fails it
-where the user can see why.
+`test_unsaved_note_search.py` holds the differential tests that prove it. The one difference
+since, up to 26.9, is that 26.8 reads every whitespace character as a space
+(`_anki_spaces_out_whitespace`), and the port follows whichever Anki it runs in.
+
+What cannot be ported faithfully is refused: a term that needs cards, review history, ids or
+collection state (`is:`, `card:`, `prop:`, `rated:`, `nid:`, ...), a regular expression or
+accent-folding form (`re:`, `nc:`, `w:`, `sc:`, `field:re:`), and a few things only this note
+makes unknowable (a `deck:` search with no deck, a tag Anki would rewrite on save), all raise
+`UnjudgeableSearch` naming the term. A guessed answer would silently run or skip a definition;
+a refusal fails it where the user can see why.
 
 What Anki does, in short, and therefore what this does:
 
-- Parsing: terms separated by spaces (and U+3000), implicit AND, `and`/`or` in any case, AND
-  binding tighter than OR, `-` negating one term or group, `"..."` and `key:"..."` quoting,
-  and backslash escapes `\\ \\" \\: \\( \\) \\- \\* \\_`; any other escape is an error.
+- Parsing: terms separated by spaces (and U+3000; from 26.8, any whitespace), implicit AND,
+  `and`/`or` in any case, AND binding tighter than OR, `-` negating one term or group,
+  `"..."` and `key:"..."` quoting, and backslash escapes `\\ \\" \\: \\( \\) \\- \\* \\_`;
+  any other escape is an error.
 - Bare text: a substring match, `*` and `_` as wildcards, ASCII letters case-insensitive and
   nothing else, against all fields joined by U+001F (so a wildcard can cross fields) *or*
   against the sort field with its HTML stripped (so `neko` finds `ne<b>ko</b>` in the sort
@@ -53,6 +57,7 @@ from typing import Callable, Optional, Union
 from anki.card_rendering_pb2 import StripHtmlRequest
 from anki.collection import Config
 from anki.notes import Note
+from anki.utils import point_version
 
 
 class UnsavedNoteSearchError(ValueError):
@@ -115,9 +120,17 @@ _RUST_WHITESPACE = (
     "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 )
 
-# Between terms the parser skips only these two, so a tab or a newline inside a search is
-# part of a term, not a separator.
+# Between terms the parser skips only these two, so before Anki 26.8 a tab or a newline inside
+# a search is part of a term, not a separator.
 _TERM_SEPARATORS = " \u3000"
+
+# Anki 26.8 turns every whitespace character in a search into a plain space before parsing it,
+# inside quotes and after a backslash too: `"a<tab>b"` finds "a b" and not "a<tab>b",
+# `a<tab>b` is two terms, `(<tab>)` is an empty group, and `a\<tab>b` is the undefined escape
+# `\ `. Anki 25.9 and 26.5 read the same characters as text. The set is Rust's White_Space,
+# the same as `_RUST_WHITESPACE`; the release was found by asking each one from 25.9.5 on.
+_SPACES_OUT_WHITESPACE_FROM = 260800
+_WHITESPACE_TO_SPACE = str.maketrans(dict.fromkeys(_RUST_WHITESPACE, " "))
 
 
 # Anki's text helpers (rslib/src/text.rs and parser.rs), ported rule for rule -------------
@@ -716,17 +729,32 @@ class ParsedSearch:
         return _judge(self._root, _NoteView(note, deck_id))
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
+def _anki_spaces_out_whitespace() -> bool:
+    """Whether the running Anki reads every whitespace character in a search as a space.
+
+    Asked on first use rather than at import: under the test suite's stand-in Anki,
+    `point_version` is a placeholder, and nothing there parses a search.
+    """
+    return point_version() >= _SPACES_OUT_WHITESPACE_FROM
+
+
 def parse_search(search: str) -> ParsedSearch:
-    """Parse `search` as Anki 25.9 would.
+    """Parse `search` as the running Anki would.
 
     Raises `SearchSyntaxError` where Anki would refuse the search, and `UnjudgeableSearch`
     for the first term that needs cards, history, ids or collection state.
-
-    A parsed search is immutable, so the same text is parsed once: a condition asks the same
-    search of every note added, and the editor asks it again on every refresh. A search that
-    raises is not remembered, so it raises every time.
     """
+    if _anki_spaces_out_whitespace():
+        search = search.translate(_WHITESPACE_TO_SPACE)
+    return _parse_search(search)
+
+
+@functools.lru_cache(maxsize=256)
+def _parse_search(search: str) -> ParsedSearch:
+    """A parsed search is immutable, so the same text is parsed once: a condition asks the
+    same search of every note added, and the editor asks it again on every refresh. A search
+    that raises is not remembered, so it raises every time."""
     return ParsedSearch(search, _Parser().parse(search))
 
 
@@ -734,8 +762,8 @@ def matches(search: str, note: Note, deck_id: Optional[int]) -> bool:
     """Whether the unsaved `note`, added to `deck_id`, would be found by `search`.
 
     To ask exactly what `find_notes(f"({search}) nid:{id}")` asks of a saved note, pass the
-    search in the same parentheses: a search with an unbalanced `)` or an inner newline reads
-    differently inside them.
+    search in the same parentheses: a search with an unbalanced `)`, or before Anki 26.8 an
+    inner newline, reads differently inside them.
     """
     return parse_search(search).matches(note, deck_id)
 

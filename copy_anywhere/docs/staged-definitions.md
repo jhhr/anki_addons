@@ -210,7 +210,8 @@ outer list plus `store` is how a loop reports anything back.
   found any note at all. An empty search fails the stage, naming the condition.
 * **A search condition on a note being added is judged against that note.** It has id 0
   and no row, so `nid:0` would never find it. `logic/unsaved_note_search.py`, a port of
-  Anki 25.9's search parser and SQL writer checked against real searches, judges the same
+  Anki 25.9's search parser and SQL writer checked against real searches (and following
+  26.8 in reading any whitespace as a space when it runs there), judges the same
   parenthesised text against the note as it stands -- its fields, tags and note type,
   including this run's earlier writes -- and `deck:` against the deck it is being added to,
   subdecks included as Anki does. A term whose answer needs what the note does not have yet

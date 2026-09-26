@@ -700,3 +700,81 @@ class TestParsingOnce:
         for _ in range(2):
             with pytest.raises(UnjudgeableSearch):
                 parse_search("is:new")
+
+
+@pytest.fixture
+def anki_version(monkeypatch):
+    """Pretend to run in the Anki whose `point_version` is given, for the parse that follows."""
+
+    def pretend(version: int) -> None:
+        monkeypatch.setattr(search_module, "point_version", lambda: version)
+        search_module._anki_spaces_out_whitespace.cache_clear()
+
+    yield pretend
+    monkeypatch.undo()
+    search_module._anki_spaces_out_whitespace.cache_clear()
+
+
+# Every character Anki 26.9.2 turned into a space inside `"a?b"`, found by asking it of every
+# code point.
+SPACED_OUT_BY_26_9 = (
+    "\t\n\x0b\x0c\r\x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+class TestWhitespaceByVersion:
+    """Anki 26.8 reads every whitespace character in a search as a space; 26.5 and before
+    read all but U+3000 as text. `test_unsaved_note_search.py` checks the installed Anki's
+    answers; this checks both readings, whichever Anki is installed."""
+
+    @pytest.mark.parametrize(
+        "version, spaces_out",
+        [(250904, False), (260500, False), (260799, False), (260800, True), (260902, True)],
+    )
+    def test_the_release_that_changed_it(self, anki_version, version, spaces_out):
+        anki_version(version)
+        assert search_module._anki_spaces_out_whitespace() is spaces_out
+
+    def test_the_characters_are_rust_s_whitespace(self):
+        table = search_module._WHITESPACE_TO_SPACE
+        spaced = {char for char in map(chr, range(0x110000)) if char.translate(table) == " "}
+        assert spaced == set(SPACED_OUT_BY_26_9) | {" "}
+
+    @pytest.mark.parametrize(
+        "search, before, after",
+        [
+            ("a\tb", "(text:a\tb)", "(text:a and text:b)"),
+            ('"a\tb"', "(text:a\tb)", "(text:a b)"),
+            ('"a\u3000b"', "(text:a\u3000b)", "(text:a b)"),
+            ("a\u2003or\nb", "(text:a\u2003or\nb)", "(text:a or text:b)"),
+            ("tag:\tx", "(tag:\tx)", "(tag: and text:x)"),
+            ('"deck:a\xa0"', "(deck:a\xa0)", "(deck:a )"),
+            ("(\ta\t)", "((text:\ta\t))", "((text:a))"),
+            ("-\ta", "(-text:\ta)", "(text:- and text:a)"),
+            ("\t", "all:", "all:"),  # the whole search is trimmed first either way
+            ("a\x1fb\u200bc\ufeff", "(text:a\x1fb\u200bc\ufeff)", "(text:a\x1fb\u200bc\ufeff)"),
+        ],
+    )
+    def test_how_each_reads_it(self, anki_version, search, before, after):
+        anki_version(260500)
+        assert shape(parse_search(search)._root) == before
+        anki_version(260800)
+        assert shape(parse_search(search)._root) == after
+
+    # Both lists are what Anki 25.9.4 and 26.9.2 answered for the same text.
+    @pytest.mark.parametrize("search", ["(\t)", "(\n)", "(a or\t)"])
+    def test_what_only_26_8_refuses(self, anki_version, search):
+        anki_version(260500)
+        parse_search(search)
+        anki_version(260800)
+        with pytest.raises(SearchSyntaxError):
+            parse_search(search)
+
+    @pytest.mark.parametrize("search", ["a\\\tb", "a or\t", "(a\u3000or\u3000)"])
+    def test_what_both_refuse(self, anki_version, search):
+        for version in (260500, 260800):
+            anki_version(version)
+            with pytest.raises(SearchSyntaxError):
+                parse_search(search)
+

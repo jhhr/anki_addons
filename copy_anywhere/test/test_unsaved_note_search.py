@@ -736,6 +736,41 @@ def _random_search(rnd: random.Random, depth: int = 0) -> str:
     return " ".join(parts)
 
 
+# Whitespace other than a space, which Anki 26.8 started reading as a space everywhere in a
+# search: before it, a tab or a newline is text, inside quotes and out. Anki's answer is asked
+# live, so these hold against whichever version is installed; the random searches found the
+# change, and the pieces suite pins both readings whatever is installed.
+WHITESPACE_SEARCHES = [
+    ("cafe", "\t"),
+    ("cafe", "(\t)"),
+    ("cafe", "-\t"),
+    ("cafe", '"one\nline"'),  # the Note field holds "line one\nline two"
+    ("cafe", "one\nline"),
+    ("cafe", "Word:Caf*\tcrème"),
+    ("cafe", "Note:line*\ttwo"),
+    ("cafe", "a\\\tb"),  # a backslash before the tab
+    ("cafe", "Word:Café\u00a0"),
+    ("cafe", "\u3000"),
+    ("cafe", '"crème\u3000brûlée"'),
+    ("neko", "cat\tor\tzzz"),
+    ("neko", "zzz\u2003OR\u2003cat"),
+    ("neko", '"deck:JP vocab::10-80\x0b"'),
+    ("neko", "tag:\tanimal"),
+    ("neko", "tag:animal\x1f"),  # U+001F is not whitespace to Rust, in either version
+    ("neko", "cat\u200b"),  # nor is a zero-width space
+    ("real", '-\t "_" or Straße:äpfel'),
+    ("quotes", "deck:\t"),
+]
+
+
+class TestWhitespace:
+    @pytest.mark.parametrize("key, search", WHITESPACE_SEARCHES)
+    def test_whitespace_reads_as_the_installed_anki_reads_it(self, pool, key, search):
+        anki = _anki_answer(pool.col, search, pool.saved[key].id)
+        mine = _matcher_answer(f"({search})", pool.unsaved[key], pool.deck_ids[key])
+        assert mine == anki
+
+
 class TestRandomSearches:
     def test_random_searches_get_anki_s_answer(self, pool):
         rnd = random.Random(20260925)
