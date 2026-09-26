@@ -15,7 +15,7 @@ from copy_anywhere.logic.definition_schema import (
     new_definition,
 )
 from copy_anywhere.ui.stage_document import StageDocument
-from copy_anywhere.ui.stage_preview import STALE_TEXT, UserRole, PreviewPane
+from copy_anywhere.ui.stage_preview import OTHER_NOTE_TEXT, STALE_TEXT, UserRole, PreviewPane
 
 from note_types import VOCAB
 
@@ -207,13 +207,24 @@ class TestStaleness:
         assert pane.stale is False
         assert pane.stale_label.text() == ""
 
-    def test_being_marked_stale_after_a_run_raises_the_badge(self, pane):
+    def test_being_marked_stale_after_an_edit_raises_the_badge(self, pane):
         # The pane's side only: what marks it stale is the dialog's, and is tested there.
+        pane.run_preview()
+        pane.definition["definition_name"] = "Renamed"
+
+        pane.mark_stale()
+
+        assert pane.stale is True
+        assert pane.stale_label.text() == STALE_TEXT
+
+    def test_being_marked_stale_with_nothing_changed_keeps_the_run(self, pane):
+        # The dialog re-analyses after things that are not edits, and says so every time.
         pane.run_preview()
 
         pane.mark_stale()
 
-        assert pane.stale_label.text() == STALE_TEXT
+        assert pane.stale is False
+        assert pane.stale_label.text() == ""
 
     def test_choosing_a_different_note_makes_the_trace_stale(self, pane, col):
         other = real_anki.add_note(col, VOCAB, {"Word": "inu"})
@@ -222,12 +233,20 @@ class TestStaleness:
         pane.run_preview()
         assert pane.stale is False
 
+        ran_row = pane.note_list.currentRow()
         pane.note_list.setCurrentRow(
             [index for index in range(pane.note_list.count())
              if pane.note_list.item(index).data(UserRole) == other.id][0]
         )
 
         assert pane.stale is True
+        # Nothing was edited, so it does not say that anything was.
+        assert pane.stale_label.text() == OTHER_NOTE_TEXT
+
+        pane.note_list.setCurrentRow(ran_row)
+
+        assert pane.stale is False
+        assert pane.stale_label.text() == ""
 
 
 class TestInsideTheDialog:
