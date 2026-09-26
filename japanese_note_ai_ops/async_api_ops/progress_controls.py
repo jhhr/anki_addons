@@ -30,6 +30,9 @@ PAUSE_REASON = "paused by user"
 # new dialog for every operation and deletes it at the end, so each run gets fresh buttons
 # and a reference to a deleted dialog's buttons is never left behind to be touched.
 _CONTROLS_ATTR = "_japanese_note_ai_ops_run_controls"
+# Set by `progress_errors` once it has split the dialog into the progress column and its error
+# pane: the layout that now holds the label and the bar, where the buttons belong too
+PROGRESS_COLUMN_ATTR = "_japanese_note_ai_ops_progress_column"
 
 
 def swallows_cancel(event_type: Any, key: Any, cancel_enabled: bool) -> bool:
@@ -89,7 +92,8 @@ def _progress_window() -> Optional[tuple[Any, Any]]:
 
     Private Anki API, all of it, kept in this one place: `mw.progress._win` (the dialog),
     `win.form.verticalLayout` (the designer form's only layout, holding the label and the
-    bar) and `win.wantCancel` (the flag Escape and the close box set, which
+    bar; once an error pane is shown, the column they were moved into, see
+    `progress_errors`) and `win.wantCancel` (the flag Escape and the close box set, which
     `mw.progress.want_cancel()` reads). Checked against Anki 26.09. If a later Anki renames
     or drops any of them, the dialog simply shows no buttons: the run still pauses itself at
     a usage limit and resumes at the reset time, and Escape still cancels.
@@ -97,7 +101,9 @@ def _progress_window() -> Optional[tuple[Any, Any]]:
     win = _dialog()
     if win is None:
         return None
-    layout = getattr(getattr(win, "form", None), "verticalLayout", None)
+    layout = getattr(win, PROGRESS_COLUMN_ATTR, None)
+    if layout is None:
+        layout = getattr(getattr(win, "form", None), "verticalLayout", None)
     if layout is None:
         return None
     return win, layout
