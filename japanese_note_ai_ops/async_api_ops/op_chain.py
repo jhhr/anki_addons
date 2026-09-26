@@ -152,6 +152,8 @@ class OpChain:
         spec = self.specs[index]
         self._awaiting = index
         try:
+            # Step 1 as well: the multi-op dialog's ids are as old as its count, and it is
+            # modal to the browser alone, so the reviewer can delete a note meanwhile
             ids = self._existing_ids(self.nids)
             if not ids:
                 self._awaiting = None

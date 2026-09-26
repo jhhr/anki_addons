@@ -187,6 +187,17 @@ class NoteIdTests(unittest.TestCase):
         h.run_scheduled()
         self.assertEqual(specs[1].calls[0][0], [3, 2])
 
+    def test_the_first_step_too_gets_only_the_ids_that_still_exist(self):
+        # The dialog's ids are as old as its count or the captured selection, and it is modal
+        # to the browser alone: the reviewer can delete a note before step 1 starts
+        h = Harness(nids=(1, 2, 3))
+        specs = [FakeSpec("a")]
+        chain = h.make(specs, nids=(3, 1, 2))
+        h.existing.discard(1)
+        chain.start(no_resources)
+        h.run_scheduled()
+        self.assertEqual(specs[0].calls[0][0], [3, 2])
+
     def test_the_chain_ends_when_no_notes_are_left(self):
         h = Harness(nids=(1, 2))
         specs = [FakeSpec("a"), FakeSpec("b"), FakeSpec("c")]
