@@ -122,7 +122,6 @@ methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`.
 - `get_variable_values_for_note` can raise `CopyFailedException` outside the `try` in
   `copy_for_single_trigger_note`. `variable_values_dict` stays `None` when
   `field_to_variable_defs` is explicitly `None`, and across mode then indexes it.
-- The `AnyProcess` union omits `WordHighlightProcess`.
 - `get_field_to_field_defs()` output carries no `guid`; rows mint a new one on load.
 - Callbacks that raise inside `EditState.call_callbacks` are dropped silently.
 - Dead code: `ProgressUpdateDef`; `build_action` / `add_action_to_gear` /

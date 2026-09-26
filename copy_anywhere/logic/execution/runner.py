@@ -12,20 +12,23 @@ failed and the bulk loop must stop so the user can see why.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from anki.notes import Note
 
-from ..definition_schema import is_format_2
+from ..definition_schema import CopyDefinitionV2, is_format_2
 from ..definition_migration import MigrationError, migrate_definition_v1_to_v2
 from .commit import CollectionCommitter
 from .context import DefinitionFrame, ExecutionSession, StageError, TriggerSkipped
 from .evaluator import Cancelled, execute_definition
 
+if TYPE_CHECKING:
+    from ...configuration import AnyCopyDefinition
+
 logger = logging.getLogger(__name__)
 
 
-def as_format_2(definition: dict) -> dict:
+def as_format_2(definition: AnyCopyDefinition) -> CopyDefinitionV2:
     """The definition as stages, migrating a stored format-1 one on the way in.
 
     Migration is pure and cheap, and doing it here means the editor, the hooks and the
@@ -38,7 +41,7 @@ def as_format_2(definition: dict) -> dict:
 
 
 def run_definition_for_trigger_note(
-    definition: dict,
+    definition: AnyCopyDefinition,
     trigger_note: Note,
     session: ExecutionSession,
     committer: Optional[CollectionCommitter] = None,

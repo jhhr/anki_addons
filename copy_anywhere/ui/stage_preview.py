@@ -55,7 +55,7 @@ STATUS_MARKS = {
 STALE_TEXT = "Edited since this ran — run it again to see what it does now."
 
 
-def _escape(text: str) -> str:
+def _escape(text: object) -> str:
     return (
         str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     )
@@ -71,7 +71,7 @@ class PreviewPane(QWidget):
         self,
         parent: Optional[QWidget],
         definition: CopyDefinitionV2,
-        all_definitions: Optional[Sequence[dict]] = None,
+        all_definitions: Optional[Sequence[CopyDefinitionV2]] = None,
     ) -> None:
         super().__init__(parent)
         self.definition = definition
@@ -322,8 +322,12 @@ class PreviewPane(QWidget):
             self._selecting = False
 
     def _collect_items(
-        self, item: QTreeWidgetItem, stage_guid: str, found: list
+        self, item: Optional[QTreeWidgetItem], stage_guid: str, found: list
     ) -> None:
+        # Qt types an item looked up by index as optional; within the counts the callers
+        # iterate over there is always one.
+        if item is None:
+            return
         if item.data(0, UserRole) == stage_guid:
             found.append(item)
         for index in range(item.childCount()):

@@ -15,7 +15,7 @@ The expression's process chain runs after the value is produced, unchanged from 
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence, cast
 
 from anki.cards import Card
 from anki.notes import Note
@@ -32,6 +32,7 @@ from ..copy_primitives import apply_process_chain
 
 from ..definition_schema import (
     CARD_PROPERTY_NAMES,
+    Stage,
     ValueExpression,
     expression_is_code,
     expression_source,
@@ -46,6 +47,9 @@ from .facades import (
     from_facade,
     to_facade,
 )
+
+if TYPE_CHECKING:
+    from ...configuration import AnyProcess
 
 
 INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
@@ -81,7 +85,7 @@ class ExpressionContext:
         source_note: Note,
         destination_note: Optional[Note] = None,
         multiple_note_types: bool = False,
-        stage: Optional[dict] = None,
+        stage: Optional[Stage] = None,
         purpose: str = "",
     ) -> None:
         self.session = session
@@ -277,7 +281,9 @@ def run_process_chain(value: str, expression: ValueExpression, ctx: ExpressionCo
     if not process_chain:
         return value
     processed = apply_process_chain(
-        process_chain=process_chain,
+        # The schema carries process-chain entries as opaque dicts; they are format 1's
+        # process shapes, which is what the chain reads.
+        process_chain=cast("Sequence[AnyProcess]", process_chain),
         text=value,
         notes=[ctx.source_note],
         dest_note=ctx.destination_note if ctx.destination_note is not None else ctx.source_note,

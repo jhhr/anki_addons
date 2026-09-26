@@ -11,7 +11,7 @@ is. What is new here is only the arrangement: a stage names the note it reads an
 it writes, so every editor starts with the binding it acts on.
 """
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
 from aqt import mw
@@ -36,6 +36,7 @@ from ..configuration import (
 )
 from ..logic.definition_schema import (
     CopyDefinitionV2,
+    FieldWrite,
     IF_EMPTY_POLICIES,
     IF_MISSING_POLICIES,
     LIST_ITEM_TYPE_NAMES,
@@ -503,7 +504,7 @@ class FieldWriteRow(QFrame):
     changed = pyqtSignal()
     removed = pyqtSignal(object)
 
-    def __init__(self, parent: "EditNoteStageEditor", field_write: dict) -> None:
+    def __init__(self, parent: "EditNoteStageEditor", field_write: FieldWrite) -> None:
         super().__init__(parent)
         self.field_write = field_write
         self.owner = parent
@@ -587,9 +588,12 @@ class FieldWriteRow(QFrame):
         box.setCurrentText(", ".join(quoted_items(stored)))
         box.blockSignals(False)
 
-    def apply(self) -> dict:
+    def apply(self) -> FieldWrite:
         self.field_write["field"] = self.field.currentText()
-        self.field_write["write_if"] = combo_value(self.write_if)
+        # Qt hands item data back untyped; this combo is built from WRITE_IF_POLICIES only.
+        self.field_write["write_if"] = cast(
+            Literal["always", "empty"], combo_value(self.write_if)
+        )
         if self.unfocus_fields is not None:
             self.field_write["unfocus_trigger_fields"] = selected_names(self.unfocus_fields)
         self.value.apply()
@@ -633,7 +637,7 @@ class EditNoteStageEditor(StageEditor):
         tags = stage.setdefault("tags", {"add": [], "remove": []})
         self.tag_editor = TagEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {  # type: ignore[arg-type]
                 "add_tags": tags_to_text(tags.get("add", [])),
                 "remove_tags": tags_to_text(tags.get("remove", [])),
@@ -646,7 +650,7 @@ class EditNoteStageEditor(StageEditor):
 
         self.card_actions = CardActionsEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
         )
         self.card_actions.initialize_ui_state()
@@ -661,7 +665,7 @@ class EditNoteStageEditor(StageEditor):
         self.state.set_target_is_trigger(name == "trigger")
         self.notify()
 
-    def _add_field_row(self, field_write: dict) -> FieldWriteRow:
+    def _add_field_row(self, field_write: FieldWrite) -> FieldWriteRow:
         row = FieldWriteRow(self, field_write)
         row.changed.connect(self.changed)
         row.removed.connect(self._on_remove_field)
@@ -670,7 +674,7 @@ class EditNoteStageEditor(StageEditor):
         return row
 
     def _on_add_field(self) -> None:
-        field_write = {"field": "", "value": value_expression(), "write_if": "always"}
+        field_write: FieldWrite = {"field": "", "value": value_expression(), "write_if": "always"}
         self.stage.setdefault("fields", []).append(field_write)
         self._add_field_row(field_write)
         self.changed.emit()
@@ -721,7 +725,7 @@ class EditCardStageEditor(StageEditor):
         )
         self.card_actions = CardActionsEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
             single_card_mode=True,
         )

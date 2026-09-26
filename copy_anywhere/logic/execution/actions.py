@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import random
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union, cast
 
 from anki.cards import Card
 from anki.notes import Note
@@ -28,11 +28,20 @@ from ..copy_primitives import (
     int_sort_by_field_value,
     sort_by_field_value,
 )
-from ..definition_schema import expression_is_code
+from ..definition_schema import (
+    FieldWrite,
+    Selection,
+    Stage,
+    ValueExpression,
+    expression_is_code,
+)
 from ..execute_code_wrappers import execute_code_for_files
 from ..unsaved_note_search import SearchSyntaxError, UnjudgeableSearch, matches
 from .context import Cancelled, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_text, evaluate_value
+
+if TYPE_CHECKING:
+    from ...configuration import CardAction
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +89,7 @@ def binding_name(reference: Any) -> Optional[str]:
     return None
 
 
-def resolve_binding(env: dict, reference: Any, frame, stage: dict, what: str) -> Any:
+def resolve_binding(env: dict, reference: Any, frame, stage: Stage, what: str) -> Any:
     name = binding_name(reference)
     if name is None:
         raise frame.error(f"{what} names no binding", stage)
@@ -89,14 +98,14 @@ def resolve_binding(env: dict, reference: Any, frame, stage: dict, what: str) ->
     return env[name]
 
 
-def resolve_note(env: dict, reference: Any, frame, stage: dict, what: str) -> Note:
+def resolve_note(env: dict, reference: Any, frame, stage: Stage, what: str) -> Note:
     value = resolve_binding(env, reference, frame, stage, what)
     if not isinstance(value, Note):
         raise frame.error(f"{what} must be a note, but it holds {type(value).__name__}", stage)
     return value
 
 
-def resolve_card(env: dict, reference: Any, frame, stage: dict, what: str) -> Card:
+def resolve_card(env: dict, reference: Any, frame, stage: Stage, what: str) -> Card:
     value = resolve_binding(env, reference, frame, stage, what)
     if not isinstance(value, Card):
         raise frame.error(f"{what} must be a card, but it holds {type(value).__name__}", stage)
@@ -106,7 +115,7 @@ def resolve_card(env: dict, reference: Any, frame, stage: dict, what: str) -> Ca
 def make_context(
     frame,
     env: dict,
-    stage: dict,
+    stage: Stage,
     source_note: Note,
     destination_note: Optional[Note] = None,
     purpose: str = "",
@@ -128,7 +137,7 @@ def make_context(
 # --------------------------------------------------------------------------------------
 
 
-def run_variable(stage: dict, env: dict, frame) -> Any:
+def run_variable(stage: Stage, env: dict, frame) -> Any:
     expression = stage.get("value") or {}
     ctx = make_context(
         frame,
@@ -140,11 +149,11 @@ def run_variable(stage: dict, env: dict, frame) -> Any:
     return evaluate_value(expression, ctx)
 
 
-def run_list_variable(stage: dict, env: dict, frame) -> list:
+def run_list_variable(stage: Stage, env: dict, frame) -> list:
     return []
 
 
-def run_store(stage: dict, env: dict, frame) -> None:
+def run_store(stage: Stage, env: dict, frame) -> None:
     target = resolve_binding(env, stage.get("target"), frame, stage, "store target")
     if not isinstance(target, list):
         raise frame.error("store target is not a list", stage)
@@ -157,7 +166,7 @@ def run_store(stage: dict, env: dict, frame) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def _select(ids: list[int], selection: dict) -> list[int]:
+def _select(ids: list[int], selection: Selection) -> list[int]:
     strategy = selection.get("strategy", "all")
     count = selection.get("count")
     if strategy == "all" or not count:
@@ -170,7 +179,7 @@ def _select(ids: list[int], selection: dict) -> list[int]:
     return ids[: int(count)]
 
 
-def runs_on_unfocus(carrier: dict, session) -> bool:
+def runs_on_unfocus(carrier: Union[Stage, FieldWrite], session) -> bool:
     """Whether this migrated write -- or the stage feeding one -- should run this unfocus.
 
     Only a migrated thing can answer either question. Format 1 asked both per field write --
@@ -193,14 +202,16 @@ def runs_on_unfocus(carrier: dict, session) -> bool:
     if "unfocus_trigger_fields" in carrier:
         if session.field_only not in (carrier["unfocus_trigger_fields"] or []):
             return False
-    flag = "unfocus_when_add" if session.unfocus_is_add else "unfocus_when_edit"
+    flag: Literal["unfocus_when_add", "unfocus_when_edit"] = (
+        "unfocus_when_add" if session.unfocus_is_add else "unfocus_when_edit"
+    )
     # A slow write -- downloading audio, say -- could be left out of the unfocus run and
     # kept for the bulk action. Ignoring the flag ran it on every keystroke that left a
     # watched field, and overwrote a value the user had set by hand.
     return flag not in carrier or bool(carrier[flag])
 
 
-def feeds_a_filled_field(carrier: dict, frame) -> bool:
+def feeds_a_filled_field(carrier: Stage, frame) -> bool:
     """Whether this migrated stage feeds a `write_if: "empty"` write whose field is filled.
 
     The other question format 1 asked of a field write before evaluating it, and the same
@@ -223,7 +234,7 @@ def feeds_a_filled_field(carrier: dict, frame) -> bool:
         return False
 
 
-def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
+def _sort_notes(notes: list[Note], selection: Selection) -> list[Note]:
     sort_field = selection.get("sort_field")
     if not sort_field:
         return notes
@@ -236,7 +247,7 @@ def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
     return notes
 
 
-def _apply_if_empty(stage: dict, frame, message: str) -> list:
+def _apply_if_empty(stage: Stage, frame, message: str) -> list:
     """The stage's `if_empty` policy, for every way a query can hand back no notes.
 
     Selecting nothing is the same event whether the query ran and matched nothing or never
@@ -252,7 +263,7 @@ def _apply_if_empty(stage: dict, frame, message: str) -> list:
     return []
 
 
-def _empty_result(stage: dict, frame, query: str, kind: str) -> list:
+def _empty_result(stage: Stage, frame, query: str, kind: str) -> list:
     if stage.get("error_if_empty"):
         logger.error("Error in copy fields: Did not find any %s with query='%s'", kind, query)
     else:
@@ -272,7 +283,7 @@ def _search_text(resolved: Optional[str]) -> str:
     return (resolved or "").strip()
 
 
-def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
+def run_query(stage: Stage, env: dict, frame, is_card_query: bool) -> list:
     session = frame.session
     kind = "cards" if is_card_query else "notes"
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
@@ -315,7 +326,7 @@ def run_query(stage: dict, env: dict, frame, is_card_query: bool) -> list:
     return notes
 
 
-def _sort_cards(cards: list[Card], selection: dict, session) -> list[Card]:
+def _sort_cards(cards: list[Card], selection: Selection, session) -> list[Card]:
     sort_field = selection.get("sort_field")
     if not sort_field:
         return cards
@@ -330,7 +341,7 @@ def _sort_cards(cards: list[Card], selection: dict, session) -> list[Card]:
 # --------------------------------------------------------------------------------------
 
 
-def run_edit_note(stage: dict, env: dict, frame) -> None:
+def run_edit_note(stage: Stage, env: dict, frame) -> None:
     session = frame.session
     target = session.working_note(resolve_note(env, stage.get("target"), frame, stage, "target"))
     # Every right-hand side in this stage reads the note as it was when the stage started,
@@ -401,7 +412,11 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
     elif card_actions:
         cards = session.cards_of_note(target)
         try:
-            edited = apply_card_actions_by_template(card_actions, target, cards)
+            # The schema carries card actions as opaque dicts; they are format 1's shape,
+            # which is what the primitives read.
+            edited = apply_card_actions_by_template(
+                cast("Sequence[CardAction]", card_actions), target, cards
+            )
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
         # What this stage changed, not every card still carrying `edited`: the mark stays on
@@ -413,7 +428,7 @@ def run_edit_note(stage: dict, env: dict, frame) -> None:
                 session.record_mutation(f"card {card.id}: {describe_card(card)}")
 
 
-def run_edit_card(stage: dict, env: dict, frame) -> None:
+def run_edit_card(stage: Stage, env: dict, frame) -> None:
     session = frame.session
     card = resolve_card(env, stage.get("target"), frame, stage, "target")
     card = session.card_by_id(card.id) if card.id else card
@@ -423,7 +438,7 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
             continue
         try:
             # No card type selector here: the action applies to exactly this card (§5.12).
-            edited = apply_card_action_to_card(card_action, card, note)
+            edited = apply_card_action_to_card(cast("CardAction", card_action), card, note)
         except CopyFailedException as error:
             raise frame.error(str(error), stage) from error
         if edited:
@@ -437,7 +452,7 @@ def run_edit_card(stage: dict, env: dict, frame) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def run_read_file(stage: dict, env: dict, frame) -> str:
+def run_read_file(stage: Stage, env: dict, frame) -> str:
     ctx = make_context(frame, env, stage, frame.trigger_note, frame.trigger_note)
     filename = evaluate_text(stage.get("filename"), ctx)
     try:
@@ -462,7 +477,7 @@ def run_read_file(stage: dict, env: dict, frame) -> str:
     return ""
 
 
-def run_write_file(stage: dict, env: dict, frame) -> None:
+def run_write_file(stage: Stage, env: dict, frame) -> None:
     session = frame.session
     # A file write names no note of its own -- its references name their bindings -- so the
     # note behind it is the trigger, which is what code mode gets as `note` unless the
@@ -504,7 +519,9 @@ def run_write_file(stage: dict, env: dict, frame) -> None:
         session.update_counts(processed_files_inc=1)
 
 
-def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, frame) -> list:
+def _code_file_pairs(
+    expression: ValueExpression, ctx: ExpressionContext, stage: Stage, frame
+) -> list:
     from ..definition_schema import expression_source
     from .expressions import code_globals, resolve_references
 
@@ -522,7 +539,7 @@ def _code_file_pairs(expression: dict, ctx: ExpressionContext, stage: dict, fram
 
 
 def _queue_file(
-    frame, stage: dict, filename: str, content: str, overwrite: bool, skip_if_exists: bool
+    frame, stage: Stage, filename: str, content: str, overwrite: bool, skip_if_exists: bool
 ) -> bool:
     try:
         return frame.session.queue_file_write(
@@ -538,7 +555,7 @@ def _queue_file(
 
 
 def _unsaved_note_matches(
-    stage: dict, frame, target: Note, raw_query: str, interpolated: str
+    stage: Stage, frame, target: Note, raw_query: str, interpolated: str
 ) -> bool:
     """A search condition asked of a note that is being added, so has no row to search.
 
@@ -581,7 +598,7 @@ def _unsaved_note_matches(
     return matched
 
 
-def evaluate_predicate(stage: dict, env: dict, frame) -> bool:
+def evaluate_predicate(stage: Stage, env: dict, frame) -> bool:
     """Whether the condition's `then` branch runs.
 
     A condition matched as an Anki search is scoped to one note, which is how format 1 ran

@@ -186,6 +186,8 @@ class StageRow(QFrame):
         menu = QMenu(self)
         menu.addAction("Duplicate", lambda: self.tree.duplicate_stage(self.guid))
         move_menu = menu.addMenu("Move into")
+        # addMenu(str) always creates and returns the submenu; the stubs type it optional.
+        assert move_menu is not None
         targets = self.tree.document.move_targets(self.guid)
         if not targets:
             move_menu.setEnabled(False)

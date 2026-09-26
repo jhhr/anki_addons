@@ -1,5 +1,5 @@
 import html
-from typing import Optional, Dict
+from typing import Any, Dict, Mapping, Optional
 import uuid
 
 from aqt import mw
@@ -152,8 +152,9 @@ class CardActionsEditor(QWidget):
         self.card_actions: Dict[str, CardAction] = {}
 
         # Load existing card actions from copy_definition
-        if copy_definition and copy_definition.get("card_actions"):
-            for action in copy_definition["card_actions"]:
+        stored_actions = copy_definition.get("card_actions") if copy_definition else None
+        if stored_actions:
+            for action in stored_actions:
                 if single_card_mode:
                     key = action.get("guid") or str(uuid.uuid4())
                     action["guid"] = key
@@ -731,7 +732,7 @@ class CardActionsEditor(QWidget):
         else:
             set_desired_retention = None
 
-        existing = self.card_actions.get(card_type_name, {})
+        existing: Mapping[str, Any] = self.card_actions.get(card_type_name, {})
         self.card_actions[card_type_name] = {
             "guid": existing.get("guid", str(uuid.uuid4())),
             # In single-card mode the key is the action's own guid, not a card type, and

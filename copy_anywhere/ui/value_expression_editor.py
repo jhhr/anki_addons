@@ -110,7 +110,7 @@ class ValueExpressionEditor(QWidget):
                 None,
                 self.expression,  # type: ignore[arg-type]
                 list(process_names or ALL_FIELD_TO_FIELD_PROCESS_NAMES),
-                state=state,  # type: ignore[arg-type]
+                state=state,
             )
             self.vbox.addWidget(self.process_widget)
 

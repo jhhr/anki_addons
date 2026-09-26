@@ -32,6 +32,7 @@ from ..definition_schema import (
     STAGE_STORE,
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
+    Stage,
     is_format_2,
     export_result_name,
     stage_result_name,
@@ -54,7 +55,7 @@ MAX_CALL_DEPTH = 32
 
 
 def execute_block(
-    stages: Sequence[dict],
+    stages: Sequence[Stage],
     env: dict,
     frame: DefinitionFrame,
     parent_event: Optional[TraceEvent] = None,
@@ -67,7 +68,7 @@ def execute_block(
 
 
 def execute_stage(
-    stage: dict,
+    stage: Stage,
     env: dict,
     frame: DefinitionFrame,
     parent_event: Optional[TraceEvent] = None,
@@ -129,7 +130,7 @@ def execute_stage(
     session.finish_event(event, "ok", result=result)
 
 
-def _dispatch(stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]) -> Any:
+def _dispatch(stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]) -> Any:
     stage_type = stage.get("type")
 
     if stage_type == STAGE_VARIABLE:
@@ -169,7 +170,7 @@ def _dispatch(stage: dict, env: dict, frame: DefinitionFrame, event: Optional[Tr
 
 
 def _run_loop(
-    stage: dict,
+    stage: Stage,
     env: dict,
     frame: DefinitionFrame,
     event: Optional[TraceEvent],
@@ -213,7 +214,7 @@ def _run_loop(
 
 
 def _run_reduce(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> Any:
     items = actions.resolve_binding(env, stage.get("input"), frame, stage, "reduce input")
     if not isinstance(items, list):
@@ -249,7 +250,7 @@ def _run_reduce(
 
 
 def _run_condition(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> None:
     matched = actions.evaluate_predicate(stage, env, frame)
     if event is not None:
@@ -285,7 +286,7 @@ def _run_condition(
 
 
 def _run_call(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> None:
     session = frame.session
     callee_guid = stage.get("definition_guid")

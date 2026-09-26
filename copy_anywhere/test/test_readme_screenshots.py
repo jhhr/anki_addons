@@ -37,6 +37,7 @@ from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.definition_schema import (
     ALL_STAGE_TYPES,
+    CopyDefinitionV2,
     validate_definition_structure,
     value_expression,
 )
@@ -294,7 +295,7 @@ def open_dialog(col, qapp):
         dialog.deleteLater()
 
 
-def editor_for(definition: dict, guid: str, parent, all_definitions=()):
+def editor_for(definition: CopyDefinitionV2, guid: str, parent, all_definitions=()):
     """One stage's editor, built the way the stage list builds it."""
     document = StageDocument(deepcopy(definition))
     environment = StageEditorEnvironment(
@@ -302,12 +303,14 @@ def editor_for(definition: dict, guid: str, parent, all_definitions=()):
         [document.definition, *all_definitions],
         document.definition.get("guid", ""),
     )
-    return make_stage_editor(
-        parent, document.stage(guid), build_contexts(document)[guid], environment
-    )
+    stage = document.stage(guid)
+    assert stage is not None, f"no stage {guid!r} in the definition"
+    return make_stage_editor(parent, stage, build_contexts(document)[guid], environment)
 
 
-def expression_editor(definition: dict, guid: str, parent, expression, label: str):
+def expression_editor(
+    definition: CopyDefinitionV2, guid: str, parent, expression, label: str
+):
     """A value expression editor in the scope of one stage of `definition`."""
     from copy_anywhere.ui.value_expression_editor import ValueExpressionEditor
 

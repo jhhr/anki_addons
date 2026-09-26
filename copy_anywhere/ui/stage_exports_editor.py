@@ -17,7 +17,7 @@ from aqt.qt import (
     pyqtSignal,
 )
 
-from ..logic.definition_schema import stage_result_name
+from ..logic.definition_schema import Export, stage_result_name
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .stage_document import StageDocument
 
@@ -185,7 +185,7 @@ class ExportsEditor(QWidget):
         Requiring a second name for the common case -- export `H1` as `H1` -- would be
         ceremony; the analyser still rejects a name that is not an identifier.
         """
-        exports = []
+        exports: list[Export] = []
         for guid, result_name, keep, name in self.rows:
             if not keep.isChecked():
                 continue

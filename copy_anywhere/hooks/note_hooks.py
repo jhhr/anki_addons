@@ -21,6 +21,7 @@ from ..shared.anki.write_custom_data import write_custom_data
 from ..logging_setup import operation_logging
 from ..utils.merge_cards import merge_cards
 from ..configuration import (
+    AnyCopyDefinition,
     Config,
     CopyDefinition,
     get_triggered_field_to_field_defs_for_field,
@@ -374,7 +375,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         initial_tags = note.tags.copy()
 
         # Copy definitions that affect other notes need an undo entry as we want to be able to undo
-        editing_other_notes_definitions: list[CopyDefinition] = []
+        editing_other_notes_definitions: list[AnyCopyDefinition] = []
 
         for copy_definition in config.copy_definitions:
             if note_type_name not in definition_note_type_names(copy_definition):
@@ -449,14 +450,14 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 # Run these separate with an undo entry
                 editing_other_notes_definitions.append(gated_definition)
             else:
-                copied_into_cards_dict: dict[int, Card] = {}
+                gated_cards_dict: dict[int, Card] = {}
                 # Either within note or destination to sources, we can run these right away
                 # without an undo entry needed
                 copy_for_single_trigger_note(
                     copy_definition=gated_definition,
                     trigger_note=note,
                     copied_into_notes=[],
-                    copied_into_cards_dict=copied_into_cards_dict,
+                    copied_into_cards_dict=gated_cards_dict,
                     field_only=field_name,
                     # The defs above are already gated by this flag, and the executor checks the
                     # migrated copy of it as well; telling it which flag to look at is what
@@ -467,7 +468,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     # that note may be committed.
                     add_note_compatible_only=is_new_note,
                 )
-                edited_cards = take_edited_cards(copied_into_cards_dict)
+                edited_cards = take_edited_cards(gated_cards_dict)
                 if edited_cards:
                     mw.col.update_cards(edited_cards)
 

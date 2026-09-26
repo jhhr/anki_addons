@@ -7,7 +7,7 @@ match what the addon's own editor writes for a new definition, so a test that na
 is exercising the out-of-the-box configuration rather than an invented one.
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from note_types import VOCAB
 
@@ -382,6 +382,7 @@ def staged(
     **trigger_extra: Any,
 ) -> dict:
     """A format-2 definition with derived `effects`, as a saved one would carry."""
+    from copy_anywhere.logic.definition_schema import CopyDefinitionV2
     from copy_anywhere.logic.flow_analysis import compute_effects
 
     triggers = {
@@ -402,5 +403,6 @@ def staged(
         "stages": stages or [],
         "exports": exports or [],
     }
-    definition["effects"] = compute_effects(definition)
+    # Built as a plain dict like every other builder here, so a test can add or break any key.
+    definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
     return definition

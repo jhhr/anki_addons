@@ -23,7 +23,7 @@ say -- which fields the note types it triggers on actually have. It answers four
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..shared.interpolate.interpolate_fields import (
     CARD_VALUE_RE,
@@ -78,6 +78,10 @@ from .definition_schema import (
     validate_definition_structure,
     value_type_from_name,
 )
+
+if TYPE_CHECKING:
+    # For the annotation only: the analyser stays clear of `configuration` at runtime.
+    from ..configuration import AnyCopyDefinition
 
 #: Refuse a call chain deeper than this even when no guid repeats, so hand-edited JSON
 #: cannot drive the evaluator into a recursion limit (§5.9).
@@ -157,8 +161,9 @@ class AnalysisResult:
         self.scopes: dict[str, dict[str, Binding]] = {}
         #: stage guid -> the type of the result it produces, when it produces one.
         self.result_types: dict[str, ValueType] = {}
-        #: export name -> type, for the callers of this definition.
-        self.export_types: dict[str, ValueType] = {}
+        #: export name -> type, for the callers of this definition. Keyed by the name as
+        #: stored, so an export saved without one is recorded under None.
+        self.export_types: dict[Optional[str], ValueType] = {}
         self.effects: Effects = {
             "edits_trigger": False,
             "edits_other_notes": False,
@@ -389,7 +394,9 @@ class _Analyzer:
             stage,
         )
 
-    def check_predicate_has_text(self, predicate: Any, stage: Stage) -> None:
+    def check_predicate_has_text(
+        self, predicate: Optional[ValueExpression], stage: Stage
+    ) -> None:
         """An empty text predicate is a condition nobody meant to write.
 
         A text predicate holds when it resolves to something, so an empty one never holds;
@@ -515,8 +522,8 @@ class _Analyzer:
             self.declare(scope, stage, stage_result_name(stage), list_of(item_type))
 
         elif stage_type == STAGE_STORE:
-            target = stage.get("target")
-            binding = self.resolve(scope, target, stage, "store target")
+            target_ref = stage.get("target")
+            binding = self.resolve(scope, target_ref, stage, "store target")
             # An Unknown binding is a code-mode result; as in `expect`, the action checks it
             # when the value arrives.
             if binding is not None and binding.type.kind not in (LIST, T_UNKNOWN.kind):
@@ -687,7 +694,7 @@ class _Analyzer:
             "calls_definitions",
         ):
             if callee_result.effects.get(key):
-                self.result.effects[key] = True  # type: ignore[literal-required]
+                self.result.effects[key] = True
         if callee_result.effects.get("edits_trigger"):
             # The callee's trigger is a note this definition chose, so from here it is
             # another note unless this definition passed its own trigger.
@@ -914,7 +921,7 @@ def callers_of(
     return callers
 
 
-def refresh_effects(definitions: Sequence[dict]) -> list[str]:
+def refresh_effects(definitions: Sequence[AnyCopyDefinition]) -> list[str]:
     """Recompute `effects` on every staged definition in `definitions`, in place.
 
     A definition's effects are transitive through `call_definition` (§4, §6), so they are

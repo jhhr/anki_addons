@@ -23,13 +23,14 @@ from aqt.qt import (
 
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
+    AnyCopyDefinition,
     Config,
     CopyDefinition,
     definition_deck_names,
     definition_note_type_names,
 )
 from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
-from ..logic.definition_schema import is_format_2
+from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from .edit_staged_definition_dialog import EditStagedDefinitionDialog
 from ..logic.copy_fields import (
     copy_fields,
@@ -270,7 +271,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
     def __init__(
         self,
         parent,
-        copy_definitions: list[CopyDefinition],
+        copy_definitions: list[AnyCopyDefinition],
         note_source: NoteSource,
     ):
         super().__init__(parent)
@@ -524,8 +525,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         return self.edit_definition(definition_index, definition_to_edit)
 
     def run_definition_editor(
-        self, definition: Optional[CopyDefinition], config: Config
-    ) -> Optional[CopyDefinition]:
+        self, definition: Optional[AnyCopyDefinition], config: Config
+    ) -> Optional[CopyDefinitionV2]:
         """Open the stage editor on this definition, converting it first if it is format 1.
 
         There is one editor. A definition only reaches here in format 1 if the startup
@@ -546,7 +547,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         return dialog.get_copy_definition() if dialog.exec() else None
 
     def edit_definition(
-        self, index: Optional[int] = None, copy_definition: Optional[CopyDefinition] = None
+        self, index: Optional[int] = None, copy_definition: Optional[AnyCopyDefinition] = None
     ):
         """
         Opens the edit dialog for the selected copy definition

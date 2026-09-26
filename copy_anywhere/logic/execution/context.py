@@ -19,8 +19,8 @@ import re
 import time
 from typing import Any, Callable, Optional, Sequence, Union
 
-from anki.cards import Card
-from anki.notes import Note
+from anki.cards import Card, CardId
+from anki.notes import Note, NoteId
 from aqt import mw
 
 from ...utils.media_files import (
@@ -29,6 +29,7 @@ from ...utils.media_files import (
     normalize_media_filename,
     read_media_file,
 )
+from ..definition_schema import CopyDefinitionV2, Stage
 
 #: The key an unsaved note is held under. A note being added has id 0, so its identity is
 #: the object itself; anything else would collide with every other unsaved note.
@@ -209,7 +210,7 @@ class ExecutionSession:
         deck_id: Optional[int] = None,
         progress_updater: Any = None,
         file_cache: Optional[dict] = None,
-        definition_lookup: Optional[Callable[[str], Optional[dict]]] = None,
+        definition_lookup: Optional[Callable[[str], Optional[CopyDefinitionV2]]] = None,
         want_cancel: Optional[Callable[[], bool]] = None,
         collect_trace: bool = False,
         add_note_compatible_only: bool = False,
@@ -273,7 +274,7 @@ class ExecutionSession:
         existing = self.notes.get(note_id)
         if existing is not None:
             return existing
-        note = mw.col.get_note(note_id)
+        note = mw.col.get_note(NoteId(note_id))
         self.notes[note_id] = note
         return note
 
@@ -302,7 +303,7 @@ class ExecutionSession:
         existing = self.cards.get(card_id)
         if existing is not None:
             return existing
-        card = mw.col.get_card(card_id)
+        card = mw.col.get_card(CardId(card_id))
         self.cards[card_id] = card
         return card
 
@@ -438,7 +439,7 @@ class ExecutionSession:
 
     def start_event(
         self,
-        stage: dict,
+        stage: Stage,
         loop_path: Sequence[int],
         parent: Optional[TraceEvent],
         env: Optional[dict] = None,
@@ -502,7 +503,7 @@ class DefinitionFrame:
 
     def __init__(
         self,
-        definition: dict,
+        definition: CopyDefinitionV2,
         trigger_note: Note,
         session: ExecutionSession,
         depth: int = 0,
@@ -530,7 +531,7 @@ class DefinitionFrame:
     def mark_root_environment(self, env: dict) -> None:
         self.root_env = env
 
-    def error(self, message: str, stage: Optional[dict] = None) -> StageError:
+    def error(self, message: str, stage: Optional[Stage] = None) -> StageError:
         return StageError(
             message,
             definition_guid=self.guid,

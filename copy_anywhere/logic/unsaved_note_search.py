@@ -56,6 +56,7 @@ from typing import Callable, Optional, Union
 
 from anki.card_rendering_pb2 import StripHtmlRequest
 from anki.collection import Config
+from anki.decks import DeckId
 from anki.notes import Note
 from anki.utils import point_version
 
@@ -498,7 +499,11 @@ class _NoteView:
     def __init__(self, note: Note, deck_id: Optional[int]) -> None:
         self.note = note
         self.col = note.col
-        self.note_type = note.note_type()
+        note_type = note.note_type()
+        # A note is always made from a note type; `note_type()` is Optional only because it
+        # looks the type up by id.
+        assert note_type is not None
+        self.note_type = note_type
         self.deck_id = deck_id
         self.tags = list(note.tags)
 
@@ -557,7 +562,9 @@ class _NoteView:
 
     @functools.cached_property
     def target_deck(self) -> Optional[dict]:
-        return self.col.decks.get(self.deck_id, default=False) if self.deck_id is not None else None
+        if self.deck_id is None:
+            return None
+        return self.col.decks.get(DeckId(self.deck_id), default=False)
 
     def norm_note(self, text: str) -> str:
         return _nfc(text) if self.normalize else text
@@ -701,6 +708,9 @@ def _judge(node: _Node, view: _NoteView) -> bool:
         return _JUDGES[node.kind](node, view)
     if isinstance(node, _Not):
         return not _judge(node.node, view)
+    # A bare string is an "and" or "or" between a group's items, which the loop below keeps
+    # from being judged on its own.
+    assert isinstance(node, _Group)
     values = [item if isinstance(item, str) else _judge(item, view) for item in node.items]
     # Anki writes the group into SQL as it stands, so AND binds tighter than OR: the group is
     # true when any OR-separated run of ANDed terms is.
@@ -709,7 +719,8 @@ def _judge(node: _Node, view: _NoteView) -> bool:
         if value == _OR:
             alternatives.append(True)
         elif value != _AND:
-            alternatives[-1] = alternatives[-1] and value
+            # A judged term: the only strings among the values are "and" and "or".
+            alternatives[-1] = alternatives[-1] and bool(value)
     return any(alternatives)
 
 
