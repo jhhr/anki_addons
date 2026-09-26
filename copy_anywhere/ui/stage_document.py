@@ -29,6 +29,7 @@ from ..logic.definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -53,6 +54,7 @@ STAGE_TYPE_LABELS: dict[str, str] = {
     STAGE_VARIABLE: "Variable",
     STAGE_NOTE_QUERY: "Query Notes",
     STAGE_CARD_QUERY: "Query Cards",
+    STAGE_SELECT_NOTE: "Select Note",
     STAGE_EDIT_NOTE: "Edit Note",
     STAGE_EDIT_CARD: "Edit Card",
     STAGE_READ_FILE: "Read File",
@@ -75,6 +77,7 @@ STAGE_TYPE_ICONS: dict[str, str] = {
     STAGE_VARIABLE: "=",
     STAGE_NOTE_QUERY: "?",
     STAGE_CARD_QUERY: "?",
+    STAGE_SELECT_NOTE: "#",
     STAGE_EDIT_NOTE: "✎",
     STAGE_EDIT_CARD: "✎",
     STAGE_READ_FILE: "←",
@@ -151,6 +154,15 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
         )
     elif stage_type == STAGE_EDIT_CARD:
         stage.update({"target": {"binding": ""}, "card_actions": []})
+    elif stage_type == STAGE_SELECT_NOTE:
+        stage.update(
+            {
+                "input": {"binding": ""},
+                "index": value_expression(text="0"),
+                "if_missing": "empty",
+                "result": "",
+            }
+        )
     elif stage_type == STAGE_READ_FILE:
         stage.update(
             {"result": "", "filename": value_expression(), "if_missing": "empty"}
@@ -815,6 +827,14 @@ def stage_summary(stage: Any) -> str:
         count = selection.get("count")
         how = "all" if strategy == "all" else f"{strategy} {count}" if count else strategy
         return f"{result} = {how} {what} matching {_expression_summary(stage.get('query')) or '?'}"
+    if stage_type == STAGE_SELECT_NOTE:
+        index = stage.get("index")
+        which = (
+            "the note its code picks"
+            if expression_is_code(index)
+            else f"note {_expression_summary(index) or '?'}"
+        )
+        return f"{result} = {which} of {source}"
     if stage_type == STAGE_EDIT_NOTE:
         parts = []
         fields = [write.get("field") for write in stage.get("fields") or [] if isinstance(write, dict)]

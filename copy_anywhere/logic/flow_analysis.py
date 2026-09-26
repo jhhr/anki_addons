@@ -49,6 +49,7 @@ from .definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -72,7 +73,9 @@ from .definition_schema import (
     is_format_2,
     list_of,
     names_are_relaxed,
+    SELECT_NOTE_LIST_NAME,
     result_name_problem,
+    result_reserved_names_allowed,
     stage_result_name,
     unclosed_reference_problem,
     validate_definition_structure,
@@ -246,7 +249,11 @@ class _Analyzer:
         )
 
     def declare(self, scope: dict, stage: Stage, name: Any, value_type: ValueType) -> None:
-        problem = result_name_problem(name, relaxed=self.relaxed_names)
+        problem = result_name_problem(
+            name,
+            relaxed=self.relaxed_names,
+            allowed_reserved=result_reserved_names_allowed(stage),
+        )
         if problem:
             self.problem(problem, stage)
             return
@@ -504,6 +511,21 @@ class _Analyzer:
             # it another note's card is therefore safe and spares the analyser having to
             # track where a card binding came from.
             effects["edits_other_cards"] = True
+
+        elif stage_type == STAGE_SELECT_NOTE:
+            binding = self.resolve(scope, stage.get("input"), stage, "select input")
+            self.expect(binding, T_NOTE_LIST, stage, "select input")
+            # The index's code gets the list as `notes`, unless something in scope is
+            # already called that, which then wins as every binding does.
+            index_scope = dict(scope)
+            if SELECT_NOTE_LIST_NAME not in index_scope:
+                index_scope[SELECT_NOTE_LIST_NAME] = Binding(
+                    SELECT_NOTE_LIST_NAME, T_NOTE_LIST, stage.get("guid"), True
+                )
+            self.check_expression(stage.get("index"), index_scope, stage, "index")
+            self.declare(scope, stage, stage_result_name(stage), T_NOTE)
+            if at_root and stage.get("if_missing") == "skip_block":
+                self.note_skipping_root_stage(stage)
 
         elif stage_type == STAGE_READ_FILE:
             effects["reads_files"] = True

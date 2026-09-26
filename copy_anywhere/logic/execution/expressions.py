@@ -201,6 +201,10 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
                 return _note_reference(value, rest, ctx)
             if isinstance(value, Card):
                 return _card_reference(value, rest, ctx, card_values)
+            if value is None and head in ctx.environment:
+                # A Select Note stage that found no note at its index binds nothing, and
+                # "no note" is empty text wherever one of its fields is read.
+                return ""
             if value is None:
                 raise ctx.error(f"'{head}' is not a binding in scope")
             raise ctx.error(f"'{head}' is not a note or card, so '{reference}' has no value")

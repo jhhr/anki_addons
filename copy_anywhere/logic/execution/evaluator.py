@@ -28,6 +28,7 @@ from ..definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -143,6 +144,8 @@ def _dispatch(stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[T
         return actions.run_query(stage, env, frame, is_card_query=False)
     if stage_type == STAGE_CARD_QUERY:
         return actions.run_query(stage, env, frame, is_card_query=True)
+    if stage_type == STAGE_SELECT_NOTE:
+        return actions.run_select_note(stage, env, frame)
     if stage_type == STAGE_EDIT_NOTE:
         return actions.run_edit_note(stage, env, frame)
     if stage_type == STAGE_EDIT_CARD:

@@ -52,6 +52,7 @@ from ..logic.definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -68,7 +69,7 @@ from ..shared.ui.required_text_input import RequiredLineEdit
 from .discard import discard_widget
 from .card_actions_editor import CardActionsEditor
 from .outline import outline_frame
-from .code_notices import FILE_CODE_NOTICE
+from .code_notices import FILE_CODE_NOTICE, SELECT_NOTE_CODE_NOTICE
 from .stage_edit_state import StageEditState
 from .stage_editor_context import NoteTypesFor, StageEditorContext
 from .stage_triggers_editor import quoted_items, selected_names
@@ -95,6 +96,12 @@ IF_EMPTY_LABELS = {
 
 IF_MISSING_LABELS = {
     "empty": "use an empty string",
+    "skip_block": "stop running the rest of this block",
+    "error": "fail the definition",
+}
+
+SELECT_IF_MISSING_LABELS = {
+    "empty": "select no note: its fields read as empty, and editing it does nothing",
     "skip_block": "stop running the rest of this block",
     "error": "fail the definition",
 }
@@ -746,6 +753,50 @@ class EditCardStageEditor(StageEditor):
         self.card_actions.update_code_editor_options()
 
 
+class SelectNoteStageEditor(StageEditor):
+    """One note of a note list, so that the rest of the definition can use it as a note."""
+
+    def __init__(self, parent, stage, context, environment):
+        super().__init__(parent, stage, context, environment)
+        self.result = name_edit(self, stage.get("result", ""), "A name, e.g. Picked")
+        self.result.textChanged.connect(self.notify)
+        self.add_row("Call the note", self.result)
+        self.input = binding_combo(
+            self,
+            context.note_list_bindings,
+            (stage.get("input") or {}).get("binding", ""),
+            "Which list of notes",
+        )
+        self.input.currentTextChanged.connect(self.notify)
+        self.add_row("From the notes in", self.input)
+        self.index = self.expression_editor(
+            stage.setdefault("index", value_expression(text="0")),
+            "Which one",
+            description=(
+                "A number: 0 is the first note, 1 the second, -1 the last. As code, return"
+                " the number, or None to select no note; the list is `notes`."
+            ),
+            notice=SELECT_NOTE_CODE_NOTICE,
+            # A position, not text: no process has anything to do to it.
+            allow_process_chain=False,
+        )
+        self.form.addRow(self.index)
+        self.if_missing = labelled_combo(
+            self,
+            IF_MISSING_POLICIES,
+            SELECT_IF_MISSING_LABELS,
+            stage.get("if_missing", "empty"),
+        )
+        self.if_missing.currentIndexChanged.connect(self.notify)
+        self.add_row("If no note is there", self.if_missing)
+
+    def apply(self):
+        super().apply()
+        self.stage["input"] = {"binding": self.input.currentText()}
+        self.stage["if_missing"] = combo_value(self.if_missing)
+        self.stage["result"] = self.result.text().strip()
+
+
 class ReadFileStageEditor(StageEditor):
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
@@ -1217,6 +1268,7 @@ STAGE_EDITOR_CLASSES: dict[str, Callable[..., StageEditor]] = {
     STAGE_VARIABLE: VariableStageEditor,
     STAGE_NOTE_QUERY: QueryStageEditor,
     STAGE_CARD_QUERY: QueryStageEditor,
+    STAGE_SELECT_NOTE: SelectNoteStageEditor,
     STAGE_EDIT_NOTE: EditNoteStageEditor,
     STAGE_EDIT_CARD: EditCardStageEditor,
     STAGE_READ_FILE: ReadFileStageEditor,

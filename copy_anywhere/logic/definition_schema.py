@@ -213,7 +213,10 @@ def unclosed_reference_problem(reference: str) -> Optional[str]:
 
 
 def result_name_problem(
-    name: Any, what: str = "Result name", relaxed: bool = False
+    name: Any,
+    what: str = "Result name",
+    relaxed: bool = False,
+    allowed_reserved: Iterable[str] = (),
 ) -> Optional[str]:
     """The reason `name` cannot be a result name, or None when it can.
 
@@ -230,7 +233,7 @@ def result_name_problem(
             f"{what} '{name}' is not an identifier"
             " (letters, digits and underscore, not starting with a digit)"
         )
-    if name in RESERVED_BINDING_NAMES:
+    if name in RESERVED_BINDING_NAMES and name not in allowed_reserved:
         return f"{what} '{name}' is a reserved binding name"
     return None
 
@@ -289,6 +292,7 @@ def expression_source(expression: ValueExpression) -> str:
 STAGE_VARIABLE = "variable"
 STAGE_NOTE_QUERY = "note_query"
 STAGE_CARD_QUERY = "card_query"
+STAGE_SELECT_NOTE = "select_note"
 STAGE_EDIT_NOTE = "edit_note"
 STAGE_EDIT_CARD = "edit_card"
 STAGE_READ_FILE = "read_file"
@@ -305,6 +309,7 @@ ALL_STAGE_TYPES = (
     STAGE_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_CARD_QUERY,
+    STAGE_SELECT_NOTE,
     STAGE_EDIT_NOTE,
     STAGE_EDIT_CARD,
     STAGE_READ_FILE,
@@ -317,6 +322,15 @@ ALL_STAGE_TYPES = (
     STAGE_CONDITION,
     STAGE_CALL_DEFINITION,
 )
+
+#: Reserved names a Select Note stage may still call its result. What it binds is one note,
+#: the way a loop's item is, and a loop may call its item `note`; a migrated Destination to
+#: sources definition that reads one source note depends on the name meaning that note.
+SELECT_NOTE_RESERVED_NAMES = frozenset({"note"})
+
+#: The name a Select Note stage's index code gets its input list under, besides the list's
+#: own name, so that code can be written without knowing what the query was called.
+SELECT_NOTE_LIST_NAME = "notes"
 
 #: Stages that contain child blocks, mapped to the keys those blocks live under.
 STRUCTURAL_STAGE_BODY_KEYS: dict[str, tuple[str, ...]] = {
@@ -410,7 +424,9 @@ Stage = TypedDict(
         "skip_if_exists": bool,
         # list_variable.
         "item_type": str,
-        # The loops and reduce.
+        # select_note: which note of its input list, as a number or code returning one.
+        "index": ValueExpression,
+        # select_note, the loops and reduce.
         "input": BindingRef,
         "item_binding": str,
         "note_binding": str,
@@ -582,6 +598,7 @@ RESULT_PRODUCING_STAGES = {
     STAGE_NOTE_QUERY: "result",
     STAGE_CARD_QUERY: "result",
     STAGE_READ_FILE: "result",
+    STAGE_SELECT_NOTE: "result",
     STAGE_LIST_VARIABLE: "result",
     STAGE_REDUCE: "result",
 }
@@ -595,6 +612,13 @@ def stage_result_name(stage: Stage) -> Optional[str]:
         return None
     name = stage.get(key)
     return name if isinstance(name, str) else None
+
+
+def result_reserved_names_allowed(stage: Stage) -> frozenset:
+    """The reserved names this stage may nonetheless give its result."""
+    if stage.get("type") == STAGE_SELECT_NOTE:
+        return SELECT_NOTE_RESERVED_NAMES
+    return frozenset()
 
 
 def stage_result_names(stage: Stage) -> list[str]:
@@ -697,7 +721,11 @@ def _require_result_name(
     stage: Stage, problems: list[SchemaProblem], relaxed: bool = False
 ) -> None:
     guid, stage_type = stage.get("guid"), stage.get("type")
-    problem = result_name_problem(stage_result_name(stage), relaxed=relaxed)
+    problem = result_name_problem(
+        stage_result_name(stage),
+        relaxed=relaxed,
+        allowed_reserved=result_reserved_names_allowed(stage),
+    )
     if problem:
         problems.append(SchemaProblem(problem, guid, stage_type))
 
@@ -777,6 +805,11 @@ def validate_stage_structure(
         _require_expression(stage, "query", problems)
         _validate_selection(stage, problems)
         _validate_choice(stage, "if_empty", IF_EMPTY_POLICIES, "continue", problems)
+    elif stage_type == STAGE_SELECT_NOTE:
+        _require_binding(stage, "input", problems)
+        _require_result_name(stage, problems, relaxed_names)
+        _require_expression(stage, "index", problems)
+        _validate_choice(stage, "if_missing", IF_MISSING_POLICIES, "empty", problems)
     elif stage_type == STAGE_EDIT_NOTE:
         _require_binding(stage, "target", problems)
         fields = stage.get("fields", [])

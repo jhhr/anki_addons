@@ -245,6 +245,27 @@ def test_the_editor_s_help_text_wraps_rather_than_widening_it(dialog):
     assert [label.text()[:40] for label in help_texts if not label.wordWrap()] == []
 
 
+def test_a_select_note_editor_offers_the_note_lists_and_writes_its_choices(col, qapp):
+    from copy_anywhere.logic.definition_schema import STAGE_SELECT_NOTE
+
+    select = default_stage(STAGE_SELECT_NOTE, "s")
+    tree = tree_for(col, note_query("q", "Found"), select)
+    editor = tree.rows["s"].editor
+    assert editor.input.findText("Found") >= 0
+
+    editor.input.setCurrentText("Found")
+    editor.result.setText("Picked")
+    editor.if_missing.setCurrentIndex(editor.if_missing.findData("skip_block"))
+    editor.apply()
+
+    stage = tree.document.stage("s")
+    assert stage["input"] == {"binding": "Found"}
+    assert stage["result"] == "Picked"
+    assert stage["if_missing"] == "skip_block"
+    assert stage["index"]["text"] == "0"
+    assert tree.rows["s"].summary.text() == "Picked = note 0 of Found"
+
+
 # -- reorder --------------------------------------------------------------------------
 
 

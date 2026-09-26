@@ -46,3 +46,16 @@ CARD_ACTION_CODE_NOTICE = (
     + _AVAILABLE_NAMES
     + CODE_NOTICE_HTML_WARNING
 )
+
+
+SELECT_NOTE_CODE_NOTICE = (
+    CODE_NOTICE_PREFIX
+    + "<b>returns a whole number or <tt>None</tt></b>: the index of the note to select in"
+    " <tt>notes</tt>, the list chosen above (0 is the first, -1 the last), or"
+    " <tt>None</tt> to select no note. "
+    + _AVAILABLE_NAMES
+    + "<br>"
+    "<small>Example: <tt>return max(range(len(notes)), key=lambda i:"
+    " len(notes[i]['Meaning']), default=None)</tt></small><br>"
+    + CODE_NOTICE_HTML_WARNING
+)

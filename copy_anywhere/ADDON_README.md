@@ -100,7 +100,7 @@ in which case you run it by hand from the browser:
 ### The stages
 
 Stages run top to bottom. A stage that produces a value gives it a name, and every stage
-below it can use that name. There are fourteen kinds, and **Add stage...** offers them all
+below it can use that name. There are fifteen kinds, and **Add stage...** offers them all
 except *Edit Card*, which appears only where an earlier stage has named a card for it to act
 on:
 
@@ -109,6 +109,7 @@ on:
 | **Variable** (`variable`) | computes one value and names it |
 | **Query Notes** (`note_query`) | an Anki search, producing a list of notes |
 | **Query Cards** (`card_query`) | the same, producing a list of cards |
+| **Select Note** (`select_note`) | picks one note of a list of notes, by its position |
 | **Edit Note** (`edit_note`) | writes fields, tags and card actions to one named note |
 | **Edit Card** (`edit_card`) | card actions on one named card |
 | **Read File** (`read_file`) | reads one file from the media folder, as text |
@@ -127,6 +128,14 @@ alongside each item. A name declared inside a loop body or a branch is gone when
 ends — which is why collecting anything out of a loop means a **List** before it, a **Store**
 inside it, and a **Reduce** after it.
 
+A list of notes cannot be edited or read as a note. When one of them is what you want — the
+first note found, a random one, the one some code prefers — **Select Note** picks it: by
+position (0 is the first, -1 the last), or with code that gets the list as `notes` and
+returns a position. Every stage after it can then use it like the trigger note:
+`{{Picked.Meaning}}`, an **Edit Note** on `Picked`. If no note is at that position, its
+fields read as empty and editing it does nothing, unless you tell it to stop the block or
+fail instead.
+
 <details>
 <summary>One editor per stage type</summary>
 
@@ -138,6 +147,9 @@ inside it, and a **Reduce** after it.
 
 ![Query cards](docs/images/stage-card_query.png)
 `card_query` — the same, counting cards instead of notes.
+
+![Select note](docs/images/stage-select_note.png)
+`select_note` — one note of a list of notes, by its position or by code.
 
 ![Edit note](docs/images/stage-edit_note.png)
 `edit_note` — fields, tags and card actions on one named note.

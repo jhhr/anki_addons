@@ -113,6 +113,7 @@ A card action's code is older and runs apart from all this, exactly as format 1 
 | `variable` | computes one value and names it |
 | `note_query` | `find_notes`, producing a `NoteList` |
 | `card_query` | `find_cards`, producing a `CardList` |
+| `select_note` | picks one note of a `NoteList` by its position, producing a `NoteRef` |
 | `edit_note` | writes fields, tags and note-level card actions to one named note |
 | `edit_card` | applies card actions to one named card, with no card type selector |
 | `read_file` | reads one media file into a `Text` result |
@@ -128,6 +129,17 @@ A card action's code is older and runs apart from all this, exactly as format 1 
 Loops bind `index` (one-based) and `count` alongside their item. Body-local results are
 discarded after each iteration and branch-local results do not escape their branch, so an
 outer list plus `store` is how a loop reports anything back.
+
+`select_note` is how one note of a list becomes a note the rest of the definition can edit
+and read, with no loop. Its `index` is a value expression: text that reads as a whole number
+(0 is the first note, 1 the second, and a negative number counts from the end), or code that
+returns one, or `None` for no note. The code gets the list as `notes` as well as under its
+own name. When no note is at the index, `if_missing` decides: `empty`, the default, binds no
+note -- a reference to one of its fields reads as empty text, an `edit_note` on it does
+nothing, and a call or a search condition given it fails naming it -- `skip_block` stops the
+rest of the block, and `error` fails the definition. Its result may be called `note`, the one
+reserved name it may take, as a loop's item may; that is what a migrated one-source
+definition calls it.
 
 ## Rules worth knowing before writing one
 
