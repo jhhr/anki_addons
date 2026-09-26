@@ -256,9 +256,19 @@ def add_revlog(
     about those need real rows rather than a mocked `db`. The row id is the review's
     epoch-millisecond timestamp and is what `ORDER BY id` sorts on, so ids are handed out in
     ascending order from `first_id`.
+
+    Without `first_id` they start at the card's id or just past the newest row already
+    there, whichever is later. Starting at the card's id alone collided: cards created
+    within the same millisecond get consecutive ids, so on a fast machine three notes added
+    back to back gave the second card's second review the third card's id, and the third
+    card's first review failed on revlog's primary key.
     """
     assert col.db is not None
-    base = first_id if first_id is not None else card_id
+    if first_id is not None:
+        base = first_id
+    else:
+        newest = col.db.scalar("SELECT max(id) FROM revlog")
+        base = max(card_id, newest + 1) if newest is not None else card_id
     ids = []
     for i in range(count):
         rid = base + i

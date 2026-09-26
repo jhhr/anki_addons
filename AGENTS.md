@@ -21,6 +21,7 @@ material is in [`docs/`](docs/):
     build.local.json         this device's build.py preferences; gitignored, may be absent
     conftest.py              makes every addon importable under pytest without Anki
     pytest.ini  mypy.ini  requirements-dev*.txt
+    .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only
     anki_shared/             shared packages; no __init__.py, not an addon
       jp_text_processing/    git submodule, its own repo (see below)
     <addon>/
@@ -104,6 +105,13 @@ pytest config deliberately skip it.
 Run everything from the repo root, with the interpreter that has the dev dependencies
 (`anki`, `aqt`, pytest; see `requirements-dev.txt`) installed. If `python -m pytest` cannot
 import `anki`, you are on the wrong interpreter; do not "fix" that by installing into it.
+
+In a Claude Code cloud session, `.claude/hooks/session-start.sh` has already done the setup: a
+venv with every suite's dependencies first on `PATH`, the submodule checked out, `shared/`
+linked. Its output at session start names the interpreter. If `anki` still does not import,
+the hook failed; say so rather than letting the suites run against the stand-in. What the
+cloud environment itself has to provide is in
+[anki_shared/testing/README.md](anki_shared/testing/README.md#cloud-sessions).
 
 | command | purpose |
 | --- | --- |

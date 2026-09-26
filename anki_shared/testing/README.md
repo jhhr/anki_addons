@@ -207,6 +207,56 @@ handler it cannot find.
 `ANKI_TEST_SHUTDOWN_GUARD=0` switches the guard off, to see the crash or debug Qt's own
 shutdown; `ANKI_TEST_SHUTDOWN_GUARD=exit` forces the `os._exit` fallback.
 
+On Linux the default does not hold: with PyQt's handler unregistered the process still
+exits 139, in four runs out of four, and with the guard off it did in two of four. `ANKI_TEST_SHUTDOWN_GUARD=exit` is the mode that exits cleanly
+there, at the cost of the leftover temporary directories described above.
+
 Separately, `real_anki.qt_offscreen()` adds `--disable-gpu` to
 `QTWEBENGINE_CHROMIUM_FLAGS`. Offscreen, QtWebEngine's GPU process kept losing its context,
 and about one run in five died mid-test on it.
+
+## Cloud sessions
+
+A Claude Code cloud session starts from a fresh clone on a stock Ubuntu image, as root.
+Left alone, `python -m pytest` there finds no `anki` and runs every suite against the
+stand-in, so the real-collection and running-Anki tests say nothing. Two things close that.
+
+`.claude/hooks/session-start.sh` runs when a cloud session starts or resumes, and exits at
+once anywhere else. It creates a venv at `/opt/anki-venv` (hardcoded, so a setup script can
+build the same one ahead of time) and installs `requirements-dev*.txt` and
+`japanese_note_ai_ops/requirements.txt` into it. It also installs `libegl1` if the image
+lacks it, checks out the submodule if it never was, runs `build.py link`, and puts the venv
+first on the session's `PATH`.
+
+The cloud environment's settings supply the rest. Three environment variables:
+
+| variable | why |
+| --- | --- |
+| `QTWEBENGINE_DISABLE_SANDBOX=1` | QtWebEngine will not start its sandbox as root: the first running-Anki test ends the process with "Running as root without --no-sandbox is not supported" |
+| `ANKI_TEST_SHUTDOWN_GUARD=exit` | on Linux the default guard mode exits 139; see the shutdown guard above |
+| `PYTHONIOENCODING=utf-8` | the jp_text_processing suite prints Japanese |
+
+A setup script is optional: the hook installs everything itself. But a setup script's result
+is cached and the hook's is not guaranteed to be, so building the venv there spares later
+sessions the install. It must use the hook's venv path, and should only read the clone, not
+check out the submodule or link: a cached checkout could reach a later session on another
+branch with the submodule at the wrong commit.
+
+```bash
+#!/bin/bash
+set -euo pipefail
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libegl1
+"$(command -v python3.10 || command -v python3)" -m venv /opt/anki-venv
+REPO=...  # where the environment clones this repository
+if [ -f "$REPO/requirements-dev.txt" ]; then  # the clone may not exist yet
+  cd "$REPO"
+  /opt/anki-venv/bin/python -m pip install -q \
+    -r requirements-dev.txt -r japanese_note_ai_ops/requirements.txt
+  /opt/anki-venv/bin/python -m pip install -q --no-deps -r requirements-dev-nodeps.txt
+fi
+```
+
+The word-array tests in `japanese_note_ai_ops/test` still skip: they need the Sudachi
+dictionary and JMdict in that addon's `user_files/`, and JMdict comes from
+`www.edrdg.org`, which the default network access level does not allow.
