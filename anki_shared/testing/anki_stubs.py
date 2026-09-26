@@ -139,6 +139,9 @@ def install() -> None:
     _module("anki.notes", Note=Note, NoteId=NoteId)
     _module("anki.collection", Collection=Collection, OpChanges=type("OpChanges", (), {}))
     _module("anki.hooks")
+    # The real one: its result is spliced into SQL, where a throwaway class would not do
+    utils = _module("anki.utils", ids2str=lambda ids: f"({','.join(str(i) for i in ids)})")
+    utils.__getattr__ = lambda name: type(name, (), {})  # type: ignore[method-assign]
     _module("aqt", mw=mw, gui_hooks=types.SimpleNamespace())
 
     sys.meta_path.append(_StubFinder())

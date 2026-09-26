@@ -1,10 +1,11 @@
 import logging
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
 from aqt import mw
 
+from ..async_api_ops.chain_types import ChainStep
 from ..async_api_ops.base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -104,6 +105,7 @@ def bulk_tag_notes_matched_status_op(
 def tag_notes_matched_status_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Tag selected notes to indicate whether all, some, or no notes in the collection
@@ -117,4 +119,4 @@ def tag_notes_matched_status_from_selected(
     progress_updater = AsyncTaskProgressUpdater(title="Sync op: Tagging notes matched status")
     done_text = "Tagged notes matched status"
     bulk_op = bulk_tag_notes_matched_status_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

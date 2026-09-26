@@ -2,6 +2,7 @@ import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Optional
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -11,6 +12,7 @@ from aqt.utils import showWarning
 
 from ..configuration import KANJI_STORY_COMPONENT_WORDS_LOG
 from ..utils import get_field_config
+from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -258,8 +260,10 @@ def bulk_make_stories_op(
     )
 
 
-def make_stories_for_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def make_stories_for_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Making kanji stories")
     done_text = "Updated stories"
     bulk_op = bulk_make_stories_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

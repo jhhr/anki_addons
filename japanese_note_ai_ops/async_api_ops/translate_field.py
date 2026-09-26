@@ -1,5 +1,5 @@
 import logging
-from typing import Union
+from typing import Optional, Union
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -7,6 +7,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 from collections.abc import Sequence
 
+from .chain_types import ChainStep
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -107,8 +108,10 @@ def bulk_translate_notes_op(
     )
 
 
-def translate_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def translate_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Translating sentences")
     done_text = "Updated translation"
     bulk_op = bulk_translate_notes_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

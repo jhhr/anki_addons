@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import Union
+from typing import Optional, Union
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -8,6 +8,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 from collections.abc import Sequence
 
+from .chain_types import ChainStep
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -395,8 +396,10 @@ def bulk_kanjify_notes_op(
     )
 
 
-def kanjify_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def kanjify_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Kanjifying sentences")
     done_text = "Updated kanjified sentences"
     bulk_op = bulk_kanjify_notes_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

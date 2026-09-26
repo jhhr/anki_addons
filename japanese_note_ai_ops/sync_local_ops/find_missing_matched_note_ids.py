@@ -1,6 +1,6 @@
 import logging
 
-from typing import Sequence, Any
+from typing import Sequence, Any, Optional
 
 from aqt import mw
 
@@ -12,6 +12,7 @@ from anki.collection import Collection
 
 from ..utils import get_field_config
 
+from ..async_api_ops.chain_types import ChainStep
 from ..async_api_ops.base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -79,8 +80,10 @@ def bulk_find_missing_matched_note_ids_op(
     )
 
 
-def find_missing_matched_note_ids_selected_notes(nids: Sequence[NoteId], parent: Any):
+def find_missing_matched_note_ids_selected_notes(
+    nids: Sequence[NoteId], parent: Any, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Sync op: Finding missing matched note ids")
     done_text = "Updated missing matched note ids"
     bulk_op = bulk_find_missing_matched_note_ids_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

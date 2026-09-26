@@ -14,6 +14,14 @@ Prompts:
 - `extract_words`: Partition the kanjified sentence into its dictionary words and write the word array into the note (`word_array/README.md`). Built by rules from SudachiPy and JMdict, so the only API call is the proper noun one (`proper_nouns_model`); the words are left unjudged. "Extract words + Judge matchability" runs the word matching judge over the new words as a second phase.
 - `match_words_to_notes`: Match the extracted words in the list to an existing word note, using the word's meaning. If matching isn't possible, creates a new word note and comes up with a meaning that matches the usage of the word in the sentence.
 
+## Running several ops at once
+
+Selecting thousands of notes in the browser makes Anki lag, and right-clicking them lags again. The browser's Edit > "Japanese AI ops..." dialog (also "Run several ops..." at the top of the "AI helper" right-click submenu; an optional shortcut is set with `multi_op_dialog_shortcut` in the config) avoids that: leave one note selected, open it and click "Use all notes from current search". It always opens on "Use selected notes (N)", even with nothing selected, so the search is only ever run on after that click and a stray Enter cannot start a run over it. The label under the lists says how many notes will be processed. The search is the one the browser last ran, so the notes it shows, not text typed into the search box without pressing Enter.
+
+Click ops in the left list ("Available ops") to add them, in that order, to the right list ("Run in this order"). Reorder them by dragging or with Up/Down; Remove or a double click takes one back out, Clear empties the list. Run (bottom left) runs them one after another on the same notes, under one progress dialog that stays open until the last has finished ("Step 1/3: ..." in its title). Each op is a normal run with its own entry in Edit > Undo. Cancelling a step keeps what it had finished and skips the rest; so does a step that fails or stops (usage limit, expired login). One summary at the end lists what each step did and which did not run; for a step that failed it gives the error message, and its "Show errors" button the full traceback. Escape cancels only while the Cancel button is enabled. In the "Japanese AI ops" dialog, Enter presses Close (bottom right), never Run.
+
+Errors that do not stop a run, from the menu or in a chain (a request the provider refused, an answer that could not be read, one note's op failing), show up as they happen in a pane that opens beside the progress bar, each titled with the note (and in a chain the step). One error repeated for many notes is listed once with a count. A run that had any ends with a message saying how many, whose "Show errors" button lists them all, tracebacks included, in a window they can be copied from. A run without errors ends as before.
+
 ## Installing dependencies
 
 First install mdict-query manually from GitHub (repo has no setup.py):

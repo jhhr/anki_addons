@@ -552,24 +552,44 @@ class CleanupCancelTests(DialogTestCase):
         self.assertIn("did not re-arm the cancel", "\n".join(logs.output))
         self.assertFalse(updater.cleanup_cancel_requested())
 
-    def test_the_start_of_the_cleanup_neither_re_arms_nor_waits(self):
+    def test_the_start_of_the_cleanup_does_not_re_arm(self):
         """Its first writes can be long, and a Cancel live through them would stop nothing;
         a run with no notes to add never gets further than this."""
         updater = self.make_updater()
-        self.replace("CLEANUP_REARM_TIMEOUT", 0.5)
         rearmed: list = []
         self.replace("rearm_cleanup_cancel", lambda *_: rearmed.append(True) or True)
-        queued: list = []
 
-        with mock.patch.object(mw.taskman, "run_on_main", queued.append):
-            began = time.monotonic()
-            updater.begin_cleanup()
-            waited = time.monotonic() - began
-        for callback in queued:
-            callback()
+        updater.begin_cleanup()
 
         self.assertEqual(rearmed, [])
-        self.assertLess(waited, 0.25)
+
+    def test_the_start_of_the_cleanup_returns_once_cancel_is_grey(self):
+        """The op thread reads the flag next: every press while Cancel was live, none after."""
+        updater = self.make_updater()
+        greyed: list = []
+        self.replace("disable_run_controls", lambda: greyed.append(time.monotonic()))
+
+        def run_on_main_later(callback):
+            threading.Timer(0.2, callback).start()
+
+        with mock.patch.object(mw.taskman, "run_on_main", run_on_main_later):
+            updater.begin_cleanup()
+            returned = time.monotonic()
+
+        self.assertEqual(len(greyed), 1)
+        self.assertLessEqual(greyed[0], returned)
+
+    def test_a_grey_that_never_lands_gives_up(self):
+        updater = self.make_updater()
+        self.replace("CLEANUP_REARM_TIMEOUT", 0.05)
+
+        with (
+            mock.patch.object(mw.taskman, "run_on_main", lambda _callback: None),
+            self.assertLogs(base_ops.logger, "WARNING") as logs,
+        ):
+            updater.begin_cleanup()
+
+        self.assertIn("did not grey the run controls", "\n".join(logs.output))
 
     def test_without_a_dialog_the_stale_flag_is_never_heard(self):
         """Nothing reset it: it may still hold the cancel of the API work, which would stop
