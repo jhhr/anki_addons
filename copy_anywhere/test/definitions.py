@@ -282,6 +282,23 @@ def select_note(
     )
 
 
+def select_card(
+    binding: str,
+    result: str,
+    index: Optional[dict] = None,
+    if_missing: str = "empty",
+    **extra: Any,
+) -> dict:
+    return _stage(
+        "select_card",
+        input={"binding": binding},
+        index=index or text("0"),
+        if_missing=if_missing,
+        result=result,
+        **extra,
+    )
+
+
 def write(field: str, value: dict, write_if: str = "always") -> dict:
     return {"field": field, "value": value, "write_if": write_if}
 

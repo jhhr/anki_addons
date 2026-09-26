@@ -18,6 +18,7 @@ from typing import Any, Optional, Sequence
 from ...shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX
 from ..definition_migration import MigrationError
 from ..definition_schema import (
+    SELECT_STAGE_TYPES,
     STAGE_CALL_DEFINITION,
     STAGE_CARD_QUERY,
     STAGE_CONDITION,
@@ -28,7 +29,6 @@ from ..definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
-    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -144,8 +144,8 @@ def _dispatch(stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[T
         return actions.run_query(stage, env, frame, is_card_query=False)
     if stage_type == STAGE_CARD_QUERY:
         return actions.run_query(stage, env, frame, is_card_query=True)
-    if stage_type == STAGE_SELECT_NOTE:
-        return actions.run_select_note(stage, env, frame)
+    if stage_type in SELECT_STAGE_TYPES:
+        return actions.run_select(stage, env, frame)
     if stage_type == STAGE_EDIT_NOTE:
         return actions.run_edit_note(stage, env, frame)
     if stage_type == STAGE_EDIT_CARD:

@@ -266,6 +266,28 @@ def test_a_select_note_editor_offers_the_note_lists_and_writes_its_choices(col, 
     assert tree.rows["s"].summary.text() == "Picked = note 0 of Found"
 
 
+def test_a_select_card_editor_offers_only_the_card_lists(col, qapp):
+    from copy_anywhere.logic.definition_schema import STAGE_CARD_QUERY, STAGE_SELECT_CARD
+
+    cards = default_stage(STAGE_CARD_QUERY, "c")
+    cards["result"] = "Cards"
+    cards["query"] = value_expression(text="deck:Default")
+    select = default_stage(STAGE_SELECT_CARD, "s")
+    tree = tree_for(col, note_query("q", "Found"), cards, select)
+    editor = tree.rows["s"].editor
+    assert editor.input.findText("Cards") >= 0
+    assert editor.input.findText("Found") < 0
+
+    editor.input.setCurrentText("Cards")
+    editor.result.setText("Picked")
+    editor.apply()
+
+    stage = tree.document.stage("s")
+    assert stage["input"] == {"binding": "Cards"}
+    assert stage["result"] == "Picked"
+    assert tree.rows["s"].summary.text() == "Picked = card 0 of Cards"
+
+
 # -- reorder --------------------------------------------------------------------------
 
 

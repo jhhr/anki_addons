@@ -236,6 +236,7 @@ class TestWhichKeysAStageHolds:
             "note_query": ("query",),
             "card_query": ("query",),
             "read_file": ("filename",),
+            "select_card": ("index",),
             "select_note": ("index",),
             "write_file": ("filename", "content"),
             "store": ("value",),

@@ -29,7 +29,8 @@ from ..copy_primitives import (
     sort_by_field_value,
 )
 from ..definition_schema import (
-    SELECT_NOTE_LIST_NAME,
+    SELECT_LIST_NAMES,
+    STAGE_SELECT_NOTE,
     FieldWrite,
     Selection,
     Stage,
@@ -102,7 +103,7 @@ def resolve_binding(env: dict, reference: Any, frame, stage: Stage, what: str) -
 def resolve_note(env: dict, reference: Any, frame, stage: Stage, what: str) -> Note:
     value = resolve_binding(env, reference, frame, stage, what)
     if value is None:
-        # Only a Select Note stage binds nothing, when no note was at its index.
+        # Only a select stage binds nothing, when nothing was at its index.
         raise frame.error(f"{what} '{binding_name(reference)}' holds no note", stage)
     if not isinstance(value, Note):
         raise frame.error(f"{what} must be a note, but it holds {type(value).__name__}", stage)
@@ -111,6 +112,9 @@ def resolve_note(env: dict, reference: Any, frame, stage: Stage, what: str) -> N
 
 def resolve_card(env: dict, reference: Any, frame, stage: Stage, what: str) -> Card:
     value = resolve_binding(env, reference, frame, stage, what)
+    if value is None:
+        # Only a Select Card stage binds nothing, when no card was at its index.
+        raise frame.error(f"{what} '{binding_name(reference)}' holds no card", stage)
     if not isinstance(value, Card):
         raise frame.error(f"{what} must be a card, but it holds {type(value).__name__}", stage)
     return value
@@ -340,42 +344,46 @@ def _sort_cards(cards: list[Card], selection: Selection, session) -> list[Card]:
     return cards
 
 
-def run_select_note(stage: Stage, env: dict, frame) -> Optional[Note]:
-    """One note of a note list, by index, or None when no note is at that index."""
+def run_select(stage: Stage, env: dict, frame) -> Union[Note, Card, None]:
+    """One note of a note list, or one card of a card list, by index; None when nothing is at
+    that index."""
     session = frame.session
-    notes = resolve_binding(env, stage.get("input"), frame, stage, "select input")
-    if not isinstance(notes, list) or not all(isinstance(note, Note) for note in notes):
-        raise frame.error("select input is not a list of notes", stage)
-    # The index's code gets the list as `notes` too, unless a binding is called that.
+    is_note = stage.get("type") == STAGE_SELECT_NOTE
+    item_class, what = (Note, "note") if is_note else (Card, "card")
+    items = resolve_binding(env, stage.get("input"), frame, stage, "select input")
+    if not isinstance(items, list) or not all(isinstance(item, item_class) for item in items):
+        raise frame.error(f"select input is not a list of {what}s", stage)
+    # The index's code gets the list as `notes` or `cards` too, unless a binding is called
+    # that.
     index_env = dict(env)
-    index_env.setdefault(SELECT_NOTE_LIST_NAME, notes)
+    index_env.setdefault(SELECT_LIST_NAMES[stage.get("type", "")], items)
     ctx = make_context(
         frame, index_env, stage, frame.trigger_note, frame.trigger_note, purpose="index"
     )
-    index = _note_index(stage.get("index"), ctx, frame, stage)
-    session.record_detail("notes", len(notes))
+    index = _item_index(stage.get("index"), ctx, frame, stage)
+    session.record_detail(f"{what}s", len(items))
     if index is not None:
         session.record_detail("index", index)
-        # Negative indexes count from the end, as in Python: -1 is the last note.
-        if -len(notes) <= index < len(notes):
-            return notes[index]
+        # Negative indexes count from the end, as in Python: -1 is the last item.
+        if -len(items) <= index < len(items):
+            return items[index]
     session.record_detail("missing", True)
     if_missing = stage.get("if_missing", "empty")
     if if_missing == "error":
         where = "no index" if index is None else f"index {index}"
-        raise frame.error(f"no note at {where} of {len(notes)}", stage)
+        raise frame.error(f"no {what} at {where} of {len(items)}", stage)
     if if_missing == "skip_block":
         raise SkipBlock()
     return None
 
 
-def _note_index(
+def _item_index(
     expression: Optional[ValueExpression], ctx: ExpressionContext, frame, stage: Stage
 ) -> Optional[int]:
     """The index an index expression names: a whole number, or None from code for none.
 
     Code is read before `evaluate_value` would turn its None into an empty string, which
-    here has to mean "select no note", not a malformed number.
+    here has to mean "select nothing", not a malformed number.
     """
     if expression_is_code(expression):
         raw = evaluate_raw(expression, ctx)
@@ -493,6 +501,11 @@ def run_edit_note(stage: Stage, env: dict, frame) -> None:
 
 def run_edit_card(stage: Stage, env: dict, frame) -> None:
     session = frame.session
+    if resolve_binding(env, stage.get("target"), frame, stage, "target") is None:
+        # A Select Card stage found no card at its index: editing no card does nothing,
+        # as editing no note does.
+        session.record_detail("no card", True)
+        return
     card = resolve_card(env, stage.get("target"), frame, stage, "target")
     card = session.card_by_id(card.id) if card.id else card
     note = session.note_by_id(card.nid) if card.nid else frame.trigger_note

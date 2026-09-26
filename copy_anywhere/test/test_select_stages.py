@@ -1,4 +1,4 @@
-"""The Select Note stage: one note of a note list, used as a note from then on.
+"""The Select Note and Select Card stages: one item of a list, used as that item from then on.
 
 A query produces a `NoteList`, which nothing can edit or interpolate, so before this stage a
 definition that wanted "the first note found" had to loop over the list, store a value per
@@ -226,6 +226,89 @@ class TestWhatTheEditorChecks:
             del stage["index"]
         definition = d.staged(stages=[d.note_query("found", "x"), stage])
         assert any(message in problem.message for problem in validate_definition_structure(definition))
+
+
+def run_cards(trigger, *stages, copied_into_cards_dict=None):
+    """Recognition cards of the pool, ordered by their note's Freq: w1's, w2's, w3's."""
+    definition = d.staged(stages=[
+        d.card_query("found", "tag:pool card:Recognition", selection=POOL_BY_FREQ),
+        *stages,
+    ])
+    return copy_for_single_trigger_note(
+        definition,
+        trigger,
+        copied_into_notes=[],
+        copied_into_cards_dict=copied_into_cards_dict if copied_into_cards_dict is not None else {},
+    )
+
+
+def write_picked_card_word():
+    return d.edit_note("trigger", [d.write("Note", d.code("return Picked.note['Word'] if Picked else ''"))])
+
+
+def flag_picked(flag=3):
+    return d.edit_card("Picked", [dict(d.card_action(VOCAB, "Recognition", set_flag=flag), card_type_name="")])
+
+
+class TestSelectCard:
+    @pytest.mark.parametrize("index, expected", [("0", "w1"), ("-1", "w3"), ("1", "w2")])
+    def test_the_card_at_the_index_is_selected(self, trigger, pool, logger, index, expected):
+        assert run_cards(
+            trigger, d.select_card("found", "Picked", d.text(index)), write_picked_card_word()
+        ) is True, logger.errors
+        assert trigger["Note"] == expected
+
+    def test_code_gets_the_list_as_cards(self, trigger, pool, logger):
+        index = d.code("return [c.note['Word'] for c in cards].index('w2')")
+        assert run_cards(
+            trigger, d.select_card("found", "Picked", index), write_picked_card_word()
+        ) is True, logger.errors
+        assert trigger["Note"] == "w2"
+
+    def test_the_selected_card_can_be_edited(self, trigger, pool, logger):
+        edited = {}
+        assert run_cards(
+            trigger,
+            d.select_card("found", "Picked", d.text("1")),
+            flag_picked(),
+            copied_into_cards_dict=edited,
+        ) is True, logger.errors
+        assert [(card.nid, card.flags) for card in edited.values()] == [(pool[1].id, 3)]
+
+    def test_no_card_at_the_index_reads_as_empty(self, trigger, pool, logger):
+        assert run_cards(
+            trigger,
+            d.select_card("found", "Picked", d.text("9")),
+            d.edit_note("trigger", [d.write("Note", d.text("[{{Picked.deck_name}}]"))]),
+        ) is True, logger.errors
+        assert trigger["Note"] == "[]"
+
+    def test_editing_no_card_does_nothing(self, trigger, pool, logger):
+        edited = {}
+        assert run_cards(
+            trigger,
+            d.select_card("found", "Picked", d.text("9")),
+            flag_picked(),
+            copied_into_cards_dict=edited,
+        ) is True, logger.errors
+        assert edited == {}
+
+    def test_error_names_a_card(self, trigger, pool, logger):
+        assert run_cards(
+            trigger, d.select_card("found", "Picked", d.text("9"), if_missing="error")
+        ) is False
+        assert logger.has_error("no card at index 9 of 3")
+
+    def test_the_input_has_to_be_a_card_list(self):
+        problems = analysed(d.select_card("found", "Picked"))
+        assert any("select input must be CardList" in problem for problem in problems)
+
+    def test_it_may_be_called_card_but_not_note(self):
+        definition_stages = [d.card_query("found", "x")]
+        ok = d.staged(stages=[*definition_stages, d.select_card("found", "card")])
+        assert [p.message for p in analyze_definition(ok).problems] == []
+        bad = d.staged(stages=[*definition_stages, d.select_card("found", "note")])
+        assert any("reserved" in p.message for p in analyze_definition(bad).problems)
 
 
 class TestMigratedDestinationToOneSource:

@@ -100,7 +100,7 @@ in which case you run it by hand from the browser:
 ### The stages
 
 Stages run top to bottom. A stage that produces a value gives it a name, and every stage
-below it can use that name. There are fifteen kinds, and **Add stage...** offers them all
+below it can use that name. There are sixteen kinds, and **Add stage...** offers them all
 except *Edit Card*, which appears only where an earlier stage has named a card for it to act
 on:
 
@@ -110,6 +110,7 @@ on:
 | **Query Notes** (`note_query`) | an Anki search, producing a list of notes |
 | **Query Cards** (`card_query`) | the same, producing a list of cards |
 | **Select Note** (`select_note`) | picks one note of a list of notes, by its position |
+| **Select Card** (`select_card`) | the same, one card of a list of cards |
 | **Edit Note** (`edit_note`) | writes fields, tags and card actions to one named note |
 | **Edit Card** (`edit_card`) | card actions on one named card |
 | **Read File** (`read_file`) | reads one file from the media folder, as text |
@@ -134,7 +135,8 @@ position (0 is the first, -1 the last), or with code that gets the list as `note
 returns a position. Every stage after it can then use it like the trigger note:
 `{{Picked.Meaning}}`, an **Edit Note** on `Picked`. If no note is at that position, its
 fields read as empty and editing it does nothing, unless you tell it to stop the block or
-fail instead.
+fail instead. **Select Card** does the same for a list of cards, and its code gets the list
+as `cards`.
 
 <details>
 <summary>One editor per stage type</summary>
@@ -150,6 +152,9 @@ fail instead.
 
 ![Select note](docs/images/stage-select_note.png)
 `select_note` — one note of a list of notes, by its position or by code.
+
+![Select card](docs/images/stage-select_card.png)
+`select_card` — the same, one card of a list of cards.
 
 ![Edit note](docs/images/stage-edit_note.png)
 `edit_note` — fields, tags and card actions on one named note.

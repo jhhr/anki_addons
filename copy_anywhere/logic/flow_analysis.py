@@ -73,7 +73,8 @@ from .definition_schema import (
     is_format_2,
     list_of,
     names_are_relaxed,
-    SELECT_NOTE_LIST_NAME,
+    SELECT_LIST_NAMES,
+    SELECT_STAGE_TYPES,
     result_name_problem,
     result_reserved_names_allowed,
     stage_result_name,
@@ -512,18 +513,19 @@ class _Analyzer:
             # track where a card binding came from.
             effects["edits_other_cards"] = True
 
-        elif stage_type == STAGE_SELECT_NOTE:
+        elif stage_type in SELECT_STAGE_TYPES:
+            is_note = stage_type == STAGE_SELECT_NOTE
+            list_type = T_NOTE_LIST if is_note else T_CARD_LIST
             binding = self.resolve(scope, stage.get("input"), stage, "select input")
-            self.expect(binding, T_NOTE_LIST, stage, "select input")
-            # The index's code gets the list as `notes`, unless something in scope is
-            # already called that, which then wins as every binding does.
+            self.expect(binding, list_type, stage, "select input")
+            # The index's code gets the list as `notes` or `cards`, unless something in
+            # scope is already called that, which then wins as every binding does.
+            list_name = SELECT_LIST_NAMES[stage_type]
             index_scope = dict(scope)
-            if SELECT_NOTE_LIST_NAME not in index_scope:
-                index_scope[SELECT_NOTE_LIST_NAME] = Binding(
-                    SELECT_NOTE_LIST_NAME, T_NOTE_LIST, stage.get("guid"), True
-                )
+            if list_name not in index_scope:
+                index_scope[list_name] = Binding(list_name, list_type, stage.get("guid"), True)
             self.check_expression(stage.get("index"), index_scope, stage, "index")
-            self.declare(scope, stage, stage_result_name(stage), T_NOTE)
+            self.declare(scope, stage, stage_result_name(stage), T_NOTE if is_note else T_CARD)
             if at_root and stage.get("if_missing") == "skip_block":
                 self.note_skipping_root_stage(stage)
 

@@ -48,14 +48,28 @@ CARD_ACTION_CODE_NOTICE = (
 )
 
 
-SELECT_NOTE_CODE_NOTICE = (
-    CODE_NOTICE_PREFIX
-    + "<b>returns a whole number or <tt>None</tt></b>: the index of the note to select in"
-    " <tt>notes</tt>, the list chosen above (0 is the first, -1 the last), or"
-    " <tt>None</tt> to select no note. "
-    + _AVAILABLE_NAMES
-    + "<br>"
-    "<small>Example: <tt>return max(range(len(notes)), key=lambda i:"
-    " len(notes[i]['Meaning']), default=None)</tt></small><br>"
-    + CODE_NOTICE_HTML_WARNING
+def _select_code_notice(what: str, items: str, example: str) -> str:
+    return (
+        CODE_NOTICE_PREFIX
+        + f"<b>returns a whole number or <tt>None</tt></b>: the index of the {what} to select"
+        f" in <tt>{items}</tt>, the list chosen above (0 is the first, -1 the last), or"
+        f" <tt>None</tt> to select no {what}. "
+        + _AVAILABLE_NAMES
+        + f"<br><small>Example: <tt>{example}</tt></small><br>"
+        + CODE_NOTICE_HTML_WARNING
+    )
+
+
+SELECT_NOTE_CODE_NOTICE = _select_code_notice(
+    "note",
+    "notes",
+    "return max(range(len(notes)), key=lambda i: len(notes[i]['Meaning']), default=None)",
+)
+
+# `cards` means the note's cards everywhere else in code; here it is the list being picked
+# from, as any binding of that name would be, and the notice has to say so.
+SELECT_CARD_CODE_NOTICE = _select_code_notice(
+    "card",
+    "cards",
+    "return min(range(len(cards)), key=lambda i: cards[i].due, default=None)",
 )

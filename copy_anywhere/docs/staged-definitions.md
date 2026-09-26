@@ -114,6 +114,7 @@ A card action's code is older and runs apart from all this, exactly as format 1 
 | `note_query` | `find_notes`, producing a `NoteList` |
 | `card_query` | `find_cards`, producing a `CardList` |
 | `select_note` | picks one note of a `NoteList` by its position, producing a `NoteRef` |
+| `select_card` | picks one card of a `CardList` by its position, producing a `CardRef` |
 | `edit_note` | writes fields, tags and note-level card actions to one named note |
 | `edit_card` | applies card actions to one named card, with no card type selector |
 | `read_file` | reads one media file into a `Text` result |
@@ -131,15 +132,18 @@ discarded after each iteration and branch-local results do not escape their bran
 outer list plus `store` is how a loop reports anything back.
 
 `select_note` is how one note of a list becomes a note the rest of the definition can edit
-and read, with no loop. Its `index` is a value expression: text that reads as a whole number
-(0 is the first note, 1 the second, and a negative number counts from the end), or code that
-returns one, or `None` for no note. The code gets the list as `notes` as well as under its
-own name. When no note is at the index, `if_missing` decides: `empty`, the default, binds no
-note -- a reference to one of its fields reads as empty text, an `edit_note` on it does
-nothing, and a call or a search condition given it fails naming it -- `skip_block` stops the
-rest of the block, and `error` fails the definition. Its result may be called `note`, the one
-reserved name it may take, as a loop's item may; that is what a migrated one-source
-definition calls it.
+and read, with no loop, and `select_card` does the same for one card of a card list. The
+`index` is a value expression: text that reads as a whole number (0 is the first, 1 the
+second, and a negative number counts from the end), or code that returns one, or `None` for
+nothing. The code gets the list as `notes` or `cards` as well as under its own name; in
+`select_card` that makes `cards` the list being picked from rather than the note's cards,
+as any binding called `cards` would. When nothing is at the index, `if_missing` decides:
+`empty`, the default, binds nothing -- a reference to one of its values reads as empty text,
+an `edit_note` or `edit_card` on it does nothing, and a call or a search condition given it
+fails naming it -- `skip_block` stops the rest of the block, and `error` fails the
+definition. The result may be called `note` or `card` respectively, the one reserved name
+each may take, as a loop's item may; `note` is what a migrated one-source definition calls
+it.
 
 ## Rules worth knowing before writing one
 

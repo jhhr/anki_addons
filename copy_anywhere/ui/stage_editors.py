@@ -52,6 +52,7 @@ from ..logic.definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_CARD,
     STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
@@ -69,7 +70,11 @@ from ..shared.ui.required_text_input import RequiredLineEdit
 from .discard import discard_widget
 from .card_actions_editor import CardActionsEditor
 from .outline import outline_frame
-from .code_notices import FILE_CODE_NOTICE, SELECT_NOTE_CODE_NOTICE
+from .code_notices import (
+    FILE_CODE_NOTICE,
+    SELECT_CARD_CODE_NOTICE,
+    SELECT_NOTE_CODE_NOTICE,
+)
 from .stage_edit_state import StageEditState
 from .stage_editor_context import NoteTypesFor, StageEditorContext
 from .stage_triggers_editor import quoted_items, selected_names
@@ -100,11 +105,12 @@ IF_MISSING_LABELS = {
     "error": "fail the definition",
 }
 
-SELECT_IF_MISSING_LABELS = {
-    "empty": "select no note: its fields read as empty, and editing it does nothing",
-    "skip_block": "stop running the rest of this block",
-    "error": "fail the definition",
-}
+def _select_if_missing_labels(what: str, values: str) -> dict[str, str]:
+    return {
+        "empty": f"select no {what}: its {values} read as empty, and editing it does nothing",
+        "skip_block": "stop running the rest of this block",
+        "error": "fail the definition",
+    }
 
 #: Said under both file stages' name box (`normalize_media_filename` adds the prefix).
 MEDIA_PREFIX_NOTE = (
@@ -753,30 +759,33 @@ class EditCardStageEditor(StageEditor):
         self.card_actions.update_code_editor_options()
 
 
-class SelectNoteStageEditor(StageEditor):
-    """One note of a note list, so that the rest of the definition can use it as a note."""
+class SelectStageEditor(StageEditor):
+    """One note of a note list, or one card of a card list, so that the rest of the
+    definition can use it as a note or a card."""
 
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
+        is_note = stage.get("type") == STAGE_SELECT_NOTE
+        what, items = ("note", "notes") if is_note else ("card", "cards")
         self.result = name_edit(self, stage.get("result", ""), "A name, e.g. Picked")
         self.result.textChanged.connect(self.notify)
-        self.add_row("Call the note", self.result)
+        self.add_row(f"Call the {what}", self.result)
         self.input = binding_combo(
             self,
-            context.note_list_bindings,
+            context.note_list_bindings if is_note else context.card_list_bindings,
             (stage.get("input") or {}).get("binding", ""),
-            "Which list of notes",
+            f"Which list of {items}",
         )
         self.input.currentTextChanged.connect(self.notify)
-        self.add_row("From the notes in", self.input)
+        self.add_row(f"From the {items} in", self.input)
         self.index = self.expression_editor(
             stage.setdefault("index", value_expression(text="0")),
             "Which one",
             description=(
-                "A number: 0 is the first note, 1 the second, -1 the last. As code, return"
-                " the number, or None to select no note; the list is `notes`."
+                f"A number: 0 is the first {what}, 1 the second, -1 the last. As code,"
+                f" return the number, or None to select no {what}; the list is `{items}`."
             ),
-            notice=SELECT_NOTE_CODE_NOTICE,
+            notice=SELECT_NOTE_CODE_NOTICE if is_note else SELECT_CARD_CODE_NOTICE,
             # A position, not text: no process has anything to do to it.
             allow_process_chain=False,
         )
@@ -784,11 +793,11 @@ class SelectNoteStageEditor(StageEditor):
         self.if_missing = labelled_combo(
             self,
             IF_MISSING_POLICIES,
-            SELECT_IF_MISSING_LABELS,
+            _select_if_missing_labels(what, "fields" if is_note else "values"),
             stage.get("if_missing", "empty"),
         )
         self.if_missing.currentIndexChanged.connect(self.notify)
-        self.add_row("If no note is there", self.if_missing)
+        self.add_row(f"If no {what} is there", self.if_missing)
 
     def apply(self):
         super().apply()
@@ -1268,7 +1277,8 @@ STAGE_EDITOR_CLASSES: dict[str, Callable[..., StageEditor]] = {
     STAGE_VARIABLE: VariableStageEditor,
     STAGE_NOTE_QUERY: QueryStageEditor,
     STAGE_CARD_QUERY: QueryStageEditor,
-    STAGE_SELECT_NOTE: SelectNoteStageEditor,
+    STAGE_SELECT_NOTE: SelectStageEditor,
+    STAGE_SELECT_CARD: SelectStageEditor,
     STAGE_EDIT_NOTE: EditNoteStageEditor,
     STAGE_EDIT_CARD: EditCardStageEditor,
     STAGE_READ_FILE: ReadFileStageEditor,
