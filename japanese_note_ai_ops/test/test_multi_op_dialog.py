@@ -364,29 +364,52 @@ class DialogTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
         self.assertEqual(dialog.note_ids, [3, 1, 2])
 
-    def test_run_fixes_the_ids_of_the_search(self):
+    def test_run_takes_the_ids_the_count_found_without_searching_again(self):
+        # A search over a whole collection is the slow part, and the label has just run it
         dialog = self.make(selected=(3,), found=(7, 8), use_selection=False)
+        self.find_notes.assert_called_once_with("deck:x")
         self.click_option(dialog, "Op B")
         self.find_notes.reset_mock()
+        self.find_notes.return_value = [7, 8, 9]
         dialog.run_button.click()
-        self.find_notes.assert_called_once_with("deck:x")
+        self.find_notes.assert_not_called()
+        self.assertEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
         self.assertEqual(dialog.note_ids, [7, 8])
 
-    def test_run_stays_open_when_the_search_fails_or_empties_by_then(self):
-        dialog = self.make(selected=(3,), found=(7, 8), use_selection=False)
+    def test_each_switch_to_the_search_counts_it_afresh_and_run_takes_the_last(self):
+        dialog = self.make(selected=(3,), found=(7, 8))
         self.click_option(dialog, "Op B")
-        self.find_notes.side_effect = RuntimeError("bad search")
+        dialog.note_source_buttons.search_button.click()
+        self.find_notes.return_value = [9]
+        dialog.note_source_buttons.selection_button.click()
+        self.assertIn("1 note will be processed (the selected", dialog.count_label.text())
+        dialog.note_source_buttons.search_button.click()
+        self.assertEqual(self.find_notes.call_count, 2)
+        self.assertIn("1 note will be processed (all notes", dialog.count_label.text())
         dialog.run_button.click()
-        self.assertNotEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
-        self.assertIn("bad search", dialog.count_label.text())
-        self.assertFalse(dialog.run_button.isEnabled())
-        self.find_notes.side_effect = None
-        self.find_notes.return_value = []
+        self.assertEqual(self.find_notes.call_count, 2)
+        self.assertEqual(dialog.note_ids, [9])
+
+    def test_back_on_the_selection_run_takes_the_selection_not_the_search(self):
+        dialog = self.make(selected=(3, 4), found=(7, 8))
+        self.click_option(dialog, "Op B")
+        dialog.note_source_buttons.search_button.click()
+        dialog.note_source_buttons.selection_button.click()
+        dialog.run_button.click()
+        self.assertEqual(dialog.note_ids, [3, 4])
+
+    def test_a_search_that_failed_runs_nothing_even_if_run_is_forced(self):
+        dialog = self.make(selected=(3,), found=(7, 8))
+        self.click_option(dialog, "Op B")
+        dialog.note_source_buttons.search_button.click()
+        self.find_notes.side_effect = RuntimeError("bad search")
         dialog.note_source_buttons.selection_button.click()
         dialog.note_source_buttons.search_button.click()
-        dialog.run_button.click()
+        self.assertFalse(dialog.run_button.isEnabled())
+        # The ids of the search that worked are not left behind for Run
+        dialog._run()
         self.assertNotEqual(dialog.result(), QtWidgets.QDialog.DialogCode.Accepted)
-        self.assertIn("0 notes", dialog.count_label.text())
+        self.assertEqual(dialog.note_ids, [])
 
     def test_close_rejects(self):
         dialog = self.make()

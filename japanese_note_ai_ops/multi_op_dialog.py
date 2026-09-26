@@ -156,8 +156,12 @@ class MultiOpDialog(QDialog):
     """Options on the left, the run order on the right, the note source and the count below,
     and a footer of Run (bottom left) and Close (bottom right, the default button).
 
-    Accepting it leaves the ops in `chosen_specs()` and the note ids, fixed when Run was
-    pressed, in `note_ids`; the caller starts the chain once the dialog has closed.
+    Accepting it leaves the ops in `chosen_specs()` and the note ids in `note_ids`; the caller
+    starts the chain once the dialog has closed. The ids are the ones the count label showed,
+    resolved when the dialog opened or the note source last changed, not searched again at
+    Run: that search is the slow part over a large collection. The dialog is window-modal to
+    the browser only, so a note can be deleted meanwhile (from the reviewer, say), exactly as
+    a captured selection can be; the chain drops ids whose notes are gone before each step.
     """
 
     def __init__(
@@ -173,6 +177,8 @@ class MultiOpDialog(QDialog):
         self.ops_by_key: dict[str, OpSpec] = {spec.key: spec for spec in ops}
         self.selection = OpSelection([spec.key for spec in ops])
         self.note_count = 0
+        # What the count label counted; `note_ids` is left empty until Run
+        self._counted_ids: list[NoteId] = []
         self.note_ids: list[NoteId] = []
 
         self.setWindowTitle(DIALOG_TITLE)
@@ -349,12 +355,13 @@ class MultiOpDialog(QDialog):
     def _update_count(self) -> None:
         error: Optional[str] = None
         try:
-            self.note_count = len(self.note_source.note_ids(self.find_notes))
+            self._counted_ids = self.note_source.note_ids(self.find_notes)
         except Exception as e:
             # The browser ran this search already, so this is unlikely; a count that cannot be
             # had disables Run rather than leaving the dialog unable to open
-            self.note_count = 0
+            self._counted_ids = []
             error = str(e)
+        self.note_count = len(self._counted_ids)
         self.count_label.setText(count_label_text(self.note_count, self.note_source, error))
         warn = error is not None or is_whole_collection(self.note_source)
         self.count_label.setStyleSheet(WHOLE_COLLECTION_STYLE if warn else "")
@@ -372,19 +379,9 @@ class MultiOpDialog(QDialog):
         self.run_button.setEnabled(bool(selected) and self.note_count > 0)
 
     def _run(self) -> None:
-        if not self.selection.selected() or self.note_count <= 0:
+        if not self.selection.selected() or not self._counted_ids:
             return
-        # Resolved again rather than reusing the count's: the ids are fixed now, at Run
-        try:
-            note_ids = self.note_source.note_ids(self.find_notes)
-        except Exception:
-            note_ids = []
-        if not note_ids:
-            # The collection changed since the count, or the search now fails. Closing would
-            # start nothing and say nothing; staying open shows why through the count label.
-            self._update_count()
-            return
-        self.note_ids = note_ids
+        self.note_ids = list(self._counted_ids)
         self.accept()
 
 

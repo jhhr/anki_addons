@@ -97,9 +97,11 @@ numbered run order (each op once); drag, Up/Down, Remove, double-click and Clear
 Below: the shared `NoteSourceButtons` and a count of the notes (`find_notes` on opening and
 on each mode switch). Footer: Run bottom left, Close bottom right. Close is the default
 button and Run has `autoDefault` off, so Enter anywhere (a list ignores it and the dialog
-takes it) closes rather than starts a chain. Run needs one op and one note, fixes the ids,
-and the chain starts after `exec()` returns, so its first progress dialog is not under a
-modal one.
+takes it) closes rather than starts a chain. Run needs one op and one note and takes the
+ids the count resolved, without searching again (the dialog is window-modal to the browser
+only, so they can go stale like a captured selection; the chain's check below covers it).
+The chain starts after `exec()` returns, so its first progress dialog is not under a modal
+one.
 
 `run_op_chain(specs, nids, parent)`, per step:
 
@@ -111,8 +113,9 @@ modal one.
   the next step starts, so a later step that queries the collection sees added notes, but
   they never join the chain's ids. `OpPhase` does not join steps: that would share one undo
   entry and hold the added notes back.
-- Before it, the ids fixed at Run are re-filtered by `existing_note_ids` (a cleanup can remove
-  notes; `selected_notes_op` raises on a removed id). None left stops the chain.
+- Before it, the chain's ids are re-filtered by `existing_note_ids` (a cleanup can remove
+  notes, and before step 1 they are as old as the dialog's count or the captured selection;
+  `selected_notes_op` raises on a removed id). None left stops the chain.
 - A cancelled, stopped or failed step, or a `start` that raises, stops the chain; a
   cancelled step still saves what it did, and the summary says so and that the steps before
   it ran to the end.
