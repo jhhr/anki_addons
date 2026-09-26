@@ -846,6 +846,51 @@ class TestATriggerFieldSomeTriggerNoteTypesLack(ADefinitionBrokenByARename):
         )
         assert any("Nonsuch" in blocker for blocker in document.save_blockers())
 
+    def card_type_blockers_for(self, definition):
+        return [
+            blocker
+            for blocker in document_for(definition).save_blockers()
+            if blocker.startswith("Card type ")
+        ]
+
+    def test_a_card_type_some_of_them_lack_is_refused(self, col):
+        definition = self.both(
+            col,
+            d.edit_note(
+                "trigger",
+                fields=[d.write("Meaning", d.text("{{trigger.Recognition__Card_Due}}"))],
+            ),
+        )
+
+        assert self.card_type_blockers_for(definition) == [
+            f'Card type "Recognition" is not on note type "{self.OTHER}", which this definition'
+            " also triggers on; use a card type all of them have, or rename it in the others"
+            " too."
+        ]
+
+    def test_a_card_type_every_trigger_note_type_has_is_fine(self, col):
+        definition = self.both(
+            col,
+            d.edit_note(
+                "trigger", fields=[d.write("Meaning", d.text("{{trigger.Card 1__Card_Due}}"))]
+            ),
+        )
+        model = col.models.by_name(VOCAB)
+        model["tmpls"][0]["name"] = "Card 1"
+        col.models.update_dict(model)
+
+        assert self.card_type_blockers_for(definition) == []
+
+    def test_a_card_type_none_of_them_has_is_not_refused_here(self, col):
+        definition = self.both(
+            col,
+            d.edit_note(
+                "trigger", fields=[d.write("Meaning", d.text("{{trigger.Nonsuch__Card_Due}}"))]
+            ),
+        )
+
+        assert self.card_type_blockers_for(definition) == []
+
     def test_one_trigger_note_type_is_not_checked_here(self, col):
         definition = d.staged(
             "one", stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text("x"))])]
