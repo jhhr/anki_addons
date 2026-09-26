@@ -9,7 +9,7 @@ is exercising the out-of-the-box configuration rather than an invented one.
 
 from typing import Any, Optional
 
-from conftest import VOCAB
+from note_types import VOCAB
 
 CARD_TYPE_SEPARATOR = "<::>"
 

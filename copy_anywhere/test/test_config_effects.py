@@ -13,7 +13,7 @@ These drive the stubbed addon config directly: the analyser never touches a coll
 import pytest
 
 import definitions as d
-from conftest import DEFAULT_CONFIG, VOCAB
+from note_types import DEFAULT_CONFIG, VOCAB
 from copy_anywhere.configuration import (
     Config,
     definition_effects,

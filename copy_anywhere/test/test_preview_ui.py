@@ -17,7 +17,7 @@ from copy_anywhere.logic.definition_schema import (
 from copy_anywhere.ui.stage_document import StageDocument
 from copy_anywhere.ui.stage_preview import STALE_TEXT, UserRole, PreviewPane
 
-from conftest import VOCAB
+from note_types import VOCAB
 
 
 @pytest.fixture

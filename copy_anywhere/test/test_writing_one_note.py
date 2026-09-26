@@ -19,7 +19,7 @@ import pytest
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.configuration import (
     get_field_to_field_unfocus_trigger_fields,
     split_tags,

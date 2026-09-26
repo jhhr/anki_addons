@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 import definitions as d
-from conftest import DEFAULT_CONFIG, VOCAB
+from note_types import DEFAULT_CONFIG, VOCAB
 from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.definition_schema import (

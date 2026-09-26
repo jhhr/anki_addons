@@ -103,6 +103,9 @@ root `testpaths`. Reuse, do not reinvent:
 - `test/conftest.py`: `col` (fresh collection with note types `CA Vocab`, `CA Sentence`,
   `CA Kanji`, `CA Cloze`, `CA Odd` and a three-level deck tree), `stub_mw`, `media_dir`,
   `logger` (`RecordingLogger` with `has_error` / `has_debug`), autouse log redirection.
+- `test/note_types.py`: the names those note types are built from (`VOCAB`, `KANJI`, ...,
+  their fields and templates) and `DEFAULT_CONFIG`. Tests import them from here, not from
+  `conftest`, which mypy.ini excludes; an import from it resolves to the root conftest.
 - `test/definitions.py`: builders `within_note`, `destination_to_sources`,
   `source_to_destinations`, `field_to_field`, `field_to_file`, `field_to_variable`,
   `card_action`, `regex_process`, `fonts_check_process`, `quoted_list`.

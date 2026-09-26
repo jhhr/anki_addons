@@ -83,7 +83,7 @@ def within_note(
     """A within-note definition: the smallest one that writes a field.
 
     The keys are spelled out rather than imported from the backend suite's `definitions.py`,
-    because that module does `from conftest import VOCAB` -- a top-level import that only
+    because that module does `from note_types import VOCAB` -- a top-level import that only
     resolves while that suite's directory is the one pytest put on `sys.path`.
     """
     definition = {

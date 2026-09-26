@@ -11,7 +11,7 @@ import pytest
 from anki_shared.testing import real_anki
 from anki_shared.interpolate.execute_code import ReadOnlyCard
 from anki_shared.interpolate.interpolate_fields import interpolate_from_text
-from conftest import CLOZE, KANJI, ODD_TEMPLATE, SENTENCE, VOCAB
+from note_types import CLOZE, KANJI, ODD_TEMPLATE, SENTENCE, VOCAB
 
 
 @pytest.fixture

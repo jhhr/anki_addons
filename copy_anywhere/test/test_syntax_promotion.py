@@ -23,7 +23,7 @@ import definitions as d
 import test_definition_migration as migration_tests
 from anki_shared.interpolate.interpolate_fields import CARD_VALUES, NOTE_VALUES
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic import definition_schema
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.definition_migration import (

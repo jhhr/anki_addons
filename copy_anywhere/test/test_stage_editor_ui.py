@@ -51,7 +51,7 @@ from copy_anywhere.ui.stage_triggers_editor import selected_names
 
 from copy_anywhere.configuration import CARD_TYPE_SEPARATOR
 
-from conftest import KANJI, VOCAB
+from note_types import KANJI, VOCAB
 
 
 @pytest.fixture

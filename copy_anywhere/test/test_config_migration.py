@@ -11,7 +11,7 @@ pure dictionary work, and the analyser it calls to fill in `effects` never touch
 import pytest
 
 import definitions as d
-from conftest import DEFAULT_CONFIG
+from note_types import DEFAULT_CONFIG
 from copy_anywhere.configuration import (
     CONFIG_VERSION,
     PRE_STAGE_MIGRATION_KEY,

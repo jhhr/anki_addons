@@ -14,54 +14,31 @@ per test, which is why the backend cases are deliberately not written against on
 
 import logging
 import sys
-from typing import Any
 
 import pytest
 
 from anki_shared.testing import real_anki
 from copy_anywhere import logging_setup
 from copy_anywhere.logging_setup import ADDON_MODULE, SHARED_LOGGER_NAME
+from note_types import (
+    VOCAB,
+    VOCAB_FIELDS,
+    VOCAB_TEMPLATES,
+    SENTENCE,
+    SENTENCE_FIELDS,
+    SENTENCE_TEMPLATES,
+    KANJI,
+    KANJI_FIELDS,
+    KANJI_TEMPLATES,
+    CLOZE,
+    CLOZE_FIELDS,
+    ODD_TEMPLATE,
+    ODD_TEMPLATE_FIELDS,
+    ODD_TEMPLATE_TEMPLATES,
+    DEFAULT_CONFIG,
+)
 
 pytest.importorskip("anki.collection", reason="the CopyAnywhere backend suite needs real anki")
-
-
-# Note types the cases are written against ------------------------------------------------
-
-# A plain two-card note type: two templates, so "a card of this note is missing" and
-# "two cards of one note come back from one query" both have somewhere to happen.
-VOCAB = "CA Vocab"
-VOCAB_FIELDS = ["Word", "Reading", "Meaning", "Freq", "Note"]
-VOCAB_TEMPLATES = [
-    ("Recognition", "{{Word}}", "{{FrontSide}}<hr id=answer>{{Meaning}}"),
-    ("Recall", "{{Meaning}}", "{{FrontSide}}<hr id=answer>{{Word}}"),
-]
-
-# A single-card note type, for the multi-note-type card value path, which raises as soon as
-# a note has more than one card type.
-SENTENCE = "CA Sentence"
-SENTENCE_FIELDS = ["Sentence", "Vocab", "Audio"]
-SENTENCE_TEMPLATES = [("Card 1", "{{Sentence}}", "{{FrontSide}}<hr id=answer>{{Vocab}}")]
-
-# A second single-card type, so a multi-note-type definition has two to span.
-KANJI = "CA Kanji"
-KANJI_FIELDS = ["Kanji", "Keyword"]
-KANJI_TEMPLATES = [("Card 1", "{{Kanji}}", "{{FrontSide}}<hr id=answer>{{Keyword}}")]
-
-# Cloze, whose card values key by ordinal rather than by template name.
-CLOZE = "CA Cloze"
-CLOZE_FIELDS = ["Text", "Extra"]
-
-# A note type whose template name itself contains a double underscore, which is the one
-# thing CARD_VALUE_RE's greedy first group has to get right.
-ODD_TEMPLATE = "CA Odd"
-ODD_TEMPLATE_FIELDS = ["Front", "Back"]
-ODD_TEMPLATE_TEMPLATES = [("Card__Front", "{{Front}}", "{{FrontSide}}<hr id=answer>{{Back}}")]
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "log_level": "error",
-    "copy_fields_shortcut": "Ctrl+Shift+C",
-    "copy_definitions": [],
-}
 
 
 @pytest.fixture(scope="session")
