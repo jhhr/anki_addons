@@ -24,3 +24,9 @@ PyQt6-WebEngine==6.11.0
 pytest==8.4.2
 # Provides `qtbot` to pytest-anki, and reads `qt_api = pyqt6` from pytest.ini.
 pytest-qt==4.5.0
+
+# Pinned because the error count `python -m mypy .` reports is compared across runs, and a
+# new mypy release moves it on its own. So does the platform: mypy only checks the
+# `sys.platform` branches of the one it runs on, so a Linux run counts errors that a Windows
+# run never sees, and the reverse.
+mypy==2.3.1
