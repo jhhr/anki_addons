@@ -38,6 +38,7 @@ import sys
 from typing import Any, Optional
 
 import pytest
+from anki.errors import SearchError
 from anki.hooks import note_will_be_added
 from aqt.editor import EditorMode
 from aqt.gui_hooks import (
@@ -425,16 +426,23 @@ class TestTheCollectionOpPath:
         # test on Anki's behalf.
         monkeypatch.setattr(sys, "excepthook", lambda kind, value, tb: raised.append(value))
 
-        # `copy_fields_in_background` indexes `copy_mode` with no default, so a definition
-        # without one raises KeyError once a note is found: the shortest route to a genuine
-        # failure inside the op.
+        # An unparsable search is the shortest route to a genuine failure inside the op.
+        # The executor deliberately does not wrap arbitrary exceptions (§7.2), so Anki's own
+        # `SearchError` leaves the op with its type and traceback intact, which is what this
+        # path has to carry to the error handler.
+        #
+        # This used to delete `copy_mode` and expect a `KeyError`. Format 2 reports a missing
+        # copy mode and stops the loop instead of raising, so that route no longer reaches
+        # `on_failure` at all -- one of the migration's intended changes.
         definition = within_note()
-        del definition["copy_mode"]
+        definition["copy_mode"] = "Across notes"
+        definition["across_mode_direction"] = "Destination to sources"
+        definition["copy_from_cards_query"] = '"unclosed'
         copy_fields(copy_definitions=[definition], on_done=lambda: done.append(1))
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
         anki_session.qtbot.waitUntil(lambda: bool(raised), timeout=WAIT)
 
-        assert isinstance(raised[0], KeyError)
+        assert isinstance(raised[0], SearchError)
         # `on_failure` finishes the progress before it re-raises, so the dialog does not
         # outlive the failed op -- though the window itself closes a turn of the event loop
         # later, which is why this waits rather than reading `busy()` straight away.
@@ -444,7 +452,9 @@ class TestTheCollectionOpPath:
         # been writing to all along.
         [written] = list(operation_logs.glob("*.log"))
         assert dialogs["logs"] == [str(written)]
-        assert "Copying failed: 'copy_mode'" in written.read_text(encoding="utf-8")
+        text = written.read_text(encoding="utf-8")
+        assert "Copying failed: " in text
+        assert "Invalid search" in text
 
 
 class TestTheSyncHooks:

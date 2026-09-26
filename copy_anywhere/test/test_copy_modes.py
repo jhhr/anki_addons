@@ -89,12 +89,15 @@ class TestWithinNote:
         assert note["Note"] == "1"
 
     def test_target_notes_count_is_not_set_in_within_note_mode(self, note, logger):
+        # Nothing counts notes in this mode, so the runtime value the across modes supply is
+        # simply not there. Format 1 logged it as an invalid field and wrote an empty
+        # string; a reference that resolves to nothing fails the definition now (§11).
         definition = d.within_note(
             field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")]
         )
-        copy_for_single_trigger_note(definition, note)
+        assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("__target_notes_count")
+        assert logger.has_error("__Target_Notes_Count")
 
     def test_a_missing_copy_mode_is_an_error(self, note, logger):
         definition = d.within_note()
@@ -227,10 +230,12 @@ class TestNoSourcesFound:
 
 
 class TestDuplicateQueryResults:
-    def test_two_cards_of_one_note_duplicate_the_value(self, col, note):
-        # select_card_by "None" pops card ids without de-duplicating their notes, so a note
-        # whose two cards both match is joined in twice. Only the select_card_count 0 path
-        # goes through SELECT DISTINCT.
+    def test_two_cards_of_one_note_no_longer_duplicate_the_value(self, col, note):
+        # Intentional format-2 change: the migrated query searches notes, not cards, so a
+        # note whose two cards both match is one result rather than two and a finite
+        # selection can no longer join the same note in twice. Format 1 wrote "dup+dup"
+        # here, because `select_card_by: None` popped card ids without de-duplicating the
+        # notes behind them.
         real_anki.add_note(col, VOCAB, {"Word": "dup", "Meaning": "twice"})
         definition = d.destination_to_sources(
             copy_from_cards_query="Word:dup",
@@ -240,7 +245,7 @@ class TestDuplicateQueryResults:
             select_card_separator="+",
         )
         copy_for_single_trigger_note(definition, note)
-        assert note["Note"] == "dup+dup"
+        assert note["Note"] == "dup"
 
     def test_select_card_count_zero_de_duplicates_them(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "dup", "Meaning": "twice"})
@@ -252,3 +257,29 @@ class TestDuplicateQueryResults:
         )
         copy_for_single_trigger_note(definition, note)
         assert note["Note"] == "dup"
+
+
+class TestTargetNotesCount:
+    def test_a_zero_source_run_writes_nothing_rather_than_a_count(self, note):
+        # The value is read once per source note, so with none there is nothing to read it
+        # with and the result is the empty join -- which is what format 1 wrote here too,
+        # for the same reason.
+        definition = d.destination_to_sources(
+            copy_from_cards_query="Word:nothing-matches-this",
+            field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")],
+            run_also_if_no_sources_found=True,
+        )
+        assert copy_for_single_trigger_note(definition, note) is True
+        assert note["Note"] == ""
+
+    def test_it_counts_the_notes_the_query_found(self, col, note):
+        real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
+        real_anki.add_note(col, VOCAB, {"Word": "b", "Meaning": "B"})
+        definition = d.destination_to_sources(
+            copy_from_cards_query='"Word:a" OR "Word:b"',
+            field_to_field_defs=[d.field_to_field("Note", "{{__Target_Notes_Count}}")],
+            select_card_count="0",
+            select_card_separator="+",
+        )
+        copy_for_single_trigger_note(definition, note)
+        assert note["Note"] == "2+2"

@@ -24,13 +24,21 @@ from ..configuration import (
     Config,
     CopyDefinition,
     get_triggered_field_to_field_defs_for_field,
+    definition_is_add_note_compatible,
     definition_modifies_other_notes,
+    definition_note_type_names,
+    definition_runs_on_add,
+    definition_runs_on_review,
+    definition_runs_on_sync,
+    definition_unfocus_fields,
 )
+from ..logic.definition_schema import is_format_2
 from ..logic.copy_fields import (
     copy_for_single_trigger_note,
     copy_fields,
     make_copy_fields_undo_text,
 )
+from ..logic.copy_primitives import take_edited_cards
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +47,9 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     """The definitions that run when `note` is added: `copy_on_add`, and this note's type.
 
     Note-type membership only; the caller still has to split the result on
-    `definition_modifies_other_notes`, because those definitions have to wait until the
-    note exists and be run under their own undo entry.
+    `definition_is_add_note_compatible`, because a definition that reaches past the note
+    being added -- another note, a card that already exists, a file -- has to be written by
+    the hook itself, under its own undo entry.
     """
     config = Config()
     config.load()
@@ -53,15 +62,9 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
     copy_definitions: list[CopyDefinition] = []
 
     for copy_definition in config.copy_definitions:
-        copy_on_add = copy_definition.get("copy_on_add", False)
-        if not copy_on_add:
+        if not definition_runs_on_add(copy_definition):
             continue
-        copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-        if not copy_into_note_types:
-            continue
-        # Split note_types by comma
-        copy_into_note_types = copy_into_note_types.strip('""').split('", "')
-        if note_type_name not in copy_into_note_types:
+        if note_type_name not in definition_note_type_names(copy_definition):
             continue
 
         copy_definitions.append(copy_definition)
@@ -72,8 +75,11 @@ def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
 def run_copy_fields_on_add(note: Note, deck_id: int):
     """
     Copy fields when a note is about to be added. This applies to notes being added
-    by AnkiConnect or the Add cards dialog. Because the note is not yet added to the
-    database, we can't get the note ID, so we can't copy fields that affect other notes.
+    by AnkiConnect or the Add cards dialog. The note is not yet in the database: its id
+    is 0, no search can find it, and it has no cards, so a card action on it has nothing
+    to reach and is skipped by the stage (with a log line). Its field writes need no
+    write here -- the add saves the mutated note object -- but writes to other notes and
+    cards do, so those definitions run second, under an undo entry of their own.
     """
     config = Config()
     config.load()
@@ -82,14 +88,23 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in get_copy_definitions_for_add_note(note):
-            # If this definition modifies other notes, we need to defer it until the note is added
-            if definition_modifies_other_notes(copy_definition):
+            # A definition that reaches past the note being added -- another note, a card
+            # that already exists, a file -- needs the hook to write and undo those changes
+            # itself, so it runs below, under its own undo entry. A card action on the note
+            # being added is not such a reach: it has no card to act on and is skipped, so it
+            # stays in this pile. The flag is the analyser's answer for a format-2 definition
+            # and the mode inspection for a format-1 one; either way the hook only reads it
+            # and never inspects stages (§8).
+            if not definition_is_add_note_compatible(copy_definition):
                 editing_other_notes_definitions.append(copy_definition)
                 continue
             copy_for_single_trigger_note(
                 copy_definition=copy_definition,
                 trigger_note=note,
                 deck_id=deck_id,
+                # Backstop against hand-edited JSON claiming compatibility it does not have: a
+                # queued mutation to anything but this note fails the definition (§8).
+                add_note_compatible_only=True,
             )
 
         if not editing_other_notes_definitions:
@@ -101,6 +116,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         undo_entry: Optional[int] = None
         for copy_definition in editing_other_notes_definitions:
             copied_into_notes: list[Note] = []
+            copied_into_cards_dict: dict[int, Card] = {}
             # Can't use copy_fields here as it'd lead to a
             # "bug: run_in_background not called from main thread" exception
             # TODO: non CollectionOp version of copy_fields
@@ -108,16 +124,18 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 copy_definition=copy_definition,
                 trigger_note=note,
                 copied_into_notes=copied_into_notes,
+                copied_into_cards_dict=copied_into_cards_dict,
                 deck_id=deck_id,
             )
             # Only source to destinations definitions get here and their destinations come from a
             # query, which can't find the unsaved note. Still, an id 0 note would make
             # mw.col.update_notes fail, so keep it out regardless
             copied_into_notes = [note for note in copied_into_notes if note.id != 0]
-            if not copied_into_notes:
+            edited_cards = take_edited_cards(copied_into_cards_dict)
+            if not copied_into_notes and not edited_cards:
                 # Nothing was written into other notes (the query matched nothing or the deck
-                # whitelist rejected the note), so there's nothing to undo and an empty entry would
-                # only clutter the undo stack.
+                # whitelist rejected the note), and no card action changed a card either, so
+                # there's nothing to undo and an empty entry would only clutter the undo stack.
                 continue
 
             if undo_entry is None:
@@ -130,13 +148,16 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 # after this undo entry will come the "Add Note" undo entry. This is not ideal, but
                 # it's the most reliable thing do while a note_was_added hook doesn't exist.
                 #
-                # Other altenatives would be to add a flag to new notes and run the deferred copy
+                # Other altenatives would be to add a flag to new notes and run these copy
                 # definitions on syncing but that seems less user-friendly.
                 undo_entry = mw.col.add_custom_undo_entry(undo_text)
             # Write after every definition, as the next one fetches its destinations from the
             # database: writing once at the end would let a later definition's copy of a note,
             # fetched without an earlier one's edit, overwrite that edit
-            mw.col.update_notes(copied_into_notes)
+            if copied_into_notes:
+                mw.col.update_notes(copied_into_notes)
+            if edited_cards:
+                mw.col.update_cards(edited_cards)
             # Merge after every write, or the entry's step falls behind and can't be found
             mw.col.merge_undo_entries(undo_entry)
 
@@ -203,27 +224,21 @@ def run_copy_fields_on_review(card: Card):
         has_definitions_to_process_on_sync = False
 
         for copy_definition in config.copy_definitions:
-            copy_on_review = copy_definition.get("copy_on_review", False)
-            if not copy_on_review:
-                copy_on_sync = copy_definition.get("copy_on_sync", False)
-                if copy_on_sync:
+            if not definition_runs_on_review(copy_definition):
+                if definition_runs_on_sync(copy_definition):
                     has_definitions_to_process_on_sync = True
                 continue
-            copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-            # Split note_types by comma
-            if not copy_into_note_types:
-                continue
-            if not isinstance(copy_into_note_types, str):
+            stored_note_types = copy_definition.get("copy_into_note_types")
+            if stored_note_types is not None and not isinstance(stored_note_types, str):
                 # The answer is already committed, so raising would only throw the error at the
                 # reviewer from inside Anki's hook dispatch and stop every later definition too
                 logger.error(
                     "Copy definition '%s' has copy_into_note_types that is not a string: %r",
                     copy_definition.get("definition_name"),
-                    copy_into_note_types,
+                    stored_note_types,
                 )
                 continue
-            note_type_names = copy_into_note_types.strip('""').split('", "')
-            if note_type_name not in note_type_names:
+            if note_type_name not in definition_note_type_names(copy_definition):
                 continue
 
             copy_definitions_to_run.append(copy_definition)
@@ -244,19 +259,12 @@ def run_copy_fields_on_review(card: Card):
             # operate on the latest data
             # update_note adds a new undo entry Update note
             mw.col.update_notes(copied_into_notes)
-            edited_cards = [
-                card
-                for card in copied_into_cards_dict.values()
-                if hasattr(card, "edited") and card.edited
-            ]
+            edited_cards = take_edited_cards(copied_into_cards_dict)
             for c in edited_cards:
                 if c.id == card.id:
                     # Merge all changes to the reviewed card so that the final update_card call
                     # doesn't overwrite the changes done here
-                    # Note, edited attribute is not merged as it's not a real card attribute, we don't
-                    # need it after this, as edit the card regardless
                     merge_cards(card, c)
-                del c.edited
             # update_card adds a new undo entry Update cards
             mw.col.update_cards(edited_cards)
             # merge all undo entries into the original Answer card undo entry. This also folds in
@@ -291,7 +299,6 @@ def on_editor_did_load_note(editor: Editor):
     This is a hack to get around the fact that the editor is not passed to the
     unfocus_field hook.
     """
-    global editor_for_note_id
     # None rather than NoteId(0) for no note, as 0 is what a new note's id is and the
     # editor would then match whatever note is being typed in the Add cards dialog
     editor_for_note_id[editor.editorMode] = editor, editor.note.id if editor.note else None
@@ -370,24 +377,54 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in config.copy_definitions:
-            copy_into_note_types = copy_definition.get("copy_into_note_types", None)
-            if not copy_into_note_types:
+            if note_type_name not in definition_note_type_names(copy_definition):
                 continue
-            # Split note_types by comma
-            note_type_names = copy_into_note_types.strip('""').split('", "')
-            if note_type_name not in note_type_names:
+
+            modifies_other_notes = definition_modifies_other_notes(copy_definition)
+
+            if is_new_note and not definition_is_add_note_compatible(copy_definition):
+                # Do not run ops that reach past the note being added -- another note, a
+                # card that already exists, a file -- while it is being typed: the add can
+                # still be cancelled and those would persist. The add hook runs them once it
+                # cannot, if `on_add` is on. Same flag it checks (§8).
+                continue
+
+            if is_format_2(copy_definition):
+                # A staged definition watches fields for the definition as a whole and runs all
+                # of it, because which stages a field feeds is not generally decidable (§8).
+                if field_name not in definition_unfocus_fields(copy_definition, is_new_note):
+                    continue
+                if modifies_other_notes:
+                    editing_other_notes_definitions.append(copy_definition)
+                else:
+                    copied_into_cards_dict: dict[int, Card] = {}
+                    copy_for_single_trigger_note(
+                        copy_definition=copy_definition,
+                        trigger_note=note,
+                        copied_into_notes=[],
+                        copied_into_cards_dict=copied_into_cards_dict,
+                        # A migrated write still says which editor fields trigger it and
+                        # whether it runs on this kind of unfocus at all; passing the field and
+                        # the mode is what lets the stage honour that. A natively authored
+                        # write says neither and is not narrowed by either.
+                        field_only=field_name,
+                        unfocus_is_add=is_new_note,
+                        deck_id=deck_id,
+                        # The Add dialog is the one place the add can still be cancelled, so
+                        # a queued change to anything but the note being typed -- another
+                        # note, a card, a file -- fails the definition rather than outliving
+                        # an Escape. The gate above reads what the definition claims; this
+                        # is what a hand-edited claim runs into (§8).
+                        add_note_compatible_only=is_new_note,
+                    )
+                    edited_cards = take_edited_cards(copied_into_cards_dict)
+                    if edited_cards:
+                        mw.col.update_cards(edited_cards)
                 continue
 
             # Check field-to-field defs for a match on this field
             field_to_field_defs = copy_definition.get("field_to_field_defs")
             if not field_to_field_defs:
-                continue
-
-            modifies_other_notes = definition_modifies_other_notes(copy_definition)
-
-            if modifies_other_notes and is_new_note:
-                # Do not run ops that edit other notes while editing a new note. Such ops should only
-                # be run when the new note is saved.
                 continue
 
             # Each def this field triggers is gated by its own add/edit flag, so that one def
@@ -412,15 +449,27 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 # Run these separate with an undo entry
                 editing_other_notes_definitions.append(gated_definition)
             else:
+                copied_into_cards_dict: dict[int, Card] = {}
                 # Either within note or destination to sources, we can run these right away
                 # without an undo entry needed
                 copy_for_single_trigger_note(
                     copy_definition=gated_definition,
                     trigger_note=note,
                     copied_into_notes=[],
+                    copied_into_cards_dict=copied_into_cards_dict,
                     field_only=field_name,
+                    # The defs above are already gated by this flag, and the executor checks the
+                    # migrated copy of it as well; telling it which flag to look at is what
+                    # keeps the two answers the same.
+                    unfocus_is_add=is_new_note,
                     deck_id=deck_id,
+                    # Same backstop as the format-2 branch above: on a new note, nothing but
+                    # that note may be committed.
+                    add_note_compatible_only=is_new_note,
                 )
+                edited_cards = take_edited_cards(copied_into_cards_dict)
+                if edited_cards:
+                    mw.col.update_cards(edited_cards)
 
         if editing_other_notes_definitions:
             # Use the CollectionOp version so we get the full report and progress dialog
@@ -431,6 +480,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 # database may not have the value just typed yet. This note always does.
                 trigger_notes=[note],
                 field_only=field_name,
+                unfocus_is_add=is_new_note,
                 undo_text_suffix=f"triggered by unfocus field '{field_name}'",
             )
 

@@ -26,7 +26,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from conftest import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic.copy_fields import (
     CacheResults,
     ProgressUpdater,
@@ -53,6 +53,11 @@ def summary(results: CacheResults) -> str:
 def copy_word_into_note(**extra):
     """A Within-note definition that writes Word into Note, so a run leaves a trace."""
     return d.within_note(field_to_field_defs=[d.field_to_field("Note", "{{Word}}")], **extra)
+
+
+def this_card_action(guid, **action):
+    """A card action for an `edit_card` stage: no card type, it acts on the card in hand."""
+    return {**d.card_action(VOCAB, "Recognition", **action), "card_type_name": "", "guid": guid}
 
 
 def flag_cards(col, note, fc):
@@ -168,15 +173,19 @@ class TestNoteTypeSelection:
         # editor wrote leaks into the user-facing text.
         assert logger.has_error('Did not find any notes of note type(s) Nope", "Nada')
 
-    def test_a_missing_copy_mode_raises_rather_than_erroring(self, col):
-        # `copy_into_note_types` is read with `.get`, but `copy_mode` is read with `[]`, so a
-        # definition dict missing that key takes the whole op down instead of logging.
+    def test_a_missing_copy_mode_is_reported_rather_than_raising(self, col, logger):
+        # Intentional format-2 change: a definition with no copy mode cannot be migrated to
+        # stages, so it is reported and the loop stops. Format 1 read `copy_mode` with `[]`
+        # and took the whole op down with a KeyError instead of logging anything.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = copy_word_into_note()
         del definition["copy_mode"]
+        copied: list = []
 
-        with pytest.raises(KeyError, match="copy_mode"):
-            run_bulk(definition)
+        run_bulk(definition, notes=copied)
+
+        assert logger.has_error("missing copy mode value")
+        assert copied == []
 
 
 class TestNoteIdFilter:
@@ -422,7 +431,7 @@ class TestCancellation:
 
         results = run_bulk(definition)
 
-        assert logger.has_error("could not be interpolated")
+        assert logger.has_error("resolved to nothing")
         assert summary(results) == ""
         assert results.get_count() == 0
 
@@ -707,10 +716,88 @@ class TestCounterArithmeticThroughTheLoop:
 
         results = run_bulk(definition, cards=cards)
 
-        # Both of the note's cards are collected for the later `update_cards`, but the counter
-        # only follows the `edited` marker, so it reports the one that changed.
+        # Only the card the action changed is handed over for the later `update_cards`, and
+        # the count is taken from what was handed over.
         assert "1 cards" in summary(results)
-        assert len(cards) == 2
+        assert len(cards) == 1
+
+    def test_two_stages_writing_one_note_count_it_once(self, col):
+        notes = [real_anki.add_note(col, VOCAB, {"Word": w}) for w in ("a", "b", "c")]
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("1"))]),
+            d.edit_note("trigger", [d.write("Meaning", d.text("2"))]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id for note in notes])
+
+        # Counted from what the trigger's commit publishes, not once per stage that wrote.
+        assert "3 destinations" in summary(results)
+
+    def test_a_migrated_within_note_definition_counts_one_per_note(self, col):
+        # Format 1 counted each destination note once, however many fields and tags it wrote.
+        notes = [real_anki.add_note(col, VOCAB, {"Word": w}) for w in ("a", "b", "c")]
+        definition = d.within_note(
+            field_to_field_defs=[
+                d.field_to_field("Note", "{{Word}}"),
+                d.field_to_field("Meaning", "{{Word}}"),
+            ],
+            add_tags="t",
+        )
+
+        results = run_bulk(definition, note_ids=[note.id for note in notes])
+
+        assert "3 destinations" in summary(results)
+
+    def test_one_destination_written_by_two_trigger_notes_counts_once_per_trigger(self, col):
+        # Per trigger, as format 1 counted: each trigger note's run did write the note, even
+        # though only the last write lands (`test_copy_fields_op.py`,
+        # `TestOneDestinationFromSeveralTriggerNotes`).
+        real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        real_anki.add_note(col, SENTENCE, {"Sentence": "s1", "Vocab": "neko"})
+        real_anki.add_note(col, SENTENCE, {"Sentence": "s2", "Vocab": "neko"})
+        definition = d.source_to_destinations(
+            note_types=[SENTENCE],
+            copy_from_cards_query='note:"CA Vocab"',
+            select_card_count="0",
+            field_to_field_defs=[d.field_to_field("Note", "{{Sentence}}")],
+        )
+
+        results = run_bulk(definition)
+
+        assert "2 destinations" in summary(results)
+
+    def test_an_edit_card_stage_with_three_actions_counts_one_card(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        definition = d.staged(stages=[
+            d.card_query("cards", f"nid:{note.id} card:Recognition"),
+            d.for_each_card("cards", [
+                d.edit_card("card", [
+                    this_card_action("a1", set_flag=2),
+                    this_card_action("a2", suspend=True),
+                    this_card_action("a3", bury=True),
+                ]),
+            ]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id])
+
+        assert "1 cards" in summary(results)
+
+    def test_a_card_edited_by_a_note_stage_and_a_card_stage_counts_once(self, col):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
+        definition = d.staged(stages=[
+            d.edit_note("trigger", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]),
+            d.card_query("cards", f"nid:{note.id} card:Recognition"),
+            d.for_each_card("cards", [
+                d.edit_card("card", [this_card_action("a1", suspend=True)]),
+            ]),
+        ])
+
+        results = run_bulk(definition, note_ids=[note.id])
+
+        assert "1 cards" in summary(results)
+        # A stage that only acted on cards wrote no field or tag, so no destination either.
+        assert "destinations" not in summary(results)
 
     def test_a_note_with_no_sources_does_not_count_its_destination(self, col):
         # The "no sources found" early return copies nothing, so it must not count the
@@ -835,3 +922,79 @@ class TestTheFinalRender:
         run_bulk(copy_word_into_note(), progress_title="Syncing fields")
 
         assert progress.titles == ["Syncing fields"]
+
+
+class TestTheCallLookupIsBuiltOnce:
+    """A `call_definition` stage sends the loop to the config to resolve the guid.
+
+    That resolution reads and parses the addon config and builds the cache that remembers
+    each callee's migration. It used to happen once per trigger note, so a bulk run over a
+    few thousand notes parsed the config a few thousand times and re-migrated the callee for
+    every one of them -- the same answer every time, since it is the same definition all the
+    way round the loop.
+    """
+
+    @pytest.fixture
+    def counted(self, stub_mw, monkeypatch):
+        """Count reads of the stored config, whoever asks for it."""
+        reads: list[str] = []
+        original = stub_mw.addonManager.getConfig
+
+        def getConfig(tag):
+            reads.append(tag)
+            return original(tag)
+
+        monkeypatch.setattr(stub_mw.addonManager, "getConfig", getConfig)
+        return reads
+
+    def callee(self):
+        producer = d.variable("H1", d.text("called"))
+        return d.staged(
+            "callee",
+            guid="callee-guid",
+            stages=[producer],
+            exports=[d.export("H1", producer)],
+        )
+
+    def caller(self):
+        return d.staged(
+            "caller",
+            stages=[
+                d.call_definition("callee-guid", outputs=[{"export": "H1", "result": "got"}]),
+                d.edit_note("trigger", [d.write("Note", d.text("{{got}}"))]),
+            ],
+        )
+
+    def test_three_notes_do_not_mean_three_config_reads(
+        self, col, stub_mw, counted
+    ):
+        stub_mw.addonManager.configs["copy_anywhere"]["copy_definitions"] = [self.callee()]
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        notes: list = []
+        run_bulk(self.caller(), notes=notes)
+
+        assert [note["Note"] for note in notes] == ["called"] * 3
+        assert len(counted) == 1
+
+    def test_a_definition_that_calls_nothing_reads_it_none(
+        self, col, stub_mw, counted
+    ):
+        for word in ("a", "b", "c"):
+            real_anki.add_note(col, VOCAB, {"Word": word})
+
+        run_bulk(copy_word_into_note())
+
+        assert counted == []
+
+    def test_definitions_handed_in_are_still_preferred_to_the_config(
+        self, col, stub_mw, counted
+    ):
+        real_anki.add_note(col, VOCAB, {"Word": "a"})
+
+        notes: list = []
+        run_bulk(self.caller(), notes=notes, definitions_for_calls=[self.callee()])
+
+        assert [note["Note"] for note in notes] == ["called"]
+        assert counted == []

@@ -332,7 +332,7 @@ class TestUndoEntry:
         # is also the merge that builds the initial `CacheResults.changes` before the loop.
         assert merge_calls() == 4
 
-    def test_the_sync_tail_merges_twice_more_on_top_of_that(self, col, run_copy_fields):
+    def test_the_sync_tail_merges_once_more_on_top_of_that(self, col, run_copy_fields):
         note = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": ""})
         flag(col, note, 0)
         merge_calls = real_anki.counting_wrapper(col, "merge_undo_entries")
@@ -345,9 +345,8 @@ class TestUndoEntry:
 
         run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
 
-        # One before the loop, one after the definition, then one after each of the tail's
-        # two `update_cards` calls.
-        assert merge_calls() == 4
+        # One before the loop, one after the definition, then one after the tail's sweep.
+        assert merge_calls() == 3
 
 
 class TestNoteIdsPerDefinition:
@@ -605,6 +604,47 @@ class TestOneDestinationFromSeveralTriggerNotes:
 
         assert col.get_note(destination.id)["Note"] == "<s2>"
 
+    @staticmethod
+    def flag_only_for_s1():
+        """Every Sentence writes into the one Vocab note; only trigger `s1` flags a card."""
+        return d.staged(
+            note_types=[SENTENCE],
+            stages=[
+                d.note_query("dests", 'note:"CA Vocab"'),
+                d.for_each_note("dests", [
+                    d.condition(
+                        d.code("return trigger['Sentence'] == 's1'"),
+                        [d.edit_note(
+                            "note",
+                            [d.write("Note", d.text("x"))],
+                            card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)],
+                        )],
+                        [d.edit_note("note", [d.write("Note", d.text("x"))])],
+                    ),
+                ]),
+            ],
+        )
+
+    @pytest.mark.parametrize("order", [("s1", "s2"), ("s2", "s1")])
+    def test_a_later_trigger_note_that_leaves_a_card_alone_keeps_the_earlier_ones_edit(
+        self, col, run_copy_fields, logger, order
+    ):
+        # Unlike the note above, this is not the known limitation: the second trigger note
+        # writes the destination note but never edits its card, so it has no copy of the
+        # card to hand over (decision 5). When every card of a written note went into
+        # `copied_into_cards_dict`, `s2`'s fresh, unflagged copy replaced `s1`'s flagged one
+        # whenever `s1` ran first, and the flag was lost. Notes are walked in id order, so
+        # the order they are added in is the order they run in.
+        destination = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        for sentence in order:
+            real_anki.add_note(col, SENTENCE, {"Sentence": sentence})
+
+        run_copy_fields(copy_definitions=[self.flag_only_for_s1()])
+
+        assert not logger.errors, logger.errors
+        flags = {card.template()["name"]: card.user_flag() for card in destination.cards()}
+        assert flags == {"Recognition": 2, "Recall": 0}
+
 
 class TestEditedCards:
     def test_the_edited_flag_is_already_gone_when_update_cards_sees_the_card(
@@ -631,10 +671,9 @@ class TestEditedCards:
 
         run_copy_fields(copy_definitions=definitions, note_ids=[note.id])
 
-        # `copied_into_cards_dict` still holds the Recognition card during the second
-        # definition, but not the object the first one flagged: every definition re-reads
-        # `destination_note.cards()` and overwrites the dict entry with a fresh Card that
-        # has no `edited` attribute. So the flag is not so much "re-set" as "started over".
+        # `copied_into_cards_dict` still holds the Recognition card the first definition
+        # flagged, but saving it took its `edited` attribute off, and the second definition
+        # leaves the entry alone because it did not edit that card. So it is saved once.
         assert updates.card_ids() == [[recognition.id], [recall.id]]
         assert [card.flags for card in col.get_note(note.id).cards()] == [2, 3]
 
@@ -750,6 +789,76 @@ class TestSyncTail:
         # Custom data is JSON nested inside JSON in the `cards.data` column, which is why
         # the search prefix is `prop:cdn:` rather than a plain column comparison.
         assert json.loads(json.loads(data)["cd"]) == {"fc": 1}
+
+    def test_an_edited_card_keeps_its_edit_and_its_unedited_sibling_is_flagged_too(
+        self, col, run_copy_fields
+    ):
+        # Only the edited Recognition card comes back in `copied_into_cards_dict`, and it is
+        # saved, edit and all, before the tail runs. So the sweep finds it by its `fc` of 0
+        # beside Recall, whose note was written but which no action changed, and reads the
+        # saved card: the edit survives being flagged.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        flag(col, note, 0)
+        definition = write_into_note(
+            copy_on_sync=True, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+        )
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        recognition, recall = col.get_note(note.id).cards()
+        assert col.get_note(note.id)["Note"] == "neko"
+        assert (recognition.user_flag(), custom_data(col, recognition.id)) == (2, {"fc": 1})
+        assert (recall.user_flag(), custom_data(col, recall.id)) == (0, {"fc": 1})
+
+    def test_an_edited_card_is_saved_once_by_the_definition_and_once_by_the_sweep(
+        self, col, run_copy_fields, updates
+    ):
+        # The definition's own save already wrote the card with its `fc` still 0, so the
+        # sweep finds it with the others. A pass over the edited cards before the sweep wrote
+        # each of them a second time, under an undo merge of its own, for nothing.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        flag(col, note, 0)
+        recognition, recall = note.cards()
+        definition = write_into_note(
+            copy_on_sync=True, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+        )
+        updates.clear()  # setting the flag above went through `update_cards` too
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        assert [sorted(ids) for ids in updates.card_ids()] == [
+            [recognition.id],
+            sorted([recognition.id, recall.id]),
+        ]
+
+    def test_an_edited_card_that_was_never_waiting_is_not_given_an_fc_key(
+        self, col, run_copy_fields
+    ):
+        # A card with no `fc` is invisible to a sync run, and so is one at 1, so there is
+        # nothing to clean up on a card of another note that a definition edited. The pass
+        # over the edited cards used to initialise it to 1 anyway.
+        trigger = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": ""})
+        flag(col, trigger, 0)
+        other = real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
+        definition = d.staged(
+            note_types=[KANJI],
+            on_sync=True,
+            stages=[
+                d.note_query("others", 'note:"CA Vocab"'),
+                d.for_each_note("others", [
+                    d.edit_note(
+                        "note", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+                    ),
+                ]),
+            ],
+        )
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        recognition = col.get_card(other.cards()[0].id)
+        assert recognition.user_flag() == 2
+        assert recognition.custom_data == ""
+        assert custom_data(col, trigger.cards()[0].id) == {"fc": 1}
 
     def test_the_tail_does_not_run_without_update_sync_result(
         self, col, run_copy_fields, sync_definition, three_kanji

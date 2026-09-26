@@ -1,12 +1,13 @@
 """Characterization tests for Step 3 of `copy_for_single_trigger_note`: the copy condition.
 
-The condition is a search run as `f"{interpolated} nid:{trigger_note.id}"`, which makes it a
+The condition is a search run as `f"({interpolated}) nid:{trigger_note.id}"`, which makes it a
 per-note gate rather than a note selector -- and gives it two failure modes that look alike
 from the outside but are not: a condition that does not match is benign and returns `True`,
 while a condition that cannot be interpolated returns `False` and stops the caller's bulk
-loop dead. This file pins that split, the `nid:` scoping (including what it does to a
-not-yet-added note), the `condition_only_on_sync` escape hatch, and the fact that variables
-are resolved before any of it happens.
+loop dead. This file pins that split, the `nid:` scoping (and that a not-yet-added note,
+which `nid:0` cannot find, is judged without the collection instead), the
+`condition_only_on_sync` escape hatch, and the fact that variables are resolved before any of
+it happens.
 """
 
 import time
@@ -94,16 +95,25 @@ class TestTheQueryIsScopedToTheTriggerNote:
         copy_for_single_trigger_note(definition, note)
         assert note["Note"] == "neko"
 
-    def test_a_new_note_never_matches_because_its_nid_is_zero(self, col, logger):
-        # A note that has not been added yet has id 0, so `nid:0` matches nothing no matter
-        # what the rest of the condition says. Every conditional definition is therefore
-        # silently skipped on add -- the note here would match "Word:neko" once it existed.
+    def test_a_new_note_is_judged_without_the_collection(self, col, logger):
+        # A note that has not been added yet has id 0, and `nid:0` matches nothing, so the
+        # search is judged against the note itself -- the answer the collection gives once
+        # the note is saved. It used to be searched anyway, which skipped every conditional
+        # definition on add.
         new_note = col.new_note(col.models.by_name(VOCAB))
         new_note["Word"] = "neko"
         definition = copy_note_field(copy_condition_query="Word:neko")
         assert copy_for_single_trigger_note(definition, new_note) is True
+        assert new_note["Note"] == "neko"
+        assert logger.errors == []
+
+    def test_a_new_note_the_condition_does_not_fit_is_skipped_benignly(self, col, logger):
+        new_note = col.new_note(col.models.by_name(VOCAB))
+        new_note["Word"] = "neko"
+        definition = copy_note_field(copy_condition_query="Word:inu")
+        assert copy_for_single_trigger_note(definition, new_note) is True
         assert new_note["Note"] == ""
-        assert logger.has_debug("did not match for note id 0")
+        assert logger.has_debug("did not match the note being added")
 
     def test_the_same_new_note_is_copied_into_when_there_is_no_condition(self, col):
         new_note = col.new_note(col.models.by_name(VOCAB))
@@ -173,25 +183,29 @@ class TestConditionInterpolation:
         definition = copy_note_field(copy_condition_query="{{Freq}}")
         assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("could not be interpolated for note id")
+        assert logger.has_error("resolved to nothing for note id")
 
-    def test_the_empty_interpolation_error_names_no_missing_fields(self, note, logger):
-        # The message blames "missing fields", but an existing-and-empty field is not
-        # invalid, so the list it prints is empty. The reported cause is misleading.
+    def test_the_empty_interpolation_error_names_the_query_it_resolved(self, note, logger):
+        # Migration names the note the reference meant, so the message can quote the search
+        # it actually ran rather than blaming "missing fields" -- which, for a field that
+        # exists and is empty, printed an empty list of them (§11).
         definition = copy_note_field(copy_condition_query="{{Freq}}")
         copy_for_single_trigger_note(definition, note)
         assert logger.errors == [
-            "Error in copy fields: Condition query '{{Freq}}' could not be interpolated"
-            f" for note id {note.id} due to missing fields: "
+            "Error in copy fields: Condition query '{{trigger.Freq}}' resolved to nothing"
+            f" for note id {note.id}"
         ]
 
-    def test_an_unknown_field_is_ignored_when_other_text_survives(self, note, logger):
-        # invalid_fields is never consulted -- only the emptiness of the result is. So an
-        # unknown field silently becomes "" and the truncated query runs, with no error.
+    def test_an_unknown_field_fails_the_definition_rather_than_truncating_the_search(
+        self, note, logger
+    ):
+        # Format 1 never consulted its own invalid-field list: an unknown field became ""
+        # and the truncated `Word:neko` ran, matched, and copied. A reference that resolves
+        # to nothing is a stage error now, so the condition is not guessed at (§11).
         definition = copy_note_field(copy_condition_query="Word:neko {{Nonexistent}}")
-        assert copy_for_single_trigger_note(definition, note) is True
-        assert note["Note"] == "neko"
-        assert logger.errors == []
+        assert copy_for_single_trigger_note(definition, note) is False
+        assert note["Note"] == ""
+        assert logger.has_error("Nonexistent")
 
     def test_a_syntactically_invalid_condition_raises_out_of_the_function(self, note):
         # find_notes is not guarded here, so a search error is neither logged nor turned into
@@ -212,13 +226,14 @@ class TestVariablesAreResolvedBeforeTheCondition:
 
     def test_variables_are_computed_even_for_a_note_the_condition_skips(self, note, logger):
         # Step 1 runs before Step 3, so the cost of resolving variables is paid for every
-        # trigger note, including the ones the condition is about to throw away. The error
-        # from the bad variable is the only evidence that it ran at all.
+        # trigger note, including the ones the condition is about to throw away. A variable
+        # naming a field the note has not is now what proves it: it used to log an invalid
+        # field and carry on, and it fails the definition instead (§11).
         definition = copy_note_field(copy_condition_query="Word:inu")
         definition["field_to_variable_defs"] = [d.field_to_variable("v", "{{Nonexistent}}")]
-        assert copy_for_single_trigger_note(definition, note) is True
+        assert copy_for_single_trigger_note(definition, note) is False
         assert note["Note"] == ""
-        assert logger.has_error("Invalid fields in copy_from_text: nonexistent")
+        assert logger.has_error("Nonexistent")
 
 
 class TestTheConditionGatesTheSourceQuery:

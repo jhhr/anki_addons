@@ -75,6 +75,42 @@ class TestExtraGlobals:
         assert error is None
         assert result == "21"
 
+    def test_the_notes_cards_are_fetched_when_the_caller_brings_other_names(self):
+        note = CountingNote({})
+        result, error = execute_code_core(
+            "return [card.id for card in cards]", note, extra_globals={"card_ivl": 21}
+        )
+        assert error is None
+        assert result == [7]
+        assert note.fetches == 1
+
+    def test_a_caller_supplying_cards_saves_the_fetch(self):
+        """The caller's list would replace the note's straight away, so fetching it first
+        was a wasted query per evaluation."""
+        note = CountingNote({})
+        result, error = execute_code_core(
+            "return cards", note, extra_globals={"cards": ["the caller's"]}
+        )
+        assert error is None
+        assert result == ["the caller's"]
+        assert note.fetches == 0
+
+
+class FakeCard:
+    id = 7
+
+
+class CountingNote(FakeNote):
+    """A note with one card, which counts how often its cards are fetched."""
+
+    def __init__(self, fields: dict):
+        super().__init__(fields)
+        self.fetches = 0
+
+    def cards(self):
+        self.fetches += 1
+        return [FakeCard()]
+
 
 class TestJapaneseGlobals:
     """The reading processor and the word array codecs, for definition code that has to

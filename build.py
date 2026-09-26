@@ -14,7 +14,8 @@ Layout this assumes:
 
 Each addon declares in build.json which shared packages it uses, and in `exclude`
 any file or directory of its own that is development-only and must stay out of the
-zip. Both commands below materialise the shared packages at <addon>/shared/<pkg>,
+zip. An addon with an ADDON_README.md ships that and not its README.md, which is then
+the developers' own. Both commands below materialise the shared packages at <addon>/shared/<pkg>,
 so the import path is identical in development and in the released zip:
 
     from .shared.interpolate.interpolate_fields import interpolate_from_text
@@ -100,6 +101,10 @@ EXCLUDE_FILES = {
 }
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".ankiaddon"}
 EXCLUDE_PATTERNS = (re.compile(r".*_tests\.py$"),)
+# An addon whose README.md is for developers keeps its user guide in ADDON_README.md, and only
+# the guide ships: whoever opens the .ankiaddon is using the addon, not working on it.
+ADDON_README = "ADDON_README.md"
+DEV_README = "README.md"
 
 SHARED_IMPORT_RE = re.compile(r"from\s+\.{1,3}shared\.(\w+)")
 # Inside anki_shared a package imports its siblings by their own name, `from ..word_array`.
@@ -266,6 +271,8 @@ def excluded_by_meta(rel: Path, addon: Addon) -> bool:
 
 
 def excluded(rel: Path, addon: Addon) -> bool:
+    if rel.as_posix() == DEV_README and (addon.path / ADDON_README).is_file():
+        return True
     parts = rel.parts
     if any(p in EXCLUDE_DIRS for p in parts):
         return True

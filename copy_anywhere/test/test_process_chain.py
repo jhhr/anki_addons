@@ -15,9 +15,8 @@ import definitions as d
 from anki_shared.testing import real_anki
 from conftest import VOCAB
 from copy_anywhere.logic.copy_fields import (
-    CopyFailedException,
     apply_process_chain,
-    copy_into_single_note,
+    copy_for_single_trigger_note,
 )
 
 FONTS_FILE = "fonts.json"
@@ -695,30 +694,33 @@ class TestFatalProcessError:
         chain = [d.fonts_check_process("does_not_exist.json"), d.regex_process("a", "b")]
         assert run_chain(chain, "aaa") is None
 
-    def test_the_caller_turns_the_none_into_a_copy_failed_exception_and_stops_the_definition(
-        self, col, logger
-    ):
+    def test_the_caller_turns_the_none_into_a_failed_definition(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
-        with pytest.raises(CopyFailedException):
-            copy_into_single_note(
-                field_to_field_defs=[
-                    d.field_to_field("Reading", "{{Word}}"),
-                    d.field_to_field(
-                        "Note",
-                        "{{Word}}",
-                        process_chain=[d.fonts_check_process("does_not_exist.json")],
-                    ),
-                    d.field_to_field("Freq", "999"),
-                ],
-                field_to_file_defs=[],
-                card_actions=[],
-                destination_note=note,
-                source_notes=[note],
-                add_tags="processed",
-            )
-        # The abort is whole-definition, not per-field: the def before the failure kept its
-        # write, but the def after it never ran and neither did the tag step below them.
-        assert note["Reading"] == "neko"
+        definition = d.within_note(
+            field_to_field_defs=[
+                d.field_to_field("Reading", "{{Word}}"),
+                d.field_to_field(
+                    "Note",
+                    "{{Word}}",
+                    process_chain=[d.fonts_check_process("does_not_exist.json")],
+                ),
+                d.field_to_field("Freq", "999"),
+            ],
+            add_tags="processed",
+        )
+        copied_into_notes: list = []
+
+        succeeded = copy_for_single_trigger_note(
+            definition, note, copied_into_notes=copied_into_notes
+        )
+
+        # The abort is whole-definition, not per-field: the write after the failure never ran
+        # and neither did the tag step below them, nothing is handed to the caller to save,
+        # and the write before it is taken back out of the note object too -- the trigger is
+        # the caller's own object, which an editor or the Add dialog would go on to save.
+        assert succeeded is False
+        assert copied_into_notes == []
+        assert note["Reading"] == ""
         assert note["Note"] == ""
         assert note["Freq"] == ""
         assert not note.has_tag("processed")
@@ -726,20 +728,19 @@ class TestFatalProcessError:
 
     def test_a_file_definition_reports_the_filename_rather_than_the_field(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
-        with pytest.raises(CopyFailedException):
-            copy_into_single_note(
-                field_to_field_defs=[],
-                field_to_file_defs=[
-                    d.field_to_file(
-                        "out.txt",
-                        "{{Word}}",
-                        process_chain=[d.fonts_check_process("does_not_exist.json")],
-                    )
-                ],
-                card_actions=[],
-                destination_note=note,
-                source_notes=[note],
-            )
+        definition = d.within_note(
+            field_to_file_defs=[
+                d.field_to_file(
+                    "out.txt",
+                    "{{Word}}",
+                    process_chain=[d.fonts_check_process("does_not_exist.json")],
+                )
+            ],
+        )
+
+        succeeded = copy_for_single_trigger_note(definition, note)
+
+        assert succeeded is False
         assert logger.has_error("Process chain failed for file out.txt")
 
 

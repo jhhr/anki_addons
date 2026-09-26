@@ -1,0 +1,117 @@
+{
+  "guid": "example-collect-meanings",
+  "format_version": 2,
+  "definition_name": "Collect meanings from related notes",
+  "triggers": {
+    "note_types": ["CA Vocab"],
+    "deck_names": ["JP vocab"],
+    "include_subdecks": true,
+    "on_sync": false,
+    "on_add": false,
+    "on_review": false,
+    "on_unfocus": {"edit_fields": ["Word"], "add_fields": []}
+  },
+  "stages": [
+    {
+      "guid": "collect-query",
+      "type": "note_query",
+      "name": "Find related notes",
+      "enabled": true,
+      "result": "Related",
+      "query": {
+        "mode": "text",
+        "text": "note:\"CA Vocab\" deck:\"JP vocab\" Meaning:*{{trigger.Word}}*",
+        "code": "",
+        "process_chain": []
+      },
+      "selection": {
+        "strategy": "first",
+        "count": 5,
+        "sort_field": "Freq",
+        "sort_order": "descending",
+        "sort_numeric": true
+      },
+      "if_empty": "skip_block"
+    },
+    {
+      "guid": "collect-list",
+      "type": "list_variable",
+      "name": "An empty list of meanings",
+      "enabled": true,
+      "result": "Meanings",
+      "item_type": "Text"
+    },
+    {
+      "guid": "collect-loop",
+      "type": "for_each_note",
+      "name": "For each related note",
+      "enabled": true,
+      "input": {"binding": "Related"},
+      "item_binding": "note",
+      "body": [
+        {
+          "guid": "collect-store",
+          "type": "store",
+          "name": "Keep its meaning",
+          "enabled": true,
+          "target": {"kind": "list", "binding": "Meanings"},
+          "value": {
+            "mode": "text",
+            "text": "{{note.Meaning}}",
+            "code": "",
+            "process_chain": []
+          }
+        }
+      ]
+    },
+    {
+      "guid": "collect-join",
+      "type": "reduce",
+      "name": "Join them into one line",
+      "enabled": true,
+      "input": {"binding": "Meanings"},
+      "result": "Summary",
+      "operation": "join",
+      "separator": "; ",
+      "initial": {"mode": "text", "text": "", "code": "", "process_chain": []},
+      "item_binding": "item",
+      "accumulator_binding": "accumulator",
+      "value": {"mode": "code", "text": "", "code": "", "process_chain": []}
+    },
+    {
+      "guid": "collect-write",
+      "type": "edit_note",
+      "name": "Write them into this note",
+      "enabled": true,
+      "target": {"binding": "trigger"},
+      "fields": [
+        {
+          "field": "Note",
+          "value": {
+            "mode": "text",
+            "text": "{{Summary}}",
+            "code": "",
+            "process_chain": []
+          },
+          "write_if": "always"
+        }
+      ],
+      "tags": {"add": [], "remove": []},
+      "card_actions": [],
+      "read_semantics": "stage_snapshot"
+    }
+  ],
+  "exports": [],
+  "effects": {
+    "edits_trigger": true,
+    "edits_other_notes": false,
+    "edits_cards": false,
+    "edits_trigger_cards": false,
+    "edits_other_cards": false,
+    "reads_files": false,
+    "writes_files": false,
+    "queries_collection": true,
+    "calls_definitions": false,
+    "add_note_compatible": true
+  }
+}

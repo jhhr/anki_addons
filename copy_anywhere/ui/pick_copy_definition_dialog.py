@@ -3,6 +3,7 @@ import uuid
 import copy as copy_module
 from anki.notes import NoteId
 from aqt import mw
+from aqt.utils import showInfo
 
 from aqt.qt import (
     QVBoxLayout,
@@ -20,12 +21,16 @@ from aqt.qt import (
     QSizePolicy,
 )
 
-from .edit_copy_definition_dialog import EditCopyDefinitionDialog
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
     Config,
     CopyDefinition,
+    definition_deck_names,
+    definition_note_type_names,
 )
+from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
+from ..logic.definition_schema import is_format_2
+from .edit_staged_definition_dialog import EditStagedDefinitionDialog
 from ..logic.copy_fields import (
     copy_fields,
 )
@@ -518,6 +523,28 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
 
         return self.edit_definition(definition_index, definition_to_edit)
 
+    def run_definition_editor(
+        self, definition: Optional[CopyDefinition], config: Config
+    ) -> Optional[CopyDefinition]:
+        """Open the stage editor on this definition, converting it first if it is format 1.
+
+        There is one editor. A definition only reaches here in format 1 if the startup
+        migration could not convert the config it is in, so it goes through the same pure
+        migrator on the way to the editor -- and one that still cannot be converted is said
+        so, rather than opened in an editor that has no shape for it.
+        """
+        staged_definitions = [
+            other for other in config.copy_definitions if is_format_2(other)
+        ]
+        if definition is not None and not is_format_2(definition):
+            try:
+                definition = migrate_definition_v1_to_v2(definition)
+            except MigrationError as error:
+                showInfo(f"This definition could not be converted to stages: {error}")
+                return None
+        dialog = EditStagedDefinitionDialog(self, definition, staged_definitions)
+        return dialog.get_copy_definition() if dialog.exec() else None
+
     def edit_definition(
         self, index: Optional[int] = None, copy_definition: Optional[CopyDefinition] = None
     ):
@@ -533,10 +560,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         else:
             definition = self.copy_definitions[index]
 
-        dialog = EditCopyDefinitionDialog(self, definition)
-
-        if dialog.exec():
-            copy_definition = dialog.get_copy_definition()
+        copy_definition = self.run_definition_editor(definition, config)
+        if copy_definition is not None:
             if index is None and copy_definition is not None:
                 # Adding new definition
                 if "guid" not in copy_definition:
@@ -594,22 +619,15 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             if checkbox.isChecked():
                 nothing_checked = False
                 checked_definition = self.copy_definitions[index]
-                decks_query = ""
-                whitelist_decknames = checked_definition.get("only_copy_into_decks")
-                if whitelist_decknames and whitelist_decknames != "-":
-                    # Remove the quotes and split the string into a list of deck names
-                    deck_names = whitelist_decknames.strip('""').split('", "')
-                    decks_query = make_query_string("deck", deck_names)
+                deck_names = definition_deck_names(checked_definition)
+                decks_query = make_query_string("deck", deck_names) if deck_names else ""
 
-                note_type_query = ""
-                # Set per definition: the editor saves one with no note types, and checking it
-                # first raised UnboundLocalError below
-                note_type_names_list: list[str] = []
-                # Split by comma and remove the first wrapping " but keeping the last one
-                note_type_names = checked_definition.get("copy_into_note_types")
-                if note_type_names and note_type_names != "-":
-                    note_type_names_list = note_type_names.strip('""').split('", "')
-                    note_type_query = make_query_string("note", note_type_names_list)
+                note_type_names_list = definition_note_type_names(checked_definition)
+                note_type_query = (
+                    make_query_string("note", note_type_names_list)
+                    if note_type_names_list
+                    else ""
+                )
                 if browser_query is None:
                     # Nothing selected: no notes, not the whole search a find would give
                     def_note_ids: Sequence[Union[int, NoteId]] = []

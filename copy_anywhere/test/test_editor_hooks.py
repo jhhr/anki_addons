@@ -593,6 +593,143 @@ class TestANewNoteNeverRunsDefinitionsThatTouchOtherNotes:
         assert ran.names() == ["direct"]
 
 
+class TestANewNoteEditsOnlyItself:
+    """The Add dialog is the one place the add can still be cancelled (§8).
+
+    So an unfocus on a note that has not been added yet may fill that note's fields and
+    tags -- the add saves the object it mutated -- and nothing else. A card action on it is
+    impossible rather than forbidden: it is skipped with a log line and does not disqualify
+    the definition. Anything that would outlive a cancelled add -- another note, an existing
+    card, a file -- is stopped, by the gate when the definition's effects admit it and by
+    the backstop when they do not.
+    """
+
+    def flag(self):
+        return d.card_action(VOCAB, "Recognition", set_flag=3)
+
+    def card_named(self, note, template_name):
+        return next(card for card in note.cards() if card.template()["name"] == template_name)
+
+    def fill_and_flag(self, *extra_stages, **effects):
+        definition = d.staged(
+            "fill-and-flag",
+            on_unfocus={"edit_fields": [], "add_fields": ["Word"]},
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("{{trigger.Word}}"))],
+                    card_actions=[self.flag()],
+                ),
+                *extra_stages,
+            ],
+        )
+        definition["effects"].update(effects)
+        return definition
+
+    def test_the_field_is_filled_and_the_card_action_is_a_logged_skip(
+        self, col, set_definitions, hook_logger, ran
+    ):
+        set_definitions(self.fill_and_flag())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == ["fill-and-flag"]
+        assert note["Meaning"] == "neko"
+        assert hook_logger.errors == []
+        assert any("no cards yet" in message for message in hook_logger.warnings), (
+            hook_logger.warnings
+        )
+
+    def test_a_definition_that_also_writes_a_file_is_skipped_by_the_gate(
+        self, col, set_definitions, hook_logger, ran, media_dir
+    ):
+        # A file written while the note is being typed stays on disk even if the user
+        # presses Escape, so the whole definition waits for the add.
+        set_definitions(self.fill_and_flag(d.write_file("log.txt", d.text("{{trigger.Word}}"))))
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == []
+        assert note["Meaning"] == ""
+        assert not (media_dir / "_log.txt").exists()
+        assert hook_logger.errors == []
+
+    def test_a_file_write_the_stored_effects_hid_is_refused_by_the_backstop(
+        self, col, set_definitions, hook_logger, media_dir
+    ):
+        # The gate only reads what the definition claims. A hand-edited config claiming a
+        # file write away is caught where the run is committed instead.
+        set_definitions(
+            self.fill_and_flag(
+                d.write_file("log.txt", d.text("{{trigger.Word}}")),
+                writes_files=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert not (media_dir / "_log.txt").exists()
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+
+    def test_an_edit_to_another_note_the_stored_effects_hid_is_refused_too(
+        self, col, set_definitions, hook_logger
+    ):
+        # The same lie about the other half of the principle: the found note's card would
+        # be flagged through the hook's own `update_cards` if the run were committed.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.fill_and_flag(
+                d.note_query("found", "Word:inu"),
+                d.for_each_note(
+                    "found",
+                    [
+                        d.edit_note(
+                            "note",
+                            [d.write("Note", d.text("copied"))],
+                            card_actions=[self.flag()],
+                        )
+                    ],
+                ),
+                edits_other_notes=False,
+                edits_other_cards=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert col.get_note(other.id)["Note"] == ""
+        assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 0
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+
+    def test_a_card_edit_the_stored_effects_hid_is_refused_too(
+        self, col, set_definitions, hook_logger
+    ):
+        # A card of another note, and nothing else of it: no other note is modified, so
+        # only the edited cards can tell the backstop the run reached past the new note.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.fill_and_flag(
+                d.card_query("found", "Word:inu"),
+                d.for_each_card(
+                    "found",
+                    [d.edit_card("card", [dict(self.flag(), card_type_name="")])],
+                ),
+                edits_other_notes=False,
+                edits_other_cards=False,
+                add_note_compatible=True,
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert col.get_card(self.card_named(other, "Recognition").id).user_flag() == 0
+        assert hook_logger.has_error("another note, card or file"), hook_logger.errors
+        # Refused as a whole, so the new note's own write is taken back as well.
+        assert note["Meaning"] == ""
+
+
 class TestWhichFieldFiresADefinition:
     def test_a_field_that_is_no_definitions_trigger_runs_nothing(
         self, col, set_definitions, ran
@@ -670,6 +807,168 @@ class TestWhichFieldFiresADefinition:
         set_definitions(within(trigger="Renamed"))
         run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
         assert ran.names() == []
+
+
+class TestWhichFieldFiresAStagedDefinition:
+    """A staged definition names its fields once, per mode, in `on_unfocus` (§8)."""
+
+    @staticmethod
+    def watching(edit_fields, add_fields):
+        return d.staged(
+            "watching",
+            on_unfocus={"edit_fields": edit_fields, "add_fields": add_fields},
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("{{trigger.Word}}"))])],
+        )
+
+    def test_an_unwatched_field_runs_nothing(self, col, set_definitions, ran):
+        set_definitions(self.watching(["Word"], ["Word"]))
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, MEANING)
+
+        assert ran.names() == []
+        assert note["Note"] == ""
+
+    def test_the_watched_field_runs_it(self, col, set_definitions, ran):
+        set_definitions(self.watching(["Word"], ["Word"]))
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert ran.names() == ["watching"]
+        assert note["Note"] == "neko"
+
+    def test_editing_reads_the_edit_fields_and_adding_the_add_fields(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(self.watching(["Word"], ["Meaning"]))
+        existing = existing_note(col, Word="neko", Meaning="cat")
+        adding = new_note(col, Word="inu", Meaning="dog")
+
+        run_copy_fields_on_unfocus_field(False, existing, MEANING)
+        run_copy_fields_on_unfocus_field(False, adding, WORD)
+        assert ran.names() == []
+
+        run_copy_fields_on_unfocus_field(False, existing, WORD)
+        run_copy_fields_on_unfocus_field(False, adding, MEANING)
+        assert ran.names() == ["watching", "watching"]
+
+    def test_no_fields_for_a_mode_means_it_never_runs_in_that_mode(
+        self, col, set_definitions, ran
+    ):
+        set_definitions(self.watching([], ["Word"]))
+
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), WORD)
+
+        assert ran.names() == []
+
+
+class TestAMigratedDefinitionsPerWriteUnfocusSettings:
+    """The two settings format 1 kept on each field write, after the startup migration.
+
+    A migrated definition is stored as stages, so the handler takes the format-2 branch and
+    runs the whole definition. The settings survive on the writes themselves, and the
+    executor is what honours them now -- which is the only reason a write can still be left
+    out of an unfocus run while the rest of its definition runs.
+    """
+
+    def migrated(self, **defs):
+        # Through `stage_definitions`, so the definition carries the derived `effects` the
+        # startup migration would have given it and the handler branches on them as it will
+        # in a real collection.
+        from copy_anywhere.logic.flow_analysis import stage_definitions
+
+        staged, problems = stage_definitions([
+            d.within_note(
+                definition_name="within",
+                field_to_field_defs=[
+                    d.field_to_field(
+                        field,
+                        "{{Word}}",
+                        copy_on_unfocus_trigger_field="Word",
+                        **settings,
+                    )
+                    for field, settings in defs.items()
+                ],
+            )
+        ])
+        assert problems == []
+        return staged[0]
+
+    def test_a_write_that_is_off_for_editing_is_left_out_of_an_edit_unfocus(
+        self, col, set_definitions
+    ):
+        # The fast write fills straight away; the slow one was deliberately saved for the
+        # bulk action, and used to run on every unfocus once the definition was migrated.
+        set_definitions(
+            self.migrated(
+                Meaning={"copy_on_unfocus_when_edit": True},
+                Note={"copy_on_unfocus_when_edit": False},
+            )
+        )
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == "neko"
+        assert note["Note"] == ""
+
+    def test_the_add_flag_is_what_counts_in_the_add_dialog(self, col, set_definitions):
+        set_definitions(
+            self.migrated(
+                Meaning={"copy_on_unfocus_when_edit": True, "copy_on_unfocus_when_add": False},
+                Note={"copy_on_unfocus_when_edit": False, "copy_on_unfocus_when_add": True},
+            )
+        )
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == ""
+        assert note["Note"] == "neko"
+
+    def test_a_write_watching_another_field_is_left_out_too(self, col, set_definitions):
+        definition = self.migrated(
+            Meaning={"copy_on_unfocus_when_edit": True},
+            Note={"copy_on_unfocus_when_edit": True},
+        )
+        writes = definition["stages"][0]["fields"]
+        next(w for w in writes if w["field"] == "Note")["unfocus_trigger_fields"] = ["Reading"]
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Meaning"] == "neko"
+        assert note["Note"] == ""
+
+
+class TestAFormatOneDefinitionStillInTheConfig:
+    """One the startup migration could not convert, so the handler's format-1 branch runs it.
+
+    That branch picks the field writes whose own add/edit flag is on and runs the definition
+    with just those. The executor then checks the migrated copy of the same flag, so both
+    have to be looking at the same one -- the migrated write is dropped otherwise, and a
+    definition set to run only while adding writes nothing in the Add dialog.
+    """
+
+    def add_only(self):
+        return within(trigger="Word", on_edit=False, on_add=True)
+
+    def test_an_add_only_definition_writes_while_adding(self, col, set_definitions):
+        set_definitions(self.add_only())
+        note = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == "neko"
+
+    def test_it_writes_nothing_while_editing(self, col, set_definitions):
+        set_definitions(self.add_only())
+        note = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert note["Note"] == ""
+
+    def test_an_edit_only_definition_is_the_other_way_round(self, col, set_definitions):
+        set_definitions(within(trigger="Word", on_edit=True, on_add=False))
+        existing = existing_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, existing, WORD)
+        added = new_note(col, Word="neko")
+        run_copy_fields_on_unfocus_field(False, added, WORD)
+        assert existing["Note"] == "neko"
+        assert added["Note"] == ""
 
 
 class TestTheDeckWhitelistOnThisPath:
@@ -1232,3 +1531,216 @@ class TestNonModifyingDefinitionsDiscardTheirNoteList:
         assert hook_logger.levels == ["debug"]
         assert hook_logger.has_error("not found in note")
         assert "not found in note" not in capsys.readouterr().out
+
+
+class TestAFailedDefinitionLeavesTheEditorsNoteAlone:
+    """A definition that fails leaves the editor's note as it found it.
+
+    The stages write into the editor's own `Note` object, and the editor saves that object
+    whatever the definition's result -- so without the fields and tags put back, a
+    definition that wrote the note and then failed had its half-done edit saved anyway,
+    while the log said it failed.
+    """
+
+    def failing(self, *extra_stages, name="failing", if_missing="error"):
+        """Writes `Meaning` and the tags, then fails on a missing file."""
+        return d.staged(
+            name,
+            on_unfocus={"edit_fields": ["Word"], "add_fields": ["Word"]},
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+                *extra_stages,
+                d.read_file("x", "nope.txt", if_missing=if_missing),
+            ],
+        )
+
+    def test_an_existing_note_keeps_its_fields_and_tags(self, col, set_definitions, hook_logger):
+        set_definitions(self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note.tags = ["kept"]
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+        assert note.tags == ["kept"]
+        # Nothing moved, so there is nothing for the editor to show.
+        assert editor.loads == 0
+
+    def test_so_the_editors_save_writes_what_was_typed(self, col, set_definitions):
+        set_definitions(self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note["Word"] = "typed"
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        # What the editor does with its note afterwards.
+        col.update_note(note)
+
+        saved = col.get_note(note.id)
+        assert (saved["Word"], saved["Meaning"]) == ("typed", "cat")
+        assert "tagged" not in saved.tags
+
+    def test_a_note_being_added_keeps_its_fields_and_tags(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.failing())
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == ""
+        assert note.tags == ["kept"]
+
+    def test_an_earlier_definitions_write_survives_and_is_shown(
+        self, col, set_definitions, hook_logger
+    ):
+        # The failed run goes back to where it started, which is after the definition that
+        # ran before it and committed.
+        set_definitions(within("ok", field="Note"), self.failing())
+        note = existing_note(col, Word="neko", Meaning="cat")
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Note"] == "neko"
+        assert note["Meaning"] == "cat"
+        assert editor.loads == 1
+
+    def test_the_copy_fields_branch_leaves_it_too(
+        self, col, set_definitions, hook_logger, copies
+    ):
+        # A definition reaching other notes runs through `copy_fields`, which is handed the
+        # editor's note object as the trigger -- so the same restore has to reach it there.
+        other = existing_note(col, Word="inu")
+        set_definitions(
+            self.failing(
+                d.note_query("found", "Word:inu"),
+                d.for_each_note("found", [d.edit_note("note", [d.write("Note", d.text("x"))])]),
+            )
+        )
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert copies.count() == 1
+        assert hook_logger.has_error("does not exist"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+        assert note.tags == []
+        assert col.get_note(other.id)["Note"] == ""
+
+    def test_a_definition_that_succeeds_still_writes(self, col, set_definitions, hook_logger):
+        set_definitions(self.failing(name="succeeding", if_missing="empty"))
+        note = existing_note(col, Word="neko", Meaning="cat")
+        note.tags = ["kept"]
+        editor = FakeEditor(EditorMode.BROWSER, note)
+        on_editor_did_load_note(editor)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.errors == []
+        assert note["Meaning"] == "written"
+        assert note.tags == ["tagged"]
+        assert editor.loads == 1
+
+
+class TestASearchConditionWhileTheNoteIsBeingAdded:
+    """In the Add dialog a search condition is judged against the note being typed.
+
+    The note has id 0, so `nid:0` would never find it; the executor answers the search from
+    the note itself and from the deck the Add dialog's chooser is on, as the add hook does
+    with the deck it is given.
+    """
+
+    @staticmethod
+    def gated(search, *before):
+        """Writes `Note` when `search` holds for the trigger; fires on `Word` while adding."""
+        return d.staged(
+            "gated",
+            on_unfocus={"edit_fields": [], "add_fields": ["Word"]},
+            stages=[
+                *before,
+                d.condition(
+                    d.text(search),
+                    [d.edit_note("trigger", [d.write("Note", d.text("matched"))])],
+                    predicate_kind="note_query",
+                    predicate_target={"binding": "trigger"},
+                ),
+            ],
+        )
+
+    def add_dialog(self, col, note, deck_name="JP vocab"):
+        editor = FakeEditor(EditorMode.ADD_CARDS, note, col.decks.id(deck_name))
+        on_editor_did_load_note(editor)
+        return editor
+
+    def test_a_matching_search_condition_runs_and_is_shown(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:neko"))
+        note = new_note(col, Word="neko")
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is True
+
+        assert hook_logger.errors == []
+        assert note["Note"] == "matched"
+        assert editor.loads == 1
+
+    def test_a_search_condition_that_does_not_hold_writes_nothing(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.gated("Word:inu"))
+        note = new_note(col, Word="neko")
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.errors == []
+        assert note["Note"] == ""
+        assert editor.loads == 0
+
+    def test_a_term_that_needs_the_cards_fails_the_definition_by_name(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(
+            self.gated(
+                "is:new Word:neko",
+                d.edit_note(
+                    "trigger",
+                    [d.write("Meaning", d.text("written"))],
+                    tags={"add": ["tagged"], "remove": ["kept"]},
+                ),
+            )
+        )
+        note = new_note(col, Word="neko")
+        note.tags = ["kept"]
+        editor = self.add_dialog(col, note)
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.has_error(
+            "the search term 'is:new' cannot be judged for a note that is not added yet"
+        ), hook_logger.errors
+        assert (note["Meaning"], note["Note"]) == ("", "")
+        assert note.tags == ["kept"]
+        assert editor.loads == 0
+
+    def test_a_deck_condition_reads_the_add_dialogs_deck(self, col, set_definitions):
+        set_definitions(self.gated('deck:"JP vocab"'))
+        into_subdeck = new_note(col, Word="neko")
+        self.add_dialog(col, into_subdeck, "JP vocab::10-80")
+        run_copy_fields_on_unfocus_field(False, into_subdeck, WORD)
+        elsewhere = new_note(col, Word="neko")
+        self.add_dialog(col, elsewhere, "Other")
+        run_copy_fields_on_unfocus_field(False, elsewhere, WORD)
+
+        assert into_subdeck["Note"] == "matched"
+        assert elsewhere["Note"] == ""
