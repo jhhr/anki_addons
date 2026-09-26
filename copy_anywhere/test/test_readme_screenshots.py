@@ -322,13 +322,15 @@ def expression_editor(
 
 @screenshots
 def test_shoot_the_definitions_list(seeded, examples, shots):
+    from copy_anywhere.shared.ui.note_source_buttons import NoteSource
     from copy_anywhere.ui.pick_copy_definition_dialog import (
         DefinitionRow,
         PickCopyDefinitionDialog,
     )
 
     width = 900
-    dialog = PickCopyDefinitionDialog(None, deepcopy(examples), [], None)
+    # No browser behind it: nothing selected and no search, so every count reads zero.
+    dialog = PickCopyDefinitionDialog(None, deepcopy(examples), NoteSource([], ""))
     # Each row fixes its width from the dialog's, which the dialog took from the screen
     # before the rows existed. The offscreen plugin's screen is small enough to elide the
     # definition names, so the rows are given the width the shot is taken at instead.
