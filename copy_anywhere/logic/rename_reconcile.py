@@ -462,6 +462,9 @@ class _Renames:
 
     fields: dict[str, str] = dataclass_field(default_factory=dict)
     templates: dict[str, str] = dataclass_field(default_factory=dict)
+    #: The id of each renamed field, by its old name: what a mark the rename leaves
+    #: remembers it by, since a name can pass to another field in the same save (a swap).
+    field_ids: dict[str, int] = dataclass_field(default_factory=dict)
 
     def __bool__(self) -> bool:
         return bool(self.fields or self.templates)
@@ -555,6 +558,8 @@ def _diff(
                         result.gone.append(_stale(definition, kind, old_name))
                 elif new_name != old_name:
                     target[old_name] = new_name
+                    if kind == KIND_FIELD and object_id is not None:
+                        renamed.field_ids[old_name] = object_id
                     for definition in triggering:
                         result.refreshed.append(
                             f"'{definition.get('definition_name', '')}': {kind} '{old_name}'"
@@ -828,6 +833,10 @@ def _split_followable(
     trading names) leaves the renamed one with both names by design. So is every note type
     the same save renamed the same way, which is the ordinary way out of a mark.
 
+    Such an entry remembers the renamed note type and field by id. Names cannot tell a swap
+    from its undoing -- both leave every note type with both names -- while the field id
+    says which field the definition's name read (`refresh_breakage`).
+
     What is withheld comes back as mark entries without their message, which
     `refresh_breakage` derives.
     """
@@ -847,7 +856,10 @@ def _split_followable(
             and _has_field(model, new_name)
             for model in models
         ):
-            withheld.append({"field": old_name, "renamed_to": new_name})
+            entry: dict = {"field": old_name, "renamed_to": new_name}
+            if old_name in renamed.field_ids:
+                entry.update(note_type_id=note_type_id, field_id=renamed.field_ids[old_name])
+            withheld.append(entry)
         else:
             followable.fields[old_name] = new_name
     for old_name, new_name in renamed.templates.items():
@@ -934,14 +946,23 @@ def breakage_message(name: str, models: list[dict], kind: str = KIND_FIELD) -> s
     )
 
 
+def _both_names_sentence(
+    old_name: str, new_name: str, renamed_in: list[dict], holding_both: list[dict]
+) -> str:
+    verb = "has" if len(holding_both) == 1 else "have"
+    return (
+        f'Field "{old_name}" was renamed to "{new_name}" in {_note_types_named(renamed_in)},'
+        f' but {_note_types_named(holding_both)} {verb} both "{old_name}" and "{new_name}"'
+    )
+
+
 def _both_names_message(old_name: str, new_name: str, models: list[dict]) -> Optional[str]:
     """Why a field rename another trigger note type's two fields keep withheld, if it still is.
 
-    Derived from the note types as they are: the ones that have the new name and not the
-    old are where the rename was made, and the ones that have both are what following it
-    would redirect. When either is gone -- the rename undone, or the other note type's
-    field renamed out of the way -- there is nothing of the kind left to say, and the
-    entry is judged as an ordinary one.
+    For an entry that names no ids, so judged by names alone: the note types that have the
+    new name and not the old are where the rename was made, and the ones that have both
+    are what following it would redirect. When either is gone there is nothing of the kind
+    left to say, and the entry is judged as an ordinary one.
     """
     renamed_in = [
         model
@@ -953,11 +974,52 @@ def _both_names_message(old_name: str, new_name: str, models: list[dict]) -> Opt
     ]
     if not renamed_in or not holding_both:
         return None
-    verb = "has" if len(holding_both) == 1 else "have"
-    return (
-        f'Field "{old_name}" was renamed to "{new_name}" in {_note_types_named(renamed_in)},'
-        f' but {_note_types_named(holding_both)} {verb} both "{old_name}" and "{new_name}"'
+    return _both_names_sentence(old_name, new_name, renamed_in, holding_both)
+
+
+def _renamed_field_entry(name: str, marked: dict, models: list[dict]) -> Optional[dict]:
+    """A both-names entry judged by the field it remembers, while that still says it is
+    broken.
+
+    The definition's `name` read the field with this id in this note type, and the field
+    is called something else now, so in that note type `name` is another field or none --
+    even when every trigger note type has `name` again, as after a swap. It holds until
+    the field is called `name` again (the rename undone), or the field, the note type or
+    the definition's trigger on it is gone; the caller's other conditions (still spelled)
+    and the ordinary rule take over from there.
+    """
+    note_type_id = _as_int(marked.get("note_type_id"))
+    field_id = _as_int(marked.get("field_id"))
+    model = next((model for model in models if model["id"] == note_type_id), None)
+    if model is None or field_id is None:
+        return None
+    current = next(
+        (entry.get("name") for entry in model.get("flds") or [] if entry.get("id") == field_id),
+        None,
     )
+    if not isinstance(current, str) or not current or current.lower() == name.lower():
+        return None
+    holding_both = [
+        other
+        for other in models
+        if other["id"] != note_type_id and _has_field(other, name) and _has_field(other, current)
+    ]
+    if holding_both:
+        message = _both_names_sentence(name, current, [model], holding_both)
+    elif not all(_has_field(other, name) for other in models):
+        message = breakage_message(name, models)
+    else:
+        message = (
+            f'Field "{name}" of note type "{model.get("name", "")}" is now called'
+            f' "{current}", so "{name}" there reads another field'
+        )
+    return {
+        "field": name,
+        "renamed_to": current,
+        "note_type_id": note_type_id,
+        "field_id": field_id,
+        "message": message,
+    }
 
 
 def refresh_breakage(
@@ -975,13 +1037,20 @@ def refresh_breakage(
     An entry is a field's (`"field"`, the only kind stored configs from before card types
     were marked hold) or a card type's (`"card_type"`), and each is judged by its own kind's
     rule, so neither clears the other. A field entry that carries `"renamed_to"` was
-    withheld because another trigger note type has both names (`_split_followable`); while
-    that is still so, it says that instead, and once it is not, it is an ordinary entry.
+    withheld because another trigger note type has both names (`_split_followable`). With
+    the renamed field's ids it is judged by that field (`_renamed_field_entry`); without
+    them, by names while some note type still has both. When that no longer holds, it is
+    an ordinary entry.
+
+    One entry per name. A stored entry's ids win over those of a rename withheld in this
+    pass: the definition was left as it was, so the field the stored entry remembers is
+    still the one its name meant. Undoing a swap is withheld again as a swap of the other
+    field, and only the stored ids see it for the undoing it is.
     """
     stored = definition.get(BROKEN_KEY)
     entries = stored if isinstance(stored, list) else []
-    # (kind, name as first spelled, renamed_to) by the key the name is matched under.
-    marked: dict[tuple[str, str], tuple[str, str, Optional[str]]] = {}
+    # By the key each name is matched under: the entry to judge it by.
+    marked: dict[tuple[str, str], dict] = {}
     for entry in list(entries) + list(withheld or []):
         if not isinstance(entry, dict):
             continue
@@ -990,12 +1059,21 @@ def refresh_breakage(
         renamed_to = entry.get("renamed_to")
         if isinstance(field_name, str) and field_name:
             key = (KIND_FIELD, field_name.lower())
-            _kind, spelling, known_to = marked.get(key, (KIND_FIELD, field_name, None))
-            if known_to is None and isinstance(renamed_to, str) and renamed_to:
-                known_to = renamed_to
-            marked[key] = (KIND_FIELD, spelling, known_to)
+            known = marked.setdefault(key, {"kind": KIND_FIELD, "name": field_name})
+            has_ids = entry.get("note_type_id") is not None and entry.get("field_id") is not None
+            if isinstance(renamed_to, str) and renamed_to and "field_id" not in known:
+                if has_ids:
+                    known.update(
+                        renamed_to=renamed_to,
+                        note_type_id=entry["note_type_id"],
+                        field_id=entry["field_id"],
+                    )
+                elif "renamed_to" not in known:
+                    known["renamed_to"] = renamed_to
         elif isinstance(card_type, str) and card_type:
-            marked.setdefault((KIND_CARD_TYPE, card_type), (KIND_CARD_TYPE, card_type, None))
+            marked.setdefault(
+                (KIND_CARD_TYPE, card_type), {"kind": KIND_CARD_TYPE, "name": card_type}
+            )
     if not marked:
         if BROKEN_KEY in definition:
             del definition[BROKEN_KEY]
@@ -1005,23 +1083,31 @@ def refresh_breakage(
     recorded = _recorded_names(definition)
     models = _trigger_models(definition, col)
     refreshed: list[dict] = []
-    for kind, name, renamed_to in marked.values():
-        if kind == KIND_CARD_TYPE:
+    for known in marked.values():
+        name = known["name"]
+        if known["kind"] == KIND_CARD_TYPE:
             if name in recorded.templates_seen and not all(
                 _has_template(model, name) for model in models
             ):
                 refreshed.append(
-                    {"card_type": name, "message": breakage_message(name, models, kind)}
+                    {"card_type": name, "message": breakage_message(name, models, KIND_CARD_TYPE)}
                 )
             continue
         if name.lower() not in recorded.fields_seen:
             continue
-        both_names = (
-            _both_names_message(name, renamed_to, models) if renamed_to is not None else None
-        )
-        if both_names is not None:
-            refreshed.append({"field": name, "renamed_to": renamed_to, "message": both_names})
-        elif not all(_has_field(model, name) for model in models):
+        if "field_id" in known:
+            by_id = _renamed_field_entry(name, known, models)
+            if by_id is not None:
+                refreshed.append(by_id)
+                continue
+        elif "renamed_to" in known:
+            both_names = _both_names_message(name, known["renamed_to"], models)
+            if both_names is not None:
+                refreshed.append(
+                    {"field": name, "renamed_to": known["renamed_to"], "message": both_names}
+                )
+                continue
+        if not all(_has_field(model, name) for model in models):
             refreshed.append({"field": name, "message": breakage_message(name, models)})
     if refreshed == stored:
         return False

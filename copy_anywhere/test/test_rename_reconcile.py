@@ -81,6 +81,14 @@ def rename_template(col, note_type_name: str, old_name: str, new_name: str) -> N
     col.models.update_dict(note_type)
 
 
+def swap_fields(col, note_type_name: str, one: str, other: str) -> None:
+    """Two fields trade names in one save, which only an edit of the note type can do."""
+    note_type = col.models.by_name(note_type_name)
+    for field in note_type["flds"]:
+        field["name"] = {one: other, other: one}.get(field["name"], field["name"])
+    col.models.update_dict(note_type)
+
+
 def names(items) -> list[str]:
     return [item.name for item in items]
 
@@ -1146,11 +1154,18 @@ class TestAFieldRenameAnotherTriggerNoteTypeHasBothNamesFor:
         assert self.spelled(definition) == "{{trigger.Word}}"
         assert result.rewritten == []
 
-    def test_the_definition_is_marked_with_why(self, marked):
+    def test_the_definition_is_marked_with_why(self, col, marked):
         definition, result = marked
+        model = col.models.by_name(VOCAB)
 
         assert definition[BROKEN_KEY] == [
-            {"field": "Word", "renamed_to": "Term", "message": self.message()}
+            {
+                "field": "Word",
+                "renamed_to": "Term",
+                "note_type_id": model["id"],
+                "field_id": model["flds"][0]["id"],
+                "message": self.message(),
+            }
         ]
         assert [(stale.kind, stale.name, stale.message) for stale in result.broken] == [
             (KIND_FIELD, "Word", self.message())
@@ -1178,8 +1193,70 @@ class TestAFieldRenameAnotherTriggerNoteTypeHasBothNamesFor:
         result = reconcile(config, mw.col)
 
         message = f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
-        assert definition[BROKEN_KEY] == [{"field": "Word", "message": message}]
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [message]
         assert [stale.message for stale in result.broken] == [message]
+
+    def swapped_in_vocab(self, col, config, other):
+        """`Word` and `Term` trade names in the first note type while the other has both."""
+        model = col.models.by_name(VOCAB)
+        col.models.add_field(model, col.models.new_field("Term"))
+        col.models.update_dict(model)
+        definition = self.definition(VOCAB, other)
+        store(config, definition)
+        reconcile(config, mw.col)
+        swap_fields(col, VOCAB, "Word", "Term")
+        return definition, reconcile(config, mw.col)
+
+    def swap_message(self):
+        return (
+            f'Field "Word" was renamed to "Term" in note type "{VOCAB}", but note type'
+            f' "{self.OTHER}" has both "Word" and "Term"'
+        )
+
+    def test_a_swap_while_the_other_has_both_is_marked(self, col, config, other):
+        definition, result = self.swapped_in_vocab(col, config, other)
+
+        assert self.spelled(definition) == "{{trigger.Word}}"
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [self.swap_message()]
+        assert [stale.message for stale in result.broken] == [self.swap_message()]
+
+    def test_the_swap_stays_marked_on_a_later_pass(self, col, config, other):
+        definition, _ = self.swapped_in_vocab(col, config, other)
+
+        result = reconcile(config, mw.col)
+
+        assert [stale.message for stale in result.broken] == [self.swap_message()]
+        assert result.changed is False
+
+    def test_undoing_the_swap_clears_the_mark(self, col, config, other):
+        definition, _ = self.swapped_in_vocab(col, config, other)
+
+        swap_fields(col, VOCAB, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert self.spelled(definition) == "{{trigger.Word}}"
+        assert BROKEN_KEY not in definition and result.broken == []
+
+    def test_the_swap_says_so_once_the_other_has_one_name(self, col, config, other):
+        definition, _ = self.swapped_in_vocab(col, config, other)
+
+        rename_field(col, other, "Term", "Gloss")
+        reconcile(config, mw.col)
+
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [
+            f'Field "Word" of note type "{VOCAB}" is now called "Term", so "Word" there reads'
+            " another field"
+        ]
+
+    def test_an_entry_without_ids_is_judged_by_names(self, marked, config):
+        definition, _ = marked
+        definition[BROKEN_KEY] = [{"field": "Word", "renamed_to": "Term", "message": "old"}]
+
+        reconcile(config, mw.col)
+
+        assert definition[BROKEN_KEY] == [
+            {"field": "Word", "renamed_to": "Term", "message": self.message()}
+        ]
 
     def test_renaming_the_others_word_the_same_way_later_follows_it(self, col, marked, config):
         definition, _ = marked
