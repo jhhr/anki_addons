@@ -23,7 +23,7 @@ import definitions as d
 import test_definition_migration as migration_tests
 from anki_shared.interpolate.interpolate_fields import CARD_VALUES, NOTE_VALUES
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic import definition_schema
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.definition_migration import (
@@ -236,6 +236,8 @@ class TestWhichKeysAStageHolds:
             "note_query": ("query",),
             "card_query": ("query",),
             "read_file": ("filename",),
+            "select_card": ("index",),
+            "select_note": ("index",),
             "write_file": ("filename", "content"),
             "store": ("value",),
             "reduce": ("value", "initial"),
@@ -502,6 +504,8 @@ class TestPromoteDefinition:
             d.destination_to_sources(
                 copy_from_cards_query="Word:a",
                 field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+                # More than one source: one is read directly, with no join to keep names.
+                select_card_count="3",
             )
         )
         promoted = promote_definition(migrated)

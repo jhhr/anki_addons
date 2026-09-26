@@ -2,7 +2,7 @@ import html
 import logging
 import uuid
 from copy import deepcopy
-from typing import Literal, Optional, Sequence, TypedDict, Union
+from typing import Literal, Optional, Sequence, TypedDict, Union, cast
 
 from aqt import mw
 from typing_extensions import TypeGuard
@@ -12,7 +12,15 @@ from .shared.interpolate.interpolate_fields import (
     QUERY_NOTE_INDEX,
     intr_format,
 )
-from .logic.definition_schema import Effects, is_format_2, read_effects, walk_stages
+from .logic.definition_schema import (
+    CopyDefinitionV2,
+    Effects,
+    Triggers,
+    UnfocusTriggers,
+    is_format_2,
+    read_effects,
+    walk_stages,
+)
 from .logic.object_refs import (
     CardTypeRef,
     ObjectRef,
@@ -114,7 +122,13 @@ class WordHighlightProcess(TypedDict):
     word_field: str
 
 
-AnyProcess = Union[KanjiumToJavdejongProcess, RegexProcess, FontsCheckProcess, KanaHighlightProcess]
+AnyProcess = Union[
+    KanjiumToJavdejongProcess,
+    RegexProcess,
+    FontsCheckProcess,
+    KanaHighlightProcess,
+    WordHighlightProcess,
+]
 
 
 def is_kana_highlight_process(
@@ -158,31 +172,42 @@ ALL_FIELD_TO_VARIABLE_PROCESS_NAMES = [
     WORD_HIGHLIGHT_PROCESS,
 ]
 
+# Each default spells out every key its type requires, with the value the readers fall back to
+# when a stored process lacks it. `guid` is replaced by `add_process` before the copy is used.
 NEW_PROCESS_DEFAULTS: dict[str, AnyProcess] = {
     KANJIUM_TO_JAVDEJONG_PROCESS: KanjiumToJavdejongProcess(
+        guid="",
         name=KANJIUM_TO_JAVDEJONG_PROCESS,
         delimiter="・",
     ),
     REGEX_PROCESS: RegexProcess(
+        guid="",
         name=REGEX_PROCESS,
         regex="",
         replacement="",
+        regex_separator="",
+        replacement_separator="",
         flags="",
+        use_all_notes=False,
     ),
     FONTS_CHECK_PROCESS: FontsCheckProcess(
+        guid="",
         name=FONTS_CHECK_PROCESS,
         fonts_dict_file="",
         limit_to_fonts=[],
         character_limit_regex="",
     ),
     KANA_HIGHLIGHT_PROCESS: KanaHighlightProcess(
+        guid="",
         name=KANA_HIGHLIGHT_PROCESS,
         kanji_field="",
         return_type="kana_only",
         wrap_readings_in_tags=True,
         merge_consecutive_tags=True,
+        onyomi_to_katakana=False,
     ),
     WORD_HIGHLIGHT_PROCESS: WordHighlightProcess(
+        guid="",
         name=WORD_HIGHLIGHT_PROCESS,
         word_field="",
     ),
@@ -337,6 +362,23 @@ class CopyDefinition(TypedDict):
     select_card_separator: Optional[str]
     show_error_if_none_found: Optional[bool]
     run_also_if_no_sources_found: Optional[bool]
+
+
+# A stored definition in either format. The helpers below read both, and the config holds
+# both while a format-1 one waits for migration; plain `dict` is there for the definitions
+# read straight out of the config, which nothing has checked yet.
+AnyCopyDefinition = Union[CopyDefinition, CopyDefinitionV2, dict]
+
+
+def _format_1(copy_definition: AnyCopyDefinition) -> dict:
+    """`copy_definition` as the format-1 dict it is once `is_format_2` has said no.
+
+    `is_format_2` is a TypeGuard, which narrows only where it says yes, so after a no mypy
+    still counts the format-2 shape among the possibilities and reads every format-1 key as
+    `object`. TypeIs would narrow both ways, but needs a typing_extensions newer than some
+    Anki versions ship.
+    """
+    return cast(dict, copy_definition)
 
 
 def compare_versions(version1: str, version2: str) -> int:
@@ -527,8 +569,25 @@ def migrate_config():
     if compare_versions(reached, "0.3.0") >= 0 and compare_versions(reached, "0.5.0") < 0:
         structure_object_references(config)
         reached = "0.5.0"
+    if compare_versions(reached, "0.3.0") >= 0:
+        repair_stage_guids(config)
     config.data["version"] = reached
     config.save()
+
+
+def repair_stage_guids(config: "Config") -> None:
+    """Give a guid to every stage that has none, on every start rather than once.
+
+    Not a versioned step: definitions converted before the conversion minted guids for
+    format-1 parts that lacked one are already past every version, and a stage can also lose
+    its guid to a hand edit. `fill_in_missing_stage_guids` leaves a complete definition
+    untouched, so the cost on a healthy config is one walk over its stages.
+    """
+    from .logic.definition_migration import fill_in_missing_stage_guids
+
+    for definition in config.data.get("copy_definitions") or []:
+        if is_format_2(definition):
+            fill_in_missing_stage_guids(definition)
 
 
 def get_variables_dict_from_variable_defs(
@@ -563,29 +622,31 @@ def get_variables_dict_from_variable_defs(
 # a config holding both formats behaves the same either way.
 
 
-def definition_note_type_refs(copy_definition: Union[CopyDefinition, dict]) -> list[ObjectRef]:
+def definition_note_type_refs(copy_definition: AnyCopyDefinition) -> list[ObjectRef]:
     """The note types a definition triggers on, as references that carry their ids.
 
     Format 1 has only names, so its references come out with null ids and resolve by name,
     which is what that format always did.
     """
-    if is_format_2(copy_definition):
-        stored = (copy_definition.get("triggers") or {}).get("note_types") or []
-    else:
-        stored = definition_note_type_names(copy_definition)
+    stored: Sequence = (
+        (copy_definition.get("triggers") or {}).get("note_types") or []
+        if is_format_2(copy_definition)
+        else definition_note_type_names(copy_definition)
+    )
     return [normalize_ref(value) for value in stored]
 
 
-def definition_deck_refs(copy_definition: Union[CopyDefinition, dict]) -> list[ObjectRef]:
+def definition_deck_refs(copy_definition: AnyCopyDefinition) -> list[ObjectRef]:
     """The decks a definition is limited to, as references. Empty means no limit."""
-    if is_format_2(copy_definition):
-        stored = (copy_definition.get("triggers") or {}).get("deck_names") or []
-    else:
-        stored = definition_deck_names(copy_definition)
+    stored: Sequence = (
+        (copy_definition.get("triggers") or {}).get("deck_names") or []
+        if is_format_2(copy_definition)
+        else definition_deck_names(copy_definition)
+    )
     return [normalize_ref(value) for value in stored]
 
 
-def definition_note_type_names(copy_definition: Union[CopyDefinition, dict]) -> list[str]:
+def definition_note_type_names(copy_definition: AnyCopyDefinition) -> list[str]:
     """The note type names a definition triggers on, as *stored*.
 
     The stored name is what the error messages have always spelled and what a picker falls
@@ -598,60 +659,60 @@ def definition_note_type_names(copy_definition: Union[CopyDefinition, dict]) -> 
             normalize_ref(value)["name"]
             for value in (copy_definition.get("triggers") or {}).get("note_types") or []
         ]
-    stored = copy_definition.get("copy_into_note_types") or ""
+    stored = _format_1(copy_definition).get("copy_into_note_types") or ""
     if not stored or stored == "-":
         return []
     # Split by comma and remove the first wrapping " but keeping the last one
     return [name for name in stored.strip('""').split('", "') if name]
 
 
-def definition_note_types_label(copy_definition: Union[CopyDefinition, dict]) -> Optional[str]:
+def definition_note_types_label(copy_definition: AnyCopyDefinition) -> Optional[str]:
     """The note type names as the error messages have always spelled them, or None."""
     if is_format_2(copy_definition):
         names = definition_note_type_names(copy_definition)
         return '", "'.join(names) if names else None
-    return copy_definition.get("copy_into_note_types", None)
+    return _format_1(copy_definition).get("copy_into_note_types", None)
 
 
-def definition_deck_names(copy_definition: Union[CopyDefinition, dict]) -> list[str]:
+def definition_deck_names(copy_definition: AnyCopyDefinition) -> list[str]:
     """The deck names a definition is limited to, as stored. Empty means no limit."""
     if is_format_2(copy_definition):
         return [
             normalize_ref(value)["name"]
             for value in (copy_definition.get("triggers") or {}).get("deck_names") or []
         ]
-    stored = copy_definition.get("only_copy_into_decks") or ""
+    stored = _format_1(copy_definition).get("only_copy_into_decks") or ""
     if not stored or stored == "-":
         return []
     return [name for name in stored.strip('""').split('", "') if name]
 
 
 def definition_trigger_flag(
-    copy_definition: Union[CopyDefinition, dict], format_2_key: str, format_1_key: str
+    copy_definition: AnyCopyDefinition, format_2_key: str, format_1_key: str
 ) -> bool:
     if is_format_2(copy_definition):
         return bool((copy_definition.get("triggers") or {}).get(format_2_key, False))
     return bool(copy_definition.get(format_1_key, False))
 
 
-def definition_include_subdecks(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_include_subdecks(copy_definition: AnyCopyDefinition) -> bool:
     return definition_trigger_flag(copy_definition, "include_subdecks", "include_subdecks")
 
 
-def definition_runs_on_add(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_runs_on_add(copy_definition: AnyCopyDefinition) -> bool:
     return definition_trigger_flag(copy_definition, "on_add", "copy_on_add")
 
 
-def definition_runs_on_sync(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_runs_on_sync(copy_definition: AnyCopyDefinition) -> bool:
     return definition_trigger_flag(copy_definition, "on_sync", "copy_on_sync")
 
 
-def definition_runs_on_review(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_runs_on_review(copy_definition: AnyCopyDefinition) -> bool:
     return definition_trigger_flag(copy_definition, "on_review", "copy_on_review")
 
 
 def definition_unfocus_fields(
-    copy_definition: Union[CopyDefinition, dict], is_new_note: bool
+    copy_definition: AnyCopyDefinition, is_new_note: bool
 ) -> list[str]:
     """The editor fields whose unfocus runs a format-2 definition, in whole (§8).
 
@@ -661,11 +722,13 @@ def definition_unfocus_fields(
     """
     if not is_format_2(copy_definition):
         return []
-    unfocus = (copy_definition.get("triggers") or {}).get("on_unfocus") or {}
-    return list(unfocus.get("add_fields" if is_new_note else "edit_fields") or [])
+    triggers: Triggers = copy_definition.get("triggers") or {}
+    unfocus: UnfocusTriggers = triggers.get("on_unfocus") or {}
+    fields = unfocus.get("add_fields") if is_new_note else unfocus.get("edit_fields")
+    return list(fields or [])
 
 
-def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
+def definition_effects(copy_definition: AnyCopyDefinition) -> Effects:
     """What this definition does to the collection, in whichever format it is stored.
 
     A format-2 definition carries its `effects` object, computed by the flow analyser
@@ -706,7 +769,7 @@ def definition_effects(copy_definition: Union[CopyDefinition, dict]) -> Effects:
     }
 
 
-def definition_is_add_note_compatible(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_is_add_note_compatible(copy_definition: AnyCopyDefinition) -> bool:
     """Whether this definition edits nothing but the note that has not been added yet.
 
     A note being added has id 0 and no cards, and the add can still be cancelled, so only
@@ -724,36 +787,38 @@ def definition_is_add_note_compatible(copy_definition: Union[CopyDefinition, dic
 
 
 def definition_modifies_trigger_note(
-    copy_definition: CopyDefinition,
+    copy_definition: AnyCopyDefinition,
 ) -> bool:
     if is_format_2(copy_definition):
         return bool(definition_effects(copy_definition).get("edits_trigger", False))
+    legacy = _format_1(copy_definition)
     targets_trigger_note = (
-        copy_definition.get("copy_mode", None) == COPY_MODE_WITHIN_NOTE
-        or copy_definition.get("across_mode_direction", None) == DIRECTION_DESTINATION_TO_SOURCES
+        legacy.get("copy_mode", None) == COPY_MODE_WITHIN_NOTE
+        or legacy.get("across_mode_direction", None) == DIRECTION_DESTINATION_TO_SOURCES
     )
     # definition might only save stuff to files
-    has_field_to_field_defs = len(copy_definition.get("field_to_field_defs", [])) > 0
+    has_field_to_field_defs = len(legacy.get("field_to_field_defs", [])) > 0
     return targets_trigger_note and has_field_to_field_defs
 
 
 def definition_modifies_other_notes(
-    copy_definition: CopyDefinition,
+    copy_definition: AnyCopyDefinition,
 ) -> bool:
     if is_format_2(copy_definition):
         return bool(definition_effects(copy_definition).get("edits_other_notes", False))
+    legacy = _format_1(copy_definition)
     # Destination to sources is Across notes too, but its only destination is the trigger note
     targets_other_notes = (
-        copy_definition.get("copy_mode", None) == COPY_MODE_ACROSS_NOTES
-        and copy_definition.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
+        legacy.get("copy_mode", None) == COPY_MODE_ACROSS_NOTES
+        and legacy.get("across_mode_direction", None) == DIRECTION_SOURCE_TO_DESTINATIONS
     )
     # definition might only save stuff to files
-    has_field_to_field_defs = len(copy_definition.get("field_to_field_defs", [])) > 0
+    has_field_to_field_defs = len(legacy.get("field_to_field_defs", [])) > 0
     # Tagging the found notes edits them as much as a field copy does, so a tags-only
     # definition still has to wait for the note to exist and be written like one
     has_tag_edits = bool(
-        (copy_definition.get("add_tags") or "").strip()
-        or (copy_definition.get("remove_tags") or "").strip()
+        (legacy.get("add_tags") or "").strip()
+        or (legacy.get("remove_tags") or "").strip()
     )
     return targets_other_notes and (has_field_to_field_defs or has_tag_edits)
 
@@ -834,13 +899,13 @@ class Config:
             refresh_all_breakage(definitions, mw.col)
         self.save()
 
-    def add_definition(self, definition: CopyDefinition):
+    def add_definition(self, definition: AnyCopyDefinition):
         if "guid" not in definition:
             definition["guid"] = str(uuid.uuid4())
         self.data["copy_definitions"].append(definition)
         self._save_definitions()
 
-    def insert_definition_at_index(self, index: int, definition: CopyDefinition):
+    def insert_definition_at_index(self, index: int, definition: AnyCopyDefinition):
         """Insert a definition at a specific index in the list"""
         if "guid" not in definition:
             definition["guid"] = str(uuid.uuid4())
@@ -866,7 +931,7 @@ class Config:
                 return
 
     def update_definition_by_name(
-        self, name: str, new_definition: CopyDefinition
+        self, name: str, new_definition: AnyCopyDefinition
     ) -> Union[int, None]:
         for index, definition in enumerate(self.data["copy_definitions"]):
             if definition["definition_name"] == name:
@@ -874,12 +939,12 @@ class Config:
                 return index
         return None
 
-    def update_definition_by_index(self, index: int, definition: CopyDefinition):
+    def update_definition_by_index(self, index: int, definition: AnyCopyDefinition):
         self.data["copy_definitions"][index] = definition
         self._save_definitions()
 
     def update_definition_by_guid(
-        self, guid: str, new_definition: CopyDefinition
+        self, guid: str, new_definition: AnyCopyDefinition
     ) -> Union[int, None]:
         for index, definition in enumerate(self.data["copy_definitions"]):
             if definition["guid"] == guid:

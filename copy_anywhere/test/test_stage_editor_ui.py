@@ -9,6 +9,7 @@ is ordinary logic that happens to live in widgets.
 import copy
 
 import pytest
+from aqt.qt import QLabel
 
 from copy_anywhere.configuration import (
     definition_deck_names,
@@ -46,12 +47,12 @@ from copy_anywhere.ui.stage_editors import (
     tags_to_list,
     tags_to_text,
 )
-from copy_anywhere.ui.stage_list import StageTreeWidget
+from copy_anywhere.ui.stage_list import StageRow, StageTreeWidget
 from copy_anywhere.ui.stage_triggers_editor import selected_names
 
 from copy_anywhere.configuration import CARD_TYPE_SEPARATOR
 
-from conftest import CLOZE, KANJI, VOCAB
+from note_types import CLOZE, KANJI, VOCAB
 
 
 @pytest.fixture
@@ -120,6 +121,171 @@ def test_an_unknown_stage_type_renders_a_row_instead_of_crashing(col, qapp):
     tree = tree_for(col, {"guid": "s", "type": "teleport", "enabled": True})
     assert tree.rows["s"].editor is None
     assert tree.document.problems_for("s")
+
+
+def test_a_row_s_small_buttons_keep_their_labels_under_anki_s_button_padding(col, qapp):
+    # Anki's own stylesheet (aqt/stylesheets.py, `button`) pads every QPushButton by 25px a
+    # side on Windows. The row's buttons were QPushButtons capped at 28px, which left the
+    # label no room at all: in Anki they showed as blank squares. The harness does not load
+    # that stylesheet, so this applies the rule itself.
+    tree = tree_for(col, variable("a", "A"))
+    tree.setStyleSheet("QPushButton { padding-left: 25px; padding-right: 25px; }")
+    tree.resize(900, 400)
+    tree.show()
+    qapp.processEvents()
+    row = tree.rows["a"]
+    for button in (row.expand_button, row.up_button, row.down_button, row.menu_button):
+        assert button.text(), "each small button has a visible label"
+        assert button.toolTip(), f"{button.text()!r} says what it does on hover"
+        assert button.width() >= button.sizeHint().width(), f"{button.text()!r} is clipped"
+    tree.close()
+
+
+def test_each_block_with_its_own_remove_button_is_boxed(col, qapp, qtbot):
+    # Field writes, processes and stages each carry a Remove or Delete, and with nothing
+    # drawn between them it was not clear which block a button belonged to. Each block is a
+    # frame whose outline rule is scoped to its own name, so the labels inside stay unboxed.
+    from aqt.qt import QFrame
+
+    from copy_anywhere.ui.outline import OUTLINE_STYLE
+
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["fields"] = [
+        {
+            "field": field,
+            "value": value_expression(text="x", process_chain=[d.regex_process(field, "y")]),
+            "write_if": "always",
+        }
+        for field in ("Word", "Meaning")
+    ]
+    stage["card_actions"] = [{"card_type_name": f"{VOCAB}{CARD_TYPE_SEPARATOR}Recall"}]
+    tree = tree_for(col, stage, variable("a", "A"))
+    # The card action editor builds its rows from a timer, after the stage editor exists.
+    qtbot.waitUntil(lambda: bool(tree.findChildren(QFrame, "cardActionBox")), timeout=2000)
+    for name, expected in (
+        ("stageRow", 2),
+        ("fieldWriteRow", 2),
+        ("processRow", 2),
+        ("cardActionBox", 1),
+    ):
+        frames = tree.findChildren(QFrame, name)
+        assert len(frames) == expected, name
+        for frame in frames:
+            assert frame.styleSheet() == f"QFrame#{name} {{ {OUTLINE_STYLE} }}"
+
+
+def test_the_card_action_loading_note_is_gone_once_the_actions_load(col, qapp):
+    # It was removed with a bare deleteLater, which inside the definition editor never ran
+    # (the delete waits for the event loop outside the editor's), so "Loading card
+    # actions..." stayed on screen under the first card action's header. The load is driven
+    # here by hand, with no event processing, which is where that delete would wait.
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["card_actions"] = [{"card_type_name": f"{VOCAB}{CARD_TYPE_SEPARATOR}Recall"}]
+    tree = tree_for(col, stage)
+    actions = tree.rows["e"].editor.card_actions
+    indicator = actions.loading_indicator
+    assert indicator is not None and not indicator.isHidden()
+    actions._process_load_queue()
+    assert actions.loading_indicator is None
+    assert indicator.isHidden()
+
+
+def test_a_long_stage_summary_is_cut_off_rather_than_widening_its_row(col, qapp):
+    # A summary listing a dozen field names on one line made the row, and with it the whole
+    # stage list, as wide as the text: the list scrolled sideways past its half of the dialog.
+    def edit_note_row(field_names):
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["fields"] = [
+            {"field": name, "value": value_expression(text="x"), "write_if": "always"}
+            for name in field_names
+        ]
+        tree = tree_for(col, stage)
+        tree.rows["e"].set_expanded(False, announce=False)
+        return tree.rows["e"]
+
+    short = edit_note_row(["Word"])
+    long = edit_note_row([f"sentence-{n}-kanjified-furigana-processed" for n in range(12)])
+    assert len(long.summary.text()) > 300
+    # It needed 3333px on one line. Cut off with "…" where the row ends, it asks for no
+    # more than a short one, and says the rest on hover.
+    assert long.minimumSizeHint().width() == short.minimumSizeHint().width()
+
+
+def test_an_elided_label_shows_what_fits_and_says_the_rest_on_hover(qapp):
+    from copy_anywhere.ui.labels import ElidedLabel
+
+    text = "trigger: " + ", ".join(f"field-{n}" for n in range(40))
+    label = ElidedLabel(text)
+    # Shown, because a hidden widget is sent its resize events only when it is shown.
+    label.show()
+    label.resize(200, label.height())
+
+    shown = QLabel.text(label)
+    assert shown.endswith("…") and len(shown) < len(text)
+    assert label.text() == text
+    assert label.toolTip() == text
+
+    label.resize(label.sizeHint().width() + 10, label.height())
+
+    assert QLabel.text(label) == text
+    assert label.toolTip() == ""
+    label.close()
+
+
+def test_the_editor_s_help_text_wraps_rather_than_widening_it(dialog):
+    # On one line, the Exports panel's help alone set the editor's minimum width to 684px,
+    # and the card actions' to 769px.
+    from aqt.qt import QLabel
+
+    help_texts = [
+        label for label in dialog.inner_widget.findChildren(QLabel)
+        if label.text().startswith("<small>")
+    ]
+    assert len(help_texts) >= 4
+    assert [label.text()[:40] for label in help_texts if not label.wordWrap()] == []
+
+
+def test_a_select_note_editor_offers_the_note_lists_and_writes_its_choices(col, qapp):
+    from copy_anywhere.logic.definition_schema import STAGE_SELECT_NOTE
+
+    select = default_stage(STAGE_SELECT_NOTE, "s")
+    tree = tree_for(col, note_query("q", "Found"), select)
+    editor = tree.rows["s"].editor
+    assert editor.input.findText("Found") >= 0
+
+    editor.input.setCurrentText("Found")
+    editor.result.setText("Picked")
+    editor.if_missing.setCurrentIndex(editor.if_missing.findData("skip_block"))
+    editor.apply()
+
+    stage = tree.document.stage("s")
+    assert stage["input"] == {"binding": "Found"}
+    assert stage["result"] == "Picked"
+    assert stage["if_missing"] == "skip_block"
+    assert stage["index"]["text"] == "0"
+    assert tree.rows["s"].summary.text() == "Picked = note 0 of Found"
+
+
+def test_a_select_card_editor_offers_only_the_card_lists(col, qapp):
+    from copy_anywhere.logic.definition_schema import STAGE_CARD_QUERY, STAGE_SELECT_CARD
+
+    cards = default_stage(STAGE_CARD_QUERY, "c")
+    cards["result"] = "Cards"
+    cards["query"] = value_expression(text="deck:Default")
+    select = default_stage(STAGE_SELECT_CARD, "s")
+    tree = tree_for(col, note_query("q", "Found"), cards, select)
+    editor = tree.rows["s"].editor
+    assert editor.input.findText("Cards") >= 0
+    assert editor.input.findText("Found") < 0
+
+    editor.input.setCurrentText("Cards")
+    editor.result.setText("Picked")
+    editor.apply()
+
+    stage = tree.document.stage("s")
+    assert stage["input"] == {"binding": "Cards"}
+    assert stage["result"] == "Picked"
+    assert tree.rows["s"].summary.text() == "Picked = card 0 of Cards"
 
 
 # -- reorder --------------------------------------------------------------------------
@@ -254,6 +420,66 @@ def test_deleting_a_producer_marks_the_stage_that_used_it(col, qapp):
 def test_a_stage_summary_says_what_it_does(col, qapp):
     tree = tree_for(col, variable("a", "A", "{{trigger.Word}}"))
     assert tree.rows["a"].summary.text() == "A = {{trigger.Word}}"
+
+
+# -- opening size ---------------------------------------------------------------------
+
+
+def _screen(width, height):
+    from aqt.qt import QRect
+
+    return QRect(0, 0, width, height)
+
+
+def test_the_dialog_opens_short_enough_for_its_title_bar_and_buttons():
+    from copy_anywhere.ui.edit_staged_definition_dialog import (
+        TITLE_BAR_ALLOWANCE,
+        initial_size,
+    )
+
+    # As tall as the free area, the title bar above it pushed Save and Cancel off the screen.
+    size = initial_size(_screen(1920, 1040), 870, 325, 20)
+    assert size.height == 1040 - TITLE_BAR_ALLOWANCE
+
+
+def test_the_stage_list_gets_the_width_it_needs_before_the_preview_grows():
+    from copy_anywhere.ui.edit_staged_definition_dialog import initial_size
+
+    # 70% of 1920 split 3:2 gave the list 806 of the 870 it needed, and a horizontal scroll
+    # bar, with half the screen's width still free.
+    size = initial_size(_screen(1920, 1040), 870, 325, 20)
+    assert size.stages_width >= 870
+    assert size.width <= 1920
+    assert size.width - 20 - size.stages_width >= 325
+
+
+def test_a_small_definition_still_opens_at_most_of_the_screen():
+    from copy_anywhere.ui.edit_staged_definition_dialog import MIN_WIDTH_SHARE, initial_size
+
+    size = initial_size(_screen(1920, 1040), 400, 300, 20)
+    assert size.width == int(1920 * MIN_WIDTH_SHARE)
+    assert size.stages_width >= 400
+
+
+def test_on_a_narrow_screen_the_dialog_fits_and_the_preview_keeps_its_width():
+    from copy_anywhere.ui.edit_staged_definition_dialog import initial_size
+
+    size = initial_size(_screen(1000, 700), 870, 325, 20)
+    assert size.width == 1000
+    assert size.stages_width == 1000 - 20 - 325
+
+
+def test_the_open_dialog_fits_on_its_screen(dialog):
+    from aqt.qt import QGuiApplication
+
+    from copy_anywhere.ui.edit_staged_definition_dialog import TITLE_BAR_ALLOWANCE
+
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    assert dialog.height() <= available.height() - TITLE_BAR_ALLOWANCE
+    assert dialog.width() <= available.width()
+    assert available.left() <= dialog.x() and dialog.x() + dialog.width() <= available.right() + 1
 
 
 # -- saving ---------------------------------------------------------------------------
@@ -446,6 +672,46 @@ def test_the_exports_panel_lists_only_root_results(dialog):
     dialog.stage_tree.rows[inner_guid].editor.result.setText("Inner")
     dialog.refresh_status()
     assert [keep.text() for _guid, _result, keep, _name in dialog.exports_editor.rows] == ["M"]
+
+
+def test_a_rebuilt_panel_shows_only_its_current_rows(dialog):
+    # A rebuild before the dialog's own event loop starts (while it is being built, which is
+    # when the first ones happen) used to leave the old rows on screen under the new ones:
+    # deleteLater waits for the loop level it was posted from, which is the one outside the
+    # dialog, so the old rows stayed until the dialog closed. Here no events are processed,
+    # which is the same situation.
+    from aqt.qt import QCheckBox
+
+    dialog.stage_tree.add_stage(STAGE_VARIABLE, None, None)
+    guid = dialog.document.root_block()[0]["guid"]
+    dialog.stage_tree.rows[guid].editor.result.setText("M")
+    dialog.refresh_status()
+    dialog.exports_editor.rebuild()
+    dialog.exports_editor.rebuild()
+    showing = [
+        box.text()
+        for box in dialog.exports_editor.rows_container.findChildren(QCheckBox)
+        if not box.isHidden() and not box.parentWidget().isHidden()
+    ]
+    assert showing == ["M"]
+
+
+def test_a_rebuilt_stage_list_shows_only_its_current_rows(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"))
+    tree.rebuild()
+    tree.rebuild()
+    showing = [
+        row for row in tree.findChildren(StageRow) if not any_ancestor_hidden(row, tree)
+    ]
+    assert sorted(row.guid for row in showing) == ["a", "b"]
+
+
+def any_ancestor_hidden(widget, top) -> bool:
+    while widget is not None and widget is not top:
+        if widget.isHidden():
+            return True
+        widget = widget.parentWidget()
+    return False
 
 
 def test_an_export_defaults_to_the_results_own_name(dialog):

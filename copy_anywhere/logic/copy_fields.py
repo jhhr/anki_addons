@@ -13,8 +13,8 @@ from aqt.qt import QDesktopServices, QUrl
 from aqt.utils import tooltip
 
 from ..configuration import (
+    AnyCopyDefinition,
     Config,
-    CopyDefinition,
     # The trigger accessors live with the config because the hooks and the picker read the
     # same settings, and they must read them the same way whichever format is stored.
     definition_deck_refs,
@@ -44,7 +44,7 @@ from .copy_primitives import (
     take_edited_cards,
 )
 from .definition_migration import MigrationError
-from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
+from .definition_schema import STAGE_CALL_DEFINITION, CopyDefinitionV2, is_format_2, walk_stages
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 from .object_refs import resolve_deck_id, resolve_note_type
@@ -75,7 +75,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def operation_log_name(copy_definitions: Sequence[CopyDefinition]) -> str:
+def operation_log_name(copy_definitions: Sequence[AnyCopyDefinition]) -> str:
     """What to call this run's log file, so a folder of them can be read at a glance.
 
     One definition is named; a picker run over several is counted, because a filename holding
@@ -136,7 +136,7 @@ class CacheResults:
 
 
 
-def definition_queries_collection(copy_definition: Union[CopyDefinition, dict]) -> bool:
+def definition_queries_collection(copy_definition: AnyCopyDefinition) -> bool:
     """Whether the definition searches the collection, which the progress label reports."""
     if is_format_2(copy_definition):
         effects = copy_definition.get("effects") or {}
@@ -145,7 +145,7 @@ def definition_queries_collection(copy_definition: Union[CopyDefinition, dict]) 
 
 
 def make_copy_fields_undo_text(
-    copy_definitions: list[CopyDefinition],
+    copy_definitions: Sequence[AnyCopyDefinition],
     note_count: Optional[int] = None,
     suffix: Optional[str] = "",
 ) -> str:
@@ -169,7 +169,7 @@ def make_copy_fields_undo_text(
 
 
 def copy_fields(
-    copy_definitions: list[CopyDefinition],
+    copy_definitions: Sequence[AnyCopyDefinition],
     note_ids: Optional[Sequence[Union[int, NoteId]]] = None,
     note_ids_per_definition: Optional[list[Sequence[Union[int, NoteId]]]] = None,
     trigger_notes: Optional[Sequence[Note]] = None,
@@ -361,8 +361,8 @@ def copy_fields(
 
 
 def definitions_a_call_may_reach(
-    staged_definition: dict, given: Optional[Sequence[dict]] = None
-) -> Optional[Sequence[dict]]:
+    staged_definition: CopyDefinitionV2, given: Optional[Sequence[AnyCopyDefinition]] = None
+) -> Optional[Sequence[AnyCopyDefinition]]:
     """The definitions a `call_definition` stage can name, loading the config if needed.
 
     A call names any definition in the config by guid, not just the ones this run was asked
@@ -383,8 +383,8 @@ def definitions_a_call_may_reach(
 
 
 def make_call_lookup(
-    copy_definition: Union[CopyDefinition, dict],
-    definitions_for_calls: Optional[Sequence[dict]] = None,
+    copy_definition: AnyCopyDefinition,
+    definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
 ):
     """The `call_definition` lookup for this definition, or None when it calls nothing.
 
@@ -402,7 +402,7 @@ def make_call_lookup(
 
 
 def copy_fields_in_background(
-    copy_definition: CopyDefinition,
+    copy_definition: AnyCopyDefinition,
     copied_into_cards_dict: dict[int, Card],
     copied_into_notes: list[Note],
     results: CacheResults,
@@ -412,7 +412,7 @@ def copy_fields_in_background(
     field_only: Optional[str] = None,
     unfocus_is_add: bool = False,
     progress_title: Optional[str] = None,
-    definitions_for_calls: Optional[Sequence[dict]] = None,
+    definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
 ) -> CacheResults:
     """
     Function run to copy stuff into many notes at once.
@@ -635,7 +635,7 @@ def note_passes_deck_whitelist(
 
 
 def copy_for_single_trigger_note(
-    copy_definition: Union[CopyDefinition, dict],
+    copy_definition: AnyCopyDefinition,
     trigger_note: Note,
     is_sync: Optional[bool] = False,
     copied_into_notes: Optional[list[Note]] = None,
@@ -645,7 +645,7 @@ def copy_for_single_trigger_note(
     deck_id: Optional[int] = None,
     file_cache: Optional[dict] = None,
     progress_updater: Optional[ProgressUpdater] = None,
-    definitions_for_calls: Optional[Sequence[dict]] = None,
+    definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
     definition_lookup=None,
     add_note_compatible_only: bool = False,
 ) -> bool:
@@ -739,7 +739,7 @@ def copy_for_single_trigger_note(
     )
 
 
-def make_definition_lookup(definitions: Sequence[dict]):
+def make_definition_lookup(definitions: Sequence[AnyCopyDefinition]):
     """Map guid -> format-2 definition, for `call_definition` stages to resolve against.
 
     Migration happens when a guid is actually looked up, not up front. The config holds

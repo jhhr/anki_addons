@@ -30,6 +30,8 @@ def word_highlight_process(
         if not word_to_highlight:
             logger.error("Error in word_highlight: word_field '%s' not found in note.", word_field)
     logger.debug("word_to_highlight: %s, text: %s", word_to_highlight, text)
-    result = word_highlight(text, word_to_highlight)
+    # `word_highlight` returns the text unchanged for a missing word, but is annotated as
+    # taking str only; that annotation lives in the jp_text_processing submodule.
+    result = word_highlight(text, word_to_highlight)  # type: ignore[arg-type]
     logger.debug("word_highlight result: %s", result)
     return result

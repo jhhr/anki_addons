@@ -15,7 +15,7 @@ The expression's process chain runs after the value is produced, unchanged from 
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence, cast
 
 from anki.cards import Card
 from anki.notes import Note
@@ -32,20 +32,25 @@ from ..copy_primitives import apply_process_chain
 
 from ..definition_schema import (
     CARD_PROPERTY_NAMES,
+    Stage,
     ValueExpression,
     expression_is_code,
     expression_source,
     unclosed_reference_problem,
 )
-from .context import ExecutionSession, StageError
+from .context import ExecutionSession, NothingSelected, StageError
 from .facades import (
     CardFacade,
+    CardListFacade,
     NoteCardsFacade,
     NoteFacade,
     code_helpers,
     from_facade,
     to_facade,
 )
+
+if TYPE_CHECKING:
+    from ...configuration import AnyProcess
 
 
 INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
@@ -81,7 +86,7 @@ class ExpressionContext:
         source_note: Note,
         destination_note: Optional[Note] = None,
         multiple_note_types: bool = False,
-        stage: Optional[dict] = None,
+        stage: Optional[Stage] = None,
         purpose: str = "",
     ) -> None:
         self.session = session
@@ -197,7 +202,11 @@ def resolve_references(text: str, ctx: ExpressionContext) -> str:
                 return _note_reference(value, rest, ctx)
             if isinstance(value, Card):
                 return _card_reference(value, rest, ctx, card_values)
-            if value is None:
+            if isinstance(value, NothingSelected):
+                # A select stage found nothing at its index, and "no note" or "no card" is
+                # empty text wherever one of its values is read.
+                return ""
+            if head not in ctx.environment:
                 raise ctx.error(f"'{head}' is not a binding in scope")
             raise ctx.error(f"'{head}' is not a note or card, so '{reference}' has no value")
         if head in ctx.environment:
@@ -239,8 +248,13 @@ def code_globals(ctx: ExpressionContext) -> dict:
         # holds something other than a note says nothing about which cards are meant, so
         # `cards` stays the source note's then. Fetched only if the code reads it.
         in_scope = ctx.environment.get("note")
-        cards_note = in_scope if isinstance(in_scope, Note) else ctx.source_note
-        globals_dict["cards"] = NoteCardsFacade(cards_note, ctx.session)
+        if isinstance(in_scope, NothingSelected):
+            # A Select Note called `note` that found nothing: no note, so no cards. Falling
+            # back to the source note's would hand code the trigger's cards as that note's.
+            globals_dict["cards"] = CardListFacade([], ctx.session)
+        else:
+            cards_note = in_scope if isinstance(in_scope, Note) else ctx.source_note
+            globals_dict["cards"] = NoteCardsFacade(cards_note, ctx.session)
     return globals_dict
 
 
@@ -277,7 +291,9 @@ def run_process_chain(value: str, expression: ValueExpression, ctx: ExpressionCo
     if not process_chain:
         return value
     processed = apply_process_chain(
-        process_chain=process_chain,
+        # The schema carries process-chain entries as opaque dicts; they are format 1's
+        # process shapes, which is what the chain reads.
+        process_chain=cast("Sequence[AnyProcess]", process_chain),
         text=value,
         notes=[ctx.source_note],
         dest_note=ctx.destination_note if ctx.destination_note is not None else ctx.source_note,

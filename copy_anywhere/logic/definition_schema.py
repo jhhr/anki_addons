@@ -20,7 +20,7 @@ binding exists, whether its type fits the action, which effects a definition has
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, Sequence, TypedDict, cast
 
 from typing_extensions import TypeGuard
 
@@ -218,7 +218,10 @@ def unclosed_reference_problem(reference: str) -> Optional[str]:
 
 
 def result_name_problem(
-    name: Any, what: str = "Result name", relaxed: bool = False
+    name: Any,
+    what: str = "Result name",
+    relaxed: bool = False,
+    allowed_reserved: Iterable[str] = (),
 ) -> Optional[str]:
     """The reason `name` cannot be a result name, or None when it can.
 
@@ -235,7 +238,7 @@ def result_name_problem(
             f"{what} '{name}' is not an identifier"
             " (letters, digits and underscore, not starting with a digit)"
         )
-    if name in RESERVED_BINDING_NAMES:
+    if name in RESERVED_BINDING_NAMES and name not in allowed_reserved:
         return f"{what} '{name}' is a reserved binding name"
     return None
 
@@ -253,6 +256,10 @@ class ValueExpression(TypedDict, total=False):
     text: str
     code: str
     process_chain: Sequence[dict]
+    # Migration bookkeeping that `promote_expression` strips before a definition leaves the
+    # migrator, and still reads on an expression a 0.3.0 start stored unpromoted.
+    syntax_version: int
+    legacy_isolated_variables: bool
 
 
 def value_expression(
@@ -273,7 +280,7 @@ def value_expression(
 
 
 def expression_is_code(expression: Optional[ValueExpression]) -> bool:
-    return bool(expression) and expression.get("mode") == MODE_CODE
+    return expression is not None and expression.get("mode") == MODE_CODE
 
 
 def expression_source(expression: ValueExpression) -> str:
@@ -290,6 +297,8 @@ def expression_source(expression: ValueExpression) -> str:
 STAGE_VARIABLE = "variable"
 STAGE_NOTE_QUERY = "note_query"
 STAGE_CARD_QUERY = "card_query"
+STAGE_SELECT_NOTE = "select_note"
+STAGE_SELECT_CARD = "select_card"
 STAGE_EDIT_NOTE = "edit_note"
 STAGE_EDIT_CARD = "edit_card"
 STAGE_READ_FILE = "read_file"
@@ -306,6 +315,8 @@ ALL_STAGE_TYPES = (
     STAGE_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_CARD_QUERY,
+    STAGE_SELECT_NOTE,
+    STAGE_SELECT_CARD,
     STAGE_EDIT_NOTE,
     STAGE_EDIT_CARD,
     STAGE_READ_FILE,
@@ -318,6 +329,25 @@ ALL_STAGE_TYPES = (
     STAGE_CONDITION,
     STAGE_CALL_DEFINITION,
 )
+
+#: The stages that pick one item of a list by index: a note of a NoteList, a card of a
+#: CardList.
+SELECT_STAGE_TYPES = (STAGE_SELECT_NOTE, STAGE_SELECT_CARD)
+
+#: The reserved name each select stage may still call its result. What it binds is one
+#: item, the way a loop's item is, and a loop may call its item `note` or `card`; a migrated
+#: Destination to sources definition that reads one source note depends on `note` meaning
+#: that note.
+SELECT_RESERVED_NAMES = {
+    STAGE_SELECT_NOTE: frozenset({"note"}),
+    STAGE_SELECT_CARD: frozenset({"card"}),
+}
+
+#: The name a select stage's index code gets its input list under, besides the list's own
+#: name, so that code can be written without knowing what the query was called. For cards
+#: it is `cards`, which in code otherwise means the note's cards: here it is the list
+#: being picked from, as any binding of that name would be.
+SELECT_LIST_NAMES = {STAGE_SELECT_NOTE: "notes", STAGE_SELECT_CARD: "cards"}
 
 #: Stages that contain child blocks, mapped to the keys those blocks live under.
 STRUCTURAL_STAGE_BODY_KEYS: dict[str, tuple[str, ...]] = {
@@ -348,16 +378,13 @@ class Selection(TypedDict, total=False):
 
 class BindingRef(TypedDict, total=False):
     binding: str
-
-
-class Stage(TypedDict, total=False):
-    guid: str
-    type: str
-    name: str
-    enabled: bool
+    # Only a `store` target has one: "list", naming the list the value is appended to.
+    kind: str
 
 
 class FieldWrite(TypedDict, total=False):
+    # Only a migrated write has one: the format-1 field definition's own guid, kept.
+    guid: str
     field: str
     value: ValueExpression
     write_if: Literal["always", "empty"]
@@ -370,6 +397,87 @@ class FieldWrite(TypedDict, total=False):
 class TagWrites(TypedDict, total=False):
     add: list[str]
     remove: list[str]
+
+
+class CallOutput(TypedDict, total=False):
+    export: str
+    result: str
+
+
+# Every key any stage type can carry, each optional: which of them a stage has depends on its
+# `type`, and `validate_stage_structure` is what checks that the right ones are there. Declared
+# as one shape rather than one per type so that code reading a stage of a known type can use
+# its keys without a cast at every access. Functional syntax because a condition's branch is
+# called `else`.
+Stage = TypedDict(
+    "Stage",
+    {
+        # Every stage.
+        "guid": str,
+        "type": str,
+        "name": str,
+        "enabled": bool,
+        # The single result a variable, query, read_file, list_variable or reduce binds.
+        "result": str,
+        # variable, store and reduce.
+        "value": ValueExpression,
+        # note_query and card_query.
+        "query": ValueExpression,
+        "selection": Selection,
+        "if_empty": str,
+        "error_if_empty": bool,
+        "counts_as_sources": bool,
+        # edit_note, edit_card and store.
+        "target": BindingRef,
+        "fields": list[FieldWrite],
+        "tags": TagWrites,
+        "read_semantics": str,
+        "card_actions": list[dict],
+        # read_file and write_file.
+        "filename": ValueExpression,
+        "content": ValueExpression,
+        "if_missing": str,
+        "overwrite": bool,
+        "skip_if_exists": bool,
+        # list_variable.
+        "item_type": str,
+        # select_note and select_card: which item of the input list, as a number or code
+        # returning one.
+        "index": ValueExpression,
+        # select_note, select_card, the loops and reduce.
+        "input": BindingRef,
+        "item_binding": str,
+        "note_binding": str,
+        "body": "list[Stage]",
+        "accumulator_binding": str,
+        "initial": ValueExpression,
+        "operation": str,
+        "separator": str,
+        # condition.
+        "predicate": ValueExpression,
+        "predicate_kind": str,
+        "predicate_target": BindingRef,
+        "only_on_sync": bool,
+        "unmatched_skips_trigger": bool,
+        "then": "list[Stage]",
+        "else": "list[Stage]",
+        # call_definition.
+        "definition_guid": str,
+        "trigger": BindingRef,
+        "outputs": list[CallOutput],
+        # Migration bookkeeping: which binding format 1 read a value from and wrote it to.
+        "legacy_source": BindingRef,
+        "legacy_destination": BindingRef,
+        # A migrated field write's gate, copied onto the stages that only exist to feed it so
+        # they decline when it would (`runs_on_unfocus`, `feeds_a_filled_field`).
+        "unfocus_trigger_fields": list[str],
+        "unfocus_when_edit": bool,
+        "unfocus_when_add": bool,
+        "write_if": Literal["always", "empty"],
+        "write_if_field": str,
+    },
+    total=False,
+)
 
 
 class Export(TypedDict, total=False):
@@ -412,6 +520,14 @@ class Triggers(TypedDict, total=False):
     on_unfocus: UnfocusTriggers
 
 
+class LegacyBehaviour(TypedDict, total=False):
+    """What a migrated definition keeps of format 1's behaviour that no stage can express."""
+
+    trigger_is_source: bool
+    select_card_separator: Optional[str]
+    query_note_index_default: Optional[int]
+
+
 class CopyDefinitionV2(TypedDict, total=False):
     guid: str
     format_version: int
@@ -420,6 +536,10 @@ class CopyDefinitionV2(TypedDict, total=False):
     stages: list[Stage]
     exports: list[Export]
     effects: Effects
+    # Only on a definition the migrator produced.
+    migrated_from_format: int
+    legacy: LegacyBehaviour
+    migration_warnings: list[str]
     #: Field renames the reconcile pass would not follow, with why (`rename_reconcile.py`).
     broken_by_rename: list[dict]
 
@@ -463,7 +583,7 @@ def stage_body_blocks(stage: Stage) -> list[tuple[str, list[Stage]]]:
     keys = STRUCTURAL_STAGE_BODY_KEYS.get(stage.get("type", ""), ())
     blocks = []
     for key in keys:
-        block = stage.get(key)  # type: ignore[misc]
+        block = stage.get(key)
         blocks.append((key, block if isinstance(block, list) else []))
     return blocks
 
@@ -501,6 +621,8 @@ RESULT_PRODUCING_STAGES = {
     STAGE_NOTE_QUERY: "result",
     STAGE_CARD_QUERY: "result",
     STAGE_READ_FILE: "result",
+    STAGE_SELECT_NOTE: "result",
+    STAGE_SELECT_CARD: "result",
     STAGE_LIST_VARIABLE: "result",
     STAGE_REDUCE: "result",
 }
@@ -512,8 +634,13 @@ def stage_result_name(stage: Stage) -> Optional[str]:
     key = RESULT_PRODUCING_STAGES.get(stage.get("type", ""))
     if key is None:
         return None
-    name = stage.get(key)  # type: ignore[misc]
+    name = stage.get(key)
     return name if isinstance(name, str) else None
+
+
+def result_reserved_names_allowed(stage: Stage) -> frozenset:
+    """The reserved names this stage may nonetheless give its result."""
+    return SELECT_RESERVED_NAMES.get(stage.get("type", ""), frozenset())
 
 
 def stage_result_names(stage: Stage) -> list[str]:
@@ -524,7 +651,7 @@ def stage_result_names(stage: Stage) -> list[str]:
     """
     if stage.get("type") == STAGE_CALL_DEFINITION:
         names = []
-        for output in stage.get("outputs", []) or []:  # type: ignore[attr-defined]
+        for output in stage.get("outputs", []) or []:
             result = output.get("result") if isinstance(output, dict) else None
             if isinstance(result, str) and result:
                 names.append(result)
@@ -584,7 +711,7 @@ class SchemaProblem:
 def _require_expression(
     stage: Stage, key: str, problems: list[SchemaProblem], required: bool = True
 ) -> None:
-    expression = stage.get(key)  # type: ignore[misc]
+    expression = stage.get(key)
     guid, stage_type = stage.get("guid"), stage.get("type")
     if expression is None:
         if required:
@@ -606,7 +733,7 @@ def _require_expression(
 
 
 def _require_binding(stage: Stage, key: str, problems: list[SchemaProblem]) -> None:
-    ref = stage.get(key)  # type: ignore[misc]
+    ref = stage.get(key)
     guid, stage_type = stage.get("guid"), stage.get("type")
     if not isinstance(ref, dict) or not isinstance(ref.get("binding"), str) or not ref["binding"]:
         problems.append(SchemaProblem(f"'{key}.binding' is missing", guid, stage_type))
@@ -616,14 +743,18 @@ def _require_result_name(
     stage: Stage, problems: list[SchemaProblem], relaxed: bool = False
 ) -> None:
     guid, stage_type = stage.get("guid"), stage.get("type")
-    problem = result_name_problem(stage_result_name(stage), relaxed=relaxed)
+    problem = result_name_problem(
+        stage_result_name(stage),
+        relaxed=relaxed,
+        allowed_reserved=result_reserved_names_allowed(stage),
+    )
     if problem:
         problems.append(SchemaProblem(problem, guid, stage_type))
 
 
 def _validate_selection(stage: Stage, problems: list[SchemaProblem]) -> None:
     guid, stage_type = stage.get("guid"), stage.get("type")
-    selection = stage.get("selection", {})  # type: ignore[misc]
+    selection = stage.get("selection", {})
     if not isinstance(selection, dict):
         problems.append(SchemaProblem("'selection' is not an object", guid, stage_type))
         return
@@ -654,7 +785,7 @@ def _validate_selection(stage: Stage, problems: list[SchemaProblem]) -> None:
 def _validate_choice(
     stage: Stage, key: str, choices: Sequence[str], default: str, problems: list[SchemaProblem]
 ) -> None:
-    value = stage.get(key, default)  # type: ignore[misc]
+    value = stage.get(key, default)
     if value not in choices:
         problems.append(
             SchemaProblem(
@@ -666,16 +797,19 @@ def _validate_choice(
 
 
 def validate_stage_structure(
-    stage: Any, problems: list[SchemaProblem], relaxed_names: bool = False
+    raw_stage: Any, problems: list[SchemaProblem], relaxed_names: bool = False
 ) -> None:
     """Check one stage's own shape. Bindings and types are the analyser's job.
 
     `relaxed_names` is the definition's `names_are_relaxed` answer, passed down because a
     stage does not know which definition it belongs to.
     """
-    if not isinstance(stage, dict):
-        problems.append(SchemaProblem(f"stage is not an object: {stage!r}"))
+    if not isinstance(raw_stage, dict):
+        problems.append(SchemaProblem(f"stage is not an object: {raw_stage!r}"))
         return
+    # Read as a stage from here on: every key it may have is optional, and each is checked
+    # below before it is trusted.
+    stage = cast(Stage, raw_stage)
     guid = stage.get("guid")
     stage_type = stage.get("type")
     if not isinstance(guid, str) or not guid:
@@ -693,6 +827,11 @@ def validate_stage_structure(
         _require_expression(stage, "query", problems)
         _validate_selection(stage, problems)
         _validate_choice(stage, "if_empty", IF_EMPTY_POLICIES, "continue", problems)
+    elif stage_type in SELECT_STAGE_TYPES:
+        _require_binding(stage, "input", problems)
+        _require_result_name(stage, problems, relaxed_names)
+        _require_expression(stage, "index", problems)
+        _validate_choice(stage, "if_missing", IF_MISSING_POLICIES, "empty", problems)
     elif stage_type == STAGE_EDIT_NOTE:
         _require_binding(stage, "target", problems)
         fields = stage.get("fields", [])
@@ -754,7 +893,7 @@ def validate_stage_structure(
         for key in ("item_binding",) + (
             ("note_binding",) if stage_type == STAGE_FOR_EACH_CARD else ()
         ):
-            problem = result_name_problem(stage.get(key), key)  # type: ignore[misc]
+            problem = result_name_problem(stage.get(key), key)
             # Loop bindings are allowed to use the reserved loop names -- that is what they
             # are for -- but must still be identifiers.
             if problem and "reserved" not in problem:
@@ -767,7 +906,7 @@ def validate_stage_structure(
         _require_expression(stage, "value", problems)
         _require_expression(stage, "initial", problems, required=False)
         for key in ("item_binding", "accumulator_binding"):
-            problem = result_name_problem(stage.get(key), key)  # type: ignore[misc]
+            problem = result_name_problem(stage.get(key), key)
             if problem and "reserved" not in problem:
                 problems.append(SchemaProblem(problem, guid, stage_type))
     elif stage_type == STAGE_CONDITION:

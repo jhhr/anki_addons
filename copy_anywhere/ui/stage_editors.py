@@ -11,7 +11,7 @@ is. What is new here is only the arrangement: a stage names the note it reads an
 it writes, so every editor starts with the binding it acts on.
 """
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
 from aqt import mw
@@ -36,6 +36,7 @@ from ..configuration import (
 )
 from ..logic.definition_schema import (
     CopyDefinitionV2,
+    FieldWrite,
     IF_EMPTY_POLICIES,
     IF_MISSING_POLICIES,
     LIST_ITEM_TYPE_NAMES,
@@ -51,6 +52,8 @@ from ..logic.definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_CARD,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -65,8 +68,14 @@ from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
+from .discard import discard_widget
 from .card_actions_editor import CardActionsEditor
-from .code_notices import FILE_CODE_NOTICE
+from .outline import outline_frame
+from .code_notices import (
+    FILE_CODE_NOTICE,
+    SELECT_CARD_CODE_NOTICE,
+    SELECT_NOTE_CODE_NOTICE,
+)
 from .stage_edit_state import StageEditState
 from .stage_editor_context import NoteTypesFor, StageEditorContext
 from .stage_triggers_editor import quoted_items, selected_names
@@ -96,6 +105,20 @@ IF_MISSING_LABELS = {
     "skip_block": "stop running the rest of this block",
     "error": "fail the definition",
 }
+
+
+def _select_if_missing_labels(is_note: bool) -> dict[str, str]:
+    if is_note:
+        # A call or a search condition given no note fails the definition: said where the
+        # choice is made rather than only when a run hits it. Neither takes a card.
+        empty = (
+            "select no note: its fields read as empty and editing it does nothing,"
+            " but a call or a search on it fails"
+        )
+    else:
+        empty = "select no card: its values read as empty, and editing it does nothing"
+    return {**IF_MISSING_LABELS, "empty": empty}
+
 
 #: Said under both file stages' name box (`normalize_media_filename` adds the prefix).
 MEDIA_PREFIX_NOTE = (
@@ -531,8 +554,9 @@ class FieldWriteRow(QFrame):
     changed = pyqtSignal()
     removed = pyqtSignal(object)
 
-    def __init__(self, parent: "EditNoteStageEditor", field_write: dict) -> None:
+    def __init__(self, parent: "EditNoteStageEditor", field_write: FieldWrite) -> None:
         super().__init__(parent)
+        outline_frame(self, "fieldWriteRow")
         self.field_write = field_write
         self.owner = parent
         layout = QVBoxLayout(self)
@@ -615,9 +639,12 @@ class FieldWriteRow(QFrame):
         box.setCurrentText(", ".join(quoted_items(stored)))
         box.blockSignals(False)
 
-    def apply(self) -> dict:
+    def apply(self) -> FieldWrite:
         self.field_write["field"] = self.field.currentText()
-        self.field_write["write_if"] = combo_value(self.write_if)
+        # Qt hands item data back untyped; this combo is built from WRITE_IF_POLICIES only.
+        self.field_write["write_if"] = cast(
+            Literal["always", "empty"], combo_value(self.write_if)
+        )
         if self.unfocus_fields is not None:
             self.field_write["unfocus_trigger_fields"] = selected_names(self.unfocus_fields)
         self.value.apply()
@@ -661,7 +688,7 @@ class EditNoteStageEditor(StageEditor):
         tags = stage.setdefault("tags", {"add": [], "remove": []})
         self.tag_editor = TagEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {  # type: ignore[arg-type]
                 "add_tags": tags_to_text(tags.get("add", [])),
                 "remove_tags": tags_to_text(tags.get("remove", [])),
@@ -674,7 +701,7 @@ class EditNoteStageEditor(StageEditor):
 
         self.card_actions = CardActionsEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
         )
         self.card_actions.initialize_ui_state()
@@ -689,7 +716,7 @@ class EditNoteStageEditor(StageEditor):
         self.state.set_target_is_trigger(name == "trigger")
         self.notify()
 
-    def _add_field_row(self, field_write: dict) -> FieldWriteRow:
+    def _add_field_row(self, field_write: FieldWrite) -> FieldWriteRow:
         row = FieldWriteRow(self, field_write)
         row.changed.connect(self.changed)
         row.removed.connect(self._on_remove_field)
@@ -698,7 +725,7 @@ class EditNoteStageEditor(StageEditor):
         return row
 
     def _on_add_field(self) -> None:
-        field_write = {"field": "", "value": value_expression(), "write_if": "always"}
+        field_write: FieldWrite = {"field": "", "value": value_expression(), "write_if": "always"}
         self.stage.setdefault("fields", []).append(field_write)
         self._add_field_row(field_write)
         self.changed.emit()
@@ -709,7 +736,7 @@ class EditNoteStageEditor(StageEditor):
         if row.field_write in fields:
             fields.remove(row.field_write)
         self.fields_layout.removeWidget(row)
-        row.deleteLater()
+        discard_widget(row)
         self.changed.emit()
 
     def apply(self):
@@ -749,7 +776,7 @@ class EditCardStageEditor(StageEditor):
         )
         self.card_actions = CardActionsEditor(
             self,
-            self.state,  # type: ignore[arg-type]
+            self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
             single_card_mode=True,
         )
@@ -765,6 +792,53 @@ class EditCardStageEditor(StageEditor):
     def set_context(self, context):
         super().set_context(context)
         self.card_actions.update_code_editor_options()
+
+
+class SelectStageEditor(StageEditor):
+    """One note of a note list, or one card of a card list, so that the rest of the
+    definition can use it as a note or a card."""
+
+    def __init__(self, parent, stage, context, environment):
+        super().__init__(parent, stage, context, environment)
+        is_note = stage.get("type") == STAGE_SELECT_NOTE
+        what, items = ("note", "notes") if is_note else ("card", "cards")
+        self.result = name_edit(self, stage.get("result", ""), "A name, e.g. Picked")
+        self.result.textChanged.connect(self.notify)
+        self.add_row(f"Call the {what}", self.result)
+        self.input = binding_combo(
+            self,
+            context.note_list_bindings if is_note else context.card_list_bindings,
+            (stage.get("input") or {}).get("binding", ""),
+            f"Which list of {items}",
+        )
+        self.input.currentTextChanged.connect(self.notify)
+        self.add_row(f"From the {items} in", self.input)
+        self.index = self.expression_editor(
+            stage.setdefault("index", value_expression(text="0")),
+            "Which one",
+            description=(
+                f"A number: 0 is the first {what}, 1 the second, -1 the last. As code,"
+                f" return the number, or None to select no {what}; the list is `{items}`."
+            ),
+            notice=SELECT_NOTE_CODE_NOTICE if is_note else SELECT_CARD_CODE_NOTICE,
+            # A position, not text: no process has anything to do to it.
+            allow_process_chain=False,
+        )
+        self.form.addRow(self.index)
+        self.if_missing = labelled_combo(
+            self,
+            IF_MISSING_POLICIES,
+            _select_if_missing_labels(is_note),
+            stage.get("if_missing", "empty"),
+        )
+        self.if_missing.currentIndexChanged.connect(self.notify)
+        self.add_row(f"If no {what} is there", self.if_missing)
+
+    def apply(self):
+        super().apply()
+        self.stage["input"] = {"binding": self.input.currentText()}
+        self.stage["if_missing"] = combo_value(self.if_missing)
+        self.stage["result"] = self.result.text().strip()
 
 
 class ReadFileStageEditor(StageEditor):
@@ -1164,7 +1238,7 @@ class CallDefinitionStageEditor(StageEditor):
             item = self.outputs_layout.takeAt(0)
             widget = item.widget() if item else None
             if widget is not None:
-                widget.deleteLater()
+                discard_widget(widget)
         self.output_rows = []
         callee = self._callee()
         bound = {
@@ -1238,6 +1312,8 @@ STAGE_EDITOR_CLASSES: dict[str, Callable[..., StageEditor]] = {
     STAGE_VARIABLE: VariableStageEditor,
     STAGE_NOTE_QUERY: QueryStageEditor,
     STAGE_CARD_QUERY: QueryStageEditor,
+    STAGE_SELECT_NOTE: SelectStageEditor,
+    STAGE_SELECT_CARD: SelectStageEditor,
     STAGE_EDIT_NOTE: EditNoteStageEditor,
     STAGE_EDIT_CARD: EditCardStageEditor,
     STAGE_READ_FILE: ReadFileStageEditor,

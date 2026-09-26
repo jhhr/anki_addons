@@ -7,9 +7,9 @@ match what the addon's own editor writes for a new definition, so a test that na
 is exercising the out-of-the-box configuration rather than an invented one.
 """
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
-from conftest import VOCAB
+from note_types import VOCAB
 
 CARD_TYPE_SEPARATOR = "<::>"
 
@@ -284,6 +284,40 @@ def card_query(result: str, query: str, strategy: str = "all", count=None, **ext
     )
 
 
+def select_note(
+    binding: str,
+    result: str,
+    index: Optional[dict] = None,
+    if_missing: str = "empty",
+    **extra: Any,
+) -> dict:
+    return _stage(
+        "select_note",
+        input={"binding": binding},
+        index=index or text("0"),
+        if_missing=if_missing,
+        result=result,
+        **extra,
+    )
+
+
+def select_card(
+    binding: str,
+    result: str,
+    index: Optional[dict] = None,
+    if_missing: str = "empty",
+    **extra: Any,
+) -> dict:
+    return _stage(
+        "select_card",
+        input={"binding": binding},
+        index=index or text("0"),
+        if_missing=if_missing,
+        result=result,
+        **extra,
+    )
+
+
 def write(field: str, value: dict, write_if: str = "always") -> dict:
     return {"field": field, "value": value, "write_if": write_if}
 
@@ -401,6 +435,7 @@ def staged(
     **trigger_extra: Any,
 ) -> dict:
     """A format-2 definition with derived `effects`, as a saved one would carry."""
+    from copy_anywhere.logic.definition_schema import CopyDefinitionV2
     from copy_anywhere.logic.flow_analysis import compute_effects
 
     triggers = {
@@ -427,5 +462,6 @@ def staged(
         "stages": stages or [],
         "exports": exports or [],
     }
-    definition["effects"] = compute_effects(definition)
+    # Built as a plain dict like every other builder here, so a test can add or break any key.
+    definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
     return definition

@@ -41,7 +41,7 @@ from aqt.editor import EditorMode
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from note_types import KANJI, VOCAB
 from copy_anywhere.hooks import note_hooks
 from copy_anywhere.hooks.note_hooks import (
     editor_for_note_id,

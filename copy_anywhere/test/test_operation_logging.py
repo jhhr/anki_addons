@@ -18,7 +18,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere import logging_setup
 from copy_anywhere.logic import copy_fields as copy_fields_module
 from copy_anywhere.logic.copy_fields import copy_fields, operation_log_name

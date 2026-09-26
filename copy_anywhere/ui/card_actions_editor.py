@@ -1,5 +1,5 @@
 import html
-from typing import Optional, Dict
+from typing import Any, Dict, Mapping, Optional
 import uuid
 
 from anki.consts import MODEL_CLOZE
@@ -19,15 +19,7 @@ from aqt.qt import (
     QLineEdit,
     QTimer,
     pyqtSignal,
-    qtmajor,
 )
-
-if qtmajor > 5:
-    QFrameStyledPanel = QFrame.Shape.StyledPanel
-    QFrameShadowRaised = QFrame.Shadow.Raised
-else:
-    QFrameStyledPanel = QFrame.StyledPanel  # type: ignore
-    QFrameShadowRaised = QFrame.Raised  # type: ignore
 
 from ..configuration import (
     CARD_TYPE_SEPARATOR,
@@ -48,7 +40,10 @@ from ..logic.object_refs import (
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
+from .discard import discard_widget
+from .labels import wrapping
 from .code_notices import CARD_ACTION_CODE_NOTICE
+from .outline import outline_frame
 from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
@@ -138,7 +133,7 @@ class CardActionsEditor(QWidget):
         self.setLayout(self.vbox)
 
         # Add description label
-        self.description_label = QLabel(self)
+        self.description_label = wrapping(QLabel(self))
         self.vbox.addWidget(self.description_label)
 
         # Container for all action editors (displayed inline)
@@ -175,8 +170,9 @@ class CardActionsEditor(QWidget):
         self._missing_card_types: set[str] = set()
 
         # Load existing card actions from copy_definition
-        if copy_definition and copy_definition.get("card_actions"):
-            for action in copy_definition["card_actions"]:
+        stored_actions = copy_definition.get("card_actions") if copy_definition else None
+        if stored_actions:
+            for action in stored_actions:
                 if single_card_mode:
                     key = action.get("guid") or str(uuid.uuid4())
                     action["guid"] = key
@@ -268,7 +264,7 @@ class CardActionsEditor(QWidget):
     def _finish_loading_initial_actions(self):
         if self.loading_indicator is not None:
             self.actions_layout.removeWidget(self.loading_indicator)
-            self.loading_indicator.deleteLater()
+            discard_widget(self.loading_indicator)
             self.loading_indicator = None
         self._building_initial_actions = False
         self._loading_initial_actions = False
@@ -541,17 +537,18 @@ class CardActionsEditor(QWidget):
 
         # Create a frame for the action editor
         frame = QFrame(self.actions_container_widget)
-        frame.setFrameShape(QFrameStyledPanel)
-        frame.setFrameShadow(QFrameShadowRaised)
+        outline_frame(frame, "cardActionBox")
         frame_layout = QVBoxLayout(frame)
         self.actions_layout.addWidget(frame)
 
         # Header
-        header = QLabel(
-            "<h3>Card action</h3>"
-            if self.single_card_mode
-            else f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
-            frame,
+        header = wrapping(
+            QLabel(
+                "<h3>Card action</h3>"
+                if self.single_card_mode
+                else f"<h3>Actions for card type: <em>{html.escape(card_type_name)}</em></h3>",
+                frame,
+            )
         )
         frame_layout.addWidget(header)
 
@@ -579,7 +576,9 @@ class CardActionsEditor(QWidget):
             deck_combo.addItem(deck_name_and_id.name)
         current_deck = action.get("change_deck")
         if current_deck:
-            index = deck_combo.findText(current_deck)
+            # A deck id rather than a name can only come from a hand-edited config; as text it
+            # finds nothing and the combo stays on "-", where PyQt raised TypeError.
+            index = deck_combo.findText(str(current_deck))
             if index >= 0:
                 deck_combo.setCurrentIndex(index)
         else:
@@ -803,7 +802,7 @@ class CardActionsEditor(QWidget):
         else:
             set_desired_retention = None
 
-        existing = self.card_actions.get(card_type_name, {})
+        existing: Mapping[str, Any] = self.card_actions.get(card_type_name, {})
         self.card_actions[card_type_name] = {
             "guid": existing.get("guid", str(uuid.uuid4())),
             # In single-card mode the key is the action's own guid, not a card type, and
@@ -831,7 +830,7 @@ class CardActionsEditor(QWidget):
         if ui_components is not None:
             frame = ui_components["frame"]
             self.actions_layout.removeWidget(frame)
-            frame.deleteLater()
+            discard_widget(frame)
 
     def delete_action(self, card_type_name: str):
         """Delete a card action and its UI"""
@@ -851,7 +850,8 @@ class CardActionsEditor(QWidget):
         result = []
         for action in self.card_actions.values():
             if (
-                (action.get("use_code", False) and action.get("action_code", "").strip())
+                # A stored `action_code` of None is no code, as the engine reads it.
+                (action.get("use_code", False) and (action.get("action_code") or "").strip())
                 or action.get("change_deck") is not None
                 or action.get("set_flag") is not None
                 or action.get("suspend") is not None

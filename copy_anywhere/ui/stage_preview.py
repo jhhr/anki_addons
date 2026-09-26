@@ -9,6 +9,7 @@ only shows what it produced -- which is what keeps "the preview matches a real r
 property of the executor rather than of a widget.
 """
 
+import json
 from typing import Optional, Sequence
 
 from aqt.qt import (
@@ -53,9 +54,15 @@ STATUS_MARKS = {
 #: Said instead of a trace whenever the definition changed after the last run. The preview
 #: is not rerun on every keystroke: a query or a nested call is not cheap enough for that.
 STALE_TEXT = "Edited since this ran — run it again to see what it does now."
+OTHER_NOTE_TEXT = "This ran on another note — run it again for this one."
 
 
-def _escape(text: str) -> str:
+def _snapshot(definition: CopyDefinitionV2) -> str:
+    """The definition as text, to tell whether it changed since a run."""
+    return json.dumps(definition, sort_keys=True, default=str)
+
+
+def _escape(text: object) -> str:
     return (
         str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     )
@@ -71,12 +78,14 @@ class PreviewPane(QWidget):
         self,
         parent: Optional[QWidget],
         definition: CopyDefinitionV2,
-        all_definitions: Optional[Sequence[dict]] = None,
+        all_definitions: Optional[Sequence[CopyDefinitionV2]] = None,
     ) -> None:
         super().__init__(parent)
         self.definition = definition
         self.all_definitions = list(all_definitions or [])
         self.run: Optional[PreviewRun] = None
+        #: The definition as it was when `run` was made, so that "edited since" means edited.
+        self._ran_snapshot: Optional[str] = None
         self.stale = True
         #: Every event the tree shows, in build order. A row carries its index rather than
         #: its guid alone, because a stage inside a loop has one row per iteration and they
@@ -163,17 +172,33 @@ class PreviewPane(QWidget):
         return item.data(UserRole) if item is not None else None
 
     def _note_chosen(self) -> None:
-        # A different note makes the trace on screen about the wrong note, which is the same
-        # problem an edit causes and deserves the same answer.
-        if self.run is not None and self.selected_note_id() != self.run.trigger_id:
-            self.mark_stale()
+        # A different note makes the trace on screen about the wrong note. It used to say
+        # "Edited since this ran" for that too, which after a click on another note read as
+        # an edit nobody made, and choosing the note it ran on again did not take it back.
+        self._update_staleness()
 
     # -- running --------------------------------------------------------------------------
 
     def mark_stale(self) -> None:
-        """Say the trace on screen no longer describes the definition as it now is (§9)."""
-        self.stale = True
-        self.stale_label.setText(STALE_TEXT if self.run is not None else "")
+        """The dialog's word that the definition may have changed: check whether it did (§9).
+
+        The dialog calls this after every re-analysis, and not everything that starts one is
+        an edit. So the definition is compared with the one that ran rather than assumed to
+        differ.
+        """
+        self._update_staleness()
+
+    def _update_staleness(self) -> None:
+        if self.run is None:
+            self.stale = True
+            self.stale_label.setText("")
+            return
+        edited = _snapshot(self.definition) != self._ran_snapshot
+        other_note = self.selected_note_id() != self.run.trigger_id
+        self.stale = edited or other_note
+        self.stale_label.setText(
+            STALE_TEXT if edited else OTHER_NOTE_TEXT if other_note else ""
+        )
 
     def set_definition(self, definition: CopyDefinitionV2) -> None:
         self.definition = definition
@@ -194,6 +219,7 @@ class PreviewPane(QWidget):
                 f" {_escape(error)}</span>"
             )
             return
+        self._ran_snapshot = _snapshot(self.definition)
         self.stale = False
         self.stale_label.setText("")
         self._show_run()
@@ -322,8 +348,12 @@ class PreviewPane(QWidget):
             self._selecting = False
 
     def _collect_items(
-        self, item: QTreeWidgetItem, stage_guid: str, found: list
+        self, item: Optional[QTreeWidgetItem], stage_guid: str, found: list
     ) -> None:
+        # Qt types an item looked up by index as optional; within the counts the callers
+        # iterate over there is always one.
+        if item is None:
+            return
         if item.data(0, UserRole) == stage_guid:
             found.append(item)
         for index in range(item.childCount()):

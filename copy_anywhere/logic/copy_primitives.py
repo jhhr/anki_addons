@@ -17,17 +17,14 @@ import time
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from anki.cards import Card
-from anki.consts import MODEL_CLOZE
+from anki.consts import MODEL_CLOZE, CardQueue
 from anki.notes import Note
 from aqt import mw
 
 from ..configuration import (
+    AnyProcess,
     CardAction,
     CopyFieldToVariable,
-    FontsCheckProcess,
-    KanaHighlightProcess,
-    KanjiumToJavdejongProcess,
-    RegexProcess,
     is_fonts_check_process,
     is_kana_highlight_process,
     is_kanjium_to_javdejong_process,
@@ -213,17 +210,10 @@ class CopyFailedException(Exception):
     pass
 
 def apply_process_chain(
-    process_chain: Sequence[
-        Union[
-            KanjiumToJavdejongProcess,
-            RegexProcess,
-            FontsCheckProcess,
-            KanaHighlightProcess,
-        ]
-    ],
+    process_chain: Sequence[AnyProcess],
     text: str,
     notes: list[Note],
-    dest_note: Note = None,
+    dest_note: Note,
     variable_values_dict: Optional[dict] = None,
     multiple_note_types: bool = False,
     progress_updater: Optional[ProgressUpdater] = None,
@@ -449,7 +439,9 @@ def get_field_values_from_notes(
                 ", ".join(invalid_fields),
             )
 
-        if use_code:
+        # `interpolate_from_text` is typed as able to return None, though it never does;
+        # the guard is the one `get_variable_values_for_note` has.
+        if use_code and interpolated_value is not None:
             interpolated_value, code_error = execute_code_for_field(interpolated_value, note)
             if code_error:
                 raise CopyFailedException(f"Code execution error:\n{code_error}")
@@ -533,12 +525,12 @@ def apply_card_action_to_card(
         edited = True
     if suspend_card in [True, False]:
         # see pylib/anki/cards.py for queue values
-        card.queue = -1 if suspend_card else card.type
+        card.queue = CardQueue(-1) if suspend_card else CardQueue(card.type)
         edited = True
     if bury_card in [True, False] and card.queue != -1:
         # Card cannot be buried, if it is suspended. To bury a suspended card, it must first
         # be unsuspended with a suspend action.
-        card.queue = -2 if bury_card else card.type
+        card.queue = CardQueue(-2) if bury_card else CardQueue(card.type)
         edited = True
     if isinstance(set_flag, int) and 0 <= set_flag <= 7:
         card.set_user_flag(set_flag)
@@ -561,7 +553,9 @@ def apply_card_action_to_card(
             edited = True
 
     if edited:
-        card.edited = True
+        # An ad-hoc marker Anki's `Card` does not declare, so it is set and removed through
+        # setattr/delattr, as `take_edited_cards` already reads it through getattr.
+        setattr(card, "edited", True)
     return edited
 
 
@@ -588,7 +582,7 @@ def take_edited_cards(cards_by_id: Mapping[int, Card]) -> list[Card]:
     """
     edited_cards = [card for card in cards_by_id.values() if getattr(card, "edited", False)]
     for card in edited_cards:
-        del card.edited
+        delattr(card, "edited")
     return edited_cards
 
 

@@ -18,7 +18,7 @@ import pytest
 from anki.collection import Config
 
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic import unsaved_note_search as search_module
 from copy_anywhere.logic.unsaved_note_search import (
     SearchSyntaxError,

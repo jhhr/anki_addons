@@ -21,7 +21,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import CLOZE, DEFAULT_CONFIG, KANJI, ODD_TEMPLATE, VOCAB
+from note_types import CLOZE, DEFAULT_CONFIG, KANJI, ODD_TEMPLATE, VOCAB
 from copy_anywhere.configuration import Config
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.definition_schema import (

@@ -25,7 +25,7 @@ import pytest
 from anki.collection import Config
 
 from anki_shared.testing import real_anki
-from conftest import (
+from note_types import (
     CLOZE,
     CLOZE_FIELDS,
     SENTENCE,

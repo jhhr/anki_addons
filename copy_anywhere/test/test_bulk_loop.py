@@ -26,7 +26,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, SENTENCE, VOCAB
+from note_types import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic.copy_fields import (
     CacheResults,
     ProgressUpdater,

@@ -16,7 +16,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from note_types import KANJI, VOCAB
 from copy_anywhere.hooks.note_hooks import (
     get_copy_definitions_for_add_note,
     run_copy_fields_on_review,

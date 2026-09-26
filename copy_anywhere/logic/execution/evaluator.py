@@ -18,6 +18,7 @@ from typing import Any, Optional, Sequence
 from ...shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX
 from ..definition_migration import MigrationError
 from ..definition_schema import (
+    SELECT_STAGE_TYPES,
     STAGE_CALL_DEFINITION,
     STAGE_CARD_QUERY,
     STAGE_CONDITION,
@@ -32,6 +33,7 @@ from ..definition_schema import (
     STAGE_STORE,
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
+    Stage,
     is_format_2,
     export_result_name,
     stage_result_name,
@@ -55,7 +57,7 @@ MAX_CALL_DEPTH = 32
 
 
 def execute_block(
-    stages: Sequence[dict],
+    stages: Sequence[Stage],
     env: dict,
     frame: DefinitionFrame,
     parent_event: Optional[TraceEvent] = None,
@@ -68,7 +70,7 @@ def execute_block(
 
 
 def execute_stage(
-    stage: dict,
+    stage: Stage,
     env: dict,
     frame: DefinitionFrame,
     parent_event: Optional[TraceEvent] = None,
@@ -130,7 +132,7 @@ def execute_stage(
     session.finish_event(event, "ok", result=result)
 
 
-def _dispatch(stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]) -> Any:
+def _dispatch(stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]) -> Any:
     stage_type = stage.get("type")
 
     if stage_type == STAGE_VARIABLE:
@@ -143,6 +145,8 @@ def _dispatch(stage: dict, env: dict, frame: DefinitionFrame, event: Optional[Tr
         return actions.run_query(stage, env, frame, is_card_query=False)
     if stage_type == STAGE_CARD_QUERY:
         return actions.run_query(stage, env, frame, is_card_query=True)
+    if stage_type in SELECT_STAGE_TYPES:
+        return actions.run_select(stage, env, frame)
     if stage_type == STAGE_EDIT_NOTE:
         return actions.run_edit_note(stage, env, frame)
     if stage_type == STAGE_EDIT_CARD:
@@ -170,7 +174,7 @@ def _dispatch(stage: dict, env: dict, frame: DefinitionFrame, event: Optional[Tr
 
 
 def _run_loop(
-    stage: dict,
+    stage: Stage,
     env: dict,
     frame: DefinitionFrame,
     event: Optional[TraceEvent],
@@ -214,7 +218,7 @@ def _run_loop(
 
 
 def _run_reduce(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> Any:
     items = actions.resolve_binding(env, stage.get("input"), frame, stage, "reduce input")
     if not isinstance(items, list):
@@ -250,7 +254,7 @@ def _run_reduce(
 
 
 def _run_condition(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> None:
     matched = actions.evaluate_predicate(stage, env, frame)
     if event is not None:
@@ -286,7 +290,7 @@ def _run_condition(
 
 
 def _run_call(
-    stage: dict, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
+    stage: Stage, env: dict, frame: DefinitionFrame, event: Optional[TraceEvent]
 ) -> None:
     session = frame.session
     callee_guid = stage.get("definition_guid")

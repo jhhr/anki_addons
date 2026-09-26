@@ -17,8 +17,10 @@ from aqt.qt import (
     pyqtSignal,
 )
 
-from ..logic.definition_schema import stage_result_name
+from ..logic.definition_schema import Export, stage_result_name
 from ..shared.ui.required_text_input import RequiredLineEdit
+from .discard import discard_widget
+from .labels import wrapping
 from .stage_document import StageDocument
 
 
@@ -33,11 +35,13 @@ class ExportsEditor(QWidget):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(0, 0, 0, 0)
         self.box.addWidget(
-            QLabel(
-                "<small>A definition that is called by another can hand back any result"
-                " produced at its top level. Nothing is handed back when it runs on its"
-                " own.</small>",
-                self,
+            wrapping(
+                QLabel(
+                    "<small>A definition that is called by another can hand back any result"
+                    " produced at its top level. Nothing is handed back when it runs on its"
+                    " own.</small>",
+                    self,
+                )
             )
         )
         self.rows_container = QWidget(self)
@@ -53,7 +57,7 @@ class ExportsEditor(QWidget):
             item = self.rows_layout.takeAt(0)
             widget = item.widget() if item else None
             if widget is not None:
-                widget.deleteLater()
+                discard_widget(widget)
         self.rows = []
         candidates = self.document.exportable_stages()
         self._follow_renames(candidates)
@@ -68,9 +72,11 @@ class ExportsEditor(QWidget):
         candidates.extend(sorted(stray))
         if not candidates:
             self.rows_layout.addWidget(
-                QLabel(
-                    "<small>No stage at the top level produces a result yet.</small>",
-                    self.rows_container,
+                wrapping(
+                    QLabel(
+                        "<small>No stage at the top level produces a result yet.</small>",
+                        self.rows_container,
+                    )
                 )
             )
             return
@@ -185,7 +191,7 @@ class ExportsEditor(QWidget):
         Requiring a second name for the common case -- export `H1` as `H1` -- would be
         ceremony; the analyser still rejects a name that is not an identifier.
         """
-        exports = []
+        exports: list[Export] = []
         for guid, result_name, keep, name in self.rows:
             if not keep.isChecked():
                 continue

@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import contextmanager
-from typing import Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
 from anki.notes import Note, NoteId
 from aqt import mw
@@ -28,6 +28,9 @@ from .definition_schema import CopyDefinitionV2
 from .execution.commit import PreviewCommitter
 from .object_refs import deck_display_name, note_type_display_name
 from .execution.context import ExecutionSession, TraceEvent
+
+if TYPE_CHECKING:
+    from ..configuration import AnyCopyDefinition
 
 #: How many notes the trigger-note browser offers at once. The list is there to pick one
 #: note out of, not to be a second card browser.
@@ -116,7 +119,7 @@ class PreviewRun:
 def run_preview(
     definition: CopyDefinitionV2,
     trigger_note: Note,
-    definitions_for_calls: Optional[Sequence[dict]] = None,
+    definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
     is_sync: bool = False,
     deck_id: Optional[int] = None,
 ) -> PreviewRun:
@@ -130,9 +133,9 @@ def run_preview(
 
 def _preview_into(
     run: PreviewRun,
-    definition: dict,
+    definition: CopyDefinitionV2,
     trigger_note: Note,
-    definitions_for_calls: Optional[Sequence[dict]],
+    definitions_for_calls: Optional[Sequence[AnyCopyDefinition]],
     is_sync: bool,
     deck_id: Optional[int],
 ) -> None:

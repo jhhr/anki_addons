@@ -12,10 +12,11 @@ even though nothing has been saved yet.
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Optional, Sequence, Union
+from typing import Any, Iterator, Optional, Sequence, Union, cast
 
 from anki.cards import Card
 from anki.consts import MODEL_CLOZE
+from anki.decks import DeckId
 from anki.notes import Note
 
 from ...shared.interpolate.interpolate_fields import (
@@ -28,7 +29,7 @@ from ...shared.interpolate.interpolate_fields import (
     get_formatted_latest_review_time,
     get_formatted_total_time,
 )
-from .context import ExecutionSession
+from .context import ExecutionSession, NothingSelected
 
 READ_ONLY_MESSAGE = (
     "notes and cards are read-only inside code; use a stage to change one"
@@ -205,7 +206,7 @@ class CardFacade(_Immutable):
     def deck_name(self) -> str:
         from aqt import mw
 
-        return mw.col.decks.name(self.deck_id)
+        return mw.col.decks.name(DeckId(self.deck_id))
 
     @property
     def original_deck_name(self) -> str:
@@ -224,7 +225,8 @@ class CardFacade(_Immutable):
         # and as format 1's code saw it.
         card = self._raw()
         template = card.template()
-        name = template["name"] if template else ""
+        # `TemplateDict` types every value as str | int | None; a template's name is a str.
+        name = cast(str, template["name"]) if template else ""
         note_type = card.note_type()
         if note_type and note_type.get("type") == MODEL_CLOZE:
             return f"{name} {card.ord + 1}"
@@ -413,7 +415,13 @@ class NoteCardsFacade(CardListFacade):
 
 
 def to_facade(value: Any, session: ExecutionSession) -> Any:
-    """Wrap notes, cards and lists of them; leave anything else alone."""
+    """Wrap notes, cards and lists of them; leave anything else alone.
+
+    A select stage that found nothing is None to code, as the code returning an index
+    says it: `return None` for no note.
+    """
+    if isinstance(value, NothingSelected):
+        return None
     if isinstance(value, Note):
         return NoteFacade(value, session)
     if isinstance(value, Card):

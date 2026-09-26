@@ -22,7 +22,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
+from note_types import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
 from copy_anywhere.configuration import Config, migrate_config
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
 from copy_anywhere.logic.copy_fields import (

@@ -123,6 +123,8 @@ A card action's code is older and runs apart from all this, exactly as format 1 
 | `variable` | computes one value and names it |
 | `note_query` | `find_notes`, producing a `NoteList` |
 | `card_query` | `find_cards`, producing a `CardList` |
+| `select_note` | picks one note of a `NoteList` by its position, producing a `NoteRef` |
+| `select_card` | picks one card of a `CardList` by its position, producing a `CardRef` |
 | `edit_note` | writes fields, tags and note-level card actions to one named note |
 | `edit_card` | applies card actions to one named card, with no card type selector |
 | `read_file` | reads one media file into a `Text` result |
@@ -138,6 +140,22 @@ A card action's code is older and runs apart from all this, exactly as format 1 
 Loops bind `index` (one-based) and `count` alongside their item. Body-local results are
 discarded after each iteration and branch-local results do not escape their branch, so an
 outer list plus `store` is how a loop reports anything back.
+
+`select_note` is how one note of a list becomes a note the rest of the definition can edit
+and read, with no loop, and `select_card` does the same for one card of a card list. The
+`index` is a value expression: text that reads as a whole number (0 is the first, 1 the
+second, and a negative number counts from the end), or code that returns one, or `None` for
+nothing. Text that comes out blank -- an empty field it read -- is nothing too, the way
+`None` is; an index box left empty is refused at save. The code gets the list as `notes` or
+`cards` as well as under its own name; in `select_card` that makes `cards` the list being
+picked from rather than the note's cards, as any binding called `cards` would. When nothing
+is at the index, `if_missing` decides: `empty`, the default, binds "nothing selected" -- a
+reference to one of its values reads as empty text, code sees `None` (and, for a result
+called `note`, no `cards`), an `edit_note` or `edit_card` on it does nothing, and a call or
+a search condition given it fails naming it -- `skip_block` stops the rest of the block, and
+`error` fails the definition. The result may be called `note` or `card` respectively, the
+one reserved name each may take, as a loop's item may; `note` is what a migrated one-source
+definition calls it.
 
 ## Rules worth knowing before writing one
 
@@ -243,8 +261,9 @@ outer list plus `store` is how a loop reports anything back.
   way. The editor warns about a term it can see in the literal text of a trigger's search
   condition, in a definition that runs for the note being added.
 * **A stage that only feeds one migrated field write shares its gates.** Migrating
-  Destination-to-sources moves each write's per-source read in front of it, into a list, a
-  loop and a reduce, and that is where the work is -- the code or the process chain runs once
+  Destination-to-sources with more than one source note (one is read directly; see *What
+  migration changes on purpose*) moves each write's per-source read in front of it, into a
+  list, a loop and a reduce, and that is where the work is -- the code or the process chain runs once
   per source note there. So the migrator copies the write's `unfocus_trigger_fields` and its
   two `unfocus_when_*` flags onto those stages, and a `write_if: "empty"` along with the
   field it asks about as `write_if_field`, and the executor skips them the same way it
@@ -472,6 +491,15 @@ by the same pure migrator, and one that cannot be converted is reported rather t
   is selected once. `select_card_by: None` becomes `first` and follows search order rather
   than the reverse of the card search.
 * `Least_reps` is gone; it migrates to `random` and the migrator says so.
+* A Destination-to-sources definition that reads exactly one source note -- `first` or
+  `random` with a count of 1 -- becomes a query, a `select_note` that binds the found note
+  as `note`, and an `edit_note` on the trigger whose writes read `{{note.Word}}` directly,
+  with its file writes after it reading the same note. The list, loop, store and join that
+  more than one source needs are left out: joining one value is that value. Not with
+  `run_also_if_no_sources_found`, which with no source wrote the joined empty text and ran
+  no field code, where a bound "no note" would run the code once. One difference remains:
+  field or file code there that returns a list or a tuple now fails the write, as it does
+  everywhere else, where the join used to turn it into text.
 * In Source-to-destinations code, `note` and `cards` are the destination's rather than the
   trigger's (see *What migration does to a format-1 expression* below).
 * A copy condition is judged against a note being added. Format 1 searched `nid:0`, which
@@ -515,8 +543,9 @@ had views of its own. A card facade has the properties format 1's card view had,
 number on `template_name` and the creation and review times included, so code reading a
 card keeps working unchanged. In Source-to-destinations the edits sit
 in a loop whose item is `note`, so field and file code that read the trigger as `note` now
-reads the destination; Destination-to-sources loops over the sources under that name, which
-is the note format 1 gave its code there. Code that reached for a note by `note`, or by any
+reads the destination; Destination-to-sources loops over the sources under that name, or with
+one source binds it under that name with a `select_note`, which is the note format 1 gave its
+code there. Code that reached for a note by `note`, or by any
 other means, is yours to check by hand; the user guide's section for an AI agent
 ([`ADDON_README.md`](../ADDON_README.md#for-an-ai-agent-rewriting-converted-code)) lists what
 every name means in each migrated shape. Card-action code is not affected: it runs as

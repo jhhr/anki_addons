@@ -34,7 +34,7 @@ from copy_anywhere.ui.stage_editor_context import (
 )
 
 from anki_shared.testing import real_anki
-from conftest import CLOZE, VOCAB, KANJI
+from note_types import CLOZE, VOCAB, KANJI
 
 
 def variable(guid, name, text="x"):

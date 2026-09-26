@@ -23,7 +23,7 @@ say -- which fields the note types it triggers on actually have. It answers four
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from ..shared.interpolate.interpolate_fields import (
     CARD_VALUE_RE,
@@ -49,6 +49,7 @@ from .definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -72,12 +73,19 @@ from .definition_schema import (
     is_format_2,
     list_of,
     names_are_relaxed,
+    SELECT_LIST_NAMES,
+    SELECT_STAGE_TYPES,
     result_name_problem,
+    result_reserved_names_allowed,
     stage_result_name,
     unclosed_reference_problem,
     validate_definition_structure,
     value_type_from_name,
 )
+
+if TYPE_CHECKING:
+    # For the annotation only: the analyser stays clear of `configuration` at runtime.
+    from ..configuration import AnyCopyDefinition
 
 #: Refuse a call chain deeper than this even when no guid repeats, so hand-edited JSON
 #: cannot drive the evaluator into a recursion limit (§5.9).
@@ -157,8 +165,9 @@ class AnalysisResult:
         self.scopes: dict[str, dict[str, Binding]] = {}
         #: stage guid -> the type of the result it produces, when it produces one.
         self.result_types: dict[str, ValueType] = {}
-        #: export name -> type, for the callers of this definition.
-        self.export_types: dict[str, ValueType] = {}
+        #: export name -> type, for the callers of this definition. Keyed by the name as
+        #: stored, so an export saved without one is recorded under None.
+        self.export_types: dict[Optional[str], ValueType] = {}
         self.effects: Effects = {
             "edits_trigger": False,
             "edits_other_notes": False,
@@ -241,7 +250,11 @@ class _Analyzer:
         )
 
     def declare(self, scope: dict, stage: Stage, name: Any, value_type: ValueType) -> None:
-        problem = result_name_problem(name, relaxed=self.relaxed_names)
+        problem = result_name_problem(
+            name,
+            relaxed=self.relaxed_names,
+            allowed_reserved=result_reserved_names_allowed(stage),
+        )
         if problem:
             self.problem(problem, stage)
             return
@@ -389,7 +402,9 @@ class _Analyzer:
             stage,
         )
 
-    def check_predicate_has_text(self, predicate: Any, stage: Stage) -> None:
+    def check_predicate_has_text(
+        self, predicate: Optional[ValueExpression], stage: Stage
+    ) -> None:
         """An empty text predicate is a condition nobody meant to write.
 
         A text predicate holds when it resolves to something, so an empty one never holds;
@@ -498,6 +513,31 @@ class _Analyzer:
             # track where a card binding came from.
             effects["edits_other_cards"] = True
 
+        elif stage_type in SELECT_STAGE_TYPES:
+            is_note = stage_type == STAGE_SELECT_NOTE
+            list_type = T_NOTE_LIST if is_note else T_CARD_LIST
+            binding = self.resolve(scope, stage.get("input"), stage, "select input")
+            self.expect(binding, list_type, stage, "select input")
+            # The index's code gets the list as `notes` or `cards`, unless something in
+            # scope is already called that, which then wins as every binding does.
+            list_name = SELECT_LIST_NAMES[stage_type]
+            index_scope = dict(scope)
+            if list_name not in index_scope:
+                index_scope[list_name] = Binding(list_name, list_type, stage.get("guid"), True)
+            index = stage.get("index")
+            self.check_expression(index, index_scope, stage, "index")
+            if (
+                isinstance(index, dict)
+                and not expression_is_code(index)
+                and not (index.get("text") or "").strip()
+            ):
+                # An index that comes out blank selects nothing, which is how an empty field
+                # read into one is meant to behave; a box left empty is nobody's intent.
+                self.problem("index is empty, so it would never select anything", stage)
+            self.declare(scope, stage, stage_result_name(stage), T_NOTE if is_note else T_CARD)
+            if at_root and stage.get("if_missing") == "skip_block":
+                self.note_skipping_root_stage(stage)
+
         elif stage_type == STAGE_READ_FILE:
             effects["reads_files"] = True
             self.check_expression(stage.get("filename"), scope, stage, "filename")
@@ -515,8 +555,8 @@ class _Analyzer:
             self.declare(scope, stage, stage_result_name(stage), list_of(item_type))
 
         elif stage_type == STAGE_STORE:
-            target = stage.get("target")
-            binding = self.resolve(scope, target, stage, "store target")
+            target_ref = stage.get("target")
+            binding = self.resolve(scope, target_ref, stage, "store target")
             # An Unknown binding is a code-mode result; as in `expect`, the action checks it
             # when the value arrives.
             if binding is not None and binding.type.kind not in (LIST, T_UNKNOWN.kind):
@@ -687,7 +727,7 @@ class _Analyzer:
             "calls_definitions",
         ):
             if callee_result.effects.get(key):
-                self.result.effects[key] = True  # type: ignore[literal-required]
+                self.result.effects[key] = True
         if callee_result.effects.get("edits_trigger"):
             # The callee's trigger is a note this definition chose, so from here it is
             # another note unless this definition passed its own trigger.
@@ -914,7 +954,7 @@ def callers_of(
     return callers
 
 
-def refresh_effects(definitions: Sequence[dict]) -> list[str]:
+def refresh_effects(definitions: Sequence[AnyCopyDefinition]) -> list[str]:
     """Recompute `effects` on every staged definition in `definitions`, in place.
 
     A definition's effects are transitive through `call_definition` (§4, §6), so they are

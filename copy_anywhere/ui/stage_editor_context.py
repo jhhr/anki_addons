@@ -178,9 +178,9 @@ def note_menu_dict(
     if note_types is None:
         assert mw is not None and mw.col is not None
         all_models: dict = {}
-        for model in mw.col.models.all_names_and_ids():
+        for name_and_id in mw.col.models.all_names_and_ids():
             add_model_options_to_dict(
-                model.name, model.id, all_models, prefix, max_cloze_ords=max_cloze_ords
+                name_and_id.name, name_and_id.id, all_models, prefix, max_cloze_ords=max_cloze_ords
             )
         menu[ALL_FIELDS_KEY] = all_models
         return menu, True

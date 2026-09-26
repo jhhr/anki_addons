@@ -29,6 +29,9 @@ from ..logic.definition_schema import (
     STAGE_LIST_VARIABLE,
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
+    SELECT_STAGE_TYPES,
+    STAGE_SELECT_CARD,
+    STAGE_SELECT_NOTE,
     STAGE_REDUCE,
     STAGE_STORE,
     STAGE_VARIABLE,
@@ -53,6 +56,8 @@ STAGE_TYPE_LABELS: dict[str, str] = {
     STAGE_VARIABLE: "Variable",
     STAGE_NOTE_QUERY: "Query Notes",
     STAGE_CARD_QUERY: "Query Cards",
+    STAGE_SELECT_NOTE: "Select Note",
+    STAGE_SELECT_CARD: "Select Card",
     STAGE_EDIT_NOTE: "Edit Note",
     STAGE_EDIT_CARD: "Edit Card",
     STAGE_READ_FILE: "Read File",
@@ -75,6 +80,8 @@ STAGE_TYPE_ICONS: dict[str, str] = {
     STAGE_VARIABLE: "=",
     STAGE_NOTE_QUERY: "?",
     STAGE_CARD_QUERY: "?",
+    STAGE_SELECT_NOTE: "#",
+    STAGE_SELECT_CARD: "#",
     STAGE_EDIT_NOTE: "✎",
     STAGE_EDIT_CARD: "✎",
     STAGE_READ_FILE: "←",
@@ -97,15 +104,16 @@ BODY_KEY_LABELS: dict[str, str] = {
 
 
 class StageLocation(NamedTuple):
-    """Where a stage sits: which block holds it, and at which index.
+    """Where a stage sits: which block holds it, and at which position in it.
 
     `parent_guid` is None for the definition's root block. `body_key` names which of a
-    structural stage's blocks -- a condition has two.
+    structural stage's blocks -- a condition has two. The index is called `position` because
+    a NamedTuple field named `index` shadows `tuple.index`.
     """
 
     parent_guid: Optional[str]
     body_key: Optional[str]
-    index: int
+    position: int
 
 
 def new_guid() -> str:
@@ -123,9 +131,9 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
         raise ValueError(f"unknown stage type {stage_type!r}")
     stage: Stage = {"guid": guid or new_guid(), "type": stage_type, "enabled": True}
     if stage_type == STAGE_VARIABLE:
-        stage.update({"result": "", "value": value_expression()})  # type: ignore[typeddict-item]
+        stage.update({"result": "", "value": value_expression()})
     elif stage_type in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY):
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {
                 "result": "",
                 "query": value_expression(),
@@ -139,7 +147,7 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
             }
         )
     elif stage_type == STAGE_EDIT_NOTE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {
                 "target": {"binding": "trigger"},
                 "fields": [],
@@ -149,13 +157,22 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
             }
         )
     elif stage_type == STAGE_EDIT_CARD:
-        stage.update({"target": {"binding": ""}, "card_actions": []})  # type: ignore[typeddict-item]
+        stage.update({"target": {"binding": ""}, "card_actions": []})
+    elif stage_type in SELECT_STAGE_TYPES:
+        stage.update(
+            {
+                "input": {"binding": ""},
+                "index": value_expression(text="0"),
+                "if_missing": "empty",
+                "result": "",
+            }
+        )
     elif stage_type == STAGE_READ_FILE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {"result": "", "filename": value_expression(), "if_missing": "empty"}
         )
     elif stage_type == STAGE_WRITE_FILE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {
                 "filename": value_expression(),
                 "content": value_expression(),
@@ -163,17 +180,17 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
             }
         )
     elif stage_type == STAGE_LIST_VARIABLE:
-        stage.update({"result": "", "item_type": TEXT})  # type: ignore[typeddict-item]
+        stage.update({"result": "", "item_type": TEXT})
     elif stage_type == STAGE_STORE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {"target": {"kind": "list", "binding": ""}, "value": value_expression()}
         )
     elif stage_type == STAGE_FOR_EACH_NOTE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {"input": {"binding": ""}, "item_binding": "note", "body": []}
         )
     elif stage_type == STAGE_FOR_EACH_CARD:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {
                 "input": {"binding": ""},
                 "item_binding": "card",
@@ -182,7 +199,7 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
             }
         )
     elif stage_type == STAGE_REDUCE:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {
                 "input": {"binding": ""},
                 "result": "",
@@ -193,11 +210,11 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
             }
         )
     elif stage_type == STAGE_CONDITION:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {"predicate": value_expression(mode="code"), "then": [], "else": []}
         )
     elif stage_type == STAGE_CALL_DEFINITION:
-        stage.update(  # type: ignore[typeddict-item]
+        stage.update(
             {"definition_guid": "", "trigger": {"binding": "trigger"}, "outputs": []}
         )
     return stage
@@ -393,7 +410,7 @@ class StageDocument:
         block = self.block(location.parent_guid, location.body_key)
         if block is None:
             return None
-        removed = block.pop(location.index)
+        removed = block.pop(location.position)
         # Exports naming a stage that is gone would be invisible corruption: the analyser
         # reports a missing producer, but the entry belongs to no row the user can see.
         gone = {stage.get("guid") for stage in walk_stages([removed])}
@@ -417,7 +434,7 @@ class StageDocument:
         block = self.block(location.parent_guid, location.body_key)
         if block is None:
             return None
-        block.insert(location.index + 1, copy)
+        block.insert(location.position + 1, copy)
         self.invalidate()
         return copy
 
@@ -439,10 +456,10 @@ class StageDocument:
         block = self.block(location.parent_guid, location.body_key)
         if block is None:
             return False
-        target = location.index + offset
+        target = location.position + offset
         if target < 0 or target >= len(block):
             return False
-        block.insert(target, block.pop(location.index))
+        block.insert(target, block.pop(location.position))
         self.invalidate()
         return True
 
@@ -767,7 +784,10 @@ def stage_label(stage: Any) -> str:
     name = (stage.get("name") or "").strip()
     if name:
         return name
-    return STAGE_TYPE_LABELS.get(stage.get("type", ""), stage.get("type", "stage"))
+    stage_type = stage.get("type", "")
+    if stage_type in STAGE_TYPE_LABELS:
+        return STAGE_TYPE_LABELS[stage_type]
+    return stage.get("type", "stage")
 
 
 def _blank_result_names(stage: Stage) -> None:
@@ -780,7 +800,7 @@ def _blank_result_names(stage: Stage) -> None:
     original stage, which is the value the user was duplicating.
     """
     if stage_result_name(stage) is not None:
-        stage["result"] = ""  # type: ignore[typeddict-unknown-key]
+        stage["result"] = ""
     if stage.get("type") == STAGE_CALL_DEFINITION:
         for output in stage.get("outputs", []) or []:
             if isinstance(output, dict):
@@ -818,6 +838,15 @@ def stage_summary(stage: Any) -> str:
         count = selection.get("count")
         how = "all" if strategy == "all" else f"{strategy} {count}" if count else strategy
         return f"{result} = {how} {what} matching {_expression_summary(stage.get('query')) or '?'}"
+    if stage_type in SELECT_STAGE_TYPES:
+        index = stage.get("index")
+        what = "note" if stage_type == STAGE_SELECT_NOTE else "card"
+        which = (
+            f"the {what} its code picks"
+            if expression_is_code(index)
+            else f"{what} {_expression_summary(index) or '?'}"
+        )
+        return f"{result} = {which} of {source}"
     if stage_type == STAGE_EDIT_NOTE:
         parts = []
         fields = [write.get("field") for write in stage.get("fields") or [] if isinstance(write, dict)]
@@ -854,7 +883,7 @@ def stage_summary(stage: Any) -> str:
         return _expression_summary(stage.get("predicate")) or "no condition yet"
     if stage_type == STAGE_CALL_DEFINITION:
         outputs = [
-            output.get("result")
+            output["result"]
             for output in stage.get("outputs") or []
             if isinstance(output, dict) and output.get("result")
         ]

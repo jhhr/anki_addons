@@ -40,6 +40,10 @@ class TagEditor(QWidget):
     ):
         super().__init__(parent)
         self.state = state
+        # Optional because a stored definition can hold an explicit None; `split_tags` reads
+        # that as no tags.
+        self.add_tags_str: Optional[str]
+        self.remove_tags_str: Optional[str]
         if copy_definition is None:
             self.add_tags_str = ""
             self.remove_tags_str = ""
@@ -51,14 +55,15 @@ class TagEditor(QWidget):
 
         self.all_tags: list[str] = mw.col.tags.all()
 
-        self.layout = QVBoxLayout()
-        self.setLayout(self.layout)
+        # Not `self.layout`: that would shadow `QWidget.layout()`.
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
 
         state.add_copy_direction_callback(self.update_direction_labels)
 
         # Show two combo boxes for adding/removing tags
         self.form_layout = QFormLayout()
-        self.layout.addLayout(self.form_layout)
+        self.main_layout.addLayout(self.form_layout)
         self.add_tags_label = QLabel("Tags to add")
         self.add_tags_combo_box = MultiComboBox(self)
         self.form_layout.addRow(self.add_tags_label, self.add_tags_combo_box)
@@ -71,9 +76,12 @@ class TagEditor(QWidget):
         # what a user does here, and `MultiComboBox.setCurrentText` blocks the model's signals
         # on purpose so that filling a box from stored text does not read as an edit.
         for box in (self.add_tags_combo_box, self.remove_tags_combo_box):
-            box.model().dataChanged.connect(self._on_changed)
+            model = box.model()
+            # A QComboBox always owns a model; the stubs type it optional.
+            assert model is not None
+            model.dataChanged.connect(self._on_changed)
 
-    def _fill_tag_box(self, box: MultiComboBox, stored: str):
+    def _fill_tag_box(self, box: MultiComboBox, stored: Optional[str]):
         """Offer every tag in the collection, plus any this definition names, and select."""
         chosen = split_tags(stored)
         names = list(self.all_tags)

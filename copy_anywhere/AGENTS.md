@@ -103,6 +103,9 @@ root `testpaths`. Reuse, do not reinvent:
 - `test/conftest.py`: `col` (fresh collection with note types `CA Vocab`, `CA Sentence`,
   `CA Kanji`, `CA Cloze`, `CA Odd` and a three-level deck tree), `stub_mw`, `media_dir`,
   `logger` (`RecordingLogger` with `has_error` / `has_debug`), autouse log redirection.
+- `test/note_types.py`: the names those note types are built from (`VOCAB`, `KANJI`, ...,
+  their fields and templates) and `DEFAULT_CONFIG`. Tests import them from here, not from
+  `conftest`, which mypy.ini excludes; an import from it resolves to the root conftest.
 - `test/definitions.py`: builders `within_note`, `destination_to_sources`,
   `source_to_destinations`, `field_to_field`, `field_to_file`, `field_to_variable`,
   `card_action`, `regex_process`, `fonts_check_process`, `quoted_list`.
@@ -119,7 +122,6 @@ methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`.
 - `get_variable_values_for_note` can raise `CopyFailedException` outside the `try` in
   `copy_for_single_trigger_note`. `variable_values_dict` stays `None` when
   `field_to_variable_defs` is explicitly `None`, and across mode then indexes it.
-- The `AnyProcess` union omits `WordHighlightProcess`.
 - `get_field_to_field_defs()` output carries no `guid`; rows mint a new one on load.
 - Callbacks that raise inside `EditState.call_callbacks` are dropped silently.
 - Dead code: `ProgressUpdateDef`; `build_action` / `add_action_to_gear` /

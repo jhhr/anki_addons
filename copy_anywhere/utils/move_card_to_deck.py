@@ -1,8 +1,9 @@
 import logging
-from typing import Union
+from typing import Optional, Union
 
 from aqt import mw
 from anki.cards import Card
+from anki.decks import DeckId
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +18,9 @@ def move_card_to_deck(
     """
     dm = mw.col.decks
     deck_name = None
-    deck_id = None
+    deck_id: Optional[DeckId] = None
     if isinstance(deck, int):
-        deck_id = deck
+        deck_id = DeckId(deck)
     elif isinstance(deck, str):
         deck_name = deck
     if deck_id is None and deck_name is not None:

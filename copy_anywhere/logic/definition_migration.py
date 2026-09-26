@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 import uuid
 from copy import deepcopy
-from typing import Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Optional, cast
 
 from ..shared.interpolate.interpolate_fields import (
     DESTINATION_PREFIX,
@@ -64,20 +64,31 @@ from .definition_schema import (
     STAGE_NOTE_QUERY,
     STAGE_READ_FILE,
     STAGE_REDUCE,
+    STAGE_SELECT_CARD,
+    STAGE_SELECT_NOTE,
     STAGE_STORE,
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
     TEXT,
     CopyDefinitionV2,
+    FieldWrite,
+    Selection,
     Stage,
+    TagWrites,
+    Triggers,
     ValueExpression,
     is_format_2,
+    result_reserved_names_allowed,
     stage_body_blocks,
     stage_result_names,
     value_expression,
     walk_stages,
 )
 from .object_refs import card_action_card_type, normalize_ref
+
+if TYPE_CHECKING:
+    # For the annotation only: the migrator stays clear of `configuration` at runtime.
+    from ..configuration import AnyCopyDefinition
 
 COPY_MODE_WITHIN_NOTE = "Within note"
 COPY_MODE_ACROSS_NOTES = "Across notes"
@@ -133,13 +144,76 @@ def _child_guid(definition_guid: str, role: str) -> str:
     return f"{definition_guid}::{role}"
 
 
+#: The format-1 lists whose entries each become a stage or a field write of their own, and
+#: the role a derived guid names them by.
+_PART_ROLES = (
+    ("field_to_field_defs", "field"),
+    ("field_to_file_defs", "file"),
+    ("field_to_variable_defs", "variable"),
+)
+
+
+def _give_parts_guids(format_1: dict, definition_guid: str) -> None:
+    """Give every variable, file write and field write that has no guid a derived one.
+
+    The stage made from such a part takes its guid, and the 0.2.0 migration that fills them
+    in runs only for a config that never reached 0.2.0: a part the format-1 editor saved
+    after that, and it built its rows without one, arrived here with none. The stage came
+    out with an empty guid, which the editor reports as "stage has no guid" and refuses to
+    save. Derived rather than random, like every stage this conversion invents, so that
+    converting the same definition twice agrees.
+    """
+    for key, role in _PART_ROLES:
+        for index, part in enumerate(format_1.get(key) or [], start=1):
+            if isinstance(part, dict) and not part.get("guid"):
+                part["guid"] = _child_guid(definition_guid, f"{role}-{index}")
+
+
+def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
+    """Give every stage of a staged definition that has no guid one. True if any had none.
+
+    For definitions converted before `_give_parts_guids` existed: their variables and file
+    writes can have an empty guid, and nothing else would ever give them one. An export the
+    user made of such a stage names no stage either, so it is pointed at the repaired stage
+    whose result it takes. Safe to run on every start: a definition with every guid in
+    place comes back untouched.
+    """
+    definition_guid = definition.get("guid") or ""
+    stages = definition.get("stages") or []
+    taken = {stage.get("guid") for stage in walk_stages(stages) if stage.get("guid")}
+    repaired_roots: dict[str, str] = {}
+    root_ids = {id(stage) for stage in stages}
+    counter = 0
+    for stage in walk_stages(stages):
+        if stage.get("guid"):
+            continue
+        guid = ""
+        while not guid or guid in taken:
+            counter += 1
+            guid = _child_guid(definition_guid, f"stage-{counter}")
+        stage["guid"] = guid
+        taken.add(guid)
+        if id(stage) in root_ids:
+            for result in stage_result_names(stage):
+                repaired_roots.setdefault(result, guid)
+    if not counter:
+        return False
+    for export in definition.get("exports") or []:
+        if not isinstance(export, dict) or export.get("stage_guid"):
+            continue
+        wanted = export.get("result") or export.get("name") or ""
+        if wanted in repaired_roots:
+            export["stage_guid"] = repaired_roots[wanted]
+    return True
+
+
 def _legacy_expression(
     text: str = "",
     code: str = "",
     use_code: bool = False,
     process_chain: Any = None,
     **extra: Any,
-) -> dict:
+) -> ValueExpression:
     return value_expression(
         text=text or "",
         code=code or "",
@@ -177,8 +251,8 @@ def _modifies_other_notes(definition: dict) -> bool:
     return targets_other_notes and (has_field_defs or has_tag_edits)
 
 
-def _field_writes(definition: dict, modifies_other_notes: bool) -> list[dict]:
-    writes = []
+def _field_writes(definition: dict, modifies_other_notes: bool) -> list[FieldWrite]:
+    writes: list[FieldWrite] = []
     for field_def in definition.get("field_to_field_defs") or []:
         writes.append({
             "guid": field_def.get("guid", ""),
@@ -202,21 +276,24 @@ def _field_writes(definition: dict, modifies_other_notes: bool) -> list[dict]:
 UNFOCUS_GATE_KEYS = ("unfocus_trigger_fields", "unfocus_when_edit", "unfocus_when_add")
 
 
-def _write_gate(field_write: dict) -> dict:
+def _write_gate(field_write: FieldWrite) -> Stage:
     """The keys a stage that only feeds `field_write` needs to decline when the write would.
 
     The unfocus keys are copied as they are. `write_if: "empty"` is copied along with the
     field it asks about, because the write knows its field and the stages in front of it do
     not; a write that always writes leaves nothing to copy.
     """
-    gate = {key: field_write[key] for key in UNFOCUS_GATE_KEYS if key in field_write}
+    # A TypedDict cannot be indexed by a key held in a variable, so the keys are copied off
+    # the write read as a plain mapping; what they make is a partial stage again.
+    written: Mapping[str, Any] = field_write
+    gate = cast(Stage, {key: written[key] for key in UNFOCUS_GATE_KEYS if key in written})
     if field_write.get("write_if", "always") == "empty":
         gate["write_if"] = "empty"
         gate["write_if_field"] = field_write.get("field", "")
     return gate
 
 
-def _tag_writes(definition: dict) -> dict:
+def _tag_writes(definition: dict) -> TagWrites:
     return {
         "add": _split_quoted_list(definition.get("add_tags")),
         "remove": _split_quoted_list(definition.get("remove_tags")),
@@ -239,10 +316,10 @@ def _card_actions(definition: dict) -> list[dict]:
     return actions
 
 
-def _selection(definition: dict, warnings: list[str]) -> dict:
+def _selection(definition: dict, warnings: list[str]) -> Selection:
     """Map `select_card_by`/`select_card_count`/`sort_by_field` onto a format-2 selection."""
     select_card_by = definition.get("select_card_by")
-    strategy = "first"
+    strategy: Literal["all", "first", "random"] = "first"
     strategy_error: Optional[str] = None
     if select_card_by is None or select_card_by not in LEGACY_SELECT_CARD_BY_VALUES:
         # Format 1 refused to select anything at all here, which is the behaviour to keep: a
@@ -266,7 +343,7 @@ def _selection(definition: dict, warnings: list[str]) -> dict:
             " 'Least_reps' is not supported in format 2 and was migrated to 'random'"
         )
 
-    selection: dict = {
+    selection: Selection = {
         "strategy": strategy,
         "count": None,
         "sort_field": None,
@@ -340,7 +417,7 @@ def _writes_reading_all_notes(definition: dict) -> list[str]:
 
 
 def _warn_about_reading_all_notes(
-    definition: dict, selection: dict, warnings: list[str]
+    definition: dict, selection: Selection, warnings: list[str]
 ) -> None:
     """Report a `use_all_notes` that the migrated definition cannot honour.
 
@@ -455,7 +532,7 @@ def _edit_note_stage(
     guid: str,
     target_binding: str,
     source_binding: Optional[str],
-    field_writes: list[dict],
+    field_writes: list[FieldWrite],
 ) -> Stage:
     stage: Stage = {
         "guid": guid,
@@ -477,9 +554,9 @@ def _edit_note_stage(
 def _join_stages(
     definition_guid: str,
     index: int,
-    expression: dict,
+    expression: ValueExpression,
     separator: str,
-    gate: Optional[dict] = None,
+    gate: Optional[Stage] = None,
 ) -> tuple[list[Stage], str]:
     """The list/loop/store/reduce that stands in for format 1's implicit many-notes join.
 
@@ -496,7 +573,7 @@ def _join_stages(
     """
     list_name = f"legacy_join_{index}"
     joined_name = f"legacy_joined_{index}"
-    gate = dict(gate or {})
+    gate = {**(gate or {})}
     stages: list[Stage] = [
         {
             "guid": _child_guid(definition_guid, f"join-list-{index}"),
@@ -609,7 +686,10 @@ def _destination_to_sources_stages(
     if separator is None:
         separator = DEFAULT_SELECT_CARD_SEPARATOR
     stages: list[Stage] = [_note_query_stage(definition, definition_guid, warnings)]
-    _warn_about_reading_all_notes(definition, stages[0].get("selection") or {}, warnings)
+    selection = stages[0].get("selection") or {}
+    _warn_about_reading_all_notes(definition, selection, warnings)
+    if _takes_one_source(definition, selection):
+        return stages + _one_source_stages(definition, definition_guid)
 
     join_index = 0
     field_writes = _field_writes(definition, modifies_other_notes=False)
@@ -618,7 +698,7 @@ def _destination_to_sources_stages(
         # The process chain ran once, on the joined text, so it stays on the write rather
         # than moving into the loop body that produces one value per source note.
         process_chain = list(write["value"].get("process_chain") or [])
-        per_note_value = dict(write["value"], process_chain=[])
+        per_note_value: ValueExpression = {**write["value"], "process_chain": []}
         join_stages, joined_name = _join_stages(
             definition_guid,
             join_index,
@@ -654,21 +734,21 @@ def _destination_to_sources_stages(
                 "input": {"binding": LEGACY_QUERY_RESULT},
                 "item_binding": LEGACY_ITEM_BINDING,
                 "body": [
-                    dict(
-                        file_stage,
+                    {
+                        **file_stage,
                         # The same pair the join's `store` stage above carries, for the same
                         # reason: the value is read from the loop note and the trigger note
                         # stands in as the destination, as format 1's `__Dest__` prefix did.
-                        legacy_source={"binding": LEGACY_ITEM_BINDING},
-                        legacy_destination={"binding": "trigger"},
-                    )
+                        "legacy_source": {"binding": LEGACY_ITEM_BINDING},
+                        "legacy_destination": {"binding": "trigger"},
+                    }
                 ],
             })
             continue
         join_index += 1
         process_chain = list(content.get("process_chain") or [])
         join_stages, joined_name = _join_stages(
-            definition_guid, join_index, dict(content, process_chain=[]), separator
+            definition_guid, join_index, {**content, "process_chain": []}, separator
         )
         stages.extend(join_stages)
         file_stage["content"] = value_expression(
@@ -679,7 +759,60 @@ def _destination_to_sources_stages(
     return stages
 
 
-def _triggers(definition: dict) -> dict:
+def _takes_one_source(definition: dict, selection: Selection) -> bool:
+    """Whether a Destination to sources definition reads exactly one source note.
+
+    Such a definition needs none of the list, loop, store and join a field write gets
+    otherwise: joining one value is that value. `run_also_if_no_sources_found` rules it
+    out, because with no source format 1 still wrote each field its joined empty text and
+    ran no field code at all, while one bound "no note" would run the code once.
+    """
+    return (
+        selection.get("strategy") in ("first", "random")
+        and selection.get("count") == 1
+        and not selection.get("selection_error")
+        and not definition.get("run_also_if_no_sources_found", False)
+    )
+
+
+def _selects_one_source(stages: list[Stage], definition_guid: str) -> bool:
+    """Whether the stages are the one-source shape, which a copy condition may wrap."""
+    guid = _child_guid(definition_guid, "select-source")
+    return any(stage.get("guid") == guid for stage in walk_stages(stages))
+
+
+def _one_source_stages(definition: dict, definition_guid: str) -> list[Stage]:
+    """The one found note, bound as `note`, and the writes that read it directly.
+
+    It is bound under the name the join's loop gave each source note, so the writes'
+    references and code mean the note they always meant: `{{Word}}` becomes
+    `{{note.Word}}`, and in code a binding called `note` is what `note` is. The query
+    before it skips the rest when it finds nothing, so the index always has a note.
+    """
+    select: Stage = {
+        "guid": _child_guid(definition_guid, "select-source"),
+        "type": STAGE_SELECT_NOTE,
+        "name": "The found note",
+        "enabled": True,
+        "input": {"binding": LEGACY_QUERY_RESULT},
+        "index": value_expression(text="0"),
+        "if_missing": "empty",
+        "result": LEGACY_ITEM_BINDING,
+    }
+    edit = _edit_note_stage(
+        definition,
+        guid=_child_guid(definition_guid, "edit-trigger"),
+        target_binding="trigger",
+        source_binding=LEGACY_ITEM_BINDING,
+        field_writes=_field_writes(definition, modifies_other_notes=False),
+    )
+    files = _write_file_stages(
+        definition, source_binding=LEGACY_ITEM_BINDING, destination_binding="trigger"
+    )
+    return [select, edit, *files]
+
+
+def _triggers(definition: dict) -> Triggers:
     edit_fields: list[str] = []
     add_fields: list[str] = []
     modifies_other_notes = _modifies_other_notes(definition)
@@ -719,7 +852,7 @@ class MigrationError(ValueError):
 
 
 def migrate_definition_v1_to_v2(
-    definition: dict,
+    definition: AnyCopyDefinition,
     new_guid: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> CopyDefinitionV2:
     """Convert one format-1 definition into its format-2 equivalent.
@@ -738,21 +871,24 @@ def migrate_definition_v1_to_v2(
         # Promotion, not a plain copy: a definition a 0.3.0 start already staged is format 2
         # and still speaks format 1 inside its expressions, and every caller here wants a
         # definition the executor can run.
-        return promote_definition(definition)  # type: ignore[arg-type]
+        return promote_definition(definition)
 
-    definition = deepcopy(definition)
-    definition_guid = definition.get("guid") or new_guid()
-    copy_mode = definition.get("copy_mode")
-    across_mode_direction = definition.get("across_mode_direction")
+    # `is_format_2` is a TypeGuard, which narrows only where it says yes: what is left here is
+    # format 1, read as the plain dict every helper below takes.
+    format_1: dict = cast(dict, deepcopy(definition))
+    definition_guid = format_1.get("guid") or new_guid()
+    _give_parts_guids(format_1, definition_guid)
+    copy_mode = format_1.get("copy_mode")
+    across_mode_direction = format_1.get("across_mode_direction")
     warnings: list[str] = []
 
     if copy_mode == COPY_MODE_WITHIN_NOTE:
-        body = _within_note_stages(definition, definition_guid)
+        body = _within_note_stages(format_1, definition_guid)
     elif copy_mode == COPY_MODE_ACROSS_NOTES:
         if across_mode_direction == DIRECTION_SOURCE_TO_DESTINATIONS:
-            body = _source_to_destinations_stages(definition, definition_guid, warnings)
+            body = _source_to_destinations_stages(format_1, definition_guid, warnings)
         elif across_mode_direction == DIRECTION_DESTINATION_TO_SOURCES:
-            body = _destination_to_sources_stages(definition, definition_guid, warnings)
+            body = _destination_to_sources_stages(format_1, definition_guid, warnings)
         else:
             raise MigrationError("Error in copy fields: missing across mode direction value")
     else:
@@ -761,7 +897,7 @@ def migrate_definition_v1_to_v2(
     # Variables come first and stay in their stored order: format 1 computed them all before
     # anything else, including before the condition.
     stages: list[Stage] = []
-    for variable_def in definition.get("field_to_variable_defs") or []:
+    for variable_def in format_1.get("field_to_variable_defs") or []:
         stages.append({
             "guid": variable_def.get("guid", ""),
             "type": STAGE_VARIABLE,
@@ -779,7 +915,7 @@ def migrate_definition_v1_to_v2(
             ),
         })
 
-    condition_query = definition.get("copy_condition_query")
+    condition_query = format_1.get("copy_condition_query")
     if condition_query:
         stages.append({
             "guid": _child_guid(definition_guid, "condition"),
@@ -795,7 +931,7 @@ def migrate_definition_v1_to_v2(
             # rather than carrying on with the stages after it. This stage wraps the entire
             # definition, so there is nothing before it to discard.
             "unmatched_skips_trigger": True,
-            "only_on_sync": bool(definition.get("condition_only_on_sync", False)),
+            "only_on_sync": bool(format_1.get("condition_only_on_sync", False)),
             "then": body,
             "else": [],
         })
@@ -806,8 +942,8 @@ def migrate_definition_v1_to_v2(
         "guid": definition_guid,
         "format_version": FORMAT_VERSION,
         "migrated_from_format": 1,
-        "definition_name": definition.get("definition_name", ""),
-        "triggers": _triggers(definition),
+        "definition_name": format_1.get("definition_name", ""),
+        "triggers": _triggers(format_1),
         "stages": stages,
         "exports": [],
         # Derived, never authored. `copy_fields` fills this in from the flow analyser; the
@@ -816,14 +952,21 @@ def migrate_definition_v1_to_v2(
             # Format 1 counted the trigger note itself as the one source in every mode but
             # Destination-to-sources, where the query result was the source list.
             "trigger_is_source": across_mode_direction != DIRECTION_DESTINATION_TO_SOURCES,
-            "select_card_separator": definition.get("select_card_separator"),
+            "select_card_separator": format_1.get("select_card_separator"),
+            # Format 1 numbered the source notes from 1. The within-note trigger is the one
+            # source, and so is the note a one-source Destination to sources selects: with
+            # no loop to count it, nothing else would give `__Query_Note_Index` the 1 the
+            # join's loop did.
             "query_note_index_default": (
-                1 if copy_mode == COPY_MODE_WITHIN_NOTE else None
+                1
+                if copy_mode == COPY_MODE_WITHIN_NOTE
+                or _selects_one_source(stages, definition_guid)
+                else None
             ),
         },
-    }  # type: ignore[typeddict-unknown-key]
+    }
     if warnings:
-        migrated["migration_warnings"] = warnings  # type: ignore[typeddict-unknown-key]
+        migrated["migration_warnings"] = warnings
     # Format-1 syntax does not outlive the migration. The stages above record which note
     # each bare reference meant, in `legacy_source` / `legacy_destination`; promotion spends
     # that record by writing the binding into the reference itself, so what comes out has
@@ -874,7 +1017,7 @@ def migrate_definitions(
                 f" ({type(error).__name__}: {error}) and was left out"
             )
             continue
-        problems.extend(result.get("migration_warnings", []))  # type: ignore[arg-type]
+        problems.extend(result.get("migration_warnings", []))
         migrated.append(result)
     return migrated, problems
 
@@ -911,6 +1054,8 @@ STAGE_EXPRESSION_KEYS: dict[str, tuple[str, ...]] = {
     STAGE_NOTE_QUERY: ("query",),
     STAGE_CARD_QUERY: ("query",),
     STAGE_READ_FILE: ("filename",),
+    STAGE_SELECT_NOTE: ("index",),
+    STAGE_SELECT_CARD: ("index",),
     STAGE_WRITE_FILE: ("filename", "content"),
     STAGE_STORE: ("value",),
     STAGE_REDUCE: ("value", "initial"),
@@ -1025,7 +1170,7 @@ def promote_expression(
     )
     for key in ("text", "code"):
         if promoted.get(key):
-            promoted[key] = _promote_text(  # type: ignore[typeddict-item]
+            promoted[key] = _promote_text(
                 promoted[key], source, destination or source, known, binding_heads
             )
     return promoted
@@ -1114,11 +1259,12 @@ def _known_names(definition: Any) -> list[str]:
     """The bare names a promoted expression keeps as they are: the bindings with names.
 
     Every stage result -- a variable's, a query's, a synthesized join's -- plus the export
-    names. The loop and reduce bindings (`note`, `item`, `accumulator`) are deliberately
-    left out although they are bindings too: format 1 had no way to name them, so a bare
-    `{{Note}}` in a migrated expression is the field `Note`, which is what it has always
-    meant, and reading it as the loop's note would turn a common field name into a stage
-    error in every migrated across-notes definition.
+    names. The loop and reduce bindings (`note`, `item`, `accumulator`), and a Select Note
+    result that takes one of those reserved names, are deliberately left out although they
+    are bindings too: format 1 had no way to name them, so a bare `{{Note}}` in a migrated
+    expression is the field `Note`, which is what it has always meant, and reading it as the
+    loop's note would turn a common field name into a stage error in every migrated
+    across-notes definition.
 
     A name that is both -- a variable called `Word` on a note type that also has a field
     `Word` -- resolves to the *binding* afterwards, which reverses format 1: it asked the
@@ -1129,7 +1275,13 @@ def _known_names(definition: Any) -> list[str]:
     """
     names: list[str] = []
     for stage in walk_stages(definition.get("stages") or []):
-        names.extend(stage_result_names(stage))
+        # A Select Note stage may bind a reserved name -- the migrated one-source shape
+        # binds `note` -- and that is the loop's `note` in all but name, so it is left out
+        # for the same reason.
+        allowed_reserved = result_reserved_names_allowed(stage)
+        names.extend(
+            name for name in stage_result_names(stage) if name not in allowed_reserved
+        )
     for export in definition.get("exports") or []:
         if isinstance(export, dict) and isinstance(export.get("name"), str):
             names.append(export["name"])

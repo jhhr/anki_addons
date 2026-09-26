@@ -10,7 +10,7 @@ import pytest
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 from copy_anywhere.logic.preview import (
     find_trigger_notes,

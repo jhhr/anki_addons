@@ -18,7 +18,7 @@ from anki.notes import Note
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 
 #: Enough notes that a per-iteration search is unmistakable in the count, and few enough that

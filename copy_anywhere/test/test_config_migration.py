@@ -8,17 +8,26 @@ These drive the stubbed addon config directly rather than a collection: the migr
 pure dictionary work, and the analyser it calls to fill in `effects` never touches one.
 """
 
+import copy
+
 import pytest
 
 import definitions as d
-from conftest import DEFAULT_CONFIG
+from note_types import DEFAULT_CONFIG
 from copy_anywhere.configuration import (
     CONFIG_VERSION,
     PRE_STAGE_MIGRATION_KEY,
     migrate_config,
 )
-from copy_anywhere.logic.definition_migration import SYNTAX_VERSION_LEGACY
-from copy_anywhere.logic.definition_schema import is_format_2, walk_stages
+from copy_anywhere.logic.definition_migration import (
+    SYNTAX_VERSION_LEGACY,
+    migrate_definition_v1_to_v2,
+)
+from copy_anywhere.logic.definition_schema import (
+    is_format_2,
+    validate_definition_structure,
+    walk_stages,
+)
 
 
 @pytest.fixture
@@ -379,6 +388,74 @@ class TestIdCarryingReferences:
         definition = stored(stub_mw)["copy_definitions"][0]
         assert definition["triggers"]["note_types"] == [{"id": None, "name": "CA Vocab"}]
         assert "card_type" in definition["stages"][0]["card_actions"][0]
+
+
+class TestStagesWithoutAGuid:
+    """A stage with no guid is refused by the editor ("stage has no guid"), so none may be left.
+
+    The format-1 editor saved variables and file writes without a guid once the 0.2.0 step
+    that fills them in had already run, and a stage made from such a part came out with an
+    empty one.
+    """
+
+    def a_format_1_definition_with_parts_that_have_no_guid(self):
+        definition = d.destination_to_sources(
+            definition_name="dts",
+            field_to_field_defs=[d.field_to_field("Meaning", "{{Word}}")],
+            field_to_file_defs=[d.field_to_file("f.txt", "x")],
+            field_to_variable_defs=[d.field_to_variable("kanjiQuery", "x")],
+        )
+        for key in ("field_to_field_defs", "field_to_file_defs", "field_to_variable_defs"):
+            for part in definition[key]:
+                part.pop("guid", None)
+        return definition
+
+    def test_converting_one_gives_every_stage_a_guid(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_format_1_definition_with_parts_that_have_no_guid()]
+        config["version"] = "0.2.0"
+        migrate_config()
+        (definition,) = stored(stub_mw)["copy_definitions"]
+        assert all(stage.get("guid") for stage in walk_stages(definition["stages"]))
+        messages = [problem.message for problem in validate_definition_structure(definition)]
+        assert "stage has no guid" not in messages
+
+    def test_converting_one_twice_gives_the_same_guids(self):
+        v1 = self.a_format_1_definition_with_parts_that_have_no_guid()
+        guids = [
+            [stage["guid"] for stage in walk_stages(migrate_definition_v1_to_v2(v1)["stages"])]
+            for _ in range(2)
+        ]
+        assert guids[0] == guids[1]
+
+    def a_converted_definition_with_a_stage_that_has_no_guid(self):
+        definition = d.staged(
+            definition_name="old",
+            stages=[
+                d.variable("kanjiQuery", d.text("x")),
+                d.edit_note("trigger", fields=[d.write("Note", d.text("{{kanjiQuery}}"))]),
+            ],
+        )
+        definition["stages"][0]["guid"] = ""
+        definition["exports"] = [{"name": "kanjiQuery", "stage_guid": "", "result": "kanjiQuery"}]
+        return definition
+
+    def test_a_converted_one_is_repaired_on_start(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_converted_definition_with_a_stage_that_has_no_guid()]
+        config["version"] = CONFIG_VERSION
+        migrate_config()
+        (definition,) = stored(stub_mw)["copy_definitions"]
+        variable_guid = definition["stages"][0]["guid"]
+        assert variable_guid
+        assert definition["exports"][0]["stage_guid"] == variable_guid
+        assert validate_definition_structure(definition) == []
+
+    def test_a_repaired_one_is_left_alone_after(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_converted_definition_with_a_stage_that_has_no_guid()]
+        config["version"] = CONFIG_VERSION
+        migrate_config()
+        first = copy.deepcopy(stored(stub_mw)["copy_definitions"])
+        migrate_config()
+        assert stored(stub_mw)["copy_definitions"] == first
 
 
 class TestTheBackup:
