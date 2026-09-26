@@ -5,6 +5,7 @@
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [
     "jp_text_processing",
+    "ui",
     "utils",
     "word_array"
   ],

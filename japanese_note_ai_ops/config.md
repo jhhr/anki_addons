@@ -4,6 +4,9 @@
 
 - `log_level`: Default is "ERROR". Possible values from less logging to more: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 - `log_to_console` Default is `true`. If false, logs to files in the logs/ dir in the addon folder
+- `multi_op_dialog_shortcut`: Default is `""` (none). A key sequence such as `"Ctrl+Shift+J"`
+  for the browser's Edit > "Japanese AI ops..." dialog, which runs several ops in a row on the
+  selected notes or on every note of the current search. Read when a browser window opens.
 
 ## models
 

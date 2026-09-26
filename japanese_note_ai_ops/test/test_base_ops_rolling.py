@@ -751,5 +751,26 @@ class FlushStartedPlansTests(unittest.TestCase):
         self.assertEqual(calls, ["failing", "saved", "unsaved", "saved", "unsaved", "saved"])
 
 
+
+class RunOnceTests(unittest.TestCase):
+    """The rule each nested op's note save used to carry a copy of: whichever of the note's own
+    save and its flush comes first runs the save, and says whether it saved anything."""
+
+    def test_the_first_call_saves_and_says_so_the_rest_do_nothing(self):
+        calls = []
+        save = base_ops.run_once(lambda: calls.append("save") or True)
+        self.assertTrue(save())
+        self.assertFalse(save())
+        self.assertEqual(calls, ["save"])
+
+    def test_a_save_that_found_nothing_to_save_is_no_save(self):
+        # A cancel with none of a note's words finished: its flush writes nothing, and the
+        # cancelled run's log must not count it among the notes it saved
+        save = base_ops.run_once(lambda: False)
+        self.assertFalse(save())
+        plans = [NotePlan(task_count=1, spawn=lambda tasks: None, flush=base_ops.run_once(bool))]
+        self.assertEqual(base_ops.flush_started_plans(plans, cancelled=True), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

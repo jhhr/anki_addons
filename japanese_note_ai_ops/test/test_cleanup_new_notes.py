@@ -95,6 +95,9 @@ class FakeUpdater:
     def begin_cleanup(self):
         pass
 
+    def show_title(self):
+        pass
+
     def arm_cleanup_cancel(self, total_notes):
         self.armed.append(total_notes)
 
@@ -1776,7 +1779,7 @@ class SelectedNotesOpTidyTests(unittest.TestCase):
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         stack.enter_context(mock.patch.object(base_ops, "CollectionOp", FakeCollectionOp))
-        stack.enter_context(mock.patch.object(base_ops, "install_run_controls", lambda: None))
+        stack.enter_context(mock.patch.object(base_ops, "start_run_controls", lambda: None))
         stack.enter_context(
             mock.patch.object(
                 base_ops,

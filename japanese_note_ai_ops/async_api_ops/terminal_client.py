@@ -44,6 +44,7 @@ from .api_client import (
     run_paused,
     wait_while_paused,
 )
+from .run_errors import excerpt, report_error
 
 try:
     import psutil  # type: ignore
@@ -244,6 +245,7 @@ def decode_text_result(text: str, corrector: Optional[Callable[[str], str]] = No
         except (ValueError, TypeError):
             continue
     logger.error("Failed to parse JSON from the claude CLI: %s", text)
+    report_error(f"claude CLI: the answer was not valid JSON: {excerpt(text)}")
     return None
 
 
@@ -507,6 +509,7 @@ def get_response_from_terminal(
     exe = find_cli(config, which)
     if not exe:
         logger.error("No claude CLI found: install Claude Code or set claude_cli_path")
+        report_error("No claude CLI found: install Claude Code or set claude_cli_path")
         return None
 
     instructions_file = None
@@ -574,6 +577,7 @@ def _run_with_retry(
             finished = run_process(cmd, prompt, timeout, cancel_state, popen)
         except OSError as e:
             logger.error("Could not start the claude CLI %s: %s", cmd[0], e)
+            report_error(f"Could not start the claude CLI {cmd[0]}: {e}")
             return None
         finally:
             semaphore.release()
@@ -595,6 +599,7 @@ def _run_with_retry(
         if outcome.action == CliAction.EXHAUSTED:
             if not pause_for_usage_limit(outcome.message, config):
                 logger.error("claude CLI usage limit was reached for %s: %s", key, outcome.message)
+                report_error(f"{key}: the usage limit was reached: {excerpt(outcome.message)}")
                 return None
             # The same attempt again once the pause ends, which the top of the loop waits for.
             # Every request that hit the limit retries, not only the one that paused the run:
@@ -614,10 +619,15 @@ def _run_with_retry(
                 finished.stdout,
                 finished.stderr,
             )
+            report_error(
+                f"{key}: the claude CLI failed with exit code {finished.exit_code}:"
+                f" {excerpt(finished.stderr or finished.stdout or '')}"
+            )
             return None
 
         if attempt >= max_retries:
             logger.error("Giving up on %s after %d attempts: %s", key, attempt + 1, outcome.message)
+            report_error(f"{key}: gave up after {attempt + 1} attempts: {excerpt(outcome.message)}")
             return None
         delay = min(_backoff_delay(attempt), max_retry_wait)
         logger.warning("Retrying %s in %.1fs: %s", key, delay, outcome.message)

@@ -49,6 +49,7 @@ from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import merge, names, resources
 from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
+from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
     OpPhase,
@@ -56,6 +57,8 @@ from .base_ops import (
     selected_notes_op,
 )
 from .find_proper_nouns import add_proper_nouns, generate_word_array
+from .progress_errors import report_exception
+from .run_errors import report_error
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
@@ -94,10 +97,9 @@ def extract_words_in_note(
         # A broken array, usually a bracket lost in a hand edit. Generating over it would drop
         # the note ids of its matched words, which merge_arrays can only carry over from an
         # array it can read
-        logger.error(
-            f"{log_prefix}Left alone: the field holds no valid word array, {problem};"
-            " fix it by hand"
-        )
+        message = f"Left alone: the field holds no valid word array, {problem}; fix it by hand"
+        logger.error(f"{log_prefix}{message}")
+        report_error(message)
         return False
     if existing is not None and not overwrite:
         logger.debug(f"{log_prefix}The note already holds a word array")
@@ -115,6 +117,7 @@ def extract_words_in_note(
     except Exception as e:
         logger.error(f"{log_prefix}Could not generate a word array: {e}")
         print_error_traceback(e, logger)
+        report_exception(e, "Could not generate a word array")
         return False
 
     add_proper_nouns(config, arr, log_prefix)
@@ -186,29 +189,39 @@ bulk_extract_from_notes_op = make_bulk_op()
 bulk_regenerate_from_notes_op = make_bulk_op(overwrite=True)
 
 
-def extract_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def extract_words_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Needs the generator's resources, asked about before any note is touched."""
 
     def run():
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Extracting words")
         done_text = "Extracted words"
-        selected_notes_op(done_text, bulk_extract_from_notes_op, nids, parent, progress_updater)
+        selected_notes_op(
+            done_text, bulk_extract_from_notes_op, nids, parent, progress_updater, chain=chain
+        )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
 
 
-def regenerate_words_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def regenerate_words_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Extract words over the array a note already holds, for a sentence that was corrected."""
 
     def run():
         progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Regenerating word arrays")
         done_text = "Regenerated word arrays"
-        selected_notes_op(done_text, bulk_regenerate_from_notes_op, nids, parent, progress_updater)
+        selected_notes_op(
+            done_text, bulk_regenerate_from_notes_op, nids, parent, progress_updater, chain=chain
+        )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
 
 
-def extract_words_and_judge_from_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def extract_words_and_judge_from_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Extract words, then judge the new words' matchability, as one operation. The judge has
     to be a phase of its own: its requests cannot be planned until the words exist."""
 
@@ -226,6 +239,7 @@ def extract_words_and_judge_from_selected_notes(nids: Sequence[NoteId], parent: 
             nids,
             parent,
             progress_updater,
+            chain=chain,
         )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)

@@ -54,11 +54,13 @@ from ..word_array.match_flags import (
     read_word_array,
     word_array_query_regex,
 )
+from .chain_types import ChainStep, fail_step
 from .base_ops import (
     AsyncTaskProgressUpdater,
     BulkOpResult,
     CancelState,
     NotePlan,
+    run_once,
     bulk_nested_notes_op,
     get_response,
     make_inner_bulk_op,
@@ -2373,15 +2375,10 @@ def plan_word_array_matching(
 
         return handle_op_error
 
-    array_saved = False
-
-    def save_array() -> bool:
-        # Once only: match_targets.save_results writes into the array's elements, and the
-        # flush may come after this note's own save or before its cancelled task is unwound
-        nonlocal array_saved
-        if array_saved:
-            return False
-        array_saved = True
+    def save_finished() -> bool:
+        # Once only (run_once): match_targets.save_results writes into the array's elements,
+        # and the flush may come after this note's own save or before its cancelled task is
+        # unwound.
         # Copies, since after a cancel an abandoned worker thread can still be writing a
         # result. Results first: a match_quality is put in before its result, so every
         # result copied has its quality in the later copy.
@@ -2395,7 +2392,10 @@ def plan_word_array_matching(
         )
         if saved or rated:
             save_note()
-        return True
+            return True
+        return False
+
+    save_array = run_once(save_finished)
 
     async def save_results(word_tasks: list[asyncio.Task]):
         # Nothing awaited after the gather, so a cancel either stops this before save_array
@@ -2667,6 +2667,7 @@ async def bulk_match_words_to_notes(
 def match_words_to_notes_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Match words to notes for selected notes.
@@ -2674,6 +2675,7 @@ def match_words_to_notes_from_selected(
     Args:
         nids (Sequence[NoteId]): List of note IDs to process.
         parent (Any): Parent widget for the operation.
+        chain (ChainStep|None): The chain this run is a step of, see selected_notes_op.
 
     Returns:
         What selected_notes_op returns for the run.
@@ -2693,6 +2695,7 @@ def match_words_to_notes_from_selected(
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
+        chain=chain,
     )
 
 
@@ -2730,6 +2733,7 @@ def match_single_word_to_notes_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
     reprocess_words: Optional[WithProcessed] = None,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Match words to notes for selected notes.
@@ -2739,6 +2743,8 @@ def match_single_word_to_notes_from_selected(
         parent (Any): Parent widget for the operation.
         reprocess_words (str|None): How to match the single word, either rematching all,
             only rematching unprocessed words, or only rematching already processed words.
+        chain (ChainStep|None): The chain this run is a step of, see selected_notes_op. A
+            missing config fails the step, since no run starts to report back.
     Returns:
         What selected_notes_op returns for the run.
     """
@@ -2747,6 +2753,7 @@ def match_single_word_to_notes_from_selected(
     config = mw.addonManager.getConfig(__name__)
     if not config:
         logger.error("Error: Missing addon configuration")
+        fail_step(chain, "Missing addon configuration")
         return None
 
     def bulk_op(
@@ -2826,4 +2833,5 @@ def match_single_word_to_notes_from_selected(
         filter_new_notes_op,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
+        chain=chain,
     )
