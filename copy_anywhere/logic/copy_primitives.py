@@ -44,8 +44,7 @@ from .kana_highlight_process import WithTagsDef, kana_highlight_process
 from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
 from .object_refs import (
     card_action_card_type,
-    card_type_ref_matches_note_type,
-    resolve_template,
+    resolve_card_type,
     split_card_type_name,
 )
 from .regex_process import regex_process
@@ -462,9 +461,13 @@ def card_actions_by_template(
 
     A note-level action names both the note type and the card type, so the same definition
     can carry actions for several note types and each note takes only its own. Both halves
-    are resolved by id where the action carries one, so an action still lands after the
-    user has renamed the note type or the card type in Anki -- neither rename fires a hook
-    the addon could hear.
+    resolve by the one rule every reader uses (`object_refs.resolve_card_type`): the id
+    wins while it exists, the stored name is looked up when it does not. So an action
+    still lands after the user has renamed the note type or the card type in Anki --
+    neither rename fires a hook the addon could hear -- and one carrying a note type id
+    this collection never issued (a deleted and re-created note type, a definition from
+    another collection) lands by name. Comparing the stored id with the note's instead
+    dropped exactly those actions, silently, while every other reader resolved them.
 
     By ordinal rather than by name because that is what the cards themselves are keyed on:
     once the template is found, the card's template ordinal is the only thing that has to
@@ -477,9 +480,12 @@ def card_actions_by_template(
         if ref["template_id"] is None and split_card_type_name(ref["name"]) is None:
             logger.error("Error in copy fields: Invalid card type name '%s'", ref["name"])
             continue
-        if not card_type_ref_matches_note_type(ref, note_type):
+        model, template = resolve_card_type(ref, note.col)
+        # An action whose note type resolves to another one, or to none at all, is
+        # addressed to other notes: an id that still exists keeps it there even when the
+        # stored name happens to be this note type's.
+        if model is None or note_type is None or model["id"] != note_type["id"]:
             continue
-        template = resolve_template(ref, note_type)
         if template is None:
             # The note type is this note's, so the action was meant for it; the card type
             # it names is gone. Dropping that silently is what made a renamed card type
@@ -487,7 +493,7 @@ def card_actions_by_template(
             logger.warning(
                 "Card action skipped: no card type '%s' in note type '%s'",
                 ref["name"],
-                note_type["name"] if note_type else "",
+                note_type["name"],
             )
             continue
         by_ord[template["ord"]] = card_action

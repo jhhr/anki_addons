@@ -28,6 +28,7 @@ rename this pass follows back.
 from __future__ import annotations
 
 import logging
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from typing import TYPE_CHECKING, Any, Final, Iterator, Optional, Union, cast
@@ -79,7 +80,8 @@ _TRIGGER_NOTE_TYPE = "trigger note type"
 #: Where the names the ids last had are kept. Not a definition's business -- it is about the
 #: collection, and one entry serves every definition that references the object. It says
 #: *which* collection, too: this config is the addon's and is shared by every profile on the
-#: machine, while every id in it belongs to the one collection that issued it.
+#: machine, while every id in it belongs to the one collection that issued it. The stamp is
+#: the collection's creation time, which syncs with it (`_collection_crt`).
 SNAPSHOT_KEY = "name_snapshot"
 
 #: Where a definition keeps the field and card type renames this pass would not follow into
@@ -1218,27 +1220,63 @@ def referenced_object_ids(definitions: Any) -> tuple[set, set]:
     return note_type_ids, deck_ids
 
 
+def _collection_crt(col: Any) -> Optional[int]:
+    """Which collection a snapshot is of: the collection's creation time.
+
+    The config is shared by every profile on the machine, and the ids in it are not: they
+    are the issuing collection's own. The creation time is stored in the collection, so it
+    is the same on every device that syncs it -- which is where this config goes too,
+    copied whole between desktops (`addon_config_sync`). A path was used before and never
+    matched there: every synced config looked like another collection's, and nothing was
+    followed on any device but the one that saved it. Anki rounds the creation time to the
+    start of its day, so two profiles made on the same day look like one collection.
+    """
+    crt = getattr(col, "crt", None)
+    return crt if isinstance(crt, int) and not isinstance(crt, bool) else None
+
+
 def _collection_path(col: Any) -> str:
-    """Which collection a snapshot is of. The config is shared by every profile on the
-    machine, and the ids in it are not: they are the issuing collection's own."""
+    """The stamp snapshots carried before `collection_crt`, still needed to read one."""
     return str(getattr(col, "path", "") or "")
 
 
 def _empty_snapshot(col: Any) -> dict:
-    return {"collection": _collection_path(col), "note_types": {}, "decks": {}}
+    return {"collection_crt": _collection_crt(col), "note_types": {}, "decks": {}}
 
 
-def _snapshot_is_of_another_collection(snapshot: Any, col: Any) -> bool:
-    """Whether this snapshot was taken of a different collection than the one in hand.
+def _created(crt: Any) -> str:
+    if not isinstance(crt, int) or isinstance(crt, bool):
+        return f"'{crt}'"
+    return time.strftime("%Y-%m-%d", time.localtime(crt))
 
-    A snapshot written before the stamp existed carries no path; it is read as this
+
+def _another_collection(snapshot: Any, col: Any) -> Optional[str]:
+    """What tells this snapshot's collection from the one in hand, or None if they are one.
+
+    A snapshot stamped with a path (before `collection_crt`) is compared by path, one last
+    time: the pass that reads it replaces it with a stamped one, whichever way it went. A
+    snapshot with no stamp at all was written before stamps existed; it is read as this
     collection's once, and the pass that reads it stamps it. Guessing the other way would
     make every upgrade look like a profile switch.
     """
     if not isinstance(snapshot, dict):
-        return False
-    stored = snapshot.get("collection")
-    return bool(stored) and stored != _collection_path(col)
+        return None
+    if "collection_crt" in snapshot:
+        stored = snapshot["collection_crt"]
+        crt = _collection_crt(col)
+        if stored is None or crt is None or stored == crt:
+            return None
+        return (
+            f"the collection changed from one created {_created(stored)}"
+            f" to one created {_created(crt)}"
+        )
+    stored_path = snapshot.get("collection")
+    if not stored_path or stored_path == _collection_path(col):
+        return None
+    return (
+        f"the collection changed from the one at '{stored_path}'"
+        f" to the one at '{_collection_path(col)}'"
+    )
 
 
 def build_name_snapshot(definitions: Any, col: Any) -> dict:
@@ -1273,7 +1311,7 @@ def build_name_snapshot(definitions: Any, col: Any) -> dict:
         if name is not None:
             decks[str(deck_id)] = name
     return {
-        "collection": _collection_path(col),
+        "collection_crt": _collection_crt(col),
         "note_types": note_types,
         "decks": decks,
     }
@@ -1292,7 +1330,8 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
     referenced: dict = {}
     stored_snapshot = config.data.get(SNAPSHOT_KEY) or {}
     snapshot = stored_snapshot
-    if _snapshot_is_of_another_collection(snapshot, col):
+    collection_changed = _another_collection(snapshot, col)
+    if collection_changed is not None:
         # A note type id, a deck id and a field id are the issuing collection's own, and
         # the config that holds them is shared by every profile. So nothing the snapshot
         # says is evidence about the collection in front of the pass now: no id in it is
@@ -1301,10 +1340,7 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         # entirely -- every reference re-binds by the one rule, the id first and the name
         # after it -- and replaced with this collection's names below. A rename is only
         # ever followed inside the collection it happened in.
-        result.collection_changed = (
-            f"the collection changed from '{snapshot.get('collection')}'"
-            f" to '{_collection_path(col)}'"
-        )
+        result.collection_changed = collection_changed
         snapshot = {}
     deleted = _deleted_objects(snapshot, col)
     for definition in definitions:
@@ -1346,7 +1382,8 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         # The snapshot going out of date is itself a change worth a write: it is what the
         # next pass compares against, so a first run on a config that has none has to store
         # one or no rename after it could ever be seen. A snapshot that gains nothing but
-        # its collection stamp differs too, which is how another collection's is replaced.
+        # its collection stamp differs too, which is how another collection's is replaced
+        # and one stamped with a path, as they were before `collection_crt`, restamped.
         config.data[SNAPSHOT_KEY] = refreshed_snapshot
         changed = True
 

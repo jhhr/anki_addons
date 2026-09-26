@@ -363,6 +363,52 @@ class TestACardActionFollowsARenamedCardType:
 
         assert logger.errors or logger.warnings
 
+    def flags_after_running(self, note, action) -> dict:
+        definition = d.within_note(
+            field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            card_actions=[action],
+        )
+        copied_into_cards: dict = {}
+        copy_for_single_trigger_note(
+            definition, note, copied_into_cards_dict=copied_into_cards
+        )
+        return {card.template()["name"]: card.flags for card in copied_into_cards.values()}
+
+    def test_a_note_type_id_this_collection_never_issued_falls_back_to_the_name(
+        self, col, logger
+    ):
+        """A deleted and re-created note type, or a definition from another collection:
+        every other reader resolves the action by name, while the run compared the stale
+        id with the note's and dropped the action without a word."""
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        action = self.card_action(col, 1, set_flag=3)
+        action["card_type"]["note_type_id"] += 10_000
+        action["card_type"]["template_id"] += 10_000
+
+        assert self.flags_after_running(note, action) == {"Recall": 3}
+        assert logger.errors == [] and logger.warnings == []
+
+    def test_an_id_that_is_another_note_types_keeps_the_action_away_from_this_note(
+        self, col, logger
+    ):
+        """The id wins while it exists, even over a stored name that is this note's: the
+        action was bound to the other note type, so it is addressed to that one's notes."""
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        action = self.card_action(col, 0, set_flag=2)
+        action["card_type"]["note_type_id"] = col.models.by_name(KANJI)["id"]
+
+        assert self.flags_after_running(note, action) == {}
+        assert logger.errors == [] and logger.warnings == []
+
+    def test_a_card_type_gone_from_the_notes_own_note_type_is_a_warning(self, col, logger):
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        action = self.card_action(col, 0, set_flag=2)
+        action["card_type"]["template_id"] += 10_000
+        action["card_type"]["name"] = f"{VOCAB}<::>Gone"
+
+        assert self.flags_after_running(note, action) == {}
+        assert any("Card action skipped: no card type" in line for line in logger.warnings)
+
 
 class TestWhatValidationSaysAboutAReferenceSlot:
     """A slot takes a reference or the bare name that came before it, and nothing else."""

@@ -186,11 +186,13 @@ def ref_matches_note_type(ref: Any, model: Any) -> bool:
 
 
 def card_type_ref_matches_note_type(ref: Any, model: Any) -> bool:
-    """Whether a card type reference is one of `model`'s.
+    """Whether a card type reference is one of `model`'s, by the stored note type half alone.
 
-    A note-level card action carries actions for several note types and each note takes
-    only its own, so this is the half that decides whether an action is even addressed to
-    this note before its template is looked for.
+    This is `resolve_template`'s gate, and it does not fall back: a stored note type id is
+    compared as it is, even one that no longer exists. Deciding which note type a
+    reference is addressed to is `resolve_card_type`'s job, which applies the id-or-name
+    rule first and then asks here with the id it found -- which is how a note-level card
+    action decides whether it is this note's (`copy_primitives.card_actions_by_template`).
     """
     reference = normalize_card_type_ref(ref)
     halves = split_card_type_name(reference["name"])
@@ -233,8 +235,7 @@ def resolve_card_type(ref: Any, col: Any) -> tuple[Optional[Any], Optional[Any]]
         return None, None
     # The template is looked for in the note type that was *found*, not in the one the
     # reference names: when a stale id fell through to the name, the two differ, and
-    # `resolve_template`'s own gate -- which is what tells a note-level action addressed to
-    # this note type from one addressed to another (`copy_primitives.py`) -- would answer
+    # `resolve_template`'s own gate, which compares the stored id as it is, would answer
     # None for a template whose name is right there.
     return model, resolve_template({**reference, "note_type_id": model["id"]}, model)
 
