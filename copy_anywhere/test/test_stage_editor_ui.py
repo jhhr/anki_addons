@@ -122,6 +122,57 @@ def test_an_unknown_stage_type_renders_a_row_instead_of_crashing(col, qapp):
     assert tree.document.problems_for("s")
 
 
+def test_a_row_s_small_buttons_keep_their_labels_under_anki_s_button_padding(col, qapp):
+    # Anki's own stylesheet (aqt/stylesheets.py, `button`) pads every QPushButton by 25px a
+    # side on Windows. The row's buttons were QPushButtons capped at 28px, which left the
+    # label no room at all: in Anki they showed as blank squares. The harness does not load
+    # that stylesheet, so this applies the rule itself.
+    tree = tree_for(col, variable("a", "A"))
+    tree.setStyleSheet("QPushButton { padding-left: 25px; padding-right: 25px; }")
+    tree.resize(900, 400)
+    tree.show()
+    qapp.processEvents()
+    row = tree.rows["a"]
+    for button in (row.expand_button, row.up_button, row.down_button, row.menu_button):
+        assert button.text(), "each small button has a visible label"
+        assert button.toolTip(), f"{button.text()!r} says what it does on hover"
+        assert button.width() >= button.sizeHint().width(), f"{button.text()!r} is clipped"
+    tree.close()
+
+
+def test_each_block_with_its_own_remove_button_is_boxed(col, qapp, qtbot):
+    # Field writes, processes and stages each carry a Remove or Delete, and with nothing
+    # drawn between them it was not clear which block a button belonged to. Each block is a
+    # frame whose outline rule is scoped to its own name, so the labels inside stay unboxed.
+    from aqt.qt import QFrame
+
+    from copy_anywhere.ui.outline import OUTLINE_STYLE
+
+    stage = default_stage(STAGE_EDIT_NOTE, "e")
+    stage["fields"] = [
+        {
+            "field": field,
+            "value": value_expression(text="x", process_chain=[d.regex_process(field, "y")]),
+            "write_if": "always",
+        }
+        for field in ("Word", "Meaning")
+    ]
+    stage["card_actions"] = [{"card_type_name": f"{VOCAB}{CARD_TYPE_SEPARATOR}Recall"}]
+    tree = tree_for(col, stage, variable("a", "A"))
+    # The card action editor builds its rows from a timer, after the stage editor exists.
+    qtbot.waitUntil(lambda: bool(tree.findChildren(QFrame, "cardActionBox")), timeout=2000)
+    for name, expected in (
+        ("stageRow", 2),
+        ("fieldWriteRow", 2),
+        ("processRow", 2),
+        ("cardActionBox", 1),
+    ):
+        frames = tree.findChildren(QFrame, name)
+        assert len(frames) == expected, name
+        for frame in frames:
+            assert frame.styleSheet() == f"QFrame#{name} {{ {OUTLINE_STYLE} }}"
+
+
 # -- reorder --------------------------------------------------------------------------
 
 

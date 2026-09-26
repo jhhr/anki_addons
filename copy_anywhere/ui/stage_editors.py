@@ -66,6 +66,7 @@ from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .card_actions_editor import CardActionsEditor
+from .outline import outline_frame
 from .code_notices import FILE_CODE_NOTICE
 from .stage_edit_state import StageEditState
 from .stage_editor_context import NoteTypesFor, StageEditorContext
@@ -506,6 +507,7 @@ class FieldWriteRow(QFrame):
 
     def __init__(self, parent: "EditNoteStageEditor", field_write: FieldWrite) -> None:
         super().__init__(parent)
+        outline_frame(self, "fieldWriteRow")
         self.field_write = field_write
         self.owner = parent
         layout = QVBoxLayout(self)

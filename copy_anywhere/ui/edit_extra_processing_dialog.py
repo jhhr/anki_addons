@@ -8,6 +8,7 @@ from aqt import mw
 
 from aqt.qt import (
     QWidget,
+    QFrame,
     QFormLayout,
     QLabel,
     QDialog,
@@ -27,6 +28,7 @@ from aqt.qt import (
 
 from aqt.utils import tooltip
 
+from .outline import outline_frame
 from .stage_edit_state import StageEditState
 
 from ..shared.ui.auto_resizing_text_edit import AutoResizingTextEdit
@@ -770,15 +772,17 @@ class EditExtraProcessingWidget(QWidget):
                 self.process_dialogs.append(process_dialog)
             return process_dialog
 
-        # Create a widget to contain this process row
-        process_widget = QWidget(self)
+        # Create a widget to contain this process row, boxed so that its Edit and Delete
+        # are plainly this process's and not the next one's
+        process_widget = QFrame(self)
+        outline_frame(process_widget, "processRow")
         process_layout = QHBoxLayout(process_widget)
         process_layout.setContentsMargins(5, 5, 5, 5)
 
-        # Add the process label
+        # The process's name on the left, its buttons on the right
         process_label = ClickableLabel(get_process_name(process), process_description, self)
-        process_layout.addStretch()  # Push buttons to the right
         process_layout.addWidget(process_label)
+        process_layout.addStretch()
 
         def process_dialog_exec():
             process_dialog = get_or_create_dialog()

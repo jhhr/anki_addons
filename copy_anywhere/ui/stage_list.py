@@ -20,6 +20,7 @@ from aqt.qt import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     pyqtSignal,
@@ -41,14 +42,13 @@ from .stage_editor_context import (
     context_after,
     make_note_types_for,
 )
+from .outline import outline_frame
 from .stage_editors import StageEditorEnvironment, make_stage_editor
 
 if qtmajor > 5:
-    QFrameStyledPanel = QFrame.Shape.StyledPanel
     QSizePolicyPreferred = QSizePolicy.Policy.Preferred
     QSizePolicyMinimum = QSizePolicy.Policy.Minimum
 else:  # pragma: no cover -- Anki 2.1.49 and older
-    QFrameStyledPanel = QFrame.StyledPanel  # type: ignore[attr-defined]
     QSizePolicyPreferred = QSizePolicy.Preferred  # type: ignore[attr-defined]
     QSizePolicyMinimum = QSizePolicy.Minimum  # type: ignore[attr-defined]
 
@@ -70,16 +70,21 @@ class StageRow(QFrame):
         self.tree = tree
         self.stage = stage
         self.guid = stage.get("guid", "")
-        self.setFrameShape(QFrameStyledPanel)
+        outline_frame(self, "stageRow")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
 
         header = QHBoxLayout()
         outer.addLayout(header)
 
-        self.expand_button = QPushButton("▸", self)
-        self.expand_button.setFlat(True)
-        self.expand_button.setMaximumWidth(24)
+        # The row's small buttons are QToolButtons sized by their one-character label, not
+        # QPushButtons with a capped width: Anki's stylesheet pads every QPushButton by 15px a
+        # side (25px on Windows), which inside a 28px button left no room for the label, so
+        # in Anki they showed as blank squares.
+        self.expand_button = QToolButton(self)
+        self.expand_button.setText("▸")
+        self.expand_button.setAutoRaise(True)
+        self.expand_button.setToolTip("Show or hide this stage's settings")
         self.expand_button.clicked.connect(self._toggle)
         header.addWidget(self.expand_button)
 
@@ -106,17 +111,20 @@ class StageRow(QFrame):
         self.enabled_box.toggled.connect(self._on_enabled)
         header.addWidget(self.enabled_box)
 
-        self.up_button = QPushButton("↑", self)
-        self.up_button.setMaximumWidth(28)
+        self.up_button = QToolButton(self)
+        self.up_button.setText("↑")
+        self.up_button.setToolTip("Move this stage up")
         self.up_button.clicked.connect(lambda: tree.move_stage(self.guid, -1))
         header.addWidget(self.up_button)
-        self.down_button = QPushButton("↓", self)
-        self.down_button.setMaximumWidth(28)
+        self.down_button = QToolButton(self)
+        self.down_button.setText("↓")
+        self.down_button.setToolTip("Move this stage down")
         self.down_button.clicked.connect(lambda: tree.move_stage(self.guid, 1))
         header.addWidget(self.down_button)
 
-        self.menu_button = QPushButton("⋮", self)
-        self.menu_button.setMaximumWidth(28)
+        self.menu_button = QToolButton(self)
+        self.menu_button.setText("⋮")
+        self.menu_button.setToolTip("Duplicate, move into another block, or delete")
         self.menu_button.clicked.connect(self._show_menu)
         header.addWidget(self.menu_button)
 

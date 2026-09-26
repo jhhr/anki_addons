@@ -18,15 +18,7 @@ from aqt.qt import (
     QLineEdit,
     QTimer,
     pyqtSignal,
-    qtmajor,
 )
-
-if qtmajor > 5:
-    QFrameStyledPanel = QFrame.Shape.StyledPanel
-    QFrameShadowRaised = QFrame.Shadow.Raised
-else:
-    QFrameStyledPanel = QFrame.StyledPanel  # type: ignore
-    QFrameShadowRaised = QFrame.Raised  # type: ignore
 
 from ..configuration import (
     CARD_TYPE_SEPARATOR,
@@ -38,6 +30,7 @@ from ..configuration import (
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
+from .outline import outline_frame
 from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
@@ -479,8 +472,7 @@ class CardActionsEditor(QWidget):
 
         # Create a frame for the action editor
         frame = QFrame(self.actions_container_widget)
-        frame.setFrameShape(QFrameStyledPanel)
-        frame.setFrameShadow(QFrameShadowRaised)
+        outline_frame(frame, "cardActionBox")
         frame_layout = QVBoxLayout(frame)
         self.actions_layout.addWidget(frame)
 
