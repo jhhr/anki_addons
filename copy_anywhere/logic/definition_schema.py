@@ -333,7 +333,10 @@ SELECT_STAGE_TYPES = (STAGE_SELECT_NOTE, STAGE_SELECT_CARD)
 #: item, the way a loop's item is, and a loop may call its item `note` or `card`; a migrated
 #: Destination to sources definition that reads one source note depends on `note` meaning
 #: that note.
-SELECT_RESERVED_NAMES = {STAGE_SELECT_NOTE: frozenset({"note"}), STAGE_SELECT_CARD: frozenset({"card"})}
+SELECT_RESERVED_NAMES = {
+    STAGE_SELECT_NOTE: frozenset({"note"}),
+    STAGE_SELECT_CARD: frozenset({"card"}),
+}
 
 #: The name a select stage's index code gets its input list under, besides the list's own
 #: name, so that code can be written without knowing what the query was called. For cards

@@ -524,7 +524,16 @@ class _Analyzer:
             index_scope = dict(scope)
             if list_name not in index_scope:
                 index_scope[list_name] = Binding(list_name, list_type, stage.get("guid"), True)
-            self.check_expression(stage.get("index"), index_scope, stage, "index")
+            index = stage.get("index")
+            self.check_expression(index, index_scope, stage, "index")
+            if (
+                isinstance(index, dict)
+                and not expression_is_code(index)
+                and not (index.get("text") or "").strip()
+            ):
+                # An index that comes out blank selects nothing, which is how an empty field
+                # read into one is meant to behave; a box left empty is nobody's intent.
+                self.problem("index is empty, so it would never select anything", stage)
             self.declare(scope, stage, stage_result_name(stage), T_NOTE if is_note else T_CARD)
             if at_root and stage.get("if_missing") == "skip_block":
                 self.note_skipping_root_stage(stage)

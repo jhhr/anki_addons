@@ -133,9 +133,10 @@ A list of notes cannot be edited or read as a note. When one of them is what you
 first note found, a random one, the one some code prefers — **Select Note** picks it: by
 position (0 is the first, -1 the last), or with code that gets the list as `notes` and
 returns a position. Every stage after it can then use it like the trigger note:
-`{{Picked.Meaning}}`, an **Edit Note** on `Picked`. If no note is at that position, its
-fields read as empty and editing it does nothing, unless you tell it to stop the block or
-fail instead. **Select Card** does the same for a list of cards, and its code gets the list
+`{{Picked.Meaning}}`, an **Edit Note** on `Picked`. If no note is at that position, or the
+position comes out blank, its fields read as empty and editing it does nothing, unless you
+tell it to stop the block or fail instead. A **Call Definition** or a search condition given
+no note fails the definition, since neither can run without one. **Select Card** does the same for a list of cards, and its code gets the list
 as `cards`.
 
 <details>

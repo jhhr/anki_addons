@@ -135,15 +135,17 @@ outer list plus `store` is how a loop reports anything back.
 and read, with no loop, and `select_card` does the same for one card of a card list. The
 `index` is a value expression: text that reads as a whole number (0 is the first, 1 the
 second, and a negative number counts from the end), or code that returns one, or `None` for
-nothing. The code gets the list as `notes` or `cards` as well as under its own name; in
-`select_card` that makes `cards` the list being picked from rather than the note's cards,
-as any binding called `cards` would. When nothing is at the index, `if_missing` decides:
-`empty`, the default, binds nothing -- a reference to one of its values reads as empty text,
-an `edit_note` or `edit_card` on it does nothing, and a call or a search condition given it
-fails naming it -- `skip_block` stops the rest of the block, and `error` fails the
-definition. The result may be called `note` or `card` respectively, the one reserved name
-each may take, as a loop's item may; `note` is what a migrated one-source definition calls
-it.
+nothing. Text that comes out blank -- an empty field it read -- is nothing too, the way
+`None` is; an index box left empty is refused at save. The code gets the list as `notes` or
+`cards` as well as under its own name; in `select_card` that makes `cards` the list being
+picked from rather than the note's cards, as any binding called `cards` would. When nothing
+is at the index, `if_missing` decides: `empty`, the default, binds "nothing selected" -- a
+reference to one of its values reads as empty text, code sees `None` (and, for a result
+called `note`, no `cards`), an `edit_note` or `edit_card` on it does nothing, and a call or
+a search condition given it fails naming it -- `skip_block` stops the rest of the block, and
+`error` fails the definition. The result may be called `note` or `card` respectively, the
+one reserved name each may take, as a loop's item may; `note` is what a migrated one-source
+definition calls it.
 
 ## Rules worth knowing before writing one
 

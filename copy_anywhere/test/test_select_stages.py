@@ -125,6 +125,59 @@ class TestNoNoteAtTheIndex:
         ) is False
         assert logger.has_error("no note at index 7 of 3")
 
+    def test_an_index_that_reads_blank_is_no_index(self, trigger, pool, logger):
+        # An empty field read as the index says "no position", as code returning None does:
+        # `if_missing` decides, rather than the run failing on '' not being a number.
+        trigger["Freq"] = ""
+        assert run(
+            trigger,
+            d.select_note("found", "Picked", d.text("{{trigger.Freq}}")),
+            write_picked_word(),
+        ) is True, logger.errors
+        assert trigger["Note"] == ""
+
+    def test_and_error_says_there_was_none(self, trigger, pool, logger):
+        trigger["Freq"] = ""
+        assert run(
+            trigger,
+            d.select_note("found", "Picked", d.text("{{trigger.Freq}}"), if_missing="error"),
+            write_picked_word(),
+        ) is False
+        assert logger.has_error("no note at no index of 3")
+
+    def test_a_call_given_no_note_fails_naming_it(self, trigger, pool, logger):
+        # Editing no note does nothing, but a call has to run its definition on some note.
+        from copy_anywhere.logic.flow_analysis import make_lookup
+
+        callee = d.staged(
+            "callee",
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("called"))])],
+            guid="callee",
+        )
+        definition = d.staged(stages=[
+            d.note_query("found", "tag:pool", selection=POOL_BY_FREQ),
+            d.select_note("found", "Picked", d.text("7")),
+            d.call_definition("callee", trigger="Picked"),
+        ])
+        assert copy_for_single_trigger_note(
+            definition, trigger, copied_into_notes=[], definition_lookup=make_lookup([callee])
+        ) is False
+        assert logger.has_error("call trigger 'Picked' holds no note")
+
+    def test_so_does_a_search_condition(self, trigger, pool, logger):
+        assert run(
+            trigger,
+            d.select_note("found", "Picked", d.text("7")),
+            d.condition(
+                d.text("Word:w1"),
+                then=[d.edit_note("trigger", [d.write("Note", d.text("matched"))])],
+                predicate_kind="note_query",
+                predicate_target={"binding": "Picked"},
+            ),
+        ) is False
+        assert logger.has_error("predicate target 'Picked' holds no note")
+        assert trigger["Note"] == "untouched"
+
 
 class TestByCode:
     def test_code_gets_the_list_as_notes_and_returns_an_index(self, trigger, pool, logger):
@@ -172,6 +225,44 @@ class TestUsingTheSelectedNote:
         ) is True, logger.errors
         assert trigger["Note"] == "mmm"
 
+    def test_code_reads_no_note_as_none_with_no_cards(self, trigger, pool, logger):
+        # Called `note`, which is what `cards` follows: with no note there are no cards,
+        # where it used to fall back to the trigger's and hand code those as the note's.
+        assert run(
+            trigger,
+            d.select_note("found", "note", d.text("7")),
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.code("return f'{note is None}:{len(cards)}'"))],
+            ),
+        ) is True, logger.errors
+        assert trigger["Note"] == "True:0"
+
+
+class TestNothingElseIsNoNote:
+    """Only a select stage that found nothing reads as "no note". A None that reaches a
+    binding any other way -- a list code built -- is the mistake it always was."""
+
+    def test_editing_a_none_from_a_code_list_fails_the_stage(self, trigger, logger):
+        definition = d.staged(stages=[
+            d.variable("found", d.code("return [None]")),
+            d.for_each_note("found", [d.edit_note("note", [d.write("Note", d.text("x"))])]),
+        ])
+        assert copy_for_single_trigger_note(definition, trigger, copied_into_notes=[]) is False
+        assert logger.has_error("target must be a note, but it holds NoneType")
+
+    def test_reading_one_fails_the_stage_too(self, trigger, logger):
+        definition = d.staged(stages=[
+            d.variable("found", d.code("return [None]")),
+            d.for_each_note(
+                "found",
+                [d.edit_note("trigger", [d.write("Note", d.text("[{{note.Word}}]"))])],
+            ),
+        ])
+        assert copy_for_single_trigger_note(definition, trigger, copied_into_notes=[]) is False
+        assert logger.has_error("'note' is not a note or card, so 'note.Word' has no value")
+        assert trigger["Note"] == "untouched"
+
 
 def analysed(*stages):
     definition = d.staged(stages=[d.note_query("found", "tag:pool"), *stages])
@@ -184,6 +275,10 @@ class TestWhatTheEditorChecks:
             d.select_note("found", "Picked"),
             d.edit_note("Picked", [d.write("Meaning", d.text("{{Picked.Word}}"))]),
         ) == []
+
+    def test_an_empty_index_box_is_refused(self):
+        problems = analysed(d.select_note("found", "Picked", d.text("  ")))
+        assert any("index is empty" in problem for problem in problems), problems
 
     def test_the_input_has_to_be_a_note_list(self):
         problems = analysed(d.variable("words", d.text("x")), d.select_note("words", "Picked"))
@@ -315,12 +410,14 @@ class TestMigratedDestinationToOneSource:
     """A migrated Destination to sources definition that reads one note does what the join
     shape did: each is run on its own copy of the same notes and they are compared."""
 
-    def run(self, col, monkeypatch, field_to_field_defs, join: bool, **extra) -> str:
+    def run(
+        self, col, monkeypatch, field_to_field_defs, join: bool, note_before="untouched", **extra
+    ) -> str:
         from copy_anywhere.logic import definition_migration
 
         if join:
             monkeypatch.setattr(definition_migration, "_takes_one_source", lambda *_: False)
-        trigger = real_anki.add_note(col, VOCAB, {"Word": "trigger", "Note": "untouched"})
+        trigger = real_anki.add_note(col, VOCAB, {"Word": "trigger", "Note": note_before})
         definition = migrate_definition_v1_to_v2(
             d.destination_to_sources(
                 copy_from_cards_query="tag:pool",
@@ -343,16 +440,46 @@ class TestMigratedDestinationToOneSource:
                 "Note", copy_as_code="return note['Meaning'] + destination['Word']",
                 use_code=True,
             ),
+            # The join's loop numbered the one source 1, and the query counted it.
+            d.field_to_field("Note", "{{Word}} {{__Query_Note_Index}}/{{__Target_Notes_Count}}"),
+            # Ran once on the joined text; with one source, once on that note's.
+            d.field_to_field(
+                "Note", "{{Meaning}}", process_chain=[d.regex_process("m", "M")]
+            ),
             d.field_to_field("Note", "{{Meaning}}", copy_if_empty=True),
         ],
-        ids=["text", "code", "copy if empty"],
+        ids=["text", "code", "runtime values", "process chain", "copy if empty"],
     )
+    @pytest.mark.parametrize("note_before", ["untouched", ""])
     @pytest.mark.parametrize("sort_by_field", ["Freq", None])
-    def test_it_writes_what_the_join_wrote(self, col, pool, monkeypatch, field_def, sort_by_field):
-        one = self.run(col, monkeypatch, [field_def], join=False, sort_by_field=sort_by_field)
-        joined = self.run(col, monkeypatch, [field_def], join=True, sort_by_field=sort_by_field)
+    def test_it_writes_what_the_join_wrote(
+        self, col, pool, monkeypatch, field_def, note_before, sort_by_field
+    ):
+        one = self.run(
+            col, monkeypatch, [field_def], join=False, note_before=note_before,
+            sort_by_field=sort_by_field,
+        )
+        joined = self.run(
+            col, monkeypatch, [field_def], join=True, note_before=note_before,
+            sort_by_field=sort_by_field,
+        )
         assert one == joined
-        assert one != "untouched" or field_def.get("copy_if_empty")
+        # Copy-if-empty writes only into the empty field; everything else always writes.
+        wrote = note_before == "" or not field_def.get("copy_if_empty")
+        assert (one != note_before) is wrote, one
+
+    def test_a_file_is_written_as_the_join_wrote_it(self, col, pool, monkeypatch, media_dir):
+        written = []
+        for join in (False, True):
+            self.run(
+                col, monkeypatch, [], join=join,
+                field_to_file_defs=[d.field_to_file("one-source.txt", "{{Word}}-{{Meaning}}")],
+                sort_by_field="Freq",
+            )
+            path = media_dir / "_one-source.txt"
+            written.append(path.read_text(encoding="utf-8"))
+            path.unlink()
+        assert written[0] == written[1] == "w1-m"
 
     def test_no_note_found_leaves_the_trigger_alone(self, col, monkeypatch, logger):
         assert self.run(

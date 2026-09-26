@@ -39,7 +39,7 @@ from ..definition_schema import (
 )
 from ..execute_code_wrappers import execute_code_for_files
 from ..unsaved_note_search import SearchSyntaxError, UnjudgeableSearch, matches
-from .context import Cancelled, SkipBlock, summarize
+from .context import NO_CARD, NO_NOTE, Cancelled, NothingSelected, SkipBlock, summarize
 from .expressions import ExpressionContext, evaluate_raw, evaluate_text, evaluate_value
 
 if TYPE_CHECKING:
@@ -102,18 +102,26 @@ def resolve_binding(env: dict, reference: Any, frame, stage: Stage, what: str) -
 
 def resolve_note(env: dict, reference: Any, frame, stage: Stage, what: str) -> Note:
     value = resolve_binding(env, reference, frame, stage, what)
-    if value is None:
-        # Only a select stage binds nothing, when nothing was at its index.
+    return _as_note(value, reference, frame, stage, what)
+
+
+def resolve_card(env: dict, reference: Any, frame, stage: Stage, what: str) -> Card:
+    value = resolve_binding(env, reference, frame, stage, what)
+    return _as_card(value, reference, frame, stage, what)
+
+
+def _as_note(value: Any, reference: Any, frame, stage: Stage, what: str) -> Note:
+    if isinstance(value, NothingSelected):
+        # A select stage that found nothing at its index. An edit takes that as "do
+        # nothing" before it gets here; a call or a search needs a note and cannot.
         raise frame.error(f"{what} '{binding_name(reference)}' holds no note", stage)
     if not isinstance(value, Note):
         raise frame.error(f"{what} must be a note, but it holds {type(value).__name__}", stage)
     return value
 
 
-def resolve_card(env: dict, reference: Any, frame, stage: Stage, what: str) -> Card:
-    value = resolve_binding(env, reference, frame, stage, what)
-    if value is None:
-        # Only a Select Card stage binds nothing, when no card was at its index.
+def _as_card(value: Any, reference: Any, frame, stage: Stage, what: str) -> Card:
+    if isinstance(value, NothingSelected):
         raise frame.error(f"{what} '{binding_name(reference)}' holds no card", stage)
     if not isinstance(value, Card):
         raise frame.error(f"{what} must be a card, but it holds {type(value).__name__}", stage)
@@ -344,12 +352,12 @@ def _sort_cards(cards: list[Card], selection: Selection, session) -> list[Card]:
     return cards
 
 
-def run_select(stage: Stage, env: dict, frame) -> Union[Note, Card, None]:
-    """One note of a note list, or one card of a card list, by index; None when nothing is at
-    that index."""
+def run_select(stage: Stage, env: dict, frame) -> Union[Note, Card, NothingSelected]:
+    """One note of a note list, or one card of a card list, by index; `NO_NOTE` or `NO_CARD`
+    when nothing is at that index."""
     session = frame.session
     is_note = stage.get("type") == STAGE_SELECT_NOTE
-    item_class, what = (Note, "note") if is_note else (Card, "card")
+    item_class, what, nothing = (Note, "note", NO_NOTE) if is_note else (Card, "card", NO_CARD)
     items = resolve_binding(env, stage.get("input"), frame, stage, "select input")
     if not isinstance(items, list) or not all(isinstance(item, item_class) for item in items):
         raise frame.error(f"select input is not a list of {what}s", stage)
@@ -374,16 +382,17 @@ def run_select(stage: Stage, env: dict, frame) -> Union[Note, Card, None]:
         raise frame.error(f"no {what} at {where} of {len(items)}", stage)
     if if_missing == "skip_block":
         raise SkipBlock()
-    return None
+    return nothing
 
 
 def _item_index(
     expression: Optional[ValueExpression], ctx: ExpressionContext, frame, stage: Stage
 ) -> Optional[int]:
-    """The index an index expression names: a whole number, or None from code for none.
+    """The index an index expression names: a whole number, or None for none.
 
-    Code is read before `evaluate_value` would turn its None into an empty string, which
-    here has to mean "select nothing", not a malformed number.
+    None is code returning None, or text that comes out blank -- an empty field it read --
+    and either means "no index", which `if_missing` decides about as it does an index past
+    the end. Code is read before `evaluate_value` would turn its None into an empty string.
     """
     if expression_is_code(expression):
         raw = evaluate_raw(expression, ctx)
@@ -396,6 +405,8 @@ def _item_index(
             )
         return raw
     text = evaluate_text(expression, ctx).strip()
+    if not text:
+        return None
     try:
         return int(text)
     except ValueError:
@@ -409,12 +420,14 @@ def _item_index(
 
 def run_edit_note(stage: Stage, env: dict, frame) -> None:
     session = frame.session
-    if resolve_binding(env, stage.get("target"), frame, stage, "target") is None:
-        # A Select Note stage found no note at its index and bound nothing: editing no note
-        # is doing nothing, which is what "no note" is for. The trace says so.
+    reference = stage.get("target")
+    value = resolve_binding(env, reference, frame, stage, "target")
+    if value is NO_NOTE:
+        # A Select Note stage found no note at its index: editing no note is doing nothing,
+        # which is what "no note" is for. The trace says so.
         session.record_detail("no note", True)
         return
-    target = session.working_note(resolve_note(env, stage.get("target"), frame, stage, "target"))
+    target = session.working_note(_as_note(value, reference, frame, stage, "target"))
     # Every right-hand side in this stage reads the note as it was when the stage started,
     # which is what lets one stage swap two fields (§5.3).
     snapshot = duplicate_note(target)
@@ -501,12 +514,14 @@ def run_edit_note(stage: Stage, env: dict, frame) -> None:
 
 def run_edit_card(stage: Stage, env: dict, frame) -> None:
     session = frame.session
-    if resolve_binding(env, stage.get("target"), frame, stage, "target") is None:
+    reference = stage.get("target")
+    value = resolve_binding(env, reference, frame, stage, "target")
+    if value is NO_CARD:
         # A Select Card stage found no card at its index: editing no card does nothing,
         # as editing no note does.
         session.record_detail("no card", True)
         return
-    card = resolve_card(env, stage.get("target"), frame, stage, "target")
+    card = _as_card(value, reference, frame, stage, "target")
     card = session.card_by_id(card.id) if card.id else card
     note = session.note_by_id(card.nid) if card.nid else frame.trigger_note
     for card_action in stage.get("card_actions") or []:

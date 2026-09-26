@@ -764,6 +764,12 @@ def _takes_one_source(definition: dict, selection: Selection) -> bool:
     )
 
 
+def _selects_one_source(stages: list[Stage], definition_guid: str) -> bool:
+    """Whether the stages are the one-source shape, which a copy condition may wrap."""
+    guid = _child_guid(definition_guid, "select-source")
+    return any(stage.get("guid") == guid for stage in walk_stages(stages))
+
+
 def _one_source_stages(definition: dict, definition_guid: str) -> list[Stage]:
     """The one found note, bound as `note`, and the writes that read it directly.
 
@@ -930,8 +936,15 @@ def migrate_definition_v1_to_v2(
             # Destination-to-sources, where the query result was the source list.
             "trigger_is_source": across_mode_direction != DIRECTION_DESTINATION_TO_SOURCES,
             "select_card_separator": format_1.get("select_card_separator"),
+            # Format 1 numbered the source notes from 1. The within-note trigger is the one
+            # source, and so is the note a one-source Destination to sources selects: with
+            # no loop to count it, nothing else would give `__Query_Note_Index` the 1 the
+            # join's loop did.
             "query_note_index_default": (
-                1 if copy_mode == COPY_MODE_WITHIN_NOTE else None
+                1
+                if copy_mode == COPY_MODE_WITHIN_NOTE
+                or _selects_one_source(stages, definition_guid)
+                else None
             ),
         },
     }
@@ -1217,10 +1230,11 @@ def _known_names(definition: Any) -> list[str]:
 
     Every stage result -- a variable's, a query's, a synthesized join's -- plus the export
     names. The loop and reduce bindings (`note`, `item`, `accumulator`), and a Select Note
-    result that takes one of those reserved names, are deliberately left out although they are bindings too: format 1 had no way to name them, so a bare
-    `{{Note}}` in a migrated expression is the field `Note`, which is what it has always
-    meant, and reading it as the loop's note would turn a common field name into a stage
-    error in every migrated across-notes definition.
+    result that takes one of those reserved names, are deliberately left out although they
+    are bindings too: format 1 had no way to name them, so a bare `{{Note}}` in a migrated
+    expression is the field `Note`, which is what it has always meant, and reading it as the
+    loop's note would turn a common field name into a stage error in every migrated
+    across-notes definition.
 
     A name that is both -- a variable called `Word` on a note type that also has a field
     `Word` -- resolves to the *binding* afterwards, which reverses format 1: it asked the

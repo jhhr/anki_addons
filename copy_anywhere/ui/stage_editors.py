@@ -105,12 +105,19 @@ IF_MISSING_LABELS = {
     "error": "fail the definition",
 }
 
-def _select_if_missing_labels(what: str, values: str) -> dict[str, str]:
-    return {
-        "empty": f"select no {what}: its {values} read as empty, and editing it does nothing",
-        "skip_block": "stop running the rest of this block",
-        "error": "fail the definition",
-    }
+
+def _select_if_missing_labels(is_note: bool) -> dict[str, str]:
+    if is_note:
+        # A call or a search condition given no note fails the definition: said where the
+        # choice is made rather than only when a run hits it. Neither takes a card.
+        empty = (
+            "select no note: its fields read as empty and editing it does nothing,"
+            " but a call or a search on it fails"
+        )
+    else:
+        empty = "select no card: its values read as empty, and editing it does nothing"
+    return {**IF_MISSING_LABELS, "empty": empty}
+
 
 #: Said under both file stages' name box (`normalize_media_filename` adds the prefix).
 MEDIA_PREFIX_NOTE = (
@@ -793,7 +800,7 @@ class SelectStageEditor(StageEditor):
         self.if_missing = labelled_combo(
             self,
             IF_MISSING_POLICIES,
-            _select_if_missing_labels(what, "fields" if is_note else "values"),
+            _select_if_missing_labels(is_note),
             stage.get("if_missing", "empty"),
         )
         self.if_missing.currentIndexChanged.connect(self.notify)

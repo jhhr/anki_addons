@@ -52,6 +52,30 @@ class SkipBlock(Exception):
     """
 
 
+class NothingSelected:
+    """What a select stage binds when nothing is at its index.
+
+    Not None, because None reaches a binding other ways -- a list code built, a callee's
+    export -- and those are mistakes the stages reading them have to report. Only this
+    reads as empty text and makes an edit do nothing; code sees it as None.
+    """
+
+    __slots__ = ("what",)
+
+    def __init__(self, what: str) -> None:
+        self.what = what
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return f"<no {self.what}>"
+
+
+NO_NOTE = NothingSelected("note")
+NO_CARD = NothingSelected("card")
+
+
 class Cancelled(Exception):
     """The user asked to stop. Nothing half-evaluated is committed (§7.1)."""
 

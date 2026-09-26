@@ -29,7 +29,7 @@ from ...shared.interpolate.interpolate_fields import (
     get_formatted_latest_review_time,
     get_formatted_total_time,
 )
-from .context import ExecutionSession
+from .context import ExecutionSession, NothingSelected
 
 READ_ONLY_MESSAGE = (
     "notes and cards are read-only inside code; use a stage to change one"
@@ -415,7 +415,13 @@ class NoteCardsFacade(CardListFacade):
 
 
 def to_facade(value: Any, session: ExecutionSession) -> Any:
-    """Wrap notes, cards and lists of them; leave anything else alone."""
+    """Wrap notes, cards and lists of them; leave anything else alone.
+
+    A select stage that found nothing is None to code, as the code returning an index
+    says it: `return None` for no note.
+    """
+    if isinstance(value, NothingSelected):
+        return None
     if isinstance(value, Note):
         return NoteFacade(value, session)
     if isinstance(value, Card):
