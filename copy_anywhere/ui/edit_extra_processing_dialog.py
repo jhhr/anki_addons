@@ -28,6 +28,7 @@ from aqt.qt import (
 
 from aqt.utils import tooltip
 
+from .discard import discard_widget
 from .outline import outline_frame
 from .stage_edit_state import StageEditState
 
@@ -807,7 +808,7 @@ class EditExtraProcessingWidget(QWidget):
         def remove_row_ui():
             # Remove the entire process widget from the layout
             self.processes_layout.removeWidget(process_widget)
-            process_widget.deleteLater()
+            discard_widget(process_widget)
 
         # Store UI components for this process GUID
         self.process_ui_components[process_guid] = {

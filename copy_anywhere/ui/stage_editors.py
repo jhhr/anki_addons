@@ -65,6 +65,7 @@ from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
 from ..shared.ui.required_text_input import RequiredLineEdit
+from .discard import discard_widget
 from .card_actions_editor import CardActionsEditor
 from .outline import outline_frame
 from .code_notices import FILE_CODE_NOTICE
@@ -687,7 +688,7 @@ class EditNoteStageEditor(StageEditor):
         if row.field_write in fields:
             fields.remove(row.field_write)
         self.fields_layout.removeWidget(row)
-        row.deleteLater()
+        discard_widget(row)
         self.changed.emit()
 
     def apply(self):
@@ -1142,7 +1143,7 @@ class CallDefinitionStageEditor(StageEditor):
             item = self.outputs_layout.takeAt(0)
             widget = item.widget() if item else None
             if widget is not None:
-                widget.deleteLater()
+                discard_widget(widget)
         self.output_rows = []
         callee = self._callee()
         bound = {

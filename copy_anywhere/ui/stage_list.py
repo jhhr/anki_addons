@@ -28,6 +28,7 @@ from aqt.qt import (
 )
 
 from ..logic.definition_schema import Stage, stage_body_blocks
+from .discard import discard_widget
 from .stage_document import (
     BODY_KEY_LABELS,
     STAGE_TYPE_ICONS,
@@ -317,7 +318,7 @@ class StageTreeWidget(QWidget):
         """
         if self.root_block is not None:
             self.layout_box.removeWidget(self.root_block)
-            self.root_block.deleteLater()
+            discard_widget(self.root_block)
         self.rows = {}
         self.contexts = build_contexts(
             self.document, make_note_types_for(self.document.definition)

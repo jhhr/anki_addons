@@ -29,6 +29,7 @@ from ..configuration import (
 )
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
+from .discard import discard_widget
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .outline import outline_frame
 from .stage_edit_state import StageEditState
@@ -232,7 +233,7 @@ class CardActionsEditor(QWidget):
     def _finish_loading_initial_actions(self):
         if self.loading_indicator is not None:
             self.actions_layout.removeWidget(self.loading_indicator)
-            self.loading_indicator.deleteLater()
+            discard_widget(self.loading_indicator)
             self.loading_indicator = None
         self._building_initial_actions = False
         self._loading_initial_actions = False
@@ -751,7 +752,7 @@ class CardActionsEditor(QWidget):
         if ui_components is not None:
             frame = ui_components["frame"]
             self.actions_layout.removeWidget(frame)
-            frame.deleteLater()
+            discard_widget(frame)
 
     def delete_action(self, card_type_name: str):
         """Delete a card action and its UI"""

@@ -31,6 +31,7 @@ from ..configuration import (
 )
 from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
 from ..logic.definition_schema import CopyDefinitionV2, is_format_2
+from .discard import discard_widget
 from .edit_staged_definition_dialog import EditStagedDefinitionDialog
 from ..logic.copy_fields import (
     copy_fields,
@@ -384,7 +385,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         def remove_row_ui():
             # Remove the entire definition row from the layout
             self.definitions_layout.removeWidget(definition_row)
-            definition_row.deleteLater()
+            discard_widget(definition_row)
 
             # Remove from checkboxes list
             if definition_row.checkbox in self.checkboxes:

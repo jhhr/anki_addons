@@ -19,6 +19,7 @@ from aqt.qt import (
 
 from ..logic.definition_schema import Export, stage_result_name
 from ..shared.ui.required_text_input import RequiredLineEdit
+from .discard import discard_widget
 from .stage_document import StageDocument
 
 
@@ -53,7 +54,7 @@ class ExportsEditor(QWidget):
             item = self.rows_layout.takeAt(0)
             widget = item.widget() if item else None
             if widget is not None:
-                widget.deleteLater()
+                discard_widget(widget)
         self.rows = []
         candidates = self.document.exportable_stages()
         self._follow_renames(candidates)

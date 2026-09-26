@@ -46,7 +46,7 @@ from copy_anywhere.ui.stage_editors import (
     tags_to_list,
     tags_to_text,
 )
-from copy_anywhere.ui.stage_list import StageTreeWidget
+from copy_anywhere.ui.stage_list import StageRow, StageTreeWidget
 from copy_anywhere.ui.stage_triggers_editor import selected_names
 
 from copy_anywhere.configuration import CARD_TYPE_SEPARATOR
@@ -553,6 +553,46 @@ def test_the_exports_panel_lists_only_root_results(dialog):
     dialog.stage_tree.rows[inner_guid].editor.result.setText("Inner")
     dialog.refresh_status()
     assert [keep.text() for _guid, _result, keep, _name in dialog.exports_editor.rows] == ["M"]
+
+
+def test_a_rebuilt_panel_shows_only_its_current_rows(dialog):
+    # A rebuild before the dialog's own event loop starts (while it is being built, which is
+    # when the first ones happen) used to leave the old rows on screen under the new ones:
+    # deleteLater waits for the loop level it was posted from, which is the one outside the
+    # dialog, so the old rows stayed until the dialog closed. Here no events are processed,
+    # which is the same situation.
+    from aqt.qt import QCheckBox
+
+    dialog.stage_tree.add_stage(STAGE_VARIABLE, None, None)
+    guid = dialog.document.root_block()[0]["guid"]
+    dialog.stage_tree.rows[guid].editor.result.setText("M")
+    dialog.refresh_status()
+    dialog.exports_editor.rebuild()
+    dialog.exports_editor.rebuild()
+    showing = [
+        box.text()
+        for box in dialog.exports_editor.rows_container.findChildren(QCheckBox)
+        if not box.isHidden() and not box.parentWidget().isHidden()
+    ]
+    assert showing == ["M"]
+
+
+def test_a_rebuilt_stage_list_shows_only_its_current_rows(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"))
+    tree.rebuild()
+    tree.rebuild()
+    showing = [
+        row for row in tree.findChildren(StageRow) if not any_ancestor_hidden(row, tree)
+    ]
+    assert sorted(row.guid for row in showing) == ["a", "b"]
+
+
+def any_ancestor_hidden(widget, top) -> bool:
+    while widget is not None and widget is not top:
+        if widget.isHidden():
+            return True
+        widget = widget.parentWidget()
+    return False
 
 
 def test_an_export_defaults_to_the_results_own_name(dialog):
