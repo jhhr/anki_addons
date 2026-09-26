@@ -12,8 +12,9 @@
 # The second line is pytest-anki2, which cannot go in this file: see the reason there.
 
 # The real `anki` package backs the default (real-collection) mode; `aqt` pulls in PyQt6
-# and QtWebEngine. aqt's own `qt` extras pin older Qt releases than the ones below, so Qt
-# is named here directly rather than through an extra.
+# and QtWebEngine. Qt is named here directly rather than through one of aqt's extras, so a
+# bump of either is a deliberate edit to this file; aqt 26.9.2's `qt` extra pins the same
+# PyQt6 and PyQt6-WebEngine as below.
 anki==26.9.2
 aqt==26.9.2
 PyQt6==6.11.0
