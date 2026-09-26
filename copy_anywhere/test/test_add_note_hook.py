@@ -448,6 +448,52 @@ class TestADefinitionBrokenByARenameOnAdd:
             "'broken' was not run: Field \"Word\" is no longer here."
         )
 
+    @staticmethod
+    def marked(name="broken", message='Field "Word" is no longer here', **effects):
+        definition = d.staged(
+            name,
+            stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("broken ran"))])],
+            on_add=True,
+        )
+        definition[BROKEN_KEY] = [{"field": "Word", "message": message}]
+        definition["effects"].update(effects)
+        return definition
+
+    def test_it_is_not_handed_to_a_run_from_either_pile(
+        self, col, set_definitions, hook_logger, ran
+    ):
+        set_definitions(
+            self.marked("on the note"),
+            # Claims to reach past the note, so it would go to the deferred pile.
+            self.marked("past the note", add_note_compatible=False),
+        )
+
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
+
+        assert ran.names() == []
+        assert len(hook_logger.errors) == 2
+        assert hook_logger.has_error("'past the note' was not run")
+
+    def test_it_is_logged_once_a_session_and_again_when_the_mark_changes(
+        self, col, set_definitions, hook_logger
+    ):
+        # Each add opens its own operation log, so a line per add would be a new file per
+        # add, and the 50-file cap would soon hold nothing else.
+        broken = self.marked()
+        set_definitions(broken)
+
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
+        run_copy_fields_on_add(new_note(col, Word="inu"), deck(col))
+        assert len(hook_logger.errors) == 1
+
+        broken[BROKEN_KEY] = [{"field": "Word", "message": "Something else now"}]
+        note = new_note(col, Word="tori")
+        run_copy_fields_on_add(note, deck(col))
+
+        assert len(hook_logger.errors) == 2
+        assert hook_logger.has_error("'broken' was not run: Something else now.")
+        assert note["Note"] == ""
+
 
 class TestTheDeckWhitelistNeedsTheDeckId:
     def test_the_deck_id_is_passed_to_every_definition(self, col, set_definitions, ran):

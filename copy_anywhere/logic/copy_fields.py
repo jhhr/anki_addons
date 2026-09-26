@@ -340,9 +340,15 @@ def copy_fields(
             # all: the cards a card action edited were saved above, still carrying the `fc` of
             # 0 or -1 that made them wait, so they are found alongside the ones nothing
             # touched. A card with no `fc`, or one at 1, was never waiting and is left alone.
-            rest_cards = [
-                mw.col.get_card(cid) for cid in mw.col.find_cards("prop:cdn:fc=-1 OR prop:cdn:fc=0")
-            ]
+            # Except the cards of a note type a refused definition triggers on: it has not
+            # run on them, and at 1 they would never be offered to it again once it is fixed.
+            # Read from the marks, which nothing in this run changes, rather than from what
+            # each run returned, since a False there also means an ordinary failure.
+            waiting = "(prop:cdn:fc=-1 OR prop:cdn:fc=0)" + "".join(
+                f" -mid:{note_type_id}"
+                for note_type_id in sorted(note_type_ids_held_for_rename(copy_definitions))
+            )
+            rest_cards = [mw.col.get_card(cid) for cid in mw.col.find_cards(waiting)]
             for card in rest_cards:
                 write_custom_data(card, key="fc", value=1)
             mw.col.update_cards(rest_cards)
@@ -634,6 +640,67 @@ def note_passes_deck_whitelist(
     return True
 
 
+# What the note hooks have already said about each refused definition this session: its
+# guid, and the messages it was refused for. A hook fires on every add, answer and unfocus,
+# and each one opens its own operation log, so one line per event would be one new file per
+# event, and the 50-file cap would soon hold nothing but the same refusal.
+_refusals_logged: dict[str, frozenset[str]] = {}
+
+
+def refused_for_rename(copy_definition: AnyCopyDefinition, once_per_session: bool = False) -> bool:
+    """Whether a rename's mark refuses this definition a run, logging why if it does.
+
+    Every run path asks this one question and answers it in the same words, so the log reads
+    alike whichever path met the mark. The mark is read through `broken_by_rename_messages`,
+    which knows every entry shape; a format-1 definition is never marked and passes.
+
+    :param once_per_session: the per-note hooks' mode. The error is logged the first time
+        this session a definition is refused, and again only when its messages change,
+        which is when the user has something new to read.
+    """
+    messages = broken_by_rename_messages(copy_definition)
+    key = str(copy_definition.get("guid") or copy_definition.get("definition_name") or "")
+    if not messages:
+        # Forgotten once it runs again, so a mark that comes back is reported again.
+        if once_per_session:
+            _refusals_logged.pop(key, None)
+        return False
+    if once_per_session:
+        refused_for = frozenset(messages)
+        if _refusals_logged.get(key) == refused_for:
+            return True
+        _refusals_logged[key] = refused_for
+    for message in messages:
+        logger.error(
+            "Error in copy fields: '%s' was not run: %s",
+            copy_definition.get("definition_name", ""),
+            broken_by_rename_explanation([message]),
+        )
+    return True
+
+
+def forget_logged_refusals() -> None:
+    """Start the hooks' record of logged refusals afresh; for tests, which share the module."""
+    _refusals_logged.clear()
+
+
+def note_type_ids_held_for_rename(copy_definitions: Sequence[AnyCopyDefinition]) -> set[int]:
+    """The ids of the note types that refused definitions among these trigger on.
+
+    A sync run's tail marks every waiting card as handled. A refused definition has not
+    handled its cards, so they must keep waiting for the run that follows the fix.
+    """
+    held: set[int] = set()
+    for copy_definition in copy_definitions:
+        if not broken_by_rename_messages(copy_definition):
+            continue
+        for ref in definition_note_type_refs(copy_definition):
+            note_type = resolve_note_type(ref, mw.col)
+            if note_type:
+                held.add(int(note_type["id"]))
+    return held
+
+
 def copy_for_single_trigger_note(
     copy_definition: AnyCopyDefinition,
     trigger_note: Note,
@@ -688,14 +755,9 @@ def copy_for_single_trigger_note(
     # A failure rather than a benign skip: the error is what opens the log that tells the
     # user to fix it, and False stops a bulk run after one line instead of one per note.
     # Before the deck whitelist, so a run over notes the whitelist skips still says so.
-    broken = broken_by_rename_messages(staged_definition)
-    if broken:
-        for message in broken:
-            logger.error(
-                "Error in copy fields: '%s' was not run: %s",
-                staged_definition.get("definition_name", ""),
-                broken_by_rename_explanation([message]),
-            )
+    # The note hooks refuse before they get here; this is the backstop for the bulk, sync
+    # and call paths, which always log, as they are user-started or rare.
+    if refused_for_rename(staged_definition):
         return False
 
     # `or {}` rather than a default: the key can be present and null in a hand-edited or

@@ -38,6 +38,7 @@ from ..logic.copy_fields import (
     copy_for_single_trigger_note,
     copy_fields,
     make_copy_fields_undo_text,
+    refused_for_rename,
 )
 from ..logic.object_refs import resolve_note_type
 from ..logic.copy_primitives import take_edited_cards
@@ -103,6 +104,10 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         editing_other_notes_definitions: list[CopyDefinition] = []
 
         for copy_definition in get_copy_definitions_for_add_note(note):
+            # Refused before either pile, so a marked definition is never handed to a run
+            # from here, and says so once a session rather than on every add.
+            if refused_for_rename(copy_definition, once_per_session=True):
+                continue
             # A definition that reaches past the note being added -- another note, a card
             # that already exists, a file -- needs the hook to write and undo those changes
             # itself, so it runs below, under its own undo entry. A card action on the note
@@ -236,6 +241,9 @@ def run_copy_fields_on_review(card: Card):
 
         copy_definitions_to_run: list[CopyDefinition] = []
         has_definitions_to_process_on_sync = False
+        # A definition this note triggers that a rename's mark refused: it has not done its
+        # work on this note, so the card must not be flagged as done.
+        refused_one = False
 
         for copy_definition in config.copy_definitions:
             if not definition_runs_on_review(copy_definition):
@@ -253,6 +261,9 @@ def run_copy_fields_on_review(card: Card):
                 )
                 continue
             if not definition_triggers_on(copy_definition, note_type):
+                continue
+            if refused_for_rename(copy_definition, once_per_session=True):
+                refused_one = True
                 continue
 
             copy_definitions_to_run.append(copy_definition)
@@ -287,13 +298,18 @@ def run_copy_fields_on_review(card: Card):
             mw.col.merge_undo_entries(answer_card_undo_entry)
         # In order to not have on_sync definitions run twice, we'll set a different fc value
         fc_value = -1 if has_definitions_to_process_on_sync else 1
-        try:
-            write_custom_data(card, key="fc", value=fc_value)
-        except ValueError as e:
-            # The copies are already written and merged, so raising here would only throw the
-            # error at the reviewer from inside Anki's hook dispatch. Without the flag the note
-            # stays queued for the sync sweep, which is the safe side to fail on.
-            logger.error("Could not set the fc flag on card %s: %s", card.id, e)
+        # A refused definition leaves the flag as the scheduler set it, so the card stays
+        # queued for the sync sweep, which keeps it waiting until the mark is gone: the same
+        # safe side as a flag that cannot be written. The cost: until then, a definition that
+        # ran here and is on sync too runs on this note again at every sync.
+        if not refused_one:
+            try:
+                write_custom_data(card, key="fc", value=fc_value)
+            except ValueError as e:
+                # The copies are already written and merged, so raising here would only throw
+                # the error at the reviewer from inside Anki's hook dispatch. Without the flag
+                # the note stays queued for the sync sweep, which is the safe side to fail on.
+                logger.error("Could not set the fc flag on card %s: %s", card.id, e)
         # Still write the card, as merge_cards may have put copied changes on it
         mw.col.update_card(card)
         # All updates are now merged into the Answer card undo entry
@@ -406,6 +422,12 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 # A staged definition watches fields for the definition as a whole and runs all
                 # of it, because which stages a field feeds is not generally decidable (§8).
                 if field_name not in definition_unfocus_fields(copy_definition, is_new_note):
+                    continue
+                # Refused before either way of running it, and only once this field would
+                # have run it, so a marked definition is never handed to a run from here and
+                # says so once a session, not on every unfocus. Only the pass marks, and it
+                # reads format 2 alone, so the format-1 branch below has nothing to refuse.
+                if refused_for_rename(copy_definition, once_per_session=True):
                     continue
                 if modifies_other_notes:
                     editing_other_notes_definitions.append(copy_definition)
