@@ -223,10 +223,28 @@ def feeds_a_filled_field(carrier: dict, frame) -> bool:
         return False
 
 
+def _warn_if_nothing_has(notes: list[Note], sort_field: str) -> None:
+    """One line per run when the sort field is a name none of the selected notes carries.
+
+    `sort_by_field_value` answers "" for a note without the field and says nothing, which
+    is right per note -- a query legitimately mixes note types, and the field is only
+    promised for the ones that have it. Every note missing it is a different thing: the
+    sort did nothing at all, and the likeliest reason is that the name is stale.
+    """
+    if any(sort_field in note for note in notes):
+        return
+    logger.warning(
+        "Sorting on field '%s', which none of the selected notes has: every note sorted"
+        " as if it were empty",
+        sort_field,
+    )
+
+
 def _sort_notes(notes: list[Note], selection: dict) -> list[Note]:
     sort_field = selection.get("sort_field")
     if not sort_field:
         return notes
+    _warn_if_nothing_has(notes, sort_field)
     reverse = selection.get("sort_order", "descending") == "descending"
     if selection.get("sort_numeric"):
         # Format 1 sorted on int(value) with 0 for anything unparsable, never on the text.
@@ -319,6 +337,7 @@ def _sort_cards(cards: list[Card], selection: dict, session) -> list[Card]:
     sort_field = selection.get("sort_field")
     if not sort_field:
         return cards
+    _warn_if_nothing_has([session.note_by_id(card.nid) for card in cards], sort_field)
     reverse = selection.get("sort_order", "descending") == "descending"
     key = int_sort_by_field_value if selection.get("sort_numeric") else sort_by_field_value
     cards.sort(key=lambda card: key(session.note_by_id(card.nid), sort_field), reverse=reverse)

@@ -17,11 +17,11 @@ import time
 from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from anki.cards import Card
+from anki.consts import MODEL_CLOZE
 from anki.notes import Note
 from aqt import mw
 
 from ..configuration import (
-    CARD_TYPE_SEPARATOR,
     CardAction,
     CopyFieldToVariable,
     FontsCheckProcess,
@@ -45,6 +45,12 @@ from .FatalProcessError import FatalProcessError
 from .fonts_check_process import fonts_check_process
 from .kana_highlight_process import WithTagsDef, kana_highlight_process
 from .kanjium_to_javdejong_process import kanjium_to_javdejong_process
+from .object_refs import (
+    card_action_card_type,
+    card_type_ref_matches_note_type,
+    resolve_template,
+    split_card_type_name,
+)
 from .regex_process import regex_process
 from .word_highlight_process import word_highlight_process
 
@@ -456,29 +462,44 @@ def get_field_values_from_notes(
     return result_val
 
 
-def card_actions_by_template_name(
+def card_actions_by_template(
     card_actions: Sequence[CardAction],
     note: Note,
 ) -> dict:
-    """Index note-level card actions by the template name they apply to.
+    """Index note-level card actions by the ordinal of the template they apply to.
 
     A note-level action names both the note type and the card type, so the same definition
-    can carry actions for several note types and each note takes only its own.
+    can carry actions for several note types and each note takes only its own. Both halves
+    are resolved by id where the action carries one, so an action still lands after the
+    user has renamed the note type or the card type in Anki -- neither rename fires a hook
+    the addon could hear.
+
+    By ordinal rather than by name because that is what the cards themselves are keyed on:
+    once the template is found, the card's template ordinal is the only thing that has to
+    match -- see `_template_ord` for why that is not always `card.ord`.
     """
-    by_template_name: dict = {}
+    by_ord: dict = {}
     note_type = note.note_type()
     for card_action in card_actions or []:
-        note_type_and_card_type = card_action.get("card_type_name", "")
-        if CARD_TYPE_SEPARATOR not in note_type_and_card_type:
-            logger.error(
-                "Error in copy fields: Invalid card type name '%s'", note_type_and_card_type
+        ref = card_action_card_type(card_action)
+        if ref["template_id"] is None and split_card_type_name(ref["name"]) is None:
+            logger.error("Error in copy fields: Invalid card type name '%s'", ref["name"])
+            continue
+        if not card_type_ref_matches_note_type(ref, note_type):
+            continue
+        template = resolve_template(ref, note_type)
+        if template is None:
+            # The note type is this note's, so the action was meant for it; the card type
+            # it names is gone. Dropping that silently is what made a renamed card type
+            # invisible, and the run still reported success.
+            logger.warning(
+                "Card action skipped: no card type '%s' in note type '%s'",
+                ref["name"],
+                note_type["name"] if note_type else "",
             )
             continue
-        note_type_name, card_type_name = note_type_and_card_type.split(CARD_TYPE_SEPARATOR, 1)
-        if not note_type or note_type_name != note_type["name"]:
-            continue
-        by_template_name[card_type_name] = card_action
-    return by_template_name
+        by_ord[template["ord"]] = card_action
+    return by_ord
 
 
 def apply_card_action_to_card(
@@ -544,6 +565,20 @@ def apply_card_action_to_card(
     return edited
 
 
+def _template_ord(card: Card, note_type: Any) -> int:
+    """The ordinal of the template a card was made from.
+
+    For a standard note type that is `card.ord`. A cloze note type has one template and
+    makes every cloze card from it, so there `card.ord` is the cloze number less one while
+    the template's ordinal is 0 for all of them: an action set on the cloze card type is
+    one action for every cloze card of the note, as it was when actions were matched by
+    template name.
+    """
+    if note_type and note_type.get("type") == MODEL_CLOZE:
+        return 0
+    return card.ord
+
+
 def take_edited_cards(cards_by_id: Mapping[int, Card]) -> list[Card]:
     """The cards in `cards_by_id` marked `edited`, for `update_cards()`, with the mark removed.
 
@@ -562,16 +597,16 @@ def apply_card_actions_by_template(
     note: Note,
     cards: Sequence[Card],
 ) -> list[Card]:
-    """Apply note-level card actions to the note's cards, matching by card type name.
+    """Apply note-level card actions to the note's cards, matching by card type.
 
     Returns the cards this call changed. Cards with no matching action are left alone, and a
     card type named by an action the note has no card for is simply not reached.
     """
-    by_template_name = card_actions_by_template_name(card_actions, note)
+    by_ord = card_actions_by_template(card_actions, note)
+    note_type = note.note_type()
     edited: list[Card] = []
     for card in cards:
-        template = card.template()
-        card_action = by_template_name.get(template["name"] if template else "", None)
+        card_action = by_ord.get(_template_ord(card, note_type), None)
         if card_action is None:
             continue
         if apply_card_action_to_card(card_action, card, note):

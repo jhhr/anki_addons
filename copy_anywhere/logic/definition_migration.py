@@ -77,6 +77,7 @@ from .definition_schema import (
     value_expression,
     walk_stages,
 )
+from .object_refs import card_action_card_type, normalize_ref
 
 COPY_MODE_WITHIN_NOTE = "Within note"
 COPY_MODE_ACROSS_NOTES = "Across notes"
@@ -224,8 +225,18 @@ def _tag_writes(definition: dict) -> dict:
 
 def _card_actions(definition: dict) -> list[dict]:
     # Card actions keep their card type selector: a note-level action still says which
-    # template it applies to (§11 step 6). `edit_card` is the stage without one.
-    return [deepcopy(action) for action in definition.get("card_actions") or []]
+    # template it applies to (§11 step 6). `edit_card` is the stage without one. The
+    # selector becomes a reference here so a definition migrated on this version never
+    # carries the bare `card_type_name` string; the ids stay null because the migrator runs
+    # before there is a collection to bind them in.
+    actions = []
+    for action in definition.get("card_actions") or []:
+        copied = deepcopy(action)
+        if isinstance(copied, dict):
+            copied["card_type"] = card_action_card_type(copied)
+            copied.pop("card_type_name", None)
+        actions.append(copied)
+    return actions
 
 
 def _selection(definition: dict, warnings: list[str]) -> dict:
@@ -679,11 +690,17 @@ def _triggers(definition: dict) -> dict:
         if field_def.get("copy_on_unfocus_when_add", False):
             add_fields.extend(name for name in fields if name and name not in add_fields)
     return {
-        "note_types": _split_quoted_list(definition.get("copy_into_note_types")),
+        "note_types": [
+            normalize_ref(name)
+            for name in _split_quoted_list(definition.get("copy_into_note_types"))
+        ],
         "deck_names": (
             []
             if definition.get("only_copy_into_decks") in (None, "", "-")
-            else _split_quoted_list(definition.get("only_copy_into_decks"))
+            else [
+                normalize_ref(name)
+                for name in _split_quoted_list(definition.get("only_copy_into_decks"))
+            ]
         ),
         "include_subdecks": bool(definition.get("include_subdecks", False)),
         "on_sync": bool(definition.get("copy_on_sync", False)),
@@ -901,6 +918,26 @@ STAGE_EXPRESSION_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def rewrite_references(text: str, rewrite: Callable[[str], str]) -> str:
+    """Every `{{...}}` reference in `text` replaced by what `rewrite` makes of it.
+
+    The one walker over an expression's references, so that everything which rewrites them
+    agrees on what a reference is. `rewrite` is handed what stands between the braces and
+    returns what should stand there instead; the braces are put back here. A cloze marker
+    is not a reference, so `{{c1::...}}` is left as it is and its content walked on its
+    own. Promotion below and the reconcile pass (`logic/rename_reconcile.py`) are its
+    callers.
+    """
+    if not text:
+        return text or ""
+    return map_outside_clozes(
+        text,
+        lambda part: FROM_TEXT_FIELD_REGEX.sub(
+            lambda match: intr_format(rewrite(match.group(1))), part
+        ),
+    )
+
+
 def _promote_reference(
     reference: str,
     source: str,
@@ -910,30 +947,30 @@ def _promote_reference(
 ) -> str:
     """One `{{...}}` reference, rewritten. `reference` is what stood between the braces."""
     if _CLOZE_REFERENCE_RE.match(reference):
-        return intr_format(reference)
+        return reference
     binding = known.get(reference.lower())
     if binding is not None:
         # A binding the migrator named. Format 1 matched names case-insensitively and
         # format 2 resolves a binding exactly, so the promoted reference carries the
         # binding's own spelling rather than the user's.
-        return intr_format(binding)
+        return binding
     head, dot, _rest = reference.partition(".")
     if dot and head in binding_heads:
         # Already qualified. Nothing in format 1 could write this, but promoting it again
         # would read the binding as a field name of itself.
-        return intr_format(reference)
+        return reference
     if reference.startswith(DESTINATION_PREFIX):
         # `interpolate_from_text` matched this prefix exactly, so a differently-cased one
         # was a field name there and stays one here.
-        return intr_format(f"{destination}.{reference[len(DESTINATION_PREFIX):]}")
+        return f"{destination}.{reference[len(DESTINATION_PREFIX):]}"
     runtime_value = _RUNTIME_VALUES_BY_LOWER.get(reference.lower())
     if runtime_value is not None:
-        return intr_format(runtime_value)
+        return runtime_value
     # Anything else names something on the source note: a field, a note value
     # (`__Note_Tags`) or a card value (`Recognition__Card_Due`). Once qualified, all three
     # are resolved by the same interpolation, against the note the binding holds. The
     # user's spelling is kept: field matching is case-insensitive on that side too.
-    return intr_format(f"{source}.{reference}")
+    return f"{source}.{reference}"
 
 
 def _promote_text(
@@ -943,17 +980,10 @@ def _promote_text(
     known: dict[str, str],
     binding_heads: frozenset,
 ) -> str:
-    if not text:
-        return text or ""
-    # Cloze markers are not references. Their content is, so it is promoted on its own and
-    # the marker kept around the result -- as `resolve_references` does.
-    return map_outside_clozes(
+    return rewrite_references(
         text,
-        lambda part: FROM_TEXT_FIELD_REGEX.sub(
-            lambda match: _promote_reference(
-                match.group(1), source, destination, known, binding_heads
-            ),
-            part,
+        lambda reference: _promote_reference(
+            reference, source, destination, known, binding_heads
         ),
     )
 
@@ -1135,4 +1165,5 @@ __all__ = [
     "promote_definition",
     "promote_expression",
     "promote_stage",
+    "rewrite_references",
 ]

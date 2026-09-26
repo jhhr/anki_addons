@@ -17,7 +17,8 @@ from ..configuration import (
     CopyDefinition,
     # The trigger accessors live with the config because the hooks and the picker read the
     # same settings, and they must read them the same way whichever format is stored.
-    definition_note_type_names,
+    definition_deck_refs,
+    definition_note_type_refs,
     definition_note_types_label,
     definition_trigger_flag,
 )
@@ -35,7 +36,7 @@ from .copy_primitives import (
     apply_card_action_to_card,
     apply_card_actions_by_template,
     apply_process_chain,
-    card_actions_by_template_name,
+    card_actions_by_template,
     get_field_values_from_notes,
     get_variable_values_for_note,
     int_sort_by_field_value,
@@ -46,6 +47,8 @@ from .definition_migration import MigrationError
 from .definition_schema import STAGE_CALL_DEFINITION, is_format_2, walk_stages
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
+from .object_refs import resolve_deck_id, resolve_note_type
+from .rename_reconcile import broken_by_rename_explanation, broken_by_rename_messages
 
 # Re-exported: these moved out into `copy_primitives` when the executor was split, and
 # everything that has always imported them from here keeps working.
@@ -57,7 +60,7 @@ __all__ = [
     "apply_card_action_to_card",
     "apply_card_actions_by_template",
     "apply_process_chain",
-    "card_actions_by_template_name",
+    "card_actions_by_template",
     "copy_fields",
     "copy_fields_in_background",
     "copy_for_single_trigger_note",
@@ -444,9 +447,16 @@ def copy_fields_in_background(
         )
         return results
 
-    note_type_names = definition_note_type_names(copy_definition)
+    # By reference: a note type the user renamed since the definition was written keeps
+    # its id, and the stored name is the old one until the reconcile pass refreshes it.
     note_type_ids = list(
-        filter(None, [mw.col.models.id_for_name(name) for name in note_type_names])
+        filter(
+            None,
+            [
+                (resolve_note_type(ref, mw.col) or {}).get("id")
+                for ref in definition_note_type_refs(copy_definition)
+            ],
+        )
     )
 
     copy_on_review = definition_trigger_flag(copy_definition, "on_review", "copy_on_review")
@@ -573,7 +583,7 @@ def copy_fields_in_background(
 
 
 def note_passes_deck_whitelist(
-    deck_names: list,
+    deck_refs: list,
     include_subdecks: bool,
     trigger_note: Note,
     deck_id: Optional[int] = None,
@@ -582,13 +592,15 @@ def note_passes_deck_whitelist(
 
     Trigger filtering stays outside the stage interpreter (§8): which notes a definition
     considers is decided by its triggers, and only then does the program run.
+
+    The whitelist is a list of deck references, resolved by id first so that a renamed deck
+    still whitelists the same notes; a reference resolving to nothing matches no deck, as a
+    stale name did before.
     """
-    if not deck_names:
+    if not deck_refs:
         return True
 
-    unique_whitelist_dids: set = {
-        mw.col.decks.id_for_name(target_deck_name) for target_deck_name in deck_names
-    }
+    unique_whitelist_dids: set = {resolve_deck_id(ref, mw.col) for ref in deck_refs}
     if include_subdecks:
         parent_dids = set()
         for did in unique_whitelist_dids:
@@ -671,13 +683,28 @@ def copy_for_single_trigger_note(
         logger.error(str(error))
         return False
 
+    # A rename left this definition spelling a field that some note type it triggers on
+    # lacks (`rename_reconcile.BROKEN_KEY`), so whatever it wrote would go wrong somewhere.
+    # A failure rather than a benign skip: the error is what opens the log that tells the
+    # user to fix it, and False stops a bulk run after one line instead of one per note.
+    # Before the deck whitelist, so a run over notes the whitelist skips still says so.
+    broken = broken_by_rename_messages(staged_definition)
+    if broken:
+        for message in broken:
+            logger.error(
+                "Error in copy fields: '%s' was not run: %s",
+                staged_definition.get("definition_name", ""),
+                broken_by_rename_explanation([message]),
+            )
+        return False
+
     # `or {}` rather than a default: the key can be present and null in a hand-edited or
     # half-written config, and every other reader of `triggers` in the addon already spells
     # it this way. Without it the next line raises out of the `CollectionOp`, which Anki
     # shows as an error dialog and which stops the bulk run over every remaining note.
     triggers = staged_definition.get("triggers") or {}
     if not note_passes_deck_whitelist(
-        deck_names=triggers.get("deck_names") or [],
+        deck_refs=definition_deck_refs(staged_definition),
         include_subdecks=bool(triggers.get("include_subdecks", False)),
         trigger_note=trigger_note,
         deck_id=deck_id,

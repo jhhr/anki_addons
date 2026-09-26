@@ -1,21 +1,18 @@
 """One pin for a rename in Anki that a stored definition never hears about.
 
 Renaming a field breaks a definition loudly -- the reference resolves to nothing, the stage
-fails and the editor refuses the save. Renaming a *card type* does not: a note-level card
-action names its card type as `NoteType<::>CardType` and
-`copy_primitives.card_actions_by_template_name` matches that string against the live
-template name, so after a rename the action matches no card and the run goes on as though
-the definition never had one. Nothing is logged at any level the user sees.
+fails and the editor refuses the save. Renaming a *card type* used to do the opposite: a
+note-level card action named its card type as the string `NoteType<::>CardType`, which was
+matched against the live template name, so after a rename the action matched no card and
+the run went on as though the definition never had one, with nothing logged at any level
+the user sees.
 
-The pin is xfail rather than a characterization test because it is an open item, not a wart
-worth keeping: see "Following a rename in Anki" in `docs/follow-ups.md`. It turns green only
-when *this run* says so and still hands over no card, which none of that section's tiers
-does as written: (a) reports stale names when the collection loads, not during a run, and
-(b) and (c) make the action follow the rename, so a card is handed over. Whichever is built
-has to rewrite this pin to ask what that tier promises; strict, so it cannot be forgotten.
+An action written since then carries the template's id and follows the rename
+(`test_object_refs.py`). This one carries only the name -- the shape a README example and a
+hand-edited definition still have -- so the action cannot land; what it must not do is
+land nowhere in silence. That is what is pinned here: see "Following a rename in Anki" in
+`docs/follow-ups.md`.
 """
-
-import pytest
 
 import definitions as d
 from anki_shared.testing import real_anki
@@ -23,7 +20,6 @@ from conftest import VOCAB
 from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
 
 
-@pytest.mark.xfail(reason="a run does not report a card type it cannot find", strict=True)
 def test_a_card_action_whose_card_type_was_renamed_says_so(col, logger):
     note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
     definition = d.within_note(
@@ -32,7 +28,8 @@ def test_a_card_action_whose_card_type_was_renamed_says_so(col, logger):
     )
 
     # The user renames the card type in Anki's card layout screen, long after writing the
-    # definition. No hook carries a template rename, so nothing tells the addon.
+    # definition. No hook carries a template rename, so nothing tells the addon, and this
+    # action has no template id to be followed by.
     note_type = col.models.by_name(VOCAB)
     note_type["tmpls"][0]["name"] = "Reading card"
     col.models.update_dict(note_type)
@@ -46,6 +43,6 @@ def test_a_card_action_whose_card_type_was_renamed_says_so(col, logger):
     assert ok is True
     assert note["Note"] == "neko"
     # The flag the definition asks for is set on neither card -- no card is handed over to
-    # be saved at all -- and nothing says why.
+    # be saved at all -- and now something says why.
     assert copied_into_cards == {}
     assert logger.errors or logger.warnings

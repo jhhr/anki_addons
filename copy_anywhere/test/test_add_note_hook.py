@@ -41,6 +41,7 @@ from copy_anywhere.hooks.note_hooks import (
     get_copy_definitions_for_add_note,
     run_copy_fields_on_add,
 )
+from copy_anywhere.logic.rename_reconcile import BROKEN_KEY
 
 ADDON_TAG = "copy_anywhere"
 
@@ -416,6 +417,36 @@ class TestAWithinNoteDefinitionOnAdd:
         set_definitions(within(), log_level="debug")
         run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
         assert hook_logger.levels == ["debug"]
+
+
+class TestADefinitionBrokenByARenameOnAdd:
+    def test_it_is_not_run_and_the_note_is_still_added(self, col, set_definitions, hook_logger):
+        # The refusal is the definition failing, which the handler already survives: only
+        # that definition's changes are dropped, and the add goes ahead with the rest.
+        broken = d.staged(
+            "broken",
+            stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("broken ran"))])],
+            on_add=True,
+        )
+        broken[BROKEN_KEY] = [{"field": "Word", "message": 'Field "Word" is no longer here'}]
+        whole = d.staged(
+            "whole",
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
+            ],
+            on_add=True,
+        )
+        set_definitions(broken, whole)
+        note = new_note(col, Word="neko")
+
+        run_copy_fields_on_add(note, deck(col))
+        col.add_note(note, deck(col))
+
+        stored = col.get_note(note.id)
+        assert (stored["Note"], stored["Meaning"]) == ("", "neko")
+        assert hook_logger.has_error(
+            "'broken' was not run: Field \"Word\" is no longer here."
+        )
 
 
 class TestTheDeckWhitelistNeedsTheDeckId:

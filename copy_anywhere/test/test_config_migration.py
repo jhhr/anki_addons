@@ -270,6 +270,117 @@ class TestRetiringFormat1Syntax:
         assert not is_format_2(definitions[0])
 
 
+class TestIdCarryingReferences:
+    """The 0.5.0 migration: the trigger and card-type slots become structured references.
+
+    Only the shape changes here. `migrate_config()` runs at import time, before `mw.col`
+    exists, so no name can be resolved to an id yet and every one comes out null; the
+    editor binds them when the definition is saved.
+    """
+
+    def a_0_4_0_definition(self):
+        """What 0.4.0 stored: bare names in the slots that now carry ids."""
+        definition = d.staged(
+            definition_name="old",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Note", d.text("{{trigger.Word}}"))],
+                    card_actions=[d.card_action("CA Vocab", "Recognition", set_flag=2)],
+                )
+            ],
+        )
+        definition["triggers"]["note_types"] = ["CA Vocab"]
+        definition["triggers"]["deck_names"] = ["JP vocab"]
+        return definition
+
+    def test_the_trigger_names_become_references_with_no_id(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        triggers = stored(stub_mw)["copy_definitions"][0]["triggers"]
+        assert triggers["note_types"] == [{"id": None, "name": "CA Vocab"}]
+        assert triggers["deck_names"] == [{"id": None, "name": "JP vocab"}]
+
+    def test_a_card_action_names_its_card_type_as_a_reference(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        action = stored(stub_mw)["copy_definitions"][0]["stages"][0]["card_actions"][0]
+        assert action["card_type"] == {
+            "note_type_id": None,
+            "template_id": None,
+            "name": "CA Vocab<::>Recognition",
+        }
+        assert "card_type_name" not in action
+
+    def test_the_version_records_that_the_step_ran(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        assert stored(stub_mw)["version"] == CONFIG_VERSION
+
+    def test_running_it_again_leaves_the_bound_ids_alone(self, config, stub_mw):
+        definition = self.a_0_4_0_definition()
+        definition["triggers"]["note_types"] = [{"id": 42, "name": "CA Vocab"}]
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+        stub_mw.addonManager.configs["copy_anywhere"]["version"] = "0.4.0"
+        migrate_config()
+
+        triggers = stored(stub_mw)["copy_definitions"][0]["triggers"]
+        assert triggers["note_types"] == [{"id": 42, "name": "CA Vocab"}]
+
+    def test_an_empty_card_type_name_becomes_no_reference_at_all(self, config, stub_mw):
+        """An `edit_card` stage's actions name no card type -- the stage named the card.
+
+        The old editor wrote one empty `card_type_name` string for them. A reference with
+        no name and no ids is not a reference to anything, so the slot comes out as the
+        `None` the editor itself writes there now.
+        """
+        action = d.card_action("CA Vocab", "Recognition", set_flag=2)
+        action["card_type_name"] = ""
+        definition = d.staged(
+            definition_name="single card",
+            stages=[
+                d.card_query("cards", "deck:x"),
+                d.for_each_card("cards", [d.edit_card("card", [action])]),
+            ],
+        )
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        stage = stored(stub_mw)["copy_definitions"][0]["stages"][1]["body"][0]
+        assert stage["card_actions"][0]["card_type"] is None
+        assert "card_type_name" not in stage["card_actions"][0]
+
+    def test_a_format_1_config_arrives_structured_in_one_pass(self, config, stub_mw):
+        config["copy_definitions"] = [
+            d.within_note(
+                definition_name="w",
+                card_actions=[d.card_action("CA Vocab", "Recognition", set_flag=2)],
+                field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            )
+        ]
+        config["version"] = "0.1.0"
+
+        migrate_config()
+
+        definition = stored(stub_mw)["copy_definitions"][0]
+        assert definition["triggers"]["note_types"] == [{"id": None, "name": "CA Vocab"}]
+        assert "card_type" in definition["stages"][0]["card_actions"][0]
+
+
 class TestTheBackup:
     def test_the_originals_are_kept_under_the_backup_key(self, config, stub_mw):
         config["copy_definitions"] = [d.within_note(definition_name="w")]

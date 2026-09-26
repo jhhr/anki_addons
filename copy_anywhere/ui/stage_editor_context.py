@@ -241,16 +241,58 @@ def scope_options_dict(
 
 
 def selected_note_types(definition: CopyDefinitionV2) -> list[NotetypeDict]:
-    """The note types a definition's trigger can be, from its trigger settings."""
+    """The note types a definition's trigger can be, from its trigger settings.
+
+    By reference, so a note type the user renamed in Anki is still the one the definition
+    means; a reference that resolves to nothing contributes no note type, as a stale name
+    did before.
+    """
     from aqt import mw
+
+    from ..configuration import definition_note_type_refs
+    from ..logic.object_refs import resolve_note_type
 
     assert mw is not None and mw.col is not None
     models = []
-    for name in (definition.get("triggers", {}) or {}).get("note_types", []) or []:
-        model = mw.col.models.by_name(name)
+    for ref in definition_note_type_refs(definition):
+        model = resolve_note_type(ref, mw.col)
         if model is not None:
             models.append(model)
     return models
+
+
+def unresolved_reference_problems(definition: CopyDefinitionV2) -> list[str]:
+    """What a definition names that this collection does not have, as save blockers.
+
+    A reference resolves by id and then by name (`logic/object_refs.py`), so one that
+    answers to neither names nothing at all: the definition triggers on no note, or holds
+    a card action that reaches no card. Saving it would leave the user with a definition
+    that looks complete and does nothing, so the editor refuses and says which name it is
+    -- the same name the reconcile pass already logged, worded the same way.
+
+    A field a definition on several note types spells for its trigger is the same kind of
+    name: one of those note types lacking it makes the definition fail on its notes. The
+    analyser checks a `{{trigger.X}}` against the fields any trigger note type has, which
+    is all it can know from a list of names, so the field some of them lack is refused here
+    (`rename_reconcile.trigger_fields_not_on_every_note_type`).
+    """
+    from aqt import mw
+
+    from ..logic.rename_reconcile import (
+        trigger_fields_not_on_every_note_type,
+        unresolved_references,
+    )
+
+    if mw is None or mw.col is None:
+        return []
+    return [
+        f"{stale.kind.capitalize()} '{stale.name}' no longer exists;"
+        " pick another or remove it."
+        for stale in unresolved_references(definition, mw.col)
+    ] + [
+        f"{problem}; use a field all of them have, or rename it in the others too."
+        for problem in trigger_fields_not_on_every_note_type(definition, mw.col)
+    ]
 
 
 def known_fields_for(definition: CopyDefinitionV2) -> dict[str, set[str]]:

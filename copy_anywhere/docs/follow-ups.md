@@ -329,11 +329,72 @@ subsumes (b) and is the only one that survives a sync; (b) is worth building onl
 fields it can do safely, and only if the report shows field renames dominating.
 
 One defect is pinned rather than only described:
-`test/test_renamed_in_anki.py` is an xfail saying that a card action whose card type was
-renamed should say so. It is the sharpest of the five, because a card action is pure loss --
-the field writes in the same definition still land, so the run reports success.
+`test/test_renamed_in_anki.py` says that a card action whose card type was renamed should
+say so. It is the sharpest of the five, because a card action is pure loss -- the field
+writes in the same definition still land, so the run reports success. It was an xfail until
+the decision below was built; it is a plain test now.
 
-**decision: pending**
+**decision: a fourth option, (d): store the ids.** None of the three tiers was taken as it
+stood. What a definition keeps for a note type, a deck and a card template is now a
+reference -- `{"id", "name"}`, and `{"note_type_id", "template_id", "name"}` for a card type
+-- and **the id wins where it still exists, the name being looked up only when it does not**
+(`logic/object_refs.py`). That needs no rename hook at all, which settles what (b) could not:
+the hook fires before the Fields dialog is accepted and a rename can be cancelled out from
+under it, and a rename undone with Ctrl+Z fires nothing that names anything. It also follows
+a rename made on another device, which (c) is the only other tier to do, and it costs
+nothing per rename because there is nothing to rewrite.
+
+Field names stay names, because a field is what the user types in expressions, queries and
+code -- the row of the table above that a mechanical rewrite would mangle. What (a) and (c)
+are still needed for is kept: one reconcile pass refreshes the cached names by id and
+rewrites a renamed trigger field's parsed reference tokens, and what stays name-only is
+reported rather than rewritten. Search text is never rewritten: `col.replace_in_search_node`
+swaps every term of a kind, so it cannot rename one deck inside a query naming two.
+
+Built in three commits on `feat/copyanywhere_rename_protection`: the references and the
+readers that go through them, the reconcile pass, and the editor's reporting.
+
+**What the reconcile pass turned out to be** (`logic/rename_reconcile.py`, registered in
+`hooks/rename_hooks.py` on `collection_did_load` and on `operation_did_execute` when
+`changes.notetype or changes.deck`). It binds a null id whose name resolves, refreshes the
+cached name of every reference whose id still resolves, follows a renamed field or card
+type of a trigger note type into that definition's field slots and its `{{trigger....}}`
+tokens -- the whole rename map applied in one step, so a swap of two names is correct --
+and reports the rest: a reference that resolves to nothing, a deleted object, a field or
+template with no id to be followed by, and code still mentioning an old name. Only an
+expression's `text` is rewritten, never its `code` and never a search term, which is (a)'s
+job kept where a rewrite would be a guess.
+
+Both names of a rename come out of `name_snapshot` in the addon config -- per referenced
+note type id, its name and its fields' and templates' names by *their* ids, plus a name per
+referenced deck id -- which is tier (c)'s snapshot, kept in step by `_save_definitions` so
+it is never older than the last save. That is what makes a rename visible with no hook at
+all, including one synced in from another device and one undone with Ctrl+Z, which is just
+a second rename the same pass follows back. The pass writes the config only when something
+changed, and never while a dialog is still open, so a cancelled Fields dialog is a
+non-problem.
+
+**Where (a)'s report ended up.** The pass writes everything into one operation log, which
+is invisible at the default log level, so the three findings a user can act on were put
+where they already look. A structured reference that resolves to nothing is shown in the
+editor under the name it was written with, marked `(not found)`, and blocks the save; a
+query stage carries an amber note listing what its search spells that the collection does
+not have; and the definition picker marks a definition that names something unresolved,
+with the names in its tooltip -- its references checked live as the picker is drawn, the
+last pass's `gone` entries only while the definition still names them
+(`rename_reconcile.still_names`), and redrawn when a definition is saved from the picker.
+A definition marked `broken_by_rename` is not run on any run path (the editor's preview
+still runs it), and the picker shows it with its own icon and a checkbox that cannot be
+ticked (`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
+(`logic/query_terms.py`) checks `deck:`, `note:` and `card:` terms and field searches by
+exact name only -- a term holding
+a wildcard, a regex or an unresolved `{{...}}` reference is skipped rather than guessed at,
+because a scan that cried wolf over a working query would be ignored. The same scan runs in
+the pass, so a query that went stale on another device is reported without anything being
+renamed here. `selection.sort_field` is still not rewritten and a note without the field
+still sorts as empty -- a query legitimately mixes note types, and the characterization
+suites pin that fallback -- but a run where no selected note had the field logs one warning,
+because then the sort did nothing at all.
 
 ## A bulk-run test
 

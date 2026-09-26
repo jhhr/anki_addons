@@ -91,8 +91,14 @@ class TestWithinNote:
         assert edit["tags"] == {"add": ["one", "two"], "remove": ["old"]}
         assert len(edit["card_actions"]) == 1
         # Note-level card actions keep their card type selector; `edit_card` is the stage
-        # without one.
-        assert edit["card_actions"][0]["card_type_name"].endswith("Recognition")
+        # without one. The selector is a reference, with null ids for the same reason the
+        # trigger references have them.
+        assert edit["card_actions"][0]["card_type"] == {
+            "note_type_id": None,
+            "template_id": None,
+            "name": "CA Vocab<::>Recognition",
+        }
+        assert "card_type_name" not in edit["card_actions"][0]
 
     def test_a_file_definition_becomes_a_following_write_file_stage(self):
         migrated = migrate_definition_v1_to_v2(
@@ -379,7 +385,9 @@ class TestSelection:
 
 
 class TestTriggers:
-    def test_note_types_and_decks_become_arrays(self):
+    def test_note_types_and_decks_become_arrays_of_references(self):
+        # References rather than bare names, with null ids: the migrator runs from
+        # `migrate_config()` at import time, when there is no collection to bind an id in.
         migrated = migrate_definition_v1_to_v2(
             d.within_note(
                 note_types=["A", "B"],
@@ -387,8 +395,14 @@ class TestTriggers:
                 include_subdecks=True,
             )
         )
-        assert migrated["triggers"]["note_types"] == ["A", "B"]
-        assert migrated["triggers"]["deck_names"] == ["JP vocab", "Other"]
+        assert migrated["triggers"]["note_types"] == [
+            {"id": None, "name": "A"},
+            {"id": None, "name": "B"},
+        ]
+        assert migrated["triggers"]["deck_names"] == [
+            {"id": None, "name": "JP vocab"},
+            {"id": None, "name": "Other"},
+        ]
         assert migrated["triggers"]["include_subdecks"] is True
 
     def test_the_placeholder_deck_list_means_no_whitelist(self):

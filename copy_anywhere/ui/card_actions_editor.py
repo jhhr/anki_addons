@@ -2,6 +2,7 @@ import html
 from typing import Optional, Dict
 import uuid
 
+from anki.consts import MODEL_CLOZE
 from aqt import mw
 from aqt.qt import (
     QWidget,
@@ -35,6 +36,16 @@ from ..configuration import (
     CardAction,
     CopyDefinition,
 )
+from ..logic.object_refs import (
+    CardTypeRef,
+    card_action_card_type,
+    card_type_display_name,
+    card_type_ref,
+    card_type_resolves,
+    normalize_card_type_ref,
+    not_found_label,
+    resolve_card_type,
+)
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .code_notices import CARD_ACTION_CODE_NOTICE
@@ -52,6 +63,12 @@ source_to_destinations_description = (
 )
 destination_to_sources_description = (
     "<p><small>Note: Card actions are performed on the trigger note's cards.</small></p>"
+)
+cloze_card_type_note = (
+    "<p><small>Note: this is a cloze note type, whose one card type makes every cloze card."
+    " The action applies to every cloze card of the note (c1, c2, c3 ...) alike. To act on"
+    " one cloze only, use a Card Query with a For Each Card loop and an Edit Card stage;"
+    " the loop's <code>card.ord</code> is the cloze number less one.</small></p>"
 )
 
 
@@ -151,6 +168,12 @@ class CardActionsEditor(QWidget):
         # Map card type names to their CardAction definitions
         self.card_actions: Dict[str, CardAction] = {}
 
+        #: The keys of actions whose card type reference resolves to nothing. They are
+        #: marked rather than dropped: an action the collection cannot place is still one
+        #: the user wrote, and a save that quietly forgot it would be the worst of the
+        #: three things this could do.
+        self._missing_card_types: set[str] = set()
+
         # Load existing card actions from copy_definition
         if copy_definition and copy_definition.get("card_actions"):
             for action in copy_definition["card_actions"]:
@@ -159,9 +182,16 @@ class CardActionsEditor(QWidget):
                     action["guid"] = key
                     self.card_actions[key] = action
                     continue
-                card_type_name = action.get("card_type_name", "")
-                if card_type_name:
-                    self.card_actions[card_type_name] = action
+                # Keyed by the *live* display name, so an action whose note type or card
+                # type was renamed in Anki still lines up with what the selector offers.
+                ref = card_action_card_type(action)
+                card_type_name = card_type_display_name(ref, mw.col)
+                if not card_type_name:
+                    continue
+                if not card_type_resolves(ref, mw.col):
+                    card_type_name = not_found_label(card_type_name)
+                    self._missing_card_types.add(card_type_name)
+                self.card_actions[card_type_name] = action
 
         if single_card_mode:
             # Nothing to pick: the stage already named the card these actions apply to.
@@ -275,7 +305,10 @@ class CardActionsEditor(QWidget):
         offered = self._offered_card_types()
         if offered is not None:
             for card_type_name in list(self.card_actions):
-                if card_type_name not in offered:
+                if (
+                    card_type_name not in offered
+                    and card_type_name not in self._missing_card_types
+                ):
                     self._discard_action(card_type_name)
         self.update_card_type_options()
 
@@ -432,7 +465,7 @@ class CardActionsEditor(QWidget):
         # Create new action
         new_action: CardAction = {
             "guid": str(uuid.uuid4()),
-            "card_type_name": card_type_name,
+            "card_type": self._card_type_ref_for(card_type_name, None),
             "change_deck": None,
             "set_flag": None,
             "suspend": None,
@@ -457,7 +490,7 @@ class CardActionsEditor(QWidget):
         key = str(uuid.uuid4())
         new_action: CardAction = {
             "guid": key,
-            "card_type_name": "",
+            "card_type": None,
             "change_deck": None,
             "set_flag": None,
             "suspend": None,
@@ -469,6 +502,36 @@ class CardActionsEditor(QWidget):
         self.card_actions[key] = new_action
         self.create_action_editor(key, new_action)
         self._on_changed()
+
+    def _card_type_ref_for(
+        self, card_type_name: str, existing: Optional[CardAction]
+    ) -> CardTypeRef:
+        """The reference a saved action carries for the card type it is shown under.
+
+        Built from the live note type and template, so the ids are bound here -- the
+        editor is the one place with a collection at hand and a name the user just picked.
+        A name the collection does not have keeps whatever reference the action arrived
+        with, rather than losing an id that would find it again.
+
+        The name is looked up by the one resolver every reader of a card type goes through,
+        so what the editor binds is what the run and the pass would find for it.
+        """
+        if mw is not None and mw.col is not None:
+            reference = normalize_card_type_ref(card_type_name)
+            model, template = resolve_card_type(reference, mw.col)
+            if model is not None and template is not None:
+                return card_type_ref(model, template)
+        if existing:
+            return card_action_card_type(existing)
+        return normalize_card_type_ref(card_type_name)
+
+    def _is_cloze_card_type(self, card_type_name: str, action: CardAction) -> bool:
+        if mw is None or mw.col is None:
+            return False
+        model, _template = resolve_card_type(
+            self._card_type_ref_for(card_type_name, action), mw.col
+        )
+        return bool(model and model.get("type") == MODEL_CLOZE)
 
     def create_action_editor(self, card_type_name: str, action: CardAction):
         """Create the UI for editing a single CardAction and add it inline"""
@@ -491,6 +554,14 @@ class CardActionsEditor(QWidget):
             frame,
         )
         frame_layout.addWidget(header)
+
+        # A cloze card type is one action for every cloze card, which nothing else on this
+        # frame says; the name alone reads as though it were one card.
+        cloze_note = None
+        if not self.single_card_mode and self._is_cloze_card_type(card_type_name, action):
+            cloze_note = QLabel(cloze_card_type_note, frame)
+            cloze_note.setWordWrap(True)
+            frame_layout.addWidget(cloze_note)
 
         # Code mode toggle
         use_code_toggle = ToggleSwitch("Execute as Python code")
@@ -690,6 +761,7 @@ class CardActionsEditor(QWidget):
             "dr_number_input": dr_number_input,
             "dr_string_input": dr_string_input,
             "code_editor": code_editor,
+            "cloze_note": cloze_note,
         }
 
     def save_action(self, card_type_name: str):
@@ -736,7 +808,9 @@ class CardActionsEditor(QWidget):
             "guid": existing.get("guid", str(uuid.uuid4())),
             # In single-card mode the key is the action's own guid, not a card type, and
             # the stage's target says which card it applies to.
-            "card_type_name": "" if self.single_card_mode else card_type_name,
+            "card_type": None
+            if self.single_card_mode
+            else self._card_type_ref_for(card_type_name, existing),
             "change_deck": change_deck,
             "set_flag": set_flag,
             "suspend": suspend,
@@ -749,6 +823,7 @@ class CardActionsEditor(QWidget):
     def _discard_action(self, card_type_name: str):
         """Forget one action, its row, and its place in the staged load."""
         self.card_actions.pop(card_type_name, None)
+        self._missing_card_types.discard(card_type_name)
         self._load_queue = [
             (name, action) for name, action in self._load_queue if name != card_type_name
         ]

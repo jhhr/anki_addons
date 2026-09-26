@@ -916,6 +916,36 @@ class TestACardValueReadThroughACardBinding:
         for card in note.cards():
             assert f"[{card.id}]" in written, written
 
+    def test_a_note_level_action_reaches_every_cloze_card(self, col):
+        # A cloze note type has one card type, and every cloze card is made from it: c2's
+        # `card.ord` is 1 while the one template's ordinal stays 0. Matching an action to a
+        # card by comparing those two left c2 onward untouched, and the run reported
+        # success.
+        note = real_anki.add_note(
+            col, CLOZE, {"Text": "{{c1::a}} {{c2::b}} {{c3::c}}", "Extra": ""}
+        )
+        model = note.note_type()
+        template = model["tmpls"][0]
+        for action in (
+            d.card_action(model["name"], template["name"], set_flag=3),
+            d.card_action_ref(model, template, set_flag=3),
+        ):
+            definition = d.staged(
+                stages=[d.edit_note("trigger", [], card_actions=[action])],
+                note_types=[CLOZE],
+            )
+            copied_into_cards: dict = {}
+
+            ok = copy_for_single_trigger_note(
+                definition, note, copied_into_cards_dict=copied_into_cards
+            )
+
+            assert ok is True
+            flagged = sorted(
+                card.ord + 1 for card in copied_into_cards.values() if card.user_flag() == 3
+            )
+            assert flagged == [1, 2, 3], action
+
     def test_a_key_that_is_not_a_card_value_is_still_refused(self, col, note, logger):
         definition = d.staged(stages=[
             d.card_query("cards", f"nid:{note.id}", strategy="first", count=1),
