@@ -18,6 +18,9 @@ aqt==26.9.2
 PyQt6==6.11.0
 PyQt6-WebEngine==6.11.0
 
-pytest==8.3.3
+# 8.4 is the oldest that anki_shared/jp_text_processing's suite imports under: its conftest
+# annotates with `pytest.TerminalReporter`, which 8.3 does not export, so on 8.3 that whole
+# suite fails at collection.
+pytest==8.4.2
 # Provides `qtbot` to pytest-anki, and reads `qt_api = pyqt6` from pytest.ini.
 pytest-qt==4.5.0
