@@ -509,7 +509,9 @@ class CardActionsEditor(QWidget):
             deck_combo.addItem(deck_name_and_id.name)
         current_deck = action.get("change_deck")
         if current_deck:
-            index = deck_combo.findText(current_deck)
+            # A deck id rather than a name can only come from a hand-edited config; as text it
+            # finds nothing and the combo stays on "-", where PyQt raised TypeError.
+            index = deck_combo.findText(str(current_deck))
             if index >= 0:
                 deck_combo.setCurrentIndex(index)
         else:
@@ -777,7 +779,8 @@ class CardActionsEditor(QWidget):
         result = []
         for action in self.card_actions.values():
             if (
-                (action.get("use_code", False) and action.get("action_code", "").strip())
+                # A stored `action_code` of None is no code, as the engine reads it.
+                (action.get("use_code", False) and (action.get("action_code") or "").strip())
                 or action.get("change_deck") is not None
                 or action.get("set_flag") is not None
                 or action.get("suspend") is not None
