@@ -735,6 +735,114 @@ class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename)
         assert not row.checkbox.isEnabled()
 
 
+class TestATriggerFieldSomeTriggerNoteTypesLack(ADefinitionBrokenByARename):
+    """A definition on several note types can only use a field all of them have.
+
+    It spells a trigger field once for every note type it triggers on, so a field one of
+    them lacks makes it fail on that note type's notes. The analyser checks a
+    `{{trigger.X}}` against the fields any trigger note type has, so the editor refuses
+    the field some of them lack itself -- at every slot a rename is followed into.
+    """
+
+    def both(self, col, *stages, **triggers):
+        real_anki.make_note_type(
+            col, self.OTHER, ["Word", "Meaning", "Extra"], [("Card 1", "{{Word}}", "{{Meaning}}")]
+        )
+        return d.staged("both", note_types=[VOCAB, self.OTHER], stages=list(stages), **triggers)
+
+    def blockers_for(self, definition):
+        return [
+            blocker
+            for blocker in document_for(definition).save_blockers()
+            if blocker.startswith("Field ")
+        ]
+
+    def test_a_definition_a_rename_left_broken_is_refused_in_the_editor(self, broken):
+        _config, definition = broken
+
+        assert self.blockers_for(definition) == [
+            f'Field "Word" is not on note type "{VOCAB}", which this definition also'
+            " triggers on; use a field all of them have, or rename it in the others too."
+        ]
+
+    def test_trading_the_old_name_for_the_new_one_is_refused_too(self, broken):
+        _config, definition = broken
+        half_fixed = copy.deepcopy(definition)
+        half_fixed["stages"][0]["fields"][0]["value"]["text"] = "{{trigger.Term}}"
+
+        assert self.blockers_for(half_fixed) == [
+            f'Field "Term" is not on note type "{self.OTHER}", which this definition also'
+            " triggers on; use a field all of them have, or rename it in the others too."
+        ]
+
+    def test_renaming_it_in_the_other_note_type_too_is_accepted(self, col, broken):
+        _config, definition = broken
+        model = col.models.by_name(self.OTHER)
+        model["flds"][0]["name"] = "Term"
+        col.models.update_dict(model)
+        fixed = copy.deepcopy(definition)
+        fixed["stages"][0]["fields"][0]["value"]["text"] = "{{trigger.Term}}"
+
+        assert self.blockers_for(fixed) == []
+
+    def test_a_field_write_on_the_trigger_is_checked(self, col):
+        definition = self.both(col, d.edit_note("trigger", fields=[d.write("Extra", d.text("x"))]))
+
+        assert self.blockers_for(definition)[0].startswith(
+            f'Field "Extra" is not on note type "{VOCAB}"'
+        )
+
+    def test_the_unfocus_lists_are_checked(self, col):
+        definition = self.both(col, on_unfocus={"edit_fields": ["Extra"], "add_fields": []})
+
+        assert self.blockers_for(definition)[0].startswith(
+            f'Field "Extra" is not on note type "{VOCAB}"'
+        )
+
+    def test_a_field_every_trigger_note_type_has_is_fine(self, col):
+        definition = self.both(
+            col,
+            d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.word}}"))]),
+            on_unfocus={"edit_fields": ["Word"], "add_fields": []},
+        )
+
+        assert self.blockers_for(definition) == []
+
+    def test_a_note_value_key_is_not_a_field(self, col):
+        definition = self.both(
+            col,
+            d.edit_note(
+                "trigger", fields=[d.write("Meaning", d.text("{{trigger.__Note_Type_ID}}"))]
+            ),
+        )
+
+        assert self.blockers_for(definition) == []
+
+    def test_a_field_none_of_them_has_is_left_to_the_analyser(self, col):
+        definition = self.both(
+            col, d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Nonsuch}}"))])
+        )
+
+        from copy_anywhere.ui.stage_editor_context import known_fields_for
+
+        assert self.blockers_for(definition) == []
+        # Wired as the dialog wires it, with the analyser's field list.
+        document = StageDocument(
+            definition,
+            known_fields=known_fields_for,
+            unresolved_refs=unresolved_reference_problems,
+        )
+        assert any("Nonsuch" in blocker for blocker in document.save_blockers())
+
+    def test_one_trigger_note_type_is_not_checked_here(self, col):
+        definition = d.staged(
+            "one", stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text("x"))])]
+        )
+        definition["triggers"]["on_unfocus"] = {"edit_fields": ["Nonsuch"], "add_fields": []}
+
+        assert self.blockers_for(definition) == []
+
+
 class TestTheBrowserMenuRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename):
     """The browser's "Copy anywhere" menu offers a marked definition as the picker does.
 

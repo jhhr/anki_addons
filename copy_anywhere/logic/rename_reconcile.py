@@ -43,7 +43,7 @@ from .definition_schema import (
     is_format_2,
     walk_stages,
 )
-from .flow_analysis import TRIGGER_BINDING
+from .flow_analysis import TRIGGER_BINDING, names_a_note_or_card_value
 from .object_refs import (
     KIND_CARD_TYPE,
     KIND_DECK,
@@ -705,18 +705,21 @@ class _NameRecorder(_Renames):
 
     Run through `_rewrite` it visits exactly the slots a rename would be followed into, so
     what "the fields this definition spells for its trigger" means cannot drift from what
-    the rewrite touches. Field names are kept folded to lower case, as they are matched;
-    card type names as spelled.
+    the rewrite touches. Field names are kept folded to lower case, as they are matched, and
+    each with the spelling it was first met under, for a message to quote; card type names
+    as spelled.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.fields_seen: set[str] = set()
+        self.field_spellings: dict[str, str] = {}
         self.templates_seen: set[str] = set()
 
     def new_field_name(self, name: Any) -> Optional[str]:
         if isinstance(name, str) and name:
             self.fields_seen.add(name.lower())
+            self.field_spellings.setdefault(name.lower(), name)
         return None
 
     def new_template_name(self, name: str) -> Optional[str]:
@@ -778,6 +781,41 @@ def _split_followable(
         else:
             followable.fields[old_name] = new_name
     return followable, withheld
+
+
+def trigger_fields_not_on_every_note_type(definition: dict, col: Any) -> list[str]:
+    """Each trigger field a definition on several note types spells that some of them lack.
+
+    A definition spells a trigger field once for every note type it triggers on, so a field
+    one of them lacks makes it fail on that note type's notes and write into the others'
+    as if nothing were wrong. That is what a field rename in only some of the note types
+    does (`BROKEN_KEY`), and what an edit that trades one name for another can do just as
+    well: `{{trigger.Word}}` rewritten to `{{trigger.Term}}` clears the mark while the other
+    note type still says `Word`. So the editor refuses it the same way, at every slot the
+    rewrite walks -- field writes on the trigger, the unfocus lists, `write_if_field`, and
+    `{{trigger....}}` tokens in text.
+
+    Only a field *some* trigger note types have: one none of them has is the analyser's to
+    report (`flow_analysis.check_note_field`), and a note or card value key is not a field.
+    One trigger note type cannot disagree with itself, so a definition with one is fine.
+    """
+    models = _trigger_models(definition, col)
+    if len(models) < 2:
+        return []
+    problems: list[str] = []
+    for name in _recorded_names(definition).field_spellings.values():
+        if names_a_note_or_card_value(name):
+            continue
+        lacking = [model for model in models if not _has_field(model, name)]
+        if not lacking or len(lacking) == len(models):
+            continue
+        noun = "note type" if len(lacking) == 1 else "note types"
+        problems.append(
+            f'Field "{name}" is not on {noun}'
+            f" {_quoted_list([str(model.get('name', '')) for model in lacking])},"
+            " which this definition also triggers on"
+        )
+    return problems
 
 
 def _quoted_list(names: list[str]) -> str:
@@ -1146,5 +1184,6 @@ __all__ = [
     "refresh_breakage",
     "stale_terms_in_searches",
     "still_names",
+    "trigger_fields_not_on_every_note_type",
     "unresolved_references",
 ]

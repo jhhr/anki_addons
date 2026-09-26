@@ -359,10 +359,22 @@ that a definition is not being run.
 
 A definition that calls a marked one fails at its `call_definition` stage with the same
 explanation, and its run on that note writes nothing -- not even what it changed before the
-call -- rather than running the rest of a chain around the gap. The editor still opens and
-saves a marked definition, since editing it is one of the ways out, and its preview still
-runs it, so a fix can be tried before it is saved; a call to a marked definition fails in
-the preview too.
+call -- rather than running the rest of a chain around the gap. The editor still opens a
+marked definition, since editing it is one of the ways out, and its preview still runs it,
+so a fix can be tried before it is saved; a call to a marked definition fails in the
+preview too. It does not save one that is still broken (next paragraph).
+
+**A definition on several note types can only use a field all of them have.** It spells a
+trigger field once for every note type it triggers on, so the editor refuses to save one
+that uses a field some of those note types lack, and says which: `Field "Term" is not on
+note type "B", which this definition also triggers on`. Every place a trigger field is
+named is checked -- a field write on the trigger, the unfocus lists, a write's
+only-if-empty field, and each `{{trigger.X}}` in a value. This is what a marked definition
+runs into when opened, and it is also what stops a half-fix: rewriting `{{trigger.Word}}`
+to `{{trigger.Term}}` after renaming `Word` in only one note type clears the mark, but the
+other note type still has no `Term`. A field none of the trigger note types has is reported
+as before, as a reference the note types cannot answer to; a definition on one note type is
+not affected.
 
 **Where the report reaches you.** The pass writes all of it into one operation log, which
 you only see with the log level turned up, so the things you can act on are also put where

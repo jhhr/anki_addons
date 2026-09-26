@@ -245,10 +245,19 @@ def unresolved_reference_problems(definition: CopyDefinitionV2) -> list[str]:
     a card action that reaches no card. Saving it would leave the user with a definition
     that looks complete and does nothing, so the editor refuses and says which name it is
     -- the same name the reconcile pass already logged, worded the same way.
+
+    A field a definition on several note types spells for its trigger is the same kind of
+    name: one of those note types lacking it makes the definition fail on its notes. The
+    analyser checks a `{{trigger.X}}` against the fields any trigger note type has, which
+    is all it can know from a list of names, so the field some of them lack is refused here
+    (`rename_reconcile.trigger_fields_not_on_every_note_type`).
     """
     from aqt import mw
 
-    from ..logic.rename_reconcile import unresolved_references
+    from ..logic.rename_reconcile import (
+        trigger_fields_not_on_every_note_type,
+        unresolved_references,
+    )
 
     if mw is None or mw.col is None:
         return []
@@ -256,6 +265,9 @@ def unresolved_reference_problems(definition: CopyDefinitionV2) -> list[str]:
         f"{stale.kind.capitalize()} '{stale.name}' no longer exists;"
         " pick another or remove it."
         for stale in unresolved_references(definition, mw.col)
+    ] + [
+        f"{problem}; use a field all of them have, or rename it in the others too."
+        for problem in trigger_fields_not_on_every_note_type(definition, mw.col)
     ]
 
 
