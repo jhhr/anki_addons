@@ -103,6 +103,40 @@ enough of the run has been measured to fit one.
 Default `180`. Seconds to wait for a single API response before giving up on that attempt.
 Timeouts are retried, subject to `max_request_retries`.
 
+### pausing and cancelling a run
+
+Nothing to configure. The progress dialog of a bulk run has **Pause** and **Cancel** buttons.
+Pause starts no new request, note or phase until you press Resume: requests already sent run to
+completion, and one that needs a retry waits for the resume. While paused the dialog says so and
+how many tasks are still finishing, and the paused time is left out of the ETA. Cancel does what
+Escape does, and works while paused too. If a later Anki version changes its progress dialog the
+buttons may be missing; Escape still cancels.
+
+A cancelled run keeps what it finished: edited notes are saved, words a match or judge run had
+already answered are kept, and the new notes a match run prepared are added and linked from
+their sentences as after a full run, so the meanings already paid for are not lost. Words still
+unanswered stay to be matched by the next run.
+
+Adding the new notes can itself take a while, since every added note runs the note-adding hooks
+(copy_anywhere's definitions among them). While it adds, Pause is greyed out and Cancel (or
+Escape) stops the adding; a note already being added is finished first. Cancel is only live
+while notes are being added; a press just before it, while the run saves its edits, cancels the
+run, which keeps the notes it prepared. The notes not added are dropped, the words that were
+linked to them are left to be matched again by the next run, and a numbering such as "(m1)" or
+"(r1)" they put on the word's other notes is taken back. A note that failed to add keeps its
+placeholder id in the word lists, which may help debugging, but only until the next match run
+over those sentences puts the words back to be matched. The end message says how many new notes
+were added, how many were left out by the cancel and how many failed.
+
+Last, after every match run, cancelled or not, the sort field markers of the words the run
+touched are tidied: a numbering with a gap ("(m1)", "(m3)") is closed up, and a "(m1)", "(r1)",
+"(kun)" or "(on)" left on a note with nothing to tell it apart from is taken off. The numbers
+follow the order the notes were created in, so a note you add by hand to a numbered word is
+numbered after the others, and a numbering in some other order is put in that one. A note that
+failed to add, a duplicate the run dropped, or a new reading whose meaning could not be made
+leaves those behind. A note whose sort field holds any other marker, such as "(x1)", is left as
+it is.
+
 ### terminal- models (claude CLI)
 
 Any `*_model` value starting with `terminal-` runs through the `claude` command line on your Claude
@@ -110,12 +144,24 @@ subscription instead of the HTTP API, e.g. `"word_matching_judge_model": "termin
 Each request starts one `claude -p` process (thinking off, no tools), so it is far slower than the
 API: about 70 requests a minute on a 4-core PC. Put the API model back in the config to switch
 back. Temperature settings are ignored for these models. `request_timeout`, `max_request_retries`
-and `max_retry_wait_seconds` apply as for the API. When the subscription's usage limit is hit, the
-run stops (the remaining notes are left as they were) and the end message says when the limit
-resets; switch the model to an API one and rerun to finish.
+and `max_retry_wait_seconds` apply as for the API.
+
+When the subscription's usage limit is hit during a bulk run, the run pauses until the reset time
+the CLI states (read as your local time) and then carries on by itself: every request that hit the
+limit is retried, without counting against `max_request_retries`, and the notes still queued are
+done as usual. If the reset time cannot be read, or lies more than 20 hours ahead, the run retries
+after `terminal_usage_limit_retry_minutes` instead, and pauses again if the limit still holds. The
+progress dialog shows the pause and when it ends; its "Resume now" button retries at once. You can
+cancel while paused, and the end message then says the run was cancelled while paused for the usage
+limit. Outside a bulk run (a translation or story written when a field loses focus) the request
+only fails. A login that has expired stops the run, leaving the remaining notes as they were: log
+in again by running `claude` in a terminal, then rerun.
 
 - `terminal_max_concurrent_requests`: Default `16`. How many `claude` processes run at once. Each
   takes a few hundred MB and a lot of CPU while it starts, on top of the normal concurrency limit.
+- `terminal_usage_limit_retry_minutes`: Default `15`. How long a run paused by the usage limit
+  waits before retrying when the CLI's message gives no reset time that can be read, or one more
+  than 20 hours ahead. At least 1 minute; `0` uses the default.
 - `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
   `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
 
@@ -176,16 +222,14 @@ You need to define
   7. `english_meaning_field`
   8. `part_of_speech_field`
   9. `new_note_id_field`
-  10. `insert_deck` (optional) Used when generating TSVs for inserting new notes. If omitted, the
-      file will simply not specify the deck
+  10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
+      into the "Default" deck
 
 ## test data exports
 
-Tools > "AI ops: generate test data" runs both browser-menu exports at once, each on the
-notes an Anki search query finds (written to the addon's `output/` folder). An empty query skips
-that export.
+Tools > "AI ops: generate test data" runs the browser-menu export, on the notes an Anki
+search query finds (written to the addon's `output/` folder). An empty query skips it.
 
-- `extract_words_migration_data_query`: notes for "Export extract-words migration test data"
 - `kanji_sentence_fine_tuning_data_query`: notes for "Export kanjify test data"
   (`kanjify_sentence_data.jsonl`, rows `{"sentence", "kanjified", "nids"}`: the furigana and
   kanjified sentence fields, one row per distinct sentence)
@@ -193,19 +237,5 @@ that export.
 ## optipnal specification
 
 ### `match_words_model` operation
-
--`word_lists_to_process` to select what parts of speech you collect:
-    - `nouns`: default = yes
-    - `proper_nouns`: default = no
-    - `verbs`: default = yes
-    - `compound_verbs`: default = yes
-    - `adjectives`: default = yes
-    - `adverbs`: default = yes
-    - `adjectivals`: default = yes
-    - `particles`: default = no
-    - `pronouns`: default = yes
-    - `suffixes`: default = yes
-    - `expressions`: default = yes
-    - `yojijukugo`: default = yes
 
 - `replace_existing_matched_words`: (default: false) overwrite previously processed matched words?

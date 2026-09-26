@@ -159,9 +159,11 @@ class TestOneFilePerOperation:
         )
 
         _, text = written_log(_operation_logs_go_to_tmp)
-        # The wrapper's own line, and one from inside `kana_highlight` two packages down.
+        # The wrapper's own line, and one from inside `kana_highlight` two packages down: the
+        # alignment search's entry line, which every search logs whatever it goes on to find
+        # (the line it logged on success was dropped when the search was rewritten).
         assert "kanji_to_highlight result:" in text
-        assert "find_first_complete_alignment - complete alignment found" in text
+        assert "find_first_complete_alignment - searching splits for word '会話'" in text
 
     def test_every_line_carries_the_definition_and_the_note_it_is_about(
         self, col, run_copy_fields, set_log_level, _operation_logs_go_to_tmp

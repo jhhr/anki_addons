@@ -9,11 +9,11 @@ import argparse
 from collections import Counter, defaultdict
 
 from _bootstrap import ADDON_ROOT, load, load_root
-from migrate_fit import CORPORA, read_export
+from corpora import CORPORA, read_export
 
 generator = load("generator")
 names = load("names")
-migrate = load("research.migrate")
+old_word_lists = load("research.old_word_lists")
 jmdict = load("jmdict_index")
 html_stripping = load_root("html_stripping")
 
@@ -37,7 +37,7 @@ def main() -> int:
         if not sentence.strip():
             continue
         corpus.append(generator.name_corpus_row(sentence))
-        for entry in migrate.read_word_lists(word_lists)[0]:
+        for entry in old_word_lists.read_word_lists(word_lists)[0]:
             if entry.word:
                 categories[entry.word].add(entry.category)
                 if entry.category == "proper_nouns":

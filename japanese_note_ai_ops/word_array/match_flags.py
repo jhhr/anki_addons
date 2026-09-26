@@ -18,7 +18,7 @@ its sentence by iter_highlighted(). By default the judge sees only unjudged word
 modes let it take a link away.
 
 The field text is read and written by `shared.word_array.field_text`, whose
-`decode_word_array` and `format_word_array` are re-exported here. It sits in the shared package
+`decode_word_array`, `read_word_array` and `format_word_array` are re-exported here. It sits in the shared package
 because the reviewer side reads the same fields: the cache definition that renders a sentence
 for the card runs in CopyAnywhere's code sandbox, which is shared code. The state side of the
 text stays here, because the states are what a search of it looks for: `word_array_query_regex`
@@ -33,6 +33,7 @@ from . import numbers
 from ..shared.word_array.field_text import (  # noqa: F401  (re-exported)
     decode_word_array,
     format_word_array,
+    read_word_array,
 )
 
 DONT_MATCH = "dontmatch"
@@ -74,7 +75,7 @@ _STATE_REGEX = {
 def word_array_query_regex(word: str, reading: str, states: Iterable[MatchState]) -> str:
     """A regex finding, in a word array field's text, a word element of this dict_form and
     reading whose `match_data` is in one of `states`, sub-words included. For a collection
-    search, as get_word_list_query_regex_for_word_and_reading is for the old word lists.
+    search, which cannot parse the field.
 
     Only the dict_form and reading strings of an element are followed by `match_data`, so the
     raw text and part of speech never pass for them."""

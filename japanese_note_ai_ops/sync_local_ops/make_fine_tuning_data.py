@@ -35,18 +35,12 @@ def _build_sentence_rows(
     return [json.dumps(row, ensure_ascii=False) for row in rows.values()], duplicates
 
 
-def build_migration_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[str], int]:
-    """One jsonl row per distinct sentence, holding the sentence and its word list exactly as
-    the fields have them: unparsed, so that invalid production data reaches the migration test
-    as it is. `notes` are (note id, sentence, word list). A row's `nids` are every note with
-    that sentence, so that a tool editing the sentence reaches them all. Returns the rows and
-    how many duplicate sentences were folded in, the first note's word list winning."""
-    return _build_sentence_rows(notes, "word_list")
-
-
 def build_kanjify_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[str], int]:
-    """Rows like `build_migration_rows`, holding the furigana sentence and its kanjified
-    version as the fields have them. No prompt is baked in, so a fine-tuning or eval format
+    """One jsonl row per distinct sentence, holding the furigana sentence and its kanjified
+    version as the fields have them. `notes` are (note id, furigana, kanjified). A row's
+    `nids` are every note with that sentence, so that a tool editing the sentence reaches
+    them all. Returns the rows and how many duplicate sentences were folded in, the first
+    note's kanjified sentence winning. No prompt is baked in, so a fine-tuning or eval format
     can be built from the rows with whatever prompt is current."""
     return _build_sentence_rows(notes, "kanjified")
 
@@ -59,59 +53,8 @@ def _run_with_config(write: Callable[[dict, Sequence[NoteId]], str], nids: Seque
     tooltip(write(config, nids), period=10000)
 
 
-def make_extract_words_migration_data(nids: Sequence[NoteId], parent: Any = None) -> None:
-    _run_with_config(_write_extract_words_migration_data, nids)
-
-
 def make_kanjify_sentence_data(nids: Sequence[NoteId], parent: Any = None) -> None:
     _run_with_config(_write_kanjify_sentence_data, nids)
-
-
-def _write_extract_words_migration_data(config: dict, nids: Sequence[NoteId]) -> str:
-    """Export the old extract_words word lists for testing the word array migration on the
-    whole collection. The sentence is the raw `word_extraction_sentence_field`, `<i>` context
-    included - the migration strips that itself. Notes whose list is already an array are
-    skipped: there is nothing left to migrate in them."""
-    notes: list[tuple[NoteId, str, str]] = []
-    skipped = 0
-    already_migrated = 0
-
-    os.makedirs(_OUTPUT_DIR, exist_ok=True)
-    output_path = os.path.join(_OUTPUT_DIR, "extract_words_migration_data.jsonl")
-
-    for nid in nids:
-        note = mw.col.get_note(nid)
-        note_type = note.note_type()
-        if note_type is None:
-            skipped += 1
-            continue
-        try:
-            sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)
-            word_list_field = get_field_config(config, "word_list_field", note_type)
-        except Exception:
-            skipped += 1
-            continue
-        if sentence_field not in note or word_list_field not in note:
-            skipped += 1
-            continue
-
-        sentence = note[sentence_field].strip()
-        word_list_raw = note[word_list_field].strip()
-        if not sentence or not word_list_raw:
-            skipped += 1
-            continue
-        if word_list_raw.startswith("["):
-            already_migrated += 1
-            continue
-        notes.append((nid, sentence, word_list_raw))
-
-    rows, duplicates = build_migration_rows(notes)
-    _write_jsonl_entries(output_path, rows)
-    return (
-        f"Wrote {len(rows)} sentences to {output_path}. Skipped {duplicates} duplicate"
-        f" sentences, {already_migrated} already migrated notes and {skipped} notes missing"
-        " a sentence or word list."
-    )
 
 
 def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
@@ -156,7 +99,6 @@ def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
 
 # Config key holding the search query for each export, in the order they run.
 TEST_DATA_EXPORTS: list[tuple[str, Callable[[dict, Sequence[NoteId]], str]]] = [
-    ("extract_words_migration_data_query", _write_extract_words_migration_data),
     ("kanji_sentence_fine_tuning_data_query", _write_kanjify_sentence_data),
 ]
 
@@ -183,7 +125,7 @@ def run_test_data_exports(
 
 
 def make_all_test_data(parent: Any = None) -> None:
-    """Tools menu action: all three exports, each on the notes its config query finds."""
+    """Tools menu action: every export, each on the notes its config query finds."""
     config = mw.addonManager.getConfig(__name__)
     if not config:
         logger.error("Make test data: missing addon configuration.")

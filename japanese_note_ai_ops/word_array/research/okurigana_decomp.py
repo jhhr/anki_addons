@@ -8,7 +8,7 @@ import argparse
 from collections import Counter, defaultdict
 
 from _bootstrap import ADDON_ROOT, load, load_root
-from migrate_fit import CORPORA, read_export
+from corpora import CORPORA, read_export
 
 generator = load("generator")
 jmdict = load("jmdict_index")

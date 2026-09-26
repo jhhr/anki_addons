@@ -30,7 +30,7 @@ def _import(dotted: str) -> ModuleType:
 
 
 def load(name: str) -> ModuleType:
-    """A word_array module, e.g. load("generator") or load("research.migrate")."""
+    """A word_array module, e.g. load("generator") or load("research.old_word_lists")."""
     return _import(f"word_array.{name}")
 
 

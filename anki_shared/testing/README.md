@@ -21,9 +21,8 @@ further down. All three run in one process, in one command.
 
 ## Installing what the tests need
 
-Into the interpreter the tests run on — the system Python that `.vscode/settings.json`
-and `pyrightconfig.json` point at, and the one to run `python -m mypy` with; not the
-repo's `.venv`:
+Into the interpreter the tests run on, which is also the one to run `python -m mypy` with
+and to point your editor at, since all of them read `anki` and `aqt` out of it:
 
 ```bash
 python -m pip install -r requirements-dev.txt

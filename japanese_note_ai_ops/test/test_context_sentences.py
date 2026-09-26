@@ -1,8 +1,8 @@
 """Stripping the <i> context sentences off a word extraction field.
 
-Three things depend on this being exactly one rule: extract_words, whose prompt must not see
-the neighbouring sentences; the word array migration, whose array must cover the same words
-the old list was made of; and research/migrate_fit.py, which measures the second.
+Two things depend on this being exactly one rule: extract_words, whose array must not cover
+the neighbouring sentences, and the research scripts that generate arrays from the corpora's
+sentences to compare with the old word lists, which must cover the same words the op does.
 """
 
 import unittest

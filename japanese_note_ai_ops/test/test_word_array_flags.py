@@ -189,6 +189,47 @@ class DecodeWordArrayTests(unittest.TestCase):
         )
         self.assertEqual(match_flags.decode_word_array(mangled), arr)
 
+    def test_json_of_the_wrong_shape_is_refused_and_says_where(self):
+        # A bracket lost in a hand edit that still leaves JSON: 事 closed one value early, so
+        # its parent's sub-words hold a 5-value word and an empty list. Every reader indexes
+        # elements by position, and this one raised IndexError halfway through an op.
+        spilled = [
+            word("事が出来る", subs=[["事", "noun", "事", "こと", ["match"]], []]),
+            ["。"],
+        ]
+        arr, problem = match_flags.read_word_array(json.dumps(spilled, ensure_ascii=False))
+        self.assertIsNone(arr)
+        self.assertIn("element [0][5][0] has 5 values", problem)
+        with self.assertLogs(level="WARNING") as logs:
+            self.assertIsNone(match_flags.decode_word_array(json.dumps(spilled)))
+        self.assertIn("element [0][5][0]", logs.output[0])
+
+    def test_every_shape_an_element_can_be_wrong_in_is_named(self):
+        cases = {
+            '["猫"]': "element [0] is",
+            "[[]]": "element [0] has 0 values",
+            "[[1]]": "a tag or punctuation holds one text",
+            json.dumps([["猫", "noun", "猫", None, [], []]]): "element [0] reading is null",
+            json.dumps([word(match_data="match")]): "element [0] match_data is",
+            json.dumps([["猫", "noun", "猫", "ねこ", [], "x"]]): "element [0] sub_words is",
+            json.dumps([word(subs=[word(), [2]])]): "element [0][5][1]",
+            '{"nouns": []}': "JSON dict, not a list",
+            "[[": "not JSON",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                arr, problem = match_flags.read_word_array(text)
+                self.assertIsNone(arr)
+                self.assertIn(expected, problem)
+
+    def test_an_empty_field_is_no_problem(self):
+        self.assertEqual(match_flags.read_word_array(""), (None, None))
+        self.assertEqual(match_flags.read_word_array("  \n"), (None, None))
+
+    def test_tags_punctuation_and_nested_words_pass(self):
+        arr = [["<k>"], word(subs=[word(), [""], word(match_data=[1, 4])]), ["</k>"], ["。"]]
+        self.assertEqual(match_flags.read_word_array(json.dumps(arr)), (arr, None))
+
     def test_an_entity_inside_a_raw_text_is_left_alone(self):
         # The repair only runs on a field that did not parse as it stands, so a raw text
         # that holds `&nbsp;` itself keeps it.

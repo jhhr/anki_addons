@@ -19,8 +19,10 @@ sys.path here instead. anki_shared has no __init__.py and resolves as a namespac
 
 import importlib.util
 import sys
+import time as real_time
 from pathlib import Path
 from types import ModuleType
+from typing import Callable
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ADDON_ROOT.parent
@@ -110,6 +112,11 @@ class FakeClock:
     def monotonic(self) -> float:
         return self.now
 
+    def time(self) -> float:
+        # The same clock as monotonic: code that measures wall-clock deadlines (an automatic
+        # pause's resume_at) moves on with the sleeps too
+        return self.now
+
     def sleep(self, seconds: float) -> None:
         self.slept.append(seconds)
         self.now += seconds
@@ -117,6 +124,133 @@ class FakeClock:
     def advance(self, seconds: float) -> None:
         self.now += seconds
 
+    # Formatting is not time passing, so the real functions do it; with these the clock can
+    # stand in for base_ops' `time`, whose progress labels format their durations
+    def gmtime(self, seconds: float) -> real_time.struct_time:
+        return real_time.gmtime(seconds)
+
+    def strftime(self, fmt: str, moment: real_time.struct_time) -> str:
+        return real_time.strftime(fmt, moment)
+
     @property
     def total_slept(self) -> float:
         return sum(self.slept)
+
+
+class PausingClock(FakeClock):
+    """A FakeClock that calls `on_sleep(sleeps_so_far)` after every sleep.
+
+    For driving a paused run: a pause nothing lifts polls forever under a fake clock, so the
+    test resumes or cancels from `on_sleep`. Past `max_sleeps` a sleep raises instead, so a
+    test whose pause never ends fails rather than hangs.
+    """
+
+    def __init__(
+        self, on_sleep: Callable[[int], None], max_sleeps: int = 1000, start: float = 1000.0
+    ):
+        super().__init__(start)
+        self.on_sleep = on_sleep
+        self.max_sleeps = max_sleeps
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        if len(self.slept) > self.max_sleeps:
+            raise AssertionError(f"Still waiting after {self.max_sleeps} sleeps")
+        self.on_sleep(len(self.slept))
+
+
+class RunGate:
+    """The gate as bulk_nested_notes_op and run_plans_rolling use it, letting every task
+    through. A limit of 0 is a budget of one API task, so the rolling driver starts a plan only
+    once the one before has all but finished: a test can leave the later notes never started."""
+
+    limit = 0
+    max_limit = 1
+
+    async def acquire(self):
+        pass
+
+    def release(self):
+        pass
+
+    def note_live_tasks(self, _):
+        pass
+
+    def abort(self):
+        pass
+
+    def start_adapting(self):
+        pass
+
+    def begin_measuring(self, _):
+        pass
+
+    def finish(self):
+        pass
+
+
+class RunProgress:
+    """What bulk_nested_notes_op, make_inner_bulk_op and the rolling driver ask of the progress
+    updater, with the done counts kept for a test to wait on."""
+
+    gate = None
+
+    def __init__(self):
+        self.notes_done = 0
+        self.tasks_done = 0
+
+    def increment_counts(self, notes_done=0, tasks_done=0, **_):
+        self.notes_done += notes_done
+        self.tasks_done += tasks_done
+
+    # Drawing only
+    def set_total_notes(self, _):
+        pass
+
+    def set_total_tasks(self, _):
+        pass
+
+    def update_preparation_progress(self, **_):
+        pass
+
+    def start_autoupdate(self):
+        pass
+
+    def stop_autoupdate(self):
+        pass
+
+    def update_progress(self):
+        pass
+
+    def show_cancelling(self):
+        pass
+
+    def update_new_note_processing_progress(self, **_):
+        pass
+
+
+class RunCollection:
+    def add_custom_undo_entry(self, _):
+        return 1
+
+
+def patch_nested_run(base_ops: ModuleType):
+    """Patches for running the real bulk_nested_notes_op: a RunGate for the gate, and no thread
+    or connection pool resizing. Use as a context manager."""
+    from contextlib import ExitStack
+    from unittest import mock
+
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(base_ops, "ConcurrencyGate", lambda *a, **k: RunGate()))
+    stack.enter_context(mock.patch.object(base_ops, "size_pools_to_ceiling", lambda _: None))
+    return stack
+
+
+async def wait_until(condition: Callable[[], bool], seconds: float = 5.0) -> bool:
+    import asyncio
+
+    for _ in range(int(seconds / 0.01)):
+        if condition():
+            return True
+        await asyncio.sleep(0.01)
+    return False

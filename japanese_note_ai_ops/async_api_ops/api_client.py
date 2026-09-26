@@ -16,7 +16,7 @@ import threading
 import time
 import weakref
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
@@ -55,13 +55,28 @@ TOGETHER = "together"
 # that belong to no run - the main thread handling an editor hook - are never cancelled.
 
 
-class Run:
-    """One bulk operation's cancelled flag, shared by every thread taking part in it."""
+class PauseState(NamedTuple):
+    """Why a run is paused, and until when."""
 
-    __slots__ = ("cancelled",)
+    # "paused by user", or "usage limit was reached: <message>"
+    reason: str
+    # Wall clock (time.time()) at which an automatic pause ends; None pauses until resumed by
+    # hand. Wall clock rather than monotonic because it comes from a reset time the provider
+    # states as a time of day.
+    resume_at: Optional[float]
+    automatic: bool
+
+
+class Run:
+    """One bulk operation's cancelled and paused state, shared by every thread in it."""
+
+    __slots__ = ("cancelled", "paused", "pause")
 
     def __init__(self) -> None:
         self.cancelled = threading.Event()
+        # Set exactly while `pause` holds a record; both change together under _pause_lock
+        self.paused = threading.Event()
+        self.pause: Optional[PauseState] = None
 
 
 # The run the calling thread is taking part in, if any.
@@ -132,13 +147,23 @@ def cancel_run(reason: Optional[str] = None) -> None:
 
     `reason` is given when the run's own work decided to stop it, and is kept for the op's end
     message (take_stop_reason); the first reason given wins.
+
+    A user who cancels a run the run paused by itself (a usage limit) gets that pause as the
+    reason, so the end message explains the notes left undone. One who cancels their own pause
+    chose both and needs no explanation.
     """
     global _stop_reason
     run = getattr(_thread_run, "run", None) or _current_run
     if run is None:
         logger.debug("Cancel requested with no run in progress")
     else:
+        pause = run.pause
+        if reason is None and pause is not None and pause.automatic:
+            reason = "cancelled while paused: " + pause.reason
+        # Cancelled before the pause is cleared: a waiter that saw the pause lift first would
+        # find the run not cancelled and send its request
         run.cancelled.set()
+        _clear_pause(run)
     if reason and _stop_reason is None:
         _stop_reason = reason
     aborted = abort_in_flight_requests()
@@ -184,6 +209,133 @@ def is_cancelled(cancel_state: Optional[Any] = None) -> bool:
     if run_cancelled():
         return True
     return cancel_state is not None and cancel_state.is_cancelled()
+
+
+# --- Run-wide pause -----------------------------------------------------------------------
+
+# A paused run starts no new task and sends no new request; whatever is already in flight runs
+# to completion, and a request that needs a retry waits for the resume before retrying. The
+# user pauses by hand, and the run pauses itself when a provider says its usage limit is spent
+# until a stated time - cancelling there would throw away a run that only had to wait.
+#
+# It is per run and per thread for the same reasons as the cancel above, and reads the same
+# enrolment. A pause belongs to the run it was made in: the threads a previous run abandoned
+# must not stop on it, and a thread in no run - the main thread handling an editor hook - is
+# never paused, so nothing here can block the UI. Pausing and resuming come from outside the
+# run (the dialog, on the main thread), so they fall back to _current_run like cancel_run does.
+#
+# Waiting is by polling in CANCEL_POLL_INTERVAL slices rather than on an event. Resume arrives
+# from the main thread or from a worker, while the waiters sit on three kinds of thread: pool
+# workers, the op thread, and the event loop running on it (through the gate). Each of them
+# also has to notice a cancel while it waits, which is a second condition no single event
+# covers, and the event loop must not block on one at all, only poll between awaits. An
+# automatic pause has no one to resume it, so it carries its end time and whichever poll first
+# finds that time passed ends it (run_paused); that needs no timer thread and nothing that
+# outlives the run.
+
+# pause_run's check-then-set and the expiry's check-then-clear race between threads: many
+# workers can hit the usage limit at once, and several pollers can find the same pause expired
+# while a worker is already recording the next one.
+_pause_lock = threading.Lock()
+
+
+def _pause_target() -> Optional[Run]:
+    """The run a pause or resume applies to: this thread's, or the one in progress."""
+    return getattr(_thread_run, "run", None) or _current_run
+
+
+def _clear_pause(run: Run, only: Optional[PauseState] = None) -> bool:
+    """Lift `run`'s pause, or only the pause `only` if given. True if one was lifted."""
+    with _pause_lock:
+        if run.pause is None or (only is not None and run.pause is not only):
+            return False
+        run.pause = None
+        run.paused.clear()
+        return True
+
+
+def pause_run(reason: str, resume_at: Optional[float] = None) -> bool:
+    """Pause the run this thread is part of, or the one in progress.
+
+    `resume_at` (time.time() based) makes the pause automatic: it ends by itself at that time.
+    Returns False, changing nothing, when there is no run or it is already paused, so the first
+    pause's reason and end time stand. An automatic pause whose time has passed but that no
+    poll has cleared yet does not count: a request hitting the limit again in that moment
+    would otherwise be refused its pause, retry at once and spend one more request on the limit.
+    """
+    run = _pause_target()
+    if run is None:
+        logger.debug("Pause requested with no run in progress")
+        return False
+    with _pause_lock:
+        current = run.pause
+        if current is not None and not (
+            current.automatic
+            and current.resume_at is not None
+            and time.time() >= current.resume_at
+        ):
+            return False
+        run.pause = PauseState(reason, resume_at, resume_at is not None)
+        run.paused.set()
+    logger.info("Run paused: %s", reason)
+    return True
+
+
+def resume_run() -> None:
+    """Resume the run this thread is part of, or the one in progress. Harmless if not paused."""
+    run = _pause_target()
+    if run is not None and _clear_pause(run):
+        logger.info("Run resumed")
+
+
+def pause_state() -> Optional[PauseState]:
+    """The pause of this thread's run, or of the one in progress; None when not paused.
+
+    For showing the pause. It does not end an expired automatic pause; run_paused does, and a
+    paused run always has a waiter polling it.
+    """
+    run = _pause_target()
+    return run.pause if run is not None else None
+
+
+def run_paused() -> bool:
+    """True if the run this thread is taking part in is paused.
+
+    The one place an automatic pause ends: once its resume_at has passed, it is cleared here
+    and False returned, so whichever waiter polls first resumes the whole run. Reads only this
+    thread's run, like run_cancelled, so a thread outside the run is never held.
+    """
+    run = current_run()
+    if run is None or not run.paused.is_set():
+        return False
+    pause = run.pause
+    if pause is None:
+        # Cleared between the two reads
+        return False
+    if pause.automatic and pause.resume_at is not None and time.time() >= pause.resume_at:
+        # Clears only this record: a later pause set by another thread in the meantime stands
+        if _clear_pause(run, only=pause):
+            logger.info("Automatic pause ended: %s", pause.reason)
+        return run.paused.is_set()
+    return True
+
+
+def wait_while_paused(cancel_state: Optional[Any] = None) -> bool:
+    """Block while the run is paused. False if it was cancelled meanwhile, else True.
+
+    Returns at once when not paused. Polled like _sleep_cancellable, so a cancel during the
+    pause is noticed within a slice.
+    """
+    waited = False
+    while True:
+        if is_cancelled(cancel_state):
+            return False
+        if not run_paused():
+            return True
+        if not waited:
+            waited = True
+            logger.debug("Waiting for the run to resume")
+        time.sleep(CANCEL_POLL_INTERVAL)
 
 
 # --- Response classification -------------------------------------------------------------
@@ -802,12 +954,19 @@ def post_with_retry(
             logger.info("Skipping request to %s, the run was cancelled", key)
             return None
 
+        # A paused run sends nothing new, retries included; a cancel during the pause ends it
+        if not wait_while_paused(cancel_state):
+            return None
+
         # Another task may already have been rejected for this model; wait rather than
         # spending a request on the same rejection.
         cooldown = rate_limit_tracker.wait_time(key)
         if cooldown > 0:
             logger.debug("Waiting %.1fs on active cooldown for %s", cooldown, key)
             if not _sleep_cancellable(cooldown, cancel_state):
+                return None
+            # The run may have been paused while this request sat out the cooldown
+            if not wait_while_paused(cancel_state):
                 return None
 
         # Noted before the request goes out: a 200 only says the limit has cleared if the
