@@ -30,6 +30,8 @@ from aqt.utils import showInfo, showWarning
 
 from ..generator_resources import with_generator_resources
 from .progress_controls import install_idle_run_controls
+from .progress_errors import show_run_end
+from .run_errors import start_run, take_run
 from .step_failure import failed_step_outcome
 from .chain_types import (
     STEP_CANCELLED,
@@ -272,12 +274,20 @@ def run_op_chain(specs: Sequence[OpSpec], nids: Sequence[NoteId], parent: Any) -
         QTimer.singleShot(0, func)
 
     def hold_progress() -> None:
+        # Every step's errors, the failed step's traceback among them, are kept for the summary
+        start_run()
         mw.progress.start(parent=parent, immediate=True, title=SUMMARY_TITLE)
         # Greyed until a step's run brings them in, so Escape cannot cancel the gap before it
         install_idle_run_controls()
 
     def show_summary(text: str, stopped_early: bool) -> None:
+        # Now, not in `show`: a run started before the timer fires must not take them
+        errors = take_run()
+
         def show() -> None:
+            if errors is not None:
+                show_run_end(text, parent, errors, title=SUMMARY_TITLE, warning=True)
+                return
             show_dialog = showWarning if stopped_early else showInfo
             show_dialog(text, parent=parent, title=SUMMARY_TITLE, textFormat="rich")
 

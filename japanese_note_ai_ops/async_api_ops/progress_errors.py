@@ -11,8 +11,16 @@ new dialog for every top-level operation and deletes it at the end, so a new run
 pane and no errors, while a chain, which holds one dialog open across its steps, keeps its
 errors from step to step.
 
-Main thread only. Nothing here may raise into its caller: it is called while a run is failing,
-and the caller's fallback (a modal error box) is better than a second error.
+The errors that do not fail a run come here too, from whichever thread met them:
+`run_errors` collects them and names the note and the chain step, and hands them to
+`report_run_error_from_any_thread`, which hops to the main thread. The pane groups repeats of
+one error, so one cause failing every note does not list thousands. What the pane shows is also
+kept for the run (`run_errors.record`), and `show_run_end` makes it readable once the dialog is
+gone: a failed chain step closes it a moment after its traceback arrives.
+
+Main thread only, but for `report_run_error_from_any_thread` and `report_exception`. Nothing
+here may raise into its caller: it is called while a run is failing, and the caller's fallback
+(a modal error box) is better than a second error.
 """
 
 from __future__ import annotations
@@ -20,11 +28,28 @@ from __future__ import annotations
 import html
 import logging
 import threading
+from functools import partial
 from typing import Any
 
-from aqt.qt import QHBoxLayout, QLabel, QTextBrowser, QTextCursor, QVBoxLayout, QWidget, Qt
+from anki.errors import Interrupted
+from aqt import mw
+from aqt.qt import (
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QTextBrowser,
+    QTextCursor,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
+from aqt.utils import showText
 
+from . import run_errors
+from .collection_access import RunCancelled
 from .progress_controls import PROGRESS_COLUMN_ATTR, _dialog, _progress_window
+from .run_errors import ErrorList, entry_html
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +60,26 @@ _PANE_ATTR = "_japanese_note_ai_ops_error_pane"
 PANE_MIN_HEIGHT = 260
 
 
+# How long repeats of an error may wait before the pane redraws their counts: one cause can
+# fail every note of a run, and redrawing the whole list for each would keep the main thread
+# busy with it
+REDRAW_DELAY_MS = 300
+
+
 class _ErrorPane:
-    __slots__ = ("column", "header", "pane", "browser", "count")
+    __slots__ = ("column", "header", "pane", "browser", "errors", "redraw")
 
     def __init__(self, column: Any, header: Any, pane: Any, browser: Any) -> None:
         self.column = column
         self.header = header
         self.pane = pane
         self.browser = browser
-        self.count = 0
+        self.errors = ErrorList()
+        # Parented to the browser, so it dies with the dialog instead of firing into it
+        self.redraw = QTimer(browser)
+        self.redraw.setSingleShot(True)
+        self.redraw.setInterval(REDRAW_DELAY_MS)
+        self.redraw.timeout.connect(partial(_redraw, self))
 
 
 def _pane_of(win: Any) -> _ErrorPane | None:
@@ -128,23 +164,41 @@ def _widen(win: Any, before: Any) -> None:
     win.move(x, y)
 
 
-def _append(errors: _ErrorPane, title: str, text: str) -> None:
-    browser = errors.browser
+def _follow_start(browser: Any) -> tuple[Any, bool]:
     bar = browser.verticalScrollBar()
     # Follow the newest error unless the user has scrolled up to read an earlier one
-    follow = bar is None or bar.value() == bar.maximum()
+    return bar, bar is None or bar.value() == bar.maximum()
+
+
+def _append(pane: _ErrorPane, title: str, text: str) -> None:
+    entry = pane.errors.add(title, text)
+    pane.header.setText(pane.errors.header())
+    if entry is None or pane.redraw.isActive():
+        # A repeat, or one past the listed kinds: only counts change, and a redraw shows them.
+        # A new error while one is pending waits for it too, or it would be listed twice.
+        if not pane.redraw.isActive():
+            pane.redraw.start()
+        return
+    browser = pane.browser
+    bar, follow = _follow_start(browser)
     cursor = browser.textCursor()
     cursor.movePosition(QTextCursor.MoveOperation.End)
-    separator = "<hr>" if errors.count else ""
-    # pre-wrap keeps a traceback's lines and indentation and still wraps the long ones
-    cursor.insertHtml(
-        f"{separator}<p><b>{html.escape(title)}</b></p>"
-        f'<p style="white-space: pre-wrap;">{html.escape(text.rstrip())}</p>'
-    )
-    errors.count += 1
-    errors.header.setText("1 error" if errors.count == 1 else f"{errors.count} errors")
+    cursor.insertHtml(entry_html(entry, len(pane.errors.entries) > 1))
     if follow and bar is not None:
         bar.setValue(bar.maximum())
+
+
+def _redraw(pane: _ErrorPane) -> None:
+    try:
+        browser = pane.browser
+        bar, follow = _follow_start(browser)
+        at = bar.value() if bar is not None else 0
+        browser.setHtml(pane.errors.as_html())
+        if bar is not None:
+            bar.setValue(bar.maximum() if follow else at)
+    except Exception as e:
+        # The dialog may be going; the errors are in the run's list all the same
+        logger.error("Could not redraw the error pane: %s", e)
 
 
 def report_run_error(title: str, text: str) -> bool:
@@ -175,7 +229,78 @@ def report_run_error(title: str, text: str) -> bool:
             errors = _split(win, found[1])
             _widen(win, before)
         _append(errors, title, text)
-        return True
     except Exception as e:
         logger.error("Could not show an error in the progress dialog: %s", e)
         return False
+    run_errors.record(title, text)
+    return True
+
+
+def report_run_error_from_any_thread(title: str, text: str) -> None:
+    """`report_run_error` from any thread: off the main thread it is run there later. Nothing
+    falls back to another box: an error that does not fail the run is not worth a modal one,
+    and the log has it. Never raises."""
+    try:
+        if threading.current_thread() is threading.main_thread():
+            report_run_error(title, text)
+        else:
+
+            def show() -> None:
+                report_run_error(title, text)
+
+            mw.taskman.run_on_main(show)
+    except Exception as e:
+        logger.error("Could not pass an error to the progress dialog: %s", e)
+
+
+run_errors.deliver_with(report_run_error_from_any_thread)
+
+
+def report_exception(error: BaseException, what: str = "", where: str = "") -> None:
+    """Report an exception a task or note ran into, when the run goes on without it; titled by
+    `run_errors.error_title(where)`, from any thread. Anki's `Interrupted` is not an error but
+    an interrupted backend call, and aqt's error box skips it too; nor is `RunCancelled`, which
+    only says the run was cancelled under the task."""
+    if isinstance(error, (Interrupted, RunCancelled)):
+        return
+    run_errors.report_error(run_errors.exception_text(error, what), where)
+
+
+def show_run_end(
+    text: str, parent: Any, errors: ErrorList, title: str = "Anki", warning: bool = True
+) -> None:
+    """The end message of a run that met errors: `text` (rich text) and how many errors there
+    were, with a button that lists them, tracebacks and all, in a box they can be copied from.
+    One box, however many errors: the list opens only when asked for."""
+    box, show = end_message_box(text, parent, errors, title, warning)
+    box.exec()
+    if box.clickedButton() is show:
+        show_error_list(errors, parent, title)
+
+
+def end_message_box(
+    text: str, parent: Any, errors: ErrorList, title: str, warning: bool
+) -> tuple[Any, Any]:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning if warning else QMessageBox.Icon.Information)
+    box.setWindowTitle(title)
+    box.setTextFormat(Qt.TextFormat.RichText)
+    box.setText(
+        f"{text}<br><br><b>{html.escape(errors.header())}</b> during the run, listed"
+        " under Show errors."
+    )
+    show = box.addButton("Show errors", QMessageBox.ButtonRole.ActionRole)
+    ok = box.addButton(QMessageBox.StandardButton.Ok)
+    box.setDefaultButton(ok)
+    return box, show
+
+
+def show_error_list(errors: ErrorList, parent: Any, title: str = "Anki") -> None:
+    showText(
+        errors.as_text(),
+        parent=parent,
+        title=f"{title}: errors",
+        copyBtn=True,
+        minWidth=700,
+        minHeight=500,
+    )

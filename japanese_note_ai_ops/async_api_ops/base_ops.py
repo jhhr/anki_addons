@@ -66,6 +66,9 @@ from .progress_controls import (
     refresh_run_controls,
     start_run_controls,
 )
+from .progress_errors import report_exception, show_run_end
+from .run_errors import NoteSubject, error_subject, excerpt, report_error, set_step, start_run
+from .run_errors import take_run as take_run_errors
 from .step_failure import failed_step_outcome
 
 from ..call_logging import bulk_op_logging, phase_log
@@ -302,7 +305,7 @@ def post_to_api(
     Blocking, and always called from a worker thread. Returns the final response, or None if
     the request was cancelled or never got a response.
     """
-    return post_with_retry(
+    response = post_with_retry(
         provider=provider,
         model=model,
         url=url,
@@ -313,6 +316,42 @@ def post_to_api(
         max_retries=int(config.get("max_request_retries", DEFAULT_MAX_RETRIES)),
         max_retry_wait=float(config.get("max_retry_wait_seconds", DEFAULT_MAX_RETRY_WAIT_SECONDS)),
     )
+    # None is also a cancelled request, which is no error
+    if response is None and not is_cancelled(cancel_state):
+        report_error(
+            f"{model}: no answer; every attempt timed out or lost its connection (see the log)"
+        )
+    return response
+
+
+def report_refused(model: str, response: Any) -> None:
+    """Log and report a provider's final non-200 answer."""
+    logger.error(f"Error: {response.status_code}, {response.text}")
+    report_error(f"{model}: HTTP {response.status_code}: {excerpt(response.text)}")
+
+
+def report_unreadable(model: str, error: Exception, response: Any) -> None:
+    """Log and report a 200 answer whose content could not be found in it."""
+    logger.error(f"Error reading the answer: {type(error).__name__}: {error}")
+    logger.error("response %s", response.text)
+    report_error(
+        f"{model}: could not read the answer ({type(error).__name__}: {error}):"
+        f" {excerpt(response.text)}"
+    )
+
+
+def decode_answer(
+    model: str, json_result: str, json_result_corrector: Optional[Callable[[str], str]]
+) -> Any:
+    """The JSON in an answer, run through the corrector if it does not parse at first; None,
+    reported, if it does not parse either way."""
+    result = decode_json_result(json_result)
+    if not result and json_result_corrector:
+        json_result = json_result_corrector(json_result)
+        result = decode_json_result(json_result)
+    if result is None:
+        report_error(f"{model}: the answer was not valid JSON: {excerpt(json_result)}")
+    return result
 
 
 def decode_json_result(json_str: str):
@@ -480,30 +519,21 @@ def get_response_from_gemini(
         return None
 
     if response.status_code != 200:
-        logger.error(f"Error: {response.status_code}, {response.text}")
+        report_refused(model, response)
         return None
 
     try:
         decoded_json = json.loads(response.text)
         # Extract content from Gemini response structure
         content_text = decoded_json["candidates"][0]["content"]["parts"][0]["text"]
-    except json.JSONDecodeError as je:
-        logger.error(f"Error decoding JSON: {je}")
-        logger.error("response %s", response.text)
-        return None
-    except KeyError as ke:
-        logger.error(f"Error extracting content: {ke}")
-        logger.error("response %s", response.text)
+    except (json.JSONDecodeError, KeyError) as e:
+        report_unreadable(model, e, response)
         return None
 
     # Extract the JSON from the response
     json_result = extract_json_string(content_text)
 
-    result = decode_json_result(json_result)
-    if not result and json_result_corrector:
-        json_result = json_result_corrector(json_result)
-        result = decode_json_result(json_result)
-    return result
+    return decode_answer(model, json_result, json_result_corrector)
 
 
 def get_response_from_openai(
@@ -597,29 +627,20 @@ def get_response_from_openai(
         return None
 
     if response.status_code != 200:
-        logger.error(f"Error: {response.status_code}, {response.text}")
+        report_refused(model, response)
         return None
 
     try:
         decoded_json = json.loads(response.text)
         content_text = decoded_json["choices"][0]["message"]["content"]
-    except json.JSONDecodeError as je:
-        logger.error(f"Error decoding JSON: {je}")
-        logger.error("response %s", response.text)
-        return None
-    except KeyError as ke:
-        logger.error(f"Error extracting content: {ke}")
-        logger.error("response %s", response.text)
+    except (json.JSONDecodeError, KeyError) as e:
+        report_unreadable(model, e, response)
         return None
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
 
-    result = decode_json_result(json_result)
-    if not result and json_result_corrector:
-        json_result = json_result_corrector(json_result)
-        result = decode_json_result(json_result)
-    return result
+    return decode_answer(model, json_result, json_result_corrector)
 
 
 def get_response_from_together(
@@ -686,28 +707,19 @@ def get_response_from_together(
         return None
 
     if response.status_code != 200:
-        logger.error(f"Error: {response.status_code}, {response.text}")
+        report_refused(model, response)
         return None
 
     try:
         decoded_json = json.loads(response.text)
         content_text = decoded_json["choices"][0]["message"]["content"]
-    except json.JSONDecodeError as je:
-        logger.error(f"Error decoding JSON: {je}")
-        logger.error("response %s", response.text)
-        return None
-    except KeyError as ke:
-        logger.error(f"Error extracting content: {ke}")
-        logger.error("response %s", response.text)
+    except (json.JSONDecodeError, KeyError) as e:
+        report_unreadable(model, e, response)
         return None
 
     json_result = extract_json_string(content_text)
 
-    result = decode_json_result(json_result)
-    if not result and json_result_corrector:
-        json_result = json_result_corrector(json_result)
-        result = decode_json_result(json_result)
-    return result
+    return decode_answer(model, json_result, json_result_corrector)
 
 
 def get_response_from_anthropic(
@@ -836,7 +848,7 @@ def get_response_from_anthropic(
             return None
 
     if response.status_code != 200:
-        logger.error(f"Error: {response.status_code}, {response.text}")
+        report_refused(model, response)
         return None
 
     try:
@@ -850,23 +862,14 @@ def get_response_from_anthropic(
         content_text = "\n".join([text for text in text_blocks if text]).strip()
         if not content_text:
             raise KeyError("content text blocks")
-    except json.JSONDecodeError as je:
-        logger.error(f"Error decoding JSON: {je}")
-        logger.error("response %s", response.text)
-        return None
-    except KeyError as ke:
-        logger.error(f"Error extracting content: {ke}")
-        logger.error("response %s", response.text)
+    except (json.JSONDecodeError, KeyError) as e:
+        report_unreadable(model, e, response)
         return None
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
 
-    result = decode_json_result(json_result)
-    if not result and json_result_corrector:
-        json_result = json_result_corrector(json_result)
-        result = decode_json_result(json_result)
-    return result
+    return decode_answer(model, json_result, json_result_corrector)
 
 
 def extract_json_string(content_text):
@@ -1018,6 +1021,7 @@ def drain_task_errors(tasks: "Sequence[asyncio.Task]") -> None:
             if error is not None:
                 logger.error("Task failed: %s", error)
                 print_error_traceback(error, logger)
+                report_exception(error, where="A task of the run")
 
 
 async def wait_for_completions(
@@ -1777,6 +1781,8 @@ def make_inner_bulk_op(
                 except Exception as e:
                     logger.error("Inner process op error, passing to handle_op_error: %s", e)
                     handle_op_error(e)
+                    # The task's note is in its context (see error_subject in the drivers)
+                    report_exception(e)
                     return False
                 finally:
                     task_time = time.time() - task_start_time
@@ -1833,6 +1839,16 @@ class NotePlan(NamedTuple):
     task_count: int
     spawn: Callable[[list[asyncio.Task]], None]
     flush: Optional[Callable[[], bool]] = None
+
+
+def _spawning_for(note: Note, spawn: Callable[[list], None]) -> Callable[[list], None]:
+    """`spawn` creating its tasks with `note` in their context, so their errors name it."""
+
+    def spawn_for_note(tasks: list) -> None:
+        with error_subject(NoteSubject(note)):
+            spawn(tasks)
+
+    return spawn_for_note
 
 
 def run_once(save: Callable[[], bool]) -> Callable[[], bool]:
@@ -2117,7 +2133,7 @@ async def bulk_nested_notes_op(
             gate=gate,
         )
         if plan is not None:
-            plans.append(plan)
+            plans.append(plan._replace(spawn=_spawning_for(note, plan.spawn)))
             planned_tasks += plan.task_count
         progress_updater.set_total_tasks(planned_tasks)
         progress_updater.update_preparation_progress(
@@ -2235,15 +2251,18 @@ def sync_bulk_notes_op(
             if not wait_while_paused(dialog_cancel):
                 break
             paused_s += time.time() - paused_at
-        try:
-            op(
-                config=config,
-                note=note,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-            )
-        except Exception as e:
-            logger.error("Sync bulk notes op: Error processing note %s: %s", note.id, e)
+        # Named in the context too, for whatever the op reports itself
+        with error_subject(NoteSubject(note)):
+            try:
+                op(
+                    config=config,
+                    note=note,
+                    notes_to_add_dict=notes_to_add_dict,
+                    notes_to_update_dict=notes_to_update_dict,
+                )
+            except Exception as e:
+                logger.error("Sync bulk notes op: Error processing note %s: %s", note.id, e)
+                report_exception(e)
         note_cnt += 1
 
         elapsed_s = time.time() - start_time
@@ -2398,17 +2417,19 @@ async def bulk_notes_op(
                     cancel_state=cancel_state,
                     one_task_per_op=True,
                 )
-                tasks.append(
-                    asyncio.create_task(
-                        process_note(
-                            notes_to_add_dict=notes_to_add_dict,
-                            notes_to_update_dict=notes_to_update_dict,
-                            # note is passed to the op function, along with config in
-                            # make_inner_bulk_op
-                            note=note,
+                # The task copies the context as it is created, so its errors name the note
+                with error_subject(NoteSubject(note)):
+                    tasks.append(
+                        asyncio.create_task(
+                            process_note(
+                                notes_to_add_dict=notes_to_add_dict,
+                                notes_to_update_dict=notes_to_update_dict,
+                                # note is passed to the op function, along with config in
+                                # make_inner_bulk_op
+                                note=note,
+                            )
                         )
                     )
-                )
 
             return NotePlan(task_count=1, spawn=spawn)
 
@@ -2615,7 +2636,8 @@ def on_bulk_success(
 ):
     """End a run that returned: say how it went. aqt has finished the progress by now.
 
-    From the menu that is a tooltip, or a warning for a run that stopped itself. As a step of
+    From the menu that is a tooltip, or a warning for a run that stopped itself or met errors
+    (those the progress dialog's pane listed), which offers to list them. As a step of
     a chain nothing is shown - the chain sums its steps up once it is over - and the message
     goes to `chain.on_done` instead. Its status is `stopped` for a stop reason, else
     `cancelled` when `selected_notes_op` saw the run cancelled on the op thread.
@@ -2641,12 +2663,19 @@ def on_bulk_success(
             outcome = failed_step_outcome(parent, e, chain.title)
         chain.on_done(outcome)
         return
+    # First, so a raising message cannot leave them for the next run (which starts clean anyway)
+    errors = take_run_errors()
     message, stop_reason = bulk_success_message(
         done_text, edited_nids, edited_other_nids, nids, extra_callback, new_notes
     )
     if stop_reason:
         # A tooltip would be gone before the user looks: the rest of the notes were not done
         message += f"<br><br><b>Stopped early.</b> {html.escape(stop_reason)}"
+    if errors is not None:
+        # Nor would it do for the errors: the pane that listed them is gone
+        show_run_end(message, parent, errors)
+        return
+    if stop_reason:
         showWarning(message, parent=parent, textFormat="rich")
         return
     tooltip(
@@ -2850,6 +2879,7 @@ def add_new_notes(
                 except Exception as e:
                     logger.error(f"Error updating notes after filter_new_notes_op: {e}")
                     print_error_traceback(e, logger)
+                    report_exception(e, "Saving the notes the new notes' dedupe changed")
                 op_changes = col.merge_undo_entries(pos)
                 filtered_nids = [note.id for note in valid_filtered_notes]
                 saved_notes.extend(valid_filtered_notes)
@@ -2885,6 +2915,8 @@ def add_new_notes(
                         except Exception as e:
                             logger.error(f"Error adding note {index}: {e}")
                             print_error_traceback(e, logger)
+                            with error_subject(NoteSubject(note)):
+                                report_exception(e, "Adding the note")
                             failed_cnt += 1
                         else:
                             added_notes.append(note)
@@ -2945,6 +2977,7 @@ def add_new_notes(
             except Exception as e:
                 logger.error(f"Error updating valid notes after new_notes_op: {e}")
                 print_error_traceback(e, logger)
+                report_exception(e, "Saving the notes linked to the added notes")
             op_changes = col.merge_undo_entries(pos)
             updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
             saved_notes.extend(valid_notes)
@@ -2961,6 +2994,7 @@ def add_new_notes(
             # repaired by the next match run, which finds no note holding them.
             logger.error(f"Error unlinking the new notes not added: {e}")
             print_error_traceback(e, logger)
+            report_exception(e, "Unlinking the new notes not added")
         unlinked_notes = [
             note
             for note in unlinked_notes_dict.values()
@@ -2972,6 +3006,7 @@ def add_new_notes(
             except Exception as e:
                 logger.error(f"Error updating notes after unadded_notes_op: {e}")
                 print_error_traceback(e, logger)
+                report_exception(e, "Saving the notes unlinked from the new notes not added")
             op_changes = col.merge_undo_entries(pos)
             already = {*updated_nids, *added_nids}
             updated_nids.extend(note.id for note in unlinked_notes if note.id not in already)
@@ -3010,6 +3045,7 @@ def tidy_markers(
     except Exception as e:
         logger.error(f"Error tidying the sort field markers: {e}")
         print_error_traceback(e, logger)
+        report_exception(e, "Tidying the sort field markers")
         return None, []
     renamed_notes = [
         note for note in renamed.values() if note.id > 0 and note.id not in removed
@@ -3021,6 +3057,7 @@ def tidy_markers(
         except Exception as e:
             logger.error(f"Error updating notes after tidying their markers: {e}")
             print_error_traceback(e, logger)
+            report_exception(e, "Saving the notes whose markers were tidied")
         op_changes = col.merge_undo_entries(pos)
     log_phase("cleanup: tidy_markers_op", started, renamed=len(renamed_notes))
     return op_changes, [note.id for note in renamed_notes]
@@ -3062,6 +3099,12 @@ def selected_notes_op(
     new_notes = NewNotesCounts()
     config = mw.addonManager.getConfig(__name__) or {}
     nids_set = set(nids)
+    # The errors that do not fail the run are kept for its end message: a run from the menu
+    # keeps its own, a chain's step adds to the chain's (run_op_chain starts those)
+    if chain is None:
+        start_run()
+    else:
+        set_step(chain.title)
     # Whether the run was cancelled, for a chain step's outcome. Set on the op thread, read by
     # the success handler on the main thread once the op has returned.
     cancelled = False
@@ -3202,6 +3245,7 @@ def selected_notes_op(
                 logger.error(f"Error updating notes: {e}")
                 logger.error(f"Notes causing error: {[n.fields for n in all_updated_notes]}")
                 print_error_traceback(e, logger)
+                report_exception(e, f"Saving the run's {len(all_updated_notes)} edited notes")
             cleanup_started = log_phase("cleanup: update_notes", cleanup_started)
             if run_cancelled():
                 dump_thread_stacks("finished update_notes")
@@ -3212,6 +3256,7 @@ def selected_notes_op(
                     logger.error(f"Error removing notes: {e}")
                     logger.error(f"Note IDs causing error: {sorted(notes_to_remove)}")
                     print_error_traceback(e, logger)
+                    report_exception(e, f"Removing {len(notes_to_remove)} notes")
                 cleanup_started = log_phase("cleanup: remove_notes", cleanup_started)
             op_changes = mw.col.merge_undo_entries(pos)
             # Every note saved from here on, for the marker tidying

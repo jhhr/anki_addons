@@ -57,6 +57,8 @@ from .base_ops import (
     selected_notes_op,
 )
 from .find_proper_nouns import add_proper_nouns, generate_word_array
+from .progress_errors import report_exception
+from .run_errors import report_error
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
@@ -95,10 +97,9 @@ def extract_words_in_note(
         # A broken array, usually a bracket lost in a hand edit. Generating over it would drop
         # the note ids of its matched words, which merge_arrays can only carry over from an
         # array it can read
-        logger.error(
-            f"{log_prefix}Left alone: the field holds no valid word array, {problem};"
-            " fix it by hand"
-        )
+        message = f"Left alone: the field holds no valid word array, {problem}; fix it by hand"
+        logger.error(f"{log_prefix}{message}")
+        report_error(message)
         return False
     if existing is not None and not overwrite:
         logger.debug(f"{log_prefix}The note already holds a word array")
@@ -116,6 +117,7 @@ def extract_words_in_note(
     except Exception as e:
         logger.error(f"{log_prefix}Could not generate a word array: {e}")
         print_error_traceback(e, logger)
+        report_exception(e, "Could not generate a word array")
         return False
 
     add_proper_nouns(config, arr, log_prefix)

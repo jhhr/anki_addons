@@ -38,10 +38,14 @@ def load_with_real_qt() -> tuple[ModuleType, ModuleType]:
     names = ["aqt.qt", controls_name, f"{PACKAGE}.async_api_ops.progress_errors"]
     saved = {name: sys.modules.pop(name, None) for name in names}
     sys.modules["aqt.qt"] = qt
+    run_errors = load_ops_module("run_errors")
+    deliver = run_errors._deliver
     try:
         errors = load_ops_module("progress_errors")
         return errors, sys.modules[controls_name]
     finally:
+        # Loading it pointed the reports at this copy; the rest of the suite reports to the other
+        run_errors.deliver_with(deliver)
         # The rest of the suite goes on with the stubbed copies
         for name, module in saved.items():
             if module is None:
@@ -134,6 +138,15 @@ class ErrorPaneTests(unittest.TestCase):
     def pane(self, win=None):
         return getattr(win or self.win, self.errors_module._PANE_ATTR, None)
 
+    def redraw_now(self, pane):
+        """The redraw the pane has due, now. The timer is stopped rather than left to fire: the
+        test's parentless dialog is freed by Python's cycle collector, which could come round
+        inside that timer's own timeout in a later test, and did (a segfault)."""
+        self.assertTrue(pane.redraw.isActive(), "a repeat puts off the redraw")
+        pane.redraw.stop()
+        self.errors_module._redraw(pane)
+        self.settle()
+
     def controls(self):
         return getattr(self.win, self.controls_module._CONTROLS_ATTR)
 
@@ -220,7 +233,7 @@ class ErrorPaneTests(unittest.TestCase):
         self.controls_module.start_run_controls()
         self.report("Step 2/2: Meanings", "second")
 
-        self.assertEqual(self.pane().count, 2)
+        self.assertEqual(self.pane().errors.total, 2)
         self.assertTrue(self.controls().cancel.isEnabled())
 
     def test_a_new_dialog_starts_without_the_pane(self):
@@ -287,6 +300,116 @@ class ErrorPaneTests(unittest.TestCase):
 
         self.assertEqual(results, [False])
         self.assertIsNone(self.pane())
+
+    def test_a_worker_threads_report_is_shown_once_it_reaches_the_main_thread(self):
+        queued: list = []
+        with mock.patch.object(mw.taskman, "run_on_main", queued.append):
+            worker = threading.Thread(
+                target=self.errors_module.report_run_error_from_any_thread, args=("Note 5", "boom")
+            )
+            worker.start()
+            worker.join()
+
+        self.assertIsNone(self.pane(), "nothing is touched on the worker thread")
+        self.assertEqual(len(queued), 1)
+        queued[0]()
+        self.settle()
+        self.assertIn("Note 5", self.pane().browser.toPlainText())
+
+    def test_on_the_main_thread_it_is_shown_at_once(self):
+        self.errors_module.report_run_error_from_any_thread("Note 5", "boom")
+        self.assertIn("boom", self.pane().browser.toPlainText())
+
+    def test_one_error_for_every_note_is_listed_once_with_a_count(self):
+        for n in range(1, 1001):
+            self.report(f"Note {n}", "HTTP 401: invalid key")
+        pane = self.pane()
+        self.redraw_now(pane)
+
+        text = pane.browser.toPlainText()
+        self.assertEqual(text.count("HTTP 401: invalid key"), 1)
+        self.assertIn("Also at 999 more: Note 2, Note 3", text)
+        self.assertEqual(pane.header.text(), "1000 errors")
+
+    def test_a_new_error_while_a_redraw_is_due_is_listed_once(self):
+        self.report("Note 1", "first")
+        self.report("Note 2", "first")
+        self.report("Note 3", "second")
+        pane = self.pane()
+        # Listed by the redraw, not appended while one is due, or it would be there twice
+        self.assertNotIn("second", pane.browser.toPlainText())
+        self.redraw_now(pane)
+
+        text = pane.browser.toPlainText()
+        self.assertEqual((text.count("first"), text.count("second")), (1, 1))
+
+    def test_what_the_pane_shows_is_kept_for_the_run(self):
+        run_errors = load_ops_module("run_errors")
+        run_errors.start_run()
+        self.addCleanup(run_errors.take_run)
+        self.report("Step 1/2: Kana", "ValueError: boom\n\nTraceback ...")
+        with mock.patch.object(mw.progress, "_win", None):
+            # Not shown, so not kept: whoever reported it showed it its own way
+            self.errors_module.report_run_error("Step 2/2", "not shown")
+
+        errors = run_errors.take_run()
+        self.assertEqual([e.title for e in errors.entries], ["Step 1/2: Kana"])
+        self.assertIsNone(run_errors.take_run(), "taken once, gone for the next run")
+
+
+@unittest.skipUnless(HAVE_QT, "needs PyQt6")
+class RunEndTests(unittest.TestCase):
+    """A run that met errors ends with one box saying so, whose button lists them all."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        cls.errors_module, _ = load_with_real_qt()
+
+    def errors(self):
+        errors = load_ops_module("run_errors").ErrorList()
+        errors.add("Step 1/2: Kana · Note 5", "ValueError: boom\n\nTraceback (most recent call)")
+        errors.add("Step 2/2: Meanings", "failed")
+        return errors
+
+    def test_the_box_says_how_many_and_offers_the_list(self):
+        box, show = self.errors_module.end_message_box(
+            "Done: 3 notes", None, self.errors(), "AI ops", warning=True
+        )
+        self.addCleanup(box.deleteLater)
+
+        self.assertIn("Done: 3 notes", box.text())
+        self.assertIn("2 errors", box.text())
+        self.assertEqual(show.text(), "Show errors")
+        self.assertIsNot(box.defaultButton(), show)
+
+    def run_end(self, clicked_show):
+        shown = mock.Mock()
+
+        class FakeBox:
+            def exec(self):
+                pass
+
+            def clickedButton(self):
+                return show if clicked_show else None
+
+        show = object()
+        with mock.patch.object(
+            self.errors_module, "end_message_box", return_value=(FakeBox(), show)
+        ), mock.patch.object(self.errors_module, "showText", shown):
+            self.errors_module.show_run_end("Done", None, self.errors(), title="AI ops")
+        return shown
+
+    def test_show_errors_lists_them_with_the_traceback(self):
+        shown = self.run_end(clicked_show=True)
+
+        text = shown.call_args.args[0]
+        self.assertIn("Step 1/2: Kana · Note 5\n\nValueError: boom\n\nTraceback", text)
+        self.assertIn("Step 2/2: Meanings", text)
+
+    def test_ok_lists_nothing(self):
+        self.run_end(clicked_show=False).assert_not_called()
 
 
 if __name__ == "__main__":
