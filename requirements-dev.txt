@@ -14,8 +14,8 @@
 # The real `anki` package backs the default (real-collection) mode; `aqt` pulls in PyQt6
 # and QtWebEngine. aqt's own `qt` extras pin older Qt releases than the ones below, so Qt
 # is named here directly rather than through an extra.
-anki==25.9.4
-aqt==25.9.4
+anki==26.9.2
+aqt==26.9.2
 PyQt6==6.11.0
 PyQt6-WebEngine==6.11.0
 
