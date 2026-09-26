@@ -162,7 +162,12 @@ outer list plus `store` is how a loop reports anything back.
   note, so when two trigger notes of one run write the same note, or edit the same card, the
   later one's copy replaces the earlier one's and the earlier edit is lost, as in format 1.
   A trigger note that writes a note but leaves its card alone does not undo another one's
-  edit of that card. The bulk-run test in `follow-ups.md` would point such definitions out.
+  edit of that card. This is an accepted limitation: saving after every trigger note was far
+  slower and made the result depend on their order, and merging two copies of a note or a
+  card edit by edit is more than is worth maintaining. A definition that gathers many notes
+  into one is better written from the one note's side -- a query and a loop over the others
+  -- so that only one trigger note writes it. The bulk-run test in `follow-ups.md` would point
+  such definitions out.
 * **Counts are what a trigger note committed.** The destinations and cards a run reports
   are the distinct notes and cards it handed over for that trigger note, so a note two
   stages wrote counts once and a card three actions changed counts once. Across trigger
@@ -215,7 +220,8 @@ outer list plus `store` is how a loop reports anything back.
   found any note at all. An empty search fails the stage, naming the condition.
 * **A search condition on a note being added is judged against that note.** It has id 0
   and no row, so `nid:0` would never find it. `logic/unsaved_note_search.py`, a port of
-  Anki 25.9's search parser and SQL writer checked against real searches, judges the same
+  Anki 25.9's search parser and SQL writer checked against real searches (and following
+  26.8 in reading any whitespace as a space when it runs there), judges the same
   parenthesised text against the note as it stands -- its fields, tags and note type,
   including this run's earlier writes -- and `deck:` against the deck it is being added to,
   subdecks included as Anki does. A term whose answer needs what the note does not have yet
@@ -490,7 +496,8 @@ had views of its own with other card properties. In Source-to-destinations the e
 in a loop whose item is `note`, so field and file code that read the trigger as `note` now
 reads the destination; Destination-to-sources loops over the sources under that name, which
 is the note format 1 gave its code there. Code that reached for a note by `note`, or by any
-other means, is yours to check by hand; the README's section for an AI agent lists what
+other means, is yours to check by hand; the user guide's section for an AI agent
+([`ADDON_README.md`](../ADDON_README.md#for-an-ai-agent-rewriting-converted-code)) lists what
 every name means in each migrated shape. Card-action code is not affected: it runs as
 format 1 ran it. A config an earlier version already staged is rewritten in place by the
 `0.4.0` config migration.

@@ -386,10 +386,12 @@ class ExecutionSession:
         written into them in memory, but nothing ever publishes them.
         """
         if self._trigger_snapshot is not None:
+            # Handed back rather than copied: a session runs one trigger, and nothing runs in
+            # it after a discard, so the snapshot is spent here.
             note, fields, tags = self._trigger_snapshot
-            # Copies, so a second discard still has the originals to restore from.
-            note.fields = list(fields)
-            note.tags = list(tags)
+            note.fields = fields
+            note.tags = tags
+            self._trigger_snapshot = None
         self.modified_notes.clear()
         self.edited_cards.clear()
         self.pending_files.clear()

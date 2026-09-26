@@ -56,8 +56,16 @@ class CollectionCommitter:
         # Only the cards a card action changed. The caller's dict outlives this trigger note,
         # so an unchanged copy of a card put there would replace the copy an earlier trigger
         # note edited, and that edit would be lost. Format 1 handed over every card of every
-        # note it wrote, for the sync tail's `fc` flag; the tail's second sweep searches for
-        # every card still waiting, so it needs none of them from here.
+        # note it wrote, for the sync tail's `fc` flag; the tail's sweep searches for every
+        # card still waiting, so it needs none of them from here.
+        #
+        # This does not stop two trigger notes of one bulk run that both *change* a card, or
+        # both write a note, from losing the earlier change: each run starts from the saved
+        # collection, the caller saves once per definition, and the later copy replaces the
+        # earlier one here and in `copied_into_notes`. That is an accepted limitation, not
+        # an oversight -- merging two copies of a note or card edit by edit is more than is
+        # worth maintaining. See "Only edited cards are handed over" in
+        # `docs/staged-definitions.md`.
         for card in session.edited_cards.values():
             result.cards.append(card)
             if copied_into_cards_dict is not None:

@@ -10,13 +10,14 @@ entry point the browser, the hooks and the sync path use.
 """
 
 import json
+import time
 
 import pytest
 
 import definitions as d
 from anki_shared.testing import real_anki
 from conftest import CLOZE, KANJI, VOCAB
-from copy_anywhere.logic.copy_fields import copy_for_single_trigger_note
+from copy_anywhere.logic.copy_fields import ProgressUpdater, copy_for_single_trigger_note
 from copy_anywhere.logic.definition_migration import migrate_definition_v1_to_v2
 from copy_anywhere.logic.execution.commit import PreviewCommitter
 from copy_anywhere.logic.execution.context import ExecutionSession
@@ -1109,6 +1110,24 @@ class TestFiles:
         assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
 
+    def test_skip_if_exists_does_not_evaluate_the_content_of_a_skipped_write(
+        self, col, note, media_dir, logger
+    ):
+        # Asked before the content, so a skipped write never pays for its expression -- here
+        # one naming a binding that does not exist, which fails the definition if it runs.
+        (media_dir / "_log.txt").write_text("keep", encoding="utf-8")
+        definition = d.staged(stages=[
+            d.write_file(
+                "log.txt",
+                d.text("{{nowhere.Word}}"),
+                overwrite=False,
+                skip_if_exists=True,
+            )
+        ])
+
+        assert run(definition, note)[0] is True, logger.errors
+        assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "keep"
+
     def test_skip_if_exists_counts_a_file_this_run_has_already_written(
         self, col, note, media_dir, logger
     ):
@@ -1123,6 +1142,54 @@ class TestFiles:
 
         assert run(definition, note)[0] is True, logger.errors
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first"
+
+    @staticmethod
+    def files_counted(definition, note):
+        updater = ProgressUpdater(
+            start_time=time.time(),
+            definition_name="files",
+            total_notes_count=1,
+            is_across=False,
+            title=None,
+        )
+        copy_for_single_trigger_note(definition, note, progress_updater=updater)
+        _note_cnt, _sources, _destinations, files, _cards = updater.get_counts()
+        return files
+
+    def test_a_written_file_is_counted(self, col, note, media_dir):
+        definition = d.staged(stages=[d.write_file("log.txt", d.text("new"))])
+
+        assert self.files_counted(definition, note) == 1
+
+    def test_a_skipped_write_is_not_counted(self, col, note, media_dir):
+        (media_dir / "_log.txt").write_text("keep", encoding="utf-8")
+        definition = d.staged(stages=[
+            d.write_file("log.txt", d.text("new"), overwrite=False, skip_if_exists=True)
+        ])
+
+        assert self.files_counted(definition, note) == 0
+
+    def test_a_skipped_write_is_not_counted_in_code_mode_either(self, col, note, media_dir):
+        # The code path names its own files, so the check happens per pair, after the code
+        # ran; one pair written is one count, every pair skipped is none.
+        (media_dir / "_log.txt").write_text("keep", encoding="utf-8")
+        skipped = d.staged(stages=[
+            d.write_file(
+                "", d.code("return [('log.txt', 'new')]"), overwrite=False, skip_if_exists=True
+            )
+        ])
+        written = d.staged(stages=[
+            d.write_file(
+                "",
+                d.code("return [('log.txt', 'new'), ('other.txt', 'new')]"),
+                overwrite=False,
+                skip_if_exists=True,
+            )
+        ])
+
+        assert self.files_counted(skipped, note) == 0
+        assert self.files_counted(written, note) == 1
+        assert (media_dir / "_other.txt").read_text(encoding="utf-8") == "new"
 
     def test_overwrite_false_refuses_a_file_this_run_has_already_written(
         self, col, note, media_dir
@@ -1893,23 +1960,49 @@ class TestPreview:
         definition = d.staged(stages=[
             d.note_query("found", "Word:a"),
             d.for_each_note(
-                "found", [d.edit_note("note", [d.write("Note", d.text("touched"))])]
+                "found",
+                [
+                    d.edit_note(
+                        "note",
+                        [d.write("Note", d.text("touched"))],
+                        card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)],
+                    )
+                ],
             ),
             d.write_file("preview.txt", d.text("{{trigger.Word}}")),
+            d.write_file("second.txt", d.text("{{trigger.Meaning}}")),
         ])
         committer = PreviewCommitter()
         session = ExecutionSession(collect_trace=True)
         copied: list = []
+        copied_cards: dict = {}
         ok = run_definition_for_trigger_note(
-            definition, note, session, committer=committer, copied_into_notes=copied
+            definition,
+            note,
+            session,
+            committer=committer,
+            copied_into_notes=copied,
+            copied_into_cards_dict=copied_cards,
         )
         assert ok is True, logger.errors
-        # Nothing reaches the caller's update list and nothing reaches the media folder.
+        # The database is only ever written by the caller, from these two; the preview hands
+        # it nothing. And nothing reaches the media folder.
         assert copied == []
+        assert copied_cards == {}
         assert not (media_dir / "_preview.txt").exists()
+        assert not (media_dir / "_second.txt").exists()
+        # Everything the run would have done is in the plan instead.
         assert [planned["fields"]["Note"] for planned in committer.planned_notes] == ["touched"]
-        assert [planned["filename"] for planned in committer.planned_files] == ["_preview.txt"]
-        assert col.get_note(other.id)["Note"] == ""
+        recognition = next(
+            card for card in other.cards() if card.template()["name"] == "Recognition"
+        )
+        assert [(planned["card_id"], planned["flag"]) for planned in committer.planned_cards] == [
+            (recognition.id, 2)
+        ]
+        assert [planned["filename"] for planned in committer.planned_files] == [
+            "_preview.txt",
+            "_second.txt",
+        ]
 
     def test_every_stage_leaves_a_trace_event(self, col, note):
         definition = d.staged(stages=[

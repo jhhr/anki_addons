@@ -9,6 +9,7 @@ loop's note, a stage before the loop does not, and nothing ever offers a list.
 from copy_anywhere.logic.definition_schema import (
     STAGE_CARD_QUERY,
     STAGE_EDIT_CARD,
+    STAGE_EDIT_NOTE,
     STAGE_FOR_EACH_CARD,
     STAGE_FOR_EACH_NOTE,
     STAGE_LIST_VARIABLE,
@@ -261,8 +262,14 @@ def test_options_are_built_once_per_distinct_scope(col, monkeypatch):
         return real(scope, resolver)
 
     monkeypatch.setattr(module, "scope_options_dict", counted)
-    doc = document(variable("a", "A"), variable("b", "B"), variable("c", "C"))
-    build_contexts(doc)
-    # Three stages, three different scopes -- but sibling stages inside one block share the
-    # analyser's scope object where nothing was declared, so this is an upper bound.
-    assert len(calls) <= 3
+    # Stages that declare nothing leave the scope as they found it, so the three edits
+    # after the variable all see the same bindings. Four stages, two distinct scopes.
+    edits = [default_stage(STAGE_EDIT_NOTE, guid) for guid in ("e1", "e2", "e3")]
+    doc = document(variable("a", "A"), *edits)
+    contexts = build_contexts(doc)
+
+    assert len(contexts) == 4
+    assert len(calls) == 2
+    # And the stages sharing a scope share its menus.
+    assert contexts["e1"].options_dict is contexts["e3"].options_dict
+    assert contexts["a"].options_dict is not contexts["e1"].options_dict

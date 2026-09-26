@@ -1,11 +1,11 @@
-"""The README's examples, and the harness that takes its screenshots.
+"""The user guide's examples, and the harness that takes its screenshots.
 
 Two halves, and only one of them runs in an ordinary test run.
 
-`docs/examples/*.json` are the definitions the README quotes. They are loaded here the way
-the addon loads a stored config -- through `Config` and the startup migration -- so an
-example that would not survive a paste into `config.json` fails the suite rather than the
-reader.
+`docs/examples/*.json` are the definitions the user guide (`ADDON_README.md`) quotes. They
+are loaded here the way the addon loads a stored config -- through `Config` and the startup
+migration -- so an example that would not survive a paste into `config.json` fails the suite
+rather than the reader.
 
 The screenshot harness is skipped unless `COPY_ANYWHERE_SCREENSHOTS` is set, because it
 writes into the repository. One command regenerates every image in `docs/images/`:
@@ -15,13 +15,14 @@ writes into the repository. One command regenerates every image in `docs/images/
 It renders the real dialogs on the offscreen platform plugin, with the Fusion style and a
 fixed font so that two machines produce comparable pictures, and saves `widget.grab()`.
 Nothing here asserts a pixel: what a shot is worth is a question for the reader of the
-README, and a test that compared images would fail on every Qt or font update.
+user guide, and a test that compared images would fail on every Qt or font update.
 
 The one test that does run in the suite is the consistency check at the bottom: every image
-the README links to exists, and every image generated here is linked to. It is what keeps a
-renamed shot or a dropped section from leaving the README pointing at nothing.
+the user guide links to exists, and every image generated here is linked to. It is what keeps
+a renamed shot or a dropped section from leaving the user guide pointing at nothing.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -51,9 +52,9 @@ SCREENSHOT_ENV = "COPY_ANYWHERE_SCREENSHOTS"
 ADDON_DIR = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = ADDON_DIR / "docs" / "examples"
 IMAGES_DIR = ADDON_DIR / "docs" / "images"
-README = ADDON_DIR / "README.md"
+USER_GUIDE = ADDON_DIR / "ADDON_README.md"
 
-#: The example the README walks through, and the order its steps are shown in.
+#: The example the user guide walks through, and the order its steps are shown in.
 WALKTHROUGH = "collect-meanings.json"
 
 #: Fusion renders the same everywhere Qt does; the platform styles do not. The font is
@@ -120,7 +121,7 @@ def examples(col, stub_mw):
 
 
 def test_the_examples_are_the_definitions_the_readme_quotes():
-    # A file the README quotes and the harness never opens, or the other way round, is the
+    # A file the user guide quotes and the harness never opens, or the other way round, is the
     # second source R1 exists to prevent.
     assert [path.name for path in example_files()] == [
         "archive-to-a-file.json",
@@ -176,7 +177,7 @@ def test_the_examples_cover_what_the_readme_has_to_explain(examples):
 
 screenshots = pytest.mark.skipif(
     not os.environ.get(SCREENSHOT_ENV),
-    reason=f"set {SCREENSHOT_ENV} to regenerate the README's images",
+    reason=f"set {SCREENSHOT_ENV} to regenerate the user guide's images",
 )
 
 
@@ -224,7 +225,7 @@ class Shooter:
 
         A widget inside a dialog is sized by the layout it sits in, so resizing it does
         nothing: the next layout pass puts it back. Moving it into a frame of its own is
-        what lets it be photographed at the width the README wants it at. The editor it
+        what lets it be photographed at the width the user guide wants it at. The editor it
         came out of is not used again.
         """
         from aqt.qt import QVBoxLayout, QWidget
@@ -347,7 +348,7 @@ def test_shoot_the_walkthrough_step_by_step(seeded, examples, shots, open_dialog
     """The walkthrough definition as it is built, one stage at a time.
 
     Each step is the definition with one more stage than the last, its newest stage open,
-    which is what the README's walkthrough section says in words.
+    which is what the user guide's walkthrough section says in words.
     """
     walkthrough = example(WALKTHROUGH, examples)
     stages = walkthrough["stages"]
@@ -465,23 +466,43 @@ def test_shoot_what_a_migrated_definition_looks_like(seeded, shots, widget_paren
     shots.save(shots.part(editor), "migrated-selection-refused", 780)
 
 
-# -- the README and the images ---------------------------------------------------------
+# -- the user guide and the images -----------------------------------------------------
 
 IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)")
 
 
-def test_the_readme_and_the_images_say_the_same_thing():
-    """Every image the README links to is there, and every image here is linked to.
+def test_the_user_guide_and_the_images_say_the_same_thing():
+    """Every image the user guide links to is there, and every image here is linked to.
 
     Both directions matter: a link to a file that was never generated shows the reader a
     broken image, and an image nothing links to is a shot whose section was dropped.
     """
     referenced = {
         Path(link).name
-        for link in IMAGE_LINK_RE.findall(README.read_text(encoding="utf-8"))
+        for link in IMAGE_LINK_RE.findall(USER_GUIDE.read_text(encoding="utf-8"))
         if link.startswith("docs/images/")
     }
     generated = {path.name for path in IMAGES_DIR.glob("*.png")}
 
-    assert referenced - generated == set(), "the README links to images that are not there"
+    assert referenced - generated == set(), "the user guide links to images that are not there"
     assert generated - referenced == set(), "these images are in docs/images/ unreferenced"
+
+
+def test_the_package_ships_the_user_guide_and_not_the_developer_readme():
+    """`build.py dist` puts `ADDON_README.md` in the `.ankiaddon`, and `README.md` stays out.
+
+    The guide's pictures and examples go with it, or its links would lead nowhere once
+    installed.
+    """
+    spec = importlib.util.spec_from_file_location("_monorepo_build", ADDON_DIR.parent / "build.py")
+    assert spec is not None and spec.loader is not None
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    (addon,) = [a for a in build.discover() if a.path == ADDON_DIR]
+
+    shipped = {arc for _, arc in build.walk_files(addon.path, addon)}
+
+    assert "ADDON_README.md" in shipped
+    assert "README.md" not in shipped
+    assert "docs/images/stage-editor.png" in shipped
+    assert "docs/examples/collect-meanings.json" in shipped

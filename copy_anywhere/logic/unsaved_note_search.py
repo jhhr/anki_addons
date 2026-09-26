@@ -9,19 +9,23 @@ unsaved note's fields and tags, its note type, and the deck it is being added to
 The answer has to be the one Anki would give once the note is saved, so everything here is a
 port of Anki 25.9's own search code (`rslib/src/search/parser.rs`, `sqlwriter.rs`, `text.rs`)
 rather than a reading of the manual, and each rule was established against a real collection;
-`test_unsaved_note_search.py` holds the differential tests that prove it. What cannot be ported
-faithfully is refused: a term that needs cards, review history, ids or collection state
-(`is:`, `card:`, `prop:`, `rated:`, `nid:`, ...), a regular expression or accent-folding form
-(`re:`, `nc:`, `w:`, `sc:`, `field:re:`), and a few things only this note makes unknowable (a
-`deck:` search with no deck, a tag Anki would rewrite on save), all raise `UnjudgeableSearch`
-naming the term. A guessed answer would silently run or skip a definition; a refusal fails it
-where the user can see why.
+`test_unsaved_note_search.py` holds the differential tests that prove it. The one difference
+since, up to 26.9, is that 26.8 reads every whitespace character as a space
+(`_anki_spaces_out_whitespace`), and the port follows whichever Anki it runs in.
+
+What cannot be ported faithfully is refused: a term that needs cards, review history, ids or
+collection state (`is:`, `card:`, `prop:`, `rated:`, `nid:`, ...), a regular expression or
+accent-folding form (`re:`, `nc:`, `w:`, `sc:`, `field:re:`), and a few things only this note
+makes unknowable (a `deck:` search with no deck, a tag Anki would rewrite on save), all raise
+`UnjudgeableSearch` naming the term. A guessed answer would silently run or skip a definition;
+a refusal fails it where the user can see why.
 
 What Anki does, in short, and therefore what this does:
 
-- Parsing: terms separated by spaces (and U+3000), implicit AND, `and`/`or` in any case, AND
-  binding tighter than OR, `-` negating one term or group, `"..."` and `key:"..."` quoting,
-  and backslash escapes `\\ \\" \\: \\( \\) \\- \\* \\_`; any other escape is an error.
+- Parsing: terms separated by spaces (and U+3000; from 26.8, any whitespace), implicit AND,
+  `and`/`or` in any case, AND binding tighter than OR, `-` negating one term or group,
+  `"..."` and `key:"..."` quoting, and backslash escapes `\\ \\" \\: \\( \\) \\- \\* \\_`;
+  any other escape is an error.
 - Bare text: a substring match, `*` and `_` as wildcards, ASCII letters case-insensitive and
   nothing else, against all fields joined by U+001F (so a wildcard can cross fields) *or*
   against the sort field with its HTML stripped (so `neko` finds `ne<b>ko</b>` in the sort
@@ -42,8 +46,10 @@ found later can be traced to the line it came from.
 
 from __future__ import annotations
 
+import functools
 import re
 import sqlite3
+import threading
 import unicodedata
 from dataclasses import dataclass
 from typing import Callable, Optional, Union
@@ -51,6 +57,7 @@ from typing import Callable, Optional, Union
 from anki.card_rendering_pb2 import StripHtmlRequest
 from anki.collection import Config
 from anki.notes import Note
+from anki.utils import point_version
 
 
 class UnsavedNoteSearchError(ValueError):
@@ -113,9 +120,17 @@ _RUST_WHITESPACE = (
     "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 )
 
-# Between terms the parser skips only these two, so a tab or a newline inside a search is
-# part of a term, not a separator.
+# Between terms the parser skips only these two, so before Anki 26.8 a tab or a newline inside
+# a search is part of a term, not a separator.
 _TERM_SEPARATORS = " \u3000"
+
+# Anki 26.8 turns every whitespace character in a search into a plain space before parsing it,
+# inside quotes and after a backslash too: `"a<tab>b"` finds "a b" and not "a<tab>b",
+# `a<tab>b` is two terms, `(<tab>)` is an empty group, and `a\<tab>b` is the undefined escape
+# `\ `. Anki 25.9 and 26.5 read the same characters as text. The set is Rust's White_Space,
+# the same as `_RUST_WHITESPACE`; the release was found by asking each one from 25.9.5 on.
+_SPACES_OUT_WHITESPACE_FROM = 260800
+_WHITESPACE_TO_SPACE = str.maketrans(dict.fromkeys(_RUST_WHITESPACE, " "))
 
 
 # Anki's text helpers (rslib/src/text.rs and parser.rs), ported rule for rule -------------
@@ -444,6 +459,29 @@ class _Parser:
 # Judging -----------------------------------------------------------------------------------
 
 
+_THREAD = threading.local()
+
+
+def _sql() -> sqlite3.Connection:
+    """This thread's scratch database: SQLite's own LIKE, and a one-row copy of the notes
+    table's sort-field column.
+
+    Opening one costs more than everything else a match does put together, so each thread
+    keeps its own. Per thread because a connection may only be used on the thread that
+    opened it, and a bulk run judges notes on a background thread while the editor judges
+    on the main one.
+    """
+    connection = getattr(_THREAD, "connection", None)
+    if connection is None:
+        connection = sqlite3.connect(":memory:", isolation_level=None)
+        # The notes table declares `sfld integer`, so a sort field that reads as a number
+        # is stored as one and searched as its text form: "<b>0123</b>" is searched as "123".
+        connection.execute("create table note (sfld integer)")
+        connection.execute("insert into note values (null)")
+        _THREAD.connection = connection
+    return connection
+
+
 class _NoteView:
     """The unsaved note as the collection would hold it once added.
 
@@ -451,36 +489,39 @@ class _NoteView:
     to), keeps the sort field as HTML-stripped text in a column with integer affinity, and
     stores the tags as one space-padded string. Searching the saved note searches those, so
     this builds them the same way.
+
+    Each of them is built the first time a term asks for it, and once: the collection's
+    options are a backend call each, the sort field another plus a trip through SQLite, and
+    a search of tags, note types and decks needs none of them.
     """
 
     def __init__(self, note: Note, deck_id: Optional[int]) -> None:
-        col = note.col
-        self.col = col
-        self.normalize = col.get_config_bool(Config.Bool.NORMALIZE_NOTE_TEXT)
-        self.ignore_accents = col.get_config_bool(Config.Bool.IGNORE_ACCENTS_IN_SEARCH)
+        self.note = note
+        self.col = note.col
         self.note_type = note.note_type()
-        fields = [self.norm_note(value) for value in note.fields]
-        self.fields = fields
-        self.flds = "\x1f".join(fields)
         self.deck_id = deck_id
         self.tags = list(note.tags)
-        self.sql = sqlite3.connect(":memory:")
-        self.sfld = self._sort_field_text(fields)
 
-    def close(self) -> None:
-        self.sql.close()
+    @functools.cached_property
+    def normalize(self) -> bool:
+        return self.col.get_config_bool(Config.Bool.NORMALIZE_NOTE_TEXT)
 
-    def norm_note(self, text: str) -> str:
-        return _nfc(text) if self.normalize else text
+    @functools.cached_property
+    def ignore_accents(self) -> bool:
+        return self.col.get_config_bool(Config.Bool.IGNORE_ACCENTS_IN_SEARCH)
 
-    def like(self, text: str, pattern: str) -> bool:
-        # SQLite's own LIKE, as Anki's search runs it: `_` is one character, and only ASCII
-        # letters match regardless of case.
-        return bool(self.sql.execute("select ? like ? escape '\\'", (text, pattern)).fetchone()[0])
+    @functools.cached_property
+    def fields(self) -> list[str]:
+        return [self.norm_note(value) for value in self.note.fields]
 
-    def _sort_field_text(self, fields: list[str]) -> str:
+    @functools.cached_property
+    def flds(self) -> str:
+        return "\x1f".join(self.fields)
+
+    @functools.cached_property
+    def sfld(self) -> str:
         index = self.note_type.get("sortf", 0) or 0
-        raw = fields[index] if index < len(fields) else ""
+        raw = self.fields[index] if index < len(self.fields) else ""
         # The Rust function Anki strips the saved sort field with (it drops comments, styles
         # and scripts, decodes entities, and keeps an image's file name). It is what
         # `anki.utils.strip_html_media` calls too, but through `anki.lang`, which is only set
@@ -488,11 +529,43 @@ class _NoteView:
         stripped = self.col._backend.strip_html(
             text=raw, mode=StripHtmlRequest.PRESERVE_MEDIA_FILENAMES
         )
-        # The notes table declares `sfld integer`, so a sort field that reads as a number is
-        # stored as one and searched as its text form: "<b>0123</b>" is searched as "123".
-        self.sql.execute("create table note (sfld integer)")
-        self.sql.execute("insert into note values (?)", (stripped,))
-        return self.sql.execute("select cast(sfld as text) from note").fetchone()[0]
+        sql = _sql()
+        sql.execute("update note set sfld = ?", (stripped,))
+        return sql.execute("select cast(sfld as text) from note").fetchone()[0]
+
+    @functools.cached_property
+    def folded_sfld(self) -> str:
+        return _without_combining(self.sfld)
+
+    @functools.cached_property
+    def folded_flds(self) -> str:
+        return _without_combining(self.flds)
+
+    @functools.cached_property
+    def rewritten_tag(self) -> Optional[str]:
+        """The first tag Anki would change when it saves the note, or None (`_saved_tags`)."""
+        for tag in self.tags:
+            parts = tag.split("::")
+            if (
+                not tag
+                or tag != _nfc(tag)
+                or any(char.isspace() or unicodedata.category(char).startswith("C") for char in tag)
+                or any(not part or part.endswith(":") for part in parts)
+            ):
+                return tag
+        return None
+
+    @functools.cached_property
+    def target_deck(self) -> Optional[dict]:
+        return self.col.decks.get(self.deck_id, default=False) if self.deck_id is not None else None
+
+    def norm_note(self, text: str) -> str:
+        return _nfc(text) if self.normalize else text
+
+    def like(self, text: str, pattern: str) -> bool:
+        # SQLite's own LIKE, as Anki's search runs it: `_` is one character, and only ASCII
+        # letters match regardless of case.
+        return bool(_sql().execute("select ? like ? escape '\\'", (text, pattern)).fetchone()[0])
 
 
 def _judge_text(term: _Term, view: _NoteView) -> bool:
@@ -500,7 +573,7 @@ def _judge_text(term: _Term, view: _NoteView) -> bool:
     sfld, flds = view.sfld, view.flds
     if view.ignore_accents:
         pattern = _without_combining(pattern)
-        sfld, flds = _without_combining(sfld), _without_combining(flds)
+        sfld, flds = view.folded_sfld, view.folded_flds
     pattern = f"%{pattern}%"
     return view.like(sfld, pattern) or view.like(flds, pattern)
 
@@ -567,17 +640,11 @@ def _saved_tags(term: _Term, view: _NoteView) -> list[str]:
     fills empty `::` parts with "blank" -- and a tag search sees the rewritten ones. Those
     rules are not ported; a note whose tags would be touched by them cannot be judged.
     """
-    for tag in view.tags:
-        parts = tag.split("::")
-        if (
-            not tag
-            or tag != _nfc(tag)
-            or any(char.isspace() or unicodedata.category(char).startswith("C") for char in tag)
-            or any(not part or part.endswith(":") for part in parts)
-        ):
-            raise UnjudgeableSearch(
-                term.source, f"the note's tag {tag!r} would be rewritten when it is saved"
-            )
+    tag = view.rewritten_tag
+    if tag is not None:
+        raise UnjudgeableSearch(
+            term.source, f"the note's tag {tag!r} would be rewritten when it is saved"
+        )
     return view.tags
 
 
@@ -593,7 +660,7 @@ def _judge_deck(term: _Term, view: _NoteView) -> bool:
         raise UnjudgeableSearch(term.source, "it depends on the collection's state")
     if view.deck_id is None:
         raise UnjudgeableSearch(term.source, "the deck the note goes into is not known")
-    target = view.col.decks.get(view.deck_id, default=False)
+    target = view.target_deck
     if not target or target.get("dyn"):
         raise UnjudgeableSearch(term.source, "the deck the note goes into is not a normal deck")
     if any(template.get("did") for template in view.note_type["tmpls"]):
@@ -659,19 +726,35 @@ class ParsedSearch:
         Raises `UnjudgeableSearch` when a term depends on something this note or deck makes
         unknowable (see `_judge_deck` and `_saved_tags`).
         """
-        view = _NoteView(note, deck_id)
-        try:
-            return _judge(self._root, view)
-        finally:
-            view.close()
+        return _judge(self._root, _NoteView(note, deck_id))
+
+
+@functools.cache
+def _anki_spaces_out_whitespace() -> bool:
+    """Whether the running Anki reads every whitespace character in a search as a space.
+
+    Asked on first use rather than at import: under the test suite's stand-in Anki,
+    `point_version` is a placeholder, and nothing there parses a search.
+    """
+    return point_version() >= _SPACES_OUT_WHITESPACE_FROM
 
 
 def parse_search(search: str) -> ParsedSearch:
-    """Parse `search` as Anki 25.9 would.
+    """Parse `search` as the running Anki would.
 
     Raises `SearchSyntaxError` where Anki would refuse the search, and `UnjudgeableSearch`
     for the first term that needs cards, history, ids or collection state.
     """
+    if _anki_spaces_out_whitespace():
+        search = search.translate(_WHITESPACE_TO_SPACE)
+    return _parse_search(search)
+
+
+@functools.lru_cache(maxsize=256)
+def _parse_search(search: str) -> ParsedSearch:
+    """A parsed search is immutable, so the same text is parsed once: a condition asks the
+    same search of every note added, and the editor asks it again on every refresh. A search
+    that raises is not remembered, so it raises every time."""
     return ParsedSearch(search, _Parser().parse(search))
 
 
@@ -679,8 +762,8 @@ def matches(search: str, note: Note, deck_id: Optional[int]) -> bool:
     """Whether the unsaved `note`, added to `deck_id`, would be found by `search`.
 
     To ask exactly what `find_notes(f"({search}) nid:{id}")` asks of a saved note, pass the
-    search in the same parentheses: a search with an unbalanced `)` or an inner newline reads
-    differently inside them.
+    search in the same parentheses: a search with an unbalanced `)`, or before Anki 26.8 an
+    inner newline, reads differently inside them.
     """
     return parse_search(search).matches(note, deck_id)
 

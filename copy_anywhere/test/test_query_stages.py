@@ -56,6 +56,25 @@ def selected(query_stage, trigger, logger, field="Word"):
     return [value for value in trigger["Note"].split(SEPARATOR) if value]
 
 
+def selected_cards(query_stage, trigger, logger, field="Word"):
+    """`selected` for a card query: the `field` of each selected card's note, in order."""
+    definition = d.staged(stages=[
+        query_stage,
+        d.list_variable("collected"),
+        d.for_each_card(
+            query_stage["result"],
+            [d.store("collected", d.text("{{note.%s}}" % field))],
+        ),
+        d.join("collected", "joined", SEPARATOR),
+        d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+    ])
+    succeeded = copy_for_single_trigger_note(
+        definition, trigger, copied_into_notes=[]
+    )
+    assert succeeded is True, logger.errors
+    return [value for value in trigger["Note"].split(SEPARATOR) if value]
+
+
 def run_legacy(trigger, **definition_kwargs):
     """Run a migrated across-note definition, for the cases about migrated markers.
 
@@ -97,13 +116,20 @@ class TestSelection:
 
         assert found == expected
 
-    def test_random_picks_from_the_pool_and_never_twice(self, col, trigger, targets, logger):
-        found = selected(
-            d.note_query("found", "tag:pool", strategy="random", count=3), trigger, logger
-        )
+    def test_random_picks_the_count_from_the_pool_and_never_twice(
+        self, col, trigger, targets, logger
+    ):
+        # Fewer than the pool holds, so a selection that ignored the count -- or returned
+        # nothing, or one note -- could not pass. Repeated because a draw that repeats a
+        # note is itself random.
+        for _ in range(10):
+            found = selected(
+                d.note_query("found", "tag:pool", strategy="random", count=2), trigger, logger
+            )
 
-        assert set(found) <= {"w1", "w2", "w3"}
-        assert len(set(found)) == len(found)
+            assert len(found) == 2
+            assert set(found) <= {"w1", "w2", "w3"}
+            assert len(set(found)) == 2
 
     @pytest.mark.parametrize("strategy", ["first", "random"])
     def test_asking_for_more_than_there_are_returns_what_there_is(
@@ -175,6 +201,53 @@ class TestSorting:
         found = self.sorted_by_freq(trigger, logger, query="tag:mixed", field="__Note_ID")
 
         assert found == [str(vocab.id), str(kanji.id)]
+
+
+class TestSortingCards:
+    """A card query sorts by a field of each card's note, the same choices as a note query.
+
+    One card per note (`card:Recognition`), so the order of the notes read back is the
+    order of the cards.
+    """
+
+    @pytest.fixture
+    def frequencies(self, col):
+        # 9, 10 and 100 sort differently as numbers and as text, which is what tells the
+        # two apart; the creation order matches neither.
+        for word, freq in [("ten", "10"), ("nine", "9"), ("hundred", "100")]:
+            real_anki.add_note(col, VOCAB, {"Word": word, "Freq": freq}, tags=["freq"])
+
+    def sorted_cards(self, trigger, logger, **selection):
+        options = {
+            "strategy": "all",
+            "count": None,
+            "sort_field": "Freq",
+            "sort_order": "descending",
+            "sort_numeric": True,
+        }
+        options.update(selection)
+        return selected_cards(
+            d.card_query("found", "tag:freq card:Recognition", selection=options),
+            trigger,
+            logger,
+        )
+
+    def test_a_numeric_sort_is_descending(self, col, trigger, frequencies, logger):
+        assert self.sorted_cards(trigger, logger) == ["hundred", "ten", "nine"]
+
+    def test_ascending_reverses_it(self, col, trigger, frequencies, logger):
+        assert self.sorted_cards(trigger, logger, sort_order="ascending") == [
+            "nine",
+            "ten",
+            "hundred",
+        ]
+
+    def test_a_text_sort_compares_the_values_as_text(self, col, trigger, frequencies, logger):
+        assert self.sorted_cards(trigger, logger, sort_numeric=False) == [
+            "nine",
+            "hundred",
+            "ten",
+        ]
 
 
 class TestAnEmptyResult:
@@ -310,6 +383,33 @@ class TestTheQueryCache:
             col.find_notes = original
 
         assert searches == [f"(Word:trigger) nid:{trigger.id}"]
+
+    def test_a_card_query_does_not_reuse_a_note_query_with_the_same_text(
+        self, col, trigger, targets, logger
+    ):
+        # The same search text means different ids to `find_notes` and `find_cards`, so
+        # the cache keeps them apart: a card query that got the note query's result would
+        # be handed note ids as card ids.
+        definition = d.staged(stages=[
+            d.note_query("notes", "tag:pool"),
+            d.card_query("cards", "tag:pool"),
+            d.list_variable("collected"),
+            d.for_each_card(
+                "cards", [d.store("collected", d.text("{{note.Word}}:{{card.__Card_ID}}"))]
+            ),
+            d.join("collected", "joined", SEPARATOR),
+            d.edit_note("trigger", [d.write("Note", d.text("{{joined}}"))]),
+        ])
+
+        assert copy_for_single_trigger_note(definition, trigger) is True, logger.errors
+
+        expected = sorted(
+            f"{col.get_card(card_id).note()['Word']}:{card_id}"
+            for card_id in col.find_cards("tag:pool")
+        )
+        assert sorted(trigger["Note"].split(SEPARATOR)) == expected
+        # One card each: with `Meaning` empty the Recall card has nothing on its front.
+        assert len(expected) == 3
 
 
 class TestARefusedQueryDoesNotWipeTheDestination:

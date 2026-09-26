@@ -168,7 +168,7 @@ runs, and every note in a bulk run would pay for the rewrite.
 every binding in scope under its own name, `note` meaning the stage's note or the loop's,
 and read-only facades in place of the note object format 1 handed it. References inside the
 code are rewritten, but nothing else is, so code that reached for a note by some other means
-is the user's to check by hand -- which the README says, in the section about migrating.
+is the user's to check by hand -- which the user guide (`ADDON_README.md`) says, in the section about migrating.
 With a handful of installs and one of them the author's, that was judged cheaper than
 keeping an interpreter for the old language alive to serve it.
 
@@ -405,7 +405,9 @@ replaces the earlier one's and the earlier write is lost, while the run reports 
 That is kept on purpose (decision 5 of the PR 14 review):
 `test_copy_fields_op.py::TestOneDestinationFromSeveralTriggerNotes::test_the_first_trigger_notes_write_is_lost`
 pins it, and its comment says why -- saving after every trigger note was far slower, and made
-the result depend on the order of the trigger notes. Since that review only a card a card
+the result depend on the order of the trigger notes. Merging the two copies instead, field by
+field and card property by card property, was considered and rejected as more than is worth
+maintaining, so the limitation stays and is documented. Since that review only a card a card
 action edited is handed over, so a trigger note that merely writes a card's note no longer
 undoes another one's edit of the card; what is left is the real double write, and nothing
 tells the user a definition does one.

@@ -1,8 +1,9 @@
 """The repo-wide pytest plugin's own decisions, made without running pytest twice.
 
-Only the parts that are ordinary functions are covered here. The shutdown guard is not: it
-ends the process on purpose, so the only honest test of it is a run that exits with pytest's
-status, which every real-Anki run in this repo already is.
+Only the parts that are ordinary functions are covered here. The shutdown guard's exit is
+not: it ends the process on purpose, so the only honest test of it is a run that exits with
+pytest's status, which every real-Anki run in this repo already is. What the guard decides
+before exiting is tested, with the exit itself replaced.
 """
 
 from types import SimpleNamespace
@@ -142,7 +143,32 @@ class TestTheGuardWhenPyQtsHandlerCannotBeFound:
 
         monkeypatch.setattr("atexit._run_exitfuncs", fake_run_exitfuncs)
         monkeypatch.setattr(pytest_plugin.os, "_exit", fake_exit)
+        # The real one closes every logging handler in this process, which the tests that
+        # run after this one still log through.
+        monkeypatch.setattr(pytest_plugin.logging, "shutdown", lambda: None)
         return pytest_plugin, calls
+
+    def unconfigure(self, monkeypatch, disarmed):
+        """Run `pytest_unconfigure` with a live Qt app and the exit replaced by a spy."""
+        from anki_shared.testing import pytest_plugin
+
+        exits = []
+        monkeypatch.setenv(pytest_plugin.GUARD_ENV, "1")
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        monkeypatch.setattr(pytest_plugin, "_running_qt_application", lambda: object())
+        monkeypatch.setattr(pytest_plugin, "_disarm_qt_teardown", lambda: disarmed)
+        monkeypatch.setattr(
+            pytest_plugin,
+            "_exit_without_interpreter_shutdown",
+            lambda status, run_handlers=True: exits.append((status, run_handlers)),
+        )
+        stash = {pytest_plugin._EXIT_STATUS: 0}
+        pytest_plugin.pytest_unconfigure(SimpleNamespace(stash=stash))
+        return exits
+
+    def test_unconfigure_runs_the_registry_only_when_the_disarm_worked(self, monkeypatch):
+        assert self.unconfigure(monkeypatch, disarmed=True) == [(0, True)]
+        assert self.unconfigure(monkeypatch, disarmed=False) == [(0, False)]
 
     def test_the_registry_is_not_run_when_the_handler_is_still_in_it(self, monkeypatch):
         plugin, calls = self.exit_spy(monkeypatch)
