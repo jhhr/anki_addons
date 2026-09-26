@@ -11,7 +11,9 @@ Every one of them runs while the chain holds its progress dialog open (a step's 
 level is finished by then, the chain's is not), so the error goes into that dialog's error pane
 rather than a message box competing with the application-modal dialog. A failed step stops the
 chain and the dialog closes right after, so the pane is not where the user reads it: the
-chain's summary names the step and carries the `error` text. The traceback goes to the log.
+chain's summary names the step and carries the `error` text, and lists what the pane showed,
+traceback and all, under its Show errors button (`run_errors` keeps it). The log has it too.
+aqt's `Interrupted` is not shown, as aqt's own error box does not show it.
 
 Not in `chain_types`, which stays free of aqt.
 """
@@ -22,6 +24,7 @@ import logging
 import traceback
 from typing import Any, Optional
 
+from anki.errors import Interrupted
 from aqt.errors import show_exception
 
 from .api_client import take_stop_reason
@@ -53,6 +56,18 @@ def failed_step_outcome(
     if context:
         summary += f" (while {context})"
     logger.error("%s failed: %s", title, summary, exc_info=error)
+    # Interrupted is not an error to show but an interrupted backend call; aqt's box skips it too
+    if not isinstance(error, Interrupted):
+        _show(parent, error, title, summary)
+    return StepOutcome(
+        STEP_FAILED,
+        # Not left for the next run to find; a run that raised may still have set one
+        stop_reason=take_stop_reason(),
+        error=summary,
+    )
+
+
+def _show(parent: Any, error: Exception, title: str, summary: str) -> None:
     try:
         text = summary
         if error.__traceback__ is not None:
@@ -64,9 +79,3 @@ def failed_step_outcome(
     except Exception as e:
         # Still a failed step: the chain has to hear of it whether or not anything was shown
         logger.error("Could not show the error of %s: %s", title, e)
-    return StepOutcome(
-        STEP_FAILED,
-        # Not left for the next run to find; a run that raised may still have set one
-        stop_reason=take_stop_reason(),
-        error=summary,
-    )

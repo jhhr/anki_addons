@@ -74,6 +74,19 @@ class FailedStepOutcomeTests(unittest.TestCase):
         outcome = step_failure.failed_step_outcome(PARENT, ValueError("boom"), TITLE)
         self.assertEqual(outcome.status, chain_types.STEP_FAILED)
 
+    def test_interrupted_is_shown_nowhere_but_still_fails_the_step(self):
+        """aqt's own error box skips Interrupted; the pane must not show it either."""
+
+        class Interrupted(Exception):
+            pass
+
+        with mock.patch.object(step_failure, "Interrupted", Interrupted):
+            outcome = step_failure.failed_step_outcome(PARENT, raised(Interrupted()), TITLE)
+
+        self.pane.assert_not_called()
+        self.shown.assert_not_called()
+        self.assertEqual(outcome.status, chain_types.STEP_FAILED)
+
     def test_the_stop_reason_is_taken(self):
         api._stop_reason = "the login expired"
         outcome = step_failure.failed_step_outcome(PARENT, ValueError("boom"), TITLE)
