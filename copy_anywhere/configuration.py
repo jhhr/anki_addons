@@ -226,8 +226,9 @@ CARD_TYPE_SEPARATOR = "<::>"
 class CardActionDict(TypedDict):
     # A structured reference since 0.5.0; the pre-0.5.0 `card_type_name` string is still
     # read by `object_refs.card_action_card_type` for a config the migration has not
-    # reached and for the README examples, which ship with null ids.
-    card_type: CardTypeRef
+    # reached and for the README examples, which ship with null ids. An `edit_card` stage's
+    # actions carry None: the stage already names the card.
+    card_type: Optional[CardTypeRef]
     change_deck: Optional[Union[str, int]]
     set_flag: Optional[FlagValueType]
     suspend: Optional[bool]

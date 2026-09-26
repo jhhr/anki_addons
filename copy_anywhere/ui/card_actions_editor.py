@@ -809,7 +809,7 @@ class CardActionsEditor(QWidget):
             # the stage's target says which card it applies to.
             "card_type": None
             if self.single_card_mode
-            else self._card_type_ref_for(card_type_name, existing),
+            else self._card_type_ref_for(card_type_name, self.card_actions.get(card_type_name)),
             "change_deck": change_deck,
             "set_flag": set_flag,
             "suspend": suspend,

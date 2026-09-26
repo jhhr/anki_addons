@@ -438,7 +438,7 @@ def staged(
     from copy_anywhere.logic.definition_schema import CopyDefinitionV2
     from copy_anywhere.logic.flow_analysis import compute_effects
 
-    triggers = {
+    triggers: dict[str, Any] = {
         "note_types": note_types if note_types is not None else [VOCAB],
         "deck_names": [],
         "include_subdecks": False,

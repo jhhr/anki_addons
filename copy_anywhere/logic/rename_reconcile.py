@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Final, Iterator, Optional, Union, cast
 
 from ..shared.interpolate.interpolate_fields import CARD_VALUE_RE, CARD_VALUES_DICT
 from .definition_migration import STAGE_EXPRESSION_KEYS, rewrite_references
@@ -40,6 +40,10 @@ from .definition_schema import (
     STAGE_CONDITION,
     STAGE_EDIT_NOTE,
     STAGE_NOTE_QUERY,
+    CopyDefinitionV2,
+    FieldWrite,
+    Stage,
+    ValueExpression,
     is_format_2,
     walk_stages,
 )
@@ -49,6 +53,8 @@ from .object_refs import (
     KIND_DECK,
     KIND_FIELD,
     KIND_NOTE_TYPE,
+    CardTypeRef,
+    ObjectRef,
     card_type_live_name,
     card_type_ref_names_nothing,
     card_type_resolves,
@@ -81,7 +87,7 @@ SNAPSHOT_KEY = "name_snapshot"
 #: field once for all of them, so a rename in only some of them leaves it wrong whichever
 #: name it spells: it is left as it was and marked, until the note types agree again or
 #: the user reworks it. See "Following a rename in Anki" in `docs/staged-definitions.md`.
-BROKEN_KEY = "broken_by_rename"
+BROKEN_KEY: Final = "broken_by_rename"
 
 
 @dataclass(frozen=True)
@@ -155,7 +161,7 @@ def definitions_hold_references(definitions: Any) -> bool:
     return False
 
 
-def _stale(definition: dict, kind: str, name: str) -> StaleName:
+def _stale(definition: CopyDefinitionV2, kind: str, name: str) -> StaleName:
     return StaleName(
         definition_guid=definition.get("guid", ""),
         definition_name=definition.get("definition_name", ""),
@@ -164,7 +170,7 @@ def _stale(definition: dict, kind: str, name: str) -> StaleName:
     )
 
 
-def _card_type_refs(definition: dict) -> Iterator[dict]:
+def _card_type_refs(definition: CopyDefinitionV2) -> Iterator[dict]:
     """Every card action that carries a structured card type reference.
 
     An action still in the pre-0.5.0 spelling -- one `card_type_name` string -- is left to
@@ -182,7 +188,7 @@ def _card_type_refs(definition: dict) -> Iterator[dict]:
                 yield card_action
 
 
-def unresolved_references(definition: dict, col: Any) -> list[StaleName]:
+def unresolved_references(definition: CopyDefinitionV2, col: Any) -> list[StaleName]:
     """Every structured reference of one definition that this collection cannot resolve.
 
     The same condition the pass reports as `unresolved`, asked of a single definition
@@ -201,13 +207,13 @@ def unresolved_references(definition: dict, col: Any) -> list[StaleName]:
             if resolve_deck_id(reference, col) is None:
                 stale.append(_stale(definition, KIND_DECK, reference["name"]))
     for card_action in _card_type_refs(definition):
-        reference = normalize_card_type_ref(card_action["card_type"])
-        if not card_type_resolves(reference, col):
-            stale.append(_stale(definition, KIND_CARD_TYPE, reference["name"]))
+        card_type = normalize_card_type_ref(card_action["card_type"])
+        if not card_type_resolves(card_type, col):
+            stale.append(_stale(definition, KIND_CARD_TYPE, card_type["name"]))
     return stale
 
 
-def still_names(definition: dict, stale: StaleName) -> bool:
+def still_names(definition: CopyDefinitionV2, stale: StaleName) -> bool:
     """Whether this definition names what a pass reported about it, as it stands now.
 
     A pass's report outlives the definitions it was about: it is kept until the next pass
@@ -244,7 +250,7 @@ def still_names(definition: dict, stale: StaleName) -> bool:
     return spelled or _code_mentions(definition, stale.name)
 
 
-def _code_mentions(definition: dict, name: str) -> bool:
+def _code_mentions(definition: CopyDefinitionV2, name: str) -> bool:
     """Whether any expression's code holds this name, as the pass looks for one there."""
     lowered = name.lower()
     return bool(lowered) and any(
@@ -254,7 +260,7 @@ def _code_mentions(definition: dict, name: str) -> bool:
     )
 
 
-def _search_expressions(stage: dict) -> Iterator[dict]:
+def _search_expressions(stage: Stage) -> Iterator[ValueExpression]:
     """The expressions of one stage whose text is an Anki search rather than a value."""
     stage_type = stage.get("type", "")
     if stage_type in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY):
@@ -265,7 +271,7 @@ def _search_expressions(stage: dict) -> Iterator[dict]:
             yield stage["predicate"]
 
 
-def stale_terms_in_searches(definition: dict, col: Any) -> list[StaleName]:
+def stale_terms_in_searches(definition: CopyDefinitionV2, col: Any) -> list[StaleName]:
     """What every search in this definition names that the collection does not have.
 
     Asked of the collection as it is now, one entry per name however many searches spell
@@ -286,7 +292,7 @@ def stale_terms_in_searches(definition: dict, col: Any) -> list[StaleName]:
     return found
 
 
-def _report_stale_terms(definition: dict, col: Any, result: ReconcileResult) -> None:
+def _report_stale_terms(definition: CopyDefinitionV2, col: Any, result: ReconcileResult) -> None:
     for stale in stale_terms_in_searches(definition, col):
         if stale not in result.stale_terms:
             result.stale_terms.append(stale)
@@ -335,7 +341,11 @@ def _deleted_objects(snapshot: dict, col: Any) -> dict[tuple, str]:
 
 
 def _bind(
-    definition: dict, col: Any, result: ReconcileResult, referenced: dict, deleted: dict
+    definition: CopyDefinitionV2,
+    col: Any,
+    result: ReconcileResult,
+    referenced: dict,
+    deleted: dict,
 ) -> bool:
     """Give every reference the id and the name the collection has for it now."""
     changed = False
@@ -378,20 +388,20 @@ def _bind(
                 changed |= _refresh(reference, "name", live[1], definition, kind, result)
 
     for card_action in _card_type_refs(definition):
-        reference = normalize_card_type_ref(card_action["card_type"])
-        if reference != card_action["card_type"]:
+        card_type = normalize_card_type_ref(card_action["card_type"])
+        if card_type != card_action["card_type"]:
             changed = True
-        card_action["card_type"] = reference
-        model, template = resolve_card_type(reference, col)
+        card_action["card_type"] = card_type
+        model, template = resolve_card_type(card_type, col)
         if model is None or template is None:
             # Named by the reference's own cached name, not the snapshot's: the pass
             # refreshed it while the card type was live, and it is what a live check of the
             # same reference (`unresolved_references`) spells, so the two read as one.
-            stale = _stale(definition, KIND_CARD_TYPE, reference["name"])
-            if (KIND_NOTE_TYPE, reference["note_type_id"]) in deleted or (
+            stale = _stale(definition, KIND_CARD_TYPE, card_type["name"])
+            if (KIND_NOTE_TYPE, card_type["note_type_id"]) in deleted or (
                 KIND_CARD_TYPE,
-                reference["note_type_id"],
-                reference["template_id"],
+                card_type["note_type_id"],
+                card_type["template_id"],
             ) in deleted:
                 result.gone.append(stale)
             else:
@@ -400,16 +410,16 @@ def _bind(
         _remember(referenced, (KIND_NOTE_TYPE, model["id"]), definition)
         live_name = card_type_live_name(model, template)
         changed |= _refresh(
-            reference, "note_type_id", model["id"], definition, KIND_CARD_TYPE, result
+            card_type, "note_type_id", model["id"], definition, KIND_CARD_TYPE, result
         )
         changed |= _refresh(
-            reference, "template_id", template.get("id"), definition, KIND_CARD_TYPE, result
+            card_type, "template_id", template.get("id"), definition, KIND_CARD_TYPE, result
         )
-        changed |= _refresh(reference, "name", live_name, definition, KIND_CARD_TYPE, result)
+        changed |= _refresh(card_type, "name", live_name, definition, KIND_CARD_TYPE, result)
     return changed
 
 
-def _remember(referenced: dict, key: tuple, definition: dict) -> None:
+def _remember(referenced: dict, key: tuple, definition: CopyDefinitionV2) -> None:
     """Note that this definition names this object, once however many slots name it."""
     holders = referenced.setdefault(key, [])
     if not any(holder is definition for holder in holders):
@@ -417,10 +427,10 @@ def _remember(referenced: dict, key: tuple, definition: dict) -> None:
 
 
 def _refresh(
-    reference: dict,
+    reference: Union[ObjectRef, CardTypeRef],
     key: str,
     live: Any,
-    definition: dict,
+    definition: CopyDefinitionV2,
     kind: str,
     result: ReconcileResult,
 ) -> bool:
@@ -428,7 +438,9 @@ def _refresh(
     if reference.get(key) == live:
         return False
     was = reference.get(key)
-    reference[key] = live
+    # The key is one of the reference's own, named by the caller; a TypedDict only takes a
+    # literal one.
+    reference[key] = live  # type: ignore[literal-required]
     where = f"'{definition.get('definition_name', '')}': {kind}"
     if key == "name":
         result.refreshed.append(f"{where} '{was}' is now called '{live}'")
@@ -592,7 +604,7 @@ def _rewrite_names(names: Any, renamed: _Renames) -> tuple[list, int]:
     return rewritten, count
 
 
-def _rewrite(definition: dict, renamed: _Renames, result: ReconcileResult) -> bool:
+def _rewrite(definition: CopyDefinitionV2, renamed: _Renames, result: ReconcileResult) -> bool:
     """Follow one note type's renames into every slot of a definition that spells one."""
     count = 0
 
@@ -607,19 +619,17 @@ def _rewrite(definition: dict, renamed: _Renames, result: ReconcileResult) -> bo
     for stage in walk_stages(definition.get("stages") or []):
         # The unfocus gate names editor fields, which are the trigger note's whichever note
         # the stage goes on to write; the migrator copies the same keys onto the stages that
-        # feed one write, so both carriers are rewritten.
-        for carrier in [stage] + [
-            write for write in stage.get("fields") or [] if isinstance(write, dict)
-        ]:
-            if isinstance(carrier.get("unfocus_trigger_fields"), list):
-                carrier["unfocus_trigger_fields"], renamed_count = _rewrite_names(
-                    carrier["unfocus_trigger_fields"], renamed
-                )
-                count += renamed_count
-            new_name = renamed.new_field_name(carrier.get("write_if_field"))
-            if new_name is not None:
-                carrier["write_if_field"] = new_name
-                count += 1
+        # feed one write, so both carriers are rewritten. `write_if_field` is only ever on
+        # such a stage (`definition_migration._write_gate`): the write itself names its
+        # field in `field`.
+        count += _rewrite_unfocus_gate(stage, renamed)
+        new_name = renamed.new_field_name(stage.get("write_if_field"))
+        if new_name is not None:
+            stage["write_if_field"] = new_name
+            count += 1
+        for write in stage.get("fields") or []:
+            if isinstance(write, dict):
+                count += _rewrite_unfocus_gate(write, renamed)
 
         if stage.get("type") == STAGE_EDIT_NOTE and _targets_the_trigger(stage):
             for write in stage.get("fields") or []:
@@ -641,6 +651,15 @@ def _rewrite(definition: dict, renamed: _Renames, result: ReconcileResult) -> bo
     return bool(count)
 
 
+def _rewrite_unfocus_gate(carrier: Union[Stage, FieldWrite], renamed: _Renames) -> int:
+    if not isinstance(carrier.get("unfocus_trigger_fields"), list):
+        return 0
+    carrier["unfocus_trigger_fields"], renamed_count = _rewrite_names(
+        carrier["unfocus_trigger_fields"], renamed
+    )
+    return renamed_count
+
+
 def _renames_as_text(renamed: _Renames) -> str:
     return ", ".join(
         f"'{old}' -> '{new}'"
@@ -648,17 +667,19 @@ def _renames_as_text(renamed: _Renames) -> str:
     )
 
 
-def _targets_the_trigger(stage: dict) -> bool:
+def _targets_the_trigger(stage: Stage) -> bool:
     target = stage.get("target")
     return isinstance(target, dict) and target.get("binding") == TRIGGER_BINDING
 
 
-def _expressions(stage: dict) -> Iterator[dict]:
+def _expressions(stage: Stage) -> Iterator[ValueExpression]:
     """Every value expression one stage holds, wherever the shape keeps it."""
     for key in STAGE_EXPRESSION_KEYS.get(stage.get("type", ""), ()):
         expression = stage.get(key)
         if isinstance(expression, dict):
-            yield expression
+            # Read by a key held in a variable, so typed a plain dict; every key
+            # STAGE_EXPRESSION_KEYS lists is a stage's ValueExpression slot.
+            yield cast(ValueExpression, expression)
     if stage.get("type") == STAGE_EDIT_NOTE:
         for write in stage.get("fields") or []:
             if isinstance(write, dict) and isinstance(write.get("value"), dict):
@@ -666,7 +687,10 @@ def _expressions(stage: dict) -> Iterator[dict]:
 
 
 def _rewrite_expression(
-    expression: dict, renamed: _Renames, definition: dict, result: ReconcileResult
+    expression: ValueExpression,
+    renamed: _Renames,
+    definition: CopyDefinitionV2,
+    result: ReconcileResult,
 ) -> int:
     """The `{{trigger....}}` tokens of one expression's text. Its code is only reported.
 
@@ -728,7 +752,7 @@ class _NameRecorder(_Renames):
         return None
 
 
-def _recorded_names(definition: dict) -> _NameRecorder:
+def _recorded_names(definition: CopyDefinitionV2) -> _NameRecorder:
     recorder = _NameRecorder()
     # On a copy: the walk writes each slot back, and a reference it re-serialises is not
     # guaranteed to come back byte for byte.
@@ -736,12 +760,12 @@ def _recorded_names(definition: dict) -> _NameRecorder:
     return recorder
 
 
-def _trigger_field_names(definition: dict) -> set[str]:
+def _trigger_field_names(definition: CopyDefinitionV2) -> set[str]:
     """Every field name the definition spells for its trigger note, folded to lower case."""
     return _recorded_names(definition).fields_seen
 
 
-def _trigger_models(definition: dict, col: Any) -> list[dict]:
+def _trigger_models(definition: CopyDefinitionV2, col: Any) -> list[dict]:
     models: list[dict] = []
     triggers = definition.get("triggers")
     for value in (triggers.get("note_types") or []) if isinstance(triggers, dict) else []:
@@ -758,7 +782,7 @@ def _has_field(model: dict, name: str) -> bool:
 
 
 def _split_followable(
-    definition: dict, renamed: _Renames, col: Any
+    definition: CopyDefinitionV2, renamed: _Renames, col: Any
 ) -> tuple[_Renames, list[str]]:
     """The renames that leave this definition working, and the old names of the rest.
 
@@ -783,7 +807,7 @@ def _split_followable(
     return followable, withheld
 
 
-def trigger_fields_not_on_every_note_type(definition: dict, col: Any) -> list[str]:
+def trigger_fields_not_on_every_note_type(definition: CopyDefinitionV2, col: Any) -> list[str]:
     """Each trigger field a definition on several note types spells that some of them lack.
 
     A definition spells a trigger field once for every note type it triggers on, so a field
@@ -834,7 +858,9 @@ def breakage_message(field_name: str, models: list[dict]) -> str:
     return f'Field "{field_name}" is no longer present on {both} note types {_quoted_list(names)}'
 
 
-def refresh_breakage(definition: dict, col: Any, withheld: Optional[list[str]] = None) -> bool:
+def refresh_breakage(
+    definition: CopyDefinitionV2, col: Any, withheld: Optional[list[str]] = None
+) -> bool:
     """Bring a definition's `BROKEN_KEY` up to date; say whether it changed.
 
     A marked name stays marked while the definition still spells it and some trigger note
@@ -874,7 +900,7 @@ def refresh_breakage(definition: dict, col: Any, withheld: Optional[list[str]] =
     return True
 
 
-def _report_broken(definition: dict, result: ReconcileResult) -> None:
+def _report_broken(definition: CopyDefinitionV2, result: ReconcileResult) -> None:
     for entry in definition.get(BROKEN_KEY) or []:
         if isinstance(entry, dict):
             result.broken.append(
@@ -941,7 +967,8 @@ def refresh_all_breakage(definitions: Any, col: Any) -> bool:
     changed = False
     for definition in definitions or []:
         if isinstance(definition, dict) and BROKEN_KEY in definition:
-            changed |= refresh_breakage(definition, col)
+            # Read as format 2: only the pass marks a definition, and it reads no other.
+            changed |= refresh_breakage(cast(CopyDefinitionV2, definition), col)
     return changed
 
 
@@ -965,9 +992,9 @@ def referenced_object_ids(definitions: Any) -> tuple[set, set]:
             if reference["id"] is not None:
                 deck_ids.add(reference["id"])
         for card_action in _card_type_refs(definition):
-            reference = normalize_card_type_ref(card_action["card_type"])
-            if reference["note_type_id"] is not None:
-                note_type_ids.add(reference["note_type_id"])
+            card_type = normalize_card_type_ref(card_action["card_type"])
+            if card_type["note_type_id"] is not None:
+                note_type_ids.add(card_type["note_type_id"])
     return note_type_ids, deck_ids
 
 
