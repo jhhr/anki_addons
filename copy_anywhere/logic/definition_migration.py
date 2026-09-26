@@ -140,6 +140,69 @@ def _child_guid(definition_guid: str, role: str) -> str:
     return f"{definition_guid}::{role}"
 
 
+#: The format-1 lists whose entries each become a stage or a field write of their own, and
+#: the role a derived guid names them by.
+_PART_ROLES = (
+    ("field_to_field_defs", "field"),
+    ("field_to_file_defs", "file"),
+    ("field_to_variable_defs", "variable"),
+)
+
+
+def _give_parts_guids(format_1: dict, definition_guid: str) -> None:
+    """Give every variable, file write and field write that has no guid a derived one.
+
+    The stage made from such a part takes its guid, and the 0.2.0 migration that fills them
+    in runs only for a config that never reached 0.2.0: a part the format-1 editor saved
+    after that, and it built its rows without one, arrived here with none. The stage came
+    out with an empty guid, which the editor reports as "stage has no guid" and refuses to
+    save. Derived rather than random, like every stage this conversion invents, so that
+    converting the same definition twice agrees.
+    """
+    for key, role in _PART_ROLES:
+        for index, part in enumerate(format_1.get(key) or [], start=1):
+            if isinstance(part, dict) and not part.get("guid"):
+                part["guid"] = _child_guid(definition_guid, f"{role}-{index}")
+
+
+def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
+    """Give every stage of a staged definition that has no guid one. True if any had none.
+
+    For definitions converted before `_give_parts_guids` existed: their variables and file
+    writes can have an empty guid, and nothing else would ever give them one. An export the
+    user made of such a stage names no stage either, so it is pointed at the repaired stage
+    whose result it takes. Safe to run on every start: a definition with every guid in
+    place comes back untouched.
+    """
+    definition_guid = definition.get("guid") or ""
+    stages = definition.get("stages") or []
+    taken = {stage.get("guid") for stage in walk_stages(stages) if stage.get("guid")}
+    repaired_roots: dict[str, str] = {}
+    root_ids = {id(stage) for stage in stages}
+    counter = 0
+    for stage in walk_stages(stages):
+        if stage.get("guid"):
+            continue
+        guid = ""
+        while not guid or guid in taken:
+            counter += 1
+            guid = _child_guid(definition_guid, f"stage-{counter}")
+        stage["guid"] = guid
+        taken.add(guid)
+        if id(stage) in root_ids:
+            for result in stage_result_names(stage):
+                repaired_roots.setdefault(result, guid)
+    if not counter:
+        return False
+    for export in definition.get("exports") or []:
+        if not isinstance(export, dict) or export.get("stage_guid"):
+            continue
+        wanted = export.get("result") or export.get("name") or ""
+        if wanted in repaired_roots:
+            export["stage_guid"] = repaired_roots[wanted]
+    return True
+
+
 def _legacy_expression(
     text: str = "",
     code: str = "",
@@ -738,6 +801,7 @@ def migrate_definition_v1_to_v2(
     # format 1, read as the plain dict every helper below takes.
     format_1: dict = cast(dict, deepcopy(definition))
     definition_guid = format_1.get("guid") or new_guid()
+    _give_parts_guids(format_1, definition_guid)
     copy_mode = format_1.get("copy_mode")
     across_mode_direction = format_1.get("across_mode_direction")
     warnings: list[str] = []

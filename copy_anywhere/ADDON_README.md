@@ -460,7 +460,11 @@ to change is the Python around them. Change as little as you can.
   conversion. Written once and never touched again; do not edit it. Compare every piece of
   code you change with its original here. A converted definition keeps its original's
   `guid`, and so does the stage made from each field write, file write and variable; the
-  stages the conversion invented have guids `<definition guid>::<role>`.
+  stages the conversion invented have guids `<definition guid>::<role>`. A field write,
+  file write or variable stored without a guid of its own gets
+  `<definition guid>::field-<n>`, `::file-<n>` or `::variable-<n>`, counting from 1, and a
+  stage that already lost its guid in an earlier conversion is given
+  `<definition guid>::stage-<n>` the next time Anki starts.
 
 | format-1 code | where it is now |
 | --- | --- |

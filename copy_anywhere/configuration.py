@@ -515,8 +515,25 @@ def migrate_config():
     if compare_versions(reached, "0.3.0") >= 0 and compare_versions(reached, "0.4.0") < 0:
         promote_definition_syntax(config)
         reached = "0.4.0"
+    if compare_versions(reached, "0.3.0") >= 0:
+        repair_stage_guids(config)
     config.data["version"] = reached
     config.save()
+
+
+def repair_stage_guids(config: "Config") -> None:
+    """Give a guid to every stage that has none, on every start rather than once.
+
+    Not a versioned step: definitions converted before the conversion minted guids for
+    format-1 parts that lacked one are already past every version, and a stage can also lose
+    its guid to a hand edit. `fill_in_missing_stage_guids` leaves a complete definition
+    untouched, so the cost on a healthy config is one walk over its stages.
+    """
+    from .logic.definition_migration import fill_in_missing_stage_guids
+
+    for definition in config.data.get("copy_definitions") or []:
+        if is_format_2(definition):
+            fill_in_missing_stage_guids(definition)
 
 
 def get_variables_dict_from_variable_defs(
