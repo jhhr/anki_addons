@@ -3,7 +3,8 @@
 Anki's progress dialog has no buttons: a run is cancelled by Escape or the close box, and
 there was no way to pause one at all. The buttons go into that dialog rather than a window of
 our own because it is application-modal for the whole run, so nothing outside it could be
-clicked, and because it already comes and goes with the run.
+clicked, and because it already comes and goes with the run. Once the buttons are in, Escape
+and the close box cancel only while Cancel is enabled (`swallows_cancel`).
 
 Everything here runs on the main thread, which belongs to no run: it reads the pause through
 `pause_state()` and acts through `pause_run`/`resume_run`, all of which fall back to the run in
@@ -17,7 +18,7 @@ import logging
 from typing import Any, Optional
 
 from aqt import mw
-from aqt.qt import QHBoxLayout, QPushButton, Qt, qconnect, sip
+from aqt.qt import QEvent, QHBoxLayout, QObject, QPushButton, Qt, qconnect, sip
 
 from .api_client import pause_run, pause_state, resume_run
 
@@ -29,14 +30,56 @@ PAUSE_REASON = "paused by user"
 # new dialog for every operation and deletes it at the end, so each run gets fresh buttons
 # and a reference to a deleted dialog's buttons is never left behind to be touched.
 _CONTROLS_ATTR = "_japanese_note_ai_ops_run_controls"
+# Set by `progress_errors` once it has split the dialog into the progress column and its error
+# pane: the layout that now holds the label and the bar, where the buttons belong too
+PROGRESS_COLUMN_ATTR = "_japanese_note_ai_ops_progress_column"
+
+
+def swallows_cancel(event_type: Any, key: Any, cancel_enabled: bool) -> bool:
+    """Whether a key press or close of the dialog is a cancel to be dropped: Escape and the
+    close box cancel only while the Cancel button could, so a greyed Cancel means neither does.
+
+    Otherwise a press while the cleanup writes what cannot be stopped set the flag all the same,
+    and the step it ended read as cancelled though it had saved everything, stopping a chain.
+    """
+    if cancel_enabled:
+        return False
+    if event_type == QEvent.Type.Close:
+        return True
+    return event_type == QEvent.Type.KeyPress and key == Qt.Key.Key_Escape
+
+
+class _CancelKeyFilter(QObject):
+    """Drops Escape and the close box while Cancel is greyed (`swallows_cancel`).
+
+    On the dialog rather than a subclass of it: the dialog is Anki's. aqt closes it with
+    hide() and deleteLater(), never close(), so no Close this drops is one of Anki's own.
+    """
+
+    def __init__(self, win: Any) -> None:
+        super().__init__(win)
+        self.controls: Optional[_RunControls] = None
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:  # type: ignore[override]
+        try:
+            controls = self.controls
+            if controls is None or event is None:
+                return False
+            key = event.key() if event.type() == QEvent.Type.KeyPress else None
+            return swallows_cancel(event.type(), key, controls.cancel.isEnabled())
+        except Exception as e:
+            logger.error("Could not filter the progress dialog's cancel keys: %s", e)
+            return False
 
 
 class _RunControls:
-    __slots__ = ("toggle", "cancel", "disabled", "cleanup")
+    __slots__ = ("toggle", "cancel", "disabled", "cleanup", "key_filter")
 
     def __init__(self, toggle: QPushButton, cancel: QPushButton) -> None:
         self.toggle = toggle
         self.cancel = cancel
+        # Kept alive with the controls; parented to the dialog as well
+        self.key_filter: Optional[_CancelKeyFilter] = None
         # Once the run is being cancelled; a later refresh must not bring the buttons back
         self.disabled = False
         # Once the cleanup has re-armed Cancel to stop its note adding (rearm_cleanup_cancel):
@@ -49,7 +92,8 @@ def _progress_window() -> Optional[tuple[Any, Any]]:
 
     Private Anki API, all of it, kept in this one place: `mw.progress._win` (the dialog),
     `win.form.verticalLayout` (the designer form's only layout, holding the label and the
-    bar) and `win.wantCancel` (the flag Escape and the close box set, which
+    bar; once an error pane is shown, the column they were moved into, see
+    `progress_errors`) and `win.wantCancel` (the flag Escape and the close box set, which
     `mw.progress.want_cancel()` reads). Checked against Anki 26.09. If a later Anki renames
     or drops any of them, the dialog simply shows no buttons: the run still pauses itself at
     a usage limit and resumes at the reset time, and Escape still cancels.
@@ -57,7 +101,9 @@ def _progress_window() -> Optional[tuple[Any, Any]]:
     win = _dialog()
     if win is None:
         return None
-    layout = getattr(getattr(win, "form", None), "verticalLayout", None)
+    layout = getattr(win, PROGRESS_COLUMN_ATTR, None)
+    if layout is None:
+        layout = getattr(getattr(win, "form", None), "verticalLayout", None)
     if layout is None:
         return None
     return win, layout
@@ -89,7 +135,7 @@ def _install(win: Any, layout: Any) -> _RunControls:
     for button in (toggle, cancel):
         # Never keyboard-activated: the dialog pops up over whatever the user was typing
         # into, and Space or Enter landing on a focused button would pause or cancel the run.
-        # Escape keeps cancelling through the dialog itself.
+        # Escape keeps cancelling through the dialog itself, while Cancel is enabled.
         button.setAutoDefault(False)
         button.setDefault(False)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -100,6 +146,10 @@ def _install(win: Any, layout: Any) -> _RunControls:
     layout.addLayout(row)
     controls = _RunControls(toggle, cancel)
     setattr(win, _CONTROLS_ATTR, controls)
+    key_filter = _CancelKeyFilter(win)
+    key_filter.controls = controls
+    win.installEventFilter(key_filter)
+    controls.key_filter = key_filter
     qconnect(toggle.clicked, lambda: _on_toggle(win))
     qconnect(cancel.clicked, lambda: _on_cancel(win))
     return controls
@@ -177,6 +227,39 @@ def install_run_controls() -> None:
         _refresh(win, controls)
     except Exception as e:
         logger.error("Could not add the run controls to the progress dialog: %s", e)
+
+
+def start_run_controls() -> None:
+    """The buttons for a run that is starting. Main thread, after `run_in_background`.
+
+    A run has its dialog to itself unless it is a step of a chain, whose dialog stays open
+    across steps: there the previous step left the buttons greyed for good, and this run
+    brings them back. Never over a cancel the dialog's flag still holds.
+    """
+    try:
+        found = _progress_window()
+        if found is None:
+            return
+        win, layout = found
+        controls = _controls_of(win)
+        if controls is None:
+            controls = _install(win, layout)
+        elif not win.wantCancel:
+            controls.disabled = False
+            controls.cleanup = False
+            controls.toggle.setEnabled(True)
+            controls.cancel.setEnabled(True)
+        _refresh(win, controls)
+    except Exception as e:
+        logger.error("Could not add the run controls to the progress dialog: %s", e)
+
+
+def install_idle_run_controls() -> None:
+    """The buttons, greyed, for a dialog open with no run in it yet: a chain's, before its
+    first step. Greyed Cancel also keeps Escape and the close box from cancelling (see
+    `swallows_cancel`). Main thread."""
+    install_run_controls()
+    disable_run_controls()
 
 
 def refresh_run_controls() -> None:

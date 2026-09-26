@@ -67,6 +67,18 @@ def triggers_editor(col, widget_parent, **triggers):
     return TriggersEditor(widget_parent, definition), definition
 
 
+def every_note():
+    """The picker's note source with no selection and an empty search: every note counts.
+
+    What the picker counted over before the shared note-source buttons, when these tests
+    passed no browser at all; the counts here are about note types and decks, not about
+    which notes the browser offered.
+    """
+    from copy_anywhere.shared.ui.note_source_buttons import NoteSource
+
+    return NoteSource([], "", use_selection=False)
+
+
 def document_for(definition) -> StageDocument:
     """A document wired to the collection the way the dialog wires it."""
     return StageDocument(definition, unresolved_refs=unresolved_reference_problems)
@@ -541,7 +553,7 @@ class TestThePickerMarksADefinition:
         """The picker over the stored definitions, as `show_copy_dialog` opens it."""
         from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
 
-        return PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), None, None)
+        return PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), every_note())
 
     def save_through(self, monkeypatch, dialog, definition, saved):
         """Edit `definition` in the picker, the editor handing back `saved`, and save it."""
@@ -642,7 +654,7 @@ class ADefinitionBrokenByARename:
         from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
 
         config.data["copy_definitions"] += list(more)
-        return PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), None, None)
+        return PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), every_note())
 
 
 class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename):
@@ -963,7 +975,7 @@ class TestThePickerMarksAStaleSearch:
         config.load()
         definition = self.searching("deck:Nonsuch")
         config.data["copy_definitions"] = [definition]
-        dialog = PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), None, None)
+        dialog = PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), every_note())
         row = dialog.definition_ui_components[definition["guid"]]["widget"]
         assert row.search_marker.text() != ""
         fixed = copy.deepcopy(definition)
@@ -1050,7 +1062,7 @@ class TestThePickerCountsApplicableNotes:
         """The dialog over this one definition, with its row ticked so the count is made."""
         from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
 
-        dialog = PickCopyDefinitionDialog(widget_parent, [definition], None, None)
+        dialog = PickCopyDefinitionDialog(widget_parent, [definition], every_note())
         dialog.checkboxes[0].setChecked(True)
         return dialog
 

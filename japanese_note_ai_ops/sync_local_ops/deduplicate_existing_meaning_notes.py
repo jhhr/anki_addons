@@ -1,6 +1,6 @@
 import logging
 
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 from aqt import mw
 from aqt.utils import showWarning
@@ -8,6 +8,7 @@ from aqt.utils import showWarning
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 
+from ..async_api_ops.chain_types import ChainStep
 from ..async_api_ops.base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
@@ -96,10 +97,12 @@ def bulk_deduplicate_existing_meaning_notes_op(
     )
 
 
-def deduplicate_existing_meaning_notes_selected_notes(nids: Sequence[NoteId], parent: Any):
+def deduplicate_existing_meaning_notes_selected_notes(
+    nids: Sequence[NoteId], parent: Any, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(
         title="Sync op: Deduplicating existing meaning notes"
     )
     done_text = "Deduplicated existing meaning notes"
     bulk_op = bulk_deduplicate_existing_meaning_notes_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

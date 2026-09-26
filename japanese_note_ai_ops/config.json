@@ -24,6 +24,7 @@
   "mdx_filenames": [],
   "mdx_pick_dictionary": "all",
   "kanji_sentence_fine_tuning_data_query": "",
+  "multi_op_dialog_shortcut": "",
   "log_level": "ERROR",
   "log_to_console": true
 }

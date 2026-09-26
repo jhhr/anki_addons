@@ -110,7 +110,8 @@ root `testpaths`. Reuse, do not reinvent:
 
 These are characterization tests: they pin current behaviour, including behaviour that
 looks odd. A test that fails after your change is a behaviour change to justify, not a test
-to update. Not covered at all: everything in `ui/`, `migrate_config`, the `Config` CRUD
+to update. Not covered at all: everything in `ui/` except the picker's note counts
+(`test/test_pick_dialog_note_source.py`), `migrate_config`, the `Config` CRUD
 methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`.
 
 ## Known rough edges
@@ -134,6 +135,11 @@ Declares `interpolate`, `ui`, `utils`, `anki`, `jp_text_processing`, `word_array
 exposes `kana_highlight`, `decode_word_array` and `format_word_array` to code mode when they
 import. The interpolation engine and most widgets this addon uses are shared with
 `related_card_disperse`; change them in `anki_shared/`, never under `shared/`, and run that
-addon's tests too. Several helpers here are generic with one owner (`utils/merge_cards`,
-`move_card_to_deck`, `duplicate_note`, the media-folder helpers): when another addon needs
-one, move it per [docs/shared-code.md](../docs/shared-code.md) instead of copying.
+addon's tests too. The picker's "Use selected notes" / "Use all notes from current search"
+pair is `ui.note_source_buttons`, shared with `japanese_note_ai_ops`' multi-op dialog. It
+always starts on the selection, and with nothing selected that is no notes: the search has
+to be clicked, so a stray Enter never applies to a whole search. The search is the one the
+browser last ran, not the box text, and `browser_query()` groups it in parentheses so that an
+`or` in it cannot escape the definition's note type and deck terms. Several
+helpers here are generic with one owner (`utils/merge_cards`, `move_card_to_deck`,
+`duplicate_note`, the media-folder helpers): when another addon needs one, move it per [docs/shared-code.md](../docs/shared-code.md) instead of copying.

@@ -17,6 +17,7 @@ from .collection_access import (
 from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
 from .word_index import WordIndex
+from .chain_types import ChainStep
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -1143,8 +1144,10 @@ def bulk_clean_notes_op(
     )
 
 
-def clean_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def clean_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Cleaning meanings")
     done_text = "Updated meaning"
     bulk_op = bulk_clean_notes_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

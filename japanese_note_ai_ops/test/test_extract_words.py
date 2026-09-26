@@ -239,7 +239,7 @@ class ExtractWordsPhasesTests(unittest.TestCase):
             mock.patch.object(extract_words, "selected_notes_op") as run_op,
             mock.patch.object(extract_words, "AsyncTaskProgressUpdater"),
         ):
-            resources.side_effect = lambda _parent, then: then()
+            resources.side_effect = lambda _parent, then, chain=None: then()
             extract_words.extract_words_and_judge_from_selected_notes([1], parent=None)
 
         phases = run_op.call_args.args[1]

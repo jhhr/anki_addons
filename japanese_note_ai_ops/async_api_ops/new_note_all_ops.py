@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Sequence
-from typing import Callable
+from typing import Callable, Optional
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -11,6 +11,7 @@ from aqt.utils import showWarning
 from ..configuration import GeneratedMeaningsDictType
 from ..generator_resources import with_generator_resources
 from ..word_array.match_flags import JUDGE_NEW
+from .chain_types import ChainStep
 from .base_ops import AsyncTaskProgressUpdater, OpPhase, bulk_notes_op, selected_notes_op
 from .clean_meaning import clean_meaning_in_note
 from .extract_words import extract_words_op
@@ -124,7 +125,9 @@ async def bulk_new_note_all_ops(
     )
 
 
-def new_note_all_ops_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def new_note_all_ops_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     """Every op a new note needs, then the judge over the words the word array just got. The
     judge is a phase of its own because its requests cannot be planned before the words exist.
     Needs the generator's resources, asked about before any note is touched."""
@@ -141,6 +144,7 @@ def new_note_all_ops_selected_notes(nids: Sequence[NoteId], parent: Browser):
             nids,
             parent,
             progress_updater,
+            chain=chain,
         )
 
-    with_generator_resources(parent, run)
+    with_generator_resources(parent, run, chain=chain)
