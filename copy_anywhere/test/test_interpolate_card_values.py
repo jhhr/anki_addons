@@ -362,7 +362,7 @@ class TestMultipleNoteTypes:
         # there is no way to pick between two, so this is a ValueError rather than a guess.
         # get_field_values_from_notes catches it and breaks out of the source-note loop.
         note = real_anki.add_note(col, VOCAB, {"Word": "w"})
-        with pytest.raises(ValueError, match="single card type"):
+        with pytest.raises(ValueError, match="names no card type.*this note has 2"):
             interpolate_from_text("{{__Card_ID}}", note, multiple_note_types=True)
 
     def test_a_second_single_card_note_type_resolves_the_same_way(self, col):

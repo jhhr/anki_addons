@@ -17,6 +17,7 @@ from typing import Callable, Mapping, Optional, Sequence
 from anki.models import NotetypeDict
 
 from ..logic.definition_schema import (
+    CARD_PROPERTY_NAMES,
     CARD_REF,
     CopyDefinitionV2,
     LIST,
@@ -32,7 +33,6 @@ from ..logic.definition_schema import (
     T_NOTE,
     walk_stages,
 )
-from ..logic.execution.expressions import CARD_PROPERTY_NAMES
 from ..logic.flow_analysis import Binding
 from ..shared.interpolate.interpolate_fields import (
     CARD_VALUES,
@@ -47,7 +47,10 @@ from ..shared.ui.add_intersecting_model_field_options_to_dict import (
     add_intersecting_model_field_options_to_dict,
     get_intersecting_model_fields,
 )
-from ..shared.ui.add_model_options_to_dict import add_model_options_to_dict
+from ..shared.ui.add_model_options_to_dict import (
+    add_model_options_to_dict,
+    get_max_cloze_ords,
+)
 from ..shared.ui.interpolated_text_edit import make_validate_dict
 from .stage_document import STAGE_TYPE_MENU_ORDER, StageDocument
 
@@ -153,26 +156,39 @@ def card_menu_dict(binding: str) -> dict:
     }
 
 
-def note_menu_dict(binding: str, note_types: Optional[Sequence[NotetypeDict]]) -> tuple[dict, bool]:
+def note_menu_dict(
+    binding: str,
+    note_types: Optional[Sequence[NotetypeDict]],
+    max_cloze_ords: Optional[Mapping[int, int]] = None,
+) -> tuple[dict, bool]:
     """A note binding's menu, and whether its fields had to be an intersection.
 
     `note_types` of None means "this binding may hold any note type", which is the honest
     answer for a query result: nothing in the definition says what the query will match.
+
+    `max_cloze_ords` is `get_max_cloze_ords()`, which a caller building several menus reads
+    once for all of them: the cloze entries it sizes cost a pass over the cards table.
     """
     from aqt import mw
 
+    if max_cloze_ords is None:
+        max_cloze_ords = get_max_cloze_ords()
     menu: dict = {NOTE_VALUES_KEY: note_values_dict(binding)}
     prefix = f"{binding}."
     if note_types is None:
         assert mw is not None and mw.col is not None
         all_models: dict = {}
         for model in mw.col.models.all_names_and_ids():
-            add_model_options_to_dict(model.name, model.id, all_models, prefix)
+            add_model_options_to_dict(
+                model.name, model.id, all_models, prefix, max_cloze_ords=max_cloze_ords
+            )
         menu[ALL_FIELDS_KEY] = all_models
         return menu, True
     if len(note_types) == 1:
         model = note_types[0]
-        add_model_options_to_dict(model["name"], model["id"], menu, prefix)
+        add_model_options_to_dict(
+            model["name"], model["id"], menu, prefix, max_cloze_ords=max_cloze_ords
+        )
         return menu, False
     if len(note_types) > 1:
         add_intersecting_model_field_options_to_dict(
@@ -183,7 +199,9 @@ def note_menu_dict(binding: str, note_types: Optional[Sequence[NotetypeDict]]) -
         )
         every: dict = {}
         for model in note_types:
-            add_model_options_to_dict(model["name"], model["id"], every, prefix)
+            add_model_options_to_dict(
+                model["name"], model["id"], every, prefix, max_cloze_ords=max_cloze_ords
+            )
         menu[ALL_FIELDS_KEY] = every
         return menu, True
     # No note types selected at all: the definition does not run yet, so offer nothing
@@ -192,20 +210,26 @@ def note_menu_dict(binding: str, note_types: Optional[Sequence[NotetypeDict]]) -
 
 
 def scope_options_dict(
-    scope: Mapping[str, Binding], note_types_for: NoteTypesFor
+    scope: Mapping[str, Binding],
+    note_types_for: NoteTypesFor,
+    max_cloze_ords: Optional[Mapping[int, int]] = None,
 ) -> tuple[dict, bool]:
     """The whole interpolation menu for one scope, and whether any note binding is mixed.
 
     List results are absent by design (§6): there is no interpolation that could produce a
     string from one, so offering it would only produce an analysis error later.
     """
+    if max_cloze_ords is None:
+        max_cloze_ords = get_max_cloze_ords()
     options: dict = {}
     mixed = False
     variables: dict = {}
     for name in sorted(scope):
         binding = scope[name]
         if binding.type.kind == NOTE_REF:
-            options[name], binding_mixed = note_menu_dict(name, note_types_for(name))
+            options[name], binding_mixed = note_menu_dict(
+                name, note_types_for(name), max_cloze_ords
+            )
             mixed = mixed or binding_mixed
         elif binding.type.kind == CARD_REF:
             options[name] = card_menu_dict(name)
@@ -277,6 +301,8 @@ def build_contexts(
     if note_types_for is None:
         note_types_for = make_note_types_for(document.definition)
     analysis = document.analysis
+    # Read once for every scope's menus rather than per note type per binding per scope.
+    max_cloze_ords = get_max_cloze_ords()
     cache: dict[frozenset, tuple[dict, dict, bool]] = {}
     contexts: dict[str, StageEditorContext] = {}
 
@@ -287,7 +313,7 @@ def build_contexts(
         # `Binding` objects on, so sibling stages after it compare equal here.
         key = frozenset(scope.items())
         if key not in cache:
-            options, mixed = scope_options_dict(scope, note_types_for)
+            options, mixed = scope_options_dict(scope, note_types_for, max_cloze_ords)
             cache[key] = (options, make_validate_dict(options), mixed)
         return cache[key]
 

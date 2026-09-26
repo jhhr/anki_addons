@@ -749,6 +749,93 @@ class TestABareNameThatNamesNothing:
         assert result.is_valid, messages(result)
 
 
+class TestReferencesInsideACloze:
+    """The run resolves every reference a cloze wraps, so saving checks every one of them.
+
+    A reference ends at the first `}}`, so read without taking the cloze apart first,
+    `{{c1::{{Wrod}}}}` is one "reference" named `c1::{{Wrod` -- which looks like a cloze
+    marker and was skipped whole, typo included.
+    """
+
+    def write(self, text):
+        return analyze([d.edit_note("trigger", [d.write("Note", d.text(text))])])
+
+    def test_a_typo_inside_a_cloze_is_refused(self):
+        result = self.write("{{c1::{{Wrod}}}}")
+        assert "'Wrod' is not a binding or a runtime value" in messages(result)
+
+    def test_so_is_the_first_of_several(self):
+        result = self.write("{{c1::{{Wrod}} and {{Wrod2}}}}")
+        assert "'Wrod'" in messages(result)
+        assert "'Wrod2'" in messages(result)
+
+    def test_and_one_in_a_cloze_inside_a_cloze(self):
+        result = self.write("{{c1::a {{c2::{{Wrod}}}}}}")
+        assert "'Wrod' is not a binding or a runtime value" in messages(result)
+
+    def test_a_field_inside_a_cloze_is_checked_against_the_trigger_fields(self):
+        result = analyze_definition(
+            d.staged(stages=[
+                d.edit_note("trigger", [d.write("Note", d.text("{{c1::{{trigger.Wrod}}}}"))]),
+            ]),
+            known_fields={"trigger": {"Word", "Note"}},
+        )
+        assert "'Wrod' is not a field or value" in messages(result)
+
+    def test_a_cloze_that_is_never_closed_is_refused_as_that(self):
+        # Rather than as the binding `c1::abc {{trigger` that splitting the swallowed
+        # reference on its dot would name.
+        result = self.write("{{c1::abc {{trigger.Word}}")
+        assert messages(result).endswith(
+            "field 'Note' has a cloze '{{c1::' that is never closed"
+        ), messages(result)
+
+    def test_so_is_any_other_brace_that_is_never_closed(self):
+        result = self.write("{{abc {{trigger.Word}}")
+        assert messages(result).endswith(
+            "field 'Note' has a '{{' that is never closed, before 'abc'"
+        ), messages(result)
+
+
+class TestAReferenceThroughACardBinding:
+    """`{{card.X}}` names a card property or a card value, and nothing else resolves.
+
+    The card binding is the card, so a card value takes no card type in front: the run
+    reads the key off the card in hand and refuses anything else, once per card.
+    """
+
+    def read(self, rest):
+        return analyze([
+            d.card_query("cards", "deck:x"),
+            d.for_each_card("cards", [
+                d.edit_note("note", [d.write("Note", d.text("{{card." + rest + "}}"))]),
+            ]),
+        ])
+
+    @pytest.mark.parametrize("rest", [
+        "deck_name",
+        "template_name",
+        "created",
+        "total_review_time",
+        "__Card_Due",
+        "__Card_Custom_Data_Prop==seen",
+    ])
+    def test_a_property_or_a_value_is_fine(self, rest):
+        result = self.read(rest)
+        assert result.is_valid, messages(result)
+
+    @pytest.mark.parametrize("rest", [
+        "template_nme",
+        "__Card_Do",
+        # The spelling a note offers for a cloze card's value. Through the card binding
+        # there is no card type to name.
+        "Cloze 1__Card_Due",
+    ])
+    def test_anything_else_is_refused(self, rest):
+        result = self.read(rest)
+        assert f"'{rest}' is not a card property or card value" in messages(result)
+
+
 #: The default for the helper below, so a test can pass `None` and mean it.
 _TRIGGER_FIELDS_OF_THE_TEST = {"trigger": {"Word", "Meaning", "Note"}}
 

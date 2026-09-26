@@ -33,7 +33,8 @@ from copy_anywhere.ui.stage_editor_context import (
     root_context,
 )
 
-from conftest import VOCAB, KANJI
+from anki_shared.testing import real_anki
+from conftest import CLOZE, VOCAB, KANJI
 
 
 def variable(guid, name, text="x"):
@@ -257,9 +258,9 @@ def test_options_are_built_once_per_distinct_scope(col, monkeypatch):
 
     real = module.scope_options_dict
 
-    def counted(scope, resolver):
+    def counted(scope, *args):
         calls.append(scope)
-        return real(scope, resolver)
+        return real(scope, *args)
 
     monkeypatch.setattr(module, "scope_options_dict", counted)
     # Stages that declare nothing leave the scope as they found it, so the three edits
@@ -273,3 +274,34 @@ def test_options_are_built_once_per_distinct_scope(col, monkeypatch):
     # And the stages sharing a scope share its menus.
     assert contexts["e1"].options_dict is contexts["e3"].options_dict
     assert contexts["a"].options_dict is not contexts["e1"].options_dict
+
+
+def test_the_cloze_numbers_in_use_are_read_once_for_every_menu(col, monkeypatch):
+    # A cloze note type's menu lists one entry per cloze number in use, which is a pass
+    # over the cards table. Every binding that may hold any note type lists every note
+    # type, in every scope, so reading it per note type made opening the editor cost one
+    # pass per cloze note type per such binding per scope.
+    real_anki.add_note(col, CLOZE, {"Text": "{{c1::a}} {{c2::b}} {{c3::c}}", "Extra": ""})
+    queries = []
+    for method in ("scalar", "all"):
+        real = getattr(col.db, method)
+
+        def counted(sql, *args, _real=real, **kwargs):
+            if "max(" in sql.lower():
+                queries.append(sql)
+            return _real(sql, *args, **kwargs)
+
+        monkeypatch.setattr(col.db, method, counted)
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["input"] = {"binding": "found"}
+    loop["body"] = [variable("inner", "Inner", "{{note.Text}}")]
+    doc = document(
+        note_query("q", "found"), loop, variable("after", "After"), note_types=(VOCAB, CLOZE)
+    )
+
+    contexts = build_contexts(doc)
+
+    assert len(queries) == 1, queries
+    cloze_cards = contexts["inner"].options_dict["note"][ALL_FIELDS_KEY][CLOZE]["Card types"]
+    assert list(cloze_cards) == ["Cloze 1", "Cloze 2", "Cloze 3"]
+    assert cloze_cards["Cloze 3"]["__Card_Due"] == "{{note.Cloze 3__Card_Due}}"

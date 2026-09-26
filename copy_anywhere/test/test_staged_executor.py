@@ -857,12 +857,12 @@ class TestACardValueReadThroughACardBinding:
     Two things fall out of the indirection, and the editor's own interpolation menu offers
     the spelling that hits both (`test_stage_editor_context` pins that it does).
 
-    A definition listing more than one trigger note type switches `interpolate_from_text` to
-    the spelling that forbids a template-name prefix, so the prefixed key matches nothing and
-    the definition fails per note with "is not a field or value of that note".
+    A definition listing more than one trigger note type switched `interpolate_from_text` to
+    the spelling that forbids a template-name prefix, so the prefixed key matched nothing and
+    the definition failed per note with "is not a field or value of that note".
 
     A cloze note keys its card values `"Cloze 1"`, `"Cloze 2"` -- all cloze cards share one
-    template, so the name alone cannot tell them apart -- while `template_name` is the bare
+    template, so the name alone cannot tell them apart -- while `template_name` was the bare
     `"Cloze"`. That misses, and a miss returns the type-appropriate default rather than
     erroring, so every card in a loop silently reported the same 0.
     """
@@ -1756,6 +1756,199 @@ class TestCalls:
             "cannot be guaranteed" in message
             for message in analyze_definition(child).problem_messages()
         )
+
+
+class TestACardValueReadThroughANote:
+    """`{{note.Recognition__Card_Due}}` and `{{note.__Card_Due}}`: a card value off a note.
+
+    The two spellings cannot be mistaken for each other, and the run tells them apart by
+    the spelling: with a card type in front it reads that card, without one it reads the
+    note's only card. It used to go by how many trigger note types the definition lists,
+    which the editor's menu could not follow -- it offers the named spelling for a note a
+    query found, whatever the trigger -- so its own choice failed on every note.
+    """
+
+    @pytest.fixture
+    def cloze(self, col):
+        note = real_anki.add_note(
+            col, CLOZE, {"Text": "{{c1::one}} and {{c2::two}}", "Extra": ""}
+        )
+        assert len(note.cards()) == 2
+        return note
+
+    def card_ids(self, note):
+        return {card.ord + 1: card.id for card in note.cards()}
+
+    def test_a_named_cloze_card_on_the_trigger_of_several_note_types(self, cloze, logger):
+        definition = d.staged(
+            stages=[
+                d.edit_note(
+                    "trigger", [d.write("Extra", d.text("{{trigger.Cloze 2__Card_ID}}"))]
+                ),
+            ],
+            note_types=[KANJI, CLOZE],
+        )
+
+        ok, copied = run(definition, cloze)
+
+        assert ok is True, logger.errors
+        assert copied[0]["Extra"] == str(self.card_ids(cloze)[2])
+
+    def test_the_menus_spelling_for_a_note_a_query_found(self, cloze, logger):
+        definition = d.staged(
+            stages=[
+                d.note_query("found", f"nid:{cloze.id}"),
+                d.for_each_note("found", [
+                    d.edit_note(
+                        "note", [d.write("Extra", d.text("{{note.Cloze 1__Card_ID}}"))]
+                    ),
+                ]),
+            ],
+            note_types=[KANJI, CLOZE],
+        )
+
+        ok, copied = run(definition, cloze)
+
+        assert ok is True, logger.errors
+        assert copied[0]["Extra"] == str(self.card_ids(cloze)[1])
+
+    def test_no_card_type_reads_the_only_card_of_a_definition_of_one_note_type(
+        self, col, logger
+    ):
+        note = real_anki.add_note(col, KANJI, {"Kanji": "a", "Keyword": ""})
+        definition = d.staged(
+            stages=[d.edit_note("trigger", [d.write("Keyword", d.text("{{trigger.__Card_ID}}"))])],
+            note_types=[KANJI],
+        )
+
+        ok, copied = run(definition, note)
+
+        assert ok is True, logger.errors
+        assert copied[0]["Keyword"] == str(note.cards()[0].id)
+
+    def test_no_card_type_on_a_note_of_several_cards_fails_the_stage(self, cloze, logger):
+        # A stage failure, which the runner handles by undoing what the stages before it
+        # did to the trigger. A bare error escaped it, and the first write stayed on the
+        # note the caller holds.
+        definition = d.staged(
+            stages=[
+                d.edit_note("trigger", [d.write("Extra", d.text("first"))]),
+                d.edit_note("trigger", [d.write("Extra", d.text("{{trigger.__Card_Due}}"))]),
+            ],
+            note_types=[KANJI, CLOZE],
+        )
+
+        ok, _copied = run(definition, cloze)
+
+        assert ok is False
+        assert cloze["Extra"] == ""
+        assert logger.errors == [
+            "'__Card_Due' names no card type, so it reads the note's only card, but this"
+            " note has 2 (Cloze 1, Cloze 2); put one in front, as in 'Cloze 1__Card_Due'"
+        ]
+
+
+class TestACloze:
+    def test_one_that_is_never_closed_fails_the_stage_saying_so(self, note, logger):
+        # The editor refuses to save this; a definition written by hand still reaches the
+        # run, which reported the binding `c1::abc {{trigger` as not in scope.
+        definition = d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("{{c1::abc {{trigger.Word}}"))]),
+        ])
+
+        ok, _copied = run(definition, note)
+
+        assert ok is False
+        assert logger.errors == [
+            "Text for field Note has a cloze '{{c1::' that is never closed"
+        ]
+
+    def test_the_references_inside_one_are_resolved_and_the_marker_kept(self, note, logger):
+        definition = d.staged(stages=[
+            d.edit_note(
+                "trigger",
+                [d.write("Note", d.text("{{c1::{{trigger.Word}} {{c2::{{trigger.Meaning}}}}}}"))],
+            ),
+        ])
+
+        assert run(definition, note)[0] is True, logger.errors
+        assert note["Note"] == "{{c1::neko {{c2::cat}}}}"
+
+
+class TestACardAsCodeSeesIt:
+    """A card in code has what format 1's code saw on one, so converted code still runs.
+
+    Format 1 handed code a `ReadOnlyCard`. The facade that replaced it lost the cloze number
+    off `template_name` and the creation and review times, and the converter rewrites code
+    without reading it -- so `c.template_name == 'Cloze 2'` silently matched nothing and
+    `c.total_review_time` failed on every note, with nothing saying which definitions did
+    either.
+    """
+
+    @pytest.fixture
+    def cloze(self, col):
+        return real_anki.add_note(
+            col, CLOZE, {"Text": "{{c1::one}} and {{c2::two}}", "Extra": ""}
+        )
+
+    def read(self, note, code):
+        definition = d.staged(
+            stages=[
+                d.variable("seen", d.code(code)),
+                d.edit_note("trigger", [d.write("Extra", d.text("{{seen}}"))]),
+            ],
+            note_types=[CLOZE],
+        )
+        ok, copied = run(definition, note)
+        assert ok is True
+        return copied[0]["Extra"]
+
+    def test_a_cloze_cards_template_name_carries_its_number(self, cloze):
+        seen = self.read(cloze, "return ','.join(sorted(c.template_name for c in cards))")
+        assert seen == "Cloze 1,Cloze 2"
+
+    def test_so_does_the_reference_in_text(self, cloze, logger):
+        definition = d.staged(
+            stages=[
+                d.card_query("cards", f"nid:{cloze.id} card:2"),
+                d.for_each_card("cards", [
+                    d.edit_note("note", [d.write("Extra", d.text("{{card.template_name}}"))]),
+                ]),
+            ],
+            note_types=[CLOZE],
+        )
+        ok, copied = run(definition, cloze)
+        assert ok is True, logger.errors
+        assert copied[0]["Extra"] == "Cloze 2"
+
+    def test_the_times_are_the_ones_format_1s_card_gave(self, col, cloze):
+        from anki_shared.interpolate.execute_code import ReadOnlyCard
+
+        card = min(cloze.cards(), key=lambda c: c.ord)
+        # Two reviews, so every one of the four values has something to say.
+        for offset, seconds in ((0, 4), (86_400_000, 6)):
+            col.db.execute(
+                "insert into revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)"
+                " values (?, ?, -1, 3, 1, 0, 2500, ?, 1)",
+                1_700_000_000_000 + offset,
+                card.id,
+                seconds * 1000,
+            )
+        names = [
+            "created",
+            "first_review_time",
+            "latest_review_time",
+            "average_review_time",
+            "total_review_time",
+        ]
+        seen = self.read(
+            cloze,
+            "c = [c for c in cards if c.ord == 0][0]\n"
+            f"return '|'.join(str(getattr(c, n)) for n in {names!r})",
+        )
+        format_1 = ReadOnlyCard(card, cloze.note_type())
+        assert seen == "|".join(str(getattr(format_1, name)) for name in names)
+        assert "-" not in seen.split("|")
 
 
 class TestFacades:

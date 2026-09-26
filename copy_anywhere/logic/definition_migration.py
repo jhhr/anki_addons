@@ -48,8 +48,8 @@ from ..shared.interpolate.interpolate_fields import (
     FROM_TEXT_FIELD_REGEX,
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
-    extract_cloze_patterns,
     intr_format,
+    map_outside_clozes,
 )
 from .definition_schema import (
     CARD_TYPE_SEPARATOR,
@@ -946,25 +946,16 @@ def _promote_text(
     if not text:
         return text or ""
     # Cloze markers are not references. Their content is, so it is promoted on its own and
-    # the marker put back around the result -- the shape `resolve_references` uses.
-    placeholders: dict[str, str] = {}
-    for index, (start, end, cloze_num, content) in enumerate(
-        reversed(extract_cloze_patterns(text))
-    ):
-        placeholder = f"\x00CLOZE{index}\x00"
-        promoted = _promote_text(content, source, destination, known, binding_heads)
-        placeholders[placeholder] = f"{{{{c{cloze_num}::{promoted}}}}}"
-        text = text[:start] + placeholder + text[end:]
-
-    text = FROM_TEXT_FIELD_REGEX.sub(
-        lambda match: _promote_reference(
-            match.group(1), source, destination, known, binding_heads
-        ),
+    # the marker kept around the result -- as `resolve_references` does.
+    return map_outside_clozes(
         text,
+        lambda part: FROM_TEXT_FIELD_REGEX.sub(
+            lambda match: _promote_reference(
+                match.group(1), source, destination, known, binding_heads
+            ),
+            part,
+        ),
     )
-    for placeholder, cloze in placeholders.items():
-        text = text.replace(placeholder, cloze)
-    return text
 
 
 def promote_expression(

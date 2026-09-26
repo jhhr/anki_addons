@@ -22,17 +22,20 @@ from anki.notes import Note
 
 from ...shared.interpolate.execute_code import execute_code_core
 from ...shared.interpolate.interpolate_fields import (
+    MULTI_CARD_VALUE_RE,
     CardValues,
-    extract_cloze_patterns,
     get_card_value,
     interpolate_from_text,
+    map_outside_clozes,
 )
 from ..copy_primitives import apply_process_chain
 
 from ..definition_schema import (
+    CARD_PROPERTY_NAMES,
     ValueExpression,
     expression_is_code,
     expression_source,
+    unclosed_reference_problem,
 )
 from .context import ExecutionSession, StageError
 from .facades import (
@@ -49,38 +52,6 @@ INTERPOLATION_RE = re.compile(r"\{\{(.+?)\}\}")
 
 #: The scalar Python types interpolation is allowed to stringify (§4.1).
 SCALAR_TYPES = (str, int, float, bool)
-
-#: `{{card.<name>}}` properties, resolved on the card facade rather than through the
-#: `<template>__Card_*` keys format 1 used.
-CARD_PROPERTY_NAMES = frozenset({
-    "id",
-    "nid",
-    "did",
-    "odid",
-    "deck_id",
-    "deck_name",
-    "original_deck_name",
-    "ord",
-    "template_name",
-    "type",
-    "queue",
-    "due",
-    "odue",
-    "ivl",
-    "factor",
-    "ease",
-    "reps",
-    "lapses",
-    "left",
-    "flag",
-    "custom_data",
-    "desired_retention",
-    "stability",
-    "difficulty",
-    "mod",
-    "suspended",
-    "buried",
-})
 
 
 class ExpressionContext:
@@ -155,11 +126,21 @@ class ExpressionContext:
 
 
 def _note_reference(note: Note, rest: str, ctx: ExpressionContext) -> str:
-    value, invalid = interpolate_from_text(
-        "{{" + rest + "}}",
-        source_note=note,
-        multiple_note_types=ctx.multiple_note_types,
-    )
+    # A card value is spelled with its card type in front (`Recognition__Card_Due`,
+    # `Cloze 2__Card_Due`), or without one to read a note's only card (`__Card_Due`). Which
+    # one the text uses says which it means; the two cannot be mistaken for each other. The
+    # definition's note types are no guide: the editor offers the named spelling for a note
+    # a query found whatever the trigger is, and a note a query found need not be of a
+    # trigger note type at all.
+    try:
+        value, invalid = interpolate_from_text(
+            "{{" + rest + "}}",
+            source_note=note,
+            multiple_note_types=MULTI_CARD_VALUE_RE.match(rest) is not None,
+        )
+    except ValueError as error:
+        # A bare card value on a note that has several cards: it cannot say which to read.
+        raise ctx.error(str(error)) from None
     if invalid:
         raise ctx.error(f"'{rest}' is not a field or value of that note")
     return value or ""
@@ -175,9 +156,8 @@ def _card_reference(
         # A card-value key, read from the card this binding names. Format 1 had no card
         # binding -- it had a note -- so it keyed these by card template name and found them
         # through `get_from_note_fields`. Going back through that path meant discarding the
-        # card in hand to re-derive it from its note, which cannot name one cloze card (they
-        # share a template) and which a definition spanning several note types refuses
-        # outright (the prefix is not allowed there). Neither question arises here.
+        # card in hand to re-derive it from its note by template name, which cannot name one
+        # cloze card (they share a template). That question does not arise here.
         #
         # One `CardValues` per card for the whole expression, so its four review-time values
         # share one revlog query however many of them the text names. Keyed by the object,
@@ -196,34 +176,20 @@ def _card_reference(
     raise ctx.error(f"'{rest}' is not a card property")
 
 
-def resolve_references(
-    text: str, ctx: ExpressionContext, card_values: Optional[dict[int, CardValues]] = None
-) -> str:
-    """Substitute every `{{...}}` in a format-2 expression with the value it names.
-
-    `card_values` is passed only by the cloze recursion below, which is still the same
-    expression: the `CardValues` built so far, one per card. They live no longer than one
-    expression because a `CardValues` is a snapshot of its card, and a later stage may have
-    changed the card.
-    """
+def resolve_references(text: str, ctx: ExpressionContext) -> str:
+    """Substitute every `{{...}}` in a format-2 expression with the value it names."""
     if not text:
         return text or ""
-    if card_values is None:
-        card_values = {}
-
-    # Cloze markers are not references. Their content is, so it is resolved on its own and
-    # the marker put back around the result.
-    cloze_patterns = extract_cloze_patterns(text)
-    placeholders: dict[str, str] = {}
-    for index, (start, end, cloze_num, content) in enumerate(reversed(cloze_patterns)):
-        placeholder = f"\x00CLOZE{index}\x00"
-        placeholders[placeholder] = (
-            f"{{{{c{cloze_num}::{resolve_references(content, ctx, card_values)}}}}}"
-        )
-        text = text[:start] + placeholder + text[end:]
+    # One `CardValues` per card, shared by the text and every cloze in it. They live no
+    # longer than one expression because a `CardValues` is a snapshot of its card, and a
+    # later stage may have changed the card.
+    card_values: dict[int, CardValues] = {}
 
     def replace(match: "re.Match[str]") -> str:
         reference = match.group(1)
+        unclosed = unclosed_reference_problem(reference)
+        if unclosed:
+            raise ctx.error(f"Text{ctx.for_purpose()} {unclosed}")
         head, separator, rest = reference.partition(".")
         value = ctx.environment.get(head)
         if separator:
@@ -250,10 +216,9 @@ def resolve_references(
         # string, with the definition reporting success either way (§11).
         raise ctx.error(f"'{head}' is not a binding or a runtime value")
 
-    text = INTERPOLATION_RE.sub(replace, text)
-    for placeholder, cloze_value in placeholders.items():
-        text = text.replace(placeholder, cloze_value)
-    return text
+    # Cloze markers are not references. Their content is, so it is resolved on its own and
+    # the marker kept around the result.
+    return map_outside_clozes(text, lambda part: INTERPOLATION_RE.sub(replace, part))
 
 
 def code_globals(ctx: ExpressionContext) -> dict:
