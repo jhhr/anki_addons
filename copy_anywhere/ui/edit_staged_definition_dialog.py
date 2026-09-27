@@ -86,11 +86,11 @@ def initial_size(
     height = max(available.height() - TITLE_BAR_ALLOWANCE, 0)
     wanted = stages_width + preview_width + chrome_width
     width = min(max(wanted, int(available.width() * MIN_WIDTH_SHARE)), available.width())
-    inside = width - chrome_width
-    # On a screen too narrow for both, the preview keeps what it asks for and the stage list
-    # scrolls; the preview is what shows the run, and it has no scroll bar of its own for
-    # width.
-    stages = min(max(stages_width, inside - preview_width), inside - min(preview_width, inside))
+    # The preview gets what it asks for and the stage list the rest, which the width above
+    # already made at least `stages_width` wherever the screen has room for both. On a screen
+    # too narrow for both, the stage list is the one that scrolls: the preview is what shows
+    # the run, and it has no scroll bar of its own for width.
+    stages = width - chrome_width - preview_width
     return InitialSize(width, height, max(stages, 0))
 
 
