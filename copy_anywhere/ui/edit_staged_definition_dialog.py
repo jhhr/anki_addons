@@ -373,7 +373,8 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
 
     def get_copy_definition(self) -> CopyDefinitionV2:
         """The definition as it should be stored, with `effects` freshly derived and the
-        rename warnings whose text the user fixed dropped (SPEC decision 6).
+        rename warnings whose text the user fixed dropped (see
+        "How a warning goes away" in `docs/staged-definitions.md`).
 
         Only a Save comes here (the picker asks only an accepted dialog), so a warning
         survives a Cancel however the text was left.

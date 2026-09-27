@@ -121,7 +121,7 @@ class TestTheReaders:
 
     def test_the_tooltip_and_the_explanation_say_the_messages_and_the_advice(self):
         assert blocking_tooltip(["one", "two"]).splitlines() == [
-            "This definition is not run while it is marked:",
+            "This definition is not run while it has these rename warnings:",
             "one",
             "two",
             BLOCKING_ADVICE,

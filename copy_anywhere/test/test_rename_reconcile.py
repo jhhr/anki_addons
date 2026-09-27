@@ -1357,7 +1357,8 @@ def a_code_action(guid: str, code: str, use_code: bool = True, change_deck=None)
 
 class TestEachLocationIsWarnedWhereItSpellsTheName:
     """A warning is filed under the location whose text or slot spells the old name, one
-    per location and object, blocking or not as SPEC decisions 4 and 5 say."""
+    per location and object, blocking or not as the block/warn table under "Where it warns"
+    in `docs/staged-definitions.md` says."""
 
     OTHER = "CA Vocab B"
 

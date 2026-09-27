@@ -23,8 +23,8 @@ Three kinds of text, each read the way what runs it reads it:
 
 A scanner reports what a hit *is* (`Hit.kind`), not whether it stops the definition from
 running: that depends on the definition (one trigger note type or several), which the
-text does not know. `hit_blocks_run` is the one rule, SPEC decisions 4 and 5, applied by
-the pass.
+text does not know. `hit_blocks_run` is the one rule -- the block/warn table under "Where it
+warns" in `docs/staged-definitions.md` -- applied by the pass.
 
 Search replacements are quoted and escaped here by the rules Anki's own search writer
 uses (`rslib/src/search/writer.rs`) rather than through `col.build_search_string`: a
@@ -129,7 +129,7 @@ class Hit:
 def hit_blocks_run(
     hit_kind: str, rename: Rename, multi_trigger: bool, on_trigger_note_type: bool
 ) -> bool:
-    """Whether a warning for this hit stops the definition from running (SPEC decisions 4, 5).
+    """Whether a warning for this hit stops the definition from running.
 
     Blocks: a `deck:` or `note:` term, a deck slot, and code spelling a deck or a note type
     -- names unique in the collection, so the hit is that object; code spelling a field or
@@ -623,7 +623,7 @@ def still_spelled(read_as: str, value: Any, entry: Any) -> bool:
     """Whether a stored warning still has its old name to point at in the location's value.
 
     What an editor part asks to decide whether to show a warning, and what a save asks to
-    decide whether to keep it (SPEC decision 6). Both lean towards keeping: code that does
+    decide whether to keep it. Both lean towards keeping: code that does
     not tokenize finds nothing, but that is "cannot tell" and not "gone" -- code is mid-edit
     far more often than it is fixed -- and an entry that does not say which rename it is
     about cannot be checked at all, so it stays for the user to dismiss.

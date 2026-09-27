@@ -30,8 +30,9 @@ still spells a renamed or deleted name that was not followed -- a slot or token 
 definition, a search term, another binding's token, a sort field, a string in code, and for
 a deck or note type any search or code of any definition -- the pass files a warning under
 that location (`rename_locations.py`, `rename_warnings.py`), found by the scanners the
-editor uses too (`rename_scan.py`). A blocking one (SPEC decision 4) keeps the definition
-from running until the user has updated it and the warning is gone. The pass never
+editor uses too (`rename_scan.py`). A blocking one (the block/warn table in
+`docs/staged-definitions.md`) keeps the definition from running until the user has updated
+it and the warning is gone. The pass never
 re-derives a warning; the only one it takes back is a rename undone.
 
 Nothing here runs while a dialog is still open: the pass reads the collection as Anki saved
@@ -1081,7 +1082,8 @@ def _expression_location(
 def drop_cleared_warnings(definition: CopyDefinitionV2) -> CopyDefinitionV2:
     """The definition without the warnings whose location no longer spells the old name.
 
-    Run when the definition editor saves (SPEC decision 6), on the definition it is about to
+    Run when the definition editor saves ("How a warning goes away" in
+    `docs/staged-definitions.md`), on the definition it is about to
     store, which it changes in place and returns. The user fixed the text, so the warning
     has nothing left to point at; keeping it would leave a blocked definition that only a
     Dismiss nobody knew was needed could unblock. Each location is read by the same walk
@@ -1160,7 +1162,8 @@ def _warnings_for(definition: CopyDefinitionV2, scans: list[_Scan]) -> list[tupl
 
     Read before anything is followed, since a rename in the same save can hand a deleted
     field's name to another one, and the text that is rewritten to spell it never meant the
-    deleted field. An entry blocks when any of its location's hits does (decision 4).
+    deleted field. An entry blocks when any of its location's hits does
+    (`rename_scan.hit_blocks_run`).
     """
     multi_trigger = _stored_trigger_count(definition) > 1
     found: list[tuple[str, dict]] = []

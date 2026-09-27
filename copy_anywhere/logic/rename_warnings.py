@@ -98,7 +98,7 @@ def blocking_tooltip(messages: list[str]) -> str:
     the same words, so a user who meets it in one recognises it in the other.
     """
     return "\n".join(
-        ["This definition is not run while it is marked:"] + messages + [BLOCKING_ADVICE]
+        ["This definition is not run while it has these rename warnings:"] + messages + [BLOCKING_ADVICE]
     )
 
 
