@@ -239,8 +239,9 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         blockers.extend(self._cycle_blockers())
         self.ok_button.setEnabled(not blockers)
         self.status_label.setText(self._status_html(blockers))
-        # Anything that reached here changed the definition, so whatever the preview last
-        # ran is no longer what this definition does (§9).
+        # Not everything that reaches here is an edit -- the dialog opening and Save come
+        # through too -- so the preview is handed the definition and compares it with the
+        # one it ran, rather than being told it is out of date (§9).
         self.preview.set_definition(self.document.definition)
         self.preview.mark_stale()
 
