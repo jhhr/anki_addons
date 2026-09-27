@@ -207,14 +207,12 @@ class TestConditionInterpolation:
         assert note["Note"] == ""
         assert logger.has_error("Nonexistent")
 
-    def test_a_syntactically_invalid_condition_raises_out_of_the_function(self, note):
-        # find_notes is not guarded here, so a search error is neither logged nor turned into
-        # a False return; it propagates past the caller's bulk loop as an exception.
-        from anki.errors import SearchError
-
+    def test_a_syntactically_invalid_condition_fails_the_definition(self, note, logger):
+        # It used to raise Anki's search error past the caller's bulk loop, which kept the
+        # edits earlier stages had made to the trigger and got a note hook dropped by Anki.
         definition = copy_note_field(copy_condition_query="Word:(")
-        with pytest.raises(SearchError):
-            copy_for_single_trigger_note(definition, note)
+        assert copy_for_single_trigger_note(definition, note) is False
+        assert logger.has_error("is not a search Anki can run")
 
 
 class TestVariablesAreResolvedBeforeTheCondition:

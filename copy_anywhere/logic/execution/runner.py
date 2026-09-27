@@ -81,6 +81,13 @@ def run_definition_for_trigger_note(
             logger.debug("copy_for_single_trigger_note: failed at %s", context)
         session.discard()
         return False
+    except Exception:
+        # Something the evaluator did not raise itself: a bug in a process, a stage's code
+        # failing. It keeps its type and traceback, but the trigger does not keep the edits
+        # the stages before it made -- they land on the caller's own note object, which the
+        # editor or the Add dialog would save.
+        session.discard()
+        raise
 
     if session.add_note_compatible_only:
         trigger_key = session.note_key(frame.trigger_note)

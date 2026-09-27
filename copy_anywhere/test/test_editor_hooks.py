@@ -1651,6 +1651,90 @@ class TestAFailedDefinitionLeavesTheEditorsNoteAlone:
         assert editor.loads == 1
 
 
+    def test_a_search_anki_cannot_parse_fails_the_stage(self, col, set_definitions, hook_logger):
+        # The search is interpolated from the note, and a lone quote in a field is enough to
+        # make one Anki refuses. Its error went past the stage error path, so the write before
+        # it stayed on the note the editor saves.
+        set_definitions(self.failing(d.note_query("found", "{{trigger.Word}}")))
+        note = existing_note(col, Word='"unterminated', Meaning="cat")
+
+        assert run_copy_fields_on_unfocus_field(False, note, WORD) is False
+
+        assert hook_logger.has_error("is not a search Anki can run"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+
+    def test_an_error_nothing_expected_is_logged_and_the_next_definition_runs(
+        self, col, set_definitions, hook_logger, monkeypatch
+    ):
+        from copy_anywhere.logic.execution import actions
+
+        def broken(*_args):
+            raise RuntimeError("a bug in a stage")
+
+        monkeypatch.setattr(actions, "run_read_file", broken)
+        set_definitions(self.failing(), within("ok", field="Note"))
+        note = existing_note(col, Word="neko", Meaning="cat")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert hook_logger.has_error("definition 'failing' failed"), hook_logger.errors
+        assert note["Meaning"] == "cat"
+        assert note.tags == []
+        assert note["Note"] == "neko"
+
+
+class TestAnkiKeepsCallingTheHooks:
+    """Anki drops a hook callback that raises for the rest of the session, so one failure
+    used to switch copying on add, review or unfocus off until Anki was restarted."""
+
+    @pytest.fixture
+    def hooks(self, monkeypatch):
+        from aqt.editor import Editor
+
+        # Fresh hook objects of Anki's own kinds, and the editor's cleanup put back after,
+        # so registering here leaves nothing behind for the rest of the suite. Each gets a
+        # list of its own: Anki's keeps its callbacks in a class attribute.
+        for name in (
+            "note_will_be_added",
+            "reviewer_did_answer_card",
+            "editor_did_unfocus_field",
+            "editor_did_load_note",
+        ):
+            hook = type(getattr(note_hooks, name))()
+            hook._hooks = []
+            monkeypatch.setattr(note_hooks, name, hook)
+        monkeypatch.setattr(Editor, "cleanup", Editor.cleanup)
+        note_hooks.init_note_hooks()
+        return note_hooks
+
+    @pytest.fixture
+    def broken(self, monkeypatch):
+        def raise_(*_args, **_kwargs):
+            raise RuntimeError("a bug")
+
+        # Outside any one definition, which `run_one_definition` already contains.
+        monkeypatch.setattr(note_hooks, "definition_note_type_names", raise_)
+
+    def test_after_an_unfocus_that_failed(self, col, set_definitions, hooks, broken, hook_logger):
+        set_definitions(within("ok", field="Note"))
+        note = existing_note(col, Word="neko")
+        hook = hooks.editor_did_unfocus_field
+
+        # A filter that fails passes on what it was given.
+        assert hook(True, note, WORD) is True
+        assert hook(False, note, WORD) is False
+        assert hook.count() == 1
+        assert hook_logger.has_error("copying on unfocus failed"), hook_logger.errors
+
+    def test_after_an_add_that_failed(self, col, set_definitions, hooks, broken):
+        set_definitions(within("ok", field="Note", copy_on_add=True))
+        hook = hooks.note_will_be_added
+
+        hook(col, new_note(col, Word="neko"), 1)
+
+        assert hook.count() == 1
+
+
 class TestASearchConditionWhileTheNoteIsBeingAdded:
     """In the Add dialog a search condition is judged against the note being typed.
 

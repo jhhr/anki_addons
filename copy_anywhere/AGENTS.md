@@ -85,7 +85,11 @@ Call chain for a bulk run:
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
 - Return contract of a run: `True` is success **or a benign skip** (deck whitelist, unmet
-  condition, `skip_block`); `False` aborts the bulk loop.
+  condition, `skip_block`); `False` aborts the bulk loop. An exception the evaluator did not
+  raise itself still restores the trigger before it propagates.
+- Anki removes a hook callback that raises, for the rest of the session. The three note
+  hooks are registered through `contained` and run each definition through
+  `run_one_definition`, which log what they catch; keep new hook code behind them.
 - Multi-value format-1 strings (note types, decks, tags, trigger fields) are stored as
   `A", "B`, the format `MultiComboBox` emits; format 2 stores JSON arrays under `triggers`.
   Parse the former with a helper that drops `""` (`split_tags` does); a bare split of an

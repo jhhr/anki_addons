@@ -590,6 +590,17 @@ class TestASearchConditionsPredicate:
         assert ok is True
         assert note["Note"] == "matched"
 
+    def test_a_search_anki_cannot_parse_fails_the_stage(self, col, logger):
+        # A lone quote in the field made a search Anki refuses, and its error left the
+        # stage error path: the run raised rather than reporting the condition.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": '"unterminated'})
+
+        ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
+
+        assert ok is False
+        assert logger.has_error("Condition query '{{trigger.Note}}' is not a search Anki")
+        assert note["Note"] == '"unterminated'
+
     def test_a_reference_to_nothing_in_scope_says_so(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
 
