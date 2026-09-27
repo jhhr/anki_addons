@@ -17,8 +17,9 @@ cd "$CLAUDE_PROJECT_DIR"
 # pytest-anki's plugin fails to import and takes the whole run down. The environment's setup
 # script is the better place for this, since its result is cached; this covers one without it.
 if ! ldconfig -p | grep -q 'libEGL\.so\.1'; then
-  # The image lists PPAs the network policy may refuse; the update warns about each and the
-  # Ubuntu archive still serves libegl1, so only a failed install is worth hearing about.
+  # The image lists PPAs the network policy may refuse. Under the Trusted level the update
+  # then exits 100, yet the Ubuntu archive still serves libegl1, so only a failed install is
+  # worth hearing about.
   apt-get update -qq >/dev/null 2>&1 || true
   DEBIAN_FRONTEND=noninteractive DEBCONF_NOWARNINGS=yes \
     apt-get install -y -qq --no-install-recommends libegl1 >/dev/null
