@@ -154,7 +154,9 @@ definition calls it.
   query. Without that rule, what a definition did would depend on when a flush happened.
 * **Reads see pending edits.** A later stage, and code, read the working note, so an edit an
   earlier stage made is visible. Within one `edit_note` stage every right-hand side reads the
-  note as it was when the stage started, which is what lets one stage swap two fields.
+  note as it was when the stage started, under whatever name it reads it by -- the target's
+  own, or a query's or loop's that found the same note -- which is what lets one stage swap
+  two fields.
 * **Two references to one note converge.** However a note was reached, a run holds one
   working copy of it, so two stages editing it both land.
 * **Nothing is written until the definition finishes.** Notes, cards and files are committed

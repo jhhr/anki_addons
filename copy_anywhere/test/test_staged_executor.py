@@ -164,6 +164,40 @@ class TestPendingEditsAreVisible:
         run(definition, note)
         assert (note["Word"], note["Meaning"]) == ("cat", "neko")
 
+    @pytest.mark.parametrize(
+        "reach, meaning, word",
+        [
+            # A query that finds the trigger binds the same working note under another name.
+            (
+                lambda body: d.for_each_note("found", item_binding="it", body=[body]),
+                d.text("{{it.Word}}"),
+                d.text("{{it.Meaning}}"),
+            ),
+            (
+                lambda body: [d.select_note("found", "it"), body],
+                d.text("{{it.Word}}"),
+                d.text("{{it.Meaning}}"),
+            ),
+            (
+                lambda body: [d.select_note("found", "it"), body],
+                d.code("return it['Word']"),
+                d.code("return it['Meaning']"),
+            ),
+        ],
+        ids=["loop", "select", "select, code"],
+    )
+    def test_the_snapshot_is_read_under_any_name_the_note_has(
+        self, note, reach, meaning, word
+    ):
+        swap = d.edit_note("trigger", [d.write("Meaning", meaning), d.write("Word", word)])
+        reached = reach(swap)
+        definition = d.staged(stages=[
+            d.note_query("found", "Word:neko"),
+            *(reached if isinstance(reached, list) else [reached]),
+        ])
+        assert run(definition, note)[0] is True
+        assert (note["Word"], note["Meaning"]) == ("cat", "neko")
+
     def test_the_trigger_can_be_edited_before_and_after_a_loop(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
         definition = d.staged(stages=[

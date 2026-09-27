@@ -446,13 +446,15 @@ def run_edit_note(stage: Stage, env: dict, frame) -> None:
     # Every right-hand side in this stage reads the note as it was when the stage started,
     # which is what lets one stage swap two fields (§5.3).
     snapshot = duplicate_note(target)
-    # Inside this stage the target's own binding names the snapshot, so `{{trigger.Word}}`
-    # on the right of a write reads the value the stage started with rather than one an
-    # earlier write in the same stage has already replaced.
-    write_env = dict(env)
-    target_name = binding_name(stage.get("target"))
-    if target_name:
-        write_env[target_name] = snapshot
+    # Inside this stage every binding that holds the target names the snapshot, so
+    # `{{trigger.Word}}` on the right of a write reads the value the stage started with
+    # rather than one an earlier write in the same stage has already replaced. Every one, not
+    # just the target's own: a query that finds the trigger binds the same working note, and
+    # a loop or a Select Note over it read the trigger's new values under the other name,
+    # so swapping two fields through it wrote one value into both.
+    write_env = {
+        name: snapshot if value is target else value for name, value in env.items()
+    }
 
     field_writes = []
     for field_write in stage.get("fields") or []:

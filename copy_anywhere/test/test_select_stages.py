@@ -481,6 +481,30 @@ class TestMigratedDestinationToOneSource:
             path.unlink()
         assert written[0] == written[1] == "w1-m"
 
+    def test_a_swap_through_the_trigger_itself_is_what_the_join_wrote(self, col, monkeypatch):
+        # The query finds the trigger, so `note` is the trigger's own working note. The join
+        # read each value into a list before the edit; the one note read the edit's own
+        # writes until every binding of the target read the stage's snapshot.
+        from copy_anywhere.logic import definition_migration
+
+        swapped = []
+        for join in (False, True):
+            trigger = real_anki.add_note(col, VOCAB, {"Word": "swap", "Meaning": "M", "Note": "N"})
+            if join:
+                monkeypatch.setattr(definition_migration, "_takes_one_source", lambda *_: False)
+            definition = migrate_definition_v1_to_v2(d.destination_to_sources(
+                copy_from_cards_query=f"nid:{trigger.id}",
+                field_to_field_defs=[
+                    d.field_to_field("Meaning", "{{Note}}"),
+                    d.field_to_field("Note", "{{Meaning}}"),
+                ],
+                select_card_count="1",
+            ))
+            monkeypatch.undo()
+            assert copy_for_single_trigger_note(definition, trigger, copied_into_notes=[])
+            swapped.append((trigger["Meaning"], trigger["Note"]))
+        assert swapped == [("N", "M"), ("N", "M")]
+
     def test_no_note_found_leaves_the_trigger_alone(self, col, monkeypatch, logger):
         assert self.run(
             col, monkeypatch, [d.field_to_field("Note", "{{Word}}")], join=False
