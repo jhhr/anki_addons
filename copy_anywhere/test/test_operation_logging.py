@@ -365,3 +365,32 @@ class TestTheSharedLoggerIsNotThisAddons:
         logging_setup.finish_operation_log()
         assert shared.level == logging.INFO
 
+
+class TestOldLogsArePruned:
+    def test_only_when_an_operation_wrote_a_file(self, _operation_logs_go_to_tmp, monkeypatch):
+        # Every field unfocus opens an operation, and most write nothing.
+        pruned = []
+        monkeypatch.setattr(logging_setup, "prune_old_logs", pruned.append)
+        with logging_setup.operation_logging("quiet", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).warning("below the level")
+        assert pruned == []
+
+        with logging_setup.operation_logging("loud", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).error("written")
+        assert pruned == [str(_operation_logs_go_to_tmp)]
+
+    def test_the_newest_two_hundred_are_kept(self, _operation_logs_go_to_tmp):
+        import os
+
+        _operation_logs_go_to_tmp.mkdir()
+        for index in range(210):
+            path = _operation_logs_go_to_tmp / f"old_{index:03}.log"
+            path.write_text("x")
+            os.utime(path, (index, index))
+
+        with logging_setup.operation_logging("new", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).error("written")
+
+        kept = sorted(path.name for path in _operation_logs_go_to_tmp.glob("*.log"))
+        assert len(kept) == 200
+        assert "old_010.log" not in kept and "old_011.log" in kept

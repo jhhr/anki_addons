@@ -389,7 +389,7 @@ None of this is a substitute for the log. A run that has something to report wri
 under the addon's `user_files/logs/`, named after what triggered it; a run you started from
 the browser opens it when it is finished. At the default `log_level` of `error` a clean run
 writes nothing at all and no file is created. Raise it to `info` or `debug` when you want to
-see every stage of every note. The newest fifty files are kept.
+see every stage of every note. The newest two hundred files are kept.
 
 ## 7. Files
 

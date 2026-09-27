@@ -46,7 +46,7 @@ ADDON_MODULE = __name__.split(".")[0]
 SHARED_LOGGER_NAME = "jp_text_processing"
 
 # Diagnostics are worth keeping for a while and worth not keeping forever.
-LOGS_TO_KEEP = 50
+LOGS_TO_KEEP = 200
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(prefix)s%(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
@@ -214,7 +214,6 @@ def start_operation_log(name: str, level: LogLevel = "error") -> Optional[str]:
         directory = logs_dir()
         try:
             os.makedirs(directory, exist_ok=True)
-            prune_old_logs(directory)
             path = os.path.join(directory, _log_file_name(name))
             # delay=True: the file is not created until something is actually written, so a
             # clean run at the default `error` level leaves nothing behind.
@@ -269,6 +268,9 @@ def _close_operation_log() -> Optional[str]:
     reset_log_context()
 
     if path is not None and os.path.exists(path):
+        # Only when a file was written: with `delay=True` most operations write none, and
+        # scanning the folder for them would be work at every field unfocus for nothing.
+        prune_old_logs(os.path.dirname(path))
         return path
     return None
 

@@ -26,7 +26,7 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | --- | --- |
 | `__init__.py` | at import: `migrate_config()`, `init_browser_hooks()`, `init_sync_hook()`, `init_note_hooks()` |
 | `configuration.py` | `Config` (saves on every mutation), format-1 TypedDicts, the trigger accessors both formats go through, `migrate_config` |
-| `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 50), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger's lines from inside its own runs, and never raises that shared logger's level |
+| `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 200, pruned when one is written), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger's lines from inside its own runs, and never raises that shared logger's level |
 | `hooks/` | browser menus, add / review / unfocus handlers (`note_hooks.py` wraps `Editor.cleanup` and `V3Scheduler.answer_card`, guarded by a `copy_anywhere_wrapped` attribute), the sync sweep |
 | `logic/definition_schema.py` | format-2 types, stage-type constants, structural validation |
 | `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and stage-guid repair |
