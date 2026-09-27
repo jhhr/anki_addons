@@ -316,10 +316,11 @@ changed". So no rename hook is used. Instead, the objects with a stable id -- no
 decks and card types -- are stored as references and resolved by id (above), so renaming
 one changes nothing about what a definition does; only the name it shows goes stale. A
 field has no reference: it is the name you spelled, in a field slot or a `{{trigger.Word}}`
-token, and so is a card type inside `{{trigger.Recognition__Card_Due}}`. A rename of one of
-those has to be carried into the definition or the definition goes on spelling a name that
-is gone. One **reconcile pass** does that where it can be done mechanically, marks the
-definition where it cannot, and reports the rest.
+token, and so is a card type inside `{{trigger.Recognition__Card_Due}}`. And any name can be
+spelled as text: `deck:JP` in a search, `"Word"` in code. A rename of one of those has to be
+carried into the definition or the definition goes on spelling a name that is gone. One
+**reconcile pass** does that where it can be done mechanically, leaves a **warning** where
+the definition still spells the old name, and reports the rest.
 
 **When it runs.** When the collection is opened, which is where a rename made on another
 device and synced in before Anki started is seen; after any operation that reports changing
@@ -338,110 +339,194 @@ The pass:
    yet pick up their ids;
 2. **refreshes** the cached `name` of every reference whose id still resolves, so a picker
    never shows a name the collection has stopped using;
-3. **follows or marks** each field or card type of a trigger note type that was renamed or
-   deleted, for every definition that triggers on that note type:
-   * A definition that stores **one** trigger note type has a rename **followed** into its
-     field slots -- a field write on the trigger, the unfocus lists, a write's only-if-empty
-     field -- and into every `{{trigger.Word}}` and `{{trigger.Recognition__Card_Due}}`
-     token in an expression's **text**. The whole rename map is applied in one step, so two
-     fields that swap names swap correctly. If an expression's **code** still mentions the
-     old name, the definition is followed and **marked** as well: code is not rewritten
-     (below), so it is only half followed.
-   * A definition that stores **several** trigger note types is **never rewritten**. It
-     spells each field once for all of them, so a rename in one leaves it wrong whichever
-     name it spells, and every rule that tried to decide for it -- follow once all of them
-     agree, hold back while another note type has both names -- found a way to decide
-     wrongly and quietly: a swap traded back, a name redirected to a field that already had
-     it. So it is **marked** if it spells the old name or its code mentions it, and you
-     decide; one that does not spell it is left alone. The note types are counted as
-     stored, resolved or not: a definition whose second note type is missing today still
-     spells its names for both.
-   * A field or card type **deleted** from a trigger note type marks every definition that
-     spells it or mentions it in code, whatever its number of trigger note types.
-4. **reports** everything else into its log: a reference that resolves to nothing, a note
-   type, deck or card action's card type that was deleted, a field or template with no id
-   (note types saved before Anki 23.10 can have them, and nothing can follow a name with no
-   id behind it), every mark a definition carries, and the stale names in its searches.
+3. **follows** a field or card type renamed in a trigger note type into a definition that
+   stores **one** trigger note type: its field slots -- a field write on the trigger, the
+   unfocus lists, a write's only-if-empty field -- and every `{{trigger.Word}}` and
+   `{{trigger.Recognition__Card_Due}}` token in an expression's **text**. The whole rename
+   map is applied in one step, so two fields that swap names swap correctly. A definition
+   that stores **several** trigger note types is **never rewritten**. It spells each field
+   once for all of them, so a rename in one leaves it wrong whichever name it spells, and
+   every rule that tried to decide for it -- follow once all of them agree, hold back while
+   another note type has both names -- found a way to decide wrongly and quietly: a swap
+   traded back, a name redirected to a field that already had it. The note types are
+   counted as stored, resolved or not: a definition whose second note type is missing today
+   still spells its names for both;
+4. **warns** at every place a definition still spells a renamed or deleted name that it did
+   not follow (below);
+5. **reports** everything into its log: a reference that resolves to nothing, a note type,
+   deck or card action's card type that was deleted, a field or template with no id (note
+   types saved before Anki 23.10 can have them, and nothing can follow a name with no id
+   behind it), every warning a definition carries, and the stale names in its searches.
 
-   *Deleted* means the snapshot (below) knew the object's id and the collection no longer
-   has it; the log says it "has been deleted". A name the snapshot never knew -- a typo, a
-   note type you have not made yet, a definition imported from another collection -- is
-   one "this collection does not have" instead. For a note type, a deck or a card action's
-   card type the difference lasts one pass: the pass rebuilds the snapshot from what is
-   still there, so from the next pass on a reference left naming a deleted one reads as
-   one this collection does not have. A deleted field or card type of a trigger note type
-   is a mark instead, which stays until you dismiss it.
+*Deleted* means the snapshot (below) knew the object's id and the collection no longer has
+it; the log says it "has been deleted". A name the snapshot never knew -- a typo, a note type
+you have not made yet, a definition imported from another collection -- is one "this
+collection does not have" instead. For a *reference* to a note type, a deck or a card
+action's card type the difference lasts one pass: the pass rebuilds the snapshot from what is
+still there, so from the next pass on a reference left naming a deleted one reads as one this
+collection does not have. A deleted name the definition *spells* gets a warning, which stays.
 
-What it never rewrites is a search term, `selection.sort_field`, or code. A query is free
-text read by Anki's own grammar -- `col.replace_in_search_node` swaps every term of a kind
-and so cannot rename one deck inside a query naming two -- and `note['Word']` is a spelling
-of a field name that no `{{...}}` rewrite can see. Code is what a mark is for; search terms
-and the sort field are reported and fixed by hand.
+### Where it warns
 
-**A mark** is a list on the definition, `broken_by_rename`, with one entry per field or
-card type: `{"kind", "note_type_id", "id", "old", "new", "message"}`, `new` null for a
-deletion. Its message is written once, with the names as they were then:
+Every text and slot of a definition that can spell a name is a **location**, and a warning
+is filed under the location that spells the name, so the editor can show it on the part
+that holds it. The locations:
+
+- the trigger's unfocus lists, a field write's unfocus fields, and a migrated stage's
+  only-if-empty and unfocus fields;
+- an expression's text: `{{trigger.Word}}`, `{{trigger.<Card type>__<Key>}}`, and
+  `{{<binding>.Word}}` for a note a query found;
+- a search -- a query stage's search and a search condition: `deck:`, `note:` and `card:`
+  terms and field terms (`Word:neko`), quoted, escaped or negated. A deck is matched without
+  regard to case, as Anki does, and renaming a parent deck renames each child deck too, so
+  `deck:JP::Vocab` is found through the child's rename;
+- code: a string literal whose value is the name, or that reads as a search naming it.
+  Python's own tokenizer finds the literals, so a comment, an identifier or a longer name
+  holding the old one is never a hit;
+- a query's sort field, a field write's target field;
+- a card action's code, when it uses code, and its deck when no code decides it.
+
+Only the side of an expression that runs is read -- its code in code mode, its text
+otherwise -- since a name left in the other side breaks nothing.
+
+A field or card type of note type N is looked for in every definition that triggers on N,
+except in a slot or token the pass has just followed; and in the searches, other bindings'
+tokens, sort fields and code of *every* definition, since any of them can reach N's notes. A
+deck or a note type is looked for in the searches, code and card action decks of every
+definition. Its references follow it by id and are never warned about. A rename that only
+changes the case of a field, deck or note type name is no rename here: everything that reads
+those names ignores case.
+
+**Block or warn.** A warning either stops the definition from running (**blocking**) or
+only tells you (**warn-only**):
+
+| blocks the run | warns only |
+| --- | --- |
+| a `deck:` or `note:` term; a card action's deck | a `card:` term; a field term |
+| code spelling a deck or a note type | a query's sort field; a field write's target on another note |
+| code spelling a field or card type, in a definition that triggers on its note type | code spelling one in a definition that does not |
+| a trigger slot or token of a definition with several trigger note types | `{{<binding>.Word}}` for a note a query found |
+| a trigger slot or token naming a field or card type that was deleted | |
+
+A deck or note type name is unique in the collection, so a term that spells it means that
+object, and a run with it would search for something that is not there. A field or card type
+name is not unique across note types, and the pass cannot know which note types a search,
+another binding or a sort field reaches: the hit is a guess, which is worth a warning and
+not a refusal. That holds for a deleted one too, since another note type may still have the
+name. Code blocks by choice, although a code hit is only a string that equals a name: a
+wrong read in code is the hardest to notice. For a field or card type, only where the
+definition triggers on its note type -- anywhere else a field called `Word` in code is too
+likely another note type's.
+
+**The warning.** A definition's warnings are stored under `rename_warnings`, a dict from a
+location key to its entries, each
+`{"kind", "object_id", "note_type_id", "old", "new", "blocks_run", "message"}`, `new` null for
+a deletion. A key is anchored on the guid of what holds the text -- `<stage guid>.query.text`,
+`<field write guid>.value.code`, `<card action guid>.change_deck`,
+`triggers.on_unfocus.edit_fields` -- and is built only by `logic/rename_locations.py`, for the
+pass and the editor alike: a key spelled any other way matches nothing and shows nothing.
+There is one entry per location and object. Its message says what happened, not where, since
+the editor shows where:
 
     Field "Word" of note type "A" was renamed to "Term"
     Card type "Recognition" of note type "A" was renamed to "Reading"
-    Field "Word" of note type "A" was deleted
-    Field "Word" of note type "A" was renamed to "Term", and code in this definition still
-    mentions "Word"
-    Field "Word" of note type "A" was renamed to "Term"; its {{...}} references were
-    followed, but code in this definition still mentions "Word"
+    Deck "JP" was renamed to "JP::Vocab"
+    Note type "A" was deleted
 
-(the last is the one-trigger case). Nothing re-derives a mark: the pass cannot tell an
-edit that fixed the definition from one that did not, so whether it now says what it
-should is yours to decide. Two things change one by themselves. The same object renamed
-again updates the entry's new name and message. And an object called by its old name
-again -- the rename undone, or renamed back by hand -- **removes** the entry: that is the
-only way a mark goes without you. Renaming the field in the other trigger note types too
-does not, nor does editing the definition.
+The pass never re-derives a warning: it cannot tell an edit that fixed the definition from one
+that did not. Two things change one by themselves. The same object renamed again updates the
+entry's new name and message. And an object called by its old name again -- the rename
+undone, or renamed back by hand -- **removes** the entry. Renaming the field in the other
+trigger note types too does not.
 
-**A marked definition is not run**, on any path: its checkbox in the definition list is
-cleared and cannot be ticked, the browser's "Copy anywhere" menu lists it disabled, the
-add, review and unfocus hooks and a sync pass it over, and a `call_definition` of it
-fails (below). Each refusal logs one error per mark: the definition's
-name, the stored message, and what to do.
+### A definition with a blocking warning is not run
+
+On any path: its checkbox in the definition list is cleared and cannot be ticked, the
+browser's "Copy anywhere" menu lists it disabled, the add, review and unfocus hooks and a sync
+pass it over, and a `call_definition` of it fails (below). Each refusal logs one error per
+blocking warning: the definition's name, the stored message, and what to do.
 
     Error in copy fields: 'both' was not run: Field "Word" of note type "A" was renamed to
-    "Term". Update the definition, then dismiss the mark in the definition editor.
+    "Term". Replace the old name in the definition editor and save, or dismiss the warning
+    there.
 
 The add, review and unfocus hooks log it the first time they meet the definition in a
-session, and again only when its marks change, since each of those events opens its own
-log file and one refusal per answer would soon fill the fifty kept files with the same
-line. A sync logs it at every sync, and stops that definition after the one line rather
-than repeating it for every note; the other definitions of the run still run. None of
-these runs opens the log, so the definition list and the dialog after the note type
-operation (below) are what say that a definition is not being run. The note being added is
-still added, and the other definitions still run on it.
+session, and again only when its blocking messages change, since each of those events opens
+its own log file and one refusal per answer would soon fill the fifty kept files with the
+same line. A sync logs it at every sync, and stops that definition after the one line rather
+than repeating it for every note; the other definitions of the run still run. None of these
+runs opens the log, so the definition list and the dialog after the operation (below) are
+what say that a definition is not being run. The note being added is still added, and the
+other definitions still run on it.
 
 A card whose review refused a definition keeps its `fc` as the scheduler set it, and a
-sync's closing sweep leaves the cards of a refused definition's trigger note types
-waiting, so the first sync after the mark is dismissed runs it on the cards it missed. The
+sync's closing sweep leaves the cards of a refused definition's trigger note types waiting,
+so the first sync after the last blocking warning goes runs it on the cards it missed. The
 cost, meanwhile: another definition that runs on both review and sync runs again on such a
 note at every sync.
 
-A definition that calls a marked one fails at its `call_definition` stage with the same
+A definition that calls a blocked one fails at its `call_definition` stage with the same
 explanation, and its run on that note writes nothing -- not even what it changed before the
-call -- rather than running the rest of a chain around the gap. The editor opens a marked
+call -- rather than running the rest of a chain around the gap. The editor opens a blocked
 definition, since that is where it is fixed, and its preview still runs it, so a fix can be
-tried before it is saved; a call to a marked definition fails in the preview too.
+tried before it is saved; a call to a blocked definition fails in the preview too.
 
-**Dismissing a mark.** The definition editor shows the marks at the top, above the
-triggers: that the definition is not run while any mark is left, then one line per mark
-with a **Dismiss** button, and **Dismiss all** when there are two or more. Dismiss a mark
-once you have updated the definition for it. Save stores the definition without it; Cancel
-keeps it. A mark does not stop the save, but a definition on several note types still has
-to pass the next check.
+A warn-only warning changes nothing about a run.
 
-**The warning after a note type edit.** After an operation that changed a note type, a
-dialog lists the marks that pass added, one line per mark under the definition's name, and
-says to update each definition and dismiss its mark. Only the new ones: a mark stays until
-you dismiss it, and listing it again after every unrelated note type edit would teach you to
-close the dialog unread. There is none after a deck change, since no mark is about a deck,
-nor when the collection is opened: a mark a synced-in rename left there is shown by the
-definition list and the editor.
+### In the editor
+
+**On the part.** Each part that holds a location -- an expression's text or code box, a
+query's sort field, a field write's target, a card action's code and deck, the unfocus
+lists -- shows a red ✖ beside it when a blocking warning is filed there and a blue ⓘ when
+only warn-only ones are, with the messages on hover. It follows the live text: once the part
+no longer spells the old name, as the pass's scanner reads it, the icon hides, although the
+warning stays stored until you save. The sort field and a field write's target keep a stored
+field name the note types no longer have, under "Renamed or deleted in Anki", while a warning
+there is about it; a card action keeps a deck name the collection does not have, and the
+unfocus lists keep a name the note types do not offer. So a renamed name is shown
+rather than silently blanked and saved away. A migrated stage's only-if-empty and unfocus
+fields have no part of their own and show in the banner only.
+
+**Replace.** Where a warning has a new name and the scanner can spell it in, a **Replace**
+button sits beside the icon. It opens a read-only dialog with the part's whole text, each old
+spelling struck through and its replacement highlighted, in colours taken from the theme;
+for a picker, just `old → new`. **Apply** writes exactly what it shows, **Close** writes
+nothing. A text box takes the change through its own undo stack, so **Ctrl+Z** takes it
+back; a picker simply changes its choice. Replace quotes and escapes a search term the way
+Anki's own search writer does, keeps a leading `-`, and keeps a field term's value as
+written. It never touches a deletion, which has no new name, or an f-string that
+interpolates, whose meaning depends on what it interpolates: a part holding only those has no
+Replace button, and beside a replaceable hit the dialog lists them as left to fix by hand.
+
+**The banner.** Above the triggers, the editor says that the definition is not run while any
+✖ is left and that an ⓘ does not stop it, then lists every warning grouped by location, each
+group named as you know the part: `Loop Over Notes > Edit Note → field write 'Meaning' →
+value`, `Triggers → unfocus fields (editing a note)`. Clicking a group's name opens its stage
+and scrolls to it. A location whose stage, field write or card action has since been deleted
+is listed as "(no longer in this definition)". Each warning has a **Dismiss**, and **Dismiss
+all** appears for two or more. Dismissing edits the document only: Save stores the
+definition without it, Cancel keeps it.
+
+**How a warning goes away.**
+
+- **Save**: a warning whose location no longer spells the old name -- because you replaced it,
+  edited it by hand, deleted its stage, switched its expression to the other side or its
+  card action to code -- is dropped when the editor saves, read by the same scanner the pass
+  used. Code that does not parse keeps its warnings: it cannot be read, so it cannot be seen
+  to be fixed. Cancel drops nothing.
+- **Dismiss**, for a hit that is not the renamed name, or one you have decided is fine.
+- **Undoing the rename** in Anki, or renaming the object back.
+
+A warning does not stop the save, but a definition on several note types still has to pass
+the next check.
+
+**The dialog after a note type or deck change.** After an operation that changed a note type,
+or a deck change the pass acted on, a dialog lists the blocking warnings that pass added, one
+line per definition and message, and says how to clear them. Only the new
+blocking ones: a warning stays until it goes, and listing it again after every unrelated
+note type edit would teach you to close the dialog unread. There is none when the collection
+is opened: a warning a synced-in rename left there is shown by the definition list and the
+editor.
 
 **A definition on several note types can only use a field all of them have.** It spells a
 trigger field once for every note type it triggers on, so the editor refuses to save one
@@ -450,16 +535,17 @@ note type "B", which this definition also triggers on; use a field all of them h
 rename it in the others too.` Every place a trigger field is named is checked -- a field
 write on the trigger, the unfocus lists, a write's only-if-empty field, and each
 `{{trigger.X}}` in a value -- and a card type spelled in a `{{trigger.<Card type>__<Key>}}`
-token is held to the same rule. This is what a definition marked for a rename made in only
+token is held to the same rule. This is what a definition warned about a rename made in only
 some of its note types runs into when it is opened, and it is what stops a half-fix:
-`{{trigger.Word}}` rewritten to `{{trigger.Term}}` cannot be saved while another trigger
+`{{trigger.Word}}` replaced by `{{trigger.Term}}` cannot be saved while another trigger
 note type still has no `Term`. A field none of the trigger note types has is reported as
 before, as a reference the note types cannot answer to; a definition on one note type is
 not affected.
 
-**Where the report reaches you.** The pass writes all of it into one operation log, which
-you only see with the log level turned up, so the things you can act on are also put where
-you already look:
+### Where the report reaches you
+
+The pass writes all of it into one operation log, which you only see with the log level
+turned up, so the things you can act on are also put where you already look:
 
 - a reference that resolves to nothing is shown in the editor under the name it was
   written with, marked `(not found)`, and listed under the stages as worth knowing, with
@@ -475,56 +561,73 @@ you already look:
 - the definition list marks a definition with a reference that resolves to nothing with an
   amber ⚠ after its name, the names in its tooltip. It is asked of the collection as the
   list is drawn, never taken from a pass, so a later pass or a restart cannot lose it. A
-  deleted note type, deck or card action's card type is one of these; a deleted field or
-  card type of a trigger note type is a mark, next but one;
-- the definition list also marks a definition whose searches name something the collection
-  does not have -- the same terms the query stage's note lists, from every query stage and
-  every search condition -- with a blue ⓘ after its name, the names in its tooltip. The
-  definition still runs; that part of the search just matches nothing, which is why the
-  mark is neither the ⚠ nor the ✖;
-- a marked definition shows a red ✖ after its name, and its checkbox is cleared and
-  cannot be ticked. Both carry the same tooltip: that it is not run while it is marked,
-  the marks' messages, and what to do. Edit, Duplicate and Delete still work. The
-  browser's "Copy anywhere" context menu lists it the same way: disabled, with the same
-  tooltip.
+  deleted note type, deck or card action's card type is one of these;
+- the definition list marks a definition that runs but deserves a look with a blue ⓘ: its
+  searches name something the collection does not have -- the same terms the query stage's
+  note lists, from every query stage and every search condition -- or it carries warn-only
+  rename warnings, whose messages follow under "Renamed or deleted in Anki (the definition
+  still runs):". Each message is listed once, without its location; the editor has that;
+- a definition with a blocking warning shows a red ✖ after its name, and its checkbox is
+  cleared and cannot be ticked. Both carry the same tooltip: that it is not run, the
+  blocking messages, and what to do. Edit, Duplicate and Delete still work. The browser's
+  "Copy anywhere" context menu lists it the same way: disabled, with the same tooltip. A
+  definition with only warn-only warnings stays enabled in both, and one with both kinds
+  shows ✖ and ⓘ.
 
 All three follow an edit made from the definition list: when you save a definition there,
 its row is redrawn from the definition as saved, so a fix clears the ⚠ or the ⓘ, and a save
-with every mark dismissed clears the ✖ and gives back a checkbox you can tick.
+that leaves no blocking warning clears the ✖ and gives back a checkbox you can tick.
 
-A sort field is still not rewritten and still sorts a note that lacks it as empty -- a
-query legitimately mixes note types -- but a run where *no* selected note had the field
-logs one warning, because then the sort did nothing at all.
+A sort field that names no field still sorts a note that lacks it as empty -- a query
+legitimately mixes note types -- but a run where *no* selected note had the field logs one
+warning, because then the sort did nothing at all.
 
-Both names of a rename come from `name_snapshot` in the addon config: per referenced note
-type id, its name and the names of its fields and templates by their ids, plus a name per
-referenced deck id. It is written by the same pass and refreshed whenever definitions are
-saved, so it is never older than the last save, and a changed name under an unchanged id is
-what a rename *is*. The pass writes the config only when something changed.
+### The snapshot
+
+Both names of a rename come from `name_snapshot` in the addon config: the name of every note
+type and every deck by id, and, for each note type a definition triggers on or names in a
+card action, the names of its fields and templates by their ids. Every deck and note type,
+because a search or code can spell any of them; fields and templates only of those note
+types, because that is what a definition's own slots and tokens spell. It is written by the
+same pass and refreshed whenever definitions are saved, so it is never older than the last
+save, and a changed name under an unchanged id is what a rename *is*. A config whose
+definitions hold no reference at all gets an empty snapshot, and the pass does not run for
+it. The pass writes the config only when something changed.
 
 **Several profiles.** The addon's config is one file for the whole add-on, shared by every
 profile, while a note type id, a deck id and a field id belong to the collection that issued
 them -- and a collection restored from a backup as a second profile answers to the first
 one's ids under whatever names it has been given since. So the snapshot records which
 collection it was taken of, and a pass that opens on a different one does not read it at
-all: no name in it is an old name here, nothing is rewritten or marked, every reference is
-re-bound by the usual rule -- the id while it still exists, the name when it does not -- and
-the snapshot is replaced with this collection's names. A rename is only ever followed inside
-the collection it happened in, so switching profiles leaves each one's definitions as they
-were.
+all: no name in it is an old name here, nothing is rewritten or warned about, every
+reference is re-bound by the usual rule -- the id while it still exists, the name when it
+does not -- and the snapshot is replaced with this collection's names. A rename is only ever
+followed inside the collection it happened in, so switching profiles leaves each one's
+definitions as they were.
 
 The collection is recorded by its path. Its creation time, which would travel with the
 collection, was tried and dropped: Anki rounds it to the start of the day, so two profiles
-made on the same day would read as one. The known cost: a config synced in from another
-desktop (`addon_config_sync` copies it whole) carries that desktop's path, so the first
-pass after it arrives reads its snapshot as another collection's. A rename that reached
-this collection without a pass seeing it -- one made on a phone, say -- is then neither
-followed nor marked. The definitions go on resolving their note types, decks and card types
-by id; only the field and card type names they spell are left as they were.
+made on the same day would read as one.
 
-Marks stored by an earlier build of this feature carry a message but no ids. They are shown
-and refused like any other, but neither a second rename nor an undo changes them: dismiss
-them in the editor.
+### Known limitations
+
+- **Wildcards.** A search term with a wildcard (`*`, or an unescaped `_`), a regex or a
+  `{{...}}` reference is not an exact name and is never a hit: `deck:JP*` is not found by a
+  rename of `JP`.
+- **Fields of note types no definition triggers on** (or names in a card action). Their names
+  are not in the snapshot, so a rename of one is not seen, even where a search, another
+  binding or code spells it.
+- **A config synced between desktops** (`addon_config_sync` copies it whole) carries the
+  other desktop's path, so the first pass after it arrives reads its snapshot as another
+  collection's. A rename that reached this collection without a pass seeing it -- one made
+  on a phone, say -- is then neither followed nor warned about. The definitions go on
+  resolving their note types, decks and card types by id; only the names they spell are
+  left as they were.
+- **Code hits that happen to equal a name.** Any string in code that equals the old name is
+  a hit, whatever it was for, and may block. Dismiss it; or, if the string changes, the next
+  save drops it.
+- **Code that does not parse** finds nothing, so a pass that meets code mid-edit files no
+  warning in it, and a save keeps the warnings it already has.
 
 ## The startup migration
 
@@ -754,9 +857,12 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `logic/unsaved_note_search.py` | judging a search against a note not in the collection yet |
 | `logic/copy_fields.py` | the bulk operation: which notes each definition runs for, undo, the sync tail |
 | `logic/object_refs.py` | note type, deck and card type references: id first, name after it |
-| `logic/rename_reconcile.py` | the reconcile pass, the name snapshot, the broken-by-rename mark |
+| `logic/rename_reconcile.py` | the reconcile pass, the name snapshot, save-time dropping of cleared warnings |
+| `logic/rename_scan.py` | where a text spells a renamed name, whether that blocks, and its replacement |
+| `logic/rename_locations.py` | the location keys warnings are filed under |
+| `logic/rename_warnings.py` | the stored warnings and their readers: blocking, messages, advice |
 | `logic/query_terms.py` | the names a search spells that the collection does not have |
-| `hooks/rename_hooks.py` | when the pass runs, and the dialog after a note type operation |
+| `hooks/rename_hooks.py` | when the pass runs, and the dialog after a note type or deck operation |
 | `configuration.py` | the config, the trigger accessors, and the startup migration |
 | `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
 | `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
@@ -768,5 +874,7 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `ui/stage_exports_editor.py` | the definition-level exports panel |
 | `ui/stage_preview.py` | the preview pane: note picker, run control, trace |
 | `ui/edit_staged_definition_dialog.py` | the dialog, what blocks a save and what it warns of |
-| `ui/rename_marks_banner.py` | the marks a rename left, one Dismiss each, atop the dialog |
-| `ui/pick_copy_definition_dialog.py` | the definition list, and its three marks |
+| `ui/rename_marks_banner.py` | the warnings grouped by location, one Dismiss each, atop the dialog |
+| `ui/rename_indicator.py` | the ✖ / ⓘ and Replace button beside each part holding a location |
+| `ui/rename_replace_dialog.py` | the read-only diff Replace shows before Apply |
+| `ui/pick_copy_definition_dialog.py` | the definition list, and its ✖, ⚠ and ⓘ |

@@ -29,18 +29,22 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 50), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger |
 | `hooks/` | browser menus, add / review / unfocus handlers (`note_hooks.py` wraps `Editor.cleanup` and `V3Scheduler.answer_card`, guarded by a `copy_anywhere_wrapped` attribute), the sync sweep, and when the rename pass runs (`rename_hooks.py`) |
 | `logic/definition_schema.py` | format-2 types, stage-type constants, structural validation |
-| `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and stage-guid repair |
+| `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and the guid repair for stages, field writes and card actions |
 | `logic/flow_analysis.py` | scopes, result types, effects, exports, call cycles: what the editor blocks a save on and what `effects` records |
 | `logic/copy_fields.py` | the operation: which notes each definition runs for, the undo entry, the sync tail |
 | `logic/execution/` | the evaluator: `runner.py` one definition for one note, `evaluator.py` the structural stages, `actions.py` the leaf stages, `expressions.py` both value syntaxes, `context.py` the session, `commit.py` what happens to a run's changes |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress; older names are re-exported from `copy_fields` |
 | `logic/preview.py`, `logic/unsaved_note_search.py` | a run that writes nothing; judging a search against a note not yet in the collection |
-| `hooks/rename_hooks.py` | when the reconcile pass runs: every collection load (a rename synced in arrives with no other hook), every operation that changed a note type, and a deck-only change only when the decks' ids or names differ from what the last completed pass saw (an answer reports a deck change); after a note type change, a dialog listing only the marks that pass added |
+| `hooks/rename_hooks.py` | when the reconcile pass runs: every collection load (a rename synced in arrives with no other hook), every operation that changed a note type, and a deck-only change only when the decks' ids or names differ from what the last completed pass saw (an answer reports a deck change); after either, a dialog listing only the blocking warnings that pass added |
 | `logic/object_refs.py` | note type, deck and card type references (`{id, name}`, `{note_type_id, template_id, name}`) and the one rule every reader resolves them by: the id while it exists, the name only when it does not. Fields are names, not references |
-| `logic/rename_reconcile.py` | the reconcile pass: binds null ids, refreshes cached names, diffs `name_snapshot` by id, follows a trigger field or card type rename into a definition with one trigger note type, and marks (`broken_by_rename`) the rest; the snapshot and its collection stamp (the path); the mark readers every run path uses; `unresolved_references` and `trigger_names_not_on_every_note_type` for the editor and the picker |
+| `logic/rename_reconcile.py` | the reconcile pass: binds null ids, refreshes cached names, diffs `name_snapshot` by id, follows a trigger field or card type rename into a definition with one trigger note type, and files a warning at every location (`_locations`) that still spells a renamed or deleted field, card type, deck or note type; the snapshot and its collection stamp (the path); `drop_cleared_warnings` for the editor's save; `unresolved_references` and `trigger_names_not_on_every_note_type` for the editor and the picker |
+| `logic/rename_warnings.py` | `definition["rename_warnings"]` (location key -> entries) and its only readers: `rename_warning_entries`, `blocks_run` / `blocking_messages` (every run path, the picker's ✖, the browser menu, `call_definition`), `non_blocking_messages` (the picker's ⓘ), `remove_rename_warning` |
+| `logic/rename_locations.py` | the one builder of location keys, `<guid>.<path>` or `triggers.<path>`, for the pass and every editor part alike |
+| `logic/rename_scan.py` | the scanners the pass, the indicators, the save and Replace share: where a template, search, code or slot spells a name, `hit_blocks_run` (which hits block), and the replacement text |
 | `logic/query_terms.py` | the `deck:`, `note:`, `card:` and field terms a search spells that the collection does not have, exact names only; `CollectionNames` is the name list a caller shares across many scans |
 | `logic/*_process.py`, `FatalProcessError.py` | the five process-chain steps; `FatalProcessError` aborts a whole run |
-| `ui/` | the picker (`pick_copy_definition_dialog`), `edit_staged_definition_dialog` and its parts: `stage_document`, `stage_list`, `stage_editors` (one editor per stage type), `stage_preview`, the triggers and exports panels, `rename_marks_banner` (a definition's rename marks, one Dismiss each: the only way a mark goes besides undoing the rename) |
+| `ui/` | the picker (`pick_copy_definition_dialog`), `edit_staged_definition_dialog` and its parts: `stage_document`, `stage_list`, `stage_editors` (one editor per stage type), `stage_preview`, the triggers and exports panels, `rename_marks_banner` (a definition's rename warnings grouped by location, click to open, one Dismiss each) |
+| `ui/rename_indicator.py`, `ui/rename_replace_dialog.py` | the ✖ / ⓘ beside each editor part holding a location, hidden once the live text no longer spells the name; its Replace button and the read-only diff it shows before Apply |
 | `utils/` | `duplicate_note`, `merge_cards`, `move_card_to_deck`, media-folder helpers, `replace_custom_field_values` |
 
 Call chain for a bulk run:
@@ -83,22 +87,27 @@ Call chain for a bulk run:
   else anyway. The hooks read `effects` and never inspect stages.
 - The review handler merges into the recorded Answer Card undo step, folds card-action edits
   into the reviewed card with `merge_cards` before the single `update_card`, then sets
-  `fc=1`, or `fc=-1` when sync-only definitions remain. When it refused a marked on-review
+  `fc=1`, or `fc=-1` when sync-only definitions remain. When it refused a blocked on-review
   definition for this note, it leaves `fc` as the scheduler set it, so the card stays
   queued for the run after the fix. The sync sweep ends by setting every `fc` of 0 or -1
   to 1, except on the note types a refused definition triggers on
   (`note_type_ids_held_for_rename`).
-- **A definition carrying a `broken_by_rename` mark is not run on any path.** Every run
-  path asks `copy_fields.refused_for_rename`: the add, review and unfocus hooks before they
-  pick a way to run it (`once_per_session=True`, so a hook firing per note cannot fill the
-  50-file log cap with one refusal), and `copy_for_single_trigger_note` as the backstop for
-  the bulk and sync runs. `call_definition` refuses a marked callee (`evaluator.py`); the
-  picker and the browser menu disable it. A new run path must ask too. Read a mark only
-  through `broken_by_rename_entries` / `_messages`: stored entries come in more than one
-  shape, and anything with a message counts.
-- The pass never re-derives a mark, and nothing else does either (`_save_definitions`
-  saves marks as they stand). An entry goes only when its object is called `old` again
-  (the rename undone) or the user dismisses it in the editor.
+- **A definition with a blocking rename warning is not run on any path.** Warnings live in
+  `definition["rename_warnings"]`, keyed by location; each entry says whether it
+  `blocks_run`, and a warn-only one changes nothing about a run. Every run path asks
+  `copy_fields.refused_for_rename`: the add, review and unfocus hooks before they pick a way
+  to run it (`once_per_session=True`, so a hook firing per note cannot fill the 50-file log
+  cap with one refusal), and `copy_for_single_trigger_note` as the backstop for the bulk
+  and sync runs. `call_definition` refuses a blocked callee (`evaluator.py`); the picker
+  and the browser menu disable it. A new run path must ask too. Read the store only through
+  `logic/rename_warnings.py` (a hand-mangled value must read alike everywhere, and an entry
+  with no message counts for nothing), and build a location key only through
+  `logic/rename_locations.py`: a key spelled by hand matches nothing and shows nothing.
+- The pass never re-derives a warning, and nothing else does either (`_save_definitions`
+  saves them as they stand). An entry goes when its object is called `old` again (the
+  rename undone), when the user dismisses it in the editor, or when the editor saves and
+  its location no longer spells the old name (`drop_cleared_warnings`, the same scanner the
+  pass used; code that does not parse keeps its warnings).
 - The unfocus handler is a filter hook: return `changed or we_changed`. It runs definitions
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
@@ -123,8 +132,9 @@ user's definitions live in `meta.json`, are large, and are edited only through t
 or nothing, keeping the originals under `pre_stage_migration_copy_definitions`; below 0.4.0
 it rewrites references into the current syntax; below 0.5.0 it stores trigger note types,
 decks and card-action card types as references with a null id, which the reconcile pass
-binds. Stage guids are repaired on every start. The config also holds `name_snapshot`, the
-names the referenced ids last had (`logic/rename_reconcile.py`).
+binds. Stage, field write and card action guids are repaired on every start. The config
+also holds `name_snapshot`: every deck's and note type's name by id, and the field and
+template names of the note types definitions reference (`logic/rename_reconcile.py`).
 The spec's "The startup migration" section is the user-facing account.
 
 A change to the format-2 shape needs: the schema and its validation, `flow_analysis`, the
@@ -152,14 +162,19 @@ in the root `testpaths`. Reuse, do not reinvent:
   guide's pictures exist; `COPY_ANYWHERE_SCREENSHOTS=1` regenerates `docs/images/`.
 - `test_anki/conftest.py`: `real_mw`, `addon_config`, `restore_stub_mw`.
 - Renames: `test/test_rename_reconcile.py` (the pass and `rename_hooks`; helpers `store`,
-  `rename_field`, `rename_template`, `saves`, `FakeChanges`, `answer_a_card`) and
-  `test/test_rename_editor.py` (the picker's marks, the editor's banner, warnings and
-  blockers).
+  `rename_field`, `rename_template`, `saves`, `FakeChanges`, `answer_a_card`),
+  `test/test_rename_editor.py` (the picker's ✖ / ⚠ / ⓘ, the browser menu, the banner and
+  the several-trigger save blocker), `test/test_rename_warnings.py` (the store's readers,
+  location keys, the dialog's text), `test/test_rename_scan.py` (the scanners, with search
+  round trips on a real collection), `test/test_rename_indicators.py` (each editor part's
+  indicator, the banner by location, save-time dropping) and `test/test_rename_replace.py`
+  (Replace and its diff dialog, reusing the indicator tests' parts and helpers). Builders
+  `d.rename_warning` and `d.warned` make stored warnings.
 
 The tests from before format 2 are characterization tests: they pin behaviour, including
 behaviour that looks odd, and now run through the migrator. A test that fails after your
 change is a behaviour change to justify, not a test to update. Not covered: the `Config`
-CRUD methods, `hooks/browser_hooks.py` beyond the disabled entry of a marked definition
+CRUD methods, `hooks/browser_hooks.py` beyond which entries a rename warning disables
 (`test/test_rename_editor.py`), `utils/replace_custom_field_values.py`. None of the
 UI has been exercised in a real Anki window by the suite; the Qt tests use offscreen
 widgets.

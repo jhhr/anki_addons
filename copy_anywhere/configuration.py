@@ -882,9 +882,10 @@ class Config:
         in one profile cannot be read as a rename in the next: this config is shared by all
         of them, and the ids in it are not.
 
-        A definition a rename left marked (`logic/rename_warnings.py`) is saved with its
-        marks as they stand: a mark is only ever taken off by the user in the editor (or by
-        the pass, when the rename is undone), never re-derived here.
+        A definition a rename left warnings on (`logic/rename_warnings.py`) is saved with
+        them as they stand: a warning is only ever taken off in the editor -- dismissed, or
+        dropped by its save once the text no longer spells the old name -- or by the pass,
+        when the rename is undone; never re-derived here.
 
         The reconcile pass itself saves with `save`: it has just stored the snapshot, and
         nothing it changes feeds `effects` (`rename_reconcile.reconcile`).

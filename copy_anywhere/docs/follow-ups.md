@@ -348,8 +348,9 @@ Field names stay names, because a field is what the user types in expressions, q
 code -- the row of the table above that a mechanical rewrite would mangle. What (a) and (c)
 are still needed for is kept: one reconcile pass refreshes the cached names by id and
 rewrites a renamed trigger field's parsed reference tokens, and what stays name-only is
-reported rather than rewritten. Search text is never rewritten: `col.replace_in_search_node`
-swaps every term of a kind, so it cannot rename one deck inside a query naming two.
+reported rather than rewritten. The pass never rewrites search text:
+`col.replace_in_search_node` swaps every term of a kind, so it cannot rename one deck inside
+a query naming two.
 
 Built in three commits on `feat/copyanywhere_rename_protection`: the references and the
 readers that go through them, the reconcile pass, and the editor's reporting.
@@ -363,18 +364,21 @@ a renamed field or card type of a trigger note type into the field slots and
 `{{trigger....}}` tokens of a definition with **one** trigger note type -- the whole rename
 map applied in one step, so a swap of two names is correct. A definition with several
 trigger note types is never rewritten: it spells a name once for all of them, and every
-rule that tried to decide for it decided wrongly somewhere, so it is marked
-(`broken_by_rename`) when it spells the old name, and not run until the user has updated it
-and dismissed the mark in the editor. A deleted field or card type it spells, and code
-still mentioning an old name, mark a definition the same way. The rest is reported: a
+rule that tried to decide for it decided wrongly somewhere, so it gets a warning where it
+spells the old name, and is not run until the old name is replaced and saved or the warning
+dismissed in the editor. Everything else that still spells a renamed or deleted name -- a
+search term, code, a sort field, another binding's token, and for a deck or note type any
+definition's search or code -- gets a warning at that location too, blocking or not
+(`definition["rename_warnings"]`, `docs/staged-definitions.md`). The rest is reported: a
 reference that resolves to nothing, a deleted note type, deck or card action's card type,
-and a field or template with no id to be followed by. Only an expression's `text` is
-rewritten, never its `code` and never a search term, which is (a)'s job kept where a
-rewrite would be a guess.
+and a field or template with no id to be followed by. The pass rewrites only an
+expression's `text`, never its `code` and never a search term, which is (a)'s job kept where
+a rewrite would be a guess; those change only through the editor's Replace, which shows the
+change as a diff before it writes it.
 
-Both names of a rename come out of `name_snapshot` in the addon config -- per referenced
-note type id, its name and its fields' and templates' names by *their* ids, plus a name per
-referenced deck id -- which is tier (c)'s snapshot, kept in step by `_save_definitions` so
+Both names of a rename come out of `name_snapshot` in the addon config -- the name of
+every note type and deck by id, and for a referenced note type its fields' and templates'
+names by *their* ids -- which is tier (c)'s snapshot, kept in step by `_save_definitions` so
 it is never older than the last save. That is what makes a rename visible with no hook at
 all, including one synced in from another device and one undone with Ctrl+Z, which is just
 a second rename the same pass follows back. The snapshot is stamped with the collection's
@@ -392,10 +396,11 @@ refused, since at run time it only matches nothing; a query stage carries an amb
 listing what its search spells that the collection does not have; and the definition
 picker marks a definition that names something unresolved, with the names in its tooltip
 -- checked live as the picker is drawn, never taken from a pass, and redrawn when a
-definition is saved from the picker. A definition marked `broken_by_rename` is not run on
-any run path (the editor's preview still runs it), the picker shows it with its own icon
-and a checkbox that cannot be ticked, and the editor shows its marks at the top, each with
-a Dismiss (`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
+definition is saved from the picker. A definition with a blocking rename warning is not
+run on any run path (the editor's preview still runs it), the picker shows it with its own
+icon and a checkbox that cannot be ticked, and the editor shows each warning on the part
+that spells the name and all of them at the top, each with a Dismiss
+(`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
 (`logic/query_terms.py`) checks `deck:`, `note:` and `card:` terms and field searches by
 exact name only -- a term holding
 a wildcard, a regex or an unresolved `{{...}}` reference is skipped rather than guessed at,
