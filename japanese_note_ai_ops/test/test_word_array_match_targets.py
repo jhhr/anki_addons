@@ -167,6 +167,21 @@ class HighlightedSentenceTests(unittest.TestCase):
         self.assertEqual(example("field", '{"nouns": []}', "本", "ほん", 111), "field")
 
 
+class WordPathTests(unittest.TestCase):
+    def test_the_path_indexes_down_to_the_very_element(self):
+        first, second = word("為る", pos="verb"), word("為る", pos="verb")
+        deep = word("様", ["match"])
+        arr = [first, ["、"], word("様に本", [], [word("様に", [], [deep, word("に")])]), second]
+
+        # An equal element earlier in the array is not the one asked for
+        self.assertEqual(match_targets.word_path(arr, second), [3])
+        self.assertEqual(match_targets.word_path(arr, first), [0])
+        path = match_targets.word_path(arr, deep)
+        self.assertEqual(path, [2, 0, 0])
+        self.assertIs(arr[path[0]][5][path[1]][5][path[2]], deep)
+        self.assertIsNone(match_targets.word_path(arr, word("為る", pos="verb")))
+
+
 class ResolvePlaceholderIdsTests(unittest.TestCase):
     def test_placeholders_take_the_added_notes_id(self):
         added = word("様", [-111, 4])

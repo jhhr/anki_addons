@@ -36,8 +36,34 @@ CALL_COLUMNS = [
     "prompt_key", "model", "params_json", "inputs_json", "instructions_hash", "prompt",
     "schema_hash", "response_raw", "response_json", "outcome", "error", "started",
     "latency_ms", "attempts", "usage_json", "extra_json",
+    # Schema version 2, last in a new file as in a migrated one
+    "context_json",
 ]
 BLOB_COLUMNS = ["hash", "text"]
+
+# The schema version 1 files were made with, as that code created it: what a v1 file holds
+V1_SCHEMA = [
+    "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, v INTEGER NOT NULL, started REAL,"
+    " ended REAL, label TEXT, implicit INTEGER DEFAULT 0, ops_json TEXT, chain_step TEXT,"
+    " note_count INTEGER, config_json TEXT, versions_json TEXT, log_path TEXT, outcome TEXT,"
+    " extra_json TEXT)",
+    "CREATE TABLE calls (call_id INTEGER PRIMARY KEY, v INTEGER NOT NULL, run_id INTEGER,"
+    " note_id INTEGER, task_id TEXT, parent_task_id TEXT, kind TEXT, request_key TEXT,"
+    " prompt_key TEXT, model TEXT, params_json TEXT, inputs_json TEXT, instructions_hash TEXT,"
+    " prompt TEXT, schema_hash TEXT, response_raw TEXT, response_json TEXT, outcome TEXT,"
+    " error TEXT, started REAL, latency_ms REAL, attempts INTEGER, usage_json TEXT,"
+    " extra_json TEXT)",
+    "CREATE TABLE blobs (hash TEXT PRIMARY KEY, text TEXT)",
+    "CREATE INDEX runs_started ON runs(started)",
+    "CREATE INDEX calls_run_id ON calls(run_id)",
+    "CREATE INDEX calls_note_id ON calls(note_id)",
+    "CREATE INDEX calls_kind ON calls(kind)",
+    "CREATE INDEX calls_request_key ON calls(request_key)",
+    "CREATE INDEX calls_prompt_key ON calls(prompt_key)",
+    "CREATE INDEX calls_instructions_hash ON calls(instructions_hash)",
+    "CREATE INDEX calls_schema_hash ON calls(schema_hash)",
+    "PRAGMA user_version = 1",
+]
 
 DAY = 86400.0
 # A fixed "now" for the prune function, so its cutoff is exact
@@ -125,9 +151,63 @@ class SchemaTests(StoreTestCase):
         store.insert_call({"call_id": 1, "run_id": 1})
         self.assertTrue(store.flush())
 
+        version = capture_store.SCHEMA_VERSION
         self.assertEqual(
-            self.rows("SELECT v FROM runs UNION ALL SELECT v FROM calls"), [(1,), (1,)]
+            self.rows("SELECT v FROM runs UNION ALL SELECT v FROM calls"), [(version,)] * 2
         )
+
+
+class MigrationTests(StoreTestCase):
+    def make_v1_file(self, *extra_statements):
+        """A file as the version 1 store left it: its schema, a run and a call."""
+        os.makedirs(os.path.dirname(self.path))
+        with closing(sqlite3.connect(self.path)) as connection:
+            for statement in V1_SCHEMA + list(extra_statements):
+                connection.execute(statement)
+            connection.execute("INSERT INTO runs (run_id, v, label) VALUES (4, 1, 'old run')")
+            connection.execute(
+                "INSERT INTO calls (call_id, v, run_id, kind) VALUES (8, 1, 4, 'match.meanings')"
+            )
+            connection.commit()
+
+    def test_a_version_1_file_gains_the_context_column_and_keeps_its_rows(self):
+        self.make_v1_file()
+
+        store = self.open_store()
+        self.assertTrue(store.enabled)
+        call_id = store.insert_call({"run_id": 4, "kind": "match.rating", "context_json": {"a": 1}})
+        self.assertTrue(store.flush())
+
+        # Its columns in the order a new file has them, so the two read alike
+        self.assertEqual([row[1] for row in self.rows("PRAGMA table_info(calls)")], CALL_COLUMNS)
+        self.assertEqual(self.rows("PRAGMA user_version"), [(capture_store.SCHEMA_VERSION,)])
+        self.assertEqual(call_id, 9, "ids carry on after the old rows")
+        self.assertEqual(
+            self.rows("SELECT call_id, v, kind, context_json FROM calls ORDER BY call_id"),
+            [
+                (8, 1, "match.meanings", None),
+                (9, capture_store.SCHEMA_VERSION, "match.rating", '{"a":1}'),
+            ],
+        )
+        self.assertEqual(self.rows("SELECT run_id, v, label FROM runs"), [(4, 1, "old run")])
+
+    def test_a_migration_that_fails_leaves_the_file_at_its_version(self):
+        self.make_v1_file()
+        v1_columns = self.rows("PRAGMA table_info(calls)")
+        # A statement that fails after the ALTER TABLE has run
+        statements = capture_store._schema_statements() + ["NOT A STATEMENT"]
+
+        with (
+            mock.patch.object(capture_store, "_schema_statements", lambda: statements),
+            self.assertLogs(capture_store.logger, "WARNING") as logs,
+        ):
+            store = self.open_store()
+
+        self.assertIn(self.path, logs.output[0])
+        self.assertFalse(store.enabled)
+        self.assertEqual(self.rows("PRAGMA user_version"), [(1,)])
+        self.assertEqual(self.rows("PRAGMA table_info(calls)"), v1_columns)
+        self.assertEqual(self.rows("SELECT call_id, v FROM calls"), [(8, 1)])
 
 
 class IdTests(StoreTestCase):
@@ -368,7 +448,7 @@ class FailureTests(StoreTestCase):
         os.makedirs(os.path.dirname(self.path))
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute("CREATE TABLE runs (run_id INTEGER PRIMARY KEY, future TEXT)")
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute(f"PRAGMA user_version = {capture_store.SCHEMA_VERSION + 1}")
             connection.commit()
         before = Path(self.path).read_bytes()
 

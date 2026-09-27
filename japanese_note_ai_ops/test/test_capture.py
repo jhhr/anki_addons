@@ -224,6 +224,7 @@ class RunTests(CaptureTestCase):
                 "attempts": 2,
                 "usage_json": '{"n":7}',
                 "extra_json": None,
+                "context_json": None,
             },
         )
         self.assertGreaterEqual(started, 0.0)
@@ -447,6 +448,39 @@ class CaptureFailureTests(CaptureTestCase):
 
         [call] = self.rows("calls")
         self.assertEqual((call["outcome"], call["response_json"]), ("ok", None))
+
+    def test_a_context_with_no_json_text_is_recorded_without_it(self):
+        self.install()
+        with self.assertLogs(capture.logger, "WARNING"):
+            record_call(result={"a": 1}, context={1: "a", "b": 2})
+
+        [call] = self.rows("calls")
+        self.assertEqual((call["outcome"], call["context_json"]), ("ok", None))
+
+
+class AnswerContextTests(CaptureTestCase):
+    """`context`: what reading the answer needs that the prompt does not show."""
+
+    CONTEXT = {"note_ids": [1712000000002, -4242424], "depth": 0}
+
+    def test_the_context_is_recorded_as_it_was_at_entry_and_keys_nothing(self):
+        self.install()
+        context = copy.deepcopy(self.CONTEXT)
+        with capture.call(KIND, INPUTS, context=context, **call_args()) as trace:
+            # The op may change what it passed once the call has begun
+            context["note_ids"].append(7)
+            trace.finish({"a": 1})
+        record_call(result={"a": 1})
+
+        with_context, without = self.rows("calls")
+        self.assertEqual(
+            with_context["context_json"], capture_store.canonical_json(self.CONTEXT)
+        )
+        self.assertIsNone(without["context_json"])
+        # The same request, whatever notes it was made for
+        self.assertEqual(with_context["request_key"], without["request_key"])
+        self.assertEqual(with_context["prompt_key"], without["prompt_key"])
+        self.assertEqual(with_context["request_key"], capture_store.request_key(KIND, INPUTS))
 
 
 class ContextTests(CaptureTestCase):

@@ -16,7 +16,8 @@ profile that opened it; readers (research scripts, a DB browser) are fine under 
 The store is diagnostics and never fails an op. A file it cannot open, a schema newer than
 this code, a batch that cannot be written: each is logged with the path and turns the store
 off for the rest of the session, and every later record is dropped. A full queue drops the
-record. None of it reaches the caller.
+record. None of it reaches the caller. A file of an older schema is brought up to this one
+when it opens (`_MIGRATIONS`); its old rows keep NULL in the columns added since.
 
 Free of aqt and anki, and imports nothing of the addon's, so tests and research scripts load
 it on its own.
@@ -38,7 +39,8 @@ from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+# 2: calls.context_json
+SCHEMA_VERSION = 2
 
 # Not diagnostics.WORKER_THREAD_PREFIX: call_logging waits for every thread with that prefix
 # to end before it closes a run's log file, and this one lives as long as the profile
@@ -150,6 +152,9 @@ CALL_COLUMNS: dict[str, str] = {
     "attempts": "INTEGER",
     "usage_json": "TEXT",
     "extra_json": "TEXT",
+    # Version 2. Last, where the migration's ALTER TABLE puts it, so that a migrated file and a
+    # new one have their columns in the same order
+    "context_json": "TEXT",
 }
 
 BLOB_COLUMNS: dict[str, str] = {"hash": "TEXT PRIMARY KEY", "text": "TEXT"}
@@ -172,6 +177,13 @@ _INDEXES = (
     ("calls_instructions_hash", "calls", "instructions_hash"),
     ("calls_schema_hash", "calls", "schema_hash"),
 )
+
+
+# What brings a file of schema version N to N+1, keyed by N. A new file gets the current schema
+# whole from _schema_statements instead
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: ("ALTER TABLE calls ADD COLUMN context_json TEXT",),
+}
 
 
 def _schema_statements() -> list[str]:
@@ -494,8 +506,8 @@ class CaptureStore:
     # --- opening (caller's thread) -----------------------------------------------------------
 
     def _open(self) -> Optional[tuple[int, int]]:
-        """Create the directory and schema, turn on WAL, return the first free run and call
-        ids; None when the file belongs to a newer version of this code."""
+        """Create the directory and schema, or migrate an older file's, turn on WAL, return the
+        first free run and call ids; None when the file belongs to a newer version of this code."""
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -515,8 +527,15 @@ class CaptureStore:
                 )
                 return None
             if version < SCHEMA_VERSION:
-                # 0 is a new file; a later schema version adds its migration here
+                # One transaction: a migration that fails leaves the file as it was, at its old
+                # version, and the store off for this session
                 connection.execute("BEGIN IMMEDIATE")
+                # 0 is a new file, which the statements below create at this version whole;
+                # an older file's tables exist, and those statements add nothing to them
+                if version:
+                    for step in range(version, SCHEMA_VERSION):
+                        for statement in _MIGRATIONS[step]:
+                            connection.execute(statement)
                 for statement in _schema_statements():
                     connection.execute(statement)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

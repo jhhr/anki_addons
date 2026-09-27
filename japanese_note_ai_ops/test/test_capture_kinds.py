@@ -2,8 +2,10 @@
 story ops record of their AI calls: each call's `kind`, and as `inputs` the values its prompt is
 built from, so that the prompt's builder given the recorded inputs gives back the prompt that
 was sent. The prompts themselves are pinned byte for byte (written before their builders were
-taken out of the ops). The meaning ops' calls are test_capture_meaning_kinds'. Last, a scan of
-async_api_ops that every call site names a kind and inputs.
+taken out of the ops). The match op's two calls also record a `context`, the word and notes their
+answers are read against, which must name what the op then does with the answer. The meaning ops'
+calls are test_capture_meaning_kinds'. Last, a scan of async_api_ops that every call site names a
+kind and inputs.
 
 `get_response` is the test's in most tests, as in test_word_array_match_targets and test_judge.
 One runs a note's word array match through the real `get_response` with a store installed in a
@@ -22,7 +24,7 @@ import tempfile
 import types
 import unittest
 from contextlib import closing
-from typing import Any
+from typing import Any, Optional
 from unittest import mock
 
 from addon_modules import OPS_DIR, load_ops_module
@@ -95,6 +97,20 @@ RATING_INPUTS = {
     "en_meaning": "to borrow",
     "sentence": "図書館で本を<b>借りた</b>。",
 }
+# What the meanings call's context says each listed meaning is, in the prompt's order: the notes
+# by their (mN) - found m2 first, so the sort moves them - then the generated meaning neither
+# note has, the second of the word's generated meanings, which sorts with the largest (mN)
+MEANINGS_CONTEXT = {
+    "word_path": [2],
+    "meanings": [
+        {"note_id": 101, "m_number": 1, "gen_index": None},
+        {"note_id": 102, "m_number": 2, "gen_index": None},
+        {"note_id": None, "m_number": 2, "gen_index": 1},
+    ],
+    # The note with the largest (mN)
+    "copy_note_id": 102,
+}
+RATING_CONTEXT = {"word_path": [4], "note_id": 222}
 
 PROPER_NOUNS_PROMPT = (
     "Does the Japanese sentence below contain any proper nouns? Respond with a JSON object"
@@ -275,8 +291,9 @@ class MatchHarness(unittest.TestCase):
         ):
             return asyncio.run(run()), results
 
-    def match_array(self, get_response) -> list:
-        """plan_word_array_matching over `library_array`, every task run; the array saved."""
+    def match_array(self, get_response, notes_to_add: Optional[dict] = None) -> list:
+        """plan_word_array_matching over `library_array`, every task run; the array saved.
+        `notes_to_add`: the run's notes to add so far, by word."""
         note = FakeNote(NOTE_ID, {"word_list_field": json.dumps(library_array())})
         linked = word_note(
             222, "借りる", RATING_INPUTS["jp_meaning"], "to borrow", "", "借りる", "かりる"
@@ -293,7 +310,7 @@ class MatchHarness(unittest.TestCase):
                 arr=library_array(),
                 sentence="図書館で本を借りた。",
                 edited_nids=[],
-                notes_to_add_dict={},
+                notes_to_add_dict=notes_to_add if notes_to_add is not None else {},
                 notes_to_update_dict={},
                 progress_updater=Progress(),
                 cancel_state=None,
@@ -369,6 +386,119 @@ class MatchCallTests(MatchHarness):
         self.assertEqual(json.loads(json.dumps(value)), value)
 
 
+def matched(meaning_number: int) -> dict:
+    """The meanings prompt's MATCH of a listed meaning, rated 5."""
+    return {"is_matched_meaning": True, "meaning_number": meaning_number, "match_quality": 5}
+
+
+def at_path(arr: list, path: list[int]) -> list:
+    """The element a context's `word_path` names."""
+    elem = arr[path[0]]
+    for index in path[1:]:
+        elem = elem[5][index]
+    return elem
+
+
+class MatchContextTests(MatchHarness):
+    """The match calls' `context`, and that it names what the op then does with the answer:
+    `context["meanings"][meaning_number - 1]` is the note the word gets linked to, or the
+    generated meaning a new note is made from, as a copy of `copy_note_id`."""
+
+    def run_match(
+        self, meanings_answer: dict, notes_to_add: Optional[dict] = None
+    ) -> tuple[list, dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """The array matched with `meanings_answer` as the meanings call's answer: the saved
+        array, each call's arguments by kind, and each new note asked for."""
+        calls: dict[str, dict[str, Any]] = {}
+        created: list[dict[str, Any]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls[kwargs["kind"]] = kwargs
+            if kwargs["kind"] == "match.rating":
+                return {"match_quality": 4}
+            return meanings_answer
+
+        def create_new_note_from_matched_note(**kwargs) -> bool:
+            created.append(kwargs)
+            return True
+
+        with mock.patch.object(
+            self.mwtn, "create_new_note_from_matched_note", create_new_note_from_matched_note
+        ):
+            saved = self.match_array(get_response, notes_to_add)
+        return saved, calls, created
+
+    def test_the_contexts_name_the_word_and_each_listed_meaning_in_the_prompts_order(self):
+        saved, calls, _ = self.run_match(matched(1))
+
+        meanings, rating = calls["match.meanings"], calls["match.rating"]
+        self.assertEqual(meanings["context"], MEANINGS_CONTEXT)
+        self.assertEqual(rating["context"], RATING_CONTEXT)
+        for context in (meanings["context"], rating["context"]):
+            self.assertEqual(json.loads(json.dumps(context)), context)
+        # Each word's path names the element its answer was saved on
+        self.assertEqual(at_path(saved, MEANINGS_CONTEXT["word_path"])[4], [101, 5])
+        self.assertEqual(at_path(saved, RATING_CONTEXT["word_path"])[4], [222, 4])
+
+    def test_a_match_to_a_listed_note_links_the_word_to_the_note_the_context_names(self):
+        for number in (1, 2):
+            with self.subTest(meaning_number=number):
+                saved, calls, created = self.run_match(matched(number))
+
+                context = calls["match.meanings"]["context"]
+                listed = context["meanings"][number - 1]
+                self.assertIsNone(listed["gen_index"])
+                self.assertEqual(at_path(saved, context["word_path"])[4], [listed["note_id"], 5])
+                self.assertEqual(created, [])
+
+    def test_a_match_to_the_generated_meaning_makes_the_note_the_context_names(self):
+        saved, calls, created = self.run_match(matched(3))
+
+        context = calls["match.meanings"]["context"]
+        listed = context["meanings"][3 - 1]
+        self.assertIsNone(listed["note_id"])
+        [new_note] = created
+        made_from = {key: new_note[key] for key in ("jp_meaning", "en_meaning")}
+        self.assertEqual(made_from, generated_meanings()["本_ほん"][listed["gen_index"]])
+        self.assertEqual(new_note["note_to_copy"].id, context["copy_note_id"])
+        # Linked once the new note exists, which this fake does not make
+        self.assertEqual(at_path(saved, context["word_path"])[4], ["match"])
+
+    def test_a_new_meaning_copies_the_note_the_context_names(self):
+        answer = {
+            "is_matched_meaning": False,
+            "meaning_number": None,
+            "jp_meaning": "本当の。",
+            "en_meaning": "real",
+        }
+        _, calls, created = self.run_match(answer)
+
+        [new_note] = created
+        self.assertEqual((new_note["jp_meaning"], new_note["en_meaning"]), ("本当の。", "real"))
+        context = calls["match.meanings"]["context"]
+        self.assertEqual(new_note["note_to_copy"].id, context["copy_note_id"])
+
+    def test_a_note_not_added_yet_is_named_by_its_placeholder(self):
+        # A note this run made for the word before, not added until cleanup: id 0
+        pending = word_note(0, "本(m3)", "当の。この。", "this; the present", "<b>本</b>日")
+        pending["new_note_id_field"] = "-1234567"
+
+        saved, calls, _ = self.run_match(matched(3), {"本": [pending]})
+
+        context = calls["match.meanings"]["context"]
+        self.assertEqual(
+            context["meanings"][2:],
+            [
+                {"note_id": -1234567, "m_number": 3, "gen_index": None},
+                # Still last: generated meanings take the largest (mN), now the new note's
+                {"note_id": None, "m_number": 3, "gen_index": 1},
+            ],
+        )
+        self.assertEqual(context["copy_note_id"], -1234567)
+        # The placeholder is what the word is linked to until cleanup adds the note
+        self.assertEqual(at_path(saved, context["word_path"])[4], [-1234567, 5])
+
+
 class MatchTaskTests(MatchHarness):
     """A note's word array matched through the real get_response, with a store installed: the
     calls made for one word target are one task."""
@@ -419,6 +549,9 @@ class MatchTaskTests(MatchHarness):
         self.assertEqual(rebuilt, meanings["prompt"])
         recorded = json.loads(rating["inputs_json"])
         self.assertEqual(match_targets.rating_prompt(**recorded), rating["prompt"])
+        # And what the answers are read against
+        self.assertEqual(json.loads(meanings["context_json"]), MEANINGS_CONTEXT)
+        self.assertEqual(json.loads(rating["context_json"]), RATING_CONTEXT)
 
 
 # 日本語学校に通う。: a word inside a word inside a word, so one prompt has a parent and

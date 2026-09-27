@@ -257,6 +257,24 @@ def highlighted_sentence(arr: list, elem: list) -> Optional[str]:
     return None
 
 
+def word_path(arr: list, elem: list) -> Optional[list[int]]:
+    """Where this very element is in the array: its index in `arr`, then in each sub-word list
+    on the way down, so that `arr[path[0]][5][path[1]]...` is the element. None when it isn't
+    one of the array's words.
+
+    What a capture call's context says the word is: a target's index, which keys the match op's
+    results, counts only the words in the states the run matches, so it names no element without
+    them. Walks the array as `match_flags.iter_words` does."""
+    for index, candidate in enumerate(arr):
+        if candidate is elem:
+            return [index]
+        if len(candidate) > 1:
+            below = word_path(candidate[5], elem)
+            if below is not None:
+                return [index] + below
+    return None
+
+
 def example_sentence(
     sentence_field: str, word_list_field: str, word: str, reading: str, note_id: int
 ) -> str:

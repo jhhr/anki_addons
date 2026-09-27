@@ -412,7 +412,14 @@ def update_all_meanings_for_word(
 
     model = config.get("word_meaning_model", "")
     result = get_response(
-        model, prompt, response_schema=response_schema, kind="clean_meaning.rework", inputs=inputs
+        model,
+        prompt,
+        response_schema=response_schema,
+        kind="clean_meaning.rework",
+        inputs=inputs,
+        # The note behind each meaning index the answer gives: the prompt numbers the meanings
+        # but shows no ids
+        context={"note_ids": [note_id for note_id, _ in meanings_dict_items]},
     )
     if result is None:
         # Return nothing if the call failed
@@ -620,7 +627,17 @@ def match_meanings_to_generated_meanings(
 
     model = config.get("word_meaning_model", "")
     result = get_response(
-        model, prompt, response_schema=response_schema, kind="clean_meaning.map", inputs=inputs
+        model,
+        prompt,
+        response_schema=response_schema,
+        kind="clean_meaning.map",
+        inputs=inputs,
+        # As rework's; the possible meanings' indexes count in inputs["possible_meanings"]. The
+        # depth tells the second try, after a revise call, from the first
+        context={
+            "note_ids": [note_id for note_id, _ in meanings_dict_items],
+            "depth": depth,
+        },
     )
     if result is None:
         # Return nothing if the call failed
@@ -814,7 +831,11 @@ def get_single_meaning_from_mdx_dict_entry(
     sentences: list[EnAndJPSentence],
     jp_mdx_dict_entry: str,
     prev_en_meaning: str = "",
+    note_id: Optional[int] = None,
 ):
+    """`note_id`, the note the meaning is for (its placeholder id until it is added), is only
+    recorded, in the call's capture context: calls.note_id is the driver's note, which for a word
+    note the match op makes a meaning for is the sentence note."""
     jp_meaning_return_field = EXTRACT_JP_FIELD
     en_meaning_return_field = EXTRACT_EN_FIELD
     logger.debug(f"Getting single meaning with {len(sentences)} sentences")
@@ -828,7 +849,13 @@ def get_single_meaning_from_mdx_dict_entry(
     prompt = extract_meaning_prompt(**inputs)
     logger.debug(f"Prompt for cleaning meaning: {prompt}")
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, kind="clean_meaning.extract", inputs=inputs)
+    result = get_response(
+        model,
+        prompt,
+        kind="clean_meaning.extract",
+        inputs=inputs,
+        context={"note_id": note_id},
+    )
     if result is None:
         # Return original dict_entry unchanged if the cleaning failed
         return jp_mdx_dict_entry, prev_en_meaning
@@ -887,7 +914,9 @@ def get_new_meaning_from_model(
     reading: str,
     sentences: list[EnAndJPSentence],
     prev_en_meaning: str = "",
+    note_id: Optional[int] = None,
 ) -> tuple[str, str]:
+    """`note_id` as get_single_meaning_from_mdx_dict_entry's: only recorded."""
     logger.debug(f"Getting new meaning with {len(sentences)} sentences")
     jp_meaning_return_field = GENERATE_JP_FIELD
     en_meaning_return_field = GENERATE_EN_FIELD
@@ -901,7 +930,13 @@ def get_new_meaning_from_model(
     prompt = generate_meaning_prompt(**inputs)
     logger.debug(f"Prompt for new meaning: {prompt}")
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, kind="clean_meaning.generate", inputs=inputs)
+    result = get_response(
+        model,
+        prompt,
+        kind="clean_meaning.generate",
+        inputs=inputs,
+        context={"note_id": note_id},
+    )
     if result is None:
         # Return nothing if the generating failed
         return "", ""
@@ -1149,7 +1184,13 @@ def clean_meaning_in_note(
         if jp_mdx_dict_entry:
             # Call API to get single meaning from the raw dictionary entry
             new_jp_meaning, new_en_meaning = get_single_meaning_from_mdx_dict_entry(
-                config, word, reading, sentences, jp_mdx_dict_entry, prev_en_meaning
+                config,
+                word,
+                reading,
+                sentences,
+                jp_mdx_dict_entry,
+                prev_en_meaning,
+                note_id=meaning_note_key(note),
             )
 
             # Update the note with the new value
@@ -1164,7 +1205,7 @@ def clean_meaning_in_note(
         else:
             # If there's no dict_entry, we'll let a model generate one from scratch
             new_meaning, en_meaning = get_new_meaning_from_model(
-                config, word, reading, sentences, prev_en_meaning
+                config, word, reading, sentences, prev_en_meaning, note_id=meaning_note_key(note)
             )
             note[meaning_field] = new_meaning
             note[english_meaning_field] = en_meaning

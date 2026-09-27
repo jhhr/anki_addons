@@ -1,7 +1,8 @@
 """What the meaning ops record of their AI calls: clean_meaning's four and make_all_meanings'
 three. Each call's `kind`, and as `inputs` the values its prompt is built from, so that the
 prompt's builder given the recorded inputs gives back the prompt that was sent - also after the
-store's round trip, whose canonical JSON sorts every dict's keys.
+store's round trip, whose canonical JSON sorts every dict's keys. clean_meaning's calls also
+record a `context`, the notes their answers go to, which must name the note the op then writes.
 
 The prompts are pinned byte for byte by their sha1, being kilobytes each: the digests were taken
 from the code before the builders were taken out of the ops. A pin that fails means the prompt
@@ -267,6 +268,8 @@ class CallTests(unittest.TestCase):
             },
         )
         self.assertEqual(call[1], {DRAW_NOTE: ("線や図をかく。", "to draw (a line)")})
+        # The notes the indexes count, which the prompt does not show
+        self.assertEqual(kwargs["context"], {"note_ids": [PULL_NOTE, DRAW_NOTE]})
         items = kwargs["response_schema"]["properties"]["meanings"]["items"]
         self.assertIn("dictionary_reference", items["required"])
 
@@ -290,7 +293,7 @@ class CallTests(unittest.TestCase):
             "meanings": [{"used_meaning_index": 2, "possible_meaning_index": 2, "mapping_score": 5}]
         }
         call = Calls.map(generated_meanings(), answer)
-        self.assert_recorded(
+        kwargs = self.assert_recorded(
             call,
             "clean_meaning.map",
             cm.map_meanings_prompt,
@@ -302,6 +305,9 @@ class CallTests(unittest.TestCase):
             },
         )
         self.assertEqual(call[1], {DRAW_NOTE: ("線や図をかく。", "to draw (a line)", 5)})
+        # used_meaning_index 2 is the second note in the context's order: the one mapped
+        self.assertEqual(kwargs["context"], {"note_ids": [PULL_NOTE, DRAW_NOTE], "depth": 0})
+        self.assertEqual(set(call[1]), {kwargs["context"]["note_ids"][2 - 1]})
         # What the recorded inputs alone decide: the pull note shows as mapped already
         self.assertIn(
             "Meaning index 1 (ALREADY MAPPED to possible meaning index 1):", call[0].one()[0]
@@ -339,6 +345,14 @@ class CallTests(unittest.TestCase):
 
         self.assertEqual(result, {DRAW_NOTE: ("線をかく。", "to draw", 5)})
         self.assertEqual([kwargs["kind"] for _, _, kwargs in maps.calls], ["clean_meaning.map"] * 2)
+        # The second mapping is the recursion's: the same notes, one level down
+        self.assertEqual(
+            [kwargs["context"] for _, _, kwargs in maps.calls],
+            [
+                {"note_ids": [PULL_NOTE, DRAW_NOTE], "depth": 0},
+                {"note_ids": [PULL_NOTE, DRAW_NOTE], "depth": 1},
+            ],
+        )
         # The usage the first mapping scored low, against the meanings it had
         self.assert_recorded(
             (revises, None),
@@ -359,7 +373,7 @@ class CallTests(unittest.TestCase):
 
     def test_extract(self):
         call = Calls.extract([PULL, LOTS], "to pull")
-        self.assert_recorded(
+        kwargs = self.assert_recorded(
             call,
             "clean_meaning.extract",
             cm.extract_meaning_prompt,
@@ -372,10 +386,12 @@ class CallTests(unittest.TestCase):
             },
         )
         self.assertEqual(call[1], ("線を描く。", "to draw"))
+        # Called without the note it is for, as here, the context says none
+        self.assertEqual(kwargs["context"], {"note_id": None})
 
     def test_generate(self):
         call = Calls.generate([PULL, LOTS], "to pull")
-        self.assert_recorded(
+        kwargs = self.assert_recorded(
             call,
             "clean_meaning.generate",
             cm.generate_meaning_prompt,
@@ -388,6 +404,7 @@ class CallTests(unittest.TestCase):
             },
         )
         self.assertEqual(call[1], ("線を描く。", "to draw"))
+        self.assertEqual(kwargs["context"], {"note_id": None})
 
     def test_make(self) -> None:
         meanings_dict: dict = {}
@@ -442,6 +459,122 @@ class CallTests(unittest.TestCase):
         self.assertEqual(call[1], mam.MakeMeaningsResult.SUCCESS)
 
 
+class WordNote:
+    """A word note as clean_meaning_in_note reads it; `placeholder` in its new note id field."""
+
+    def __init__(self, note_id: int, meaning: str, en_meaning: str, placeholder: str = ""):
+        self.id = note_id
+        self.fields = {
+            "meaning_field": meaning,
+            "english_meaning_field": en_meaning,
+            "word_field": WORD,
+            "word_reading_field": READING,
+            "sentence_field": f"{meaning}の文。",
+            "new_note_id_field": placeholder,
+        }
+        self.tags: list[str] = []
+
+    def note_type(self) -> dict:
+        return {"name": "Word"}
+
+    def __contains__(self, field: str) -> bool:
+        return field in self.fields
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
+
+    def __setitem__(self, field: str, value: str) -> None:
+        self.fields[field] = value
+
+    def add_tag(self, tag: str) -> None:
+        self.tags.append(tag)
+
+    def has_tag(self, tag: str) -> bool:
+        return tag in self.tags
+
+    def key(self) -> int:
+        """The id the note's meaning is known by: its own, or its placeholder until added."""
+        return self.id or int(self.fields["new_note_id_field"])
+
+
+NEW_MEANING = ("新しい意味。", "new meaning")
+
+
+class CleanNoteTests(unittest.TestCase):
+    """clean_meaning_in_note over fake notes: the context of each call it makes names the note
+    the op then writes the answer into."""
+
+    CONFIG = {
+        "Word": {key: key for key in WordNote(0, "", "").fields},
+        "word_meaning_model": "model",
+    }
+
+    def clean(self, note: WordNote, others: list[WordNote], entry, answer) -> Recorder:
+        recorder = Recorder(answer)
+
+        def sentences(config, n: WordNote, **kwargs) -> list[dict]:
+            return [{"jp_sentence": n["sentence_field"], "en_sentence": ""}]
+
+        with (
+            no_mdx_load(),
+            mdx_entry(entry),
+            mock.patch.object(cm, "get_other_meaning_notes", lambda **kwargs: others),
+            mock.patch.object(cm, "get_sentences_for_note", sentences),
+            mock.patch.object(cm, "get_response", recorder),
+        ):
+            cm.clean_meaning_in_note(
+                config=self.CONFIG,
+                note=note,
+                notes_to_add_dict={},
+                notes_to_update_dict={},
+                all_generated_meanings_dict={},
+            )
+        return recorder
+
+    def test_a_reworked_meaning_goes_to_the_note_the_context_names_at_its_index(self):
+        for index in (1, 2, 3):
+            with self.subTest(meaning_index=index):
+                pull = WordNote(PULL_NOTE, "手元へ寄せる。", "to pull")
+                draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
+                # Made by this run and not added yet: known by its placeholder, which sorts first
+                lots = WordNote(0, "くじを抜く。", "to draw lots", placeholder="-5550001")
+                old = {n.key(): n["meaning_field"] for n in (pull, draw, lots)}
+                jp, en = NEW_MEANING
+                reworked = {"meaning_index": index, "jp_meaning": jp, "en_meaning": en}
+
+                _, kwargs = self.clean(pull, [draw, lots], ENTRY, {"meanings": [reworked]}).one()
+
+                self.assertEqual(kwargs["kind"], "clean_meaning.rework")
+                note_ids = kwargs["context"]["note_ids"]
+                self.assertEqual(note_ids, [-5550001, PULL_NOTE, DRAW_NOTE])
+                [updated] = [n for n in (pull, draw, lots) if n["meaning_field"] == jp]
+                self.assertEqual(updated.key(), note_ids[index - 1])
+                # The prompt's meaning at that index was that note's
+                listed = kwargs["inputs"]["meanings"][index - 1]
+                self.assertEqual(listed["jp_meaning"], old[updated.key()])
+
+    def test_a_meaning_extracted_or_generated_names_the_note_it_is_for(self):
+        jp, en = NEW_MEANING
+        cases = [
+            # A dictionary entry: extracted from it
+            ("clean_meaning.extract", ENTRY, {"cleaned_meaning": jp, "english_meaning": en}),
+            # None: generated from the sentences
+            ("clean_meaning.generate", None, {"new_meaning": jp, "english_meaning": en}),
+        ]
+        for kind, entry, answer in cases:
+            for note in (
+                WordNote(PULL_NOTE, "", ""),
+                WordNote(0, "", "", placeholder="-5550002"),
+            ):
+                with self.subTest(kind=kind, note_id=note.id):
+                    _, kwargs = self.clean(note, [], entry, answer).one()
+
+                    self.assertEqual(kwargs["kind"], kind)
+                    self.assertEqual(kwargs["context"], {"note_id": note.key()})
+                    written = (note["meaning_field"], note["english_meaning_field"])
+                    self.assertEqual(written, (jp, en))
+
+
 class StoreTests(unittest.TestCase):
     """Two of the calls through the real get_response with a store installed: the rows' inputs
     give back the rows' prompts."""
@@ -478,7 +611,7 @@ class StoreTests(unittest.TestCase):
             mock.patch.object(base_ops, "_dispatch_response", answer),
         ):
             cm.get_single_meaning_from_mdx_dict_entry(
-                CONFIG, WORD, READING, [DRAW], ENTRY, "to draw"
+                CONFIG, WORD, READING, [DRAW], ENTRY, "to draw", note_id=DRAW_NOTE
             )
             mam.merge_existing_meanings_for_word(
                 CONFIG, WORD, READING, {WORD_KEY: generated_meanings()}
@@ -497,5 +630,10 @@ class StoreTests(unittest.TestCase):
                 self.assertEqual((row["run_id"], row["note_id"]), (run_id, DRAW_NOTE))
                 self.assertEqual(row["outcome"], "ok")
                 self.assertEqual(builder(**json.loads(row["inputs_json"])), row["prompt"])
+        self.assertEqual(
+            json.loads(rows["clean_meaning.extract"]["context_json"]), {"note_id": DRAW_NOTE}
+        )
+        # Nothing to read make_all_meanings' answers against that the inputs do not say
+        self.assertIsNone(rows["make_all_meanings.merge"]["context_json"])
 
 

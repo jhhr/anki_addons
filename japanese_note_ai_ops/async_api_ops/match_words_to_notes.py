@@ -175,6 +175,18 @@ def make_new_note_id(note: Note) -> int:
     return -random.randint(1000000, 9999999)
 
 
+def linked_note_id(note: Note, new_note_id_field: str) -> Optional[int]:
+    """The id a word array links `note` by, as the main prompt's MATCH writes it: its own once
+    it has been added, until then the placeholder in `new_note_id_field`. None for a note not
+    added that holds no placeholder. For the capture context; never raises."""
+    try:
+        if note.id > 0:
+            return int(note.id)
+        return int(note[new_note_id_field])
+    except Exception:
+        return None
+
+
 # How a rematching run treats words that are already linked to a note.
 WithProcessed = Literal["only_unprocessed", "only_processed", "both"]
 
@@ -854,6 +866,9 @@ class _WordArrayMatchOpArgs(TypedDict, total=False):
     # prompt instead of `sentence`, and where its match_quality goes, keyed by word_index
     prompt_sentence: str
     match_qualities: dict[int, int]
+    # The target's element in the array (match_targets.word_path), which the meanings call's
+    # capture context records: word_index counts only the run's targets
+    word_path: Optional[list[int]]
 
 
 class MatchOpArgs(_WordArrayMatchOpArgs, MatchFields):
@@ -1675,6 +1690,9 @@ async def match_single_word_in_word_tuple(
         # Get all the meanings from the notes to check against the sentence
         meanings: list[tuple[str, int, Optional[NoteId], str, str, str]] = []
         # meaning is a tuple of (jp_meaning, meaning_number, note_id, example_sentence, en_meaning)
+        # What the call's capture context says each meaning is, keyed by the identity of its
+        # tuple: the sort below moves the tuples, and two of them can be equal
+        meaning_sources: dict[int, dict[str, Optional[int]]] = {}
         largest_meaning_index = 0
         note_to_copy = None
         has_existing_note_meanings = False
@@ -1714,14 +1732,20 @@ async def match_single_word_in_word_tuple(
                     en_meaning_in_meanings.add(english_meaning)
                     jp_meaning_in_meanings.add(meaning)
                     has_existing_note_meanings = True
-                    meanings.append((
+                    meaning_entry = (
                         meaning,
                         matched_meaning_number,
                         note.id,
                         other_sentence,
                         english_meaning,
                         match_word,
-                    ))
+                    )
+                    meanings.append(meaning_entry)
+                    meaning_sources[id(meaning_entry)] = {
+                        "note_id": linked_note_id(note, new_note_id_field),
+                        "m_number": matched_meaning_number,
+                        "gen_index": None,
+                    }
                 else:
                     logger.debug(f"{log_prefix}Note {note.id} has empty meaning field")
             else:
@@ -1766,12 +1790,12 @@ async def match_single_word_in_word_tuple(
         gen_meaning_by_index: dict[int, GeneratedMeaningType] = {}
         if word_key in all_generated_meanings_dict:
             possible_meanings: list[GeneratedMeaningType] = all_generated_meanings_dict[word_key]
-            for gen_meaning in possible_meanings:
+            for gen_index, gen_meaning in enumerate(possible_meanings):
                 if (
                     gen_meaning["jp_meaning"] not in jp_meaning_in_meanings
                     and gen_meaning["en_meaning"] not in en_meaning_in_meanings
                 ):
-                    meanings.append((
+                    generated_entry = (
                         gen_meaning["jp_meaning"],
                         # Since these are not existing notes, we use the largest_meaning_index
                         # so that selecting one of these will increment the meaning number correctly
@@ -1780,8 +1804,14 @@ async def match_single_word_in_word_tuple(
                         "",
                         gen_meaning["en_meaning"],
                         word,
-                    ))
+                    )
+                    meanings.append(generated_entry)
                     gen_meaning_by_index[len(meanings) - 1] = gen_meaning
+                    meaning_sources[id(generated_entry)] = {
+                        "note_id": None,
+                        "m_number": largest_meaning_index,
+                        "gen_index": gen_index,
+                    }
 
         if note_to_copy:
             # use the updated note if available
@@ -1804,6 +1834,16 @@ async def match_single_word_in_word_tuple(
             }
             for jp_meaning, _, _, example_sentence, en_meaning, match_word in meanings
         ]
+        # The call's capture context: what each listed meaning is, in the same order, so that the
+        # answer's meaning_number names a note or a generated meaning, and the note a new note
+        # is copied from. Read off the sorted tuples themselves, not the indexes they had before
+        meanings_context: dict[str, Any] = {
+            "word_path": match_op_args.get("word_path"),
+            "meanings": [meaning_sources.get(id(entry)) for entry in meanings],
+            "copy_note_id": (
+                linked_note_id(note_to_copy, new_note_id_field) if note_to_copy else None
+            ),
+        }
         meanings_str = match_targets.meanings_listing(listed_meanings)
 
         instructions = (
@@ -1936,6 +1976,7 @@ None of the meanings fit, so you create a new one.
                 "sentence": prompt_sentence,
                 "meanings": listed_meanings,
             },
+            context=meanings_context,
         )
         logger.debug(f"{log_prefix}Raw result: {raw_result}")
         if raw_result is None:
@@ -2174,10 +2215,12 @@ async def rate_linked_word(
     note_cache: NoteCache,
     cancel_state: CancelState,
     log_prefix: str,
+    word_path: Optional[list[int]] = None,
 ) -> Optional[int]:
     """Ask the secondary prompt how well the meaning of the note a word is already linked to fits
     its occurrence, returning the match_quality, or None when there was no meaning to rate or no
-    valid rating came back."""
+    valid rating came back. `word_path` (match_targets.word_path) is only recorded, in the call's
+    capture context."""
     log_prefix = f"{log_prefix}rate--word:'{target.word}'--reading:'{target.reading}'--"
     note_id = match_flags.matched_note_id(target.elem)
     if note_id is None or note_id <= 0:
@@ -2215,6 +2258,8 @@ async def rate_linked_word(
         max_output_tokens=4000,
         kind="match.rating",
         inputs=inputs,
+        # Which word the rating is saved on, and the note whose meaning the prompt shows
+        context={"word_path": word_path, "note_id": note_id},
     )
     quality = match_targets.rating_from_response(raw_result)
     if quality is None:
@@ -2346,6 +2391,7 @@ def plan_word_array_matching(
                     reading=target.reading,
                     sentence=sentence,
                     prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                    word_path=match_targets.word_path(arr, target.elem),
                     match_qualities=qualities,
                     processed_word_tuples=results,
                     all_generated_meanings_dict=all_generated_meanings_dict,
@@ -2376,6 +2422,7 @@ def plan_word_array_matching(
                 note_cache=note_cache,
                 cancel_state=cancel_state,
                 log_prefix=log_prefix,
+                word_path=match_targets.word_path(arr, target.elem),
             )
         if quality is None:
             return False

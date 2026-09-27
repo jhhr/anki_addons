@@ -488,7 +488,7 @@ class _Call:
 
     def _start(self) -> CallTrace:
         started = time.monotonic()
-        kind, inputs, model, prompt, instructions, schema, params = self._args
+        kind, inputs, model, prompt, instructions, schema, params, context = self._args
         store = self._state.store
         call_id = store.new_call_id()
         tasks = _tasks.get()
@@ -505,6 +505,7 @@ class _Call:
             # after the call, and these must match the keys computed from them here
             "params_json": _json(params, "a call's params"),
             "inputs_json": _json(inputs, "a call's inputs"),
+            "context_json": _json(context, "a call's context"),
             # put_blob(None) would store the text "null"
             "instructions_hash": None if instructions is None else store.put_blob(instructions),
             "prompt": prompt,
@@ -602,6 +603,7 @@ def call(
     instructions: Optional[str],
     schema: Any,
     params: Any,
+    context: Any = None,
 ) -> AbstractContextManager[Optional[CallTrace]]:
     """Record one AI call: `with capture.call(...) as trace:` around the request.
 
@@ -612,11 +614,19 @@ def call(
     run with the call's outcome. `instructions` is the text actually sent; `params` the
     sampling parameters as passed. An exception leaving the block is recorded as `error` with
     its repr and goes on unchanged.
+
+    `context` is what reading or applying the answer needs that the prompt does not show:
+    which note each numbered item of the prompt came from, the note the answer is written to.
+    Plain JSON, note ids as ints; serialised at entry, like `inputs`. It is not part of either
+    key, being about this collection rather than about what was asked, and it holds nothing
+    the prompt is built from: that is `inputs`.
     """
     state = _installed
     if state is None or not state.store.enabled:
         return _NOT_RECORDED
-    return _Call(state, (kind or "", inputs, model, prompt, instructions, schema, params))
+    return _Call(
+        state, (kind or "", inputs, model, prompt, instructions, schema, params, context)
+    )
 
 
 def note_attempt() -> None:

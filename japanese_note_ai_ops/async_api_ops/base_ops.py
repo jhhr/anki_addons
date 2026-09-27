@@ -220,6 +220,7 @@ def get_response(
     effort: Optional[str] = None,
     kind: str = "",
     inputs: Optional[dict] = None,
+    context: Optional[dict] = None,
 ) -> Union[dict, None]:
     """Get a response from the appropriate model based on the configuration.
 
@@ -229,6 +230,10 @@ def get_response(
             values its prompt was built from (JSON-serialisable; no note ids, no API keys).
             Both are only recorded with the call in the capture store, when one is
             installed; the request is the same without them.
+        context: Recorded the same way, and only that: what reading or applying the answer
+            needs that the prompt does not show, as plain JSON with note ids as ints - the
+            note behind each numbered meaning the prompt lists, the note the answer is written
+            to. Not part of the request key. The shapes are in AGENTS.md, "Capture store".
 
     Returns:
         A dict containing the parsed JSON response, or None if there was an error.
@@ -246,6 +251,7 @@ def get_response(
             "temperature": temperature,
             "effort": effort,
         },
+        context=context,
     ) as trace:
         try:
             result = _dispatch_response(
