@@ -54,6 +54,7 @@ from ..word_array.match_flags import (
     read_word_array,
     word_array_query_regex,
 )
+from . import capture
 from .chain_types import ChainStep, fail_step
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -1793,21 +1794,17 @@ async def match_single_word_in_word_tuple(
             return False
         # Sort meanings by the meaning number
         meanings.sort(key=lambda x: x[1])
-        meanings_str = ""
-        for i, (
-            jp_meaning,
-            _,
-            _,
-            example_sentence,
-            en_meaning,
-            match_word,
-        ) in enumerate(meanings):
-            meanings_str += f"""Meaning number {i + 1}:
-- *match_word*: {match_word}
-- *jp_meaning*: {jp_meaning}
-- *en_meaning*: {en_meaning}
-- *example_sentence*: {example_sentence or ("(no example sentence)")}
-"""
+        # As the prompt lists them, in its order: what it is built from and what the call records
+        listed_meanings = [
+            {
+                "match_word": match_word,
+                "jp_meaning": jp_meaning,
+                "en_meaning": en_meaning,
+                "example_sentence": example_sentence,
+            }
+            for jp_meaning, _, _, example_sentence, en_meaning, match_word in meanings
+        ]
+        meanings_str = match_targets.meanings_listing(listed_meanings)
 
         instructions = (
             """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
@@ -1871,11 +1868,7 @@ None of the meanings fit, so you create a new one.
 ```"""
         )
 
-        prompt = f"""MEANINGS AND EXAMPLE SENTENCES
-{meanings_str}
-
-_Targeted word_: {word}
-_Current sentence_: {prompt_sentence}"""
+        prompt = match_targets.meanings_prompt(word, prompt_sentence, listed_meanings)
 
         # response_schema = {
         #     "type": "object",
@@ -1934,6 +1927,15 @@ _Current sentence_: {prompt_sentence}"""
             # response_schema=response_schema,
             max_output_tokens=max_output_tokens,
             json_result_corrector=json_result_corrector,
+            kind="match.meanings",
+            # meanings_prompt's arguments, and the reading: the prompt shows only the word, but
+            # the word and its reading are what the case is (another reading is another case)
+            inputs={
+                "word": word,
+                "reading": reading,
+                "sentence": prompt_sentence,
+                "meanings": listed_meanings,
+            },
         )
         logger.debug(f"{log_prefix}Raw result: {raw_result}")
         if raw_result is None:
@@ -2194,9 +2196,15 @@ async def rate_linked_word(
     if not jp_meaning and not en_meaning:
         logger.debug(f"{log_prefix}Linked note {note_id} has no meaning yet, left unrated")
         return None
-    prompt = match_targets.rating_prompt(
-        target.word, target.reading, jp_meaning, en_meaning, prompt_sentence
-    )
+    # rating_prompt's arguments, which the call records as its inputs
+    inputs = {
+        "word": target.word,
+        "reading": target.reading,
+        "jp_meaning": jp_meaning,
+        "en_meaning": en_meaning,
+        "sentence": prompt_sentence,
+    }
+    prompt = match_targets.rating_prompt(**inputs)
     raw_result = await asyncio.to_thread(
         get_response,
         config.get("match_words_model", ""),
@@ -2205,6 +2213,8 @@ async def rate_linked_word(
         instructions=match_targets.RATING_INSTRUCTIONS,
         # Thinking counts towards the limit; the answer itself is a few tokens
         max_output_tokens=4000,
+        kind="match.rating",
+        inputs=inputs,
     )
     quality = match_targets.rating_from_response(raw_result)
     if quality is None:
@@ -2316,33 +2326,37 @@ def plan_word_array_matching(
     ) -> bool:
         target = targets[target_index]
         word_note_index = await word_note_index_cache.get(word_index_fields(fields))
-        return await match_single_word_in_word_tuple(
-            config=config,
-            word_lock=word_lock,
-            word_locks_dict=word_locks_dict,
-            log_prefix=log_prefix,
-            match_op_args=MatchOpArgs(
-                **fields,
-                current_note=note,
-                note_type=note_type,
-                word_index=target_index,
-                part_of_speech=target.part_of_speech,
-                multi_meaning_index=None,
-                word=target.word,
-                reading=target.reading,
-                sentence=sentence,
-                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
-                match_qualities=qualities,
-                processed_word_tuples=results,
-                all_generated_meanings_dict=all_generated_meanings_dict,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                word_note_index=word_note_index,
-                note_cache=note_cache,
-                sentence_cache=sentence_cache,
-                cancel_state=cancel_state,
-            ),
-        )
+        # One capture task per word target: the calls it makes, meanings generated or notes
+        # cleaned on the way included, are told apart from the note's other words'. Set in this
+        # task's own context, which its to_thread workers copy
+        with capture.task_scope(f"{target.word}|{target.reading}"):
+            return await match_single_word_in_word_tuple(
+                config=config,
+                word_lock=word_lock,
+                word_locks_dict=word_locks_dict,
+                log_prefix=log_prefix,
+                match_op_args=MatchOpArgs(
+                    **fields,
+                    current_note=note,
+                    note_type=note_type,
+                    word_index=target_index,
+                    part_of_speech=target.part_of_speech,
+                    multi_meaning_index=None,
+                    word=target.word,
+                    reading=target.reading,
+                    sentence=sentence,
+                    prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                    match_qualities=qualities,
+                    processed_word_tuples=results,
+                    all_generated_meanings_dict=all_generated_meanings_dict,
+                    notes_to_add_dict=notes_to_add_dict,
+                    notes_to_update_dict=notes_to_update_dict,
+                    word_note_index=word_note_index,
+                    note_cache=note_cache,
+                    sentence_cache=sentence_cache,
+                    cancel_state=cancel_state,
+                ),
+            )
 
     async def rate_op(
         _,
@@ -2351,16 +2365,18 @@ def plan_word_array_matching(
         target_index: int,
     ) -> bool:
         target = rate_targets[target_index]
-        quality = await rate_linked_word(
-            config=config,
-            target=target,
-            prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
-            fields=fields,
-            notes_to_update_dict=notes_to_update_dict,
-            note_cache=note_cache,
-            cancel_state=cancel_state,
-            log_prefix=log_prefix,
-        )
+        # A word target's capture task, as in match_op
+        with capture.task_scope(f"{target.word}|{target.reading}"):
+            quality = await rate_linked_word(
+                config=config,
+                target=target,
+                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                fields=fields,
+                notes_to_update_dict=notes_to_update_dict,
+                note_cache=note_cache,
+                cancel_state=cancel_state,
+                log_prefix=log_prefix,
+            )
         if quality is None:
             return False
         ratings[target_index] = quality

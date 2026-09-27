@@ -135,6 +135,8 @@ def plan_word_matching_judge(
             ask.prompt,
             cancel_state=cancel_state,
             response_schema=judge.RESPONSE_SCHEMA,
+            kind="judge.word",
+            inputs=ask.inputs,
         )
         if response is None:
             logger.error(f"{log_prefix}No response from the judge for {ask.elem[2]}")

@@ -44,10 +44,16 @@ def sentence_of(arr: list) -> str:
 
 
 def prompt(arr: list) -> str:
+    return sentence_prompt(sentence_of(arr))
+
+
+def sentence_prompt(sentence: str) -> str:
+    """The prompt for a furigana sentence (`sentence_of`), the only value it is built from and
+    what the call records as its inputs."""
     return (
         "Does the Japanese sentence below contain any proper nouns? Respond with a JSON object"
         f' whose "{NAMES_FIELD}" is the list of the proper nouns, each written as it is in the'
-        " sentence without its furigana, or an empty list if there are none.\n\n" + sentence_of(arr)
+        " sentence without its furigana, or an empty list if there are none.\n\n" + sentence
     )
 
 

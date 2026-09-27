@@ -13,7 +13,7 @@ secondary prompt that only gives their match_quality.
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from . import match_flags
 from .match_flags import MatchState
@@ -114,6 +114,34 @@ MATCH_QUALITY_SCALE = """- 5: The meaning describes this usage exactly.
 - 3: The meaning fits only in a broader or related sense; the usage here is a narrower or extended one.
 - 2: The meaning fits loosely; a learner would need more than it says to understand this usage.
 - 1: The meaning does not really fit this usage; it was only the closest available."""
+
+
+def meanings_listing(meanings: Sequence[Mapping[str, str]]) -> str:
+    """The main prompt's list of the meanings to choose from, numbered from 1 in the order
+    given, each a dict of `match_word`, `jp_meaning`, `en_meaning` and `example_sentence` (empty
+    when there is none, as for a generated meaning)."""
+    listing = ""
+    for i, meaning in enumerate(meanings):
+        listing += f"""Meaning number {i + 1}:
+- *match_word*: {meaning["match_word"]}
+- *jp_meaning*: {meaning["jp_meaning"]}
+- *en_meaning*: {meaning["en_meaning"]}
+- *example_sentence*: {meaning["example_sentence"] or "(no example sentence)"}
+"""
+    return listing
+
+
+def meanings_prompt(word: str, sentence: str, meanings: Sequence[Mapping[str, str]]) -> str:
+    """The main prompt's input for a word to match: its meanings (`meanings_listing`), the word,
+    and the sentence with the occurrence in `<b>`. Its instructions are match_words_to_notes's.
+    Built from nothing but these, which the call records as its inputs, so that a recorded
+    call's prompt can be built again."""
+    return f"""MEANINGS AND EXAMPLE SENTENCES
+{meanings_listing(meanings)}
+
+_Targeted word_: {word}
+_Current sentence_: {sentence}"""
+
 
 RATING_INSTRUCTIONS = f"""You are an expert Japanese lexicographer. A Japanese word in a _current sentence_ has already been matched to a dictionary meaning. Your task is only to rate how well that meaning fits the word's usage in the sentence. You are designed to output JSON.
 
