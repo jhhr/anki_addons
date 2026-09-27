@@ -26,8 +26,8 @@ from typing import Optional
 from anki.cards import Card
 from anki.notes import Note
 
-from ...utils.media_files import write_media_file
-from .context import ExecutionSession
+from ...utils.media_files import file_key, write_media_file
+from .context import ExecutionSession, QueuedFiles
 
 
 class CommitResult:
@@ -54,7 +54,7 @@ class CollectionCommitter:
         session: ExecutionSession,
         copied_into_notes: Optional[list] = None,
         copied_into_cards_dict: Optional[dict] = None,
-        copied_into_files: Optional[dict[str, str]] = None,
+        copied_into_files: Optional[QueuedFiles] = None,
     ) -> CommitResult:
         result = CommitResult()
         for note in session.modified_notes.values():
@@ -82,8 +82,9 @@ class CollectionCommitter:
             for pending in session.pending_files:
                 # Moved to the end: the file lands with the content, and in the order, of
                 # its last write.
-                copied_into_files.pop(pending["filename"], None)
-                copied_into_files[pending["filename"]] = pending["content"]
+                key = file_key(pending["filename"])
+                copied_into_files.pop(key, None)
+                copied_into_files[key] = (pending["filename"], pending["content"])
                 result.files.append(pending["filename"])
         else:
             self.write_files(session, result)
@@ -104,13 +105,13 @@ class CollectionCommitter:
         result.files.extend(written)
 
 
-def write_queued_files(copied_into_files: dict[str, str]) -> Optional[str]:
+def write_queued_files(copied_into_files: QueuedFiles) -> Optional[str]:
     """Write what the runs queued into `copied_into_files`, once their notes are saved.
 
     Returns why a write failed, for the caller to log as it logs a failed run, or None. The
     dict is emptied either way: what did not make it is abandoned, as a failed run's is.
     """
-    _written, error = _write(list(copied_into_files.items()))
+    _written, error = _write(list(copied_into_files.values()))
     copied_into_files.clear()
     return error
 
@@ -157,7 +158,7 @@ class PreviewCommitter(CollectionCommitter):
         session: ExecutionSession,
         copied_into_notes: Optional[list] = None,
         copied_into_cards_dict: Optional[dict] = None,
-        copied_into_files: Optional[dict[str, str]] = None,
+        copied_into_files: Optional[QueuedFiles] = None,
     ) -> CommitResult:
         result = CommitResult()
         for note in session.modified_notes.values():

@@ -45,7 +45,7 @@ from .copy_primitives import (
 from .definition_migration import MigrationError
 from .definition_schema import STAGE_CALL_DEFINITION, CopyDefinitionV2, is_format_2, walk_stages
 from .execution.commit import write_queued_files
-from .execution.context import ExecutionSession
+from .execution.context import ExecutionSession, QueuedFiles
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 
 # Re-exported: these moved out into `copy_primitives` when the executor was split, and
@@ -281,7 +281,7 @@ def copy_fields(
 
         copied_into_cards_dict: dict[int, Card] = {}
         copied_into_notes: list[Note] = []
-        copied_into_files: dict[str, str] = {}
+        copied_into_files: QueuedFiles = {}
         # If an undo_entry isn't passed, create one
         nonlocal undo_entry
         if undo_entry is None:
@@ -419,7 +419,7 @@ def copy_fields_in_background(
     unfocus_is_add: bool = False,
     progress_title: Optional[str] = None,
     definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
-    copied_into_files: Optional[dict[str, str]] = None,
+    copied_into_files: Optional[QueuedFiles] = None,
 ) -> CacheResults:
     """
     Function run to copy stuff into many notes at once.
@@ -649,7 +649,7 @@ def copy_for_single_trigger_note(
     definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
     definition_lookup=None,
     add_note_compatible_only: bool = False,
-    copied_into_files: Optional[dict[str, str]] = None,
+    copied_into_files: Optional[QueuedFiles] = None,
 ) -> bool:
     """Run one copy definition for one trigger note.
 

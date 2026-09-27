@@ -41,6 +41,7 @@ from ..logic.copy_fields import (
 )
 from ..logic.copy_primitives import take_edited_cards
 from ..logic.execution.commit import write_queued_files
+from ..logic.execution.context import QueuedFiles
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def run_one_definition(**kwargs) -> bool:
         return False
 
 
-def write_files_after_saving(copied_into_files: dict[str, str]) -> None:
+def write_files_after_saving(copied_into_files: QueuedFiles) -> None:
     """Write the files a definition queued, now that the notes they go with are saved."""
     file_error = write_queued_files(copied_into_files)
     if file_error:
@@ -161,7 +162,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         for copy_definition in editing_other_notes_definitions:
             copied_into_notes: list[Note] = []
             copied_into_cards_dict: dict[int, Card] = {}
-            copied_into_files: dict[str, str] = {}
+            copied_into_files: QueuedFiles = {}
             # Can't use copy_fields here as it'd lead to a
             # "bug: run_in_background not called from main thread" exception
             # TODO: non CollectionOp version of copy_fields
@@ -296,7 +297,7 @@ def run_copy_fields_on_review(card: Card):
 
         copied_into_notes: list[Note] = []
         copied_into_cards_dict: dict[int, Card] = {}
-        copied_into_files: dict[str, str] = {}
+        copied_into_files: QueuedFiles = {}
         for copy_definition in copy_definitions_to_run:
             run_one_definition(
                 copy_definition=copy_definition,

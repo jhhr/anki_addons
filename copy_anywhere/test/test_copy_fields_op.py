@@ -1093,6 +1093,19 @@ class TestFilesLandAfterTheirNotes:
         assert (media_dir / "_one.txt").read_text(encoding="utf-8") == "aaa;"
         assert [col.get_note(note.id)["Note"] for note in notes] == ["written", "written"]
 
+    def test_a_later_one_writing_the_name_in_another_case_is_refused_too(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        [first, second] = self.notes(col, "One", "one")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="{{trigger.Word}}.txt", overwrite=False)],
+            note_ids=[first.id, second.id],
+        )
+
+        assert logger.has_error("already written earlier in this run"), logger.errors
+        assert [path.name for path in media_dir.glob("_*ne.txt")] == ["_One.txt"]
+
     def test_a_write_that_fails_says_the_notes_were_kept(
         self, col, run_copy_fields, media_dir, logger
     ):

@@ -404,7 +404,10 @@ What to know before using them:
   writing, and in the error that says a file is missing. No note refers to these files, and
   the `_` is what keeps Anki's Check Media from deleting them as unused.
 - Files are written as UTF-8, with no byte-order mark and no newline translation.
-- A filename resolves inside the media folder. A path separator or a `..` segment is refused.
+- A filename resolves inside the media folder. A path separator or a `..` segment is refused,
+  and so is anything Windows would not write as given: `< > : " | ? *`, a control character,
+  or a trailing dot. Names that differ only in case are one file, as they are on Windows and
+  macOS.
 - There is no append. Read the file, build the new content, write it back with *overwrite*.
 - A stage can be told to skip if the file exists, or to refuse to overwrite. Both questions
   count a file an earlier stage of the same run has queued as already there.

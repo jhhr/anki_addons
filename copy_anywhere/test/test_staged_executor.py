@@ -1411,7 +1411,8 @@ class TestANameTheFileSystemRefuses:
         "filename, said",
         [
             ("data", "'_data' is a folder in the media folder, not a file"),
-            ("a\x00b.txt", "cannot be used"),
+            # Refused by name now, before the file system is asked.
+            ("a\x00b.txt", "must not contain '\\x00'"),
             ("x" * 300 + ".txt", "cannot be used"),
         ],
         ids=["a folder", "a NUL", "too long"],
@@ -1436,6 +1437,46 @@ class TestANameTheFileSystemRefuses:
         assert ok is False
         assert logger.has_error("cannot be used"), logger.errors
         assert note["Note"] == ""
+
+
+class TestANameWindowsWouldNotWriteAsGiven:
+    """Names Windows refuses, or reads as something else, are refused everywhere.
+
+    They passed the name check and the preview, and on Windows then failed at commit, or
+    for `:` wrote a hidden stream of another file. Refused by name, the definition fails the
+    same way on every system, and before anything is written.
+    """
+
+    @pytest.mark.parametrize(
+        "filename", ["a:b.txt", "a?.txt", "a*.txt", 'a"b.txt', "a<b>.txt", "a|b.txt", "a\tb", "a."]
+    )
+    def test_a_write_fails_the_stage(self, col, note, media_dir, logger, filename):
+        ok, _ = run(d.staged(stages=[d.write_file(filename, d.text("x"))]), note)
+
+        assert ok is False
+        assert logger.has_error(f"Filename '{filename}' must not"), logger.errors
+        assert list(media_dir.glob("_a*")) == []
+
+    def test_one_run_does_not_tell_names_apart_by_case(self, col, note, media_dir, logger):
+        # On Windows and macOS these are one file, so the second write replaced the first
+        # although the stage said not to overwrite.
+        ok, _ = run(d.staged(stages=[
+            d.write_file("Foo.txt", d.text("first"), overwrite=False),
+            d.write_file("foo.txt", d.text("second"), overwrite=False),
+        ]), note)
+
+        assert ok is False
+        assert logger.has_error("already written earlier in this run"), logger.errors
+
+    def test_and_a_read_under_the_other_case_sees_the_write(self, col, note, media_dir):
+        ok, _ = run(d.staged(stages=[
+            d.write_file("Foo.txt", d.text("first")),
+            d.read_file("read", "foo.txt"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{read}}"))]),
+        ]), note)
+
+        assert ok is True
+        assert note["Note"] == "first"
 
 
 class TestCalls:

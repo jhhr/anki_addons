@@ -192,7 +192,9 @@ definition calls it.
   stages wrote counts once and a card three actions changed counts once. Across trigger
   notes they add up, as format 1 counted: a note two trigger notes wrote counts twice.
 * **Files are UTF-8, no BOM, no newline translation**, and a filename resolves inside the
-  media folder -- a path separator or a `..` segment is refused. There is no append mode:
+  media folder -- a path separator or a `..` segment is refused, as is anything Windows would
+  not write as given (`< > : " | ? *`, a control character, a trailing dot), on every
+  system. Names that differ only in case are one file to a run. There is no append mode:
   `read_file`, build the new content, `write_file` with `overwrite: true`.
 * **Every file name starts with `_`.** Reading and writing both add one to a name that has
   none -- a stage's filename and each name file code returns -- and a missing-file error

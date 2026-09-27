@@ -25,8 +25,22 @@ class MediaFileError(ValueError):
     read."""
 
 
+def file_key(name: str) -> str:
+    """What makes two names one file: Windows and macOS do not tell `_Foo.txt` from
+    `_foo.txt`, so a run that checked names as typed let a write that must not overwrite
+    replace a file it had written itself under the other case."""
+    return name.casefold()
+
+
 def media_folder() -> Path:
     return Path(mw.pm.profileFolder(), MEDIA_FOLDER_NAME)
+
+
+#: What Windows refuses in a file name, or reads as something else: `:` names an alternate
+#: data stream of the file before it, so `a:b.txt` wrote a hidden stream of an empty `a`.
+#: Refused on every system, so a definition that runs on one runs on all, and the preview
+#: -- which writes nothing -- refuses what the real run would fail on.
+_REFUSED_CHARACTERS = frozenset('<>:"|?*')
 
 
 def normalize_media_filename(filename: str) -> str:
@@ -43,6 +57,15 @@ def normalize_media_filename(filename: str) -> str:
         raise MediaFileError(f"Filename '{filename}' must not contain a path separator")
     if name in (".", "..") or ".." in Path(name).parts:
         raise MediaFileError(f"Filename '{filename}' must not contain a '..' segment")
+    refused = sorted(
+        {char for char in name if char in _REFUSED_CHARACTERS or ord(char) < 32 or char == "\x7f"}
+    )
+    if refused:
+        shown = " ".join(char if char.isprintable() else repr(char) for char in refused)
+        raise MediaFileError(f"Filename '{filename}' must not contain {shown}")
+    if name.endswith("."):
+        # Windows drops a trailing dot, so `a.` and `a` would be one file there.
+        raise MediaFileError(f"Filename '{filename}' must not end in '.'")
     if not name.startswith("_"):
         name = f"_{name}"
     return name
