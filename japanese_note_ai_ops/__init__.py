@@ -82,6 +82,16 @@ def setup_addon_logging():
     # Prevent propagation to Anki's loggers
     addon_logger.propagate = False
 
+    # A handler from the start, which does nothing. Until an op or a hook opens a log file the
+    # addon logger has none, and a record that finds no handler goes to logging's last resort,
+    # stderr, which Anki turns into an error dialog: an error logged before the first log file
+    # was opened (at profile open, say) would reach the user as a crash report. Never flagged
+    # as the addon's, so opening and closing log files leaves it in place. Here rather than in
+    # call_logging, which imports vendored packages: a broken install must not write to stderr
+    # either.
+    if not any(isinstance(h, logging.NullHandler) for h in addon_logger.handlers):
+        addon_logger.addHandler(logging.NullHandler())
+
 
 setup_addon_logging()
 
