@@ -479,6 +479,9 @@ to change is the Python around them. Change as little as you can.
 - `copy_definitions`: the format-2 definitions, which are what runs. The full specification
   is [`docs/staged-definitions.md`](docs/staged-definitions.md). Do not edit `effects`; it is
   derived.
+- `migration_warnings`, on a converted definition: what the conversion could not carry
+  over (a regex process's "use all notes", `Least_reps`). Report these to the user; they
+  are not in code.
 - `pre_stage_migration_copy_definitions`: the format-1 originals, as they were before the
   conversion. Written once and never touched again; do not edit it. Compare every piece of
   code you change with its original here. A converted definition keeps its original's
@@ -521,11 +524,12 @@ runs for.
 | *Within note*, file write | the trigger before the field writes | the trigger after them | the trigger | not defined |
 | *Source to destinations*, field write | **the trigger** | **the note being written**, as the stage started | the note being written | its place among the found notes, their number |
 | *Source to destinations*, file write | **the trigger** | **the found note the loop is on** | the trigger | the same |
-| *Destination to sources*, field write | the source note | the source note | the trigger | its place among the sources, their number |
+| *Destination to sources*, field write | the source note | the source note | the trigger | its place among the sources, their number; not defined when it reads one note |
 | *Destination to sources*, file write | the source note | the source note | the trigger | the same |
 
 `cards` is the cards of whatever `note` is, as it was in format 1, so it changed exactly
-where `note` did.
+where `note` did. Format-1 code had neither `index` nor `count`, so no converted code uses them;
+`{{__Query_Note_Index}}` is 1 in the one-note shape, as it was.
 
 **The trap is *Source to destinations*.** Its edits run inside a loop whose item is called
 `note`, and `note` means the loop's note there. Format-1 code that read the note the
