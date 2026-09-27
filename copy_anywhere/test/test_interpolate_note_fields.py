@@ -17,7 +17,7 @@ from anki_shared.interpolate.interpolate_fields import (
     interpolate_from_text,
 )
 from anki_shared.interpolate.to_lowercase_dict import to_lowercase_dict
-from conftest import VOCAB
+from note_types import VOCAB
 
 
 @pytest.fixture

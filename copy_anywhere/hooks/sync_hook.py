@@ -2,7 +2,7 @@ from aqt import mw
 from aqt.gui_hooks import sync_will_start, sync_did_finish
 from aqt.utils import tooltip
 
-from ..configuration import Config
+from ..configuration import Config, definition_runs_on_sync
 from ..logic.copy_fields import copy_fields
 
 
@@ -32,7 +32,7 @@ def local_changes_copy_definitions(sync_result: SyncResult) -> None:
     copy_on_sync_definitions = [
         definition
         for definition in config.copy_definitions
-        if definition.get("copy_on_sync", False)
+        if definition_runs_on_sync(definition)
     ]
     if not copy_on_sync_definitions:
         return
@@ -78,7 +78,7 @@ def remote_changes_copy_definitions(sync_result: SyncResult) -> None:
     copy_on_sync_definitions = [
         definition
         for definition in config.copy_definitions
-        if definition.get("copy_on_sync", False)
+        if definition_runs_on_sync(definition)
     ]
     if not copy_on_sync_definitions:
         show_result_tooltip(sync_result)

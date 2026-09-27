@@ -82,7 +82,7 @@ def within_note(
     """A within-note definition: the smallest one that writes a field.
 
     The keys are spelled out rather than imported from the backend suite's `definitions.py`,
-    because that module does `from conftest import VOCAB` -- a top-level import that only
+    because that module does `from note_types import VOCAB` -- a top-level import that only
     resolves while that suite's directory is the one pytest put on `sys.path`.
     """
     definition = {
@@ -425,16 +425,28 @@ class TestTheCollectionOpPath:
         # test on Anki's behalf.
         monkeypatch.setattr(sys, "excepthook", lambda kind, value, tb: raised.append(value))
 
-        # `copy_fields_in_background` indexes `copy_mode` with no default, so a definition
-        # without one raises KeyError once a note is found: the shortest route to a genuine
-        # failure inside the op.
+        # A stage raising something the executor did not raise itself: that leaves the op
+        # with its type and traceback intact (§7.2), which is what this path has to carry
+        # to the error handler.
+        #
+        # This used to delete `copy_mode` and expect a `KeyError`, then to search for
+        # `"unclosed` and expect Anki's `SearchError`. Format 2 reports both against the
+        # stage and stops the loop instead of raising, so neither reaches `on_failure`.
+        from copy_anywhere.logic.execution import actions
+
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("a bug in a stage")
+
+        monkeypatch.setattr(actions, "run_query", broken)
         definition = within_note()
-        del definition["copy_mode"]
+        definition["copy_mode"] = "Across notes"
+        definition["across_mode_direction"] = "Destination to sources"
+        definition["copy_from_cards_query"] = "Word:inu"
         copy_fields(copy_definitions=[definition], on_done=lambda: done.append(1))
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
         anki_session.qtbot.waitUntil(lambda: bool(raised), timeout=WAIT)
 
-        assert isinstance(raised[0], KeyError)
+        assert isinstance(raised[0], RuntimeError)
         # `on_failure` finishes the progress before it re-raises, so the dialog does not
         # outlive the failed op -- though the window itself closes a turn of the event loop
         # later, which is why this waits rather than reading `busy()` straight away.
@@ -444,7 +456,9 @@ class TestTheCollectionOpPath:
         # been writing to all along.
         [written] = list(operation_logs.glob("*.log"))
         assert dialogs["logs"] == [str(written)]
-        assert "Copying failed: 'copy_mode'" in written.read_text(encoding="utf-8")
+        text = written.read_text(encoding="utf-8")
+        assert "Copying failed: " in text
+        assert "a bug in a stage" in text
 
 
 class TestTheSyncHooks:

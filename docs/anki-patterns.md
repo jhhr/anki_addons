@@ -14,7 +14,7 @@ What is true of Anki addons in general and of how this repo uses the API. Each a
 - `from aqt import mw` binds at import. That is fine inside Anki and is the reason tests need
   `real_anki.rebind_mw`.
 - Anything written to stderr inside Anki becomes an error-report dialog. Use `logging` with a
-  handler that does not write to stderr (shared code attaches a `NullHandler`), never `print`
+  handler that does not write to stderr (`anki_shared/utils/vendor_rebuild_ui.py` attaches a `NullHandler`), never `print`
   for diagnostics in shipped code, and never let a logger propagate to the root logger's
   stderr handler.
 
@@ -29,8 +29,9 @@ What is true of Anki addons in general and of how this repo uses the API. Each a
 - Hook lists are class attributes. A handler attached in one test fires in every later test
   in the process; `running_anki.stub_mw_restored` exists to undo that.
 - Monkeypatching Anki classes is a last resort and is version-fragile. Where the repo does it
-  (`copy_anywhere/hooks/note_hooks.py`, `desired_retention`), the wrap is guarded against
-  double application and keeps the original's signature. Say so in the addon's `AGENTS.md`
+  (`copy_anywhere/hooks/note_hooks.py`, `desired_retention`), the wrap keeps the original's
+  signature. copy_anywhere's is guarded against double application; desired_retention's is
+  not, and relies on running once at import. Say so in the addon's `AGENTS.md`
   when you add one.
 
 ## Main thread, background work, and the collection

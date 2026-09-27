@@ -2,7 +2,7 @@ import json
 import re
 import time
 from functools import partial
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 from anki.cards import Card, CardId
 from anki.consts import (
@@ -248,6 +248,32 @@ def get_fields_from_text(from_text: str) -> List[str]:
     return fields
 
 
+def map_outside_clozes(text: str, transform: Callable[[str], str]) -> str:
+    """
+    Apply `transform` to text while keeping every cloze marker {{c<N>::...}} out of its reach.
+
+    A cloze marker is spelled like an interpolation field but is not one; its content can
+    still hold fields. So each cloze's content is mapped on its own (recursively, for a cloze
+    nested in one), the whole cloze is swapped for a placeholder while `transform` sees the
+    rest of the text, and the marker is put back around its mapped content afterwards.
+    Clozes are visited last to first, so the contents are transformed in that order and
+    before the text around them.
+    """
+    placeholders: dict[str, str] = {}
+    # In reverse order to preserve string indices when splicing text
+    for index, (start, end, cloze_num, content) in enumerate(
+        reversed(extract_cloze_patterns(text))
+    ):
+        placeholder = f"\x00CLOZE{index}\x00"
+        mapped = map_outside_clozes(content, transform)
+        placeholders[placeholder] = f"{CLOZE_OPEN}c{cloze_num}::{mapped}{CLOZE_CLOSE}"
+        text = text[:start] + placeholder + text[end:]
+    text = transform(text)
+    for placeholder, cloze in placeholders.items():
+        text = text.replace(placeholder, cloze)
+    return text
+
+
 def basic_arg_validator(arg: str) -> str:
     """
     A basic argument validator that checks if the arg is empty.
@@ -397,7 +423,7 @@ def get_card_last_reps(
     return reps
 
 
-ValuesDict = dict[str, ValueOrValueGetter]
+ValuesDict = Mapping[str, ValueOrValueGetter]
 
 
 def get_card_custom_data_prop(custom_data_str: str, prop: str) -> Any:
@@ -482,37 +508,83 @@ def get_formatted_card_created_time(card_id: int) -> str:
     return format_timestamp(card_id / 1000)
 
 
+class CardValues(Mapping[str, ValueOrValueGetter]):
+    """One card's values, keyed by `CARD_VALUES`, with the ones that cost a query read on demand.
+
+    Most of them are attributes of the card in hand. The four review-time values are one
+    aggregate over `revlog` and the other card ids are a second query, and a mapping that
+    computed everything to answer one key charged `__Card_ID` for both -- per card of the
+    note, on the note-level path. Those are computed on the first read of a key that needs
+    them and kept, so the four review-time values still share the one query.
+    """
+
+    def __init__(self, card: Card, note: Note) -> None:
+        self._card = card
+        self._note = note
+        self._time_values: Optional[CardTimeValues] = None
+        self._values: dict[str, ValueOrValueGetter] = {
+            CARD_ID: card.id or 0,
+            CARD_NID: card.nid or 0,
+            CARD_DUE: card.due or 0,
+            CARD_IVL: card.ivl or 0,
+            CARD_EASE: card.factor / 10 or 0,
+            # If FSRS is not enabled, memory_state will be None
+            CARD_STABILITY: round(card.memory_state.stability, 1) if card.memory_state else 0,
+            CARD_DIFFICULTY: round(card.memory_state.difficulty, 1) if card.memory_state else 0,
+            CARD_REP_COUNT: card.reps or 0,
+            CARD_LAPSE_COUNT: card.lapses or 0,
+            CARD_TYPE: get_card_type_as_string(card.type),
+            CARD_CREATED: get_formatted_card_created_time(card.id),
+            CARD_CUSTOM_DATA: card.custom_data or {},
+            CARD_CUSTOM_DATA_PROP: partial(get_card_custom_data_prop, card.custom_data),
+            CARD_LAST_EASES: partial(get_card_last_reps, card.id, get_ease=True),
+            CARD_LAST_FACTORS: partial(get_card_last_reps, card.id, get_fct=True),
+            CARD_LAST_IVLS: partial(get_card_last_reps, card.id, get_ivl=True),
+            CARD_LAST_REV_TYPES: partial(get_card_last_reps, card.id, get_type=True),
+            CARD_LAST_REV_TIMES: partial(get_card_last_reps, card.id, get_time=True),
+        }
+
+    def _times(self) -> CardTimeValues:
+        if self._time_values is None:
+            self._time_values = get_card_time_values(self._card.id)
+        return self._time_values
+
+    def _other_card_ids(self) -> list[int]:
+        return [cid for cid in self._note.card_ids() if cid != self._card.id]
+
+    #: The keys whose value is a query, each read through the memo above.
+    _ON_DEMAND: dict[str, Callable[["CardValues"], ValueOrValueGetter]] = {
+        OTHER_CARD_IDS: _other_card_ids,
+        CARD_FIRST_REVIEW: lambda self: get_formatted_first_review_time(self._times()[0]),
+        CARD_LATEST_REVIEW: lambda self: get_formatted_latest_review_time(self._times()[1]),
+        CARD_AVERAGE_TIME: lambda self: get_formatted_average_time(
+            self._times()[3], self._times()[2]
+        ),
+        CARD_TOTAL_TIME: lambda self: get_formatted_total_time(self._times()[3]),
+    }
+
+    def __getitem__(self, key: str) -> ValueOrValueGetter:
+        try:
+            return self._values[key]
+        except KeyError:
+            read = self._ON_DEMAND.get(key)
+            if read is None:
+                raise
+            value = self._values[key] = read(self)
+            return value
+
+    def __iter__(self):
+        return iter(CARD_VALUES)
+
+    def __len__(self) -> int:
+        return len(CARD_VALUES)
+
+
 def get_value_for_card(
     card: Card,
     note: Note,
 ) -> ValuesDict:
-    first, last, cnt, total = get_card_time_values(card.id)
-    return {
-        CARD_ID: card.id or 0,
-        OTHER_CARD_IDS: [cid for cid in note.card_ids() if cid != card.id],
-        CARD_NID: card.nid or 0,
-        CARD_DUE: card.due or 0,
-        CARD_IVL: card.ivl or 0,
-        CARD_EASE: card.factor / 10 or 0,
-        # If FSRS is not enabled, memory_state will be None
-        CARD_STABILITY: round(card.memory_state.stability, 1) if card.memory_state else 0,
-        CARD_DIFFICULTY: round(card.memory_state.difficulty, 1) if card.memory_state else 0,
-        CARD_REP_COUNT: card.reps or 0,
-        CARD_LAPSE_COUNT: card.lapses or 0,
-        CARD_FIRST_REVIEW: get_formatted_first_review_time(first),
-        CARD_LATEST_REVIEW: get_formatted_latest_review_time(last),
-        CARD_AVERAGE_TIME: get_formatted_average_time(total, cnt),
-        CARD_TOTAL_TIME: get_formatted_total_time(total),
-        CARD_TYPE: get_card_type_as_string(card.type),
-        CARD_CREATED: get_formatted_card_created_time(card.id),
-        CARD_CUSTOM_DATA: card.custom_data or {},
-        CARD_CUSTOM_DATA_PROP: partial(get_card_custom_data_prop, card.custom_data),
-        CARD_LAST_EASES: partial(get_card_last_reps, card.id, get_ease=True),
-        CARD_LAST_FACTORS: partial(get_card_last_reps, card.id, get_fct=True),
-        CARD_LAST_IVLS: partial(get_card_last_reps, card.id, get_ivl=True),
-        CARD_LAST_REV_TYPES: partial(get_card_last_reps, card.id, get_type=True),
-        CARD_LAST_REV_TIMES: partial(get_card_last_reps, card.id, get_time=True),
-    }
+    return CardValues(card, note)
 
 
 CardValuesDict = dict[str, ValuesDict]
@@ -556,6 +628,58 @@ def get_card_values_dict_for_note(
             card_values[cloze_key] = get_value_for_card(card, note)
 
     return card_values
+
+
+def split_card_value_reference(reference: str) -> Tuple[str, str]:
+    """`__Card_Custom_Data_Prop==name` as its key and argument: the key is what
+    `CARD_VALUES_DICT` holds, the argument what follows the separator ("" when none does).
+
+    The key constants carry the separator when the value takes an argument, which is how the
+    regexes above capture them too, so the key keeps it.
+    """
+    key, separator, arg = reference.partition(ARG_SEPARATOR)
+    return key + separator, arg
+
+
+def get_card_value(
+    card: Card,
+    note: Note,
+    reference: str,
+    card_values: Optional[CardValues] = None,
+) -> Optional[JSONSerializableValue]:
+    """One card value, read from the card itself rather than found by template name.
+
+    `get_from_note_fields` exists for a caller that has only a note, so it keys card values
+    by card template name and takes the name as a prefix on the reference. That indirection
+    cannot express two things a caller holding the card does not need it to:
+
+    * a cloze note's cards all share one template, so the dict keys them `"Cloze 1"`,
+      `"Cloze 2"` and a bare template name picks none of them -- and a miss there returns a
+      type-appropriate default rather than reporting anything;
+    * a definition spanning several note types drops the prefix entirely
+      (`MULTI_CARD_VALUE_RE`), so a prefixed reference matches nothing at all.
+
+    :param card: the card the value is read from
+    :param note: that card's note, which some values are relative to
+    :param reference: the card value key, with its argument if it takes one --
+        `__Card_Due`, or `__Card_Custom_Data_Prop==name`
+    :param card_values: `CardValues(card, note)` from an earlier call, for a caller reading
+        several values of one card: the four review-time values share one revlog query
+        only within one `CardValues`. It is a snapshot of the card, so reuse it only while
+        the card cannot have changed. Built here when not given.
+    :return: the value, which is None when its getter has nothing to say -- custom data
+        that does not parse, for one -- and never means the key was unknown
+    :raises KeyError: when `reference` does not name a card value
+    """
+    key, arg = split_card_value_reference(reference)
+    if key not in CARD_VALUES_DICT:
+        raise KeyError(key)
+    if card_values is None:
+        card_values = CardValues(card, note)
+    value_or_partial = card_values.get(key)
+    if isinstance(value_or_partial, partial):
+        return cast(JSONSerializableValue, value_or_partial(arg))
+    return cast(JSONSerializableValue, value_or_partial)
 
 
 NOTE_VALUE_RE = re.compile(
@@ -667,8 +791,13 @@ def get_from_note_fields(
                 if len(dict_keys) == 1:
                     maybe_card_type_name = dict_keys[0]
                 elif len(dict_keys) > 1:
+                    # A cloze note with more than one cloze lands here too: its cards share
+                    # one template, but each is a card of its own.
                     raise ValueError(
-                        "ERROR: Multiple target note types should each only have a single card type"
+                        f"'{field}' names no card type, so it reads the note's only card,"
+                        f" but this note has {len(dict_keys)}"
+                        f" ({', '.join(dict_keys)}); put one in front, as in"
+                        f" '{dict_keys[0]}{field}'"
                     )
                 # If there somehow are zero card types, we of course can't get a value
 
@@ -709,84 +838,59 @@ def interpolate_from_text(
     :param variable_values_dict: A dictionary of custom variables to use in the interpolation
     :param multiple_note_types: Whether the copy is into multiple note types
     """
-    # Pre-process cloze patterns: {{c<N>::content}} → placeholder.
-    # The content inside each cloze is interpolated separately so that
-    # interpolation fields within cloze content are resolved while the
-    # outer {{c<N>::...}} wrapper is preserved and never treated as a field.
-    cloze_patterns = extract_cloze_patterns(text)
-    cloze_placeholder_map: dict[str, str] = {}
-    all_inner_invalid: List[str] = []
-    # Process in reverse order to preserve string indices when splicing text
-    for idx, (start, end, cloze_num, cloze_content) in enumerate(reversed(cloze_patterns)):
-        interpolated_content, inner_invalid = interpolate_from_text(
-            cloze_content,
-            source_note,
-            destination_note,
-            variable_values_dict,
-            multiple_note_types,
-        )
-        all_inner_invalid.extend(inner_invalid)
-        placeholder = f"\x00CLOZE{idx}\x00"
-        resolved = interpolated_content if interpolated_content is not None else cloze_content
-        cloze_placeholder_map[placeholder] = f"{{{{c{cloze_num}::{resolved}}}}}"
-        text = text[:start] + placeholder + text[end:]
-
     # Bunch of extra logic to make this whole process case-insensitive
-
-    # Regex to pull out any words enclosed in double curly braces
-    fields = get_fields_from_text(text)
 
     # field.lower() -> value map
     all_note_fields = to_lowercase_dict(source_note)
     all_dest_note_fields = to_lowercase_dict(destination_note)
     variable_fields = to_lowercase_dict(variable_values_dict)
 
-    # Lowercase the characters inside {{}} in the text (placeholders are not {{}} so safe)
-    text = FROM_TEXT_FIELD_REGEX.sub(lambda x: intr_format(x.group(1).lower()), text)
+    # Made once needed, and then shared by the text and every cloze in it
+    card_values_dict: Optional[CardValuesDict] = None
+    dest_card_values_dict: Optional[CardValuesDict] = None
+    invalid_fields: List[str] = []
 
-    card_values_dict = None
-    dest_card_values_dict = None
+    def interpolate_fields(part: str) -> str:
+        nonlocal card_values_dict, dest_card_values_dict
+        # Regex to pull out any words enclosed in double curly braces
+        fields = get_fields_from_text(part)
 
-    # Sub values in text
-    invalid_fields = []
-    for field in fields:
-        # It's possible to input invalid stuff like destination fields in within copy mode
-        if field.startswith(DESTINATION_PREFIX) and destination_note:
-            value, dest_card_values_dict = get_from_note_fields(
-                field[len(DESTINATION_PREFIX) :],
-                destination_note,
-                all_dest_note_fields,
-                dest_card_values_dict,
-                multiple_note_types,
-            )
-        else:
-            value, card_values_dict = get_from_note_fields(
-                field,
-                source_note,
-                all_note_fields,
-                card_values_dict,
-                multiple_note_types,
-            )
-        field_lower = field.lower()
-        if value is None:
-            value = variable_fields.get(field_lower, None)
-        # value being "" or 0 is ok, but None is not
-        if value is None:
-            if field_lower not in invalid_fields:
-                invalid_fields.append(field_lower)
-            # Set value to empty string so the text doesn't break,
-            # we don't leave un-interpolated fields
-            value = ""
+        # Lowercase the characters inside {{}} in the text (cloze placeholders are not {{}})
+        part = FROM_TEXT_FIELD_REGEX.sub(lambda x: intr_format(x.group(1).lower()), part)
 
-        text = text.replace(intr_format(field_lower), str(value))
+        # Sub values in text
+        for field in fields:
+            # It's possible to input invalid stuff like destination fields in within copy mode
+            if field.startswith(DESTINATION_PREFIX) and destination_note:
+                value, dest_card_values_dict = get_from_note_fields(
+                    field[len(DESTINATION_PREFIX) :],
+                    destination_note,
+                    all_dest_note_fields,
+                    dest_card_values_dict,
+                    multiple_note_types,
+                )
+            else:
+                value, card_values_dict = get_from_note_fields(
+                    field,
+                    source_note,
+                    all_note_fields,
+                    card_values_dict,
+                    multiple_note_types,
+                )
+            field_lower = field.lower()
+            if value is None:
+                value = variable_fields.get(field_lower, None)
+            # value being "" or 0 is ok, but None is not
+            if value is None:
+                if field_lower not in invalid_fields:
+                    invalid_fields.append(field_lower)
+                # Set value to empty string so the text doesn't break,
+                # we don't leave un-interpolated fields
+                value = ""
 
-    # Restore cloze patterns with their interpolated content
-    for placeholder, cloze_value in cloze_placeholder_map.items():
-        text = text.replace(placeholder, cloze_value)
+            part = part.replace(intr_format(field_lower), str(value))
+        return part
 
-    # Merge invalid fields, avoiding duplicates
-    combined_invalid = all_inner_invalid.copy()
-    for field in invalid_fields:
-        if field not in combined_invalid:
-            combined_invalid.append(field)
-    return text, combined_invalid
+    # The {{c<N>::...}} wrapper is kept and never treated as a field; the fields inside it
+    # are interpolated like any others.
+    return map_outside_clozes(text, interpolate_fields), invalid_fields

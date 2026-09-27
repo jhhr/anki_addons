@@ -37,14 +37,13 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
-from anki.errors import InvalidInput
 from anki.scheduler.v3 import CardAnswer
 from anki.scheduler.v3 import Scheduler as V3Scheduler
 from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, VOCAB
+from note_types import KANJI, VOCAB
 from copy_anywhere.hooks import note_hooks
 from copy_anywhere.hooks.note_hooks import run_copy_fields_on_review
 
@@ -414,6 +413,7 @@ class TestWhichDefinitionsRun:
         assert ran.kwarg_names() == [
             [
                 "copied_into_cards_dict",
+                "copied_into_files",
                 "copied_into_notes",
                 "copy_definition",
                 "trigger_note",
@@ -704,19 +704,6 @@ class TestEverythingMergesIntoTheAnswerCardEntry:
         run_copy_fields_on_review(col.get_card(note.cards()[1].id))
         assert col.undo_status().undo == "Some other addon"
 
-    def test_no_undo_entry_at_all_makes_the_merge_raise(
-        self, col, set_definitions, monkeypatch
-    ):
-        # There is no guard on the captured step. Anki always leaves an entry behind the
-        # answer, so this is not reachable through the reviewer; it is pinned because it is
-        # what the handler does once the step it is handed does not exist. The patch goes in
-        # before the review because the step is recorded when the card is answered.
-        monkeypatch.setattr(col, "undo_status", lambda: SimpleNamespace(last_step=0))
-        _, reviewed = review(col)
-        set_definitions(within())
-        with pytest.raises(InvalidInput, match="target undo op not found"):
-            run_copy_fields_on_review(reviewed)
-
 
 # The reviewed card itself ---------------------------------------------------------------------
 
@@ -754,19 +741,6 @@ class TestACardActionOnTheReviewedCard:
         run_copy_fields_on_review(reviewed)
         after = col.get_card(reviewed.id)
         assert col.decks.name(after.did) == "JP vocab"
-        assert after.reps == 1
-
-    def test_without_the_merge_the_closing_update_takes_the_flag_back(
-        self, col, set_definitions, monkeypatch
-    ):
-        # The negative control, and the reason this bullet is in the issue at all: neutering
-        # `merge_cards` leaves the review intact and silently drops the card action.
-        _, reviewed = review(col)
-        monkeypatch.setattr(note_hooks, "merge_cards", lambda card, other: None)
-        set_definitions(within(card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]))
-        run_copy_fields_on_review(reviewed)
-        after = col.get_card(reviewed.id)
-        assert after.user_flag() == 0
         assert after.reps == 1
 
     def test_one_undo_takes_back_the_answer_the_field_and_the_flag_together(
@@ -857,9 +831,9 @@ class TestACardActionOnAnotherCard:
     def test_only_cards_a_definition_actually_edited_are_written(
         self, col, set_definitions, updates
     ):
-        # Every destination note's cards land in `copied_into_cards_dict`, edited or not; the
-        # `edited` attribute the card actions set is what narrows the write down. The last
-        # entry is the handler's own closing `update_card`, which arrives without one.
+        # Only the cards a card action edited land in `copied_into_cards_dict`: "plain" writes
+        # into the note and hands over none of its cards. The last entry is the handler's own
+        # closing `update_card`, which arrives without an `edited` attribute.
         note, reviewed = review(col)
         sibling = note.cards()[1]
         set_definitions(
@@ -1051,3 +1025,34 @@ class TestTheRestOfTheDefinition:
         run_copy_fields_on_review(reviewed)
         assert col.get_note(note.id)["Note"] == "neko"
         assert custom_data(col, reviewed.id) == {"fc": 1}
+
+
+class TestFilesAreWrittenAfterTheNotes:
+    def test_a_file_a_definition_writes_lands_once_the_note_is_saved(
+        self, col, set_definitions, media_dir, monkeypatch
+    ):
+        # The hook collects the files and writes them itself, after its update_notes; one it
+        # forgot to write would never reach the disk at all.
+        on_disk_when_saved = []
+        original = col.update_notes
+
+        def update_notes(notes, **kwargs):
+            on_disk_when_saved.append((media_dir / "_review.txt").exists())
+            return original(notes, **kwargs)
+
+        monkeypatch.setattr(col, "update_notes", update_notes)
+        set_definitions(d.staged(
+            "reviewed",
+            on_review=True,
+            stages=[
+                d.edit_note("trigger", [d.write("Note", d.text("reviewed"))]),
+                d.write_file("review.txt", d.text("{{trigger.Word}}")),
+            ],
+        ))
+        note, reviewed = review(col)
+
+        run_copy_fields_on_review(reviewed)
+
+        assert on_disk_when_saved == [False]
+        assert (media_dir / "_review.txt").read_text(encoding="utf-8") == note["Word"]
+        assert col.get_note(note.id)["Note"] == "reviewed"

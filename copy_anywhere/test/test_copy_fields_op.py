@@ -38,7 +38,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import KANJI, SENTENCE, VOCAB
+from note_types import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic import copy_fields as copy_fields_module
 from copy_anywhere.logic.copy_fields import copy_fields, make_copy_fields_undo_text
 
@@ -332,7 +332,7 @@ class TestUndoEntry:
         # is also the merge that builds the initial `CacheResults.changes` before the loop.
         assert merge_calls() == 4
 
-    def test_the_sync_tail_merges_twice_more_on_top_of_that(self, col, run_copy_fields):
+    def test_the_sync_tail_merges_once_more_on_top_of_that(self, col, run_copy_fields):
         note = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": ""})
         flag(col, note, 0)
         merge_calls = real_anki.counting_wrapper(col, "merge_undo_entries")
@@ -345,9 +345,8 @@ class TestUndoEntry:
 
         run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
 
-        # One before the loop, one after the definition, then one after each of the tail's
-        # two `update_cards` calls.
-        assert merge_calls() == 4
+        # One before the loop, one after the definition, then one after the tail's sweep.
+        assert merge_calls() == 3
 
 
 class TestNoteIdsPerDefinition:
@@ -605,6 +604,47 @@ class TestOneDestinationFromSeveralTriggerNotes:
 
         assert col.get_note(destination.id)["Note"] == "<s2>"
 
+    @staticmethod
+    def flag_only_for_s1():
+        """Every Sentence writes into the one Vocab note; only trigger `s1` flags a card."""
+        return d.staged(
+            note_types=[SENTENCE],
+            stages=[
+                d.note_query("dests", 'note:"CA Vocab"'),
+                d.for_each_note("dests", [
+                    d.condition(
+                        d.code("return trigger['Sentence'] == 's1'"),
+                        [d.edit_note(
+                            "note",
+                            [d.write("Note", d.text("x"))],
+                            card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)],
+                        )],
+                        [d.edit_note("note", [d.write("Note", d.text("x"))])],
+                    ),
+                ]),
+            ],
+        )
+
+    @pytest.mark.parametrize("order", [("s1", "s2"), ("s2", "s1")])
+    def test_a_later_trigger_note_that_leaves_a_card_alone_keeps_the_earlier_ones_edit(
+        self, col, run_copy_fields, logger, order
+    ):
+        # Unlike the note above, this is not the known limitation: the second trigger note
+        # writes the destination note but never edits its card, so it has no copy of the
+        # card to hand over (decision 5). When every card of a written note went into
+        # `copied_into_cards_dict`, `s2`'s fresh, unflagged copy replaced `s1`'s flagged one
+        # whenever `s1` ran first, and the flag was lost. Notes are walked in id order, so
+        # the order they are added in is the order they run in.
+        destination = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        for sentence in order:
+            real_anki.add_note(col, SENTENCE, {"Sentence": sentence})
+
+        run_copy_fields(copy_definitions=[self.flag_only_for_s1()])
+
+        assert not logger.errors, logger.errors
+        flags = {card.template()["name"]: card.user_flag() for card in destination.cards()}
+        assert flags == {"Recognition": 2, "Recall": 0}
+
 
 class TestEditedCards:
     def test_the_edited_flag_is_already_gone_when_update_cards_sees_the_card(
@@ -631,10 +671,9 @@ class TestEditedCards:
 
         run_copy_fields(copy_definitions=definitions, note_ids=[note.id])
 
-        # `copied_into_cards_dict` still holds the Recognition card during the second
-        # definition, but not the object the first one flagged: every definition re-reads
-        # `destination_note.cards()` and overwrites the dict entry with a fresh Card that
-        # has no `edited` attribute. So the flag is not so much "re-set" as "started over".
+        # `copied_into_cards_dict` still holds the Recognition card the first definition
+        # flagged, but saving it took its `edited` attribute off, and the second definition
+        # leaves the entry alone because it did not edit that card. So it is saved once.
         assert updates.card_ids() == [[recognition.id], [recall.id]]
         assert [card.flags for card in col.get_note(note.id).cards()] == [2, 3]
 
@@ -750,6 +789,76 @@ class TestSyncTail:
         # Custom data is JSON nested inside JSON in the `cards.data` column, which is why
         # the search prefix is `prop:cdn:` rather than a plain column comparison.
         assert json.loads(json.loads(data)["cd"]) == {"fc": 1}
+
+    def test_an_edited_card_keeps_its_edit_and_its_unedited_sibling_is_flagged_too(
+        self, col, run_copy_fields
+    ):
+        # Only the edited Recognition card comes back in `copied_into_cards_dict`, and it is
+        # saved, edit and all, before the tail runs. So the sweep finds it by its `fc` of 0
+        # beside Recall, whose note was written but which no action changed, and reads the
+        # saved card: the edit survives being flagged.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        flag(col, note, 0)
+        definition = write_into_note(
+            copy_on_sync=True, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+        )
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        recognition, recall = col.get_note(note.id).cards()
+        assert col.get_note(note.id)["Note"] == "neko"
+        assert (recognition.user_flag(), custom_data(col, recognition.id)) == (2, {"fc": 1})
+        assert (recall.user_flag(), custom_data(col, recall.id)) == (0, {"fc": 1})
+
+    def test_an_edited_card_is_saved_once_by_the_definition_and_once_by_the_sweep(
+        self, col, run_copy_fields, updates
+    ):
+        # The definition's own save already wrote the card with its `fc` still 0, so the
+        # sweep finds it with the others. A pass over the edited cards before the sweep wrote
+        # each of them a second time, under an undo merge of its own, for nothing.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
+        flag(col, note, 0)
+        recognition, recall = note.cards()
+        definition = write_into_note(
+            copy_on_sync=True, card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+        )
+        updates.clear()  # setting the flag above went through `update_cards` too
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        assert [sorted(ids) for ids in updates.card_ids()] == [
+            [recognition.id],
+            sorted([recognition.id, recall.id]),
+        ]
+
+    def test_an_edited_card_that_was_never_waiting_is_not_given_an_fc_key(
+        self, col, run_copy_fields
+    ):
+        # A card with no `fc` is invisible to a sync run, and so is one at 1, so there is
+        # nothing to clean up on a card of another note that a definition edited. The pass
+        # over the edited cards used to initialise it to 1 anyway.
+        trigger = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": ""})
+        flag(col, trigger, 0)
+        other = real_anki.add_note(col, VOCAB, {"Word": "inu", "Meaning": "dog"})
+        definition = d.staged(
+            note_types=[KANJI],
+            on_sync=True,
+            stages=[
+                d.note_query("others", 'note:"CA Vocab"'),
+                d.for_each_note("others", [
+                    d.edit_note(
+                        "note", card_actions=[d.card_action(VOCAB, "Recognition", set_flag=2)]
+                    ),
+                ]),
+            ],
+        )
+
+        run_copy_fields(copy_definitions=[definition], update_sync_result=lambda text, count: None)
+
+        recognition = col.get_card(other.cards()[0].id)
+        assert recognition.user_flag() == 2
+        assert recognition.custom_data == ""
+        assert custom_data(col, trigger.cards()[0].id) == {"fc": 1}
 
     def test_the_tail_does_not_run_without_update_sync_result(
         self, col, run_copy_fields, sync_definition, three_kanji
@@ -878,3 +987,134 @@ class TestCancellation:
         run_copy_fields(copy_definitions=[write_into_note("a")], note_ids=[note.id])
 
         assert col.get_note(note.id)["Note"] == "neko"
+
+
+class TestFilesLandAfterTheirNotes:
+    """A bulk run writes a definition's files once the notes and cards they go with are saved.
+
+    The commit of each trigger note used to write its files straight away, while the notes
+    were saved once the definition had run over them all. A run that then raised on a later
+    trigger note left the earlier notes' files on disk and none of their note changes.
+    """
+
+    def writing(self, *extra_stages, filename="out_{{trigger.Word}}.txt", **write):
+        return d.staged("files", stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("written"))]),
+            d.write_file(filename, d.text("{{trigger.Word}};"), **write),
+            *extra_stages,
+        ])
+
+    def notes(self, col, *words):
+        return [real_anki.add_note(col, VOCAB, {"Word": word}) for word in words]
+
+    def test_a_run_that_raises_writes_no_file(self, col, run_copy_fields, media_dir, monkeypatch):
+        from copy_anywhere.logic.execution import actions
+
+        original = actions.run_variable
+
+        def breaks_on_the_last(stage, env, frame):
+            if frame.trigger_note["Word"] == "ccc":
+                raise RuntimeError("a bug in a stage")
+            return original(stage, env, frame)
+
+        monkeypatch.setattr(actions, "run_variable", breaks_on_the_last)
+        notes = self.notes(col, "aaa", "bbb", "ccc")
+
+        with pytest.raises(RuntimeError):
+            run_copy_fields(
+                copy_definitions=[self.writing(d.variable("v"))],
+                note_ids=[note.id for note in notes],
+            )
+
+        assert sorted(path.name for path in media_dir.glob("_out_*")) == []
+        assert [col.get_note(note.id)["Note"] for note in notes] == ["", "", ""]
+
+    def test_the_notes_are_saved_before_the_files_are_written(
+        self, col, run_copy_fields, media_dir, monkeypatch
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+        on_disk_when_saved = []
+        original = col.update_notes
+
+        def update_notes(saved, **kwargs):
+            on_disk_when_saved.append(sorted(path.name for path in media_dir.glob("_out_*")))
+            return original(saved, **kwargs)
+
+        monkeypatch.setattr(col, "update_notes", update_notes)
+
+        run_copy_fields(copy_definitions=[self.writing()], note_ids=[note.id for note in notes])
+
+        assert on_disk_when_saved == [[]]
+        assert sorted(path.name for path in media_dir.glob("_out_*")) == [
+            "_out_aaa.txt",
+            "_out_bbb.txt",
+        ]
+
+    def test_a_later_trigger_note_reads_what_an_earlier_one_wrote(
+        self, col, run_copy_fields, media_dir
+    ):
+        # Appending across trigger notes reads the file an earlier one queued, which is not
+        # on disk yet.
+        notes = self.notes(col, "aaa", "bbb")
+        definition = d.staged("append", stages=[
+            d.read_file("log", "log.txt"),
+            d.write_file("log.txt", d.text("{{log}}{{trigger.Word}};")),
+        ])
+
+        run_copy_fields(copy_definitions=[definition], note_ids=[note.id for note in notes])
+
+        written = (media_dir / "_log.txt").read_text(encoding="utf-8")
+        assert sorted(written.split(";")) == ["", "aaa", "bbb"]
+
+    def test_nor_does_not_overwriting_let_a_later_one_replace_it(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="one.txt", overwrite=False)],
+            note_ids=[note.id for note in notes],
+        )
+
+        assert logger.has_error("already written earlier in this run"), logger.errors
+        assert (media_dir / "_one.txt").read_text(encoding="utf-8") == "aaa;"
+
+    def test_or_a_later_skip_if_exists_write_it_again(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="one.txt", skip_if_exists=True)],
+            note_ids=[note.id for note in notes],
+        )
+
+        assert logger.errors == []
+        assert (media_dir / "_one.txt").read_text(encoding="utf-8") == "aaa;"
+        assert [col.get_note(note.id)["Note"] for note in notes] == ["written", "written"]
+
+    def test_a_later_one_writing_the_name_in_another_case_is_refused_too(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        [first, second] = self.notes(col, "One", "one")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="{{trigger.Word}}.txt", overwrite=False)],
+            note_ids=[first.id, second.id],
+        )
+
+        assert logger.has_error("already written earlier in this run"), logger.errors
+        assert [path.name for path in media_dir.glob("_*ne.txt")] == ["_One.txt"]
+
+    def test_a_write_that_fails_says_the_notes_were_kept(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        (media_dir / "_data").mkdir()
+        [note] = self.notes(col, "aaa")
+
+        run_copy_fields(copy_definitions=[self.writing(filename="data")], note_ids=[note.id])
+
+        assert logger.has_error(
+            "The note and card changes are kept; this file was not written."
+        ), logger.errors
+        assert col.get_note(note.id)["Note"] == "written"

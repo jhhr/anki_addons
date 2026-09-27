@@ -18,7 +18,7 @@ from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere import logging_setup
 from copy_anywhere.logic import copy_fields as copy_fields_module
 from copy_anywhere.logic.copy_fields import copy_fields, operation_log_name
@@ -313,3 +313,84 @@ class TestTheFileName:
 
         path, _ = written_log(_operation_logs_go_to_tmp)
         assert path.name.startswith("copy_fields_JP_vocab_kanji_")
+
+
+class TestTheSharedLoggerIsNotThisAddons:
+    """`jp_text_processing` logs through one logger object in every addon that vendors it.
+
+    The operation attached its file to that logger and set its level for the whole run, so
+    a debug run wrote another addon's lines into this addon's file, and an error-level run
+    silenced another addon's warnings until it ended.
+    """
+
+    @pytest.fixture
+    def shared(self):
+        shared = logging.getLogger(logging_setup.SHARED_LOGGER_NAME)
+        before = shared.level
+        shared.setLevel(logging.NOTSET)
+        yield shared
+        shared.setLevel(before)
+
+    def test_another_threads_lines_stay_out_of_the_file(self, shared, _operation_logs_go_to_tmp):
+        import threading
+
+        logging_setup.start_operation_log("op", "debug")
+        try:
+            with logging_setup.running_a_definition():
+                shared.debug("this addon's")
+            elsewhere = threading.Thread(target=lambda: shared.debug("another addon's"))
+            elsewhere.start()
+            elsewhere.join()
+        finally:
+            logging_setup.finish_operation_log()
+
+        _, text = written_log(_operation_logs_go_to_tmp)
+        assert "this addon's" in text
+        assert "another addon's" not in text
+
+    def test_an_error_level_operation_does_not_raise_its_level(
+        self, shared, _operation_logs_go_to_tmp
+    ):
+        effective = shared.getEffectiveLevel()
+        logging_setup.start_operation_log("op", "error")
+        try:
+            assert shared.getEffectiveLevel() == effective
+        finally:
+            logging_setup.finish_operation_log()
+
+    def test_a_level_set_while_the_operation_ran_is_kept(self, shared, _operation_logs_go_to_tmp):
+        logging_setup.start_operation_log("op", "debug")
+        assert shared.level == logging.DEBUG
+        shared.setLevel(logging.INFO)
+        logging_setup.finish_operation_log()
+        assert shared.level == logging.INFO
+
+
+class TestOldLogsArePruned:
+    def test_only_when_an_operation_wrote_a_file(self, _operation_logs_go_to_tmp, monkeypatch):
+        # Every field unfocus opens an operation, and most write nothing.
+        pruned = []
+        monkeypatch.setattr(logging_setup, "prune_old_logs", pruned.append)
+        with logging_setup.operation_logging("quiet", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).warning("below the level")
+        assert pruned == []
+
+        with logging_setup.operation_logging("loud", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).error("written")
+        assert pruned == [str(_operation_logs_go_to_tmp)]
+
+    def test_the_newest_two_hundred_are_kept(self, _operation_logs_go_to_tmp):
+        import os
+
+        _operation_logs_go_to_tmp.mkdir()
+        for index in range(210):
+            path = _operation_logs_go_to_tmp / f"old_{index:03}.log"
+            path.write_text("x")
+            os.utime(path, (index, index))
+
+        with logging_setup.operation_logging("new", "error"):
+            logging.getLogger(logging_setup.ADDON_MODULE).error("written")
+
+        kept = sorted(path.name for path in _operation_logs_go_to_tmp.glob("*.log"))
+        assert len(kept) == 200
+        assert "old_010.log" not in kept and "old_011.log" in kept

@@ -11,7 +11,7 @@ import pytest
 
 from anki_shared.testing import real_anki
 from anki_shared.interpolate.interpolate_fields import QUERY_NOTE_INDEX
-from conftest import VOCAB
+from note_types import VOCAB
 from copy_anywhere.logic.copy_fields import (
     CopyFailedException,
     get_field_values_from_notes,
@@ -157,7 +157,7 @@ class TestGetFieldValuesFromNotes:
         # A note with two card types raises out of interpolation when multiple_note_types is
         # set. The handler breaks rather than continuing, so the notes after it are dropped
         # and a *partial* joined string comes back -- not "" and not an exception.
-        from conftest import SENTENCE
+        from note_types import SENTENCE
 
         single = real_anki.add_note(col, SENTENCE, {"Sentence": "s", "Vocab": "v"})
         two_card = real_anki.add_note(col, VOCAB, {"Word": "boom"})

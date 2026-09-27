@@ -323,7 +323,8 @@ def execute_code_core(
         code.
     :param extra_globals: Extra names to expose inside the code, for callers
         whose context holds more than a note — the card being reviewed, say.
-        Applied last, so a caller may also replace a standard name.
+        Applied last, so a caller may also replace a standard name. A caller
+        that supplies ``cards`` saves the fetch of the note's cards.
     :return: ``(raw_result, error_message)`` — *error_message* is ``None``
         on success.  *raw_result* is ``None`` when the code returns nothing or
         when an error occurred.
@@ -337,13 +338,6 @@ def execute_code_core(
     # Copy _SAFE_BUILTINS per-call so that exec cannot leak mutations between
     # invocations (Python exposes __builtins__ inside exec'd namespaces and
     # user code could mutate the dict if it were shared).
-    note_cards = []
-    if note.id not in (None, 0):
-        try:
-            note_cards = note.cards()
-        except Exception:
-            note_cards = []
-    note_type = note.note_type()
     exec_globals: dict = {
         "__builtins__": dict(_SAFE_BUILTINS),
         "re": re,
@@ -353,10 +347,20 @@ def execute_code_core(
         "find_cards": mw.col.find_cards,
         "find_notes": mw.col.find_notes,
         "note": ReadOnlyNote(note),
-        "cards": [ReadOnlyCard(c, note_type) for c in note_cards],
         "get_card_last_reps": get_card_last_reps,
         **_JAPANESE_GLOBALS,
     }
+    if not extra_globals or "cards" not in extra_globals:
+        # Only when the caller has not brought its own `cards`: fetching the note's cards
+        # is a query, and one the caller's list would replace straight away.
+        note_cards = []
+        if note.id not in (None, 0):
+            try:
+                note_cards = note.cards()
+            except Exception:
+                note_cards = []
+        note_type = note.note_type()
+        exec_globals["cards"] = [ReadOnlyCard(c, note_type) for c in note_cards]
     if extra_globals:
         exec_globals.update(extra_globals)
 

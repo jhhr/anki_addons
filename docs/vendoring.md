@@ -45,7 +45,8 @@ names (`mdict_query`); `vendor_no_binaries` ships a package pure-Python (`rapidf
 ## At runtime
 
 `add_vendor_paths` puts `user_files/lib`, then `lib/_platform/<tag>`, then `lib` on
-`sys.path`. `vendor_health` compares the manifest's Python version and a digest of
+`sys.path`; a `user_files/lib` whose manifest no longer fits this machine goes last instead,
+where it shadows nothing. `vendor_health` compares the manifest's Python version and a digest of
 `requirements.txt` with what is running. When the tree does not fit, or a package is missing,
 `install_rebuild_ui` offers to rebuild into `user_files/lib` using Anki's bundled `uv`, or
 `pip` where there is none. It asks first, remembers refusals, and adds a Tools action.

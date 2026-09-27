@@ -26,7 +26,7 @@ Just install the addon and use my scheduler.
 Or...
 
 1. Write your own custom scheduling js code and apply it. Mine is included in this repository in `custom_scheduler.js`
-2. Edit this addon and duplicate that functionality in the `Scheduler.next_interval` function in `schedule/reschule.py`
+2. Edit this addon and duplicate that functionality in the `Scheduler.next_interval` function in `schedule/reschedule.py`
 3. Also edit the Auto Ease Factor logic in `ease/ease_calculator.py` if you don't like the
    aggressively attenuated ease changes.
 

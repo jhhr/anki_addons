@@ -12,6 +12,13 @@ of its own rather than under this addon's -- it is vendored into several addons,
 records cannot sit in any one addon's tree -- and the helpers here are the single place that
 attaches to both, so their level and destination cannot drift apart.
 
+**The shared logger is not this addon's.** Every addon that vendors `jp_text_processing`
+logs through the same `jp_text_processing` logger object, often from threads of its own. So
+the operation's handler takes only the records logged while one of this addon's definitions
+runs (`running_a_definition`), and the operation only ever lowers that logger's level, and
+puts it back only if nobody changed it meanwhile. Before, a debug-level run wrote another
+addon's lines into this addon's file, and an error-level run silenced its warnings.
+
 **Why the file is reference counted rather than scoped.** `copy_fields` hands its work to a
 `CollectionOp` and returns immediately; the records are written on the worker thread and the
 operation ends in `on_success`/`on_failure` on the main thread, long after the hook that
@@ -39,7 +46,7 @@ ADDON_MODULE = __name__.split(".")[0]
 SHARED_LOGGER_NAME = "jp_text_processing"
 
 # Diagnostics are worth keeping for a while and worth not keeping forever.
-LOGS_TO_KEEP = 50
+LOGS_TO_KEEP = 200
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(prefix)s%(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
@@ -86,6 +93,35 @@ def set_log_nid(nid: Optional[int]) -> None:
 
 def reset_log_context() -> None:
     log_context.set((None, None))
+
+
+# Whether the thread logging right now is running one of this addon's definitions. A
+# ContextVar for the same reason `log_context` is one: each thread starts from the default.
+_running: ContextVar[bool] = ContextVar("copy_anywhere_running", default=False)
+
+
+@contextmanager
+def running_a_definition() -> Iterator[None]:
+    """Mark the block as this addon's work, so `jp_text_processing`'s lines in it are its."""
+    token = _running.set(True)
+    try:
+        yield
+    finally:
+        _running.reset(token)
+
+
+class OwnSharedRecordsFilter(logging.Filter):
+    """Lets a `jp_text_processing` record through only from inside one of this addon's runs.
+
+    Everything logged under the addon's own name is the addon's, whatever thread it came
+    from. The shared logger's records are only this addon's when one of its definitions is
+    what called the package; the rest belong to another addon using the same logger.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == SHARED_LOGGER_NAME or record.name.startswith(SHARED_LOGGER_NAME + "."):
+            return _running.get()
+        return True
 
 
 class LogContextFilter(logging.Filter):
@@ -156,7 +192,8 @@ class _OperationLog:
         self.depth = 0
         self.handler: Optional[logging.Handler] = None
         self.path: Optional[str] = None
-        self.previous_levels: list[Tuple[logging.Logger, int]] = []
+        #: (logger, its level before, the level the operation set), for each one it set.
+        self.previous_levels: list[Tuple[logging.Logger, int, int]] = []
 
 
 _operation = _OperationLog()
@@ -177,7 +214,6 @@ def start_operation_log(name: str, level: LogLevel = "error") -> Optional[str]:
         directory = logs_dir()
         try:
             os.makedirs(directory, exist_ok=True)
-            prune_old_logs(directory)
             path = os.path.join(directory, _log_file_name(name))
             # delay=True: the file is not created until something is actually written, so a
             # clean run at the default `error` level leaves nothing behind.
@@ -188,13 +224,18 @@ def start_operation_log(name: str, level: LogLevel = "error") -> Optional[str]:
 
         log_level = log_level_to_int(level)
         handler.setLevel(log_level)
+        handler.addFilter(OwnSharedRecordsFilter())
         handler.addFilter(LogContextFilter())
         handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
 
         _operation.previous_levels = []
         for target in _operation_loggers():
-            _operation.previous_levels.append((target, target.level))
-            target.setLevel(log_level)
+            # The addon's own logger is set to the level asked for. The shared one is only
+            # ever lowered, far enough for the records this run asked for to be made: raised,
+            # it silenced every other addon's lines below the level for the whole run.
+            if target is addon_logger() or log_level < target.getEffectiveLevel():
+                _operation.previous_levels.append((target, target.level, log_level))
+                target.setLevel(log_level)
             target.addHandler(handler)
         _operation.handler = handler
         _operation.path = path
@@ -210,9 +251,13 @@ def _close_operation_log() -> Optional[str]:
     """
     handler = _operation.handler
     path = _operation.path
-    for target, previous_level in _operation.previous_levels:
-        target.setLevel(previous_level)
-        if handler is not None:
+    for target, previous_level, set_level in _operation.previous_levels:
+        # Left alone if something else set it while the operation ran; putting the old
+        # level back would undo that.
+        if target.level == set_level:
+            target.setLevel(previous_level)
+    if handler is not None:
+        for target in _operation_loggers():
             target.removeHandler(handler)
     _operation.previous_levels = []
     _operation.handler = None
@@ -223,6 +268,9 @@ def _close_operation_log() -> Optional[str]:
     reset_log_context()
 
     if path is not None and os.path.exists(path):
+        # Only when a file was written: with `delay=True` most operations write none, and
+        # scanning the folder for them would be work at every field unfocus for nothing.
+        prune_old_logs(os.path.dirname(path))
         return path
     return None
 

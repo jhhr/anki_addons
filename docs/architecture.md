@@ -94,7 +94,9 @@ packages. Left out everywhere: `test/`, `tests/`, `test_anki/`, `*_tests.py`, `u
 `logs/`, `output/`, `dist/`, caches, `meta.json`, `build.json`, `requirements.in`,
 `AGENTS.md`, `CLAUDE.md`, VCS and editor files, plus the addon's own `exclude` list.
 `requirements.txt` and `lib/` do ship. Name a directory `test` or `test_anki` and it stays
-out; name it anything else and it ships unless `exclude` lists it.
+out; name it anything else and it ships unless `exclude` lists it. An addon that has an
+`ADDON_README.md` ships that as its user guide and leaves its `README.md`, then the
+developers' one, out.
 
 ## Tests without Anki
 

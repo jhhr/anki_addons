@@ -11,7 +11,7 @@ import pytest
 from anki_shared.testing import real_anki
 from anki_shared.interpolate.execute_code import ReadOnlyCard
 from anki_shared.interpolate.interpolate_fields import interpolate_from_text
-from conftest import CLOZE, KANJI, ODD_TEMPLATE, SENTENCE, VOCAB
+from note_types import CLOZE, KANJI, ODD_TEMPLATE, SENTENCE, VOCAB
 
 
 @pytest.fixture
@@ -109,6 +109,79 @@ class TestReadOnlyCardReviewTimes:
         card = ReadOnlyCard(recognition_card, note.note_type())
         assert card.first_review_time == "-"
         assert object.__getattribute__(card, "_card_time_values") == (None, None, 0, None)
+
+
+def count_time_value_queries(monkeypatch):
+    """Count the revlog aggregates card values run, undone when the test ends."""
+    from anki_shared.interpolate import interpolate_fields
+
+    original = interpolate_fields.get_card_time_values
+    calls = {"n": 0}
+
+    def counted(card_id):
+        calls["n"] += 1
+        return original(card_id)
+
+    monkeypatch.setattr(interpolate_fields, "get_card_time_values", counted)
+    return lambda: calls["n"]
+
+
+class TestWhatReadingOneValueCosts:
+    """The values that cost a query are read only by the keys that need them.
+
+    `get_value_for_card` answers every key of a card at once, and `get_from_note_fields`
+    builds it for every card of the note to read one key of one card. The four review-time
+    values are one aggregate over `revlog` and the other card ids a second query; the card
+    id needs neither.
+    """
+
+    def test_the_card_id_reads_no_revlog(self, note, recognition_card, monkeypatch):
+        from anki_shared.interpolate import interpolate_fields
+
+        def refuse(card_id):
+            raise AssertionError(f"revlog read for card {card_id} to answer __Card_ID")
+
+        monkeypatch.setattr(interpolate_fields, "get_card_time_values", refuse)
+        assert interpolate_from_text("{{Recognition__Card_ID}}", note) == (
+            str(recognition_card.id),
+            [],
+        )
+
+    def test_the_four_review_times_share_one_query(self, note, monkeypatch):
+        from anki_shared.interpolate import interpolate_fields
+
+        calls = real_anki.counting_wrapper(interpolate_fields, "get_card_time_values")
+        text, invalid = interpolate_from_text(
+            "{{Recognition__Card_First_Review}}{{Recognition__Card_Latest_Review}}"
+            "{{Recognition__Card_Average_Time}}{{Recognition__Card_Total_Time}}",
+            note,
+        )
+        assert (text, invalid) == ("----", [])
+        assert calls() == 1
+
+    def test_get_card_value_reuses_card_values_it_is_given(
+        self, note, recognition_card, monkeypatch
+    ):
+        from anki_shared.interpolate.interpolate_fields import CardValues, get_card_value
+
+        calls = count_time_value_queries(monkeypatch)
+        values = CardValues(recognition_card, note)
+        read = [
+            get_card_value(recognition_card, note, key, card_values=values)
+            for key in ("__Card_First_Review", "__Card_Latest_Review", "__Card_Total_Time")
+        ]
+        assert read == ["-", "-", "-"]
+        assert calls() == 1
+
+    def test_get_card_value_without_them_builds_its_own_each_time(
+        self, note, recognition_card, monkeypatch
+    ):
+        from anki_shared.interpolate.interpolate_fields import get_card_value
+
+        calls = count_time_value_queries(monkeypatch)
+        for key in ("__Card_First_Review", "__Card_Latest_Review"):
+            assert get_card_value(recognition_card, note, key) == "-"
+        assert calls() == 2
 
 
 class TestCustomDataProp:
@@ -289,7 +362,7 @@ class TestMultipleNoteTypes:
         # there is no way to pick between two, so this is a ValueError rather than a guess.
         # get_field_values_from_notes catches it and breaks out of the source-note loop.
         note = real_anki.add_note(col, VOCAB, {"Word": "w"})
-        with pytest.raises(ValueError, match="single card type"):
+        with pytest.raises(ValueError, match="names no card type.*this note has 2"):
             interpolate_from_text("{{__Card_ID}}", note, multiple_note_types=True)
 
     def test_a_second_single_card_note_type_resolves_the_same_way(self, col):

@@ -62,12 +62,12 @@ pip3 install --upgrade -t lib --no-cache-dir --python-version 3.9 --only-binary=
 
 ## Running the tests
 
-`test/` covers the two modules that carry the tricky concurrent behaviour - the rate-limit
-and retry handling in `async_api_ops/api_client.py`, and the memory-aware gate in
-`async_api_ops/concurrency.py`. Both are deliberately free of `aqt`/`anki` imports, so the
-suite loads them straight from their files and runs outside Anki, with no network and no
-waiting: a fake session supplies responses, a fake clock makes backoffs pass instantly, and
-the memory probes are stubbed.
+`test/` covers the rate-limit and retry handling in `async_api_ops/api_client.py`, the
+memory-aware gate in `async_api_ops/concurrency.py`, the operation framework in
+`base_ops.py`, op chains, the run controls and many of the ops themselves. It runs outside
+Anki, with no network and no waiting: modules are loaded straight from their files, a fake
+session supplies responses, a fake clock makes backoffs pass instantly, and the memory
+probes are stubbed.
 
 ```bash
 pytest test              # from the add-on root
@@ -79,5 +79,4 @@ Run it as `pytest test`, not bare `pytest`: the add-on directory is itself a pac
 the collection tree. `test/pytest.ini` keeps the rootdir below that.
 
 Tests are plain `unittest.TestCase` classes so both runners work. Anything that needs a real
-collection, `mw`, or a running Anki belongs in a manual check instead - `base_ops.py` and the
-ops themselves are not covered here.
+collection, `mw`, or a running Anki belongs in a manual check instead.
