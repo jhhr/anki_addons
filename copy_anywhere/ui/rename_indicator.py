@@ -13,6 +13,11 @@ stored until Save drops it (`rename_reconcile.drop_cleared_warnings`, the same r
 user dismisses it. So what the indicator shows while the user types is what a save would
 keep.
 
+Where a warning there has a new name and the scanner can spell it in (`Hit.replaceable`),
+a Replace button beside the icon opens `rename_replace_dialog`, which shows the change and
+hands it back to the part through the location's `replace`: a text box takes it through
+its undo stack (`replace_text`), a picker selects the new name (`select_name`).
+
 The part builds each key through `rename_locations` from the guid of the object it edits,
 never by hand: a key spelled differently from the pass's matches nothing and shows nothing,
 with no error to say so.
@@ -22,9 +27,18 @@ from __future__ import annotations
 
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
-from aqt.qt import QHBoxLayout, QLabel, QWidget
+from aqt.qt import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QTextCursor,
+    QWidget,
+)
 
 from ..logic.rename_scan import still_spelled
+from .rename_replace_dialog import RenameReplaceDialog, Replacement, plan_replacement
 from .stage_document import StageDocument
 
 #: The picker's mark for a definition that is not run (`DefinitionRow._mark_if_broken`), so
@@ -53,6 +67,42 @@ class LiveLocation(NamedTuple):
     #: code side of an expression in text mode: the pass does not read it, and a save drops
     #: its warnings, so the indicator does not show them either.
     value: Any
+    #: How the part takes a new value, which the Replace button's Apply calls with what
+    #: the dialog showed; None for a part that offers no Replace.
+    replace: Optional[Callable[[Any], None]] = None
+
+
+def replace_text(edit: QPlainTextEdit, text: str) -> None:
+    """Put `text` in `edit` as one step of its undo stack, so Ctrl+Z brings the old back.
+
+    `setPlainText`, which the layouts' `set_text` uses, empties the undo stack instead. The
+    whole text is swapped rather than each span: the scanners count in Python characters and
+    a text cursor in UTF-16 units, which part ways at the first character outside the Basic
+    Multilingual Plane, such as a rare kanji. `textChanged` fires as for typing, so the
+    part's own change signal carries the edit on to the definition and the indicator.
+    """
+    document = edit.document()
+    if document is None:
+        return
+    cursor = QTextCursor(document)
+    cursor.beginEditBlock()
+    cursor.select(QTextCursor.SelectionType.Document)
+    cursor.insertText(text)
+    cursor.endEditBlock()
+
+
+def select_name(combo: QComboBox, name: str) -> None:
+    """Select `name` in a picker, adding it first when the picker does not offer it.
+
+    A renamed object's new name is normally on offer already; it is not when the picker
+    lists the fields of other note types than the one renamed, and the user asked for the
+    name by pressing Apply.
+    """
+    index = combo.findText(name)
+    if index < 0:
+        combo.addItem(name)
+        index = combo.findText(name)
+    combo.setCurrentIndex(index)
 
 
 class RenameIndicator(QWidget):
@@ -63,8 +113,11 @@ class RenameIndicator(QWidget):
     search). The part calls `refresh` on its own change signal; the dialog also refreshes
     every indicator after a dismissal in the banner and on each re-analysis.
 
-    `row` is the layout the icon sits in, left open for the Replace button that goes beside
-    it.
+    `row` is the layout the icon and the Replace button sit in.
+
+    The button shows when some location with a `replace` has a warning Replace can act on;
+    it applies every such warning at once, so a search naming both a renamed deck and a
+    renamed note type is fixed by one Apply.
     """
 
     def __init__(
@@ -80,8 +133,17 @@ class RenameIndicator(QWidget):
         self.row.setContentsMargins(0, 0, 0, 0)
         self.icon = QLabel(self)
         self.row.addWidget(self.icon)
+        self.replace_button = QPushButton("Replace…", self)
+        self.replace_button.setToolTip(
+            "Show this text with the new name in place of the old, and apply it if it reads"
+            " right"
+        )
+        self.replace_button.clicked.connect(self._on_replace)
+        self.row.addWidget(self.replace_button)
         #: The stored entries shown, with the location each is filed under.
         self.shown: list[tuple[LiveLocation, dict]] = []
+        #: What Replace would do, per location it can act on, with how that location takes it.
+        self.replacements: list[tuple[Replacement, Callable[[Any], None]]] = []
         self.refresh()
 
     def refresh(self, *_args) -> None:
@@ -91,6 +153,8 @@ class RenameIndicator(QWidget):
             for entry in self.document.rename_marks_at(location.key)
             if still_spelled(location.read_as, location.value, entry)
         ]
+        self.replacements = self._replacements()
+        self.replace_button.setVisible(bool(self.replacements))
         self.setVisible(bool(self.shown))
         if not self.shown:
             self.icon.setText("")
@@ -101,6 +165,33 @@ class RenameIndicator(QWidget):
         self.icon.setToolTip(
             "\n".join([BLOCKING_HEADER if blocking else WARNING_HEADER] + self.messages())
         )
+
+    def _replacements(self) -> list[tuple[Replacement, Callable[[Any], None]]]:
+        by_key: dict[str, tuple[LiveLocation, list[dict]]] = {}
+        for location, entry in self.shown:
+            by_key.setdefault(location.key, (location, []))[1].append(entry)
+        planned = []
+        for location, entries in by_key.values():
+            if location.replace is None:
+                continue
+            replacement = plan_replacement(location.read_as, location.value, entries)
+            if replacement.changes:
+                planned.append((replacement, location.replace))
+        return planned
+
+    def replace_dialog(self) -> RenameReplaceDialog:
+        """The dialog the Replace button opens, for what the part says right now.
+
+        Parented to the window, not to this widget: Apply hides the indicator, and the
+        dialog must not go with it.
+        """
+        self.refresh()
+        return RenameReplaceDialog(self.window(), self.replacements)
+
+    def _on_replace(self) -> None:
+        self.replace_dialog().exec()
+        # A part whose change signal does not reach `refresh` still shows what it now says.
+        self.refresh()
 
     def entries(self) -> list[dict]:
         return [entry for _location, entry in self.shown]
@@ -116,5 +207,7 @@ __all__ = [
     "BLOCKING_ICON",
     "LiveLocation",
     "RenameIndicator",
+    "replace_text",
+    "select_name",
     "WARNING_ICON",
 ]

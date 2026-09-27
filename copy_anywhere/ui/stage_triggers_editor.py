@@ -58,6 +58,18 @@ def selected_names(box: MultiComboBox) -> list[str]:
     return [name for name in text.strip('""').split('", "') if name]
 
 
+def select_names(box: MultiComboBox, names: list[str]) -> None:
+    """Tick exactly `names` in the box, adding any it does not offer as items of their own.
+
+    The Replace button's way of swapping an old field name for the new one in a list: the
+    new name is on offer unless the box lists another note type's fields, and a name the
+    user asked for by pressing Apply is not one to drop.
+    """
+    offered = [box.itemText(index) for index in range(box.count())]
+    box.addItems([item for item in quoted_items(names) if item not in offered])
+    box.setCurrentText(", ".join(quoted_items(names)))
+
+
 def note_type_label(ref, col) -> str:
     """What the note type box shows one stored reference as.
 
@@ -286,7 +298,14 @@ class TriggersEditor(QWidget):
         indicator = RenameIndicator(
             self,
             document,
-            lambda: [LiveLocation(key, READ_AS_TRIGGER_SLOT, self._live_unfocus(index))],
+            lambda: [
+                LiveLocation(
+                    key,
+                    READ_AS_TRIGGER_SLOT,
+                    self._live_unfocus(index),
+                    lambda names: self._replace_unfocus(index, names),
+                )
+            ],
         )
         self.rename_indicators.append(indicator)
         box.currentTextChanged.connect(indicator.refresh)
@@ -313,6 +332,21 @@ class TriggersEditor(QWidget):
         if offered is None:
             return list(chosen[index])
         return [name for name in chosen[index] if name not in offered] + selected_names(box)
+
+    def _replace_unfocus(self, index: int, names: list[str]) -> None:
+        """Make `names` what one unfocus list has chosen: the Replace button's Apply.
+
+        Both halves of the record change together. `_chosen_unfocus` answers for the names
+        the box does not offer and the box for those it does, and the next `_take_choice`
+        folds the box back into the list: a name set in only one of them would be undone
+        there, the new one dropped as "unticked" or the old one brought back.
+        """
+        box = (self.unfocus_edit, self.unfocus_add)[index]
+        offered = self._offered_unfocus[index] or []
+        self._chosen_unfocus[index][:] = list(names)
+        box.setCurrentText(", ".join(quoted_items(name for name in names if name in offered)))
+        self.refresh_rename_indicators()
+        self.changed.emit()
 
     def refresh_rename_indicators(self) -> None:
         for indicator in self.rename_indicators:

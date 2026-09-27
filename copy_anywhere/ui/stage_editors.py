@@ -13,7 +13,7 @@ it writes, so every editor starts with the binding it acts on.
 
 import html
 from functools import partial
-from typing import Callable, Literal, Optional, Sequence, cast
+from typing import Any, Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
 from aqt import mw
@@ -67,7 +67,7 @@ from ..logic.definition_schema import (
 )
 from ..logic.query_terms import CollectionNames, stale_search_terms
 from ..logic.rename_locations import field_write_key, stage_key
-from ..logic.rename_scan import READ_AS_OTHER_SLOT, READ_AS_TRIGGER_SLOT
+from ..logic.rename_scan import READ_AS_OTHER_SLOT, READ_AS_TRIGGER_SLOT, still_spelled
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
@@ -81,10 +81,10 @@ from .code_notices import (
     SELECT_NOTE_CODE_NOTICE,
 )
 from .stage_edit_state import StageEditState
-from .rename_indicator import LiveLocation, RenameIndicator
+from .rename_indicator import LiveLocation, RenameIndicator, select_name
 from .stage_document import StageDocument, new_guid
 from .stage_editor_context import NoteTypesFor, StageEditorContext
-from .stage_triggers_editor import quoted_items, selected_names
+from .stage_triggers_editor import quoted_items, select_names, selected_names
 from .tag_editor import TagEditor
 from .value_expression_editor import ValueExpressionEditor
 
@@ -200,6 +200,28 @@ def rename_indicator(
     return RenameIndicator(parent, environment.document, locations)
 
 
+def warned_field_name(
+    environment: StageEditorEnvironment, key: Optional[str]
+) -> Callable[[str], bool]:
+    """Whether a rename warning filed at `key` is about a field of the name asked.
+
+    What a field picker asks before it drops a name its note types do not have: a field
+    renamed in Anki is exactly such a name, and blanking it hid the warning about it and
+    saved the part without it (`fill_field_combo`).
+    """
+    document = environment.document
+
+    def warned(name: str) -> bool:
+        if document is None or key is None:
+            return False
+        return any(
+            still_spelled(READ_AS_OTHER_SLOT, name, entry)
+            for entry in document.rename_marks_at(key)
+        )
+
+    return warned
+
+
 def binding_combo(
     parent: QWidget, names: Sequence[str], current: str, placeholder: str
 ) -> RequiredCombobox:
@@ -248,16 +270,29 @@ def note_types_of(binding: str, note_types_for: NoteTypesFor) -> list[NotetypeDi
 
 
 def field_combo(
-    parent: QWidget, binding: str, note_types_for: NoteTypesFor, current: str
+    parent: QWidget,
+    binding: str,
+    note_types_for: NoteTypesFor,
+    current: str,
+    keep: Optional[Callable[[str], bool]] = None,
 ) -> GroupedComboBox:
     """A field picker for whichever note types the target binding may hold."""
     combo = GroupedComboBox(parent, placeholder_text="Select a field", is_required=True)
-    fill_field_combo(combo, binding, note_types_for, current)
+    fill_field_combo(combo, binding, note_types_for, current, keep)
     return combo
 
 
+#: The group a field picker lists a name under that none of its note types has, kept only
+#: while a rename warning is about it.
+RENAMED_FIELD_GROUP = "Renamed or deleted in Anki"
+
+
 def fill_field_combo(
-    combo: GroupedComboBox, binding: str, note_types_for: NoteTypesFor, current: str
+    combo: GroupedComboBox,
+    binding: str,
+    note_types_for: NoteTypesFor,
+    current: str,
+    keep: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """(Re)list the fields on offer, keeping the current choice if it is still one of them.
 
@@ -284,6 +319,13 @@ def fill_field_combo(
         # A name no longer on offer is dropped rather than kept: unlike a deck whitelist,
         # this one is checked against the note at run time, so keeping it would preserve a
         # write that cannot work. Blanking it makes the analyser ask for a field instead.
+        # Except while a rename warning is about it (`keep`): then the name is the thing the
+        # warning points at, and blanking it hid the warning, took away what Replace acts on,
+        # and saved the part without its field and without the warning that explained why.
+        if current and current not in offered and keep is not None and keep(current):
+            combo.addGroup(RENAMED_FIELD_GROUP)
+            combo.addItemToGroup(RENAMED_FIELD_GROUP, current)
+            offered.append(current)
         combo.setCurrentText(current if current in offered else "")
     finally:
         combo.blockSignals(False)
@@ -399,7 +441,14 @@ class StageEditor(QWidget):
         indicator = rename_indicator(
             self,
             self.environment,
-            lambda: [LiveLocation(key, read_as, combo.currentText() or None)],
+            lambda: [
+                LiveLocation(
+                    key,
+                    read_as,
+                    combo.currentText() or None,
+                    lambda new: select_name(combo, new),
+                )
+            ],
         )
         if indicator is not None:
             combo.currentTextChanged.connect(indicator.refresh)
@@ -519,7 +568,11 @@ class QueryStageEditor(StageEditor):
         self.add_row("Take", self._wrap(selection_row))
 
         self.sort_field = field_combo(
-            self, "", environment.note_types_for, selection.get("sort_field") or ""
+            self,
+            "",
+            environment.note_types_for,
+            selection.get("sort_field") or "",
+            warned_field_name(environment, self.stage_location("selection.sort_field")),
         )
         self.sort_field.setPlaceholderText("Do not sort")
         self.sort_order = labelled_combo(
@@ -647,11 +700,21 @@ class FieldWriteRow(QFrame):
         self.owner = parent
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
+        # Each of this write's parts shows its own rename warnings, filed under the write's
+        # guid; a write with none (only a definition the startup repair never reached) has
+        # nowhere a warning could be filed.
+        write_guid = field_write.get("guid")
+        self.write_guid = write_guid if isinstance(write_guid, str) and write_guid else None
+        self._keep_field = warned_field_name(
+            parent.environment,
+            field_write_key(self.write_guid, "field") if self.write_guid else None,
+        )
         self.field = field_combo(
             self,
             (parent.stage.get("target") or {}).get("binding", "trigger"),
             parent.environment.note_types_for,
             field_write.get("field", ""),
+            self._keep_field,
         )
         self.field.currentTextChanged.connect(self.changed)
         self.write_if = labelled_combo(
@@ -660,15 +723,13 @@ class FieldWriteRow(QFrame):
         self.write_if.currentIndexChanged.connect(self.changed)
         remove = QPushButton("Remove", self)
         remove.clicked.connect(lambda: self.removed.emit(self))
-        # Each of this write's parts shows its own rename warnings, filed under the write's
-        # guid; a write with none (only a definition the startup repair never reached) has
-        # nowhere a warning could be filed.
-        write_guid = field_write.get("guid")
-        self.write_guid = write_guid if isinstance(write_guid, str) and write_guid else None
         header.addWidget(QLabel("Write", self))
         header.addWidget(self.field)
         self.field_indicator = self._slot_indicator(
-            "field", self._target_read_as, lambda: self.field.currentText() or None
+            "field",
+            self._target_read_as,
+            lambda: self.field.currentText() or None,
+            lambda new: select_name(self.field, new),
         )
         if self.field_indicator is not None:
             self.field.currentTextChanged.connect(self.field_indicator.refresh)
@@ -717,6 +778,7 @@ class FieldWriteRow(QFrame):
                 "unfocus_trigger_fields",
                 lambda: READ_AS_TRIGGER_SLOT,
                 lambda: selected_names(unfocus_fields),
+                lambda names: select_names(unfocus_fields, names),
             )
             if self.unfocus_indicator is not None:
                 unfocus_fields.currentTextChanged.connect(self.unfocus_indicator.refresh)
@@ -730,13 +792,19 @@ class FieldWriteRow(QFrame):
         return READ_AS_TRIGGER_SLOT if target == "trigger" else READ_AS_OTHER_SLOT
 
     def _slot_indicator(
-        self, path: str, read_as: Callable[[], str], value: Callable[[], object]
+        self,
+        path: str,
+        read_as: Callable[[], str],
+        value: Callable[[], object],
+        replace: Callable[[Any], None],
     ) -> Optional[RenameIndicator]:
         if self.write_guid is None:
             return None
         key = field_write_key(self.write_guid, path)
         return rename_indicator(
-            self, self.owner.environment, lambda: [LiveLocation(key, read_as(), value())]
+            self,
+            self.owner.environment,
+            lambda: [LiveLocation(key, read_as(), value(), replace)],
         )
 
     def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
@@ -785,6 +853,7 @@ class FieldWriteRow(QFrame):
             (self.owner.stage.get("target") or {}).get("binding", "trigger"),
             self.owner.environment.note_types_for,
             self.field.currentText(),
+            self._keep_field,
         )
         self._fill_unfocus_fields(context)
 

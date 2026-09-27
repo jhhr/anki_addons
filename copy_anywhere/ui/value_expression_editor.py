@@ -29,7 +29,7 @@ from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.toggle_switch import ToggleSwitch
 from .code_notices import FIELD_CODE_NOTICE
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
-from .rename_indicator import LiveLocation, RenameIndicator
+from .rename_indicator import LiveLocation, RenameIndicator, replace_text
 from .stage_document import StageDocument
 from .stage_edit_state import StageEditState
 from .stage_editor_context import StageEditorContext
@@ -164,11 +164,28 @@ class ValueExpressionEditor(QWidget):
         """
         code = self.is_code_mode()
         text_read_as = READ_AS_QUERY if self.text_is_search else READ_AS_TEXT
-        code_text = self.code_layout.get_text() if self.code_layout is not None else None
-        return [
-            LiveLocation(key("text"), text_read_as, None if code else self.text_layout.get_text()),
-            LiveLocation(key("code"), READ_AS_CODE, code_text if code else None),
+        text_edit = self.text_layout.text_edit
+        locations = [
+            LiveLocation(
+                key("text"),
+                text_read_as,
+                None if code else self.text_layout.get_text(),
+                lambda new: replace_text(text_edit, new),
+            )
         ]
+        if self.code_layout is not None:
+            code_edit = self.code_layout.text_edit
+            locations.append(
+                LiveLocation(
+                    key("code"),
+                    READ_AS_CODE,
+                    self.code_layout.get_text() if code else None,
+                    lambda new: replace_text(code_edit, new),
+                )
+            )
+        else:
+            locations.append(LiveLocation(key("code"), READ_AS_CODE, None))
+        return locations
 
     def refresh_rename_indicator(self) -> None:
         if self.rename_indicator is not None:

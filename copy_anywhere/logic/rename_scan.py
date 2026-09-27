@@ -540,19 +540,33 @@ def find_in_code(code: Any, rename: Rename) -> list[Hit]:
 # Replacing -------------------------------------------------------------------------------------
 
 
-def apply_with_spans(text: str, hits: Iterable[Hit]) -> tuple[str, list[tuple[int, int]]]:
-    """The text with every replaceable hit replaced, and where each replacement now stands.
+def applied_hits(hits: Iterable[Hit]) -> list[Hit]:
+    """The hits `apply_with_spans` replaces, in text order.
 
     Hits are applied in text order; one overlapping a hit already applied, and one with no
-    replacement, are left as they are (a second scan still finds them).
+    replacement, are left as they are (a second scan still finds them). The editor's diff
+    dialog asks this rather than guessing, so it shows exactly what Apply will write.
+    """
+    applied: list[Hit] = []
+    position = 0
+    for hit in sorted(hits, key=lambda hit: (hit.start, hit.end)):
+        if hit.replacement is None or hit.start < position:
+            continue
+        applied.append(hit)
+        position = hit.end
+    return applied
+
+
+def apply_with_spans(text: str, hits: Iterable[Hit]) -> tuple[str, list[tuple[int, int]]]:
+    """The text with every replaceable hit replaced, and where each replacement now stands,
+    one span per hit of `applied_hits`, in the same order.
     """
     pieces: list[str] = []
     spans: list[tuple[int, int]] = []
     position = 0
     length = 0
-    for hit in sorted(hits, key=lambda hit: (hit.start, hit.end)):
-        if hit.replacement is None or hit.start < position:
-            continue
+    for hit in applied_hits(hits):
+        assert hit.replacement is not None
         pieces.append(text[position : hit.start])
         length += hit.start - position
         pieces.append(hit.replacement)
@@ -642,6 +656,7 @@ __all__ = [
     "Hit",
     "Rename",
     "apply",
+    "applied_hits",
     "apply_with_spans",
     "code_is_readable",
     "find_in_code",

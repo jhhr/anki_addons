@@ -46,7 +46,7 @@ from .discard import discard_widget
 from .labels import wrapping
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .outline import outline_frame
-from .rename_indicator import LiveLocation, RenameIndicator
+from .rename_indicator import LiveLocation, RenameIndicator, replace_text, select_name
 from .stage_document import StageDocument
 from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
@@ -824,12 +824,28 @@ class CardActionsEditor(QWidget):
         code_key = card_action_key(guid, "action_code")
         deck_key = card_action_key(guid, "change_deck")
         document = self.rename_document
+        code_edit = code_editor.text_edit
         indicators = (
             RenameIndicator(
-                frame, document, lambda: [LiveLocation(code_key, READ_AS_CODE, code())]
+                frame,
+                document,
+                lambda: [
+                    LiveLocation(
+                        code_key, READ_AS_CODE, code(), lambda new: replace_text(code_edit, new)
+                    )
+                ],
             ),
             RenameIndicator(
-                frame, document, lambda: [LiveLocation(deck_key, READ_AS_DECK_SLOT, deck())]
+                frame,
+                document,
+                lambda: [
+                    LiveLocation(
+                        deck_key,
+                        READ_AS_DECK_SLOT,
+                        deck(),
+                        lambda new: select_name(deck_combo, new),
+                    )
+                ],
             ),
         )
         # Either one follows all three controls: the toggle and the code decide whether the
