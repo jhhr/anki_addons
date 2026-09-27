@@ -13,7 +13,7 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
 | --- | --- |
 | `__init__.py` | Tools action; `sync_will_start` → `sync_on_save`, `media_sync_did_start_or_stop` → `read_on_sync`. Hooks are always registered and read config when they fire, so a config edit needs no restart |
 | `sync_actions.py` | the file operations: `save_addon_to_media`, `overwrite_addon_from_media`, `remove_addon_from_media`, `save_configs_on_sync`, `read_configs_on_sync`; module state `UPDATED_STATE`, `SUPPRESS_AUTO_SYNC_ACTIONS`, `SUPPRESS_SYNC_FINISH_CALLBACKS` |
-| `config_manager_dialog.py` | the manager dialog (about 700 lines): rows, status, diff view, filters, sorting, bulk actions, "Sync media only now" |
+| `config_manager_dialog.py` | the manager dialog (about 850 lines): rows, status, diff view, filters, sorting, bulk actions, "Sync media only now" |
 | `utils.py` | `meta.json` readers, `json_files_deep_equal`, `show_non_blocking_info`, `standard_icon`, this addon's own config access (`get_main_config`, `write_main_config`, ignore flags) |
 
 ## Invariants

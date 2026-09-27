@@ -115,7 +115,7 @@ cloud environment itself has to provide is in
 
 | command | purpose |
 | --- | --- |
-| `python -m pytest -q` | every suite; needs no `build.py link` first |
+| `python -m pytest -q` | every suite but `japanese_note_ai_ops/test` and the submodule's, which run from their own directories; needs no `build.py link` first |
 | `python -m pytest -q <addon>/test` | one suite |
 | `python -m mypy .` | type check the repo (config in `mypy.ini`) |
 | `python build.py check` | undeclared or unused shared-package declarations |
@@ -137,8 +137,10 @@ say so in your report instead of implying coverage that does not exist.
 - Target Python 3.10 syntax and stdlib for anything that ships: users' Anki can run 3.9+ and
   the type checkers are pinned to 3.10. No `match`, no `typing.NotRequired`, no `tomllib`.
   New modules use `from __future__ import annotations` with builtin generics.
-- The tree is mypy-clean from the root. Keep it that way; narrow Qt's Optionals rather than
-  adding blanket `# type: ignore`.
+- `python -m mypy .` from the root is clean except for a few old errors in
+  `japanese_note_ai_ops` (`async_api_ops/`, `word_array/jmdict_index.py`), `build.py` and
+  `custom_schedule_helper/py_fsrs` (an optional `torch` import). Add none; narrow Qt's
+  Optionals rather than adding blanket `# type: ignore`.
 - Import Qt from `aqt.qt`, never from `PyQt6` directly.
 - Lines run to about 100 columns. There is no formatter config in this repo; match the file
   you are in and do not reformat code you are not changing.

@@ -2,14 +2,19 @@
 
 Read the root [AGENTS.md](../AGENTS.md) first.
 
-Batch field editing driven by saved **copy definitions**. A definition fills destination
-fields from `{{Field}}` templates, special note/card values, variables or sandboxed Python
-("code mode"), then optionally runs a process chain (regex replace, Kana Highlight, Word
-Highlight, Kanjium to Javdejong, Fonts check). Modes: within one note, or across notes via a
-search query interpolated from the trigger note, in either direction ("Destination to
-sources" writes the trigger note; "Source to destinations" writes the found notes). A
-definition can also add/remove tags, write files into `collection.media`, and act on cards
-(move deck, flag, suspend, bury, desired retention).
+Batch field editing driven by saved **copy definitions**. A definition is a list of
+**stages** that run in order for one trigger note: variables, note and card queries, Select
+Note / Select Card, loops, reduce, conditions, edits to notes and cards (field writes with a
+process chain, tags, card actions), file reads and writes, and calls into other
+definitions. Values come from `{{Field}}` templates or sandboxed Python ("code mode"). This
+is **format 2**; the older flat shape (format 1: copy modes, field-to-field defs) is
+converted at startup and only survives as migration input.
+
+The specification is [docs/staged-definitions.md](docs/staged-definitions.md): the shape,
+every rule, the editor, the preview, and which file holds what. The user guide is
+[ADDON_README.md](ADDON_README.md) (it ships in the package; `README.md` is for
+developers and does not). Decisions and deferred work are in
+[docs/follow-ups.md](docs/follow-ups.md).
 
 Triggers: the browser Edit menu dialog and right-click submenu, note add, card review,
 editor field unfocus, and sync (for cards whose custom data `fc` flag the scheduler JS
@@ -20,47 +25,62 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | path | role |
 | --- | --- |
 | `__init__.py` | at import: `migrate_config()`, `init_browser_hooks()`, `init_sync_hook()`, `init_note_hooks()`, `init_rename_hooks()` |
-| `configuration.py` | TypedDicts for the whole config shape (`CopyDefinition` and its parts), `Config` (saves on every mutation), `migrate_config` |
+| `configuration.py` | `Config` (saves on every mutation), format-1 TypedDicts, the trigger accessors both formats go through, `migrate_config` |
 | `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 50), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger |
-| `hooks/browser_hooks.py` | Edit-menu action, context submenu with one action per definition, a "CustomData" reset submenu |
-| `hooks/note_hooks.py` | add / review / unfocus handlers; wraps `Editor.cleanup` and `V3Scheduler.answer_card` (guarded by a `copy_anywhere_wrapped` attribute) |
-| `hooks/sync_hook.py` | runs every `copy_on_sync` definition at sync start and finish; one combined tooltip |
+| `hooks/` | browser menus, add / review / unfocus handlers (`note_hooks.py` wraps `Editor.cleanup` and `V3Scheduler.answer_card`, guarded by a `copy_anywhere_wrapped` attribute), the sync sweep, and when the rename pass runs (`rename_hooks.py`) |
+| `logic/definition_schema.py` | format-2 types, stage-type constants, structural validation |
+| `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and stage-guid repair |
+| `logic/flow_analysis.py` | scopes, result types, effects, exports, call cycles: what the editor blocks a save on and what `effects` records |
+| `logic/copy_fields.py` | the operation: which notes each definition runs for, the undo entry, the sync tail |
+| `logic/execution/` | the evaluator: `runner.py` one definition for one note, `evaluator.py` the structural stages, `actions.py` the leaf stages, `expressions.py` both value syntaxes, `context.py` the session, `commit.py` what happens to a run's changes |
+| `logic/copy_primitives.py` | interpolation, process chains, card actions, progress; older names are re-exported from `copy_fields` |
+| `logic/preview.py`, `logic/unsaved_note_search.py` | a run that writes nothing; judging a search against a note not yet in the collection |
 | `hooks/rename_hooks.py` | when the reconcile pass runs: every collection load (a rename synced in arrives with no other hook), every operation that changed a note type, and a deck-only change only when the decks' ids or names differ from what the last completed pass saw (an answer reports a deck change); after a note type change, a dialog listing only the marks that pass added |
 | `logic/object_refs.py` | note type, deck and card type references (`{id, name}`, `{note_type_id, template_id, name}`) and the one rule every reader resolves them by: the id while it exists, the name only when it does not. Fields are names, not references |
 | `logic/rename_reconcile.py` | the reconcile pass: binds null ids, refreshes cached names, diffs `name_snapshot` by id, follows a trigger field or card type rename into a definition with one trigger note type, and marks (`broken_by_rename`) the rest; the snapshot and its collection stamp (the path); the mark readers every run path uses; `unresolved_references` and `trigger_names_not_on_every_note_type` for the editor and the picker |
 | `logic/query_terms.py` | the `deck:`, `note:`, `card:` and field terms a search spells that the collection does not have, exact names only; `CollectionNames` is the name list a caller shares across many scans |
-| `logic/copy_fields.py` | the engine (about 1600 lines) |
-| `logic/execute_code_wrappers.py` | validates code-mode return shapes for files and card actions over the shared `execute_code_core` |
-| `logic/*_process.py`, `FatalProcessError.py` | the five chain steps; `FatalProcessError` aborts a whole run |
+| `logic/*_process.py`, `FatalProcessError.py` | the five process-chain steps; `FatalProcessError` aborts a whole run |
+| `ui/` | the picker (`pick_copy_definition_dialog`), `edit_staged_definition_dialog` and its parts: `stage_document`, `stage_list`, `stage_editors` (one editor per stage type), `stage_preview`, the triggers and exports panels, `rename_marks_banner` (a definition's rename marks, one Dismiss each: the only way a mark goes besides undoing the rename) |
 | `utils/` | `duplicate_note`, `merge_cards`, `move_card_to_deck`, media-folder helpers, `replace_custom_field_values` |
-| `ui/` | `pick_copy_definition_dialog` (run, edit, duplicate, reorder), `edit_copy_definition_dialog` and one editor module per tab, `edit_state.EditState` shared between tabs |
-| `ui/rename_marks_banner.py` | the marks at the top of the definition editor, one Dismiss per mark: the only way a mark goes besides undoing the rename; Save stores the dismissal, Cancel drops it |
 
-Engine call chain for a bulk run:
+Call chain for a bulk run:
 
-    copy_fields()                       main thread; opens the operation log; CollectionOp
+    copy_fields()                         main thread; opens the operation log; CollectionOp
       op: add_custom_undo_entry
-        copy_fields_in_background()     per definition: select note ids by SQL
-          copy_for_single_trigger_note()  variables, deck whitelist, condition, target notes
-            copy_into_single_note()       field values, process chain, tags, files, card actions
+        copy_fields_in_background()       per definition: select note ids by SQL
+          copy_for_single_trigger_note()  format 1 -> 2 if needed, deck whitelist, session
+            run_definition_for_trigger_note()   evaluate the stages, then commit
         update_notes / update_cards / merge_undo_entries   after EACH definition
 
 ## Invariants
 
-- **Only the top layer writes to the database.** Everything from
-  `copy_for_single_trigger_note` down mutates the `Note` and `Card` objects it is given and
-  appends them to the caller's `copied_into_notes` / `copied_into_cards_dict`. A caller that
-  passes no lists gets no write, on purpose: on add, Anki saves the note; on unfocus, the
-  editor does. Tests therefore assert on returned objects, not on a re-fetched note, except
-  at the `copy_fields` level.
+- **Evaluation never writes to the database.** Stages edit the session's working note and
+  card objects and queue file writes; `commit.py` hands the notes and cards to the caller's
+  `copied_into_notes` / `copied_into_cards_dict` and puts files on disk. A failure anywhere
+  leaves the collection alone, and preview runs the real evaluator and simply does not
+  commit. A caller that passes no lists gets no note write, on purpose: on add, Anki saves
+  the note; on unfocus, the editor does. Tests therefore assert on returned objects, not on
+  a re-fetched note, except at the `copy_fields` level.
 - `update_notes`, `update_cards` and `merge_undo_entries` run after **every** definition.
   Later definitions re-fetch from the database, and a skipped merge ends in "target undo op
   not found".
-- `card.edited` is an ad-hoc marker attribute; it must be deleted before `update_cards`.
+- `card.edited` is an ad-hoc marker attribute; `take_edited_cards` collects the marked
+  cards and removes it before `update_cards`.
+- One `ExecutionSession` per trigger note. Its overlays keep one working object per note
+  and card, so a later stage sees an earlier stage's edit and two references converge.
+  Queries do **not** read the overlays: they search the saved collection, so what a query
+  matches never depends on unsaved edits. The query cache returns copies, because selection
+  consumes the list. `file_cache` lives for one definition run.
+- An Edit Note stage reads its right-hand sides from a `duplicate_note` snapshot taken when
+  the stage starts, which is what lets one stage swap two fields.
 - `copy_fields` must be called on the main thread. The add hook therefore calls
   `copy_for_single_trigger_note` directly and handles undo itself; notes with id 0 are
   filtered out before `update_notes`. Its undo entry lands before Anki's own "Add note"
   entry, a documented limitation.
+- On a note that is not in the collection yet (add, or unfocus in the Add dialog), a
+  definition whose `effects` reach past that note is not run while typing, and
+  `add_note_compatible_only=True` fails any definition that queues a change to anything
+  else anyway. The hooks read `effects` and never inspect stages.
 - The review handler merges into the recorded Answer Card undo step, folds card-action edits
   into the reviewed card with `merge_cards` before the single `update_card`, then sets
   `fc=1`, or `fc=-1` when sync-only definitions remain. When it refused a marked on-review
@@ -79,45 +99,45 @@ Engine call chain for a bulk run:
 - The pass never re-derives a mark, and nothing else does either (`_save_definitions`
   saves marks as they stand). An entry goes only when its object is called `old` again
   (the rename undone) or the user dismisses it in the editor.
-- The unfocus handler is a filter hook: return `changed or we_changed`. It never runs
-  other-note definitions on a new note, runs "Source to destinations" through
-  `copy_fields(trigger_notes=[note])` because the editor's note can be ahead of the database,
-  and reloads editors with `loadNoteKeepingFocus`.
-- Return contract inside the engine: `True` is success **or a benign skip** (deck whitelist,
-  unmet condition, no sources); `False` aborts the bulk loop. Zero sources without
-  `run_also_if_no_sources_found` returns early so that destination fields are not wiped.
-- Source and destination notes are `duplicate_note` copies, so every field definition reads
-  pre-edit values and a field swap works.
-- `extra_state` (query cache) is rebuilt per note and never hits across notes;
-  `test/test_across_target_notes.py` pins this. Cached lists must be copied before use,
-  because selection pops from them. `file_cache` lives for one definition run.
-- Every `start_operation_log` needs exactly one `finish_operation_log`. `copy_fields`
-  releases in both `on_success` and `on_failure`; `on_failure` re-raises on purpose.
-- Multi-value config strings (note types, decks, tags, trigger fields) are stored as
-  `A", "B`, the format `MultiComboBox` emits. `"-"` means none for decks and the sort field.
-  Parse with a helper that drops `""` (`split_tags` does); a bare split of an empty string
-  yields `[""]` and has caused bugs.
-- UI tabs build lazily and rows load incrementally. A getter must call the tab's
-  `create_*_tab()` and `finish_loading_*()` before reading widgets. The picker dialog keeps
-  `checkboxes` and `definition_note_ids` index-parallel with the config list.
-- Validation exists only in the UI (`EditCopyDefinitionDialog.check_fields`). The engine
-  re-checks defensively and logs instead of raising.
+- The unfocus handler is a filter hook: return `changed or we_changed`. It runs definitions
+  that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
+  note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
+- Return contract of a run: `True` is success **or a benign skip** (deck whitelist, unmet
+  condition, `skip_block`); `False` aborts the bulk loop.
+- Multi-value format-1 strings (note types, decks, tags, trigger fields) are stored as
+  `A", "B`, the format `MultiComboBox` emits; format 2 stores JSON arrays under `triggers`.
+  Parse the former with a helper that drops `""` (`split_tags` does); a bare split of an
+  empty string yields `[""]` and has caused bugs.
+- The editor blocks a save while `flow_analysis` reports a problem. The evaluator re-checks
+  what hand-edited JSON could break (call depth, a skip the analyser did not expect) and
+  fails the run with a message rather than raising.
+- The picker keeps `checkboxes` and `definition_note_ids` index-parallel with the config
+  list.
 
 ## Config
 
 Defaults in `config.json` (`log_level`, `copy_fields_shortcut`, `copy_definitions`); the
 user's definitions live in `meta.json`, are large, and are edited only through the dialogs.
-`migrate_config()` is gated on a `version` key and currently has one step (GUIDs, below
-0.2.0). A change to the `CopyDefinition` shape needs: the TypedDict, a migration step, the
-editor UI, the engine, and a builder in `test/definitions.py`. Definitions in the wild
-contain user code that calls names exposed by the shared `execute_code`; renaming one of
-those names breaks stored definitions silently.
+`migrate_config()` is gated on the `version` key (`CONFIG_VERSION`, now `0.5.0`): below
+0.2.0 it fills in definition guids; below 0.3.0 it converts every definition to stages, all
+or nothing, keeping the originals under `pre_stage_migration_copy_definitions`; below 0.4.0
+it rewrites references into the current syntax; below 0.5.0 it stores trigger note types,
+decks and card-action card types as references with a null id, which the reconcile pass
+binds. Stage guids are repaired on every start. The config also holds `name_snapshot`, the
+names the referenced ids last had (`logic/rename_reconcile.py`).
+The spec's "The startup migration" section is the user-facing account.
+
+A change to the format-2 shape needs: the schema and its validation, `flow_analysis`, the
+evaluator, the stage editor and `stage_document`'s defaults and summary, a builder in
+`test/definitions.py`, and the spec. Old stored data needs a migration step. Definitions in
+the wild contain user code that calls names exposed by the shared `execute_code` and by
+the stage environment; renaming one of those names breaks stored definitions silently.
 
 ## Tests
 
-`copy_anywhere/test` (about 650 characterization tests on a real `Collection` behind a
-stubbed `mw`) and `copy_anywhere/test_anki` (running Anki via pytest-anki2) are both in the
-root `testpaths`. Reuse, do not reinvent:
+`copy_anywhere/test` (a real `Collection` behind a stubbed `mw`, plus Qt tests of the
+editor and preview) and `copy_anywhere/test_anki` (running Anki via pytest-anki2) are both
+in the root `testpaths`. Reuse, do not reinvent:
 
 - `test/conftest.py`: `col` (fresh collection with note types `CA Vocab`, `CA Sentence`,
   `CA Kanji`, `CA Cloze`, `CA Odd` and a three-level deck tree), `stub_mw`, `media_dir`,
@@ -125,35 +145,36 @@ root `testpaths`. Reuse, do not reinvent:
 - `test/note_types.py`: the names those note types are built from (`VOCAB`, `KANJI`, ...,
   their fields and templates) and `DEFAULT_CONFIG`. Tests import them from here, not from
   `conftest`, which mypy.ini excludes; an import from it resolves to the root conftest.
-- `test/definitions.py`: builders `within_note`, `destination_to_sources`,
-  `source_to_destinations`, `field_to_field`, `field_to_file`, `field_to_variable`,
-  `card_action`, `regex_process`, `fonts_check_process`, `quoted_list`.
+- `test/definitions.py`: format-1 builders (`within_note`, `destination_to_sources`,
+  `source_to_destinations`, `field_to_field`, `card_action`, ...) and one builder per stage
+  type plus `staged` for format 2.
+- `test/test_readme_screenshots.py` loads every `docs/examples/` definition and checks the
+  guide's pictures exist; `COPY_ANYWHERE_SCREENSHOTS=1` regenerates `docs/images/`.
 - `test_anki/conftest.py`: `real_mw`, `addon_config`, `restore_stub_mw`.
 - Renames: `test/test_rename_reconcile.py` (the pass and `rename_hooks`; helpers `store`,
   `rename_field`, `rename_template`, `saves`, `FakeChanges`, `answer_a_card`) and
   `test/test_rename_editor.py` (the picker's marks, the editor's banner, warnings and
   blockers).
 
-These are characterization tests: they pin current behaviour, including behaviour that
-looks odd. A test that fails after your change is a behaviour change to justify, not a test
-to update. Not covered at all: everything in `ui/` except the picker's note counts
-(`test/test_pick_dialog_note_source.py`) and the rename marks, warnings and banner
-(`test/test_rename_editor.py`, which also covers the browser menu's disabled entry),
-`migrate_config`, the `Config` CRUD methods, the rest of `hooks/browser_hooks.py`,
-`utils/replace_custom_field_values.py`.
+The tests from before format 2 are characterization tests: they pin behaviour, including
+behaviour that looks odd, and now run through the migrator. A test that fails after your
+change is a behaviour change to justify, not a test to update. Not covered: the `Config`
+CRUD methods, `hooks/browser_hooks.py` beyond the disabled entry of a marked definition
+(`test/test_rename_editor.py`), `utils/replace_custom_field_values.py`. None of the
+UI has been exercised in a real Anki window by the suite; the Qt tests use offscreen
+widgets.
 
 ## Known rough edges
 
-- `get_variable_values_for_note` can raise `CopyFailedException` outside the `try` in
-  `copy_for_single_trigger_note`. `variable_values_dict` stays `None` when
-  `field_to_variable_defs` is explicitly `None`, and across mode then indexes it.
-- `get_field_to_field_defs()` output carries no `guid`; rows mint a new one on load.
-- Callbacks that raise inside `EditState.call_callbacks` are dropped silently.
-- Dead code: `ProgressUpdateDef`; `build_action` / `add_action_to_gear` /
-  `add_separator_to_gear` in `hooks/browser_hooks.py`; the inline `test()`/`main()` in
-  `logic/regex_process.py` that `.vscode/` runs through `test/run_with_setup.py`.
-- The README says the hotkey is Alt+Shift+C; the `config.json` default is `Ctrl+Shift+C`.
-  `config.md` is empty.
+- Dead code: `ProgressUpdateDef`, and `get_field_values_from_notes` /
+  `get_variable_values_for_note` in `copy_primitives` (only the tests call them now);
+  `build_action` / `add_action_to_gear` / `add_separator_to_gear` in
+  `hooks/browser_hooks.py`; the inline `test()`/`main()` in `logic/regex_process.py` that
+  `.vscode/` runs through `test/run_with_setup.py`.
+- Within one definition nothing is saved until every trigger note has run, so two trigger
+  notes writing the same note or card leave only the later copy (spec: "Only edited cards
+  are handed over").
+- `config.md` is empty.
 
 ## Shared code
 

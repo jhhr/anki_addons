@@ -553,6 +553,10 @@ read the original here and build it again.
 A definition that somehow reaches the editor still in format 1 is converted on the way in
 by the same pure migrator, and one that cannot be converted is reported rather than opened.
 
+Separately from the version steps, every start gives a guid to any stage that has none, and
+points the exports at the repaired stages. Definitions converted before the conversion
+minted guids for every part could lack them, and a hand edit can drop one.
+
 ## What migration changes on purpose
 
 * Across-note selection searches notes rather than cards, so a note with two matching cards
@@ -645,7 +649,7 @@ run, then the exports.
 * A stage row shows what it does in one line and expands into its own editor. The controls
   inside are the ones format 1 used -- the same interpolated text edit, code editor,
   process chains, tag and card-action editors.
-* **Add stage** offers the fourteen types. *Edit Card* appears only where a card binding is
+* **Add stage** offers the sixteen types. *Edit Card* appears only where a card binding is
   in scope, because it names one card and there would be nothing to name.
 * The `⋮` menu on a row duplicates it, deletes it, or moves it into another block; `↑`/`↓`
   reorder it among its siblings. There is no drag-and-drop; the move menu does the same
@@ -747,6 +751,8 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `logic/execution/runner.py` | one definition against one trigger note |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress |
 | `logic/preview.py` | a read-only run, its trace, and the trigger-note search |
+| `logic/unsaved_note_search.py` | judging a search against a note not in the collection yet |
+| `logic/copy_fields.py` | the bulk operation: which notes each definition runs for, undo, the sync tail |
 | `logic/object_refs.py` | note type, deck and card type references: id first, name after it |
 | `logic/rename_reconcile.py` | the reconcile pass, the name snapshot, the broken-by-rename mark |
 | `logic/query_terms.py` | the names a search spells that the collection does not have |

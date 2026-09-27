@@ -31,9 +31,10 @@ logger = logging.getLogger(__name__)
 def as_format_2(definition: AnyCopyDefinition) -> CopyDefinitionV2:
     """The definition as stages, migrating a stored format-1 one on the way in.
 
-    Migration is pure and cheap, and doing it here means the editor, the hooks and the
-    stored config can stay on format 1 until the format-2 editor lands, while everything
-    that actually runs is one executor over one format.
+    Migration is pure and cheap. The startup migration converts every stored definition, so
+    this is for one that reaches a run in format 1 anyway: a config whose conversion failed
+    and is retried each start, or one pasted in by hand. Everything that actually runs is
+    one executor over one format.
     """
     if is_format_2(definition):
         return definition
