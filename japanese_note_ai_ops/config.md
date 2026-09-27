@@ -3,7 +3,9 @@
 ## General
 
 - `log_level`: Default is "ERROR". Possible values from less logging to more: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
-- `log_to_console` Default is `true`. If false, logs to files in the logs/ dir in the addon folder
+- `log_to_console` Default is `true`. If false, logs to files in `user_files/logs/` in the
+  addon folder, one per op run, named after the op: `match_words_<time>.log`, and
+  `match_words_add_note_phase_<time>.log` for its note adding.
 - `multi_op_dialog_shortcut`: Default is `""` (none). A key sequence such as `"Ctrl+Shift+J"`
   for the browser's Edit > "Japanese AI ops..." dialog, which runs several ops in a row on the
   selected notes or on every note of the current search. Read when a browser window opens.

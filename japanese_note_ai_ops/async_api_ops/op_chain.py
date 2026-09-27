@@ -28,6 +28,7 @@ from aqt import mw
 from aqt.qt import QTimer
 from aqt.utils import showInfo, showWarning
 
+from ..call_logging import start_call_log
 from ..generator_resources import with_generator_resources
 from .progress_controls import install_idle_run_controls
 from .progress_errors import show_run_end
@@ -81,6 +82,8 @@ class OpChain:
       the failed step's outcome.
     - `show_summary(text, stopped_early)`: show the rich-text summary once the progress dialog
       has gone.
+    - `start_log(key)`: open the log file a step's run writes to, named by its op's key, just
+      before the step starts; each step gets its own, as the same op run from the menu would.
 
     A step's `on_done` can come synchronously from inside `spec.start` (`fail_step`), and a
     run's comes from inside aqt's success handler, before aqt has finished with the operation.
@@ -100,6 +103,7 @@ class OpChain:
         release_progress: Callable[[], None],
         failed_outcome: Callable[[Exception, str], StepOutcome],
         show_summary: Callable[[str, bool], None],
+        start_log: Callable[[str], None],
     ):
         self.specs = list(specs)
         # Fixed now; notes a step adds never join them (a later step that searches the
@@ -113,6 +117,7 @@ class OpChain:
         self._holding = False
         self._failed_outcome = failed_outcome
         self._show_summary = show_summary
+        self._start_log = start_log
         # (step index, outcome) of every step that was started, in order
         self.outcomes: list[tuple[int, StepOutcome]] = []
         # Index of the step that found no notes left to run on
@@ -164,6 +169,7 @@ class OpChain:
                 self.notes_gone_at = index
                 self._end()
                 return
+            self._start_log(spec.key)
             spec.start(ids, self.parent, step)
         except Exception as e:
             if self._awaiting == index:
@@ -305,4 +311,5 @@ def run_op_chain(specs: Sequence[OpSpec], nids: Sequence[NoteId], parent: Any) -
         release_progress=mw.progress.finish,
         failed_outcome=lambda error, title: failed_step_outcome(parent, error, title),
         show_summary=show_summary,
+        start_log=start_call_log,
     ).start(with_generator_resources)

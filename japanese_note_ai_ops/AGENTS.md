@@ -19,7 +19,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | --- | --- |
 | `__init__.py` | strict order, see below |
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
-| `call_logging.py` | per-call log files in `user_files/logs/`; `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
+| `call_logging.py` | per-call log files in `user_files/logs/`, `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
 | `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
@@ -398,8 +398,8 @@ japanese_note_ai_ops` from the repo root and is gitignored. `mdict_query` is pla
 ## Stale documentation here
 
 `README.md` still describes a manual `pip -t lib` install (only its `mdict_query` part is
-current). `config.md` says logs go to `logs/` (they go to `user_files/logs`), lists outdated
-models, and `log_to_console` is `true` in `config.json` while the code default is `False`.
+current). `config.md` lists outdated models, and `log_to_console` is `true` in
+`config.json` while the code default is `False`.
 `anthropic_api_key` is read in `base_ops.py` but has no default in `config.json`.
 
 ## Shared code

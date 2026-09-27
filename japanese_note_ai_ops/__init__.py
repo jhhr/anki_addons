@@ -89,7 +89,9 @@ setup_addon_logging()
 # Function to be executed when the browser menus are initialized
 def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     logger = logging.getLogger(__name__)
-    start_call_log("add_note")
+    # Only for what building the menu logs, and it closes the last op's file. An op chosen from
+    # the menu opens a file named after itself when it starts (ai_helper_menu)
+    start_call_log("browser_menu")
 
     # Captured once, when the menu opens: every action runs over the selection it was opened on
     selected_nids = browser.selectedNotes()
@@ -120,8 +122,8 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     logger = logging.getLogger(__name__)
     # A hook the user drives one field at a time, so the call really is the unit of work and a
     # log file per call is the right granularity - unlike note_will_be_added, which a bulk run
-    # fires a thousand times in a row.
-    start_call_log("add_note")
+    # fires a thousand times in a row. The file is opened once the op is known, named by the
+    # op's key as the menu's are, and not at all for the many unfocuses that run nothing.
 
     note_type = note.note_type()
     if not note_type:
@@ -129,6 +131,7 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     note_type_name = note_type["name"]
     config = mw.addonManager.getConfig(__name__)
     if not config:
+        start_call_log("field_unfocus")
         logger.error("Error: Missing addon configuration")
         return
 
@@ -140,12 +143,14 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     if note_type_name == "Kanji draw":
         story_field = get_field_config(config, "story_field", note_type)
         if field_name == story_field and cur_field_value == "":
+            start_call_log("kanji_story")
             with capture.note_scope(note.id or None):
                 return make_story_for_note(config, note, {}, {})
 
     if note_type_name == "Japanese vocab note":
         translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
         if field_name == translated_sentence_field and cur_field_value == "":
+            start_call_log("translate_sentence")
             with capture.note_scope(note.id or None):
                 return translate_sentence_in_note(config, note, {}, {})
 

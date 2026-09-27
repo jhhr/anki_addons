@@ -62,6 +62,8 @@ class Harness:
         self.errors: list = []
         self.error_titles: list = []
         self.resource_checks: list = []
+        # The keys of the log files the chain opened, one per step started
+        self.logs: list = []
         self.parent = object()
 
     def make(self, specs, nids=(1, 2, 3)):
@@ -75,6 +77,7 @@ class Harness:
             release_progress=lambda: self.events.append("release"),
             failed_outcome=self.failed_outcome,
             show_summary=self.show_summary,
+            start_log=self.logs.append,
         )
 
     def show_summary(self, text, stopped):
@@ -129,6 +132,27 @@ class StepOrderTests(unittest.TestCase):
             self.h.run_scheduled()
         self.assertEqual(len(self.h.summaries), 1)
         self.assertFalse(self.h.summaries[0][1])
+
+    def test_each_step_opens_a_log_named_by_its_op_just_before_it_starts(self):
+        # One file per step, as the same op run from the menu gets, so a chain's runs can be
+        # told apart in the log folder by their ops
+        logs_at_start = []
+        for spec in self.specs:
+            spec.on_start = lambda chain: logs_at_start.append(list(self.h.logs))
+        self.chain.start(no_resources)
+        self.h.run_scheduled()
+        for spec in self.specs:
+            spec.chain.on_done(StepOutcome(COMPLETED))
+            self.h.run_scheduled()
+        self.assertEqual(logs_at_start, [["a"], ["a", "b"], ["a", "b", "c"]])
+
+    def test_a_step_with_no_notes_left_opens_no_log(self):
+        self.chain.start(no_resources)
+        self.h.run_scheduled()
+        self.h.existing.clear()
+        self.specs[0].chain.on_done(StepOutcome(COMPLETED))
+        self.h.run_scheduled()
+        self.assertEqual(self.h.logs, ["a"])
 
     def test_nothing_starts_before_the_scheduler_runs(self):
         self.chain.start(no_resources)

@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional, Union
 from anki.notes import NoteId
 from aqt.qt import QAction, QMenu, qconnect
 
+from .call_logging import start_call_log
 from .multi_op_dialog import show_multi_op_dialog
 from .op_registry import GROUP_ASYNC, GROUP_SYNC, OPS, OpSpec
 from .sync_local_ops.build_name_lexicon import build_name_lexicon_from_selected
@@ -27,6 +28,8 @@ from .sync_local_ops.make_fine_tuning_data import make_kanjify_sentence_data
 class MenuOnlyAction:
     """A menu entry that is not an op: it writes no notes, so it is no step of a chain."""
 
+    # Its log files' name, as an op's key names its own
+    key: str
     label: str
     run: Callable[[Sequence[NoteId], Any], None]
     # The op it follows in the menu
@@ -35,11 +38,13 @@ class MenuOnlyAction:
 
 MENU_ONLY_ACTIONS: tuple[MenuOnlyAction, ...] = (
     MenuOnlyAction(
+        "build_name_lexicon",
         "Build name lexicon from selected notes",
         lambda nids, parent: build_name_lexicon_from_selected(nids, parent=parent),
         after_key="tag_notes_matched_status",
     ),
     MenuOnlyAction(
+        "export_kanjify_data",
         "Export kanjify test data",
         lambda nids, parent: make_kanjify_sentence_data(nids, parent=parent),
         after_key="deduplicate_existing_meaning_notes",
@@ -71,9 +76,23 @@ def _on_triggered(entry: Union[OpSpec, MenuOnlyAction], nids: Sequence[NoteId], 
     # entry by the time any action fires. Takes no arguments on purpose, like the lambdas it
     # replaced: PyQt passes `triggered`'s `checked` flag to a slot that can take it, and a
     # functools.partial can, which would hand the flag to the op as its chain.
+    # Each opens a log file named by its key first, so one op's files can be told from another's
+    # in the folder; a chain does the same per step (op_chain).
     if isinstance(entry, OpSpec):
-        return lambda: entry.start(nids, parent, None)
-    return lambda: entry.run(nids, parent)
+        spec = entry
+
+        def start_op() -> None:
+            start_call_log(spec.key)
+            spec.start(nids, parent, None)
+
+        return start_op
+    action = entry
+
+    def run_action() -> None:
+        start_call_log(action.key)
+        action.run(nids, parent)
+
+    return run_action
 
 
 def add_ai_helper_actions(ai_menu: QMenu, nids: Sequence[NoteId], parent: Any) -> None:
