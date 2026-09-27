@@ -1,7 +1,9 @@
-"""What the match op, the word matching judge and the proper noun op record of their AI calls:
-each call's `kind`, and as `inputs` the values its prompt is built from, so that the prompt's
-builder given the recorded inputs gives back the prompt that was sent. The prompts themselves
-are pinned byte for byte (written before their builders were taken out of the ops).
+"""What the match op, the word matching judge, the proper noun, translate, kanjify and kanji
+story ops record of their AI calls: each call's `kind`, and as `inputs` the values its prompt is
+built from, so that the prompt's builder given the recorded inputs gives back the prompt that
+was sent. The prompts themselves are pinned byte for byte (written before their builders were
+taken out of the ops). The meaning ops' calls are test_capture_meaning_kinds'. Last, a scan of
+async_api_ops that every call site names a kind and inputs.
 
 `get_response` is the test's in most tests, as in test_word_array_match_targets and test_judge.
 One runs a note's word array match through the real `get_response` with a store installed in a
@@ -10,23 +12,27 @@ temporary directory (test_capture_runs) and its provider faked, for the word tar
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import hashlib
 import json
 import os
 import sqlite3
 import tempfile
+import types
 import unittest
 from contextlib import closing
 from typing import Any
 from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import OPS_DIR, load_ops_module
 
 configuration = load_ops_module("configuration", "")
 match_targets = load_ops_module("match_targets", subdir="word_array")
 judge = load_ops_module("judge", subdir="word_array")
 proper_noun_llm = load_ops_module("proper_noun_llm", subdir="word_array")
 capture = load_ops_module("capture")
+capture_store = load_ops_module("capture_store")
 base_ops = load_ops_module("base_ops")
 
 MODEL = "model"
@@ -554,6 +560,200 @@ class ProperNounsCallTests(unittest.TestCase):
         self.assertEqual(kwargs["kind"], "proper_nouns.sentence")
         self.assertEqual(kwargs["inputs"], {"sentence": " 山田[やまだ]さんが 来[き]た。"})
         self.assertEqual(proper_noun_llm.sentence_prompt(**kwargs["inputs"]), prompt)
+
+
+def sha1(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+TRANSLATE_SENTENCE = "図書館で<b>本</b>を借りた。"
+TRANSLATE_PROMPT = (
+    "sentence_to_translate_into_english: 図書館で<b>本</b>を借りた。\n\nIgnore any HTML in"
+    " the sentence.\nReturn an HTML-free English translation of the sentence in a JSON string"
+    ' as the value of the key "english_sentence".'
+)
+
+
+class TranslateCallTests(unittest.TestCase):
+    def translate(self) -> tuple[str, dict[str, Any], Any]:
+        op = load_ops_module("translate_field")
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return {"english_sentence": "I borrowed a book from the library."}
+
+        with mock.patch.object(op, "get_response", get_response):
+            result = op.get_translated_field_from_model(
+                {"translate_sentence_model": MODEL}, TRANSLATE_SENTENCE
+            )
+        [(prompt, kwargs)] = calls
+        return prompt, kwargs, result
+
+    def test_the_prompt_is_unchanged(self):
+        prompt, kwargs, result = self.translate()
+
+        self.assertEqual(prompt, TRANSLATE_PROMPT)
+        self.assertEqual(result, "I borrowed a book from the library.")
+
+    def test_the_call_records_its_kind_and_the_sentence(self):
+        op = load_ops_module("translate_field")
+        prompt, kwargs, _ = self.translate()
+
+        self.assertEqual(kwargs["kind"], "translate.sentence")
+        self.assertEqual(kwargs["inputs"], {"sentence": TRANSLATE_SENTENCE})
+        self.assertEqual(op.translate_sentence_prompt(**kwargs["inputs"]), prompt)
+
+
+class KanjifyCallTests(unittest.TestCase):
+    def test_the_call_records_its_kind_and_the_sentence(self) -> None:
+        # The prompt's builder was pure already and is research's too (kanjify_eval): the call
+        # only names it and its sentence
+        op = load_ops_module("kanjify_sentence")
+        sentence = "これを 読[よ]む。"
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return {"kanjified_sentence": "<k> 此[こ]れ</k>を 読[よ]む。"}
+
+        config = {"kanjify_sentence_model": MODEL, "kanjify_sentence_temperature": "0.3"}
+        with mock.patch.object(op, "get_response", get_response):
+            result = op.get_kanjified_sentence_from_model(config, sentence)
+
+        self.assertEqual(result, ["<k> 此[こ]れ</k>を 読[よ]む。"])
+        [(prompt, kwargs)] = calls
+        self.assertEqual(kwargs["kind"], "kanjify.sentence")
+        self.assertEqual(kwargs["inputs"], {"sentence": sentence})
+        self.assertEqual(op.get_kanjify_sentence_prompt(**kwargs["inputs"]), prompt)
+        # A request parameter, recorded with the params rather than the inputs
+        self.assertEqual(kwargs["temperature"], 0.3)
+
+
+# The file's words for the note's components, for three of the prompt's examples' (裾 is
+# 衤 + 居, 諭 is 言 + 俞), and for a component the prompt does not show
+STORY_WORDS = {
+    "木": "き",
+    "卯": "うさぎの みみ",
+    "衤": "ころも",
+    "居": "いる",
+    "言": "いいたい",
+    "氵": "みず",
+}
+
+
+class KanjiStoryCallTests(unittest.TestCase):
+    """The story op reads the component words from a file in the profile's media folder: a
+    temporary one here."""
+
+    def setUp(self) -> None:
+        self.op = load_ops_module("make_kanji_story")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        media = os.path.join(directory.name, "collection.media")
+        os.mkdir(media)
+        words_file = os.path.join(media, configuration.KANJI_STORY_COMPONENT_WORDS_LOG)
+        with open(words_file, "w", encoding="utf-8") as f:
+            json.dump(STORY_WORDS, f, ensure_ascii=False)
+        profile = types.SimpleNamespace(profileFolder=lambda: directory.name)
+        patcher = mock.patch.object(self.op, "mw", types.SimpleNamespace(pm=profile))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def story(self, current_story: str) -> tuple[str, dict[str, Any], Any]:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return {"new_story": "<i>き</i> の <i>うさぎの みみ</i>、<b>やなぎ</b>"}
+
+        with mock.patch.object(self.op, "get_response", get_response):
+            result = self.op.get_kanji_story_from_model(
+                {"kanji_story_model": MODEL}, "柳", "木,卯", current_story
+            )
+        [(prompt, kwargs)] = calls
+        return prompt, kwargs, result
+
+    def test_the_prompts_are_unchanged(self):
+        # Pinned by their sha1, taken before the builder was taken out of the op: the prompt is
+        # 3.6 KB of examples. Its head is the case's own part.
+        prompt, _, _ = self.story("")
+        self.assertEqual(sha1(prompt), "8ac6094ee661490105e325dd19ce7c314d37ffa5", prompt)
+        self.assertTrue(
+            prompt.startswith(
+                "kanji: 柳\n  component_radicals_or_kanji: ['木', '卯']\n"
+                "  words_to_use_in_story_for_components: き, うさぎの みみ\n\nThe kanji is"
+            )
+        )
+        # With a story to keep: its own line and the other instruction
+        prompt, _, _ = self.story("<i>き</i> の そば")
+        self.assertEqual(sha1(prompt), "d2173d5b10a4ffc09967c50bb32029012fc66733", prompt)
+        self.assertIn(
+            "words_to_use_in_story_for_components: き, うさぎの みみ\n"
+            "current_story_in_japanese: <i>き</i> の そば\n\nThe kanji is",
+            prompt,
+        )
+
+    def test_the_call_records_its_kind_and_the_words_the_prompt_shows(self):
+        prompt, kwargs, result = self.story("<i>き</i> の そば")
+
+        self.assertEqual(result, "<i>き</i> の <i>うさぎの みみ</i>、<b>やなぎ</b>")
+        self.assertEqual(kwargs["kind"], "kanji_story.kanji")
+        inputs = kwargs["inputs"]
+        # The words, not only the components they were looked up by, so the inputs rebuild the
+        # prompt without the file; and of the file's words only those the prompt shows (no 氵)
+        self.assertEqual(
+            inputs,
+            {
+                "kanji": "柳",
+                "components": "木,卯",
+                "current_story": "<i>き</i> の そば",
+                "component_words": {
+                    "木": "き",
+                    "卯": "うさぎの みみ",
+                    "衤": "ころも",
+                    "居": "いる",
+                    "言": "いいたい",
+                },
+            },
+        )
+        self.assertEqual(json.loads(json.dumps(inputs)), inputs)
+        self.assertEqual(self.op.kanji_story_prompt(**inputs), prompt)
+        stored = json.loads(capture_store.canonical_json(inputs))
+        self.assertEqual(self.op.kanji_story_prompt(**stored), prompt)
+
+
+def names_get_response(node: ast.expr) -> bool:
+    return (isinstance(node, ast.Name) and node.id == "get_response") or (
+        isinstance(node, ast.Attribute) and node.attr == "get_response"
+    )
+
+
+class EveryCallSiteTests(unittest.TestCase):
+    def test_every_ai_call_of_the_ops_records_a_kind_and_inputs(self) -> None:
+        """A call of `get_response`, or a call handed it to run (`asyncio.to_thread`), in any
+        module of async_api_ops, names its kind and inputs: without them its row in the store
+        says neither what it was for nor what case it was."""
+        sites: list[str] = []
+        missing: list[str] = []
+        for path in sorted(OPS_DIR.glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                if not (names_get_response(node.func) or any(map(names_get_response, node.args))):
+                    continue
+                site = f"{path.name}:{node.lineno}"
+                sites.append(site)
+                keywords = {k.arg: k.value for k in node.keywords}
+                kind = keywords.get("kind")
+                if kind is None or (isinstance(kind, ast.Constant) and not kind.value):
+                    missing.append(f"{site} kind")
+                if "inputs" not in keywords:
+                    missing.append(f"{site} inputs")
+
+        self.assertEqual(missing, [])
+        # The fourteen there were when this was written: a scan that finds none proves nothing
+        self.assertGreaterEqual(len(sites), 14, sites)
 
 
 if __name__ == "__main__":

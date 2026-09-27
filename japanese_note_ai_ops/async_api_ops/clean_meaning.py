@@ -2,7 +2,7 @@ import logging
 import json
 import re
 from pathlib import Path
-from typing import Mapping, Optional, Union, Sequence
+from typing import Any, Mapping, Optional, Union, Sequence
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -272,6 +272,73 @@ def get_other_meaning_notes(
 UpdateAllMeaningsResultType = dict[NoteId, tuple[str, str]]
 
 
+# The fields of the rework prompt's answer: the prompt names them and the op reads them
+REWORK_INDEX_FIELD = "meaning_index"
+REWORK_JP_FIELD = "jp_meaning"
+REWORK_EN_FIELD = "en_meaning"
+REWORK_REFERENCE_FIELD = "dictionary_reference"
+
+
+def rework_meanings_prompt(
+    word: str,
+    reading: str,
+    meanings: Sequence[WordAndSentences],
+    dictionary_entry: Optional[str],
+) -> str:
+    """The prompt that reworks a word's meanings to fit their sentences, `meanings` in the
+    order it numbers them. Without a dictionary entry it has other rules and no entry."""
+    # Format current meanings and sentences for the prompt
+    meanings_and_sentences = ""
+    for i, ws in enumerate(meanings):
+        sentences_formatted = ""
+        if len(ws["sentences"]) > 0:
+            for sen in ws["sentences"]:
+                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
+        else:
+            sentences_formatted = ""
+        meanings_and_sentences += f"""---
+Meaning index {i + 1}:
+Japanese meaning: {ws['jp_meaning'] or '(empty)'}
+English meaning: {ws['en_meaning'] or '(empty)'}
+
+Sentences:
+{sentences_formatted}
+"""
+
+    return f"""{f'''Below is the dictionary entry for a word or phrase, along with currently used meanings for groups of sentences containing that word or phrase. Your task is to rework the meanings to better fit the usage in the sentences, using the dictionary entry as reference.
+For each meaning, either extract the relevant parts from the dictionary entry and rephrase those to better fit the sentences. Follow these rules:
+- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a single sentence. Pick as many meanings as possible than can broadly fit the theme of the sentences.
+- If the dictionary entry describes two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
+- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
+- Aggressively shorten and simplify the picked meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
+- Omit any example sentences included in the dictionary entry (often included within 「」 brackets).
+''' if dictionary_entry else f'''Below are currently used meanings for groups of sentences containing a certain word or phrase. Your task is to rework the meanings to better fit the usage in the sentences.
+Follow these rules:
+- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a mere 1-3 sentences. Aim for general definitions that broadly fit the theme of the sentences.
+- If there are two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
+- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
+- Shorten and simplify the meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
+'''}
+
+Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
+- "{REWORK_INDEX_FIELD}": The 1-based index of an used meaning. IMPORTANT: This should match the index of the meaning in below list exactly.
+- "{REWORK_JP_FIELD}": The reworked Japanese meaning.
+- "{REWORK_EN_FIELD}": The reworked English meaning.
+{f'- "{REWORK_REFERENCE_FIELD}": Repeat the parts of the dictionary entry that were used as reference for reworking the meaning.' if dictionary_entry else ''}
+
+You do not need to rework all meanings, only those that seem not to fit well with the sentences; the array can be of any length, including empty if all meanings are fine.
+
+Word or phrase (and its reading):
+{word} ({reading})
+---{f'''
+Dictionary entry:
+{dictionary_entry}
+---
+''' if dictionary_entry else ''}
+Current meanings and sentences:
+{meanings_and_sentences}"""
+
+
 def update_all_meanings_for_word(
     config: dict[str, str],
     word: str,
@@ -294,67 +361,23 @@ def update_all_meanings_for_word(
     """
     if not existing_note_meanings_dict:
         return {}
-    # Format current meanings and sentences for the prompt
-    meanings_and_sentences = ""
     # Sort by note id, smallest to largest, to have a consistent order
     meanings_dict_items = list(existing_note_meanings_dict.items())
     meanings_dict_items.sort(key=lambda x: x[0])
-    meaning_index_to_note_id = {}
-    for i, (note_id, ws) in enumerate(meanings_dict_items):
-        meaning_index_to_note_id[i] = note_id
-        sentences_formatted = ""
-        if len(ws["sentences"]) > 0:
-            for sen in ws["sentences"]:
-                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        else:
-            sentences_formatted = ""
-        meanings_and_sentences += f"""---
-Meaning index {i + 1}:
-Japanese meaning: {ws['jp_meaning'] or '(empty)'}
-English meaning: {ws['en_meaning'] or '(empty)'}
-
-Sentences:
-{sentences_formatted}
-"""
-
-    meaning_index_field = "meaning_index"
-    jp_meaning_return_field = "jp_meaning"
-    en_meaning_return_field = "en_meaning"
-    dict_reference_return_field = "dictionary_reference"
-
-    prompt = f"""{f'''Below is the dictionary entry for a word or phrase, along with currently used meanings for groups of sentences containing that word or phrase. Your task is to rework the meanings to better fit the usage in the sentences, using the dictionary entry as reference.
-For each meaning, either extract the relevant parts from the dictionary entry and rephrase those to better fit the sentences. Follow these rules:
-- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a single sentence. Pick as many meanings as possible than can broadly fit the theme of the sentences.
-- If the dictionary entry describes two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
-- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
-- Aggressively shorten and simplify the picked meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
-- Omit any example sentences included in the dictionary entry (often included within 「」 brackets).
-''' if jp_mdx_dict_entry else f'''Below are currently used meanings for groups of sentences containing a certain word or phrase. Your task is to rework the meanings to better fit the usage in the sentences.
-Follow these rules:
-- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a mere 1-3 sentences. Aim for general definitions that broadly fit the theme of the sentences.
-- If there are two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
-- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
-- Shorten and simplify the meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
-'''}
-
-Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
-- "{meaning_index_field}": The 1-based index of an used meaning. IMPORTANT: This should match the index of the meaning in below list exactly.
-- "{jp_meaning_return_field}": The reworked Japanese meaning.
-- "{en_meaning_return_field}": The reworked English meaning.
-{f'- "{dict_reference_return_field}": Repeat the parts of the dictionary entry that were used as reference for reworking the meaning.' if jp_mdx_dict_entry else ''}
-
-You do not need to rework all meanings, only those that seem not to fit well with the sentences; the array can be of any length, including empty if all meanings are fine.
-
-Word or phrase (and its reading):
-{word} ({reading})
----{f'''
-Dictionary entry:
-{jp_mdx_dict_entry}
----
-''' if jp_mdx_dict_entry else ''}
-Current meanings and sentences:
-{meanings_and_sentences}"""
+    meaning_index_to_note_id = {i: note_id for i, (note_id, _) in enumerate(meanings_dict_items)}
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "meanings": [ws for _, ws in meanings_dict_items],
+        "dictionary_entry": jp_mdx_dict_entry,
+    }
+    prompt = rework_meanings_prompt(**inputs)
     logger.debug(f"Prompt for updating meanings: {prompt}")
+
+    meaning_index_field = REWORK_INDEX_FIELD
+    jp_meaning_return_field = REWORK_JP_FIELD
+    en_meaning_return_field = REWORK_EN_FIELD
+    dict_reference_return_field = REWORK_REFERENCE_FIELD
 
     array_properties = {
         meaning_index_field: {"type": "integer"},
@@ -388,7 +411,9 @@ Current meanings and sentences:
     }
 
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, response_schema=response_schema)
+    result = get_response(
+        model, prompt, response_schema=response_schema, kind="clean_meaning.rework", inputs=inputs
+    )
     if result is None:
         # Return nothing if the call failed
         return {}
@@ -433,6 +458,88 @@ Current meanings and sentences:
 MatchMeaningsResultType = dict[NoteId, tuple[str, str, int]]
 
 
+# The fields of the map prompt's answer
+MAP_USED_INDEX_FIELD = "used_meaning_index"
+MAP_POSSIBLE_INDEX_FIELD = "possible_meaning_index"
+MAP_SCORE_FIELD = "mapping_score"
+
+
+def map_meanings_prompt(
+    word: str,
+    reading: str,
+    possible_meanings: Sequence[GeneratedMeaningType],
+    meanings: Sequence[WordAndSentences],
+) -> str:
+    """The prompt that maps a word's meanings to its generated (possible) meanings, both lists
+    in the order it numbers them. A meaning whose English is a possible meaning's is shown as
+    mapped to it already, which also selects the prompt's other rule."""
+    # Turn generated meanings to dict by note id for easy access
+    generated_meanings_by_en_meaning: dict[str, GeneratedMeaningType] = {}
+    for gm in possible_meanings:
+        if "en_meaning" in gm and gm["en_meaning"] is not None:
+            generated_meanings_by_en_meaning[gm["en_meaning"]] = gm
+
+    # Format current meanings and sentences for the prompt
+    meanings_and_sentences = ""
+    ws_meanings_by_en_meaning: dict[str, WordAndSentences] = {}
+    some_meanings_already_mapped = False
+    for i, ws in enumerate(meanings):
+        ws_meanings_by_en_meaning[ws["en_meaning"]] = ws
+        # Is this note ID already mapped to a generated meaning?
+        to_generated_meaning = generated_meanings_by_en_meaning.get(ws["en_meaning"])
+        to_generated_meaning_index = None
+        if to_generated_meaning:
+            to_generated_meaning_index = possible_meanings.index(to_generated_meaning)
+            some_meanings_already_mapped = True
+        sentences_formatted = ""
+        if len(ws["sentences"]) > 0:
+            for sen in ws["sentences"]:
+                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
+        else:
+            sentences_formatted = ""
+        meanings_and_sentences += f"""---
+Meaning index {i + 1}{f" (ALREADY MAPPED to possible meaning index {to_generated_meaning_index + 1})" if to_generated_meaning_index is not None else ""}:
+Japanese meaning: {ws['jp_meaning'] or '(empty)'}
+English meaning: {ws['en_meaning'] or '(empty)'}
+
+Sentences:
+{sentences_formatted}
+"""
+
+    generated_meanings_formatted = ""
+    for i, gm in enumerate(possible_meanings):
+        jp_meaning = gm.get("jp_meaning", "").strip()
+        en_meaning = gm.get("en_meaning", "").strip()
+        already_mapped = en_meaning in ws_meanings_by_en_meaning
+        generated_meanings_formatted += f"""---
+Possible meaning index {i + 1}{f" (ALREADY MAPPED)" if already_mapped else ""}:
+Japanese meaning: {jp_meaning}
+English meaning: {en_meaning}
+"""
+
+    return f"""Below is a list all possible meanings for a certain word or phrase (which was generated from a selection of Japanese dictionary entries), along with currently used meanings for groups of sentences containing that word or phrase. Your task is to match the current meanings to the possible meanings, selecting the best fitting possible meaning for each current meaning.
+Your task is to create a mapping from current meanings to possible meanings. Each current meaning must map to exactly one possible meaning.{f'''
+- Some of the current meanings are already mapped to possible meanings. The possible meaning indexes they are mapped to are indicated and the already in use possible meanings are also marked. You CANNOT use those possible meanings for other current meanings; you must use one of the remaining possible meanings that is not yet mapped
+- You MUST return a mapping for each not-already mappedcurrent meaning, even if you think its current meaning is already perfect.''' if some_meanings_already_mapped else '''
+- You MUST return a mapping for current meaning, even if you think its current meaning is already perfect.'''}
+- Return a score of 1 to 5 for how well each possible meaning fits the sentences for the current meaning, where 5=perfect fit,3=acceptable fit,1=unacceptable fit. This information is used to detect insufficient possible meanings.
+
+Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
+- "{MAP_USED_INDEX_FIELD}": The 1-based index of an item in the CURRENT MEANINGS AND SENTENCES list below.
+- "{MAP_POSSIBLE_INDEX_FIELD}": The 1-based index of the possible meaning from the ALL POSSIBLE MEANINGS list below that should replace the current meaning.
+- "{MAP_SCORE_FIELD}": An integer score from 1 to 5 indicating how well the possible meaning fits the sentences for the current meaning.
+
+
+WORD OR PHRASE (READING):
+{word} ({reading})
+
+ALL POSSIBLE MEANINGS:
+{generated_meanings_formatted}
+---
+CURRENT MEANINGS AND SENTENCES:
+{meanings_and_sentences}"""
+
+
 def match_meanings_to_generated_meanings(
     config: dict[str, str],
     word: str,
@@ -462,84 +569,26 @@ def match_meanings_to_generated_meanings(
     if not generated_meanings:
         logger.error("match_meanings_to_generated_meanings called with missing generated meanings")
         return {}
-    # Turn generated meanings to dict by note id for easy access
-    generated_meanings_by_en_meaning: dict[str, GeneratedMeaningType] = {}
-    for gm in generated_meanings:
-        if "en_meaning" in gm and gm["en_meaning"] is not None:
-            generated_meanings_by_en_meaning[gm["en_meaning"]] = gm
-
-    # Format current meanings and sentences for the prompt
-    meanings_and_sentences = ""
     # Sort by note id, smallest to largest, to have a consistent order
     meanings_dict_items = list(existing_note_meanings_dict.items())
     meanings_dict_items.sort(key=lambda x: x[0])
-    meaning_index_to_note_id = {}
-    ws_meanings_by_en_meaning: dict[str, WordAndSentences] = {}
-    some_meanings_already_mapped = False
-    for i, (note_id, ws) in enumerate(meanings_dict_items):
-        ws_meanings_by_en_meaning[ws["en_meaning"]] = ws
-        # Is this note ID already mapped to a generated meaning?
-        to_generated_meaning = generated_meanings_by_en_meaning.get(ws["en_meaning"])
-        to_generated_meaning_index = None
-        if to_generated_meaning:
-            to_generated_meaning_index = generated_meanings.index(to_generated_meaning)
-            some_meanings_already_mapped = True
-        meaning_index_to_note_id[i] = note_id
-        sentences_formatted = ""
-        if len(ws["sentences"]) > 0:
-            for sen in ws["sentences"]:
-                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        else:
-            sentences_formatted = ""
-        meanings_and_sentences += f"""---
-Meaning index {i + 1}{f" (ALREADY MAPPED to possible meaning index {to_generated_meaning_index + 1})" if to_generated_meaning_index is not None else ""}:
-Japanese meaning: {ws['jp_meaning'] or '(empty)'}
-English meaning: {ws['en_meaning'] or '(empty)'}
-
-Sentences:
-{sentences_formatted}
-"""
-
-    used_meaning_index_field = "used_meaning_index"
-    possible_meaning_index_field = "possible_meaning_index"
-    mapping_score_field = "mapping_score"
-
+    meaning_index_to_note_id = {i: note_id for i, (note_id, _) in enumerate(meanings_dict_items)}
     # Make dict for getting the possible meanings by index indicated by the AI call result
-    possible_meanings_index_to_obj: dict[int, GeneratedMeaningType] = {}
-    generated_meanings_formatted = ""
-    for i, gm in enumerate(generated_meanings):
-        jp_meaning = gm.get("jp_meaning", "").strip()
-        en_meaning = gm.get("en_meaning", "").strip()
-        possible_meanings_index_to_obj[i] = gm
-        already_mapped = en_meaning in ws_meanings_by_en_meaning
-        generated_meanings_formatted += f"""---
-Possible meaning index {i + 1}{f" (ALREADY MAPPED)" if already_mapped else ""}:
-Japanese meaning: {jp_meaning}
-English meaning: {en_meaning}
-"""
-
-    prompt = f"""Below is a list all possible meanings for a certain word or phrase (which was generated from a selection of Japanese dictionary entries), along with currently used meanings for groups of sentences containing that word or phrase. Your task is to match the current meanings to the possible meanings, selecting the best fitting possible meaning for each current meaning.
-Your task is to create a mapping from current meanings to possible meanings. Each current meaning must map to exactly one possible meaning.{f'''
-- Some of the current meanings are already mapped to possible meanings. The possible meaning indexes they are mapped to are indicated and the already in use possible meanings are also marked. You CANNOT use those possible meanings for other current meanings; you must use one of the remaining possible meanings that is not yet mapped
-- You MUST return a mapping for each not-already mappedcurrent meaning, even if you think its current meaning is already perfect.''' if some_meanings_already_mapped else '''
-- You MUST return a mapping for current meaning, even if you think its current meaning is already perfect.'''}
-- Return a score of 1 to 5 for how well each possible meaning fits the sentences for the current meaning, where 5=perfect fit,3=acceptable fit,1=unacceptable fit. This information is used to detect insufficient possible meanings.
-
-Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
-- "{used_meaning_index_field}": The 1-based index of an item in the CURRENT MEANINGS AND SENTENCES list below.
-- "{possible_meaning_index_field}": The 1-based index of the possible meaning from the ALL POSSIBLE MEANINGS list below that should replace the current meaning.
-- "{mapping_score_field}": An integer score from 1 to 5 indicating how well the possible meaning fits the sentences for the current meaning.
-
-
-WORD OR PHRASE (READING):
-{word} ({reading})
-
-ALL POSSIBLE MEANINGS:
-{generated_meanings_formatted}
----
-CURRENT MEANINGS AND SENTENCES:
-{meanings_and_sentences}"""
+    possible_meanings_index_to_obj: dict[int, GeneratedMeaningType] = dict(
+        enumerate(generated_meanings)
+    )
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "possible_meanings": generated_meanings,
+        "meanings": [ws for _, ws in meanings_dict_items],
+    }
+    prompt = map_meanings_prompt(**inputs)
     logger.debug(f"Prompt for updating meanings: {prompt}")
+
+    used_meaning_index_field = MAP_USED_INDEX_FIELD
+    possible_meaning_index_field = MAP_POSSIBLE_INDEX_FIELD
+    mapping_score_field = MAP_SCORE_FIELD
 
     array_properties = {
         used_meaning_index_field: {"type": "integer"},
@@ -570,7 +619,9 @@ CURRENT MEANINGS AND SENTENCES:
     }
 
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, response_schema=response_schema)
+    result = get_response(
+        model, prompt, response_schema=response_schema, kind="clean_meaning.map", inputs=inputs
+    )
     if result is None:
         # Return nothing if the call failed
         return {}
@@ -695,17 +746,20 @@ CURRENT MEANINGS AND SENTENCES:
     return updated_good_meanings
 
 
-def get_single_meaning_from_mdx_dict_entry(
-    config: dict[str, str],
+# The fields of the extract prompt's answer
+EXTRACT_JP_FIELD = "cleaned_meaning"
+EXTRACT_EN_FIELD = "english_meaning"
+
+
+def extract_meaning_prompt(
     word: str,
     reading: str,
-    sentences: list[EnAndJPSentence],
-    jp_mdx_dict_entry: str,
-    prev_en_meaning: str = "",
-):
-    jp_meaning_return_field = "cleaned_meaning"
-    en_meaning_return_field = "english_meaning"
-    logger.debug(f"Getting single meaning with {len(sentences)} sentences")
+    sentences: Sequence[EnAndJPSentence],
+    dictionary_entry: str,
+    prev_en_meaning: str,
+) -> str:
+    """The prompt that makes one meaning out of the dictionary entry for the word's use in
+    `sentences`. One sentence or several, and an English meaning or none, are its variants."""
     sentences_formatted = ""
     if len(sentences) > 1:
         for sen in sentences:
@@ -714,7 +768,7 @@ def get_single_meaning_from_mdx_dict_entry(
         sentences_formatted = (
             f"JP: {sentences[0]['jp_sentence']} -- EN: {sentences[0]['en_sentence']}"
         )
-    prompt = f"""Below, the dictionary entry for the word or phrase may contain multiple meanings. Your task is to either 1) extract the one meaning 2) or combine and rephrase meanings matching the usage of the word in the sentence{'s' if len(sentences) > 1 else ''}.
+    return f"""Below, the dictionary entry for the word or phrase may contain multiple meanings. Your task is to either 1) extract the one meaning 2) or combine and rephrase meanings matching the usage of the word in the sentence{'s' if len(sentences) > 1 else ''}.
 
 Selection criteria:
 - DO NOT overfit the definition to the sentence{'s' if len(sentences) > 1 else ''}, but rather pick as many meanings as possible that can broadly fit the theme of the sentence{'s' if len(sentences) > 1 else ''}.
@@ -736,8 +790,8 @@ Formatting rules:
 Additionally, but only if it seems necessary, reword the English dictionary definition to fit the Japanese one. The English definition should ideally simply list equivalent words, if there are some, and only explain in sentences when it's necessary.
 
 Return a JSON object with two fields:
-Return the extracted and possibly modified Japanese meaning as the value of the key "{jp_meaning_return_field}".
-Return the possibly modified English meaning as the value of the key "{en_meaning_return_field}".
+Return the extracted and possibly modified Japanese meaning as the value of the key "{EXTRACT_JP_FIELD}".
+Return the possibly modified English meaning as the value of the key "{EXTRACT_EN_FIELD}".
 
 Word or phrase (and its reading):
 {word} ({reading})
@@ -749,11 +803,32 @@ Current English meaning:
 {prev_en_meaning}''' if prev_en_meaning.strip() != "" else ""}
 ---
 Japanese dictionary entry:
-{jp_mdx_dict_entry}
+{dictionary_entry}
 """
+
+
+def get_single_meaning_from_mdx_dict_entry(
+    config: dict[str, str],
+    word: str,
+    reading: str,
+    sentences: list[EnAndJPSentence],
+    jp_mdx_dict_entry: str,
+    prev_en_meaning: str = "",
+):
+    jp_meaning_return_field = EXTRACT_JP_FIELD
+    en_meaning_return_field = EXTRACT_EN_FIELD
+    logger.debug(f"Getting single meaning with {len(sentences)} sentences")
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "sentences": sentences,
+        "dictionary_entry": jp_mdx_dict_entry,
+        "prev_en_meaning": prev_en_meaning,
+    }
+    prompt = extract_meaning_prompt(**inputs)
     logger.debug(f"Prompt for cleaning meaning: {prompt}")
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt)
+    result = get_response(model, prompt, kind="clean_meaning.extract", inputs=inputs)
     if result is None:
         # Return original dict_entry unchanged if the cleaning failed
         return jp_mdx_dict_entry, prev_en_meaning
@@ -763,23 +838,24 @@ Japanese dictionary entry:
         return jp_mdx_dict_entry, prev_en_meaning
 
 
-def get_new_meaning_from_model(
-    config: dict[str, str],
-    word: str,
-    reading: str,
-    sentences: list[EnAndJPSentence],
-    prev_en_meaning: str = "",
-) -> tuple[str, str]:
-    logger.debug(f"Getting new meaning with {len(sentences)} sentences")
-    jp_meaning_return_field = "new_meaning"
-    en_meaning_return_field = "english_meaning"
+# The fields of the generate prompt's answer
+GENERATE_JP_FIELD = "new_meaning"
+GENERATE_EN_FIELD = "english_meaning"
+
+
+def generate_meaning_prompt(
+    word: str, reading: str, sentences: Sequence[str], prev_en_meaning: str
+) -> str:
+    """The prompt that makes a meaning from the word's use in `sentences` alone, which are
+    the Japanese sentences only. One sentence or several, and an English meaning or none,
+    are its variants."""
     sentences_formatted = ""
     if len(sentences) > 1:
         for sen in sentences:
-            sentences_formatted += f"- {sen['jp_sentence']}\n"
+            sentences_formatted += f"- {sen}\n"
     else:
-        sentences_formatted = sentences[0]["jp_sentence"]
-    prompt = f"""Below {'is a sentence' if len(sentences) == 1 else 'are sentences each'} containing a certain word or phrase. Your task is to generate a short monolingual dictionary style definition of the general meaning used in the sentence by the word or phrase.
+        sentences_formatted = sentences[0]
+    return f"""Below {'is a sentence' if len(sentences) == 1 else 'are sentences each'} containing a certain word or phrase. Your task is to generate a short monolingual dictionary style definition of the general meaning used in the sentence by the word or phrase.
 
 - Generally aim to for the definition to be a single sentence. If it is necessary to explain more, the maximum length should be 3 sentences.
 - Do not overfit the definition to the sentence{'s' if len(sentences) > 1 else ''}, but rather aim for a general definition that fits the usage in {'each sentence' if len(sentences) > 1 else 'the sentence'}.
@@ -791,8 +867,8 @@ The definition should be in the same language as the sentence. {'Use the current
 
 
 Return a JSON object with two fields:
-Return the meaning as the value of the key "{jp_meaning_return_field}".
-Return the English translation as the value of the key "{en_meaning_return_field}".
+Return the meaning as the value of the key "{GENERATE_JP_FIELD}".
+Return the English translation as the value of the key "{GENERATE_EN_FIELD}".
 
 Word or phrase (and its reading):
 {word} ({reading})
@@ -803,9 +879,29 @@ Current English meaning:
 Sentence{'s' if len(sentences) > 1 else ''}:
 {sentences_formatted}
 """
+
+
+def get_new_meaning_from_model(
+    config: dict[str, str],
+    word: str,
+    reading: str,
+    sentences: list[EnAndJPSentence],
+    prev_en_meaning: str = "",
+) -> tuple[str, str]:
+    logger.debug(f"Getting new meaning with {len(sentences)} sentences")
+    jp_meaning_return_field = GENERATE_JP_FIELD
+    en_meaning_return_field = GENERATE_EN_FIELD
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        # The prompt shows no translation
+        "sentences": [sentence["jp_sentence"] for sentence in sentences],
+        "prev_en_meaning": prev_en_meaning,
+    }
+    prompt = generate_meaning_prompt(**inputs)
     logger.debug(f"Prompt for new meaning: {prompt}")
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt)
+    result = get_response(model, prompt, kind="clean_meaning.generate", inputs=inputs)
     if result is None:
         # Return nothing if the generating failed
         return "", ""

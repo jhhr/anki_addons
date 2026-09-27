@@ -4,7 +4,7 @@ import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final, Optional
+from typing import Any, Final, Optional
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
@@ -146,6 +146,42 @@ def make_meaning_dict_key(word: str, reading: str) -> str:
     return f"{word}_{reading}"
 
 
+def generated_meanings_json(meanings: Sequence[GeneratedMeaningType]) -> str:
+    """Generated meanings as the merge and revise prompts show them. Their calls' inputs record
+    this text rather than the list: the capture store's JSON sorts every dict's keys, and a
+    prompt rebuilt from the sorted list would show each meaning's keys in another order."""
+    return json.dumps(meanings, ensure_ascii=False, indent=2)
+
+
+def make_meanings_prompt(word: str, reading: str, dictionary_entry: str) -> str:
+    return f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. Your task is to compress this information into a comprehensive list of distinct meanings expressed in these. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
+
+Definition rules:
+- Create a Japanese meaning and English meaning.
+- MINIMIZE DIFFERENT MEANINGS: Make as a few separate meanings as possible by combining meanings that are related. Extremely common words like 見る, 行く, 来る, 有る, etc. have a large number of meanings which should be especially aggressively combined into as few meanings as possible.
+- BE CONCISE: Each meaning should be concise, ideally a single sentence but more if absolutely necessary to combine multiple related meanings.
+- The English meaning should almost always be a short list of equivalent words or phrases separated by semicolons. Only explain in sentences when equivalents do not exist; e.g. the word is "untranslatable".
+
+Combination rules:
+- Most of all, if the dictionary entries includes multiple meanings that are similar, combine them into one.
+- However also combine dissimilar meanings that that are of the type one literal and one metaphorical - those should become one meaning where each is described shortly.
+
+Information extraction rules:
+- Make sure to analyze the different dictionary entries carefully and identify the same meanings expressed in different ways. The aim is to compress all the information into a minimal set of distinct meanings.
+- Note that the dictionary entries may include information about additinal phrases that use the word. These would usually come after the list of main meanings per dictionary. Ignore these additional phrases and only focus on the main meanings of the word or phrase itself.
+- Exclude any example sentences, usage notes, or extraneous information.
+
+Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys for each distinct meaning.
+
+Word or phrase (and its reading):
+{word} ({reading})
+---
+Dictionary entry:
+{dictionary_entry}
+---
+"""
+
+
 def make_all_meanings_for_word(
     config: dict[str, str],
     word: str,
@@ -188,32 +224,12 @@ def make_all_meanings_for_word(
         timer.report(logger, "no dictionary entry")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
 
-    prompt = f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. Your task is to compress this information into a comprehensive list of distinct meanings expressed in these. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
-
-Definition rules:
-- Create a Japanese meaning and English meaning.
-- MINIMIZE DIFFERENT MEANINGS: Make as a few separate meanings as possible by combining meanings that are related. Extremely common words like 見る, 行く, 来る, 有る, etc. have a large number of meanings which should be especially aggressively combined into as few meanings as possible.
-- BE CONCISE: Each meaning should be concise, ideally a single sentence but more if absolutely necessary to combine multiple related meanings.
-- The English meaning should almost always be a short list of equivalent words or phrases separated by semicolons. Only explain in sentences when equivalents do not exist; e.g. the word is "untranslatable".
-
-Combination rules:
-- Most of all, if the dictionary entries includes multiple meanings that are similar, combine them into one.
-- However also combine dissimilar meanings that that are of the type one literal and one metaphorical - those should become one meaning where each is described shortly.
-
-Information extraction rules:
-- Make sure to analyze the different dictionary entries carefully and identify the same meanings expressed in different ways. The aim is to compress all the information into a minimal set of distinct meanings.
-- Note that the dictionary entries may include information about additinal phrases that use the word. These would usually come after the list of main meanings per dictionary. Ignore these additional phrases and only focus on the main meanings of the word or phrase itself.
-- Exclude any example sentences, usage notes, or extraneous information.
-
-Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys for each distinct meaning.
-
-Word or phrase (and its reading):
-{word} ({reading})
----
-Dictionary entry:
-{dict_meaning_for_word}
----
-"""
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "dictionary_entry": dict_meaning_for_word,
+    }
+    prompt = make_meanings_prompt(**inputs)
     logger.debug(f"Prompt for generating possible meanings: {prompt}")
 
     response_schema = {
@@ -225,7 +241,13 @@ Dictionary entry:
 
     model = config.get("make_meanings_model", "")
     timer.step("prompt_built")
-    result = get_response(model, prompt, response_schema=response_schema)
+    result = get_response(
+        model,
+        prompt,
+        response_schema=response_schema,
+        kind="make_all_meanings.make",
+        inputs=inputs,
+    )
     timer.step("get_response")
     all_meanings = validate_meanings_result_object(result, "making all meanings")
     if all_meanings is None:
@@ -238,19 +260,8 @@ Dictionary entry:
     return MakeMeaningsResult.SUCCESS
 
 
-def merge_existing_meanings_for_word(
-    config: dict[str, str],
-    word: str,
-    reading: str,
-    all_meanings_dict: GeneratedMeaningsDictType,
-) -> MakeMeaningsResult:
-    word_key = make_meaning_dict_key(word, reading)
-    existing_meanings = all_meanings_dict.get(word_key)
-    if not existing_meanings:
-        logger.debug("No existing generated meanings found for word '%s' (%s)", word, reading)
-        return MakeMeaningsResult.ERROR
-
-    prompt = f"""The following list of meanings contains too many different nuances. The purpose of the list is to split meanings into useful categories for language learning.
+def merge_meanings_prompt(word: str, reading: str, meanings_json: str) -> str:
+    return f"""The following list of meanings contains too many different nuances. The purpose of the list is to split meanings into useful categories for language learning.
 
 Your task is to merge together meanings when they differ only by small nuances or close related usages.
 
@@ -268,8 +279,28 @@ WORD OR PHRASE (READING):
 {word} ({reading})
 
 EXISTING MEANINGS:
-{json.dumps(existing_meanings, ensure_ascii=False, indent=2)}
+{meanings_json}
 """
+
+
+def merge_existing_meanings_for_word(
+    config: dict[str, str],
+    word: str,
+    reading: str,
+    all_meanings_dict: GeneratedMeaningsDictType,
+) -> MakeMeaningsResult:
+    word_key = make_meaning_dict_key(word, reading)
+    existing_meanings = all_meanings_dict.get(word_key)
+    if not existing_meanings:
+        logger.debug("No existing generated meanings found for word '%s' (%s)", word, reading)
+        return MakeMeaningsResult.ERROR
+
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "meanings_json": generated_meanings_json(existing_meanings),
+    }
+    prompt = merge_meanings_prompt(**inputs)
     logger.debug("Prompt for merging existing meanings: %s", prompt)
 
     model = config.get("make_meanings_model", "")
@@ -283,6 +314,8 @@ EXISTING MEANINGS:
         model,
         prompt,
         response_schema=response_schema,
+        kind="make_all_meanings.merge",
+        inputs=inputs,
     )
     merged_meanings = validate_meanings_result_object(result, "merging meanings")
     if merged_meanings is None:
@@ -291,6 +324,66 @@ EXISTING MEANINGS:
     logger.debug("Merged meanings: %s", json.dumps(merged_meanings, ensure_ascii=False, indent=2))
     all_meanings_dict[word_key] = merged_meanings
     return MakeMeaningsResult.SUCCESS
+
+
+def revise_meanings_prompt(
+    word: str,
+    reading: str,
+    meanings_json: str,
+    usages: Sequence[WordAndSentences],
+    dictionary_entry: str,
+) -> str:
+    """The prompt that revises the generated meanings (`generated_meanings_json`'s text) to
+    cover `usages`, the meanings and sentences of notes none of them fitted, as it numbers
+    them."""
+    meanings_and_sentences = ""
+    for i, word_and_sentences in enumerate(usages):
+        sentences_formatted = ""
+        for sen in word_and_sentences["sentences"]:
+            sentences_formatted += f"  - JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
+        meanings_and_sentences += f"""
+UNMATCHED USAGE {i + 1}:
+- Description of usage in Japanese: {word_and_sentences["jp_meaning"] or "(empty)"}
+- English description: {word_and_sentences["en_meaning"] or "(empty)"}
+- Sentences:
+{sentences_formatted}
+"""
+    return f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. From this, a single list of all distinct meanings was previously created. The list was meant to be comprehensive enough to match all possible usages of the word but some usages of the word were encountered that did not match any of the meanings. Your task is to revise the previous list of meanings to better cover all the usages expressed in the usages and the dictionary entry. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
+
+Definition rules:
+- Create a Japanese meaning and English meaning.
+- MINIMIZE DIFFERENT MEANINGS: Make as a few separate meanings as possible by combining meanings that are related. Extremely common words like 見る, 行く, 来る, 有る, etc. have a large number of meanings which should be especially aggressively combined into as few meanings as possible.
+- BE CONCISE: Each meaning should be concise, ideally a single sentence but more if absolutely necessary to combine multiple related meanings.
+- The English meaning should almost always be a short list of equivalent words or phrases separated by semicolons. Only explain in sentences when equivalents do not exist; e.g. the word is "untranslatable".
+- If an unmatched usage is something that no dictionary entry covers, add a new meaning to cover that usage. Create the meaning based on the description and sentences provided following the same rules as above.
+
+Combination rules:
+- Most of all, if the dictionary entries includes multiple meanings that are similar, combine them into one.
+- However also combine dissimilar meanings that that are of the type one literal and one metaphorical - those should become one meaning where each is described shortly.
+- Especially, if an unmatched usage is a combination of two meanings then follow its example, and make just one meaning that covers both.
+
+Information extraction rules:
+- Make sure to analyze the different dictionary entries carefully and identify the same meanings expressed in different ways. The aim is to compress all the information into a minimal set of distinct meanings.
+- Note that the dictionary entries may include information about additinal phrases that use the word. These would usually come after the list of main meanings per dictionary. Ignore these additional phrases and only focus on the main meanings of the word or phrase itself.
+- Exclude any example sentences, usage notes, or extraneous information.
+- When creating new meanings based on unmatched usages, focus on the core meaning being expressed and avoid referencing anything about the example sentences directly.
+
+Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys for each distinct meaning.
+
+WORD OR PHRASE (READING):
+{word} ({reading})
+
+---
+PREVIOUSLY GENERATED MEANINGS:
+{{{meanings_json}}}
+---
+WORD USAGES NOT COVERED BY PREVIOUS MEANINGS:
+{meanings_and_sentences}
+---
+DICTIONARY ENTRIES:
+{dictionary_entry}
+---
+"""
 
 
 def revise_meanings_for_word(
@@ -318,18 +411,7 @@ def revise_meanings_for_word(
     """
     mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
 
-    meanings_and_sentences = ""
-    for i, word_and_sentences in enumerate(list(bad_note_meanings_dict.values())):
-        sentences_formatted = ""
-        for sen in word_and_sentences["sentences"]:
-            sentences_formatted += f"  - JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        meanings_and_sentences += f"""
-UNMATCHED USAGE {i + 1}:
-- Description of usage in Japanese: {word_and_sentences["jp_meaning"] or "(empty)"}
-- English description: {word_and_sentences["en_meaning"] or "(empty)"}
-- Sentences:
-{sentences_formatted}
-"""
+    usages = list(bad_note_meanings_dict.values())
     word_key = make_meaning_dict_key(word, reading)
     existing_meanings = all_meanings_dict.get(word_key, [])
 
@@ -348,42 +430,14 @@ UNMATCHED USAGE {i + 1}:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
         return MakeMeaningsResult.NO_DICTIONARY_ENTRY
 
-    prompt = f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. From this, a single list of all distinct meanings was previously created. The list was meant to be comprehensive enough to match all possible usages of the word but some usages of the word were encountered that did not match any of the meanings. Your task is to revise the previous list of meanings to better cover all the usages expressed in the usages and the dictionary entry. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
-
-Definition rules:
-- Create a Japanese meaning and English meaning.
-- MINIMIZE DIFFERENT MEANINGS: Make as a few separate meanings as possible by combining meanings that are related. Extremely common words like 見る, 行く, 来る, 有る, etc. have a large number of meanings which should be especially aggressively combined into as few meanings as possible.
-- BE CONCISE: Each meaning should be concise, ideally a single sentence but more if absolutely necessary to combine multiple related meanings.
-- The English meaning should almost always be a short list of equivalent words or phrases separated by semicolons. Only explain in sentences when equivalents do not exist; e.g. the word is "untranslatable".
-- If an unmatched usage is something that no dictionary entry covers, add a new meaning to cover that usage. Create the meaning based on the description and sentences provided following the same rules as above.
-
-Combination rules:
-- Most of all, if the dictionary entries includes multiple meanings that are similar, combine them into one.
-- However also combine dissimilar meanings that that are of the type one literal and one metaphorical - those should become one meaning where each is described shortly.
-- Especially, if an unmatched usage is a combination of two meanings then follow its example, and make just one meaning that covers both.
-
-Information extraction rules:
-- Make sure to analyze the different dictionary entries carefully and identify the same meanings expressed in different ways. The aim is to compress all the information into a minimal set of distinct meanings.
-- Note that the dictionary entries may include information about additinal phrases that use the word. These would usually come after the list of main meanings per dictionary. Ignore these additional phrases and only focus on the main meanings of the word or phrase itself.
-- Exclude any example sentences, usage notes, or extraneous information.
-- When creating new meanings based on unmatched usages, focus on the core meaning being expressed and avoid referencing anything about the example sentences directly.
-
-Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys for each distinct meaning.
-
-WORD OR PHRASE (READING):
-{word} ({reading})
-
----
-PREVIOUSLY GENERATED MEANINGS:
-{{{json.dumps(existing_meanings, ensure_ascii=False, indent=2)}}}
----
-WORD USAGES NOT COVERED BY PREVIOUS MEANINGS:
-{meanings_and_sentences}
----
-DICTIONARY ENTRIES:
-{dict_meaning_for_word}
----
-"""
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "meanings_json": generated_meanings_json(existing_meanings),
+        "usages": usages,
+        "dictionary_entry": dict_meaning_for_word,
+    }
+    prompt = revise_meanings_prompt(**inputs)
     logger.debug(f"Prompt for revising possible meanings: {prompt}")
 
     response_schema = {
@@ -394,7 +448,13 @@ DICTIONARY ENTRIES:
     }
 
     model = config.get("make_meanings_model", "")
-    result = get_response(model, prompt, response_schema=response_schema)
+    result = get_response(
+        model,
+        prompt,
+        response_schema=response_schema,
+        kind="make_all_meanings.revise",
+        inputs=inputs,
+    )
     revised_meanings = validate_meanings_result_object(result, "revising meanings")
     if revised_meanings is None:
         return MakeMeaningsResult.ERROR
