@@ -18,23 +18,25 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | path | role |
 | --- | --- |
 | `__init__.py` | strict order, see below |
-| `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts. Importing it creates `user_files/` and imports `anki` |
-| `call_logging.py` | per-call log files in `user_files/logs/`; `bulk_op_logging()`, `phase_log()`, `in_bulk_op()` |
+| `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
+| `call_logging.py` | per-call log files in `user_files/logs/`; `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
 | `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
-| `async_api_ops/base_ops.py` | the operation framework and provider dispatch |
+| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
+| `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
+| `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
 | `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login or unusable model stops it); cancel watchdog and stack dumps |
 | `async_api_ops/chain_types.py` | `ChainStep(label, on_done, op_label)` (`.title` is "Step i/n: <op>"), `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
 | `async_api_ops/step_failure.py` | `failed_step_outcome(parent, error, title, context=None)`: the one way a step is failed on an exception; shows it (pane, else `show_exception`; aqt's `Interrupted` neither), takes the stop reason, never raises |
-| `async_api_ops/run_errors.py` | the errors a run meets without failing, as data: `report_error(text, where)` from any thread, titled by the chain step (`set_step`) and the task's note (`error_subject(NoteSubject(note))`, a ContextVar that follows `create_task` and `to_thread`); `ErrorList` groups repeats of one text with a count (MAX_KINDS listed, the rest counted); `start_run`/`take_run` keep what the pane showed for the run's end message. aqt- and anki-free, so `terminal_client` reports through it |
+| `async_api_ops/run_errors.py` | the errors a run meets without failing, as data: `report_error(text, where)` from any thread, titled by the chain step (`set_step`) and the task's note (`error_subject(NoteSubject(note))`, a ContextVar that follows `create_task` and `to_thread`; the drivers enter it through `base_ops.note_context`, with the capture note); `ErrorList` groups repeats of one text with a count (MAX_KINDS listed, the rest counted); `start_run`/`take_run` keep what the pane showed for the run's end message. aqt- and anki-free, so `terminal_client` reports through it |
 | `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
@@ -154,6 +156,65 @@ containing `/` to Together. Keys and per-operation `*_model` names are in the ad
 There is no configured rate; throttling reacts to `retry-after`. Concurrency is
 memory-driven, with learned per-operation costs in `user_files/memory_estimates.json`.
 Never log, print or commit an API key, and never read the user's `meta.json` to find one.
+Every `get_response` call is recorded in the capture store, below.
+
+### Capture store
+
+A record of every AI call, for debugging and for building tests and evals from real runs:
+`user_files/capture.sqlite3`, one file per addon install, so every profile writes to it.
+`__init__.py` installs it at `profile_did_open` when config `capture_calls` is on (the default)
+and shuts it down at `profile_will_close`. When its writer starts, it deletes the runs older
+than `capture_keep_days` (default 90; 0 or less keeps everything), their calls, and the blobs no
+call uses. Tests and research scripts install no store unless they mean to (tests: in a temp
+dir); without one every capture function is a cheap no-op and nothing is recorded.
+
+| table | one row is |
+| --- | --- |
+| `runs` | one `selected_notes_op` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
+| `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result) |
+| `blobs` | instructions and response schemas, stored once by sha1 |
+
+- Outcomes: `ok`; `refused` (final non-200, body in `error`); `unreadable` (a 200 whose answer
+  text could not be found); `unparseable` (not JSON even after the corrector); `no_response`
+  (every attempt timed out or lost its connection, or the CLI gave up retrying); `cancelled`;
+  `error` (an exception, recorded and re-raised; no config, unsupported model, a CLI failure or
+  dead end). The helper that reports each (`post_to_api`, `report_refused`,
+  `report_unreadable`, `decode_answer`, the terminal client's failure paths) also notes it with
+  `capture.note_outcome`, and the last noted wins; a new failure path in a provider notes its own.
+- Keys: `request_key` is the sha1 of `kind` and `canonical_json(inputs)`: what was asked, the
+  same after the prompt is reworded. `prompt_key` hashes model, instructions, prompt, schema and
+  params: what was sent. `capture_store.research_cache_key(model, prompt)` is the research
+  scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no column holds it.
+- Log ids: every line of the addon's log carries `[r<run> n<note> c<call>]`, only the ids there
+  are (`n` shows with capture off too), or `[-]`. Each captured call ends with
+  `call <id> <kind> <outcome> <seconds>s`, the line that names its row, logged at INFO inside
+  the call; the default `log_level` ERROR hides it, and the store's own warnings too.
+- The ids travel in ContextVars, not arguments. `selected_notes_op`'s `run_bulk_op` begins the
+  run and enters `capture.run_scope` around `run_until_complete`; each driver enters
+  `base_ops.note_context(note)` (`error_subject` and `capture.note_scope` together) where it
+  starts a note's work; `asyncio.create_task` and `asyncio.to_thread` copy both into the pool
+  thread that calls `get_response`. `loop.run_in_executor`, `executor.submit` and a plain
+  `threading.Thread` start without them: a call made there gets an implicit run and no note.
+  The match op adds `capture.task_scope(f"{word}|{reading}")` around each word target.
+- `note_id` is the note the driver or hook works on, not always the one a call changes: the
+  clean_meaning and make_all_meanings calls a match target makes for a word note carry the
+  sentence note's id and the target's task. A note not added yet (id 0) is recorded as none.
+
+**A new AI call site** (`translate_field.py` is the smallest example):
+
+- Pass `kind="<op>.<what one request is about>"`: `translate.sentence`, `judge.word`,
+  `clean_meaning.map`. The prefix is the module whose prompt it is, not the op the user ran (a
+  low map score in clean_meaning makes a `make_all_meanings.revise` call).
+- Pass `inputs`, the values the prompt is built from, as plain JSON: no note ids (the row has its
+  own), no API keys, a looked-up value as the text the prompt shows (a dictionary entry, not its
+  key). Add nothing the prompt does not show but what makes the case, with a comment saying why
+  (`match.meanings` records `reading`, which its prompt leaves out).
+- Build the prompt with a pure module-level builder from exactly those inputs (with no such
+  extra, `prompt = builder(**inputs)`), and test that the builder given the recorded inputs,
+  also after `canonical_json`'s round trip (it sorts dict keys), returns the prompt sent.
+  `test_capture_kinds.py` and `test_capture_meaning_kinds.py` have the shape.
+- `test_capture_kinds.py`'s AST scan fails a call of `get_response` in `async_api_ops/`, or a
+  call handed it (`asyncio.to_thread(get_response, ...)`), that passes no `kind` or `inputs`.
 
 ## Invariants
 
@@ -240,11 +301,16 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   the default search, where `find_notes("")` is every note. The box stands in only if aqt
   drops `_lastSearchTxt`, and the dialog's count then says in red that an empty search is
   every note in the collection.
-- These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`,
-  `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An `aqt`
-  import in one of them takes the test suite offline (`test/addon_modules.py` says so).
+- These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`, `capture_store.py`,
+  `capture.py`, `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An
+  `aqt` import in one of them takes the test suite offline (`test/addon_modules.py` says so).
   `async_api_ops/chain_types.py` is kept free of both too, so the chain's types need nothing
   of Anki.
+- **Capture never fails or changes an op.** The store is diagnostics: a file it cannot open or
+  write turns it off for the session (a warning, then nothing recorded), a full queue drops the
+  record, and its recording methods only enqueue, never block or raise, from any thread; past
+  the open at install, no sqlite call happens off its writer thread. The capture code around
+  `get_response` catches its own failures and lets the op's result and exception through.
 - A progress **message is also a key**: `ConcurrencyGate` stores the learned memory cost
   under `op_key=message`, so rewording it resets the estimate.
 - `bulk_*_op` signatures have mutable `{}` defaults, harmless only because
@@ -289,7 +355,7 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
 
 ## Tests and types
 
-- `test/` (about 50 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
+- `test/` (about 60 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
   this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir so pytest
   never imports the addon's aqt-importing `__init__.py`, and sets `--import-mode=importlib`.
   `test/addon_modules.py` provides `load_addon_module`, `load_ops_module(name, subdir)`
@@ -306,6 +372,15 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
   skip. Copy it for another dialog rather than un-stubbing the suite.
+- Capture: `test_capture_store.py` (the file, writer, prune, keys), `test_capture.py` (the
+  API), `test_capture_calls.py` (`get_response` through each provider over a fake session or
+  Popen), `test_capture_runs.py` (a real `selected_notes_op` run), `test_capture_kinds.py` and
+  `test_capture_meaning_kinds.py` (each call site's kind and inputs, the prompts pinned byte for
+  byte, the AST scan); `test_call_logging.py` covers the ids in the log format. A test that
+  installs a store puts it in a `tempfile.TemporaryDirectory()` and shuts it down in a cleanup,
+  or it records the next test's calls; it reads rows with its own `sqlite3` connection after
+  `flush()`, never by waiting on the batch timer, and clears `capture._quiet_until` in `setUp`
+  (capture's warnings are rate limited per process).
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.

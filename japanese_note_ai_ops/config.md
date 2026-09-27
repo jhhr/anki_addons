@@ -10,9 +10,9 @@
 - `capture_calls`: Default is `true`. Records every AI call (prompt, answer, outcome, timing,
   the note and run it was for) in `user_files/capture.sqlite3`, for debugging and for
   building tests and evals from real runs. No API keys.
-- `capture_keep_days`: Default is `90`. Runs older than this are deleted from that file; `0`
-  keeps every run. Both are read when the profile opens: a change takes effect on the next
-  profile load or restart.
+- `capture_keep_days`: Default is `90`. Runs older than this many days are deleted from that
+  file, with their calls, when a profile opens; `0` or less keeps every run. Both are read when
+  the profile opens: a change takes effect on the next profile load or restart.
 
 ## models
 
