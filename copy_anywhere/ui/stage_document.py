@@ -49,6 +49,7 @@ from ..logic.definition_schema import (
     walk_stages,
 )
 from ..logic.flow_analysis import AnalysisResult, analyze_definition
+from ..logic.rename_reconcile import BROKEN_KEY, broken_by_rename_entries
 from ..logic.unsaved_note_search import UnjudgeableSearch, UnsavedNoteSearchError, parse_search
 
 #: Human labels for the Add Stage menu and the stage row headers, in menu order (§10).
@@ -539,6 +540,33 @@ class StageDocument:
     def set_exports(self, exports: Iterable[Export]) -> None:
         self.definition["exports"] = list(exports)
         self.invalidate()
+
+    # -- marks a rename left -------------------------------------------------------------
+    #
+    # The analysis never reads a mark, so dismissing one does not invalidate it: the only
+    # thing a dismissal changes is what `to_definition` stores, and whether the definition
+    # is run afterwards.
+
+    def rename_marks(self) -> list[tuple[dict, str]]:
+        """The marks a rename left on this definition, each entry with its message."""
+        return broken_by_rename_entries(self.definition)
+
+    def dismiss_rename_mark(self, entry: dict) -> None:
+        """Take one mark off: the user says they have updated the definition for it.
+
+        Found by identity, not by position or message: two entries can say the same thing,
+        and the editor's rows hold the entries they were built from. Once nothing with a
+        message is left the key goes too, with any entry that has nothing to say -- such an
+        entry does not stop a run and is never shown, so it could never be dismissed.
+        """
+        stored = self.definition.get(BROKEN_KEY)
+        if isinstance(stored, list):
+            self.definition[BROKEN_KEY] = [kept for kept in stored if kept is not entry]
+        if not self.rename_marks():
+            self.definition.pop(BROKEN_KEY, None)
+
+    def dismiss_all_rename_marks(self) -> None:
+        self.definition.pop(BROKEN_KEY, None)
 
     # -- saving --------------------------------------------------------------------------
 

@@ -1081,17 +1081,27 @@ def broken_by_rename_messages(definition: Any) -> list[str]:
     not dicts, no message -- counts only for its well-formed entries: one with nothing to
     say does not stop the run.
     """
+    return [message for _entry, message in broken_by_rename_entries(definition)]
+
+
+def broken_by_rename_entries(definition: Any) -> list[tuple[dict, str]]:
+    """Each stored mark entry that has something to say, with its message, in stored order.
+
+    The entries themselves rather than their messages, for the editor, which dismisses one
+    entry at a time: two entries can carry the same message (a stored list edited by hand,
+    or shapes from two versions), and dismissing one must not take the other with it.
+    """
     if not isinstance(definition, dict):
         return []
     stored = definition.get(BROKEN_KEY)
     if not isinstance(stored, list):
         return []
-    messages: list[str] = []
+    found: list[tuple[dict, str]] = []
     for entry in stored:
         message = entry.get("message") if isinstance(entry, dict) else None
         if isinstance(message, str) and message.strip():
-            messages.append(message)
-    return messages
+            found.append((entry, message))
+    return found
 
 
 def broken_by_rename_tooltip(messages: list[str]) -> str:
@@ -1358,6 +1368,7 @@ __all__ = [
     "SNAPSHOT_KEY",
     "ReconcileResult",
     "StaleName",
+    "broken_by_rename_entries",
     "broken_by_rename_explanation",
     "broken_by_rename_tooltip",
     "broken_by_rename_messages",

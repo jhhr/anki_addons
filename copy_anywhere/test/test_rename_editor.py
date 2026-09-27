@@ -15,6 +15,7 @@ has says so once per run rather than per note.
 """
 
 import copy
+from typing import Optional
 
 import pytest
 from aqt import mw
@@ -618,6 +619,187 @@ class TestThePickerMarksADefinition:
 
         assert row.checkbox.text() == "Renamed"
         assert "Note" in row.broken_marker.toolTip()
+
+    def test_a_mark_dismissed_in_the_real_editor_and_saved_unmarks_the_row(
+        self, col, picker, widget_parent, monkeypatch
+    ):
+        from copy_anywhere.ui.edit_staged_definition_dialog import EditStagedDefinitionDialog
+
+        config, run = picker
+        definition = self.reading(d.code("return trigger['Note']"))
+        self.delete_the_note_field(col, run, definition)
+        dialog = self.dialog(widget_parent, config)
+        row = dialog.definition_ui_components[definition["guid"]]["widget"]
+        assert "Note" in row.broken_marker.toolTip()
+
+        def dismiss_and_save(to_edit, _config):
+            # What `run_definition_editor` does, with the user's clicks in place of `exec`.
+            editor = EditStagedDefinitionDialog(widget_parent, to_edit)
+            try:
+                dismiss_button(editor.marks_banner, 0).click()
+                editor.ok_button.click()
+                return editor.get_copy_definition() if editor.result() else None
+            finally:
+                editor._refresh_timer.stop()
+
+        monkeypatch.setattr(dialog, "run_definition_editor", dismiss_and_save)
+        assert dialog.edit_definition_by_guid(definition["guid"]) == 0
+
+        assert BROKEN_KEY not in dialog.copy_definitions[0]
+        assert row.broken_marker.text() == "" and row.checkbox.isEnabled()
+
+
+def rename_mark(old: str, new: Optional[str], message: Optional[str] = None) -> dict:
+    """A mark entry as the pass stores one for a field of VOCAB."""
+    done = f'renamed to "{new}"' if new else "deleted"
+    return {
+        "kind": "field",
+        "note_type_id": 1,
+        "id": 2,
+        "old": old,
+        "new": new,
+        "message": message or f'Field "{old}" of note type "{VOCAB}" was {done}',
+    }
+
+
+def dismiss_button(banner, index: int):
+    from aqt.qt import QPushButton
+
+    return banner.rows[index][1].findChild(QPushButton)
+
+
+class TestTheEditorShowsTheMarks:
+    """The marks a rename left, at the top of the definition editor, each with Dismiss.
+
+    Nothing re-derives a mark, so the editor is where one leaves (besides undoing the
+    rename): the user updates the definition, dismisses the mark to say so, and saves.
+    Cancel throws the dismissal away with the rest of the edit.
+    """
+
+    @pytest.fixture
+    def open_editor(self, col, qapp, widget_parent):
+        from copy_anywhere.ui.edit_staged_definition_dialog import EditStagedDefinitionDialog
+
+        opened = []
+
+        def open_editor(definition):
+            dialog = EditStagedDefinitionDialog(widget_parent, definition)
+            opened.append(dialog)
+            return dialog
+
+        yield open_editor
+        for dialog in opened:
+            dialog._refresh_timer.stop()
+
+    def marked(self, *marks) -> dict:
+        definition = d.staged(
+            "Marked",
+            note_types=[VOCAB],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
+            ],
+        )
+        if marks:
+            definition[BROKEN_KEY] = list(marks)
+        return definition
+
+    def save(self, dialog):
+        # Asserted first: a blocked save opens a message box, which would wait for a click.
+        assert dialog.ok_button.isEnabled()
+        dialog.ok_button.click()
+        assert dialog.result()
+        return dialog.get_copy_definition()
+
+    def test_the_banner_lists_each_marks_message(self, open_editor):
+        first = rename_mark("Word", "Term")
+        second = rename_mark("Note", None)
+        dialog = open_editor(self.marked(first, second))
+
+        banner = dialog.marks_banner
+        assert not banner.isHidden()
+        assert banner.messages() == [first["message"], second["message"]]
+        assert not banner.dismiss_all_button.isHidden()
+
+    def test_dismiss_removes_one_and_save_stores_the_definition_without_it(self, open_editor):
+        first = rename_mark("Word", "Term")
+        second = rename_mark("Note", None)
+        dialog = open_editor(self.marked(first, second))
+
+        dismiss_button(dialog.marks_banner, 0).click()
+
+        assert dialog.marks_banner.messages() == [second["message"]]
+        # One left: Dismiss does the same, so Dismiss all is not offered.
+        assert dialog.marks_banner.dismiss_all_button.isHidden()
+        assert self.save(dialog)[BROKEN_KEY] == [second]
+
+    def test_two_marks_with_one_message_are_dismissed_one_at_a_time(self, open_editor):
+        same = "Field was renamed"
+        dialog = open_editor(
+            self.marked(
+                rename_mark("Word", "Term", message=same), rename_mark("Note", None, message=same)
+            )
+        )
+
+        dismiss_button(dialog.marks_banner, 1).click()
+
+        assert [entry["old"] for entry in self.save(dialog)[BROKEN_KEY]] == ["Word"]
+
+    def test_dismiss_all_takes_every_mark_off_and_the_banner_away(self, open_editor):
+        # An entry with nothing to say is never shown; it goes with the rest.
+        dialog = open_editor(
+            self.marked(rename_mark("Word", "Term"), {"field": "Note"}, rename_mark("Note", None))
+        )
+
+        dialog.marks_banner.dismiss_all_button.click()
+
+        assert dialog.marks_banner.isHidden()
+        assert BROKEN_KEY not in self.save(dialog)
+
+    def test_dismissing_the_last_one_takes_the_banner_away_and_the_key_with_it(
+        self, open_editor
+    ):
+        dialog = open_editor(self.marked(rename_mark("Word", "Term"), {"field": "Note"}))
+
+        dismiss_button(dialog.marks_banner, 0).click()
+
+        assert dialog.marks_banner.isHidden()
+        assert BROKEN_KEY not in self.save(dialog)
+
+    def test_cancel_keeps_the_marks(self, open_editor):
+        marks = [rename_mark("Word", "Term"), rename_mark("Note", None)]
+        definition = self.marked(*marks)
+        dialog = open_editor(definition)
+
+        dialog.marks_banner.dismiss_all_button.click()
+        dialog.close_button.click()
+
+        # The dict handed in is the stored one (`run_definition_editor` passes the config's
+        # own), and a cancelled editor hands nothing back.
+        assert not dialog.result()
+        assert definition[BROKEN_KEY] == marks
+
+    def test_an_unmarked_definition_has_no_banner(self, open_editor):
+        dialog = open_editor(self.marked())
+
+        assert dialog.marks_banner.isHidden()
+        assert dialog.marks_banner.messages() == []
+        assert BROKEN_KEY not in self.save(dialog)
+
+    def test_an_older_shape_of_entry_is_shown_and_dismissable(self, open_editor):
+        old = {"field": "Word", "message": f'Field "Word" is no longer present in "{VOCAB}"'}
+        dialog = open_editor(self.marked(old))
+
+        assert dialog.marks_banner.messages() == [old["message"]]
+        dismiss_button(dialog.marks_banner, 0).click()
+        assert BROKEN_KEY not in self.save(dialog)
+
+    def test_a_message_is_shown_as_text(self, open_editor):
+        from aqt.qt import QLabel
+
+        dialog = open_editor(self.marked(rename_mark("<b>Word</b>", "Term")))
+        label = dialog.marks_banner.rows[0][1].findChild(QLabel)
+
+        assert "&lt;b&gt;Word&lt;/b&gt;" in label.text()
 
 
 class ADefinitionBrokenByARename:

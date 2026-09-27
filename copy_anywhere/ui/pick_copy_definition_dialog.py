@@ -228,13 +228,14 @@ class DefinitionRow(QWidget):
         self._mark_stale_search_terms()
 
     def _mark_if_broken(self) -> None:
-        """Mark, and refuse to select, a definition a field rename left marked as broken.
+        """Mark, and refuse to select, a definition the reconcile pass marked for a renamed
+        or deleted field or card type (`rename_reconcile.BROKEN_KEY`).
 
-        Such a definition is not run (`copy_fields.copy_for_single_trigger_note`): a run
-        would only log the same message. So the checkbox is unticked and disabled rather
-        than offered, and both it and the icon beside it say why -- a disabled checkbox
-        still shows its tooltip. Edit, Duplicate and Delete stay, since editing is one of
-        the ways out.
+        Such a definition is not run (`copy_fields.refused_for_rename`) until it has been
+        updated and every mark dismissed in the editor: a run would only log the same
+        message. So the checkbox is unticked and disabled rather than offered, and both it
+        and the icon beside it say why -- a disabled checkbox still shows its tooltip. Edit,
+        Duplicate and Delete stay, since the editor is the way out.
         """
         from ..logic.rename_reconcile import broken_by_rename_messages, broken_by_rename_tooltip
 
@@ -731,8 +732,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         """Show the saved definition in its existing row, markers and all.
 
         The one the save stored, taken from the reloaded list: the save brings the stored
-        copy up to date (`Config._save_definitions` re-derives the broken mark, for one),
-        and the dict the editor handed back is not guaranteed to be that copy.
+        copy up to date (`Config._save_definitions` rederives `effects`, for one), and the
+        dict the editor handed back is not guaranteed to be that copy.
         """
         row = self.definition_ui_components.get(definition_guid, {}).get("widget")
         saved = next(

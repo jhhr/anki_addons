@@ -35,6 +35,7 @@ from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from ..logic.flow_analysis import find_call_cycles, make_lookup
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from .labels import wrapping
+from .rename_marks_banner import RenameMarksBanner
 from .stage_document import StageDocument
 from .stage_editor_context import (
     known_fields_for,
@@ -131,6 +132,12 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         )
 
         self.body = QVBoxLayout(self.inner_widget)
+
+        # First, above everything it may be about: a marked definition is not run, which
+        # matters more than anything else the editor says about it, and the user is the one
+        # who says it has been updated.
+        self.marks_banner = RenameMarksBanner(self.inner_widget, self.document)
+        self.body.addWidget(self.marks_banner)
 
         self.triggers_editor = TriggersEditor(self.inner_widget, self.document.definition)
         self.triggers_editor.changed.connect(self.schedule_refresh)
