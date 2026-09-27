@@ -1395,6 +1395,49 @@ class TestTheFileAReadLooksFor:
         ), logger.errors
 
 
+class TestANameTheFileSystemRefuses:
+    """A file name is made from note fields, and the file system can refuse one. What it
+    raised was not the file stages' own error, so it went past their error handling: the
+    run aborted with a traceback, the trigger kept the stages' earlier edits, and the
+    preview failed rather than showing the stage."""
+
+    def run_with(self, note, stage):
+        return run(d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("edited"))]),
+            stage,
+        ]), note)
+
+    @pytest.mark.parametrize(
+        "filename, said",
+        [
+            ("data", "'_data' is a folder in the media folder, not a file"),
+            ("a\x00b.txt", "cannot be used"),
+            ("x" * 300 + ".txt", "cannot be used"),
+        ],
+        ids=["a folder", "a NUL", "too long"],
+    )
+    def test_a_read_fails_the_stage(self, col, note, media_dir, logger, filename, said):
+        (media_dir / "_data").mkdir()
+
+        ok, _ = self.run_with(note, d.read_file("content", filename))
+
+        assert ok is False
+        assert logger.has_error(said), logger.errors
+        assert note["Note"] == ""
+
+    @pytest.mark.parametrize(
+        "extra", [{"overwrite": False}, {"skip_if_exists": True}], ids=["no overwrite", "skip"]
+    )
+    def test_so_does_a_write_that_checks_for_the_file(self, col, note, media_dir, logger, extra):
+        stage = d.write_file("x" * 300 + ".txt", d.text("content"), **extra)
+
+        ok, _ = self.run_with(note, stage)
+
+        assert ok is False
+        assert logger.has_error("cannot be used"), logger.errors
+        assert note["Note"] == ""
+
+
 class TestCalls:
     def child(self, guid="child-guid"):
         producer = d.variable("H1", d.text("from {{trigger.Word}}"))
