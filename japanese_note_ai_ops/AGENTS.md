@@ -331,6 +331,10 @@ dir); without one every capture function is a cheap no-op and nothing is recorde
   `aqt` import in one of them takes the test suite offline (`test/addon_modules.py` says so).
   `async_api_ops/chain_types.py` is kept free of both too, so the chain's types need nothing
   of Anki.
+- **Nothing the addon logs reaches stderr**, which Anki shows as an error dialog. The addon
+  logger does not propagate, and `__init__.setup_addon_logging` gives it a `NullHandler` at
+  import, unflagged, so that opening and closing log files never leaves it with no handler
+  (a record with none goes to logging's last resort, stderr). Keep both.
 - **Capture never fails or changes an op.** The store is diagnostics: a file it cannot open or
   write turns it off for the session (a warning, then nothing recorded), a full queue drops the
   record, and its recording methods only enqueue, never block or raise, from any thread; past
