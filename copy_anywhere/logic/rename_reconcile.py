@@ -92,6 +92,7 @@ from .rename_scan import (
     Hit,
     Rename,
     find_in_code,
+    find_in_deck_slot,
     find_in_query,
     find_in_slot,
     find_in_template,
@@ -977,6 +978,8 @@ _READ_AS_TRIGGER_SLOT = "trigger slot"
 #: A field name of notes whose note types the pass cannot know: a sort field, a field
 #: write's target on a note from a query.
 _READ_AS_OTHER_SLOT = "other slot"
+#: A deck name: a card action's `change_deck`, which moves the card by name.
+_READ_AS_DECK_SLOT = "deck slot"
 
 #: The hits a definition's own trigger note types are spelled through. A rename of a field
 #: or card type of the one note type a definition triggers on is followed there, and a
@@ -1057,13 +1060,19 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
                 )
     for action in stage.get("card_actions") or []:
         action_guid = action.get("guid") if isinstance(action, dict) else None
+        if not isinstance(action_guid, str) or not action_guid:
+            continue
         # The code runs only when the action says so (`copy_primitives`); code kept beside
-        # a switched-off action breaks nothing.
-        if isinstance(action_guid, str) and action_guid and action.get("use_code"):
+        # a switched-off action breaks nothing. Code that runs returns the action itself,
+        # so the stored `change_deck` is only what moves the card when no code does.
+        code = action.get("action_code")
+        if action.get("use_code"):
+            yield _Location(card_action_key(action_guid, "action_code"), _READ_AS_CODE, code)
+        if not (action.get("use_code") and isinstance(code, str) and code.strip()):
             yield _Location(
-                card_action_key(action_guid, "action_code"),
-                _READ_AS_CODE,
-                action.get("action_code"),
+                card_action_key(action_guid, "change_deck"),
+                _READ_AS_DECK_SLOT,
+                action.get("change_deck"),
             )
 
 
@@ -1091,8 +1100,22 @@ def _hits(location: _Location, rename: Rename) -> list[Hit]:
         return find_in_template(location.value, rename)
     if location.read_as == _READ_AS_OTHER_SLOT:
         return find_in_slot(location.value, rename, OTHER_SLOT)
+    if location.read_as == _READ_AS_DECK_SLOT:
+        return find_in_deck_slot(location.value, rename)
     names = location.value if isinstance(location.value, list) else [location.value]
     return [hit for name in names for hit in find_in_slot(name, rename, TRIGGER_SLOT)]
+
+
+@dataclass(frozen=True)
+class _Scan:
+    """One change to look for in one definition, and how that definition relates to it."""
+
+    change: _Change
+    #: Whether the definition's trigger slots and tokens count as spelling it.
+    through_trigger: bool
+    #: Whether the definition triggers on the note type a field or card type belongs to,
+    #: which is what makes its code's spelling of one more than a guess (`hit_blocks_run`).
+    on_trigger_note_type: bool
 
 
 def _changes_to_scan(
@@ -1100,7 +1123,7 @@ def _changes_to_scan(
     field_changes: dict[int, list[_Change]],
     object_changes: list[_Change],
     referenced: dict,
-) -> list[tuple[_Change, bool]]:
+) -> list[_Scan]:
     """Each change this definition could spell, and whether its trigger slots and tokens
     count as spelling it.
 
@@ -1110,24 +1133,22 @@ def _changes_to_scan(
     deletion has nothing to follow, so it is warned about there too. A definition that does
     not trigger on the note type spells *its* trigger's names there, but a search, another
     binding, a sort field or code can still reach the note type's notes, so those are
-    scanned for every definition. A deck or a note type is only ever spelled in a search or
-    in code, of any definition.
+    scanned for every definition -- as a guess, which only warns. A deck or a note type is
+    spelled in a search, in code or in a card action's deck, of any definition.
     """
     followed = _stored_trigger_count(definition) == 1
-    scans: list[tuple[_Change, bool]] = []
+    scans: list[_Scan] = []
     for note_type_id, changes in field_changes.items():
         holders = referenced.get((_TRIGGER_NOTE_TYPE, note_type_id)) or []
         triggering = any(holder is definition for holder in holders)
         for change in changes:
             through_trigger = triggering and not (followed and change.rename.new is not None)
-            scans.append((change, through_trigger))
-    scans += [(change, False) for change in object_changes]
+            scans.append(_Scan(change, through_trigger, triggering))
+    scans += [_Scan(change, False, False) for change in object_changes]
     return scans
 
 
-def _warnings_for(
-    definition: CopyDefinitionV2, scans: list[tuple[_Change, bool]]
-) -> list[tuple[str, dict]]:
+def _warnings_for(definition: CopyDefinitionV2, scans: list[_Scan]) -> list[tuple[str, dict]]:
     """One entry per location and change the location still spells, `(key, entry)`.
 
     Read before anything is followed, since a rename in the same save can hand a deleted
@@ -1137,15 +1158,19 @@ def _warnings_for(
     multi_trigger = _stored_trigger_count(definition) > 1
     found: list[tuple[str, dict]] = []
     for location in _locations(definition):
-        for change, through_trigger in scans:
+        for scan in scans:
+            rename = scan.change.rename
             hits = [
                 hit
-                for hit in _hits(location, change.rename)
-                if through_trigger or hit.kind not in _TRIGGER_HIT_KINDS
+                for hit in _hits(location, rename)
+                if scan.through_trigger or hit.kind not in _TRIGGER_HIT_KINDS
             ]
             if hits:
-                blocks = any(hit_blocks_run(hit.kind, change.rename, multi_trigger) for hit in hits)
-                found.append((location.key, change.entry(blocks)))
+                blocks = any(
+                    hit_blocks_run(hit.kind, rename, multi_trigger, scan.on_trigger_note_type)
+                    for hit in hits
+                )
+                found.append((location.key, scan.change.entry(blocks)))
     return found
 
 

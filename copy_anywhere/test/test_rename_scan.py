@@ -18,6 +18,7 @@ from copy_anywhere.logic.rename_scan import (
     BINDING_TOKEN,
     CARD_TERM,
     CODE_LITERAL,
+    DECK_SLOT,
     DECK_TERM,
     FIELD_TERM,
     NOTE_TERM,
@@ -30,6 +31,7 @@ from copy_anywhere.logic.rename_scan import (
     apply_with_spans,
     code_is_readable,
     find_in_code,
+    find_in_deck_slot,
     find_in_query,
     find_in_search,
     find_in_slot,
@@ -517,7 +519,46 @@ class TestSlotsAndBlocking:
         ],
     )
     def test_what_blocks(self, kind, rename, multi, blocks):
-        assert hit_blocks_run(kind, rename, multi) is blocks
+        # In a definition that triggers on the renamed object's note type.
+        assert hit_blocks_run(kind, rename, multi, True) is blocks
+
+    @pytest.mark.parametrize(
+        "kind, rename, blocks",
+        [
+            # Code naming a field or card type of a note type the definition does not
+            # trigger on is a guess: another note type may have the name.
+            (CODE_LITERAL, WORD, False),
+            (CODE_LITERAL, Rename(KIND_FIELD, "Word"), False),
+            (CODE_LITERAL, RECOGNITION, False),
+            # A deck and a note type have unique names: code naming one is that object.
+            (CODE_LITERAL, JP, True),
+            (CODE_LITERAL, Rename(KIND_DECK, "JP Vocab"), True),
+            (CODE_LITERAL, VOCAB_NOTE, True),
+            (DECK_TERM, JP, True),
+            (DECK_SLOT, JP, True),
+            (DECK_SLOT, Rename(KIND_DECK, "JP Vocab"), True),
+            (FIELD_TERM, WORD, False),
+            (BINDING_TOKEN, WORD, False),
+        ],
+    )
+    def test_what_blocks_in_a_definition_not_on_the_note_type(self, kind, rename, blocks):
+        assert hit_blocks_run(kind, rename, False, False) is blocks
+
+    @pytest.mark.parametrize("value", ["JP Vocab", "jp vocab"])
+    def test_a_deck_slot_matches_the_deck_in_any_case(self, value):
+        assert find_in_deck_slot(value, JP) == [Hit(0, len(value), DECK_SLOT, "JP Words")]
+
+    @pytest.mark.parametrize("value", [None, "-", "", 0, 12345, "JP Vocab::Sub", "Other"])
+    def test_what_a_deck_slot_holds_for_no_move_or_an_id_is_not_a_hit(self, value):
+        assert find_in_deck_slot(value, JP) == []
+
+    def test_a_deck_slot_is_only_about_decks(self):
+        assert find_in_deck_slot("Word", WORD) == []
+        assert find_in_deck_slot("CA Vocab", VOCAB_NOTE) == []
+
+    def test_a_deleted_deck_in_a_slot_has_no_replacement(self):
+        hits = find_in_deck_slot("JP Vocab", Rename(KIND_DECK, "JP Vocab"))
+        assert [hit.replaceable for hit in hits] == [False]
 
     def test_a_rename_from_a_stored_entry(self):
         entry = {"kind": KIND_DECK, "old": "JP", "new": "JP2", "object_id": 1}

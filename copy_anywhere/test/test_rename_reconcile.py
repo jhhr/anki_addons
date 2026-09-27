@@ -1340,12 +1340,12 @@ class TestADeletedFieldOrCardTypeIsMarked:
 # Where a warning is filed ------------------------------------------------------------------
 
 
-def a_code_action(guid: str, code: str, use_code: bool = True) -> dict:
+def a_code_action(guid: str, code: str, use_code: bool = True, change_deck=None) -> dict:
     """A card action that runs code (or keeps code it does not run), naming no card type."""
     return {
         "guid": guid,
         "card_type": None,
-        "change_deck": None,
+        "change_deck": change_deck,
         "set_flag": None,
         "suspend": None,
         "bury": None,
@@ -1552,12 +1552,14 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         rename_field(col, VOCAB, "Word", "Term")
         reconcile(config, mw.col)
 
-        # Its search and its code can reach the renamed note type's notes; its own
+        # Its search and its code can reach the renamed note type's notes, but whether they
+        # mean that note type's field is a guess, so they only warn; its own
         # `{{trigger.Word}}` is a Kanji note's and is left alone.
         assert located(on_kanji) == {
             stage_key("kanji-query", "query.text"): [("Word", "Term", False)],
-            stage_key("kanji-code", "value.code"): [("Word", "Term", True)],
+            stage_key("kanji-code", "value.code"): [("Word", "Term", False)],
         }
+        assert not blocking_messages(on_kanji)
         assert on_kanji["stages"][2]["value"]["text"] == "{{trigger.Word}}"
         assert WARNINGS_KEY not in on_vocab
 
@@ -1682,6 +1684,58 @@ class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
 
         # Anki finds `deck:Other` in `OTHER` all the same.
         assert WARNINGS_KEY not in definition
+
+    def moving(self, *actions) -> dict:
+        return d.staged(
+            definition_name="moves",
+            note_types=[VOCAB],
+            stages=[d.edit_note("trigger", card_actions=list(actions))],
+        )
+
+    def test_a_card_action_moving_to_a_renamed_deck_is_warned_and_blocks(self, col, config):
+        definition = self.moving(a_code_action("move", "", use_code=False, change_deck="other"))
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        col.decks.rename(col.decks.id_for_name("Other"), "Elsewhere")
+        reconcile(config, mw.col)
+
+        # The action moves the card by name, and a name Anki no longer has moves nothing.
+        assert located(definition) == {
+            card_action_key("move", "change_deck"): [("Other", "Elsewhere", True)]
+        }
+
+    def test_a_card_action_moving_to_a_deleted_deck_is_warned_and_blocks(self, col, config):
+        definition = self.moving(a_code_action("move", "", use_code=False, change_deck="Other"))
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        col.decks.remove([col.decks.id_for_name("Other")])
+        reconcile(config, mw.col)
+
+        assert located(definition) == {
+            card_action_key("move", "change_deck"): [("Other", None, True)]
+        }
+
+    def test_a_deck_the_action_does_not_move_to_by_that_name_is_not_warned(self, col, config):
+        other_id = col.decks.id_for_name("Other")
+        definition = self.moving(
+            # Code that runs returns the action; the stored deck is not what moves the card.
+            a_code_action("coded", "return {'suspend': True}", change_deck="Other"),
+            # Switched on with no code: the stored deck is what runs.
+            a_code_action("blank-code", "  ", change_deck="Other"),
+            a_code_action("no-move", "", use_code=False, change_deck="-"),
+            a_code_action("by-id", "", use_code=False, change_deck=other_id),
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        col.decks.rename(other_id, "Elsewhere")
+        reconcile(config, mw.col)
+
+        assert located(definition) == {
+            card_action_key("blank-code", "change_deck"): [("Other", "Elsewhere", True)]
+        }
 
     def test_a_definition_that_spells_nothing_is_untouched_and_nothing_saves_after(
         self, col, config, stub_mw

@@ -57,7 +57,8 @@ from .query_terms import (
 )
 
 # What a hit is. The template scanner gives the first two, the search scanner the four
-# `_term`s, the code scanner `code_literal`, and `find_in_slot` the two slots.
+# `_term`s, the code scanner `code_literal`, `find_in_slot` the two field slots and
+# `find_in_deck_slot` the deck slot.
 
 #: `{{trigger.Word}}` or `{{trigger.Recognition__Card_Due}}`.
 TRIGGER_TOKEN = "trigger_token"
@@ -75,6 +76,8 @@ TRIGGER_SLOT = "trigger_slot"
 #: A slot naming a field of notes whose note types are not known: a query's sort field, a
 #: field write's target on a note from a query.
 OTHER_SLOT = "other_slot"
+#: A slot naming a deck: a card action's `change_deck`, which moves the card by name.
+DECK_SLOT = "deck_slot"
 
 #: The search key each object term kind is spelled with.
 _TERM_KEYS = {KIND_DECK: "deck", KIND_NOTE_TYPE: "note", KIND_CARD_TYPE: "card"}
@@ -123,21 +126,29 @@ class Hit:
         return self.replacement is not None
 
 
-def hit_blocks_run(hit_kind: str, rename: Rename, multi_trigger: bool) -> bool:
+def hit_blocks_run(
+    hit_kind: str, rename: Rename, multi_trigger: bool, on_trigger_note_type: bool
+) -> bool:
     """Whether a warning for this hit stops the definition from running (SPEC decisions 4, 5).
 
-    Blocks: any code hit; a `deck:` or `note:` term; a trigger token or slot of a definition
-    on several trigger note types, or naming a field or card type that was deleted. Warns
-    only: `card:` and field terms, a sort field or a query note's field, and a field or card
-    type spelled through another binding -- names that are not unique across note types,
-    spelled where the pass cannot know which note types are meant. That holds for a deletion
-    too: another note type the search or the binding reaches may still have the name.
+    Blocks: a `deck:` or `note:` term, a deck slot, and code spelling a deck or a note type
+    -- names unique in the collection, so the hit is that object; code spelling a field or
+    card type in a definition that triggers on its note type (`on_trigger_note_type`, the
+    user's choice); a trigger token or slot of a definition on several trigger note types,
+    or naming a field or card type that was deleted. Warns only: `card:` and field terms, a
+    sort field or a query note's field, a field or card type spelled through another
+    binding, and code spelling one in a definition that does not trigger on its note type
+    -- names that are not unique across note types, spelled where the pass cannot know which
+    note types are meant, so the hit is a guess. That holds for a deletion too: another
+    note type the search, the binding or the code reaches may still have the name.
 
     A trigger token or slot of a one-trigger definition is followed by the pass rather than
     warned about, so it only reaches here as a deletion.
     """
-    if hit_kind in (CODE_LITERAL, DECK_TERM, NOTE_TERM):
+    if hit_kind in (DECK_TERM, NOTE_TERM, DECK_SLOT):
         return True
+    if hit_kind == CODE_LITERAL:
+        return rename.kind in (KIND_DECK, KIND_NOTE_TYPE) or on_trigger_note_type
     if hit_kind in (TRIGGER_TOKEN, TRIGGER_SLOT):
         return multi_trigger or rename.new is None
     return False
@@ -186,6 +197,19 @@ def find_in_slot(value: Any, rename: Rename, kind: str = TRIGGER_SLOT) -> list[H
     if not _names_equal(rename, value):
         return []
     return [Hit(0, len(value), kind, rename.new)]
+
+
+def find_in_deck_slot(value: Any, rename: Rename) -> list[Hit]:
+    """A slot holding one deck name: a hit over all of it when it names the old deck.
+
+    Without regard to case, as Anki looks a deck up by name. What a card action stores for
+    "no move" (`None`, `"-"`, `0`) and a deck id are not names, and never a hit.
+    """
+    if rename.kind != KIND_DECK or not isinstance(value, str) or value in ("", "-"):
+        return []
+    if not _names_equal(rename, value):
+        return []
+    return [Hit(0, len(value), DECK_SLOT, rename.new)]
 
 
 # Template text -------------------------------------------------------------------------------
@@ -548,6 +572,7 @@ __all__ = [
     "BINDING_TOKEN",
     "CARD_TERM",
     "CODE_LITERAL",
+    "DECK_SLOT",
     "DECK_TERM",
     "FIELD_TERM",
     "NOTE_TERM",
@@ -560,6 +585,7 @@ __all__ = [
     "apply_with_spans",
     "code_is_readable",
     "find_in_code",
+    "find_in_deck_slot",
     "find_in_query",
     "find_in_search",
     "find_in_slot",
