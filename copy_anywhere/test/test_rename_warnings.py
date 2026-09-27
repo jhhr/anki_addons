@@ -24,6 +24,7 @@ from copy_anywhere.logic.rename_warnings import (
     blocking_messages,
     blocking_tooltip,
     blocks_run,
+    non_blocking_messages,
     remove_rename_warning,
     rename_warning_entries,
 )
@@ -95,6 +96,17 @@ class TestTheReaders:
 
         assert blocking_messages(definition) == ["blocks"]
         assert blocks_run(definition) is True
+
+    def test_the_entries_that_do_not_block_are_the_rest(self):
+        definition = d.warned(
+            d.staged(),
+            d.rename_warning("first warning", blocks_run=False),
+            d.rename_warning("blocks"),
+            d.rename_warning("second warning", blocks_run=False),
+        )
+
+        assert non_blocking_messages(definition) == ["first warning", "second warning"]
+        assert non_blocking_messages(d.staged()) == []
 
     def test_a_store_of_warnings_only_does_not_block(self):
         definition = d.warned(d.staged(), d.rename_warning("warned only", blocks_run=False))

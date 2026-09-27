@@ -7,13 +7,14 @@ spells the old name (`rename_locations.py`), as `definition["rename_warnings"]`:
                          "message"}, ...], ...}
 
 `new` is None for a deletion; `note_type_id` is the note type a field or card type belongs
-to. A warning with `blocks_run` keeps the definition from running on every path until the
-user has updated it and dismissed the warning in the editor. The store is read only through
-the functions here: every run path, the picker, the browser menu and `call_definition` ask
-the same question, and a stored value mangled by hand -- not a dict, a location that is not
-a list, an entry with nothing to say -- must read the same way to all of them. An entry
-with no message counts for nothing, so a mangled one never blocks a run the user could not
-see a reason for.
+to. A warning with `blocks_run` keeps the definition from running on every path until it
+is gone: the editor drops it on save once its location no longer spells the old name
+(`rename_reconcile.drop_cleared_warnings`), or the user dismisses it. The store is read
+only through the functions here: every run path, the picker, the browser menu and
+`call_definition` ask the same question, and a stored value mangled by hand -- not a dict, a
+location that is not a list, an entry with nothing to say -- must read the same way to all
+of them. An entry with no message counts for nothing, so a mangled one never blocks a run
+the user could not see a reason for.
 """
 
 from __future__ import annotations
@@ -25,8 +26,10 @@ WARNINGS_KEY: Final = "rename_warnings"
 #: What the user can do about a definition a blocking warning holds back, said after the
 #: stored message wherever a run refuses it. Undoing the rename takes the warning back too
 #: (`rename_reconcile._refresh_marks`), but the advice is for keeping the rename, which is
-#: the usual case.
-BLOCKING_ADVICE = "Update the definition, then dismiss the mark in the definition editor."
+#: the usual case. Dismissing is the other way out, for a hit that is not the renamed name.
+BLOCKING_ADVICE = (
+    "Replace the old name in the definition editor and save, or dismiss the warning there."
+)
 
 
 def rename_warning_entries(definition: Any) -> list[tuple[str, dict]]:
@@ -65,6 +68,21 @@ def blocking_messages(definition: Any) -> list[str]:
         entry["message"]
         for _key, entry in rename_warning_entries(definition)
         if entry.get("blocks_run") is True
+    ]
+
+
+def non_blocking_messages(definition: Any) -> list[str]:
+    """The messages of the warnings that let this definition run, in stored order.
+
+    A name spelled where it may not mean the renamed object -- a card type or field in a
+    search, a sort field, another binding's token -- so the definition runs as it is and
+    the user is told rather than stopped. Read for the picker's information icon, which
+    shows them beside the stale search terms.
+    """
+    return [
+        entry["message"]
+        for _key, entry in rename_warning_entries(definition)
+        if entry.get("blocks_run") is not True
     ]
 
 
@@ -125,6 +143,7 @@ __all__ = [
     "blocking_messages",
     "blocking_tooltip",
     "blocks_run",
+    "non_blocking_messages",
     "remove_rename_warning",
     "rename_warning_entries",
 ]

@@ -161,8 +161,8 @@ class ReconcileResult:
     #: cannot be seen at all (note types saved before Anki 23.10 keep null ids).
     unfollowable: list[StaleName] = dataclass_field(default_factory=list)
     #: A name a query spells that the collection does not have. Checked every run rather
-    #: than only after a rename: a query can go stale on another device, and nothing else
-    #: ever looks inside search text (`query_terms.py`).
+    #: than only after a rename: a query can go stale on another device, where this pass
+    #: sees no rename to warn about in it (`query_terms.py`).
     stale_terms: list[StaleName] = dataclass_field(default_factory=list)
     #: Every blocking warning a definition carries after this pass (`rename_warnings.py`),
     #: one per stored entry, named by the name the definition spells. Listed for as long as
@@ -1623,8 +1623,8 @@ def log_result(result: ReconcileResult) -> None:
         )
     for stale in result.broken:
         logger.warning(
-            "Rename reconcile: '%s' is marked at %s, and not run until the mark is"
-            " dismissed: %s",
+            "Rename reconcile: '%s' has a blocking warning at %s, and is not run until it is"
+            " replaced and saved, or dismissed: %s",
             stale.definition_name,
             stale.location,
             stale.message,

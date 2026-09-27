@@ -232,13 +232,15 @@ class DefinitionRow(QWidget):
 
     def _mark_if_broken(self) -> None:
         """Mark, and refuse to select, a definition the reconcile pass left a blocking
-        warning on for a renamed or deleted field or card type (`logic/rename_warnings.py`).
+        warning on for a renamed or deleted name (`logic/rename_warnings.py`). A warning
+        that does not block is shown by the information icon instead.
 
-        Such a definition is not run (`copy_fields.refused_for_rename`) until it has been
-        updated and every mark dismissed in the editor: a run would only log the same
-        message. So the checkbox is unticked and disabled rather than offered, and both it
-        and the icon beside it say why -- a disabled checkbox still shows its tooltip. Edit,
-        Duplicate and Delete stay, since the editor is the way out.
+        Such a definition is not run (`copy_fields.refused_for_rename`) until every blocking
+        warning is gone -- the old name replaced and saved, or dismissed in the editor: a
+        run would only log the same message. So the checkbox is unticked and disabled rather
+        than offered, and both it and the icon beside it say why -- a disabled checkbox
+        still shows its tooltip. Edit, Duplicate and Delete stay, since the editor is the
+        way out.
         """
         from ..logic.rename_warnings import blocking_messages, blocking_tooltip
 
@@ -293,32 +295,53 @@ class DefinitionRow(QWidget):
         )
 
     def _mark_stale_search_terms(self) -> None:
-        """Mark a definition whose searches name something this collection does not have.
+        """Mark a definition that still runs but may not do what the user meant.
 
-        The same scan the query stage's own note under its search runs
+        Two things share this icon. A search naming something this collection does not
+        have: the same scan the query stage's own note under its search runs
         (`query_terms.stale_search_terms`), so a definition list is where a stale search is
-        found without opening every definition. Its own icon, apart from the two above: a
-        search is Anki's grammar and is never rewritten, a name in it may be one the user
-        has not made yet, and the definition still runs -- the term just matches nothing.
-        Asked of the collection as the row is drawn, like the unresolved references.
+        found without opening every definition. A search is Anki's grammar and is never
+        rewritten on its own, a name in it may be one the user has not made yet, and the
+        definition still runs -- the term just matches nothing. Asked of the collection as
+        the row is drawn, like the unresolved references.
+
+        And the rename warnings that do not block (`logic/rename_warnings.py`): a card type
+        or field name in a search, a sort field, another binding's token -- names not
+        unique across note types, so the pass cannot tell whether the rename meant them.
+        The definition runs as it is; the list says so here rather than only in the editor,
+        where the warning sits at its location. Only the messages are shown, as stored: a
+        row has no room for where, and the editor's banner says it.
         """
         from ..logic.rename_reconcile import stale_terms_in_searches
+        from ..logic.rename_warnings import non_blocking_messages
 
         stale = []
         if mw is not None and mw.col is not None:
             stale = stale_terms_in_searches(self.definition, mw.col, self.collection_names)
-        if not stale:
+        # One line per message: the same rename spelled in two places is one thing to fix.
+        warned = list(dict.fromkeys(non_blocking_messages(self.definition)))
+        if not stale and not warned:
             self.search_marker.setText("")
             self.search_marker.setToolTip("")
             return
         self.search_marker.setText("<span style='color: #2471a3'>&#9432;</span>")
-        # Plain text, like the tooltip above: its first line is fixed.
-        self.search_marker.setToolTip(
-            "A search in this definition names something this collection does not have:\n"
-            + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
-            + "\nThe definition still runs, but that part of the search matches nothing."
-            " A search is left alone when something is renamed, so check it by hand."
-        )
+        # Plain text, like the tooltip above: whichever part comes first opens with a fixed
+        # line, and Qt guesses rich text from the first line only.
+        parts: list[str] = []
+        if stale:
+            parts.append(
+                "A search in this definition names something this collection does not have:\n"
+                + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
+                + "\nThe definition still runs, but that part of the search matches nothing."
+                " A search is left alone when something is renamed, so check it by hand."
+            )
+        if warned:
+            parts.append(
+                "Renamed or deleted in Anki (the definition still runs):\n"
+                + "\n".join(warned)
+                + "\nOpen the definition to replace the old name or dismiss the warning."
+            )
+        self.search_marker.setToolTip("\n".join(parts))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():

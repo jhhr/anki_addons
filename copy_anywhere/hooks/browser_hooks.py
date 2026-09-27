@@ -95,9 +95,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
 
         return run_copy_def
 
-    # A definition marked by a rename or deletion in Anki is not run, so it is offered the
-    # way the definition list offers it: listed, disabled, and saying why on hover. A
-    # QMenu hides its actions' tooltips unless told otherwise.
+    # A definition a rename or deletion in Anki left a blocking warning on is not run, so it
+    # is offered the way the definition list offers it: listed, disabled, and saying why on
+    # hover. A warning that does not block leaves it enabled, as the list does. A QMenu
+    # hides its actions' tooltips unless told otherwise.
     copy_fields_menu.setToolTipsVisible(True)
     for copy_definition in config.copy_definitions:
         copy_fields_action = QAction(copy_definition["definition_name"], browser)

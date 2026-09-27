@@ -125,17 +125,17 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
 
     Only the new ones (`ReconcileResult.newly_marked`), and only those that keep a
     definition from running, which is what this dialog says: a mark stays until the user
-    dismisses it, and listing it again after every unrelated note type edit would teach
-    them to close this dialog unread. The picker and the editor go on showing every mark,
+    replaces the name and saves or dismisses it, and listing it again after every unrelated
+    note type edit would teach them to close this dialog unread. The picker and the editor go on showing every mark,
     and the log lists them all.
 
     One line per mark, under the definition's name: which field, card type, deck or note
     type was renamed or deleted. A definition spelling the name in several places has a
     mark at each, which the editor shows where it is; here they would be the same line
     again, so each line is said once. It says the definitions are not run meanwhile
-    (`copy_fields.refused_for_rename`) and how that ends -- the user updates each one and
-    dismisses its mark in the definition editor -- since this dialog is where the user
-    learns that.
+    (`copy_fields.refused_for_rename`) and how that ends -- the user replaces the old name
+    and saves, or dismisses the warning, in the definition editor -- since this dialog is
+    where the user learns that.
     """
     blocking = [stale for stale in result.newly_marked if stale.blocks_run]
     if not blocking:
@@ -151,8 +151,8 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
         " run:"
         "<br><br>"
         + "<br>".join(lines)
-        + "<br><br>Update each definition, then dismiss its mark in the definition editor;"
-        " it runs again once it has no mark left."
+        + "<br><br>In the definition editor, replace the old name and save, or dismiss the"
+        " warning; a definition runs again once no blocking warning is left."
     )
 
 

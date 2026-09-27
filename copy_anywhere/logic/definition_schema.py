@@ -541,7 +541,8 @@ class CopyDefinitionV2(TypedDict, total=False):
     legacy: LegacyBehaviour
     migration_warnings: list[str]
     #: Renames and deletions the reconcile pass could not follow, with why, by the location
-    #: that spells the name, until the user dismisses them (`rename_warnings.py`).
+    #: that spells the name, until a save finds it no longer spelled or the user dismisses
+    #: it (`rename_warnings.py`).
     rename_warnings: dict[str, list[dict]]
 
 

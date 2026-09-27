@@ -1980,7 +1980,7 @@ class TestTheWarningAfterAFieldsSave:
             warnings[0]
         )
         assert "renamed or deleted" in warnings[0]
-        assert "dismiss its mark in the definition editor" in warnings[0]
+        assert "replace the old name and save, or dismiss the warning" in warnings[0]
 
     def test_a_deck_operation_shows_it_too(self, col, marked, warnings, passes):
         # A deck rename can mark a definition itself (a search or code spelling the deck),

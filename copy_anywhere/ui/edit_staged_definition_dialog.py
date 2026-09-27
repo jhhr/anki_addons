@@ -139,9 +139,8 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
 
         self.body = QVBoxLayout(self.inner_widget)
 
-        # First, above everything it may be about: a marked definition is not run, which
-        # matters more than anything else the editor says about it, and the user is the one
-        # who says it has been updated.
+        # First, above everything it may be about: a definition with a blocking warning is
+        # not run, which matters more than anything else the editor says about it.
         self.marks_banner = RenameMarksBanner(self.inner_widget, self.document)
         self.marks_banner.location_chosen.connect(self.focus_location)
         self.marks_banner.dismissed.connect(self.refresh_rename_indicators)

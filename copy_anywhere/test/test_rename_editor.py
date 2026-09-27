@@ -1308,6 +1308,24 @@ class TestTheBrowserMenuRefusesADefinitionBrokenByARename(ADefinitionBrokenByARe
         assert actions["whole"].isEnabled()
         assert copy_menu.toolTipsVisible()
 
+    def test_a_definition_with_only_warnings_that_do_not_block_stays_enabled(
+        self, broken, stub_mw, qapp, widget_parent
+    ):
+        config, _definition = broken
+        config.data["copy_definitions"].append(
+            d.warned(
+                d.staged("warned", note_types=[VOCAB]),
+                d.rename_warning('Card type "Card 1" was renamed', blocks_run=False),
+            )
+        )
+
+        _copy_menu, actions = self.menu_actions(stub_mw, config, widget_parent)
+
+        assert actions["warned"].isEnabled()
+        # No tooltip was set: a QAction's own is its text.
+        assert actions["warned"].toolTip() == "warned"
+        assert not actions["both"].isEnabled()
+
     def test_its_tooltip_is_the_pickers(self, broken, stub_mw, qapp, widget_parent):
         config, _definition = broken
         row = self.dialog(widget_parent, config).definition_ui_components["def-both"]["widget"]
@@ -1432,6 +1450,88 @@ class TestThePickerMarksAStaleSearch:
 
         assert dialog.definition_ui_components[definition["guid"]]["widget"] is row
         assert row.search_marker.text() == ""
+
+
+class TestThePickerShowsWarningsThatDoNotBlock:
+    """A rename warning that lets the definition run joins the stale searches under the ⓘ.
+
+    ✖ and the disabled checkbox are for blocking warnings only; a definition whose warnings
+    all warn is still offered, and the list says what they are without opening it.
+    """
+
+    WARNING = 'Card type "Card 1" of note type "CA Vocab" was renamed to "Recognition"'
+    BLOCKING = 'Field "Word" of note type "CA Vocab" was renamed to "Term"'
+
+    def row(self, widget_parent, definition):
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        return DefinitionRow(widget_parent, definition, 0)
+
+    def test_a_warning_alone_shows_the_info_icon_and_leaves_it_selectable(
+        self, col, qapp, widget_parent
+    ):
+        definition = d.warned(
+            d.staged("warned", note_types=[VOCAB]),
+            d.rename_warning(self.WARNING, blocks_run=False),
+        )
+
+        row = self.row(widget_parent, definition)
+
+        assert row.search_marker.text() != ""
+        assert self.WARNING in row.search_marker.toolTip().splitlines()
+        assert "still runs" in row.search_marker.toolTip()
+        assert row.broken_marker.text() == ""
+        assert row.checkbox.isEnabled() and row.checkbox.toolTip() == ""
+
+    def test_a_blocking_and_a_warning_show_both_icons_each_with_its_own(
+        self, col, qapp, widget_parent
+    ):
+        definition = d.warned(
+            d.staged("both", note_types=[VOCAB]),
+            d.rename_warning(self.BLOCKING),
+            d.rename_warning(self.WARNING, blocks_run=False),
+        )
+
+        row = self.row(widget_parent, definition)
+
+        assert not row.checkbox.isEnabled()
+        assert self.BLOCKING in row.broken_marker.toolTip().splitlines()
+        assert self.WARNING not in row.broken_marker.toolTip()
+        assert self.WARNING in row.search_marker.toolTip().splitlines()
+        assert self.BLOCKING not in row.search_marker.toolTip()
+
+    def test_it_is_listed_after_the_stale_search_terms(self, col, qapp, widget_parent):
+        definition = d.warned(
+            d.staged("searching", note_types=[VOCAB], stages=[d.note_query("found", "deck:Nope")]),
+            d.rename_warning(self.WARNING, blocks_run=False),
+        )
+
+        lines = self.row(widget_parent, definition).search_marker.toolTip().splitlines()
+
+        assert lines.index("deck 'Nope'") < lines.index(self.WARNING)
+
+    def test_one_message_spelled_in_two_places_is_listed_once(self, col, qapp, widget_parent):
+        definition = d.staged("warned", note_types=[VOCAB])
+        definition[WARNINGS_KEY] = {
+            "a.query.text": [d.rename_warning(self.WARNING, blocks_run=False)],
+            "b.query.text": [d.rename_warning(self.WARNING, blocks_run=False)],
+        }
+
+        lines = self.row(widget_parent, definition).search_marker.toolTip().splitlines()
+
+        assert lines.count(self.WARNING) == 1
+
+    def test_a_message_is_shown_as_text(self, col, qapp, widget_parent):
+        from aqt.qt import Qt
+
+        message = 'Deck "<b>Q&A" was renamed to "Q&A::<i>"'
+        row = self.row(
+            widget_parent,
+            d.warned(d.staged("warned"), d.rename_warning(message, blocks_run=False)),
+        )
+
+        assert message in row.search_marker.toolTip().splitlines()
+        assert not Qt.mightBeRichText(row.search_marker.toolTip())
 
 
 class TestTheCardActionsEditorBindsACardTypeByTheResolver:
