@@ -95,7 +95,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
 
         return run_copy_def
 
-    # A definition a field rename left marked as broken is not run, so it is offered the
+    # A definition marked by a rename or deletion in Anki is not run, so it is offered the
     # way the definition list offers it: listed, disabled, and saying why on hover. A
     # QMenu hides its actions' tooltips unless told otherwise.
     copy_fields_menu.setToolTipsVisible(True)

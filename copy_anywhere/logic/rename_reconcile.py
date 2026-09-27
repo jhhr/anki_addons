@@ -11,7 +11,8 @@ This pass closes both, without a rename hook. It keeps a snapshot of the names t
 **both** names in hand -- which is exactly what Anki's one rename hook gives and its three
 missing ones do not, and it works for a rename made on another device, or undone with
 Ctrl+Z, because the comparison is against the collection as it is now rather than against
-an event. See "Following a rename in Anki" in `docs/follow-ups.md`.
+an event. Why Anki's hooks cannot do this is in `docs/follow-ups.md`, and what the pass does
+for the user is in `docs/staged-definitions.md`, both under "Following a rename in Anki".
 
 What it rewrites is only what is a whole, delimited value: a cached name inside a
 reference, a field slot, and a parsed `{{trigger....}}` token in an expression's *text*.
