@@ -57,11 +57,14 @@ An addon's `README.md` is for whoever works on it. When the addon also has an
 
 ## Tests
 
-One command runs every suite, from the repo root:
+One command runs every suite in the root `pytest.ini`'s `testpaths`, from the repo root:
 
 ```
 python -m pytest
 ```
+
+Two suites run on their own: `japanese_note_ai_ops/test`, from that addon's directory (see
+its README), and the `anki_shared/jp_text_processing` submodule's, from the submodule.
 
 It needs the dev dependencies in the interpreter the tests run on, which should also be the
 one mypy and your editor use. Two steps, because `pytest-anki2` has to go in without its

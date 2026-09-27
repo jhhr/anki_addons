@@ -115,7 +115,7 @@ cloud environment itself has to provide is in
 
 | command | purpose |
 | --- | --- |
-| `python -m pytest -q` | every suite; needs no `build.py link` first |
+| `python -m pytest -q` | every suite but `japanese_note_ai_ops/test` and the submodule's, which run from their own directories; needs no `build.py link` first |
 | `python -m pytest -q <addon>/test` | one suite |
 | `python -m mypy .` | type check the repo (config in `mypy.ini`) |
 | `python build.py check` | undeclared or unused shared-package declarations |

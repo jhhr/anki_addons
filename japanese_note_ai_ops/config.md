@@ -208,7 +208,7 @@ You need to define
   2. `translated_sentence_field`
 - for generating kanji stories:
   1. `kanji_field`
-  2. `kanji_story_field`
+  2. `story_field`
 - for kanjifying sentences:
   1. `furigana_sentence_field`
   2. `kanjified_sentence_field`
