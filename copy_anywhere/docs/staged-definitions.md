@@ -160,11 +160,13 @@ definition calls it.
 * **Two references to one note converge.** However a note was reached, a run holds one
   working copy of it, so two stages editing it both land.
 * **Nothing is written until the definition finishes.** Notes, cards and files are committed
-  together once the whole definition has run; a failure anywhere commits none of it. File
-  writes are applied after the collection changes and are outside Anki's undo. A media
-  write that fails (a full disk, a read-only folder) fails the run and names the file: the
-  note and card changes are kept, the files queued before it are on disk, and it and the
-  files queued after it are not written.
+  together once the whole definition has run; a failure anywhere commits none of it. Files
+  reach the disk only after the notes and cards they go with are saved, and are outside
+  Anki's undo: a bulk run or a hook collects them and writes them after its `update_notes`,
+  and a later trigger note of the same bulk run reads the ones already collected as if they
+  were on disk. A media write that fails (a full disk, a read-only folder) is reported with
+  the file's name: the note and card changes are kept, the files queued before it are on
+  disk, and it and the files queued after it are not written.
 * **A run that commits nothing leaves the trigger note as it was.** The trigger is the one
   note the run edits in place: it is the caller's own object, and the Add dialog and the
   editor save that object whatever the run's result. So a run that fails, is cancelled, is

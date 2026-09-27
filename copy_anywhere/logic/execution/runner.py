@@ -107,7 +107,9 @@ def run_definition_for_trigger_note(
         # Format 1 counted the trigger note as the one source in every mode but
         # Destination-to-sources, where the query result was the source list.
         session.update_counts(processed_sources_inc=1)
-    result = committer.commit(session, copied_into_notes, copied_into_cards_dict)
+    result = committer.commit(
+        session, copied_into_notes, copied_into_cards_dict, session.copied_into_files
+    )
     # Counted from what the commit published rather than as stages ran, so a note two stages
     # wrote is one destination and a card three actions changed is one card. Per trigger
     # note, as format 1 counted: a note two trigger notes both wrote counts twice. Counted

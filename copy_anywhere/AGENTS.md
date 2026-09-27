@@ -51,11 +51,13 @@ Call chain for a bulk run:
 ## Invariants
 
 - **Evaluation never writes to the database.** Stages edit the session's working note and
-  card objects and queue file writes; `commit.py` hands the notes and cards to the caller's
-  `copied_into_notes` / `copied_into_cards_dict` and puts files on disk. A failure anywhere
-  leaves the collection alone, and preview runs the real evaluator and simply does not
-  commit. A caller that passes no lists gets no note write, on purpose: on add, Anki saves
-  the note; on unfocus, the editor does. Tests therefore assert on returned objects, not on
+  card objects and queue file writes; `commit.py` hands the notes, cards and files to the
+  caller's `copied_into_notes` / `copied_into_cards_dict` / `copied_into_files`, and the
+  caller writes the files with `write_queued_files` after its `update_notes` (a caller
+  passing no files dict has them written at commit). A failure anywhere leaves the
+  collection alone, and preview runs the real evaluator and simply does not commit. A
+  caller that passes no lists gets no note write, on purpose: on add, Anki saves the note;
+  on unfocus, the editor does. Tests therefore assert on returned objects, not on
   a re-fetched note, except at the `copy_fields` level.
 - `update_notes`, `update_cards` and `merge_undo_entries` run after **every** definition.
   Later definitions re-fetch from the database, and a skipped merge ends in "target undo op

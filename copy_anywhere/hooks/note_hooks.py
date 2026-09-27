@@ -40,6 +40,7 @@ from ..logic.copy_fields import (
     make_copy_fields_undo_text,
 )
 from ..logic.copy_primitives import take_edited_cards
+from ..logic.execution.commit import write_queued_files
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,13 @@ def run_one_definition(**kwargs) -> bool:
             "Error in copy fields: definition '%s' failed", definition.get("definition_name", "")
         )
         return False
+
+
+def write_files_after_saving(copied_into_files: dict[str, str]) -> None:
+    """Write the files a definition queued, now that the notes they go with are saved."""
+    file_error = write_queued_files(copied_into_files)
+    if file_error:
+        logger.error(file_error)
 
 
 def contained(
@@ -153,6 +161,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         for copy_definition in editing_other_notes_definitions:
             copied_into_notes: list[Note] = []
             copied_into_cards_dict: dict[int, Card] = {}
+            copied_into_files: dict[str, str] = {}
             # Can't use copy_fields here as it'd lead to a
             # "bug: run_in_background not called from main thread" exception
             # TODO: non CollectionOp version of copy_fields
@@ -162,6 +171,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 copied_into_notes=copied_into_notes,
                 copied_into_cards_dict=copied_into_cards_dict,
                 deck_id=deck_id,
+                copied_into_files=copied_into_files,
             )
             # Only source to destinations definitions get here and their destinations come from a
             # query, which can't find the unsaved note. Still, an id 0 note would make
@@ -172,6 +182,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 # Nothing was written into other notes (the query matched nothing or the deck
                 # whitelist rejected the note), and no card action changed a card either, so
                 # there's nothing to undo and an empty entry would only clutter the undo stack.
+                write_files_after_saving(copied_into_files)
                 continue
 
             if undo_entry is None:
@@ -196,6 +207,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 mw.col.update_cards(edited_cards)
             # Merge after every write, or the entry's step falls behind and can't be found
             mw.col.merge_undo_entries(undo_entry)
+            write_files_after_saving(copied_into_files)
 
 
 # The card id and undo step of the latest answer, recorded by the wrapped
@@ -284,12 +296,14 @@ def run_copy_fields_on_review(card: Card):
 
         copied_into_notes: list[Note] = []
         copied_into_cards_dict: dict[int, Card] = {}
+        copied_into_files: dict[str, str] = {}
         for copy_definition in copy_definitions_to_run:
             run_one_definition(
                 copy_definition=copy_definition,
                 trigger_note=note,
                 copied_into_notes=copied_into_notes,
                 copied_into_cards_dict=copied_into_cards_dict,
+                copied_into_files=copied_into_files,
             )
             # After each copy_definition, update notes and cards so that subsequent copy_definitions
             # operate on the latest data
@@ -307,6 +321,7 @@ def run_copy_fields_on_review(card: Card):
             # any entry another reviewer_did_answer_card listener added after it, as Anki merges
             # every step newer than the target
             mw.col.merge_undo_entries(answer_card_undo_entry)
+            write_files_after_saving(copied_into_files)
         # In order to not have on_sync definitions run twice, we'll set a different fc value
         fc_value = -1 if has_definitions_to_process_on_sync else 1
         try:

@@ -1145,3 +1145,40 @@ class TestAFailedOrRefusedDefinitionLeavesTheNoteAlone:
         assert hook_logger.errors == []
         assert note["Meaning"] == "written"
         assert note.tags == ["tagged"]
+
+
+class TestFilesAreWrittenAfterTheOtherNotes:
+    """A definition that reaches past the note being added writes its files itself once the
+    other notes are saved, and still writes them when there were no other notes to save."""
+
+    def writing(self, query):
+        return d.staged(
+            "files",
+            on_add=True,
+            stages=[
+                d.note_query("found", query),
+                d.for_each_note(
+                    "found", [d.edit_note("note", [d.write("Note", d.text("reached"))])]
+                ),
+                d.write_file("added.txt", d.text("{{trigger.Word}}")),
+            ],
+        )
+
+    @pytest.mark.parametrize("query, reached", [("Word:inu", "reached"), ("Word:none", "")])
+    def test_the_file_lands(self, col, set_definitions, media_dir, monkeypatch, query, reached):
+        other = real_anki.add_note(col, VOCAB, {"Word": "inu"})
+        on_disk_when_saved = []
+        original = col.update_notes
+
+        def update_notes(notes, **kwargs):
+            on_disk_when_saved.append((media_dir / "_added.txt").exists())
+            return original(notes, **kwargs)
+
+        monkeypatch.setattr(col, "update_notes", update_notes)
+        set_definitions(self.writing(query))
+
+        run_copy_fields_on_add(new_note(col, Word="neko"), deck(col))
+
+        assert (media_dir / "_added.txt").read_text(encoding="utf-8") == "neko"
+        assert on_disk_when_saved == ([False] if reached else [])
+        assert col.get_note(other.id)["Note"] == reached

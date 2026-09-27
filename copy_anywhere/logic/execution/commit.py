@@ -6,10 +6,17 @@ caller's batched `update_notes()`/`update_cards()` and puts the files on disk. K
 two apart is what lets a failure anywhere in a definition leave the collection alone, and
 what lets preview run the real evaluator and simply not commit.
 
-File writes are applied after the collection changes and are *not* covered by Anki's undo.
+File writes are *not* covered by Anki's undo, and they go to disk only once the note and card
+changes they belong with are saved. A caller that saves notes -- a bulk run once per
+definition, the hooks after each definition -- passes `copied_into_files`, which collects the
+files as `copied_into_notes` collects the notes, and writes them with `write_queued_files`
+after its `update_notes()`. Written at commit instead, a bulk run that failed on a later
+trigger note left files on disk whose notes were never saved. A caller that saves nothing
+itself passes no dict, and the files are written at commit.
+
 A write that fails stops the rest: the files before it are on disk, it and the ones queued
-after it are not, and the commit result carries the reason so the runner can fail the run
-the way it fails a stage error -- the notes and cards are already the caller's by then.
+after it are not, and the reason is returned so the caller can fail the run the way it fails
+a stage error -- the notes and cards are the caller's by then.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ class CollectionCommitter:
         session: ExecutionSession,
         copied_into_notes: Optional[list] = None,
         copied_into_cards_dict: Optional[dict] = None,
+        copied_into_files: Optional[dict[str, str]] = None,
     ) -> CommitResult:
         result = CommitResult()
         for note in session.modified_notes.values():
@@ -70,35 +78,65 @@ class CollectionCommitter:
             result.cards.append(card)
             if copied_into_cards_dict is not None:
                 copied_into_cards_dict[card.id] = card
-        self.write_files(session, result)
+        if copied_into_files is not None:
+            for pending in session.pending_files:
+                # Moved to the end: the file lands with the content, and in the order, of
+                # its last write.
+                copied_into_files.pop(pending["filename"], None)
+                copied_into_files[pending["filename"]] = pending["content"]
+                result.files.append(pending["filename"])
+        else:
+            self.write_files(session, result)
         session.modified_notes.clear()
         session.edited_cards.clear()
         session.pending_files.clear()
         # Cleared whether or not every file made it: the overlay is what a later read sees
         # "as if the file were written", and once the queue is empty a file is either on
-        # disk, where the read finds it anyway, or abandoned, in which case the overlay
-        # would be the only thing still claiming it exists.
+        # disk or in the caller's queue, where a read finds it anyway, or abandoned, in which
+        # case the overlay would be the only thing still claiming it exists.
         session.file_overlay.clear()
         return result
 
     def write_files(self, session: ExecutionSession, result: CommitResult) -> None:
-        for index, pending in enumerate(session.pending_files):
-            try:
-                write_media_file(pending["filename"], pending["content"])
-                result.files.append(pending["filename"])
-            except Exception as error:  # noqa: BLE001 -- reported, never raised past here
-                # The collection changes are already committed and file writes are outside
-                # undo, so a failure here is recorded rather than unwinding anything. The
-                # files after it are not attempted: the definition wrote them in this order
-                # for a reason, and a later one may well fail the same way.
-                remaining = len(session.pending_files) - index - 1
-                result.file_error = (
-                    f"Error in writing to file '{pending['filename']}': {error}."
-                    " The note and card changes were saved; this file"
-                    + (f" and the {remaining} queued after it" if remaining else "")
-                    + " were not written."
-                )
-                return
+        written, result.file_error = _write(
+            [(pending["filename"], pending["content"]) for pending in session.pending_files]
+        )
+        result.files.extend(written)
+
+
+def write_queued_files(copied_into_files: dict[str, str]) -> Optional[str]:
+    """Write what the runs queued into `copied_into_files`, once their notes are saved.
+
+    Returns why a write failed, for the caller to log as it logs a failed run, or None. The
+    dict is emptied either way: what did not make it is abandoned, as a failed run's is.
+    """
+    _written, error = _write(list(copied_into_files.items()))
+    copied_into_files.clear()
+    return error
+
+
+def _write(files: list[tuple[str, str]]) -> tuple[list[str], Optional[str]]:
+    written: list[str] = []
+    for index, (filename, content) in enumerate(files):
+        try:
+            write_media_file(filename, content)
+            written.append(filename)
+        except Exception as error:  # noqa: BLE001 -- reported, never raised past here
+            # The collection changes are the caller's already and file writes are outside
+            # undo, so a failure here is recorded rather than unwinding anything. The files
+            # after it are not attempted: the definition wrote them in this order for a
+            # reason, and a later one may well fail the same way.
+            remaining = len(files) - index - 1
+            not_written = (
+                f"this file and the {remaining} queued after it were not written"
+                if remaining
+                else "this file was not written"
+            )
+            return written, (
+                f"Error in writing to file '{filename}': {error}."
+                f" The note and card changes are kept; {not_written}."
+            )
+    return written, None
 
 
 class PreviewCommitter(CollectionCommitter):
@@ -119,6 +157,7 @@ class PreviewCommitter(CollectionCommitter):
         session: ExecutionSession,
         copied_into_notes: Optional[list] = None,
         copied_into_cards_dict: Optional[dict] = None,
+        copied_into_files: Optional[dict[str, str]] = None,
     ) -> CommitResult:
         result = CommitResult()
         for note in session.modified_notes.values():

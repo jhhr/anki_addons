@@ -408,12 +408,14 @@ What to know before using them:
 - There is no append. Read the file, build the new content, write it back with *overwrite*.
 - A stage can be told to skip if the file exists, or to refuse to overwrite. Both questions
   count a file an earlier stage of the same run has queued as already there.
-- File writes happen after the collection changes and are **outside Anki's undo**. Undoing
-  the operation puts the notes and cards back; it does not put the files back.
-- If a write fails — a full disk, a read-only folder — the run stops there and reports
-  failure naming the file. The note and card changes it had already made are kept, the files
-  written before it stay written, and that file and the ones queued after it are not
-  attempted.
+- File writes happen once the note and card changes are saved, and are **outside Anki's
+  undo**. Undoing the operation puts the notes and cards back; it does not put the files
+  back. Over several notes, a definition's files are written after it has run over all of
+  them, and a note later in the run reads and checks the files an earlier one wrote as if
+  they were already there.
+- If a write fails — a full disk, a read-only folder — the error names the file. The note
+  and card changes are kept, the files written before it stay written, and that file and the
+  ones queued after it are not attempted.
 
 ## 8. Migrating from format 1
 
