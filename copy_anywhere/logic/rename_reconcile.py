@@ -74,7 +74,7 @@ from .object_refs import (
     resolve_deck_id,
     resolve_note_type,
 )
-from .query_terms import stale_search_terms
+from .query_terms import CollectionNames, stale_search_terms
 
 if TYPE_CHECKING:  # pragma: no cover -- the import would close a cycle at run time
     from ..configuration import Config
@@ -289,13 +289,18 @@ def _search_expressions(stage: Stage) -> Iterator[ValueExpression]:
             yield stage["predicate"]
 
 
-def stale_terms_in_searches(definition: CopyDefinitionV2, col: Any) -> list[StaleName]:
+def stale_terms_in_searches(
+    definition: CopyDefinitionV2, col: Any, names: Optional[CollectionNames] = None
+) -> list[StaleName]:
     """What every search in this definition names that the collection does not have.
 
     Asked of the collection as it is now, one entry per name however many searches spell
     it, so the definition list can show it as the list is drawn as well as the pass
-    reporting it.
+    reporting it. `names` is a name list the caller shares across definitions (the pass,
+    the picker); without one, this definition's searches share their own.
     """
+    if names is None:
+        names = CollectionNames(col)
     found: list[StaleName] = []
     for stage in walk_stages(definition.get("stages") or []):
         for expression in _search_expressions(stage):
@@ -303,15 +308,17 @@ def stale_terms_in_searches(definition: CopyDefinitionV2, col: Any) -> list[Stal
                 # A search built by code is not text this scan can read; the code report
                 # below is what covers it.
                 continue
-            for term in stale_search_terms(expression.get("text"), col):
+            for term in stale_search_terms(expression.get("text"), col, names):
                 stale = _stale(definition, term.kind, term.name)
                 if stale not in found:
                     found.append(stale)
     return found
 
 
-def _report_stale_terms(definition: CopyDefinitionV2, col: Any, result: ReconcileResult) -> None:
-    for stale in stale_terms_in_searches(definition, col):
+def _report_stale_terms(
+    definition: CopyDefinitionV2, col: Any, names: CollectionNames, result: ReconcileResult
+) -> None:
+    for stale in stale_terms_in_searches(definition, col, names):
         if stale not in result.stale_terms:
             result.stale_terms.append(stale)
 
@@ -1255,8 +1262,11 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         if model is not None:
             _report_unfollowable(model, holders, result)
 
+    # One name list for every search of every definition: nothing in the pass changes a
+    # name the collection has, only names the definitions spell.
+    collection_names = CollectionNames(col)
     for definition in definitions:
-        _report_stale_terms(definition, col, result)
+        _report_stale_terms(definition, col, collection_names, result)
 
     renames = _diff(snapshot, col, referenced, result)
     # Before anything is followed or marked: what each definition's marks were about, and
@@ -1301,7 +1311,12 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
 
     result.changed = changed
     if changed:
-        config._save_definitions()
+        # Not `_save_definitions`, which would take the snapshot stored just above a second
+        # time. Nor does `effects` need recomputing: it follows stage types, the bindings
+        # stages target, expression modes, card actions and calls (`flow_analysis`), and
+        # the pass changes none of them -- it binds ids, rewrites names and adds or drops
+        # marks.
+        config.save()
     return result
 
 

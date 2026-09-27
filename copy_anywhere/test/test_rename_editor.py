@@ -68,6 +68,19 @@ def triggers_editor(col, widget_parent, **triggers):
     return TriggersEditor(widget_parent, definition), definition
 
 
+def count_note_type_listings(col, monkeypatch) -> list:
+    """One entry per `col.models.all()`, which is what a stale-search scan reads names from."""
+    listings: list = []
+    list_all = col.models.all
+
+    def counted():
+        listings.append(1)
+        return list_all()
+
+    monkeypatch.setattr(col.models, "all", counted)
+    return listings
+
+
 def every_note():
     """The picker's note source with no selection and an empty search: every note counts.
 
@@ -386,6 +399,20 @@ class TestTheQueryEditorsWarning:
         editor.query.text_layout.set_text("deck:Other")
 
         assert editor.stale_terms_label.text() == ""
+
+    def test_every_keystroke_reads_the_same_name_lists(
+        self, col, qapp, widget_parent, monkeypatch
+    ):
+        """No note type can change while the editor is open, so one read of them serves."""
+        listings = count_note_type_listings(col, monkeypatch)
+        editor = self.query_editor(col, widget_parent, "Nonsuch:x card:Nope")
+        read_at_start = len(listings)
+
+        for query in ("Nonsuch:x card:Nope2", "Word:neko card:Recall", "Other:y"):
+            editor.query.text_layout.set_text(query)
+
+        assert "Other" in editor.stale_terms_label.text()
+        assert read_at_start > 0 and len(listings) == read_at_start
 
 
 # -- N8: the picker and the sort field ---------------------------------------------------
@@ -1198,6 +1225,27 @@ class TestThePickerMarksAStaleSearch:
         row = self.row(widget_parent, definition)
 
         assert "deck 'Nonsuch'" in row.search_marker.toolTip().splitlines()
+
+    def test_every_row_reads_the_same_name_lists(
+        self, col, stub_mw, qapp, widget_parent, monkeypatch
+    ):
+        """The picker holds the Browser's window modal: no note type changes while it is open."""
+        from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
+
+        definitions = [self.searching("Nonsuch:neko card:Nope") for _ in range(3)]
+        for index, definition in enumerate(definitions):
+            definition["guid"] = f"searching-{index}"
+        listings = count_note_type_listings(col, monkeypatch)
+
+        dialog = PickCopyDefinitionDialog(widget_parent, definitions, every_note())
+
+        rows = [
+            dialog.definition_ui_components[definition["guid"]]["widget"]
+            for definition in definitions
+        ]
+        assert all("field 'Nonsuch'" in row.search_marker.toolTip() for row in rows)
+        # One listing for the field names and one for the card type names.
+        assert len(listings) == 2
 
     def test_saving_a_fixed_search_through_the_picker_clears_it(
         self, col, stub_mw, qapp, widget_parent, monkeypatch

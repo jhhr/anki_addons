@@ -885,6 +885,9 @@ class Config:
         A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is saved with its
         marks as they stand: a mark is only ever taken off by the user in the editor (or by
         the pass, when the rename is undone), never re-derived here.
+
+        The reconcile pass itself saves with `save`: it has just stored the snapshot, and
+        nothing it changes feeds `effects` (`rename_reconcile.reconcile`).
         """
         from .logic.flow_analysis import refresh_effects
         from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot

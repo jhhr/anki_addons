@@ -8,14 +8,23 @@ Types, Note Types and deck dialogs, their undo and redo -- undo is a `Collection
 reports the same booleans -- and the everything-changed operation `mw.reset()` synthesises
 after a sync.
 
+A deck change alone runs it only when the decks' ids or names differ from what the last
+completed pass saw. Answering a card reports a deck change (`col.sched.answer_card` says
+`deck` changed, for the deck's review counts), so without that check every answer would
+load the config from disk, clear the note type cache and scan every definition to find
+nothing. The check costs one deck listing; a note type change always runs the pass.
+
 Both run the pass synchronously on the main thread. It is two name listings plus one
 `models.get` per referenced note type, which is not worth a background task, and a config
 rewritten from a worker thread while the editor reads it is worth even less.
 """
 
+from __future__ import annotations
+
 import html
 import logging
-from typing import Optional
+import weakref
+from typing import Any, Optional
 
 from aqt import mw
 from aqt.gui_hooks import collection_did_load, operation_did_execute
@@ -40,15 +49,51 @@ _last_result = ReconcileResult()
 #: Anki turns `writeConfig` into an operation today, so this is a guard rather than a fix.
 _running = False
 
+#: The collection the last completed pass ran on, and its decks then as `(id, name)` pairs.
+#: A weak reference, so that it neither keeps a closed profile's collection alive nor lets
+#: a new collection pass for the old one because it happens to reuse its `id()`.
+_decks_seen: Optional[tuple[weakref.ref[Any], frozenset[tuple[int, str]]]] = None
+
 
 def last_reconcile_result() -> ReconcileResult:
     return _last_result
+
+
+def _deck_names(col: Any) -> frozenset[tuple[int, str]]:
+    return frozenset((entry.id, entry.name) for entry in col.decks.all_names_and_ids())
+
+
+def _remember_decks(col: Any) -> None:
+    global _decks_seen
+    _decks_seen = (weakref.ref(col), _deck_names(col))
+
+
+def _forget_decks() -> None:
+    global _decks_seen
+    _decks_seen = None
+
+
+def _decks_changed(col: Any) -> bool:
+    """Whether `col`'s decks differ from what the last completed pass saw.
+
+    One deck listing and nothing else -- not the config, not the note type cache -- since
+    it is asked after every answer. A collection no pass has completed on counts as changed.
+    """
+    if _decks_seen is None:
+        return True
+    seen_col, seen_names = _decks_seen
+    return seen_col() is not col or _deck_names(col) != seen_names
 
 
 def run_reconcile() -> Optional[ReconcileResult]:
     """Reconcile the stored definitions against the collection, reporting into one log file.
 
     Returns what the pass found, or None when it did not run.
+
+    The decks are remembered after every pass that completed, one that stopped because no
+    definition holds a reference included: otherwise that is the pass the first answer
+    after loading would repeat. A pass that failed remembers nothing, so the next deck
+    change tries again.
 
     Nothing here may raise: `operation_did_execute` removes a hook that does, so an
     exception would take the pass out for the rest of the session without saying so.
@@ -64,6 +109,7 @@ def run_reconcile() -> Optional[ReconcileResult]:
         config = Config()
         config.load()
         if not definitions_hold_references(config.copy_definitions):
+            _remember_decks(mw.col)
             return None
         # The main window clears this in its own handler, but hook order is not something
         # to rely on: a note type read through a stale cache would compare equal to its
@@ -72,8 +118,10 @@ def run_reconcile() -> Optional[ReconcileResult]:
         with operation_logging("rename_reconcile", config.log_level):
             _last_result = reconcile(config, mw.col)
             log_result(_last_result)
+        _remember_decks(mw.col)
         return _last_result
     except Exception:
+        _forget_decks()
         logger.exception("Could not reconcile the stored definitions with the collection")
         return None
     finally:
@@ -81,7 +129,12 @@ def run_reconcile() -> Optional[ReconcileResult]:
 
 
 def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
-    """What to tell the user about definitions a rename left marked, if any.
+    """What to tell the user about the marks this pass added, if any.
+
+    Only the new ones (`ReconcileResult.newly_marked`): a mark stays until the user
+    dismisses it, and listing it again after every unrelated note type edit would teach
+    them to close this dialog unread. The picker and the editor go on showing every mark,
+    and the log lists them all.
 
     One line per mark, under the definition's name: which field or card type was renamed or
     deleted, and in which note type. It says the definitions are not run meanwhile
@@ -89,10 +142,11 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     dismisses its mark in the definition editor -- since this dialog is where the user
     learns that.
     """
-    if not result.broken:
+    if not result.newly_marked:
         return None
     lines = [
-        html.escape(f"'{stale.definition_name}': {stale.message}") for stale in result.broken
+        html.escape(f"'{stale.definition_name}': {stale.message}")
+        for stale in result.newly_marked
     ]
     return (
         "These copy definitions use a field or card type that was renamed or deleted, in a"
@@ -104,23 +158,35 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     )
 
 
-def on_collection_did_load(col) -> None:
+def on_collection_did_load(col: Any) -> None:
     """A collection was opened. A rename made on another device arrives with no hook at all
-    -- only the collection, already holding the new names -- so this is where it is seen."""
+    -- only the collection, already holding the new names -- so this is where it is seen.
+
+    The decks an earlier collection had are forgotten first, so that nothing about it can
+    stand in for this one's should this pass not complete.
+    """
+    _forget_decks()
     run_reconcile()
 
 
-def on_operation_did_execute(changes, handler) -> None:
-    """Anki says only *that* a note type or a deck changed, which is reason enough to look.
+def on_operation_did_execute(changes: Any, handler: Any) -> None:
+    """Anki says only *that* a note type or a deck changed, which is reason enough to look
+    -- at a deck change, once the decks are seen to differ (see the module docstring).
 
-    After a note type change -- saving the Fields dialog is one -- a definition still
-    marked as broken by a rename is said so in a dialog, since the log is not read at the
-    default level. Not after a deck change: answering a card reports one, and a dialog on
-    every answer would teach the user to dismiss it.
+    After a note type change -- saving the Fields dialog is one -- a mark the pass just
+    added is said so in a dialog, since the log is not read at the default level. Not after
+    a deck change: no mark is ever about a deck.
     """
     notetype_changed = bool(getattr(changes, "notetype", False))
-    if not (notetype_changed or getattr(changes, "deck", False)):
-        return
+    if not notetype_changed:
+        if not getattr(changes, "deck", False) or _running or mw.col is None:
+            return
+        try:
+            if not _decks_changed(mw.col):
+                return
+        except Exception:
+            logger.exception("Could not compare the decks with the last reconcile pass")
+            return
     result = run_reconcile()
     if not notetype_changed or result is None:
         return
@@ -132,6 +198,6 @@ def on_operation_did_execute(changes, handler) -> None:
         logger.exception("Could not show the definitions a rename left broken")
 
 
-def init_rename_hooks():
+def init_rename_hooks() -> None:
     collection_did_load.append(on_collection_did_load)
     operation_did_execute.append(on_operation_did_execute)

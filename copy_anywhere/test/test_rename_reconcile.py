@@ -5,8 +5,9 @@ A definition stores an id beside the name for every object Anki gives a stable i
 does not do is tell the *user* which name a definition is still spelling, and it cannot
 help a field at all -- a field is stored as the name it is written with, everywhere.
 
-This pass closes both. It runs when the collection loads and after any operation that
-changed a note type or a deck, compares the live names against a snapshot kept per id, and
+This pass closes both. It runs when the collection loads, after any operation that changed
+a note type, and after one that changed the decks' names or ids (not merely reported a deck
+change, as every answer does), compares the live names against a snapshot kept per id, and
 so has both names of a rename in hand -- which no Anki hook gives. Cached names are
 refreshed, a renamed field or card type of a trigger note type is followed into the
 definition's field slots and its `{{trigger....}}` tokens -- in a definition with one
@@ -21,12 +22,14 @@ import shutil
 from contextlib import contextmanager
 
 import pytest
+from anki.scheduler.v3 import CardAnswer
 from aqt import mw
 
 import definitions as d
 from anki_shared.testing import real_anki
 from note_types import DEFAULT_CONFIG, KANJI, VOCAB, VOCAB_FIELDS, VOCAB_TEMPLATES
 from copy_anywhere.configuration import Config, migrate_config
+from copy_anywhere.hooks import rename_hooks
 from copy_anywhere.hooks.rename_hooks import on_operation_did_execute
 from copy_anywhere.logic.copy_fields import (
     CacheResults,
@@ -100,9 +103,9 @@ def names(items) -> list[str]:
 def opened(stub_mw, collection):
     """Run a block with `mw` pointing at this collection, as a profile switch leaves it.
 
-    The pass is given the collection to reconcile, but the save at the end of it rebuilds
-    the snapshot from `mw.col` (`Config._save_definitions`), so a test that moved one and
-    not the other would be testing a state Anki never has.
+    The pass is given the collection to reconcile, but every other save rebuilds the
+    snapshot from `mw.col` (`Config._save_definitions`), so a test that moved one and not
+    the other would be testing a state Anki never has.
     """
     previous = stub_mw.col
     stub_mw.col = collection
@@ -1479,11 +1482,46 @@ class TestTheWarningAfterAFieldsSave:
         assert "renamed or deleted" in warnings[0]
         assert "dismiss its mark in the definition editor" in warnings[0]
 
-    def test_a_deck_operation_does_not(self, marked, warnings):
-        # Answering a card reports a deck change; a dialog per answer is not a warning.
-        on_operation_did_execute(FakeChanges(notetype=False, deck=True), None)
+    def test_a_deck_operation_does_not(self, col, marked, warnings, passes):
+        # A deck renamed, so that the pass does run and mark, and still says nothing: no
+        # mark is about a deck, and answering a card reports a deck change too.
+        changes = col.decks.rename(col.decks.id_for_name("Other"), "Elsewhere")
 
+        on_operation_did_execute(changes, None)
+
+        assert len(passes) == 1
+        assert broken_by_rename_messages(marked)
         assert warnings == []
+
+    def test_a_mark_already_shown_is_not_shown_again(self, col, marked, warnings):
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+        rename_field(col, KANJI, "Keyword", "Gloss")
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert len(warnings) == 1
+        assert broken_by_rename_messages(marked)
+
+    def test_only_the_marks_this_pass_added_are_listed(self, col, config, marked, warnings):
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+        definition = d.staged(
+            definition_name="both again",
+            note_types=[VOCAB, "CA Vocab B"],
+            stages=[
+                d.edit_note(
+                    "trigger", fields=[d.write("Meaning", d.text("{{trigger.Reading}}"))]
+                )
+            ],
+        )
+        config.data["copy_definitions"].append(definition)
+        reconcile(config, mw.col)
+        rename_field(col, VOCAB, "Reading", "Kana")
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert len(warnings) == 2
+        assert "both again" in warnings[1] and html.escape('"Reading"') in warnings[1]
+        assert "both &lt;&amp;&gt;" not in warnings[1]
 
     def test_nothing_marked_shows_nothing(self, col, config, warnings):
         store(config, d.staged(note_types=[VOCAB]))
@@ -1651,6 +1689,155 @@ class TestWhenThePassRuns:
         assert result.changed is False
         assert saves(stub_mw) == 0
 
+    def test_a_note_type_change_runs_it_even_with_the_decks_unchanged(
+        self, col, config, passes
+    ):
+        store(config, d.staged(note_types=[VOCAB]))
+        rename_hooks.on_collection_did_load(col)
+
+        on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        assert len(passes) == 2
+
+    def test_answering_a_card_does_not_run_it(self, col, config, passes, config_loads):
+        """An answer reports a deck change; the decks it did not change are what say so."""
+        store(config, d.staged(note_types=[VOCAB]))
+        rename_hooks.on_collection_did_load(col)
+        del passes[:], config_loads[:]
+
+        changes = answer_a_card(col)
+        on_operation_did_execute(changes, None)
+
+        assert changes.deck is True and changes.notetype is False
+        assert passes == [] and config_loads == []
+
+    def test_answering_does_not_reread_a_config_with_no_references(
+        self, col, config, passes, config_loads
+    ):
+        """The load pass stops early here, and it still has to count as the decks seen."""
+        store(config, d.staged(note_types=[]))
+        rename_hooks.on_collection_did_load(col)
+        del config_loads[:]
+
+        on_operation_did_execute(answer_a_card(col), None)
+
+        assert passes == [] and config_loads == []
+
+    @pytest.mark.parametrize("deck_operation", ["rename", "remove", "add"])
+    def test_a_deck_renamed_removed_or_added_runs_it(
+        self, col, config, passes, deck_operation
+    ):
+        store(config, d.staged(note_types=[VOCAB], deck_names=["JP vocab"]))
+        rename_hooks.on_collection_did_load(col)
+        other = col.decks.id_for_name("Other")
+        if deck_operation == "rename":
+            changes = col.decks.rename(other, "Elsewhere")
+        elif deck_operation == "remove":
+            changes = col.decks.remove([other]).changes
+        else:
+            changes = col.decks.add_normal_deck_with_name("Brand new").changes
+
+        on_operation_did_execute(changes, None)
+
+        assert changes.notetype is False
+        assert len(passes) == 2
+
+    def test_once_it_has_run_the_same_decks_do_not_run_it_again(self, col, config, passes):
+        store(config, d.staged(note_types=[VOCAB], deck_names=["JP vocab"]))
+        rename_hooks.on_collection_did_load(col)
+        # Not "Other", which the answered card's note is added to.
+        changes = col.decks.rename(col.decks.id_for_name("JP vocab::10-80::x"), "Elsewhere")
+        on_operation_did_execute(changes, None)
+
+        on_operation_did_execute(answer_a_card(col), None)
+
+        assert len(passes) == 2
+
+    def test_the_decks_of_another_collection_do_not_stand_for_this_ones(
+        self, col, config, stub_mw, passes, tmp_path
+    ):
+        """A copy has the very same deck ids and names, and is still a pass not yet run."""
+        store(config, d.staged(note_types=[VOCAB]))
+        rename_hooks.on_collection_did_load(col)
+        other = a_copy_of(col, tmp_path / "other.anki2")
+        try:
+            with opened(stub_mw, other):
+                on_operation_did_execute(FakeChanges(notetype=False, deck=True), None)
+        finally:
+            other.close()
+
+        assert passes[-1] is other
+
+    def test_a_pass_that_failed_is_tried_again_at_the_next_deck_change(
+        self, col, config, passes, monkeypatch
+    ):
+        store(config, d.staged(note_types=[VOCAB]))
+        rename_hooks.on_collection_did_load(col)
+
+        def fail(self):
+            raise ValueError("meta.json is not JSON")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Config, "load", fail)
+            on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
+
+        on_operation_did_execute(answer_a_card(col), None)
+
+        assert len(passes) == 2
+
+    def test_a_pass_that_saves_takes_the_snapshot_once(self, col, config, stub_mw, monkeypatch):
+        """The pass stores the snapshot itself; its save must not take it a second time."""
+        from copy_anywhere.logic import rename_reconcile
+
+        builds: list = []
+        build = rename_reconcile.build_name_snapshot
+
+        def counted(definitions, collection):
+            builds.append(collection)
+            return build(definitions, collection)
+
+        monkeypatch.setattr(rename_reconcile, "build_name_snapshot", counted)
+        store(config, d.staged(note_types=[VOCAB], deck_names=["JP vocab"]))
+
+        result = reconcile(config, mw.col)
+
+        assert result.changed is True and saves(stub_mw) == 1
+        assert len(builds) == 1
+        assert stub_mw.addonManager.configs[ADDON_TAG][SNAPSHOT_KEY] == build(
+            config.copy_definitions, mw.col
+        )
+
+    def test_every_search_of_a_pass_shares_one_name_list(self, col, config, monkeypatch):
+        listings: list = []
+        list_all = col.models.all
+
+        def counted():
+            listings.append(1)
+            return list_all()
+
+        monkeypatch.setattr(col.models, "all", counted)
+        store(
+            config,
+            *[
+                d.staged(
+                    definition_name=name,
+                    note_types=[VOCAB],
+                    stages=[
+                        d.note_query("found", "Nowhere:x card:Nothing"),
+                        d.note_query("again", "Elsewhere:y"),
+                    ],
+                )
+                for name in ("one", "two")
+            ],
+        )
+
+        result = reconcile(config, mw.col)
+
+        assert len(result.stale_terms) == 6
+        # One for the field names and one for the card type names, whatever the count of
+        # searches.
+        assert len(listings) == 2
+
 
     def test_both_hooks_get_a_handler(self):
         """The pass is only as good as its registration, and nothing else would say."""
@@ -1707,6 +1894,52 @@ class TestAConfigThePassCannotRead:
         on_operation_did_execute(FakeChanges(notetype=True, deck=False), None)
 
         assert rename_hooks._running is False
+
+
+@pytest.fixture
+def passes(monkeypatch) -> list:
+    """The collection of every pass the hooks run, in order."""
+    from copy_anywhere.hooks import rename_hooks
+
+    ran: list = []
+    real = rename_hooks.reconcile
+
+    def spy(config, col):
+        ran.append(col)
+        return real(config, col)
+
+    monkeypatch.setattr(rename_hooks, "reconcile", spy)
+    return ran
+
+
+@pytest.fixture
+def config_loads(monkeypatch) -> list:
+    """One entry per read of the config from disk, which the deck check must never do."""
+    loads: list = []
+    load = Config.load
+
+    def counted(self):
+        loads.append(self)
+        return load(self)
+
+    monkeypatch.setattr(Config, "load", counted)
+    return loads
+
+
+def answer_a_card(col):
+    """Answer a new card for real and return the `OpChanges` Anki hands the hook.
+
+    As `test_review_hook.answer_card` does it, keeping what `answer_card` returns.
+    """
+    note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"}, deck_name="Other")
+    card = note.cards()[0]
+    col.decks.select(card.did)
+    queued = col.sched.get_queued_cards(fetch_limit=50)
+    states = next(entry.states for entry in queued.cards if entry.card.id == card.id)
+    card.start_timer()
+    return col.sched.answer_card(
+        col.sched.build_answer(card=card, states=states, rating=CardAnswer.GOOD)
+    )
 
 
 class FakeChanges:

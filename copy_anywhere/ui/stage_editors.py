@@ -63,7 +63,7 @@ from ..logic.definition_schema import (
     WRITE_IF_POLICIES,
     value_expression,
 )
-from ..logic.query_terms import stale_search_terms
+from ..logic.query_terms import CollectionNames, stale_search_terms
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
@@ -394,6 +394,10 @@ class QueryStageEditor(StageEditor):
 
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
+        # The name lists the stale-term note is checked against, read on the first keystroke
+        # that needs them and kept: while the definition editor is open no note type can
+        # be edited, so they cannot go out of date under it.
+        self._collection_names: Optional[CollectionNames] = None
         self.is_cards = stage.get("type") == STAGE_CARD_QUERY
         what = "cards" if self.is_cards else "notes"
         self.result = name_edit(self, stage.get("result", ""), f"A name for the {what}")
@@ -503,7 +507,9 @@ class QueryStageEditor(StageEditor):
         # A search built by code is not text to read; what it ends up naming is only known
         # when the stage runs.
         text = "" if self.query.is_code_mode() else self.query.text_layout.get_text()
-        stale = stale_search_terms(text, mw.col)
+        if self._collection_names is None:
+            self._collection_names = CollectionNames(mw.col)
+        stale = stale_search_terms(text, mw.col, self._collection_names)
         self.stale_terms_label.setVisible(bool(stale))
         if not stale:
             self.stale_terms_label.setText("")

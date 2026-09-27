@@ -30,6 +30,7 @@ from ..configuration import (
     definition_note_type_refs,
 )
 from ..logic.object_refs import deck_display_name, note_type_display_name
+from ..logic.query_terms import CollectionNames
 from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
 from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from .discard import discard_widget
@@ -152,10 +153,12 @@ class DragHandle(QLabel):
 class DefinitionRow(QWidget):
     """A widget that represents a single definition row with drag and drop support"""
 
-    def __init__(self, parent_dialog, definition, index):
+    def __init__(self, parent_dialog, definition, index, collection_names=None):
         super().__init__()
         self.parent_dialog = parent_dialog
         self.definition = definition
+        #: The dialog's one `query_terms.CollectionNames`, shared by every row's search scan.
+        self.collection_names = collection_names
         self.definition_guid = definition["guid"]
         self.index = index
 
@@ -314,7 +317,7 @@ class DefinitionRow(QWidget):
 
         stale = []
         if mw is not None and mw.col is not None:
-            stale = stale_terms_in_searches(self.definition, mw.col)
+            stale = stale_terms_in_searches(self.definition, mw.col, self.collection_names)
         if not stale:
             self.search_marker.setText("")
             self.search_marker.setToolTip("")
@@ -408,6 +411,12 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         self.checkboxes: list[QCheckBox] = []
         self.definition_note_ids: list[Sequence[Union[int, NoteId]]] = []
         self.note_source = note_source
+        # One set of name lists for every row's search scan, for as long as the dialog is
+        # open: it holds the Browser's window modal, so no note type can change meanwhile
+        # (`DefinitionRow.refresh`). Read lazily: definitions that search nothing read none.
+        self.collection_names: Optional[CollectionNames] = (
+            CollectionNames(mw.col) if mw is not None and mw.col is not None else None
+        )
 
         # GUID-based definition UI tracking
         self.definition_ui_components: dict[str, dict] = (
@@ -499,7 +508,9 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         definition_guid = definition["guid"]
 
         # Create a definition row widget
-        definition_row = DefinitionRow(self, definition, index)
+        definition_row = DefinitionRow(
+            self, definition, index, collection_names=self.collection_names
+        )
 
         # Add to checkboxes list and connect events
         self.checkboxes.append(definition_row.checkbox)

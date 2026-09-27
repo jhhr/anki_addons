@@ -145,8 +145,13 @@ def _unescape(text: str) -> str:
     return "".join(result)
 
 
-class _CollectionNames:
-    """The name lists a scan needs, read once per scan rather than once per term.
+class CollectionNames:
+    """The name lists a scan needs, read once rather than once per term.
+
+    Built lazily and never re-read, so one object may be shared by every scan made while
+    the collection's names cannot change: a whole pass, or an open picker or definition
+    editor, during which Manage Note Types cannot be reached. A scan given none builds its
+    own, which is always correct.
 
     Both lists are folded to lower case: Anki matches a field search and `card:` without
     regard to case, so a query spelling a live name in another case works and must not be
@@ -180,7 +185,7 @@ class _CollectionNames:
         return self._templates
 
 
-def _stale_term(key: str, value: str, col: Any, names: _CollectionNames):
+def _stale_term(key: str, value: str, col: Any, names: CollectionNames):
     if key == "deck":
         if value.lower() in DECK_PSEUDO_NAMES or col.decks.id_for_name(value) is not None:
             return None
@@ -200,11 +205,17 @@ def _stale_term(key: str, value: str, col: Any, names: _CollectionNames):
     return StaleTerm(KIND_FIELD, key)
 
 
-def stale_search_terms(query_text: Any, col: Any) -> list[StaleTerm]:
-    """Every exact name in this search that the collection does not have, in order."""
+def stale_search_terms(
+    query_text: Any, col: Any, names: Optional[CollectionNames] = None
+) -> list[StaleTerm]:
+    """Every exact name in this search that the collection does not have, in order.
+
+    `names` is the caller's shared `CollectionNames` for `col`, if it keeps one.
+    """
     if not isinstance(query_text, str) or not query_text.strip():
         return []
-    names = _CollectionNames(col)
+    if names is None:
+        names = CollectionNames(col)
     found: list[StaleTerm] = []
     for raw in _split_terms(query_text):
         text = raw.lstrip("-")
@@ -227,4 +238,4 @@ def stale_search_terms(query_text: Any, col: Any) -> list[StaleTerm]:
     return found
 
 
-__all__ = ["StaleTerm", "stale_search_terms"]
+__all__ = ["CollectionNames", "StaleTerm", "stale_search_terms"]
