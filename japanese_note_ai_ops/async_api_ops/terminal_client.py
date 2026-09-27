@@ -29,6 +29,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
+from . import capture
 from .api_client import (
     CANCEL_POLL_INTERVAL,
     DEFAULT_MAX_RETRIES,
@@ -165,9 +166,22 @@ class CliOutcome(NamedTuple):
     action: str
     # OK: the schema object when the CLI parsed one, else None and the answer is in `message`
     result: Optional[dict]
-    # OK without a parsed object: the model's text. Otherwise what went wrong.
+    # OK: the model's text (also beside a parsed object). Otherwise what went wrong.
     message: str
     status: Optional[int] = None
+    # OK: the CLI's `usage` with its `total_cost_usd` added, for the capture store
+    usage: Optional[dict] = None
+
+
+def cli_usage(body: dict) -> Optional[dict]:
+    """What a finished request cost, as capture records it: the CLI's `usage` object, with the
+    `total_cost_usd` it reports beside it moved in."""
+    usage = body.get("usage")
+    usage = dict(usage) if isinstance(usage, dict) else {}
+    cost = body.get("total_cost_usd")
+    if cost is not None:
+        usage["total_cost_usd"] = cost
+    return usage or None
 
 
 def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOutcome:
@@ -190,8 +204,8 @@ def classify_result(exit_code: Optional[int], stdout: str, stderr: str) -> CliOu
     if not body.get("is_error") and exit_code == 0:
         structured = body.get("structured_output")
         if isinstance(structured, dict):
-            return CliOutcome(CliAction.OK, structured, text)
-        return CliOutcome(CliAction.OK, None, text)
+            return CliOutcome(CliAction.OK, structured, text, usage=cli_usage(body))
+        return CliOutcome(CliAction.OK, None, text, usage=cli_usage(body))
 
     # Before the status checks: the 404 and 400 it comes as would otherwise fail only this
     # request, and a run of thousands failed every one of them before it was noticed
@@ -236,16 +250,21 @@ def decode_text_result(text: str, corrector: Optional[Callable[[str], str]] = No
     start, end = text.find("{"), text.rfind("}")
     json_text = text[start : end + 1] if start != -1 and end != -1 else text
     for attempt in (json_text, None):
+        corrected = attempt is None
         if attempt is None:
             if not corrector:
                 break
             attempt = corrector(json_text)
         try:
-            return json.loads(attempt)
+            result = json.loads(attempt)
         except (ValueError, TypeError):
             continue
+        if corrected:
+            capture.note_response(corrected=True)
+        return result
     logger.error("Failed to parse JSON from the claude CLI: %s", text)
     report_error(f"claude CLI: the answer was not valid JSON: {excerpt(text)}")
+    capture.note_outcome("unparseable", "the answer was not valid JSON")
     return None
 
 
@@ -510,6 +529,7 @@ def get_response_from_terminal(
     if not exe:
         logger.error("No claude CLI found: install Claude Code or set claude_cli_path")
         report_error("No claude CLI found: install Claude Code or set claude_cli_path")
+        capture.note_outcome("error", "no claude CLI found")
         return None
 
     instructions_file = None
@@ -574,10 +594,12 @@ def _run_with_retry(
             continue
         sent_at = time.monotonic()
         try:
+            capture.note_attempt()
             finished = run_process(cmd, prompt, timeout, cancel_state, popen)
         except OSError as e:
             logger.error("Could not start the claude CLI %s: %s", cmd[0], e)
             report_error(f"Could not start the claude CLI {cmd[0]}: {e}")
+            capture.note_outcome("error", f"could not start the claude CLI {cmd[0]}: {e}")
             return None
         finally:
             semaphore.release()
@@ -593,6 +615,7 @@ def _run_with_retry(
 
         if outcome.action == CliAction.OK:
             rate_limit_tracker.note_success(key, sent_at=sent_at)
+            capture.note_response(raw=outcome.message, usage=outcome.usage)
             if outcome.result is not None:
                 return outcome.result
             return decode_text_result(outcome.message, json_result_corrector)
@@ -600,6 +623,7 @@ def _run_with_retry(
             if not pause_for_usage_limit(outcome.message, config):
                 logger.error("claude CLI usage limit was reached for %s: %s", key, outcome.message)
                 report_error(f"{key}: the usage limit was reached: {excerpt(outcome.message)}")
+                capture.note_outcome("error", f"usage limit reached: {outcome.message}")
                 return None
             # The same attempt again once the pause ends, which the top of the loop waits for.
             # Every request that hit the limit retries, not only the one that paused the run:
@@ -609,6 +633,8 @@ def _run_with_retry(
             reason = STOP_REASONS[outcome.action]
             logger.error("claude CLI %s, stopping %s: %s", reason, key, outcome.message)
             stop_run_for_dead_end(reason, outcome.message)
+            # Noted: the run this cancels would otherwise make the call's outcome `cancelled`
+            capture.note_outcome("error", f"claude CLI {reason}: {outcome.message}")
             return None
         if outcome.action == CliAction.FAIL:
             # Full output, so a failure this classifier doesn't know yet can be taught to it
@@ -623,11 +649,19 @@ def _run_with_retry(
                 f"{key}: the claude CLI failed with exit code {finished.exit_code}:"
                 f" {excerpt(finished.stderr or finished.stdout or '')}"
             )
+            capture.note_outcome(
+                "error",
+                f"claude CLI failed with exit code {finished.exit_code}:"
+                f" {finished.stderr or finished.stdout or ''}",
+            )
             return None
 
         if attempt >= max_retries:
             logger.error("Giving up on %s after %d attempts: %s", key, attempt + 1, outcome.message)
             report_error(f"{key}: gave up after {attempt + 1} attempts: {excerpt(outcome.message)}")
+            capture.note_outcome(
+                "no_response", f"gave up after {attempt + 1} attempts: {outcome.message}"
+            )
             return None
         delay = min(_backoff_delay(attempt), max_retry_wait)
         logger.warning("Retrying %s in %.1fs: %s", key, delay, outcome.message)

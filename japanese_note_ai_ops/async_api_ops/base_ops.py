@@ -18,6 +18,7 @@ from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
 from collections.abc import Container, Iterable, Sequence
 
+from . import capture
 from .api_client import (
     ANTHROPIC,
     DEFAULT_MAX_RETRIES,
@@ -216,19 +217,95 @@ def get_response(
     temperature: Optional[float] = None,
     json_result_corrector: Optional[Callable[[str], str]] = None,
     effort: Optional[str] = None,
+    kind: str = "",
+    inputs: Optional[dict] = None,
 ) -> Union[dict, None]:
     """Get a response from the appropriate model based on the configuration.
 
     Args:
         model: The model to use for the request.
+        kind: What the call is for, `<op>.<purpose>` (`match.meanings`), and `inputs` the
+            values its prompt was built from (JSON-serialisable; no note ids, no API keys).
+            Both are only recorded with the call in the capture store, when one is
+            installed; the request is the same without them.
 
     Returns:
         A dict containing the parsed JSON response, or None if there was an error.
     """
+    with capture.call(
+        kind,
+        inputs,
+        model=model,
+        prompt=prompt,
+        # What every provider sends when it is given none, so the record is what was sent
+        instructions=instructions or DEFAULT_SYSTEM_INSTRUCTION,
+        schema=response_schema,
+        params={
+            "max_output_tokens": max_output_tokens,
+            "temperature": temperature,
+            "effort": effort,
+        },
+    ) as trace:
+        try:
+            result = _dispatch_response(
+                model,
+                prompt,
+                cancel_state=cancel_state,
+                instructions=instructions,
+                response_schema=response_schema,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                json_result_corrector=json_result_corrector,
+                effort=effort,
+            )
+        except Exception:
+            if trace is not None:
+                # The row records the exception as the outcome; the trace never sees it
+                _log_call_end(trace, kind, "error")
+            raise
+        if trace is not None:
+            _finish_call(trace, kind, result, cancel_state)
+    return result
+
+
+def _finish_call(
+    trace: capture.CallTrace, kind: str, result: Any, cancel_state: Optional[CancelState]
+) -> None:
+    """Give a captured call its result and log its reference line. Never raises: the result
+    is the op's whether or not it could be recorded."""
+    try:
+        trace.finish(result, cancelled=is_cancelled(cancel_state))
+    except Exception:
+        logger.warning("Capture: call %s could not be finished", trace.call_id, exc_info=True)
+    _log_call_end(trace, kind, trace.outcome)
+
+
+def _log_call_end(trace: capture.CallTrace, kind: str, outcome: Optional[str]) -> None:
+    """The text log's line for a captured call, the one that names its row in the store.
+
+    Logged inside the call, so that its record carries the call's ids like every other line
+    of it, the implicit run's included.
+    """
+    logger.info("call %s %s %s %.1fs", trace.call_id, kind or "-", outcome, trace.elapsed())
+
+
+def _dispatch_response(
+    model: str,
+    prompt: str,
+    cancel_state: Optional[CancelState] = None,
+    instructions: Optional[str] = None,
+    response_schema: Optional[dict] = None,
+    max_output_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    json_result_corrector: Optional[Callable[[str], str]] = None,
+    effort: Optional[str] = None,
+) -> Union[dict, None]:
+    """`get_response`'s request, sent to the provider the model's name selects."""
     if is_terminal_model(model):
         config = mw.addonManager.getConfig(__name__)
         if config is None:
             logger.error("No configuration found for the addon.")
+            capture.note_outcome("error", "no configuration found for the addon")
             return None
         return get_response_from_terminal(
             model,
@@ -288,6 +365,7 @@ def get_response(
         )
     else:
         logger.error(f"Unsupported model: {model}")
+        capture.note_outcome("error", f"unsupported model: {model}")
         return None
 
 
@@ -321,6 +399,7 @@ def post_to_api(
         report_error(
             f"{model}: no answer; every attempt timed out or lost its connection (see the log)"
         )
+        capture.note_outcome("no_response", "every attempt timed out or lost its connection")
     return response
 
 
@@ -328,6 +407,7 @@ def report_refused(model: str, response: Any) -> None:
     """Log and report a provider's final non-200 answer."""
     logger.error(f"Error: {response.status_code}, {response.text}")
     report_error(f"{model}: HTTP {response.status_code}: {excerpt(response.text)}")
+    capture.note_outcome("refused", f"HTTP {response.status_code}: {response.text}")
 
 
 def report_unreadable(model: str, error: Exception, response: Any) -> None:
@@ -338,6 +418,7 @@ def report_unreadable(model: str, error: Exception, response: Any) -> None:
         f"{model}: could not read the answer ({type(error).__name__}: {error}):"
         f" {excerpt(response.text)}"
     )
+    capture.note_outcome("unreadable", f"{type(error).__name__}: {error}: {response.text}")
 
 
 def decode_answer(
@@ -346,16 +427,21 @@ def decode_answer(
     """The JSON in an answer, run through the corrector if it does not parse at first; None,
     reported, if it does not parse either way."""
     result = decode_json_result(json_result)
+    corrected = False
     if not result and json_result_corrector:
         json_result = json_result_corrector(json_result)
         result = decode_json_result(json_result)
+        corrected = True
     if result is None:
         report_error(f"{model}: the answer was not valid JSON: {excerpt(json_result)}")
+        capture.note_outcome("unparseable", "the answer was not valid JSON")
+    elif corrected:
+        capture.note_response(corrected=True)
     return result
 
 
 def decode_json_result(json_str: str):
-    logging.debug("json_result", json_str)
+    logger.debug("json_result %s", json_str)
     try:
         result = json.loads(json_str)
         logger.debug(
@@ -456,17 +542,7 @@ def get_response_from_gemini(
         ],
         "system_instruction": {
             "parts": [
-                {
-                    "text": (
-                        instructions
-                        if instructions
-                        else (
-                            "You are a helpful assistant for processing Japanese text. You are a"
-                            " superlative expert in the Japanese language and its writing system."
-                            " You are designed to output JSON."
-                        )
-                    )
-                },
+                {"text": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION},
             ]
         },
         "generationConfig": {
@@ -498,6 +574,7 @@ def get_response_from_gemini(
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         print("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     google_api_key = config.get("google_api_key", "")
 
@@ -529,6 +606,7 @@ def get_response_from_gemini(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usageMetadata"))
 
     # Extract the JSON from the response
     json_result = extract_json_string(content_text)
@@ -556,21 +634,14 @@ def get_response_from_openai(
     messages = [
         {
             "role": "system",
-            "content": (
-                instructions
-                if instructions
-                else (
-                    "You are a helpful assistant for processing Japanese text. You are a"
-                    " superlative expert in the Japanese language and its writing system. You are"
-                    " designed to output JSON."
-                )
-            ),
+            "content": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         },
         {"role": "user", "content": prompt},
     ]
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     openai_api_key = config.get("openai_api_key", "")
     headers = {
@@ -636,6 +707,7 @@ def get_response_from_openai(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
@@ -661,21 +733,14 @@ def get_response_from_together(
     messages = [
         {
             "role": "system",
-            "content": (
-                instructions
-                if instructions
-                else (
-                    "You are a helpful assistant for processing Japanese text. You are a"
-                    " superlative expert in the Japanese language and its writing system. You are"
-                    " designed to output JSON."
-                )
-            ),
+            "content": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         },
         {"role": "user", "content": prompt},
     ]
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     together_api_key = config.get("together_api_key", "")
     headers = {
@@ -716,6 +781,7 @@ def get_response_from_together(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     json_result = extract_json_string(content_text)
 
@@ -752,15 +818,7 @@ def get_response_from_anthropic(
     # Create the request body
     data: dict[str, Any] = {
         "model": model,
-        "system": (
-            instructions
-            if instructions
-            else (
-                "You are a helpful assistant for processing Japanese text. You are a"
-                " superlative expert in the Japanese language and its writing system. You are"
-                " designed to output JSON."
-            )
-        ),
+        "system": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         "max_tokens": max_output_tokens or MAX_TOKENS_VALUE,
         "messages": messages,
     }
@@ -800,6 +858,7 @@ def get_response_from_anthropic(
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     anthropic_api_key = config.get("anthropic_api_key", "")
 
@@ -865,6 +924,7 @@ def get_response_from_anthropic(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
