@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Optional
 
 from anki.notes import Note
 
+from ...logging_setup import running_a_definition
 from ..definition_schema import CopyDefinitionV2, is_format_2
 from ..definition_migration import MigrationError, migrate_definition_v1_to_v2
 from .commit import CollectionCommitter
@@ -62,7 +63,8 @@ def run_definition_for_trigger_note(
     # puts it back; a run that commits never does, or the writes it just made would be lost.
     session.remember_trigger(frame.trigger_note)
     try:
-        execute_definition(frame)
+        with running_a_definition():
+            execute_definition(frame)
     except TriggerSkipped:
         # The deck whitelist or a copy condition said this note is not one the definition
         # applies to. Benign: nothing is written, nothing is committed, the loop goes on. A

@@ -313,3 +313,55 @@ class TestTheFileName:
 
         path, _ = written_log(_operation_logs_go_to_tmp)
         assert path.name.startswith("copy_fields_JP_vocab_kanji_")
+
+
+class TestTheSharedLoggerIsNotThisAddons:
+    """`jp_text_processing` logs through one logger object in every addon that vendors it.
+
+    The operation attached its file to that logger and set its level for the whole run, so
+    a debug run wrote another addon's lines into this addon's file, and an error-level run
+    silenced another addon's warnings until it ended.
+    """
+
+    @pytest.fixture
+    def shared(self):
+        shared = logging.getLogger(logging_setup.SHARED_LOGGER_NAME)
+        before = shared.level
+        shared.setLevel(logging.NOTSET)
+        yield shared
+        shared.setLevel(before)
+
+    def test_another_threads_lines_stay_out_of_the_file(self, shared, _operation_logs_go_to_tmp):
+        import threading
+
+        logging_setup.start_operation_log("op", "debug")
+        try:
+            with logging_setup.running_a_definition():
+                shared.debug("this addon's")
+            elsewhere = threading.Thread(target=lambda: shared.debug("another addon's"))
+            elsewhere.start()
+            elsewhere.join()
+        finally:
+            logging_setup.finish_operation_log()
+
+        _, text = written_log(_operation_logs_go_to_tmp)
+        assert "this addon's" in text
+        assert "another addon's" not in text
+
+    def test_an_error_level_operation_does_not_raise_its_level(
+        self, shared, _operation_logs_go_to_tmp
+    ):
+        effective = shared.getEffectiveLevel()
+        logging_setup.start_operation_log("op", "error")
+        try:
+            assert shared.getEffectiveLevel() == effective
+        finally:
+            logging_setup.finish_operation_log()
+
+    def test_a_level_set_while_the_operation_ran_is_kept(self, shared, _operation_logs_go_to_tmp):
+        logging_setup.start_operation_log("op", "debug")
+        assert shared.level == logging.DEBUG
+        shared.setLevel(logging.INFO)
+        logging_setup.finish_operation_log()
+        assert shared.level == logging.INFO
+
