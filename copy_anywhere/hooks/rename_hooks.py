@@ -83,10 +83,10 @@ def run_reconcile() -> Optional[ReconcileResult]:
 def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     """What to tell the user about definitions a rename left marked, if any.
 
-    One line per marked field or card type, under the definition's name, so the user sees
-    which of the three ways out -- rename it in the other note types too, undo the rename,
-    or rework the definition -- fits each one. It says the definitions are not run meanwhile
-    (`copy_fields.copy_for_single_trigger_note`), since this dialog is where the user
+    One line per mark, under the definition's name: which field or card type was renamed or
+    deleted, and in which note type. It says the definitions are not run meanwhile
+    (`copy_fields.refused_for_rename`) and how that ends -- the user updates each one and
+    dismisses its mark in the definition editor -- since this dialog is where the user
     learns that.
     """
     if not result.broken:
@@ -95,14 +95,12 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
         html.escape(f"'{stale.definition_name}': {stale.message}") for stale in result.broken
     ]
     return (
-        "These copy definitions trigger on several note types, and a rename made in only"
-        " some of them would leave a name they spell wrong for the others, so the rename"
-        " was not followed into them and they are not run until that is fixed:"
+        "These copy definitions use a field or card type that was renamed or deleted, in a"
+        " way that could not be followed into them, so they are marked and not run:"
         "<br><br>"
         + "<br>".join(lines)
-        + "<br><br>Rename the field or card type in the other note types too, undo the"
-        " rename, or edit the definition. A definition is updated by itself, and runs again, once its note"
-        " types agree again."
+        + "<br><br>Update each definition, then dismiss its mark in the definition editor;"
+        " it runs again once it has no mark left."
     )
 
 

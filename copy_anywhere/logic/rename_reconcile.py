@@ -20,6 +20,16 @@ they are reported instead -- `col.replace_in_search_node` swaps every term of a 
 cannot rename one deck inside a query naming two, and `note['Word']` is a spelling of a
 field name that no `{{...}}` rewrite can see.
 
+It rewrites only a definition with one trigger note type, where following a rename is
+mechanical. A definition on several spells a field or a card type once for all of them, so
+a rename in one leaves it wrong whichever name it spells, and every rule that tried to
+decide for it (follow once all of them agree, withhold when another has both names) found
+a way to decide wrongly and quietly. So it is not rewritten at all: it is marked
+(`BROKEN_KEY`), as is a one-trigger definition whose code still mentions the old name and
+any definition spelling a field or card type that was deleted. A marked definition is not
+run until the user has updated it and dismissed the mark in the definition editor. The
+pass never re-derives a mark; the only one it takes back is a rename undone.
+
 Nothing here runs while a dialog is still open: the pass reads the collection as Anki saved
 it, so a rename the user cancels was never made, and one undone later is just a second
 rename this pass follows back.
@@ -83,12 +93,16 @@ _TRIGGER_NOTE_TYPE = "trigger note type"
 #: the collection's path; `_collection_path` says why, and what that costs.
 SNAPSHOT_KEY = "name_snapshot"
 
-#: Where a definition keeps the field and card type renames this pass would not follow into
-#: it, each with the one sentence that says why. A definition triggering on several note
-#: types spells a field or a card type once for all of them, so a rename in only some of
-#: them leaves it wrong whichever name it spells: it is left as it was and marked, until
-#: the note types agree again or the user reworks it. See "Following a rename in Anki" in
-#: `docs/staged-definitions.md`.
+#: Where a definition keeps the renames and deletions this pass could not follow into it,
+#: one entry per field or template: `{"kind", "note_type_id", "id", "old", "new",
+#: "message"}`, `new` None for a deletion. Written once, with the names as they were then,
+#: and never re-derived: a rename in a definition with several trigger note types, a name
+#: its code still mentions, a field or card type it spells that was deleted. The user
+#: updates the definition and dismisses the mark in the editor; the pass itself only drops
+#: an entry whose object is called `old` again (the rename undone) and updates one renamed
+#: a second time. Entries a version before this one stored (`{"field"}` or `{"card_type"}`
+#: with a message, and no `"id"`) are read for their message and otherwise left alone. See
+#: "Following a rename in Anki" in `docs/staged-definitions.md`.
 BROKEN_KEY: Final = "broken_by_rename"
 
 
@@ -119,24 +133,25 @@ class ReconcileResult:
     #: knew: the definition names an object this collection has never had, so it does
     #: nothing rather than the wrong thing.
     unresolved: list[StaleName] = dataclass_field(default_factory=list)
-    #: A snapshotted id that is no longer in the collection -- the user deleted the object,
-    #: and the name is the last one it had. Reported, never rewritten.
+    #: A snapshotted note type, deck or card action's card type that is no longer in the
+    #: collection -- the user deleted the object, and the name is the last one it had.
+    #: Reported, never rewritten. A deleted field or template marks the definitions that
+    #: spell it instead (`broken`), since a report is gone again by the next pass.
     gone: list[StaleName] = dataclass_field(default_factory=list)
     #: A field or template of a trigger note type that carries no id, so a rename of it
     #: cannot be seen at all (note types saved before Anki 23.10 keep null ids).
     unfollowable: list[StaleName] = dataclass_field(default_factory=list)
-    #: An old name still inside a code block, where a mechanical rewrite would be a guess
-    #: at what the user meant.
-    not_rewritten: list[StaleName] = dataclass_field(default_factory=list)
     #: A name a query spells that the collection does not have. Checked every run rather
     #: than only after a rename: a query can go stale on another device, and nothing else
     #: ever looks inside search text (`query_terms.py`).
     stale_terms: list[StaleName] = dataclass_field(default_factory=list)
-    #: A field or card type this definition spells that is not on every note type it
-    #: triggers on (or a field whose new name another of them has too, `_split_followable`),
-    #: after a rename the pass did not follow for that reason (`BROKEN_KEY`). Listed for as
-    #: long as the definition stays marked, not only on the pass that marked it.
+    #: Every mark a definition carries after this pass (`BROKEN_KEY`), named by the name the
+    #: definition spells. Listed for as long as the definition stays marked, not only on the
+    #: pass that marked it.
     broken: list[StaleName] = dataclass_field(default_factory=list)
+    #: The marks this pass added, which is what the user has not been told about yet. An
+    #: entry it only updated (the object renamed again) is not new.
+    newly_marked: list[StaleName] = dataclass_field(default_factory=list)
     #: The one line a pass on a collection other than the snapshot's has to say: nothing
     #: was followed, because nothing in the snapshot was about this collection.
     collection_changed: Optional[str] = None
@@ -222,9 +237,9 @@ def still_names(definition: CopyDefinitionV2, stale: StaleName) -> bool:
     A pass's report outlives the definitions it was about: it is kept until the next pass
     (`rename_hooks.last_reconcile_result`), and saving a definition does not start one, so
     a deleted field the user has since taken out of the definition would still be said to
-    be in it. And a deleted field or template is reported to every definition triggering on
-    its note type, whether it spells that one or not. So the picker asks here before it
-    marks a row with an entry.
+    be in it. So the picker asks here before it marks a row with an entry. (A deleted field
+    or template is a mark now, not a report, but a kind this is asked about keeps its
+    answer.)
 
     Named means what the pass itself reads: a note type or a deck among the trigger
     references, a card type among the card actions' references, a field or card type in a
@@ -463,9 +478,13 @@ class _Renames:
 
     fields: dict[str, str] = dataclass_field(default_factory=dict)
     templates: dict[str, str] = dataclass_field(default_factory=dict)
-    #: The id of each renamed field, by its old name: what a mark the rename leaves
-    #: remembers it by, since a name can pass to another field in the same save (a swap).
-    field_ids: dict[str, int] = dataclass_field(default_factory=dict)
+    #: The id of each renamed field and template, by kind and old name: what a mark the
+    #: rename leaves remembers it by, since a name can pass to another field in the same
+    #: save (a swap).
+    ids: dict[tuple[str, str], int] = dataclass_field(default_factory=dict)
+    #: The fields and templates deleted from the note type, as `(kind, id, last name)`.
+    #: Not renames, so `__bool__` and the rewrite ignore them; only a mark says them.
+    deleted: list[tuple[str, int, str]] = dataclass_field(default_factory=list)
 
     def __bool__(self) -> bool:
         return bool(self.fields or self.templates)
@@ -489,21 +508,6 @@ class _Renames:
         """What this card type is called now, matched exactly (see `new_field_name`)."""
         return self.templates.get(name)
 
-    def without(self, followed: set[tuple[str, str, str]]) -> _Renames:
-        """These renames less the ones already in `followed`, which gains the rest."""
-        rest = _Renames()
-        for kind, renames, target in (
-            (KIND_FIELD, self.fields, rest.fields),
-            (KIND_CARD_TYPE, self.templates, rest.templates),
-        ):
-            for old_name, new_name in renames.items():
-                # Keyed as each kind is matched: a field without regard to case.
-                key = (kind, old_name.lower() if kind == KIND_FIELD else old_name, new_name)
-                if key not in followed:
-                    followed.add(key)
-                    target[old_name] = new_name
-        return rest
-
 
 def _live_names_by_id(entries: Any) -> dict[int, str]:
     return {
@@ -519,10 +523,10 @@ def _diff(
     """Compare the snapshotted names against the live ones, by id.
 
     A changed name under an id that is still there is a rename, and the only place both
-    names exist. A field or template id that is gone is reported: a deleted field is not a
-    renamed one, and guessing which live field replaced it is how a rewrite writes to the
-    wrong field. The note types and decks that are gone were reported before the bind
-    (`_deleted_objects`); what is left here is what they contain.
+    names exist. A field or template id that is gone is a deletion, kept apart: a deleted
+    field is not a renamed one, and guessing which live field replaced it is how a rewrite
+    writes to the wrong field. The note types and decks that are gone were reported before
+    the bind (`_deleted_objects`); what is left here is what they contain.
     """
     renames: dict[int, _Renames] = {}
     for key, entry in (snapshot.get("note_types") or {}).items():
@@ -553,20 +557,20 @@ def _diff(
         ):
             for stored_key, old_name in (stored or {}).items():
                 object_id = _as_int(stored_key)
-                new_name = live.get(object_id) if object_id is not None else None
+                if object_id is None:
+                    continue
+                new_name = live.get(object_id)
                 if new_name is None:
-                    for definition in triggering:
-                        result.gone.append(_stale(definition, kind, old_name))
+                    renamed.deleted.append((kind, object_id, old_name))
                 elif new_name != old_name:
                     target[old_name] = new_name
-                    if kind == KIND_FIELD and object_id is not None:
-                        renamed.field_ids[old_name] = object_id
+                    renamed.ids[(kind, old_name)] = object_id
                     for definition in triggering:
                         result.refreshed.append(
                             f"'{definition.get('definition_name', '')}': {kind} '{old_name}'"
                             f" is now called '{new_name}'"
                         )
-        if renamed:
+        if renamed or renamed.deleted:
             renames[note_type_id] = renamed
 
     return renames
@@ -664,7 +668,7 @@ def _rewrite(definition: CopyDefinitionV2, renamed: _Renames, result: ReconcileR
                     count += 1
 
         for expression in _expressions(stage):
-            count += _rewrite_expression(expression, renamed, definition, result)
+            count += _rewrite_expression(expression, renamed)
 
     if count:
         result.rewritten.append(
@@ -709,18 +713,14 @@ def _expressions(stage: Stage) -> Iterator[ValueExpression]:
                 yield write["value"]
 
 
-def _rewrite_expression(
-    expression: ValueExpression,
-    renamed: _Renames,
-    definition: CopyDefinitionV2,
-    result: ReconcileResult,
-) -> int:
-    """The `{{trigger....}}` tokens of one expression's text. Its code is only reported.
+def _rewrite_expression(expression: ValueExpression, renamed: _Renames) -> int:
+    """The `{{trigger....}}` tokens of one expression's text. Its code is left alone.
 
     A reference in text is a delimited token and rewriting one is exact. The same name
     inside code is not: `note['Word']` is the other spelling of the same field and a
     `{{...}}` rewrite cannot see it, while a rewrite that went looking for the name as a
-    substring would also find it inside a string literal that meant something else.
+    substring would also find it inside a string literal that meant something else. A
+    mention there marks the definition instead (`_marks_for`).
     """
     count = 0
 
@@ -733,18 +733,10 @@ def _rewrite_expression(
     text = expression.get("text")
     if isinstance(text, str) and text:
         expression["text"] = rewrite_references(text, follow)
-
-    code = expression.get("code")
-    if isinstance(code, str) and code:
-        for old_name, kind in [(name, KIND_FIELD) for name in renamed.fields] + [
-            (name, KIND_CARD_TYPE) for name in renamed.templates
-        ]:
-            if old_name.lower() in code.lower():
-                result.not_rewritten.append(_stale(definition, kind, old_name))
     return count
 
 
-# Step 5: a rename only some trigger note types made ----------------------------------------
+# Step 5: what a definition spells --------------------------------------------------------
 
 
 class _NameRecorder(_Renames):
@@ -804,89 +796,20 @@ def _has_template(model: dict, name: str) -> bool:
     return any(entry.get("name") == name for entry in model.get("tmpls") or [])
 
 
-def _made_in(renames: dict[int, _Renames], old_name: str, new_name: str) -> set[int]:
-    """The note types one save gave the same field rename, matched as field names are."""
-    return {
-        note_type_id
-        for note_type_id, renamed in renames.items()
-        if (renamed.new_field_name(old_name) or "").lower() == new_name.lower()
-    }
-
-
-def _split_followable(
-    definition: CopyDefinitionV2, note_type_id: int, renames: dict[int, _Renames], col: Any
-) -> tuple[_Renames, list[dict]]:
-    """The renames of one note type that leave this definition working, and the rest.
-
-    A rename is followed when every note type the definition triggers on has the new name.
-    With one trigger note type that is always so. With several, a rename made in only some
-    of them breaks the definition either way -- the old name is missing from the renamed
-    note types and the new one from the others -- so nothing is rewritten and the old name
-    is returned for the definition to be marked with. Once the others are renamed too, the
-    same test passes and the rename is followed then. A card type is held to the same rule
-    as a field: a `{{trigger.Recognition__Card_Due}}` rewritten for one note type reads
-    nothing on the others.
-
-    A field rename has one more way to break it: another trigger note type that has both
-    names. Every trigger note type has the new name then, but following the rename would
-    quietly move that note type from the field it read to a different one. The note types
-    the rename was made in are left out of that test, since a swap (`Word` and `Term`
-    trading names) leaves the renamed one with both names by design. So is every note type
-    the same save renamed the same way, which is the ordinary way out of a mark.
-
-    Such an entry remembers the renamed note type and field by id. Names cannot tell a swap
-    from its undoing -- both leave every note type with both names -- while the field id
-    says which field the definition's name read (`refresh_breakage`).
-
-    What is withheld comes back as mark entries without their message, which
-    `refresh_breakage` derives.
-    """
-    renamed = renames[note_type_id]
-    recorded = _recorded_names(definition)
-    models = _trigger_models(definition, col)
-    followable = _Renames()
-    withheld: list[dict] = []
-    for old_name, new_name in renamed.fields.items():
-        if old_name.lower() not in recorded.fields_seen:
-            followable.fields[old_name] = new_name
-        elif not all(_has_field(model, new_name) for model in models):
-            withheld.append({"field": old_name})
-        elif any(
-            model["id"] not in _made_in(renames, old_name, new_name)
-            and _has_field(model, old_name)
-            and _has_field(model, new_name)
-            for model in models
-        ):
-            entry: dict = {"field": old_name, "renamed_to": new_name}
-            if old_name in renamed.field_ids:
-                entry.update(note_type_id=note_type_id, field_id=renamed.field_ids[old_name])
-            withheld.append(entry)
-        else:
-            followable.fields[old_name] = new_name
-    for old_name, new_name in renamed.templates.items():
-        if old_name in recorded.templates_seen and not all(
-            _has_template(model, new_name) for model in models
-        ):
-            withheld.append({"card_type": old_name})
-        else:
-            followable.templates[old_name] = new_name
-    return followable, withheld
-
-
 def trigger_names_not_on_every_note_type(definition: CopyDefinitionV2, col: Any) -> list[str]:
     """Each trigger field or card type a definition on several note types spells that some
     of them lack, as a sentence that says what to do about it.
 
     A definition spells a trigger field once for every note type it triggers on, so a field
     one of them lacks makes it fail on that note type's notes and write into the others'
-    as if nothing were wrong. That is what a field rename in only some of the note types
-    does (`BROKEN_KEY`), and what an edit that trades one name for another can do just as
-    well: `{{trigger.Word}}` rewritten to `{{trigger.Term}}` clears the mark while the other
-    note type still says `Word`. So the editor refuses it the same way, at every slot the
+    as if nothing were wrong. That is what a rename in only some of the note types leaves
+    behind (the pass marks it, `BROKEN_KEY`), and what an edit that trades one name for
+    another can do just as well: `{{trigger.Word}}` rewritten to `{{trigger.Term}}` while
+    the other note type still says `Word`. So the editor refuses it, at every slot the
     rewrite walks -- field writes on the trigger, the unfocus lists, `write_if_field`, and
     `{{trigger....}}` tokens in text. The card type a `{{trigger.<Card type>__<Key>}}`
-    token names is held to the same rule, as the pass holds a card type rename; a card
-    action's card type is not, since it names one note type's template by id.
+    token names is held to the same rule; a card action's card type is not, since it names
+    one note type's template by id.
 
     Only a name *some* trigger note types have: a field none of them has is the analyser's
     to report (`flow_analysis.check_note_field`), and a note or card value key is not a
@@ -926,233 +849,237 @@ def _quoted_list(names: list[str]) -> str:
     return ", ".join(quoted[:-1]) + " & " + quoted[-1]
 
 
-def _note_types_named(models: list[dict]) -> str:
-    noun = "note type" if len(models) == 1 else "note types"
-    return f"{noun} {_quoted_list([str(model.get('name', '')) for model in models])}"
+# Step 6: mark what was not followed -------------------------------------------------------
 
 
-def breakage_message(name: str, models: list[dict], kind: str = KIND_FIELD) -> str:
-    """The sentence a marked definition carries: which field or card type, and which note
-    types."""
-    names = [str(model.get("name", "")) for model in models]
-    if len(names) == 1:
-        return (
-            f'{kind.capitalize()} "{name}" is no longer present on note type'
-            f" {_quoted_list(names)}"
-        )
-    both = "both" if len(names) == 2 else "all of the"
-    return (
-        f'{kind.capitalize()} "{name}" is no longer present on {both} note types'
-        f" {_quoted_list(names)}"
-    )
+def _stored_trigger_count(definition: CopyDefinitionV2) -> int:
+    """How many trigger note types a definition stores, resolved or not.
+
+    Counted as stored rather than as resolved: a definition whose second note type is
+    missing today still spells its names for both, and deciding by what happens to resolve
+    would follow a rename into it that the other note type never had.
+    """
+    triggers = definition.get("triggers")
+    stored = triggers.get("note_types") if isinstance(triggers, dict) else None
+    return len(stored) if isinstance(stored, list) else 0
 
 
-def _both_names_sentence(
-    old_name: str, new_name: str, renamed_in: list[dict], holding_both: list[dict]
+def _spells(recorded: _NameRecorder, kind: str, name: str) -> bool:
+    if kind == KIND_FIELD:
+        return name.lower() in recorded.fields_seen
+    return name in recorded.templates_seen
+
+
+def _same_name(kind: str, one: str, other: str) -> bool:
+    """As each kind is matched: a field without regard to case, a card type exactly."""
+    return one.lower() == other.lower() if kind == KIND_FIELD else one == other
+
+
+def _mark_message(
+    kind: str,
+    note_type_name: str,
+    old: str,
+    new: Optional[str],
+    followed: bool,
+    in_code: bool,
 ) -> str:
-    verb = "has" if len(holding_both) == 1 else "have"
-    return (
-        f'Field "{old_name}" was renamed to "{new_name}" in {_note_types_named(renamed_in)},'
-        f' but {_note_types_named(holding_both)} {verb} both "{old_name}" and "{new_name}"'
-    )
-
-
-def _both_names_message(old_name: str, new_name: str, models: list[dict]) -> Optional[str]:
-    """Why a field rename another trigger note type's two fields keep withheld, if it still is.
-
-    For an entry that names no ids, so judged by names alone: the note types that have the
-    new name and not the old are where the rename was made, and the ones that have both
-    are what following it would redirect. When either is gone there is nothing of the kind
-    left to say, and the entry is judged as an ordinary one.
-    """
-    renamed_in = [
-        model
-        for model in models
-        if _has_field(model, new_name) and not _has_field(model, old_name)
-    ]
-    holding_both = [
-        model for model in models if _has_field(model, new_name) and _has_field(model, old_name)
-    ]
-    if not renamed_in or not holding_both:
-        return None
-    return _both_names_sentence(old_name, new_name, renamed_in, holding_both)
-
-
-def _renamed_field_entry(name: str, marked: dict, models: list[dict]) -> Optional[dict]:
-    """A both-names entry judged by the field it remembers, while that still says it is
-    broken.
-
-    The definition's `name` read the field with this id in this note type, and the field
-    is called something else now, so in that note type `name` is another field or none --
-    even when every trigger note type has `name` again, as after a swap. It holds until
-    the field is called `name` again (the rename undone), or the field, the note type or
-    the definition's trigger on it is gone; the caller's other conditions (still spelled)
-    and the ordinary rule take over from there.
-    """
-    note_type_id = _as_int(marked.get("note_type_id"))
-    field_id = _as_int(marked.get("field_id"))
-    model = next((model for model in models if model["id"] == note_type_id), None)
-    if model is None or field_id is None:
-        return None
-    current = next(
-        (entry.get("name") for entry in model.get("flds") or [] if entry.get("id") == field_id),
-        None,
-    )
-    if not isinstance(current, str) or not current or current.lower() == name.lower():
-        return None
-    holding_both = [
-        other
-        for other in models
-        if other["id"] != note_type_id and _has_field(other, name) and _has_field(other, current)
-    ]
-    if holding_both:
-        message = _both_names_sentence(name, current, [model], holding_both)
-    elif not all(_has_field(other, name) for other in models):
-        message = breakage_message(name, models)
-    else:
-        message = (
-            f'Field "{name}" of note type "{model.get("name", "")}" is now called'
-            f' "{current}", so "{name}" there reads another field'
+    """The sentence a mark carries, with the names as they are when it is written."""
+    what = f'{kind.capitalize()} "{old}" of note type "{note_type_name}"'
+    what += " was deleted" if new is None else f' was renamed to "{new}"'
+    if not in_code:
+        return what
+    if followed:
+        # The text was rewritten, so the definition is half followed; saying only "renamed"
+        # would send the user looking for `{{...}}` references that are already right.
+        return (
+            f"{what}; its {{{{...}}}} references were followed, but code in this definition"
+            f' still mentions "{old}"'
         )
-    return {
-        "field": name,
-        "renamed_to": current,
-        "note_type_id": note_type_id,
-        "field_id": field_id,
-        "message": message,
-    }
+    return f'{what}, and code in this definition still mentions "{old}"'
 
 
-def refresh_breakage(
-    definition: CopyDefinitionV2, col: Any, withheld: Optional[list[dict]] = None
-) -> bool:
-    """Bring a definition's `BROKEN_KEY` up to date; say whether it changed.
+def _mark_key(entry: Any) -> Optional[tuple[int, str, int]]:
+    """The object an entry is about, `(note_type_id, kind, id)`, if it names one.
 
-    A marked name stays marked while the definition still spells it and some trigger note
-    type lacks it. It is cleared by any of the three ways out: the other note types were
-    renamed as well (and the rename followed), the rename was undone, or the definition was
-    reworked so it no longer spells the name or no longer triggers on the note type that
-    lacks it. The message is derived afresh each time, so it names the note types as they
-    are called now.
+    The entries an earlier version stored name no object this way (`BROKEN_KEY`), so they
+    have no key: nothing here updates or removes them.
+    """
+    if not isinstance(entry, dict) or not isinstance(entry.get("old"), str):
+        return None
+    kind = entry.get("kind")
+    note_type_id = _as_int(entry.get("note_type_id"))
+    object_id = _as_int(entry.get("id"))
+    if kind not in (KIND_FIELD, KIND_CARD_TYPE) or note_type_id is None or object_id is None:
+        return None
+    return note_type_id, kind, object_id
 
-    An entry is a field's (`"field"`, the only kind stored configs from before card types
-    were marked hold) or a card type's (`"card_type"`), and each is judged by its own kind's
-    rule, so neither clears the other. A field entry that carries `"renamed_to"` was
-    withheld because another trigger note type has both names (`_split_followable`). With
-    the renamed field's ids it is judged by that field (`_renamed_field_entry`); without
-    them, by names while some note type still has both. When that no longer holds, it is
-    an ordinary entry.
 
-    One entry per name. A stored entry's ids win over those of a rename withheld in this
-    pass: the definition was left as it was, so the field the stored entry remembers is
-    still the one its name meant. Undoing a swap is withheld again as a swap of the other
-    field, and only the stored ids see it for the undoing it is.
+def _mark_keys(definition: CopyDefinitionV2) -> set[tuple[int, str, int]]:
+    stored = definition.get(BROKEN_KEY)
+    keys = {_mark_key(entry) for entry in (stored if isinstance(stored, list) else [])}
+    return {key for key in keys if key is not None}
+
+
+def _refresh_marks(definition: CopyDefinitionV2, col: Any) -> bool:
+    """Take back the entries whose rename was undone, and follow one renamed again.
+
+    Asked of every stored entry by its ids on every pass, not only when the snapshot shows a
+    rename: undoing a rename is itself a rename, but the object called `old` again is the
+    simpler test, and it holds after a restart too. That is the only way a mark goes by
+    itself; one the user has made moot by editing the definition stays until dismissed,
+    since the pass cannot tell a fix from a mistake. An entry whose note type is gone is
+    left as it is.
     """
     stored = definition.get(BROKEN_KEY)
-    entries = stored if isinstance(stored, list) else []
-    # By the key each name is matched under: the entry to judge it by.
-    marked: dict[tuple[str, str], dict] = {}
-    for entry in list(entries) + list(withheld or []):
-        if not isinstance(entry, dict):
+    if not isinstance(stored, list):
+        return False
+    changed = False
+    kept: list = []
+    for entry in stored:
+        key = _mark_key(entry)
+        model = None if key is None else col.models.get(key[0])
+        if key is None or model is None:
+            kept.append(entry)
             continue
-        field_name = entry.get("field")
-        card_type = entry.get("card_type")
-        renamed_to = entry.get("renamed_to")
-        if isinstance(field_name, str) and field_name:
-            key = (KIND_FIELD, field_name.lower())
-            known = marked.setdefault(key, {"kind": KIND_FIELD, "name": field_name})
-            has_ids = entry.get("note_type_id") is not None and entry.get("field_id") is not None
-            if isinstance(renamed_to, str) and renamed_to and "field_id" not in known:
-                if has_ids:
-                    known.update(
-                        renamed_to=renamed_to,
-                        note_type_id=entry["note_type_id"],
-                        field_id=entry["field_id"],
-                    )
-                elif "renamed_to" not in known:
-                    known["renamed_to"] = renamed_to
-        elif isinstance(card_type, str) and card_type:
-            marked.setdefault(
-                (KIND_CARD_TYPE, card_type), {"kind": KIND_CARD_TYPE, "name": card_type}
+        _note_type_id, kind, object_id = key
+        live = _live_names_by_id(model.get("flds" if kind == KIND_FIELD else "tmpls")).get(
+            object_id
+        )
+        old = entry["old"]
+        if live is not None and _same_name(kind, live, old):
+            changed = True
+            continue
+        if live != entry.get("new"):
+            entry["new"] = live
+            entry["message"] = _mark_message(
+                kind,
+                str(model.get("name", "")),
+                old,
+                live,
+                followed=live is not None and _stored_trigger_count(definition) == 1,
+                in_code=_code_mentions(definition, old),
             )
-    if not marked:
-        if BROKEN_KEY in definition:
-            del definition[BROKEN_KEY]
-            return True
+            changed = True
+        kept.append(entry)
+    if not changed:
         return False
-
-    recorded = _recorded_names(definition)
-    models = _trigger_models(definition, col)
-    refreshed: list[dict] = []
-    for known in marked.values():
-        name = known["name"]
-        if known["kind"] == KIND_CARD_TYPE:
-            if name in recorded.templates_seen and not all(
-                _has_template(model, name) for model in models
-            ):
-                refreshed.append(
-                    {"card_type": name, "message": breakage_message(name, models, KIND_CARD_TYPE)}
-                )
-            continue
-        if name.lower() not in recorded.fields_seen:
-            continue
-        if "field_id" in known:
-            by_id = _renamed_field_entry(name, known, models)
-            if by_id is not None:
-                refreshed.append(by_id)
-                continue
-        elif "renamed_to" in known:
-            both_names = _both_names_message(name, known["renamed_to"], models)
-            if both_names is not None:
-                refreshed.append(
-                    {"field": name, "renamed_to": known["renamed_to"], "message": both_names}
-                )
-                continue
-        if not all(_has_field(model, name) for model in models):
-            refreshed.append({"field": name, "message": breakage_message(name, models)})
-    if refreshed == stored:
-        return False
-    if refreshed:
-        definition[BROKEN_KEY] = refreshed
+    if kept:
+        definition[BROKEN_KEY] = kept
     else:
-        definition.pop(BROKEN_KEY, None)
+        del definition[BROKEN_KEY]
     return True
 
 
+def _marks_for(
+    definition: CopyDefinitionV2,
+    recorded: _NameRecorder,
+    model: dict,
+    changes: _Renames,
+    followed: bool,
+) -> list[dict]:
+    """The entries one note type's renames and deletions leave on one definition.
+
+    `followed` says its renames were rewritten into the definition (one trigger note
+    type), so a rename is marked only where its code still mentions the old name; otherwise
+    wherever the definition spells the old name or its code mentions it. A deletion is
+    marked wherever it is spelled or mentioned, followed or not. `recorded` is what the
+    definition spelled before any rewrite, since a rename in the same save can hand a
+    deleted field's name to another one.
+    """
+    note_type_name = str(model.get("name", ""))
+    found: list[tuple[str, int, str, Optional[str]]] = [
+        (kind, changes.ids[(kind, old)], old, new)
+        for kind, renames in ((KIND_FIELD, changes.fields), (KIND_CARD_TYPE, changes.templates))
+        for old, new in renames.items()
+    ] + [(kind, object_id, old, None) for kind, object_id, old in changes.deleted]
+    entries: list[dict] = []
+    for kind, object_id, old, new in found:
+        in_code = _code_mentions(definition, old)
+        rewritten = followed and new is not None
+        if not in_code and (rewritten or not _spells(recorded, kind, old)):
+            continue
+        entries.append(
+            {
+                "kind": kind,
+                "note_type_id": model["id"],
+                "id": object_id,
+                "old": old,
+                "new": new,
+                "message": _mark_message(kind, note_type_name, old, new, rewritten, in_code),
+            }
+        )
+    return entries
+
+
+def _add_marks(
+    definition: CopyDefinitionV2,
+    entries: list[dict],
+    known: set[tuple[int, str, int]],
+    result: ReconcileResult,
+) -> bool:
+    """Store the entries about objects the definition was not already marked for.
+
+    `known` is what its marks were about when the pass began. An object among them has had
+    its entry updated or taken back already (`_refresh_marks`), and a rename the snapshot
+    shows for it is that same change seen from the other side: undoing a swap is a swap,
+    and marking it again would put back the entry the undo just removed.
+    """
+    stored = definition.get(BROKEN_KEY)
+    marks = stored if isinstance(stored, list) else []
+    added = False
+    for entry in entries:
+        key = _mark_key(entry)
+        if key in known or any(_mark_key(existing) == key for existing in marks):
+            continue
+        marks.append(entry)
+        result.newly_marked.append(_mark_as_stale(definition, entry))
+        added = True
+    if added:
+        definition[BROKEN_KEY] = marks
+    return added
+
+
+def _mark_as_stale(definition: CopyDefinitionV2, entry: dict) -> StaleName:
+    """One mark entry as the report lists it, whichever version stored it."""
+    if isinstance(entry.get("old"), str):
+        kind = KIND_CARD_TYPE if entry.get("kind") == KIND_CARD_TYPE else KIND_FIELD
+        name = entry["old"]
+    else:
+        kind = KIND_CARD_TYPE if "field" not in entry and "card_type" in entry else KIND_FIELD
+        name = str(entry.get("card_type" if kind == KIND_CARD_TYPE else "field", ""))
+    return StaleName(
+        definition_guid=definition.get("guid", ""),
+        definition_name=definition.get("definition_name", ""),
+        kind=kind,
+        name=name,
+        message=str(entry.get("message", "")),
+    )
+
+
 def _report_broken(definition: CopyDefinitionV2, result: ReconcileResult) -> None:
-    for entry in definition.get(BROKEN_KEY) or []:
+    stored = definition.get(BROKEN_KEY)
+    for entry in stored if isinstance(stored, list) else []:
         if isinstance(entry, dict):
-            is_card_type = "field" not in entry and "card_type" in entry
-            result.broken.append(
-                StaleName(
-                    definition_guid=definition.get("guid", ""),
-                    definition_name=definition.get("definition_name", ""),
-                    kind=KIND_CARD_TYPE if is_card_type else KIND_FIELD,
-                    name=str(entry.get("card_type" if is_card_type else "field", "")),
-                    message=str(entry.get("message", "")),
-                )
-            )
+            result.broken.append(_mark_as_stale(definition, entry))
 
 
-#: What the user can do about a definition marked `BROKEN_KEY`: the three ways out
-#: `refresh_breakage` recognises, said after the stored message wherever a run refuses it.
-BROKEN_ADVICE = (
-    "Rename the field or card type in the other note types too, undo the rename, or edit"
-    " the definition."
-)
+#: What the user can do about a definition marked `BROKEN_KEY`, said after the stored
+#: message wherever a run refuses it. Undoing the rename takes the mark back too
+#: (`_refresh_marks`), but the advice is for keeping the rename, which is the usual case.
+BROKEN_ADVICE = "Update the definition, then dismiss the mark in the definition editor."
 
 
 def broken_by_rename_messages(definition: Any) -> list[str]:
     """The stored messages of a definition a rename left marked, or none if it is whole.
 
-    A marked definition is not run: whichever name it spells, some note type it triggers on
-    lacks it, so it would fail on that note type's notes and go on writing into the others
-    as if nothing had happened, while the user still has to decide what it should say. The
-    mark is read as stored rather than re-derived, because the pass and every definition
-    save keep it current, and a run has no business second-guessing them per note. A mark
-    that has been mangled by hand -- not a list, entries that are not dicts, no message --
-    counts only for its well-formed entries: one with nothing to say does not stop the run,
-    and the next pass or save derives it afresh anyway.
+    A marked definition is not run: a name it spells, or its code mentions, no longer means
+    what it did in some note type it triggers on, so it would fail on that note type's notes
+    or read another field, and go on writing as if nothing had happened, while the user
+    still has to decide what it should say. The mark is read as stored, never re-derived: it
+    is the user's to dismiss. Any entry with a message counts, including the shapes earlier
+    versions stored. A mark that has been mangled by hand -- not a list, entries that are
+    not dicts, no message -- counts only for its well-formed entries: one with nothing to
+    say does not stop the run.
     """
     if not isinstance(definition, dict):
         return []
@@ -1173,7 +1100,7 @@ def broken_by_rename_tooltip(messages: list[str]) -> str:
     The definition list and the browser's menu both refuse a marked definition and say why
     in the same words, so a user who meets it in one recognises it in the other.
     """
-    return "\n".join(["This definition is not run until it is fixed:"] + messages + [BROKEN_ADVICE])
+    return "\n".join(["This definition is not run while it is marked:"] + messages + [BROKEN_ADVICE])
 
 
 def broken_by_rename_explanation(messages: list[str]) -> str:
@@ -1181,16 +1108,6 @@ def broken_by_rename_explanation(messages: list[str]) -> str:
     text = "; ".join(messages)
     end = "" if text.rstrip().endswith((".", "!", "?")) else "."
     return f"{text}{end} {BROKEN_ADVICE}"
-
-
-def refresh_all_breakage(definitions: Any, col: Any) -> bool:
-    """`refresh_breakage` over every marked definition, for a save made outside the pass."""
-    changed = False
-    for definition in definitions or []:
-        if isinstance(definition, dict) and BROKEN_KEY in definition:
-            # Read as format 2: only the pass marks a definition, and it reads no other.
-            changed |= refresh_breakage(cast(CopyDefinitionV2, definition), col)
-    return changed
 
 
 # The snapshot -------------------------------------------------------------------------------
@@ -1332,26 +1249,34 @@ def reconcile(config: "Config", col: Any) -> ReconcileResult:
         _report_stale_terms(definition, col, result)
 
     renames = _diff(snapshot, col, referenced, result)
-    withheld: dict[int, list[dict]] = {}
-    followed: dict[int, set[tuple[str, str, str]]] = {}
-    for note_type_id in renames:
+    # Before anything is followed or marked: what each definition's marks were about, and
+    # those marks brought up to date. Not on another collection's snapshot, whose ids say
+    # nothing about the objects in front of the pass.
+    known: dict[int, set[tuple[int, str, int]]] = {}
+    if collection_changed is None:
+        for definition in definitions:
+            known[id(definition)] = _mark_keys(definition)
+            changed |= _refresh_marks(definition, col)
+    for note_type_id, changes in renames.items():
+        model = col.models.get(note_type_id)
+        if model is None:
+            continue
         for definition in referenced.get((_TRIGGER_NOTE_TYPE, note_type_id)) or []:
-            followable, entries_withheld = _split_followable(
-                definition, note_type_id, renames, col
+            # A definition storing several trigger note types spells each name for all of
+            # them, so a rename in one is never followed into it: the user decides, and the
+            # mark is how they are asked. Stored, not resolved: see `_stored_trigger_count`.
+            followed = _stored_trigger_count(definition) == 1
+            recorded = _recorded_names(definition)
+            if followed:
+                changed |= _rewrite(definition, changes, result)
+            changed |= _add_marks(
+                definition,
+                _marks_for(definition, recorded, model, changes, followed),
+                known.get(id(definition), set()),
+                result,
             )
-            if entries_withheld:
-                withheld.setdefault(id(definition), []).extend(entries_withheld)
-            # The same rename made in several trigger note types in one save arrives once
-            # per note type, and is followed once: a swap (`Word` and `Term` trading names)
-            # followed a second time trades them back.
-            followable = followable.without(followed.setdefault(id(definition), set()))
-            changed |= _rewrite(definition, followable, result)
 
-    # After every rewrite, not per note type: a rename in one note type is what can make a
-    # definition marked by a rename in another whole again.
     for definition in definitions:
-        if id(definition) in withheld or BROKEN_KEY in definition:
-            changed |= refresh_breakage(definition, col, withheld.get(id(definition)))
         _report_broken(definition, result)
 
     refreshed_snapshot = build_name_snapshot(definitions, col)
@@ -1374,8 +1299,8 @@ def log_result(result: ReconcileResult) -> None:
     """Put the pass's report where the user looks: this operation's log file.
 
     A bind, a refreshed name and a followed rename are the pass doing its job, so they are
-    written at info; a name that resolves to nothing, a deleted object and a name left
-    inside code are things only the user can fix, so they are warnings.
+    written at info; a name that resolves to nothing, a deleted object and a mark are
+    things only the user can fix, so they are warnings.
     """
     if result.collection_changed is not None:
         # First, because it is why everything under it re-bound and nothing was followed.
@@ -1407,16 +1332,9 @@ def log_result(result: ReconcileResult) -> None:
             stale.name,
             stale.definition_name,
         )
-    for stale in result.not_rewritten:
-        logger.warning(
-            "Rename reconcile: not rewritten: code in '%s' mentions %s '%s'",
-            stale.definition_name,
-            stale.kind,
-            stale.name,
-        )
     for stale in result.broken:
         logger.warning(
-            "Rename reconcile: not rewritten: '%s' triggers on several note types: %s",
+            "Rename reconcile: '%s' is marked, and not run until the mark is dismissed: %s",
             stale.definition_name,
             stale.message,
         )
@@ -1448,8 +1366,6 @@ __all__ = [
     "log_result",
     "reconcile",
     "referenced_object_ids",
-    "refresh_all_breakage",
-    "refresh_breakage",
     "stale_terms_in_searches",
     "still_names",
     "trigger_names_not_on_every_note_type",

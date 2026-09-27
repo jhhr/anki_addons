@@ -882,22 +882,17 @@ class Config:
         in one profile cannot be read as a rename in the next: this config is shared by all
         of them, and the ids in it are not.
 
-        A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is re-checked here
-        too, so the editor save that reworks it clears the mark then rather than at the next
-        note type operation.
+        A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is saved with its
+        marks as they stand: a mark is only ever taken off by the user in the editor (or by
+        the pass, when the rename is undone), never re-derived here.
         """
         from .logic.flow_analysis import refresh_effects
-        from .logic.rename_reconcile import (
-            SNAPSHOT_KEY,
-            build_name_snapshot,
-            refresh_all_breakage,
-        )
+        from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot
 
         definitions = self.data["copy_definitions"] or []
         refresh_effects(definitions)
         if mw.col is not None:
             self.data[SNAPSHOT_KEY] = build_name_snapshot(definitions, mw.col)
-            refresh_all_breakage(definitions, mw.col)
         self.save()
 
     def add_definition(self, definition: AnyCopyDefinition):

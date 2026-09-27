@@ -9,11 +9,14 @@ This pass closes both. It runs when the collection loads and after any operation
 changed a note type or a deck, compares the live names against a snapshot kept per id, and
 so has both names of a rename in hand -- which no Anki hook gives. Cached names are
 refreshed, a renamed field or card type of a trigger note type is followed into the
-definition's field slots and its `{{trigger....}}` tokens, and everything it will not
-rewrite -- a search term, code, a deleted field -- is reported instead.
+definition's field slots and its `{{trigger....}}` tokens -- in a definition with one
+trigger note type. What it will not rewrite is reported (a search term) or marks the
+definition, which is then not run until the user dismisses the mark: a rename in a
+definition on several note types, a name code still mentions, a deleted field.
 """
 
 import copy
+import html
 import shutil
 from contextlib import contextmanager
 
@@ -631,10 +634,45 @@ class TestAFieldOfTheTriggerNoteTypeIsRenamed:
         definition, _ = reconciled
         assert definition["stages"][0]["selection"]["sort_field"] == "Word"
 
-    def test_code_is_not_rewritten_but_is_reported(self, reconciled):
+    def test_code_is_not_rewritten_and_marks_the_definition(self, col, reconciled):
         definition, result = reconciled
         assert definition["stages"][1]["value"]["code"] == "note['Word'] + '{{trigger.Word}}'"
-        assert names(result.not_rewritten) == ["Word"]
+        # Half followed: the text reads `Term`, the code still `Word`, so it is not run until
+        # the user has looked.
+        assert definition[BROKEN_KEY] == [
+            {
+                "kind": KIND_FIELD,
+                "note_type_id": col.models.id_for_name(VOCAB),
+                "id": field_id(col, VOCAB, "Term"),
+                "old": "Word",
+                "new": "Term",
+                "message": f'Field "Word" of note type "{VOCAB}" was renamed to "Term"; its'
+                " {{...}} references were followed, but code in this definition still"
+                ' mentions "Word"',
+            }
+        ]
+        assert names(result.newly_marked) == ["Word"]
+
+    def test_code_renamed_again_is_still_marked_as_followed(self, col, reconciled, config):
+        definition, _ = reconciled
+
+        rename_field(col, VOCAB, "Term", "Headword")
+        reconcile(config, mw.col)
+
+        assert definition["stages"][2]["fields"][0]["field"] == "Headword"
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [
+            f'Field "Word" of note type "{VOCAB}" was renamed to "Headword"; its {{{{...}}}}'
+            ' references were followed, but code in this definition still mentions "Word"'
+        ]
+
+    def test_undoing_it_follows_it_back_and_removes_the_mark(self, col, reconciled, config):
+        definition, _ = reconciled
+
+        col.undo()
+        reconcile(config, mw.col)
+
+        assert definition["stages"][2]["fields"][0]["field"] == "Word"
+        assert BROKEN_KEY not in definition
 
     def test_a_reference_on_another_binding_is_left_alone(self, reconciled):
         definition, _ = reconciled
@@ -684,7 +722,7 @@ class TestAFieldOfTheTriggerNoteTypeIsRenamed:
             == "{{trigger.Meaning}}/{{trigger.Word}}"
         )
 
-    def test_a_deleted_field_is_reported_and_nothing_is_rewritten(self, col, config):
+    def test_a_deleted_field_marks_the_definition_and_nothing_is_rewritten(self, col, config):
         definition = d.staged(
             definition_name="reads freq",
             note_types=[VOCAB],
@@ -701,7 +739,8 @@ class TestAFieldOfTheTriggerNoteTypeIsRenamed:
         col.models.update_dict(note_type)
         result = reconcile(config, mw.col)
 
-        assert names(result.gone) == ["Freq"]
+        assert names(result.gone) == []
+        assert names(result.newly_marked) == ["Freq"]
         assert definition["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Freq}}"
 
     def test_an_undone_rename_is_followed_back(self, col, config):
@@ -782,14 +821,28 @@ class TestACardTypeOfTheTriggerNoteTypeIsRenamed:
         assert action["card_type"]["name"] == f"{VOCAB}<::>Reading card"
 
 
-class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
-    """A definition triggering on several note types spells a field once for all of them.
+def field_id(col, note_type_name: str, name: str) -> int:
+    return next(
+        field["id"] for field in col.models.by_name(note_type_name)["flds"] if field["name"] == name
+    )
 
-    Renaming it in one of them breaks the definition whatever it spells: the old name is
-    gone from the renamed note type, the new one was never on the others. So the pass
-    leaves it as it is and marks it, and follows the rename only once every trigger note
-    type has the new name -- which is where renaming the others too, undoing the rename,
-    or reworking the definition all end up.
+
+def template_id(col, note_type_name: str, name: str) -> int:
+    return next(
+        template["id"]
+        for template in col.models.by_name(note_type_name)["tmpls"]
+        if template["name"] == name
+    )
+
+
+class TestARenameInADefinitionOnSeveralNoteTypesIsMarked:
+    """A definition triggering on several note types spells a name once for all of them.
+
+    A rename in one of them leaves it wrong whichever name it spells, and every rule that
+    tried to decide which one it should spell found a way to decide wrongly. So it is never
+    rewritten: it is marked, with a sentence naming the object and both names, and the user
+    decides. The number of trigger note types is the number the definition stores, whether
+    they resolve or not.
     """
 
     OTHER = "CA Vocab B"
@@ -797,17 +850,15 @@ class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
     @pytest.fixture
     def other(self, col):
         real_anki.make_note_type(
-            col, self.OTHER, ["Word", "Meaning"], [("Card 1", "{{Word}}", "{{Meaning}}")]
+            col, self.OTHER, ["Word", "Meaning"], [("Recognition", "{{Word}}", "{{Meaning}}")]
         )
         return self.OTHER
 
-    def definition(self, *note_types):
+    def definition(self, *note_types, text="{{trigger.Word}}"):
         return d.staged(
             definition_name="both",
             note_types=list(note_types),
-            stages=[
-                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
-            ],
+            stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text(text))])],
             on_unfocus={"edit_fields": ["Word"], "add_fields": []},
         )
 
@@ -817,6 +868,16 @@ class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
             definition["triggers"]["on_unfocus"]["edit_fields"],
         )
 
+    def entry(self, col, old="Word", new="Term", note_type=VOCAB, message=None):
+        return {
+            "kind": KIND_FIELD,
+            "note_type_id": col.models.id_for_name(note_type),
+            "id": field_id(col, note_type, new if new is not None else old),
+            "old": old,
+            "new": new,
+            "message": message or f'Field "{old}" of note type "{note_type}" was renamed to "{new}"',
+        }
+
     @pytest.fixture
     def marked(self, col, config, other):
         definition = self.definition(VOCAB, other)
@@ -825,66 +886,113 @@ class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
         rename_field(col, VOCAB, "Word", "Term")
         return definition, reconcile(config, mw.col)
 
-    def test_a_rename_in_one_of_them_is_not_followed(self, marked):
+    def test_a_field_rename_is_not_followed(self, marked):
         definition, result = marked
 
         assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
         assert result.rewritten == []
 
-    def test_the_definition_is_marked_with_why(self, marked, stub_mw):
+    def test_the_definition_is_marked_with_the_object_and_both_names(
+        self, col, marked, stub_mw
+    ):
         definition, result = marked
-        message = f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
 
-        assert definition[BROKEN_KEY] == [{"field": "Word", "message": message}]
-        assert [(stale.name, stale.message) for stale in result.broken] == [("Word", message)]
+        assert definition[BROKEN_KEY] == [self.entry(col)]
+        assert [(stale.kind, stale.name) for stale in result.newly_marked] == [
+            (KIND_FIELD, "Word")
+        ]
+        assert [stale.message for stale in result.broken] == [self.entry(col)["message"]]
         stored = stub_mw.addonManager.configs[ADDON_TAG]["copy_definitions"][0]
         assert stored[BROKEN_KEY] == definition[BROKEN_KEY]
 
-    def test_a_later_pass_still_reports_it(self, marked, config):
+    def test_a_later_pass_still_lists_it_but_not_as_new(self, marked, config):
         definition, _ = marked
 
         result = reconcile(config, mw.col)
 
-        assert [stale.name for stale in result.broken] == ["Word"]
+        assert names(result.broken) == ["Word"]
+        assert result.newly_marked == []
         assert result.changed is False
 
-    def test_renaming_the_others_too_follows_it_and_clears_the_mark(self, col, marked, config):
+    def test_renaming_the_others_too_is_not_followed_either(self, col, marked, config):
         definition, _ = marked
 
         rename_field(col, self.OTHER, "Word", "Term")
         result = reconcile(config, mw.col)
 
-        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
-        assert BROKEN_KEY not in definition
-        assert result.broken == []
+        # The user decides: two marks, one per note type, and the definition as it was.
+        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
+        # In the order the snapshot lists the note types, which is no order in particular.
+        assert sorted(definition[BROKEN_KEY], key=lambda entry: entry["note_type_id"]) == sorted(
+            [self.entry(col), self.entry(col, note_type=self.OTHER)],
+            key=lambda entry: entry["note_type_id"],
+        )
+        assert names(result.newly_marked) == ["Word"]
 
-    def test_undoing_the_rename_clears_the_mark(self, col, marked, config):
+    def test_renamed_again_updates_the_entry(self, col, marked, config):
+        definition, _ = marked
+
+        rename_field(col, VOCAB, "Term", "Headword")
+        result = reconcile(config, mw.col)
+
+        assert definition[BROKEN_KEY] == [self.entry(col, new="Headword")]
+        assert result.newly_marked == []
+        assert result.changed is True
+
+    def test_renamed_back_removes_the_entry(self, col, marked, config):
         definition, _ = marked
 
         rename_field(col, VOCAB, "Term", "Word")
         result = reconcile(config, mw.col)
 
-        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
         assert BROKEN_KEY not in definition
+        assert result.broken == [] and result.newly_marked == []
+
+    def test_undo_removes_the_entry(self, col, marked, config):
+        definition, _ = marked
+
+        col.undo()
+        reconcile(config, mw.col)
+
+        assert BROKEN_KEY not in definition
+
+    def test_renamed_back_differently_cased_removes_the_entry(self, col, marked, config):
+        definition, _ = marked
+
+        rename_field(col, VOCAB, "Term", "word")
+        reconcile(config, mw.col)
+
+        # `{{trigger.Word}}` reads `word` again: fields are matched without regard to case.
+        assert BROKEN_KEY not in definition
+
+    def test_renamed_back_after_the_snapshot_moved_on_removes_the_entry(
+        self, col, marked, config
+    ):
+        definition, _ = marked
+        rename_field(col, VOCAB, "Term", "Word")
+        # A save rebuilds the snapshot with the names as they are, so the pass after it sees
+        # no rename at all; the entry's own ids are what still show the rename undone.
+        config.update_definition_by_index(0, definition)
+
+        result = reconcile(config, mw.col)
+
+        assert BROKEN_KEY not in config.copy_definitions[0]
         assert result.broken == []
 
-    def test_saving_a_reworked_definition_clears_the_mark(self, col, marked, config):
+    def test_a_save_keeps_the_mark(self, col, marked, config):
         definition, _ = marked
         reworked = copy.deepcopy(definition)
         reworked["triggers"]["note_types"] = [d.object_ref(self.OTHER)]
 
         config.update_definition_by_index(0, reworked)
+        reconcile(config, mw.col)
 
-        assert BROKEN_KEY not in config.copy_definitions[0]
+        # Only the user takes a mark off, in the editor; a save does not re-derive it.
+        assert config.copy_definitions[0][BROKEN_KEY] == [self.entry(col)]
 
-    def test_saving_it_unchanged_keeps_the_mark(self, marked, config):
-        definition, _ = marked
-
-        config.update_definition_by_index(0, copy.deepcopy(definition))
-
-        assert [entry["field"] for entry in config.copy_definitions[0][BROKEN_KEY]] == ["Word"]
-
-    def test_the_same_rename_in_all_of_them_at_once_is_followed(self, col, config, other):
+    def test_the_same_rename_in_both_at_once_marks_it_once_per_note_type(
+        self, col, config, other
+    ):
         definition = self.definition(VOCAB, other)
         store(config, definition)
         reconcile(config, mw.col)
@@ -893,456 +1001,282 @@ class TestAFieldRenamedInOnlySomeTriggerNoteTypes:
         rename_field(col, other, "Word", "Term")
         result = reconcile(config, mw.col)
 
-        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_opposite_renames_in_one_pass_rewrite_nothing(self, col, config, other):
-        model = col.models.by_name(other)
-        model["flds"][0]["name"] = "Term"
-        col.models.update_dict(model)
-        definition = d.staged(
-            definition_name="both",
-            note_types=[VOCAB, other],
-            stages=[
-                d.edit_note(
-                    "trigger",
-                    fields=[d.write("Meaning", d.text("{{trigger.Word}}|{{trigger.Term}}"))],
-                )
-            ],
+        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
+        # In the order the snapshot lists the note types, which is no order in particular.
+        assert sorted(definition[BROKEN_KEY], key=lambda entry: entry["note_type_id"]) == sorted(
+            [self.entry(col), self.entry(col, note_type=self.OTHER)],
+            key=lambda entry: entry["note_type_id"],
         )
+        assert names(result.newly_marked) == ["Word", "Word"]
+
+    def test_a_template_rename_is_marked_and_not_followed(self, col, config, other):
+        definition = self.definition(VOCAB, other, text="{{trigger.Recognition__Card_Due}}")
         store(config, definition)
         reconcile(config, mw.col)
 
-        rename_field(col, VOCAB, "Word", "Term")
-        rename_field(col, other, "Term", "Word")
-        result = reconcile(config, mw.col)
+        rename_template(col, VOCAB, "Recognition", "Reading")
+        reconcile(config, mw.col)
 
-        text = definition["stages"][0]["fields"][0]["value"]["text"]
-        assert text == "{{trigger.Word}}|{{trigger.Term}}"
-        assert sorted(stale.name for stale in result.broken) == ["Term", "Word"]
+        assert self.spelled(definition)[0] == "{{trigger.Recognition__Card_Due}}"
+        assert definition[BROKEN_KEY] == [
+            {
+                "kind": KIND_CARD_TYPE,
+                "note_type_id": col.models.id_for_name(VOCAB),
+                "id": template_id(col, VOCAB, "Reading"),
+                "old": "Recognition",
+                "new": "Reading",
+                "message": f'Card type "Recognition" of note type "{VOCAB}" was renamed to'
+                ' "Reading"',
+            }
+        ]
 
-    def test_a_field_the_definition_does_not_spell_marks_nothing(self, col, config, other):
+    def test_a_template_renamed_back_removes_the_entry(self, col, config, other):
+        definition = self.definition(VOCAB, other, text="{{trigger.Recognition__Card_Due}}")
+        store(config, definition)
+        reconcile(config, mw.col)
+        rename_template(col, VOCAB, "Recognition", "Reading")
+        reconcile(config, mw.col)
+
+        rename_template(col, VOCAB, "Reading", "Recognition")
+        reconcile(config, mw.col)
+
+        assert BROKEN_KEY not in definition
+
+    def test_a_name_the_definition_does_not_spell_marks_nothing(self, col, config, other):
         definition = self.definition(VOCAB, other)
         store(config, definition)
         reconcile(config, mw.col)
 
         rename_field(col, VOCAB, "Reading", "Kana")
-        result = reconcile(config, mw.col)
-
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_a_single_trigger_note_type_is_followed_as_before(self, col, config):
-        definition = self.definition(VOCAB)
-        store(config, definition)
-        reconcile(config, mw.col)
-
-        rename_field(col, VOCAB, "Word", "Term")
-        reconcile(config, mw.col)
-
-        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
-        assert BROKEN_KEY not in definition
-
-    def test_three_note_types_are_named_in_the_message(self, col, config, other):
-        definition = self.definition(VOCAB, other, KANJI)
-        # KANJI has no 'Word'; give it one so the definition starts out whole.
-        model = col.models.by_name(KANJI)
-        col.models.add_field(model, col.models.new_field("Word"))
-        col.models.update_dict(model)
-        store(config, definition)
-        reconcile(config, mw.col)
-
-        rename_field(col, VOCAB, "Word", "Term")
-        result = reconcile(config, mw.col)
-
-        assert [stale.message for stale in result.broken] == [
-            f'Field "Word" is no longer present on all of the note types "{VOCAB}",'
-            f' "{self.OTHER}" & "{KANJI}"'
-        ]
-
-    def test_an_entry_stored_before_marks_had_kinds_is_read_and_refreshed(self, marked, config):
-        definition, _ = marked
-        definition[BROKEN_KEY] = [{"field": "Word", "message": "worded by an older version"}]
-
-        result = reconcile(config, mw.col)
-
-        assert definition[BROKEN_KEY] == [
-            {
-                "field": "Word",
-                "message": f'Field "Word" is no longer present on both note types "{VOCAB}"'
-                f' & "{self.OTHER}"',
-            }
-        ]
-        assert [(stale.kind, stale.name) for stale in result.broken] == [(KIND_FIELD, "Word")]
-        assert result.changed is True
-
-
-class TestACardTypeRenamedInOnlySomeTriggerNoteTypes:
-    """A card value token spells a card type once for every trigger note type, as a field.
-
-    `{{trigger.Recognition__Card_Due}}` rewritten for the one note type whose card type was
-    renamed reads nothing on the others, which still call theirs `Recognition`. So a card
-    type rename is held to the field rule: followed once every trigger note type has the
-    new name, withheld and marked until then.
-    """
-
-    OTHER = "CA Vocab B"
-    TOKEN = "{{trigger.Recognition__Card_Due}}"
-
-    @pytest.fixture
-    def other(self, col):
-        real_anki.make_note_type(
-            col, self.OTHER, ["Word", "Meaning"], [("Recognition", "{{Word}}", "{{Meaning}}")]
-        )
-        return self.OTHER
-
-    def definition(self, *note_types, text=TOKEN):
-        return d.staged(
-            definition_name="both",
-            note_types=list(note_types),
-            stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text(text))])],
-        )
-
-    def spelled(self, definition):
-        return definition["stages"][0]["fields"][0]["value"]["text"]
-
-    def message(self):
-        return (
-            f'Card type "Recognition" is no longer present on both note types "{VOCAB}"'
-            f' & "{self.OTHER}"'
-        )
-
-    @pytest.fixture
-    def marked(self, col, config, other):
-        definition = self.definition(VOCAB, other)
-        store(config, definition)
-        reconcile(config, mw.col)
-        rename_template(col, VOCAB, "Recognition", "Reading")
-        return definition, reconcile(config, mw.col)
-
-    def test_a_rename_in_one_of_them_is_not_followed(self, marked):
-        definition, result = marked
-
-        assert self.spelled(definition) == self.TOKEN
-        assert result.rewritten == []
-
-    def test_the_definition_is_marked_with_why(self, marked, stub_mw):
-        definition, result = marked
-
-        assert definition[BROKEN_KEY] == [{"card_type": "Recognition", "message": self.message()}]
-        assert [(stale.kind, stale.name, stale.message) for stale in result.broken] == [
-            (KIND_CARD_TYPE, "Recognition", self.message())
-        ]
-        assert broken_by_rename_messages(definition) == [self.message()]
-        stored = stub_mw.addonManager.configs[ADDON_TAG]["copy_definitions"][0]
-        assert stored[BROKEN_KEY] == definition[BROKEN_KEY]
-
-    def test_a_later_pass_still_reports_it(self, marked, config):
-        result = reconcile(config, mw.col)
-
-        assert names(result.broken) == ["Recognition"]
-        assert result.changed is False
-
-    def test_renaming_it_in_the_other_too_follows_it_and_clears_the_mark(
-        self, col, marked, config
-    ):
-        definition, _ = marked
-
-        rename_template(col, self.OTHER, "Recognition", "Reading")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Reading__Card_Due}}"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_undoing_the_rename_clears_the_mark(self, col, marked, config):
-        definition, _ = marked
-
-        rename_template(col, VOCAB, "Reading", "Recognition")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == self.TOKEN
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_the_same_rename_in_all_of_them_at_once_is_followed(self, col, config, other):
-        definition = self.definition(VOCAB, other)
-        store(config, definition)
-        reconcile(config, mw.col)
-
-        rename_template(col, VOCAB, "Recognition", "Reading")
-        rename_template(col, other, "Recognition", "Reading")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Reading__Card_Due}}"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_a_single_trigger_note_type_is_followed_as_before(self, col, config):
-        definition = self.definition(VOCAB)
-        store(config, definition)
-        reconcile(config, mw.col)
-
-        rename_template(col, VOCAB, "Recognition", "Reading")
-        reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Reading__Card_Due}}"
-        assert BROKEN_KEY not in definition
-
-    def test_a_card_type_the_definition_does_not_spell_marks_nothing(self, col, config, other):
-        definition = self.definition(VOCAB, other)
-        store(config, definition)
-        reconcile(config, mw.col)
-
         rename_template(col, VOCAB, "Recall", "Production")
         result = reconcile(config, mw.col)
 
-        assert BROKEN_KEY not in definition and result.broken == []
+        assert BROKEN_KEY not in definition
+        assert result.broken == [] and result.newly_marked == []
 
-    def test_a_card_actions_card_type_is_not_held_to_it(self, col, config, other):
-        # A card action names one note type's template by id: it resolves after a rename
-        # whatever the other trigger note types call theirs.
-        model = col.models.by_name(VOCAB)
-        action = d.card_action_ref(model, model["tmpls"][0], set_flag=2)
+    def test_a_name_only_its_code_mentions_is_marked(self, col, config, other):
         definition = d.staged(
             definition_name="both",
             note_types=[VOCAB, other],
-            stages=[d.edit_note("trigger", card_actions=[action])],
+            stages=[d.variable("word", d.code("return trigger['Word']"))],
         )
         store(config, definition)
         reconcile(config, mw.col)
 
-        rename_template(col, VOCAB, "Recognition", "Reading")
-        result = reconcile(config, mw.col)
-
-        assert action["card_type"]["name"] == f"{VOCAB}<::>Reading"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_a_field_entry_and_a_card_type_entry_are_judged_apart(self, col, config, other):
-        definition = self.definition(VOCAB, other, text="{{trigger.Word}} " + self.TOKEN)
-        store(config, definition)
-        reconcile(config, mw.col)
         rename_field(col, VOCAB, "Word", "Term")
-        rename_template(col, VOCAB, "Recognition", "Reading")
-        reconcile(config, mw.col)
-        assert [sorted(entry) for entry in definition[BROKEN_KEY]] == [
-            ["field", "message"],
-            ["card_type", "message"],
-        ]
-
-        rename_field(col, other, "Word", "Term")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Term}} " + self.TOKEN
-        assert definition[BROKEN_KEY] == [{"card_type": "Recognition", "message": self.message()}]
-        assert names(result.broken) == ["Recognition"]
-
-
-class TestAFieldRenameAnotherTriggerNoteTypeHasBothNamesFor:
-    """A field rename that would move another trigger note type onto a different field.
-
-    Every trigger note type has the new name, so the ordinary rule would follow it, but the
-    other note type has the old name too: `{{trigger.Word}}` rewritten to `{{trigger.Term}}`
-    would read its `Term` where it read its `Word`. So the rename is withheld and the
-    definition marked, as long as that note type still has both.
-    """
-
-    OTHER = "CA Vocab B"
-
-    @pytest.fixture
-    def other(self, col):
-        real_anki.make_note_type(
-            col,
-            self.OTHER,
-            ["Word", "Term", "Meaning"],
-            [("Card 1", "{{Word}}", "{{Meaning}}")],
-        )
-        return self.OTHER
-
-    def definition(self, *note_types, text="{{trigger.Word}}"):
-        return d.staged(
-            definition_name="both",
-            note_types=list(note_types),
-            stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text(text))])],
-        )
-
-    def spelled(self, definition):
-        return definition["stages"][0]["fields"][0]["value"]["text"]
-
-    def message(self):
-        return (
-            f'Field "Word" was renamed to "Term" in note type "{VOCAB}", but note type'
-            f' "{self.OTHER}" has both "Word" and "Term"'
-        )
-
-    @pytest.fixture
-    def marked(self, col, config, other):
-        definition = self.definition(VOCAB, other)
-        store(config, definition)
-        reconcile(config, mw.col)
-        rename_field(col, VOCAB, "Word", "Term")
-        return definition, reconcile(config, mw.col)
-
-    def test_the_rename_is_not_followed(self, marked):
-        definition, result = marked
-
-        assert self.spelled(definition) == "{{trigger.Word}}"
-        assert result.rewritten == []
-
-    def test_the_definition_is_marked_with_why(self, col, marked):
-        definition, result = marked
-        model = col.models.by_name(VOCAB)
-
-        assert definition[BROKEN_KEY] == [
-            {
-                "field": "Word",
-                "renamed_to": "Term",
-                "note_type_id": model["id"],
-                "field_id": model["flds"][0]["id"],
-                "message": self.message(),
-            }
-        ]
-        assert [(stale.kind, stale.name, stale.message) for stale in result.broken] == [
-            (KIND_FIELD, "Word", self.message())
-        ]
-
-    def test_a_later_pass_still_reports_it(self, marked, config):
-        result = reconcile(config, mw.col)
-
-        assert [stale.message for stale in result.broken] == [self.message()]
-        assert result.changed is False
-
-    def test_undoing_the_rename_clears_the_mark(self, col, marked, config):
-        definition, _ = marked
-
-        rename_field(col, VOCAB, "Term", "Word")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Word}}"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_once_the_other_has_one_name_it_is_an_ordinary_mark(self, col, marked, config):
-        definition, _ = marked
-
-        rename_field(col, self.OTHER, "Term", "Gloss")
-        result = reconcile(config, mw.col)
-
-        message = f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
-        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [message]
-        assert [stale.message for stale in result.broken] == [message]
-
-    def swapped_in_vocab(self, col, config, other):
-        """`Word` and `Term` trade names in the first note type while the other has both."""
-        model = col.models.by_name(VOCAB)
-        col.models.add_field(model, col.models.new_field("Term"))
-        col.models.update_dict(model)
-        definition = self.definition(VOCAB, other)
-        store(config, definition)
-        reconcile(config, mw.col)
-        swap_fields(col, VOCAB, "Word", "Term")
-        return definition, reconcile(config, mw.col)
-
-    def swap_message(self):
-        return (
-            f'Field "Word" was renamed to "Term" in note type "{VOCAB}", but note type'
-            f' "{self.OTHER}" has both "Word" and "Term"'
-        )
-
-    def test_a_swap_while_the_other_has_both_is_marked(self, col, config, other):
-        definition, result = self.swapped_in_vocab(col, config, other)
-
-        assert self.spelled(definition) == "{{trigger.Word}}"
-        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [self.swap_message()]
-        assert [stale.message for stale in result.broken] == [self.swap_message()]
-
-    def test_the_swap_stays_marked_on_a_later_pass(self, col, config, other):
-        definition, _ = self.swapped_in_vocab(col, config, other)
-
-        result = reconcile(config, mw.col)
-
-        assert [stale.message for stale in result.broken] == [self.swap_message()]
-        assert result.changed is False
-
-    def test_undoing_the_swap_clears_the_mark(self, col, config, other):
-        definition, _ = self.swapped_in_vocab(col, config, other)
-
-        swap_fields(col, VOCAB, "Word", "Term")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Word}}"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_the_swap_says_so_once_the_other_has_one_name(self, col, config, other):
-        definition, _ = self.swapped_in_vocab(col, config, other)
-
-        rename_field(col, other, "Term", "Gloss")
         reconcile(config, mw.col)
 
         assert [entry["message"] for entry in definition[BROKEN_KEY]] == [
-            f'Field "Word" of note type "{VOCAB}" is now called "Term", so "Word" there reads'
-            " another field"
+            f'Field "Word" of note type "{VOCAB}" was renamed to "Term", and code in this'
+            ' definition still mentions "Word"'
         ]
 
-    def test_an_entry_without_ids_is_judged_by_names(self, marked, config):
-        definition, _ = marked
-        definition[BROKEN_KEY] = [{"field": "Word", "renamed_to": "Term", "message": "old"}]
-
-        reconcile(config, mw.col)
-
-        assert definition[BROKEN_KEY] == [
-            {"field": "Word", "renamed_to": "Term", "message": self.message()}
-        ]
-
-    def test_renaming_the_others_word_the_same_way_later_follows_it(self, col, marked, config):
-        definition, _ = marked
-        # Out of the way first, or the other note type cannot take the name.
-        rename_field(col, self.OTHER, "Term", "Gloss")
-        reconcile(config, mw.col)
-
-        rename_field(col, self.OTHER, "Word", "Term")
-        result = reconcile(config, mw.col)
-
-        assert self.spelled(definition) == "{{trigger.Term}}"
-        assert BROKEN_KEY not in definition and result.broken == []
-
-    def test_a_swap_in_the_only_trigger_note_type_is_followed(self, col, config):
-        definition = self.definition(VOCAB, text="{{trigger.Word}}|{{trigger.Reading}}")
+    def test_a_swap_marks_both_names(self, col, config, other):
+        definition = self.definition(VOCAB, other, text="{{trigger.Word}}/{{trigger.Meaning}}")
         store(config, definition)
         reconcile(config, mw.col)
 
-        model = col.models.by_name(VOCAB)
-        model["flds"][0]["name"], model["flds"][1]["name"] = "Reading", "Word"
-        col.models.update_dict(model)
+        swap_fields(col, VOCAB, "Word", "Meaning")
+        reconcile(config, mw.col)
+
+        assert self.spelled(definition)[0] == "{{trigger.Word}}/{{trigger.Meaning}}"
+        assert sorted(
+            (entry["old"], entry["new"], entry["id"]) for entry in definition[BROKEN_KEY]
+        ) == [
+            ("Meaning", "Word", field_id(col, VOCAB, "Word")),
+            ("Word", "Meaning", field_id(col, VOCAB, "Meaning")),
+        ]
+
+    def test_undoing_a_swap_removes_both_and_marks_nothing_new(self, col, config, other):
+        definition = self.definition(VOCAB, other, text="{{trigger.Word}}/{{trigger.Meaning}}")
+        store(config, definition)
+        reconcile(config, mw.col)
+        swap_fields(col, VOCAB, "Word", "Meaning")
+        reconcile(config, mw.col)
+
+        # The undo is itself a swap the snapshot shows, of two names the definition spells.
+        swap_fields(col, VOCAB, "Word", "Meaning")
         result = reconcile(config, mw.col)
 
-        assert self.spelled(definition) == "{{trigger.Reading}}|{{trigger.Word}}"
-        assert BROKEN_KEY not in definition and result.broken == []
+        assert BROKEN_KEY not in definition
+        assert result.newly_marked == []
 
-    def test_the_same_swap_in_both_trigger_note_types_is_followed(self, col, config, other):
-        definition = self.definition(VOCAB, other, text="{{trigger.Word}}|{{trigger.Meaning}}")
+    def test_two_stored_note_types_are_several_even_if_one_resolves_to_nothing(
+        self, col, config
+    ):
+        definition = self.definition(VOCAB, d.object_ref("Nonsuch", 1_000_000_001))
         store(config, definition)
         reconcile(config, mw.col)
 
-        for name in (VOCAB, other):
-            model = col.models.by_name(name)
-            for field in model["flds"]:
-                field["name"] = {"Word": "Meaning", "Meaning": "Word"}.get(
-                    field["name"], field["name"]
-                )
-            col.models.update_dict(model)
-        result = reconcile(config, mw.col)
+        rename_field(col, VOCAB, "Word", "Term")
+        reconcile(config, mw.col)
 
-        # The write's own field was `Meaning` and is swapped with the rest.
-        assert definition["stages"][0]["fields"][0]["field"] == "Word"
-        assert self.spelled(definition) == "{{trigger.Meaning}}|{{trigger.Word}}"
-        assert BROKEN_KEY not in definition and result.broken == []
+        assert self.spelled(definition) == ("{{trigger.Word}}", ["Word"])
+        assert definition[BROKEN_KEY] == [self.entry(col)]
 
-    def test_a_single_trigger_note_type_is_followed_as_before(self, col, config):
+    def test_a_single_trigger_note_type_is_followed_and_not_marked(self, col, config):
         definition = self.definition(VOCAB)
         store(config, definition)
         reconcile(config, mw.col)
 
         rename_field(col, VOCAB, "Word", "Term")
+        result = reconcile(config, mw.col)
+
+        assert self.spelled(definition) == ("{{trigger.Term}}", ["Term"])
+        assert BROKEN_KEY not in definition and result.broken == []
+
+    def test_an_entry_an_earlier_version_stored_is_read_and_left_alone(
+        self, col, marked, config
+    ):
+        definition, _ = marked
+        older = [
+            {"field": "Word", "message": "worded by an older version"},
+            {"card_type": "Recognition", "message": "a card type, as P1 wrote it"},
+            {
+                "field": "Word",
+                "renamed_to": "Term",
+                "note_type_id": col.models.id_for_name(VOCAB),
+                "field_id": field_id(col, VOCAB, "Term"),
+                "message": "a both-names entry",
+            },
+        ]
+        definition[BROKEN_KEY] = copy.deepcopy(older)
+        # Even the rename those entries were about, undone: they carry no `id` to see it by.
+        rename_field(col, VOCAB, "Term", "Word")
+
+        result = reconcile(config, mw.col)
+
+        assert definition[BROKEN_KEY] == older
+        assert broken_by_rename_messages(definition) == [
+            "worded by an older version",
+            "a card type, as P1 wrote it",
+            "a both-names entry",
+        ]
+        assert [(stale.kind, stale.name) for stale in result.broken] == [
+            (KIND_FIELD, "Word"),
+            (KIND_CARD_TYPE, "Recognition"),
+            (KIND_FIELD, "Word"),
+        ]
+
+
+class TestADeletedFieldOrCardTypeIsMarked:
+    """A field or card type deleted from a trigger note type marks what spells it.
+
+    Whatever the number of trigger note types: there is nothing to follow a deletion to. A
+    report of it would be gone by the next pass, since the snapshot is rebuilt without the
+    id; a mark is stored and stays until the user dismisses it.
+    """
+
+    OTHER = "CA Vocab B"
+
+    def reading(self, *note_types, text="{{trigger.Freq}}", name="reads"):
+        return d.staged(
+            definition_name=name,
+            note_types=list(note_types),
+            stages=[d.edit_note("trigger", fields=[d.write("Meaning", d.text(text))])],
+        )
+
+    def delete_field(self, col, name):
+        model = col.models.by_name(VOCAB)
+        deleted = next(field for field in model["flds"] if field["name"] == name)
+        col.models.remove_field(model, deleted)
+        col.models.update_dict(model)
+        return deleted["id"]
+
+    def test_every_definition_spelling_it_is_marked(self, col, config):
+        real_anki.make_note_type(
+            col, self.OTHER, ["Word", "Meaning", "Freq"], [("Card 1", "{{Word}}", "{{Freq}}")]
+        )
+        single = self.reading(VOCAB, name="single")
+        several = self.reading(VOCAB, self.OTHER, name="several")
+        elsewhere = self.reading(VOCAB, text="{{trigger.Word}}", name="elsewhere")
+        store(config, single, several, elsewhere)
         reconcile(config, mw.col)
 
-        assert self.spelled(definition) == "{{trigger.Term}}"
-        assert BROKEN_KEY not in definition
+        deleted_id = self.delete_field(col, "Freq")
+        result = reconcile(config, mw.col)
+
+        expected = {
+            "kind": KIND_FIELD,
+            "note_type_id": col.models.id_for_name(VOCAB),
+            "id": deleted_id,
+            "old": "Freq",
+            "new": None,
+            "message": f'Field "Freq" of note type "{VOCAB}" was deleted',
+        }
+        assert single[BROKEN_KEY] == [expected]
+        assert several[BROKEN_KEY] == [expected]
+        assert BROKEN_KEY not in elsewhere
+        assert single["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Freq}}"
+        assert names(result.gone) == []
+        assert [stale.definition_name for stale in result.newly_marked] == ["single", "several"]
+
+    def test_the_mark_survives_a_second_pass(self, col, config):
+        definition = self.reading(VOCAB)
+        store(config, definition)
+        reconcile(config, mw.col)
+        self.delete_field(col, "Freq")
+        reconcile(config, mw.col)
+
+        result = reconcile(config, mw.col)
+
+        assert names(result.broken) == ["Freq"]
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [
+            f'Field "Freq" of note type "{VOCAB}" was deleted'
+        ]
+        assert result.changed is False
+
+    def test_a_name_only_its_code_mentions_is_marked(self, col, config):
+        definition = d.staged(
+            definition_name="code",
+            note_types=[VOCAB],
+            stages=[d.variable("freq", d.code("return trigger['Freq']"))],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        self.delete_field(col, "Freq")
+        reconcile(config, mw.col)
+
+        assert [entry["message"] for entry in definition[BROKEN_KEY]] == [
+            f'Field "Freq" of note type "{VOCAB}" was deleted, and code in this definition'
+            ' still mentions "Freq"'
+        ]
+
+    def test_a_field_renamed_into_the_deleted_ones_name_marks_only_what_spelled_it(
+        self, col, config
+    ):
+        spelled = self.reading(VOCAB, name="spelled")
+        other_field = self.reading(VOCAB, text="{{trigger.Note}}", name="other field")
+        store(config, spelled, other_field)
+        reconcile(config, mw.col)
+
+        self.delete_field(col, "Freq")
+        rename_field(col, VOCAB, "Note", "Freq")
+        reconcile(config, mw.col)
+
+        # The rewrite hands `Freq` to the second one, which never read the deleted field.
+        assert other_field["stages"][0]["fields"][0]["value"]["text"] == "{{trigger.Freq}}"
+        assert BROKEN_KEY not in other_field
+        assert [entry["old"] for entry in spelled[BROKEN_KEY]] == ["Freq"]
+
+    def test_a_deleted_template_is_marked(self, col, config):
+        definition = self.reading(VOCAB, text="{{trigger.Recall__Card_Interval}}")
+        store(config, definition)
+        reconcile(config, mw.col)
+        model = col.models.by_name(VOCAB)
+        recall = model["tmpls"][1]
+        col.models.remove_template(model, recall)
+        col.models.update_dict(model)
+
+        reconcile(config, mw.col)
+
+        assert [(entry["kind"], entry["id"], entry["new"]) for entry in definition[BROKEN_KEY]] == [
+            (KIND_CARD_TYPE, recall["id"], None)
+        ]
+        assert definition[BROKEN_KEY][0]["message"] == (
+            f'Card type "Recall" of note type "{VOCAB}" was deleted'
+        )
 
 
 class TestADefinitionBrokenByARenameIsNotRun:
@@ -1381,7 +1315,7 @@ class TestADefinitionBrokenByARenameIsNotRun:
         return real_anki.add_note(col, self.OTHER, {"Word": word, "Meaning": "cat"})
 
     def message(self) -> str:
-        return f'Field "Word" is no longer present on both note types "{VOCAB}" & "{self.OTHER}"'
+        return f'Field "Word" of note type "{VOCAB}" was renamed to "Term"'
 
     def test_a_run_on_one_note_writes_nothing_and_logs_the_message(self, col, marked, logger):
         note = self.other_note(col)
@@ -1442,9 +1376,9 @@ class TestADefinitionBrokenByARenameIsNotRun:
             f"calls definition 'both', which was not run: {self.message()}. {BROKEN_ADVICE}"
         ]
 
-    def test_it_runs_again_once_the_mark_is_cleared(self, col, marked, config, logger):
+    def test_it_runs_again_once_the_rename_is_undone(self, col, marked, config, logger):
         note = self.other_note(col)
-        rename_field(col, self.OTHER, "Word", "Term")
+        rename_field(col, VOCAB, "Term", "Word")
         reconcile(config, mw.col)
         note = col.get_note(note.id)
 
@@ -1504,7 +1438,7 @@ class TestTheWarningAfterAFieldsSave:
     """A marked definition is said so in a dialog after a note type operation.
 
     The log is not read at the default level, and the user who just saved the Fields
-    dialog is the one who can choose between the three ways out.
+    dialog is the one who knows what the definition should say now.
     """
 
     @pytest.fixture
@@ -1539,8 +1473,11 @@ class TestTheWarningAfterAFieldsSave:
 
         assert len(warnings) == 1
         assert "both &lt;&amp;&gt;" in warnings[0]
-        assert "no longer present on both note types" in warnings[0]
-        assert "not run until that is fixed" in warnings[0]
+        assert html.escape(f'Field "Word" of note type "{VOCAB}" was renamed to "Term"') in (
+            warnings[0]
+        )
+        assert "renamed or deleted" in warnings[0]
+        assert "dismiss its mark in the definition editor" in warnings[0]
 
     def test_a_deck_operation_does_not(self, marked, warnings):
         # Answering a card reports a deck change; a dialog per answer is not a warning.

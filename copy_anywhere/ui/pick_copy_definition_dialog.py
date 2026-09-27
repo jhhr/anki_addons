@@ -264,10 +264,11 @@ class DefinitionRow(QWidget):
         from the last pass: the pass runs on a note type or deck operation and on a
         collection load, so a definition the user has just fixed in the editor, or one an
         import has just made stale, would otherwise carry the pass's answer until the next
-        one. What the pass alone knows -- a field or a template that was *deleted*, which
-        takes the snapshot to tell from a rename -- still comes from its result, but only
-        for as long as the definition still names it (`rename_reconcile.still_names`): a
-        deleted field the user has since taken out of it is not a problem any more.
+        one. What the pass alone knows -- an object that was *deleted*, which takes the
+        snapshot to tell from one this collection never had -- still comes from its result,
+        but only for as long as the definition still names it
+        (`rename_reconcile.still_names`). A deleted field or template is not among it: the
+        pass marks the definitions that spell one (`_mark_if_broken`).
 
         Cleared when nothing is stale, since a refresh after a save can find it fixed.
         """

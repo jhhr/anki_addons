@@ -750,8 +750,8 @@ def copy_for_single_trigger_note(
         logger.error(str(error))
         return False
 
-    # A rename left this definition spelling a field that some note type it triggers on
-    # lacks (`rename_reconcile.BROKEN_KEY`), so whatever it wrote would go wrong somewhere.
+    # A rename or deletion left this definition spelling a name that no longer means what it
+    # did (`rename_reconcile.BROKEN_KEY`), so whatever it wrote would go wrong somewhere.
     # A failure rather than a benign skip: the error is what opens the log that tells the
     # user to fix it, and False stops a bulk run after one line instead of one per note.
     # Before the deck whitelist, so a run over notes the whitelist skips still says so.

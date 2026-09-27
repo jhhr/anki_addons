@@ -540,7 +540,8 @@ class CopyDefinitionV2(TypedDict, total=False):
     migrated_from_format: int
     legacy: LegacyBehaviour
     migration_warnings: list[str]
-    #: Field renames the reconcile pass would not follow, with why (`rename_reconcile.py`).
+    #: Renames and deletions the reconcile pass could not follow, with why, until the user
+    #: dismisses them (`rename_reconcile.BROKEN_KEY`).
     broken_by_rename: list[dict]
 
 

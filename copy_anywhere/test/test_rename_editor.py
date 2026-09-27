@@ -445,7 +445,7 @@ class TestThePickerMarksADefinition:
         )
 
     def delete_the_note_field(self, col, run, definition):
-        """Delete VOCAB's "Note" field between two passes, so the second reports it gone."""
+        """Delete VOCAB's "Note" field between two passes, so the second sees it deleted."""
         # The first pass is what snapshots the field ids; without one there is no old name
         # to miss.
         run(definition)
@@ -459,8 +459,12 @@ class TestThePickerMarksADefinition:
 
         row, result = self.delete_the_note_field(col, run, definition)
 
-        assert [stale.name for stale in result.gone] == ["Note"]
-        assert "Note" in row.stale_marker.toolTip()
+        # A mark, stored, rather than a report the next pass would no longer have: the row
+        # shows it as broken, and the definition is not run.
+        assert [stale.name for stale in result.newly_marked] == ["Note"]
+        assert result.gone == []
+        assert "Note" in row.broken_marker.toolTip()
+        assert not row.checkbox.isEnabled()
 
     def test_a_field_mentioned_only_in_code_still_marks_the_row(self, col, picker):
         _config, run = picker
@@ -468,21 +472,21 @@ class TestThePickerMarksADefinition:
 
         row, _result = self.delete_the_note_field(col, run, definition)
 
-        assert "Note" in row.stale_marker.toolTip()
+        assert "Note" in row.broken_marker.toolTip()
 
     def test_a_deleted_field_the_definition_never_spelled_does_not_mark_it(
         self, col, picker
     ):
         _config, run = picker
 
-        # The pass reports the deletion to every definition triggering on the note type;
-        # the row is about what this one names, and this one reads only "Word".
+        # The pass marks only the definitions that spell the deleted field, and this one
+        # reads only "Word".
         row, result = self.delete_the_note_field(
             col, run, self.reading(d.text("{{trigger.Word}}"))
         )
 
-        assert [stale.name for stale in result.gone] == ["Note"]
-        assert row.stale_marker.text() == ""
+        assert result.gone == [] and result.broken == []
+        assert row.stale_marker.text() == "" and row.broken_marker.text() == ""
 
     @pytest.mark.parametrize("reads, marked", [("Recall", True), ("Recognition", False)])
     def test_a_deleted_template_marks_the_rows_that_read_its_card(
@@ -497,8 +501,8 @@ class TestThePickerMarksADefinition:
 
         row, result = run(definition)
 
-        assert [stale.name for stale in result.gone] == ["Recall"]
-        assert ("Recall" in row.stale_marker.toolTip()) is marked
+        assert result.gone == []
+        assert ("Recall" in row.broken_marker.toolTip()) is marked
 
     def test_a_definition_fixed_since_the_last_pass_is_not_marked(
         self, col, picker, widget_parent
@@ -579,7 +583,7 @@ class TestThePickerMarksADefinition:
         assert row.definition is dialog.copy_definitions[0]
         assert row.stale_marker.text() == "" and row.stale_marker.toolTip() == ""
 
-    def test_a_deleted_field_taken_out_in_the_editor_unmarks_the_row(
+    def test_a_deleted_field_taken_out_and_dismissed_in_the_editor_unmarks_the_row(
         self, col, picker, widget_parent, monkeypatch
     ):
         config, run = picker
@@ -587,15 +591,17 @@ class TestThePickerMarksADefinition:
         self.delete_the_note_field(col, run, definition)
         dialog = self.dialog(widget_parent, config)
         row = dialog.definition_ui_components[definition["guid"]]["widget"]
-        assert "Note" in row.stale_marker.toolTip()
+        assert "Note" in row.broken_marker.toolTip()
         fixed = copy.deepcopy(definition)
         fixed["stages"][0]["fields"][0]["value"] = d.text("{{trigger.Word}}")
+        # What dismissing the mark in the editor leaves: nothing re-derives it, so the fix
+        # alone would keep it.
+        del fixed[BROKEN_KEY]
 
-        # No pass runs over a save, so the last one still reports the field gone for this
-        # definition; what the definition now says is what decides.
         self.save_through(monkeypatch, dialog, definition, fixed)
 
-        assert row.stale_marker.text() == ""
+        assert row.broken_marker.text() == "" and row.stale_marker.text() == ""
+        assert row.checkbox.isEnabled()
 
     def test_a_deleted_field_still_spelled_after_a_save_keeps_the_mark(
         self, col, picker, widget_parent, monkeypatch
@@ -611,7 +617,7 @@ class TestThePickerMarksADefinition:
         self.save_through(monkeypatch, dialog, definition, renamed)
 
         assert row.checkbox.text() == "Renamed"
-        assert "Note" in row.stale_marker.toolTip()
+        assert "Note" in row.broken_marker.toolTip()
 
 
 class ADefinitionBrokenByARename:
@@ -714,10 +720,11 @@ class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename)
         real_anki.add_note(col, self.OTHER, {"Word": "neko"})
         dialog = self.dialog(widget_parent, config)
         row = dialog.definition_ui_components["def-both"]["widget"]
-        # Triggering on the other note type alone, which still has "Word". The copy still
-        # carries the mark: it is the save that re-derives it, as it would for the editor.
+        # Triggering on the other note type alone, which still has "Word", and the mark
+        # dismissed, as the editor leaves it: a save does not re-derive a mark.
         reworked = copy.deepcopy(definition)
         reworked["triggers"]["note_types"] = [d.object_ref(self.OTHER)]
+        del reworked[BROKEN_KEY]
         monkeypatch.setattr(dialog, "run_definition_editor", lambda _d, _c: reworked)
 
         dialog.edit_definition_by_guid("def-both")
