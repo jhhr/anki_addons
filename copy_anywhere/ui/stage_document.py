@@ -246,6 +246,7 @@ class StageDocument:
         make_guid: Callable[[], str] = new_guid,
         known_fields: Optional[Callable[[CopyDefinitionV2], Mapping[str, set[str]]]] = None,
         unresolved_refs: Optional[Callable[[CopyDefinitionV2], list[str]]] = None,
+        trigger_names: Optional[Callable[[CopyDefinitionV2], list[str]]] = None,
     ) -> None:
         self._make_guid = make_guid
         if definition is None:
@@ -263,10 +264,13 @@ class StageDocument:
         # against have to be the ones chosen now. Without it the analyser checks the head
         # of a reference and no further.
         self._known_fields = known_fields
-        # Asked of the collection rather than of the analyser: whether a stored note type
-        # id still exists is not a question about the definition's shape, and the analyser
-        # is built to answer without a collection at all.
+        # Both asked of the collection rather than of the analyser: whether a stored note
+        # type id still exists, or whether every trigger note type has a field, is not a
+        # question about the definition's shape, and the analyser is built to answer
+        # without a collection at all. The first answers with warnings (a reference that
+        # resolves to nothing fails quietly at run time), the second with save blockers.
         self._unresolved_refs = unresolved_refs
+        self._trigger_names = trigger_names
         self._analysis: Optional[AnalysisResult] = None
 
     # -- analysis ------------------------------------------------------------------------
@@ -582,11 +586,12 @@ class StageDocument:
         """Everything standing between this definition and a save, in the order to show it.
 
         Warnings -- mixed note types, an add-note trigger on a definition that edits other
-        notes or cards -- are deliberately absent: §10 says they do not block.
+        notes or cards, a reference that resolves to nothing -- are deliberately absent:
+        §10 says they do not block.
         """
         blockers = [self._describe(problem) for problem in _unique(self.analysis.problems)]
-        if self._unresolved_refs is not None:
-            blockers.extend(self._unresolved_refs(self.definition))
+        if self._trigger_names is not None:
+            blockers.extend(self._trigger_names(self.definition))
         if not (self.definition.get("definition_name") or "").strip():
             blockers.append("The definition needs a name.")
         return blockers
@@ -597,6 +602,8 @@ class StageDocument:
     def warnings(self) -> list[str]:
         """What is worth telling the user about this definition without refusing the save."""
         found = [problem.message for problem in _unique(self.analysis.warnings)]
+        if self._unresolved_refs is not None:
+            found.extend(self._unresolved_refs(self.definition))
         found.extend(self.add_note_warnings())
         return found
 

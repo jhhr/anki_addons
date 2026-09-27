@@ -11,6 +11,7 @@ is. What is new here is only the arrangement: a stage names the note it reads an
 it writes, so every editor starts with the binding it acts on.
 """
 
+import html
 from typing import Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
@@ -514,9 +515,11 @@ class QueryStageEditor(StageEditor):
         if not stale:
             self.stale_terms_label.setText("")
             return
+        # Escaped: the label is rich text for its colour, and a term is whatever the user
+        # typed -- `deck:a<b` or `note:"Q&A"` would otherwise lose text or read as a tag.
         self.stale_terms_label.setText(
             "<span style='color: #b8860b'>Not in this collection:</span> "
-            + ", ".join(term.as_text() for term in stale)
+            + ", ".join(html.escape(term.as_text(), quote=False) for term in stale)
             + ". A search is left alone when something is renamed, so check it by hand."
         )
 

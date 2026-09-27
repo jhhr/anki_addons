@@ -264,40 +264,29 @@ class DefinitionRow(QWidget):
         without looking. Only what cannot be resolved at all is marked -- a name the pass
         refreshed or a rename it followed is not a problem any more.
 
-        What a reference resolves to is asked of the collection here rather than taken
-        from the last pass: the pass runs on a note type or deck operation and on a
-        collection load, so a definition the user has just fixed in the editor, or one an
-        import has just made stale, would otherwise carry the pass's answer until the next
-        one. What the pass alone knows -- an object that was *deleted*, which takes the
-        snapshot to tell from one this collection never had -- still comes from its result,
-        but only for as long as the definition still names it
-        (`rename_reconcile.still_names`). A deleted field or template is not among it: the
-        pass marks the definitions that spell one (`_mark_if_broken`).
+        Asked of the collection as the row is drawn, never taken from a pass: a pass's
+        report is gone by the next pass and with the process, which is how a deleted field
+        once lost its marker after any later note type edit. Nothing here needs it. A
+        deleted note type, deck or card-action card type leaves a reference that resolves
+        to nothing, which is the question asked here; a deleted field or template marks the
+        definitions that spell it (`_mark_if_broken`). And a definition the user has just
+        fixed in the editor, or one an import has just made stale, is answered as it is now.
 
         Cleared when nothing is stale, since a refresh after a save can find it fixed.
         """
-        from ..hooks.rename_hooks import last_reconcile_result
-        from ..logic.rename_reconcile import StaleName, still_names, unresolved_references
+        from ..logic.rename_reconcile import StaleName, unresolved_references
 
         stale: list[StaleName] = []
         if mw is not None and mw.col is not None:
             stale = unresolved_references(self.definition, mw.col)
-            # A deleted note type or deck is in both -- the pass reports it gone, and the
-            # reference it left behind resolves to nothing here -- and the tooltip is a
-            # list of names, not of reasons, so it says each one once.
-            named = {(item.kind, item.name) for item in stale}
-            stale += [
-                item
-                for item in last_reconcile_result().gone
-                if item.definition_guid == self.definition_guid
-                and (item.kind, item.name) not in named
-                and still_names(self.definition, item)
-            ]
         if not stale:
             self.stale_marker.setText("")
             self.stale_marker.setToolTip("")
             return
         self.stale_marker.setText("<span style='color: #b8860b'>&#9888;</span>")
+        # Not escaped: a tooltip is rich text only when its first line looks like markup
+        # (`Qt.mightBeRichText`), and this one's first line is fixed, so a name holding `<`
+        # or `&` shows as it is. Escaping it would show the entity instead.
         self.stale_marker.setToolTip(
             "This definition names something this collection does not have:\n"
             + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
@@ -323,6 +312,7 @@ class DefinitionRow(QWidget):
             self.search_marker.setToolTip("")
             return
         self.search_marker.setText("<span style='color: #2471a3'>&#9432;</span>")
+        # Plain text, like the tooltip above: its first line is fixed.
         self.search_marker.setToolTip(
             "A search in this definition names something this collection does not have:\n"
             + "\n".join(f"{item.kind} '{item.name}'" for item in stale)

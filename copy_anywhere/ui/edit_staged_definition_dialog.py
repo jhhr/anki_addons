@@ -15,6 +15,7 @@ is far too expensive to run on a keystroke -- so an edit marks it stale and the 
 it when they want the answer.
 """
 
+import html
 from typing import NamedTuple, Optional, Sequence
 
 from aqt.qt import (
@@ -40,7 +41,8 @@ from .stage_document import StageDocument
 from .stage_editor_context import (
     known_fields_for,
     make_note_types_for,
-    unresolved_reference_problems,
+    trigger_name_blockers,
+    unresolved_reference_warnings,
 )
 from .stage_editors import StageEditorEnvironment
 from .stage_exports_editor import ExportsEditor
@@ -128,7 +130,8 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
             copy_definition,
             lookup=make_lookup(self.all_definitions),
             known_fields=known_fields_for,
-            unresolved_refs=unresolved_reference_problems,
+            unresolved_refs=unresolved_reference_warnings,
+            trigger_names=trigger_name_blockers,
         )
 
         self.body = QVBoxLayout(self.inner_widget)
@@ -295,17 +298,20 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         ]
         # The document's list, not the analyser's: the add-note case is worded from the
         # triggers and named with stage paths, neither of which the analyser knows about.
+        # Escaped: every message is plain text (the same lines go to `showInfo` as they
+        # are) and many quote a name from the collection. A card type's is "Note<::>Card",
+        # whose `<::>` rich text would swallow.
         warnings = self.document.warnings()
         if warnings:
             lines.append(
                 "<span style='color: #b8860b'>Worth knowing:</span><ul>"
-                + "".join(f"<li>{warning}</li>" for warning in warnings)
+                + "".join(f"<li>{html.escape(warning, quote=False)}</li>" for warning in warnings)
                 + "</ul>"
             )
         if blockers:
             lines.append(
                 "<span style='color: #c0392b'>Cannot be saved yet:</span><ul>"
-                + "".join(f"<li>{blocker}</li>" for blocker in blockers)
+                + "".join(f"<li>{html.escape(blocker, quote=False)}</li>" for blocker in blockers)
                 + "</ul>"
             )
         return "<br>".join(lines)

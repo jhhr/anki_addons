@@ -41,10 +41,6 @@ from ..logic.rename_reconcile import (
 
 logger = logging.getLogger(__name__)
 
-#: What the last pass found, for the editor and the picker to mark a definition with. The
-#: pass runs long before either is opened, and re-running it to ask would cost a save.
-_last_result = ReconcileResult()
-
 #: The pass writes the config, and a config write must never start another pass. Nothing in
 #: Anki turns `writeConfig` into an operation today, so this is a guard rather than a fix.
 _running = False
@@ -53,10 +49,6 @@ _running = False
 #: A weak reference, so that it neither keeps a closed profile's collection alive nor lets
 #: a new collection pass for the old one because it happens to reuse its `id()`.
 _decks_seen: Optional[tuple[weakref.ref[Any], frozenset[tuple[int, str]]]] = None
-
-
-def last_reconcile_result() -> ReconcileResult:
-    return _last_result
 
 
 def _deck_names(col: Any) -> frozenset[tuple[int, str]]:
@@ -98,7 +90,7 @@ def run_reconcile() -> Optional[ReconcileResult]:
     Nothing here may raise: `operation_did_execute` removes a hook that does, so an
     exception would take the pass out for the rest of the session without saying so.
     """
-    global _running, _last_result
+    global _running
     if _running or mw.col is None:
         return None
     _running = True
@@ -116,10 +108,10 @@ def run_reconcile() -> Optional[ReconcileResult]:
         # old name.
         mw.col.models._clear_cache()
         with operation_logging("rename_reconcile", config.log_level):
-            _last_result = reconcile(config, mw.col)
-            log_result(_last_result)
+            result = reconcile(config, mw.col)
+            log_result(result)
         _remember_decks(mw.col)
-        return _last_result
+        return result
     except Exception:
         _forget_decks()
         logger.exception("Could not reconcile the stored definitions with the collection")

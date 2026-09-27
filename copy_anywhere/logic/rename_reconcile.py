@@ -122,8 +122,10 @@ class StaleName:
 class ReconcileResult:
     """What one pass did and what it wants the user to know.
 
-    The four lists of names are what a picker or an editor marks a definition with; the
-    three lists of lines are the story, in the order it happened.
+    The lists of names are what the log reports, and what the warning after a note type
+    edit lists (`newly_marked`); the three lists of lines are the story, in the order it
+    happened. Nothing keeps a result past the pass: the picker and the editor ask the
+    collection and the stored marks instead, which a later pass or a restart cannot lose.
     """
 
     bound: list[str] = dataclass_field(default_factory=list)
@@ -209,9 +211,9 @@ def _card_type_refs(definition: CopyDefinitionV2) -> Iterator[dict]:
 def unresolved_references(definition: CopyDefinitionV2, col: Any) -> list[StaleName]:
     """Every structured reference of one definition that this collection cannot resolve.
 
-    The same condition the pass reports as `unresolved`, asked of a single definition
-    without touching it, so the editor can refuse a save over a reference that names
-    nothing (§N6) in the words the log already uses.
+    The same condition the pass reports as `unresolved` (and, for an object it saw
+    deleted, as `gone`), asked of a single definition without touching it, so the editor
+    can warn about a reference that names nothing and the picker can mark its row (§N6).
     """
     stale: list[StaleName] = []
     triggers = definition.get("triggers")
@@ -229,43 +231,6 @@ def unresolved_references(definition: CopyDefinitionV2, col: Any) -> list[StaleN
         if not card_type_resolves(card_type, col):
             stale.append(_stale(definition, KIND_CARD_TYPE, card_type["name"]))
     return stale
-
-
-def still_names(definition: CopyDefinitionV2, stale: StaleName) -> bool:
-    """Whether this definition names what a pass reported about it, as it stands now.
-
-    A pass's report outlives the definitions it was about: it is kept until the next pass
-    (`rename_hooks.last_reconcile_result`), and saving a definition does not start one, so
-    a deleted field the user has since taken out of the definition would still be said to
-    be in it. So the picker asks here before it marks a row with an entry. (A deleted field
-    or template is a mark now, not a report, but a kind this is asked about keeps its
-    answer.)
-
-    Named means what the pass itself reads: a note type or a deck among the trigger
-    references, a card type among the card actions' references, a field or card type in a
-    slot a rename would be followed into (`_rewrite`), or a mention in code -- the pass
-    reports those without rewriting them, and a substring errs on the side of the mark. A
-    kind this does not know about is kept.
-    """
-    if stale.kind in (KIND_NOTE_TYPE, KIND_DECK):
-        triggers = definition.get("triggers")
-        key = "note_types" if stale.kind == KIND_NOTE_TYPE else "deck_names"
-        stored = triggers.get(key) if isinstance(triggers, dict) else None
-        return any(
-            normalize_ref(value)["name"] == stale.name
-            for value in (stored if isinstance(stored, list) else [])
-        )
-    if stale.kind not in (KIND_FIELD, KIND_CARD_TYPE):
-        return True
-    recorded = _recorded_names(definition)
-    if stale.kind == KIND_FIELD:
-        spelled = stale.name.lower() in recorded.fields_seen
-    else:
-        spelled = stale.name in recorded.templates_seen or any(
-            normalize_card_type_ref(card_action["card_type"])["name"] == stale.name
-            for card_action in _card_type_refs(definition)
-        )
-    return spelled or _code_mentions(definition, stale.name)
 
 
 def _code_mentions(definition: CopyDefinitionV2, name: str) -> bool:
@@ -1393,7 +1358,6 @@ __all__ = [
     "reconcile",
     "referenced_object_ids",
     "stale_terms_in_searches",
-    "still_names",
     "trigger_names_not_on_every_note_type",
     "unresolved_references",
 ]

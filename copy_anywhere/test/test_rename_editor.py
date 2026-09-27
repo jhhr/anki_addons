@@ -5,13 +5,14 @@ but its report goes into a log file the user has to have turned up to read. This
 other half: the places a user already looks.
 
 A structured reference that resolves to nothing is shown under the name it was written
-with, marked, and refuses the save -- a definition naming a note type this collection does
-not have runs on nothing, and that is worth being stopped for. A name inside a query or a
-code block is only ever reported, here as an amber warning under the query: query text is
-Anki's grammar, not this addon's, and a mechanical rewrite of one term inside it would be a
-guess. The picker marks a definition the last pass could not resolve, refuses one a rename
-left broken, and shows a definition saved from it as saved; a sort field no selected note
-has says so once per run rather than per note.
+with, marked, and warned about -- a definition naming a note type this collection does not
+have runs on nothing, quietly, and the note type may still be on its way -- but it saves. A
+name inside a query or a code block is only ever reported, here as an amber warning under
+the query: query text is Anki's grammar, not this addon's, and a mechanical rewrite of one
+term inside it would be a guess. The picker marks a definition that names something the
+collection cannot resolve, refuses one a rename left broken, and shows a definition saved
+from it as saved; a sort field no selected note has says so once per run rather than per
+note.
 """
 
 import copy
@@ -47,7 +48,8 @@ from copy_anywhere.ui.stage_document import StageDocument, default_stage
 from copy_anywhere.ui.stage_editor_context import (
     build_contexts,
     make_note_types_for,
-    unresolved_reference_problems,
+    trigger_name_blockers,
+    unresolved_reference_warnings,
 )
 from copy_anywhere.ui.stage_editors import StageEditorEnvironment, make_stage_editor
 from copy_anywhere.ui.stage_list import StageTreeWidget
@@ -95,7 +97,11 @@ def every_note():
 
 def document_for(definition) -> StageDocument:
     """A document wired to the collection the way the dialog wires it."""
-    return StageDocument(definition, unresolved_refs=unresolved_reference_problems)
+    return StageDocument(
+        definition,
+        unresolved_refs=unresolved_reference_warnings,
+        trigger_names=trigger_name_blockers,
+    )
 
 
 def item_texts(box) -> list[str]:
@@ -124,10 +130,12 @@ def card_actions_editor(col, stage):
 
 
 class TestATriggerNoteTypeThatResolvesToNothing:
-    """It is still shown, marked, and it refuses the save.
+    """It is still shown, marked, and warned about, and the definition saves.
 
-    Dropping it silently would be worse than either: the user would reopen a definition
-    that has quietly stopped naming anything and see nothing wrong with it.
+    Dropping it silently would be worse than any of those: the user would reopen a
+    definition that has quietly stopped naming anything and see nothing wrong with it.
+    Refusing the save would be worse too: at run time the reference just matches no note,
+    and the note type may be one the user has not made yet.
     """
 
     def test_it_is_shown_under_its_stored_name(self, col, qapp, widget_parent):
@@ -146,14 +154,17 @@ class TestATriggerNoteTypeThatResolvesToNothing:
 
         assert definition["triggers"]["note_types"] == [{"id": GONE_ID, "name": "CA Ghost"}]
 
-    def test_it_blocks_the_save(self, col, qapp, widget_parent):
+    def test_it_warns_and_does_not_block_the_save(self, col, qapp, widget_parent):
         _editor, definition = triggers_editor(
             col, widget_parent, note_types=[d.object_ref("CA Ghost", GONE_ID)]
         )
+        document = document_for(definition)
 
-        assert document_for(definition).save_blockers() == [
-            "Note type 'CA Ghost' no longer exists; pick another or remove it."
+        assert document.warnings() == [
+            "Note type 'CA Ghost' is not in this collection, so nothing triggers this"
+            " definition on it until it is."
         ]
+        assert document.save_blockers() == []
 
     def test_choosing_a_live_note_type_clears_it(self, col, qapp, widget_parent):
         editor, definition = triggers_editor(
@@ -166,13 +177,14 @@ class TestATriggerNoteTypeThatResolvesToNothing:
         assert definition["triggers"]["note_types"] == [
             {"id": col.models.id_for_name(VOCAB), "name": VOCAB}
         ]
-        assert document_for(definition).save_blockers() == []
+        assert document_for(definition).warnings() == []
 
     def test_a_null_id_whose_name_resolves_is_fine(self, col, qapp, widget_parent):
         _editor, definition = triggers_editor(
             col, widget_parent, note_types=[d.object_ref(VOCAB)]
         )
 
+        assert document_for(definition).warnings() == []
         assert document_for(definition).save_blockers() == []
 
     def test_a_stale_cached_name_is_offered_once_under_the_live_name(
@@ -197,16 +209,58 @@ class TestATriggerDeckThatResolvesToNothing:
 
         assert selected_names(editor.decks_box) == ["Gone deck" + NOT_FOUND_SUFFIX]
 
-    def test_it_blocks_the_save(self, col, qapp, widget_parent):
+    def test_the_only_deck_warns_that_no_note_passes(self, col, qapp, widget_parent):
         _editor, definition = triggers_editor(
             col,
             widget_parent,
             note_types=[d.object_ref(VOCAB)],
             deck_names=[d.object_ref("Gone deck", GONE_ID)],
         )
+        document = document_for(definition)
 
-        assert document_for(definition).save_blockers() == [
-            "Deck 'Gone deck' no longer exists; pick another or remove it."
+        # A whitelist that is not empty but resolves to nothing lets no note through
+        # (`note_passes_deck_whitelist`), which is worth saying in so many words.
+        assert document.warnings() == [
+            "Deck 'Gone deck' is not in this collection, and it is the only deck the"
+            " whitelist names, so no note passes the whitelist until it is."
+        ]
+        assert document.save_blockers() == []
+
+    def test_beside_a_live_deck_it_only_drops_out_of_the_whitelist(
+        self, col, qapp, widget_parent
+    ):
+        _editor, definition = triggers_editor(
+            col,
+            widget_parent,
+            note_types=[d.object_ref(VOCAB)],
+            deck_names=[
+                d.object_ref("Gone deck", GONE_ID),
+                d.object_ref("Other", col.decks.id_for_name("Other")),
+            ],
+        )
+        document = document_for(definition)
+
+        assert document.warnings() == [
+            "Deck 'Gone deck' is not in this collection, so the deck whitelist matches no"
+            " deck for it until it is."
+        ]
+        assert document.save_blockers() == []
+
+    def test_several_decks_none_of_which_resolve_say_so(self, col, qapp, widget_parent):
+        _editor, definition = triggers_editor(
+            col,
+            widget_parent,
+            note_types=[d.object_ref(VOCAB)],
+            deck_names=[
+                d.object_ref("Gone deck", GONE_ID),
+                d.object_ref("Also gone", GONE_ID + 1),
+            ],
+        )
+
+        assert document_for(definition).warnings() == [
+            f"Deck '{name}' is not in this collection, and no other deck the whitelist"
+            " names is either, so no note passes the whitelist until one is."
+            for name in ("Gone deck", "Also gone")
         ]
 
     def test_unticking_it_clears_it(self, col, qapp, widget_parent):
@@ -221,7 +275,7 @@ class TestATriggerDeckThatResolvesToNothing:
         editor.apply()
 
         assert definition["triggers"]["deck_names"] == []
-        assert document_for(definition).save_blockers() == []
+        assert document_for(definition).warnings() == []
 
 
 class TestACardTypeThatResolvesToNothing:
@@ -259,30 +313,54 @@ class TestACardTypeThatResolvesToNothing:
             f"{VOCAB}<::>Deleted card type" + NOT_FOUND_SUFFIX
         ]
 
-    def test_it_blocks_the_save(self, col, qapp):
+    def test_it_warns_and_does_not_block_the_save(self, col, qapp):
         definition = new_definition("d", "A definition", stages=[self.action_stage(col)])
         definition["triggers"]["note_types"] = [d.object_ref(VOCAB)]
+        document = document_for(definition)
 
-        assert document_for(definition).save_blockers() == [
-            f"Card type '{VOCAB}<::>Deleted card type' no longer exists;"
-            " pick another or remove it."
+        assert document.warnings() == [
+            f"Card type '{VOCAB}<::>Deleted card type' is not in this collection, so its"
+            " card action is skipped until it is."
         ]
+        assert document.save_blockers() == []
 
 
-class TestTheDialogRefusesToSave:
-    def test_a_definition_naming_a_gone_note_type_cannot_be_saved(self, col, qapp):
+class TestTheDialogWarnsAndSaves:
+    @pytest.fixture
+    def dialog(self, col, qapp, widget_parent):
         from copy_anywhere.ui.edit_staged_definition_dialog import EditStagedDefinitionDialog
 
         definition = new_definition("d", "A definition")
         definition["triggers"]["note_types"] = [d.object_ref("CA Ghost", GONE_ID)]
-        dialog = EditStagedDefinitionDialog(None, definition)
-        try:
-            assert any(
-                "CA Ghost" in blocker for blocker in dialog.document.save_blockers()
-            )
-        finally:
-            dialog._refresh_timer.stop()
-            dialog.deleteLater()
+        definition["triggers"]["deck_names"] = [d.object_ref("Q<b>&A", GONE_ID)]
+        dialog = EditStagedDefinitionDialog(widget_parent, definition)
+        yield dialog
+        dialog._refresh_timer.stop()
+
+    def test_a_definition_naming_a_gone_note_type_is_warned_about(self, dialog):
+        assert "Worth knowing" in dialog.status_label.text()
+        assert "CA Ghost" in dialog.status_label.text()
+        assert "Cannot be saved yet" not in dialog.status_label.text()
+
+    def test_it_saves(self, dialog):
+        # Asserted first: a blocked save opens a message box, which would wait for a click.
+        assert dialog.ok_button.isEnabled()
+        dialog.ok_button.click()
+
+        assert dialog.result()
+        assert dialog.get_copy_definition()["triggers"]["note_types"] == [
+            {"id": GONE_ID, "name": "CA Ghost"}
+        ]
+
+    def test_a_name_is_shown_as_text(self, dialog):
+        from aqt.qt import QTextDocument
+
+        # The status is rich text for its colours; a name holding `<` or `&` must not be
+        # read as markup. A card type's own name, "Note<::>Card", would lose its `<::>`.
+        rendered = QTextDocument()
+        rendered.setHtml(dialog.status_label.text())
+
+        assert "Deck 'Q<b>&A' is not in this collection" in rendered.toPlainText()
 
 
 # -- N7: names inside queries and code --------------------------------------------------
@@ -400,6 +478,16 @@ class TestTheQueryEditorsWarning:
 
         assert editor.stale_terms_label.text() == ""
 
+    def test_a_term_is_shown_as_text(self, col, qapp, widget_parent):
+        from aqt.qt import QTextDocument
+
+        editor = self.query_editor(col, widget_parent, 'deck:"a<b>c&d" Word:neko')
+
+        # The label is rich text for its colour; the term is whatever the user typed.
+        rendered = QTextDocument()
+        rendered.setHtml(editor.stale_terms_label.text())
+        assert "deck 'a<b>c&d'" in rendered.toPlainText()
+
     def test_every_keystroke_reads_the_same_name_lists(
         self, col, qapp, widget_parent, monkeypatch
     ):
@@ -419,33 +507,30 @@ class TestTheQueryEditorsWarning:
 
 
 class TestThePickerMarksADefinition:
-    """What the last pass could not resolve, where the user picks a definition to run.
+    """What the definition names that the collection cannot resolve, where the user picks
+    a definition to run.
 
     The pass reports into an operation log nobody reads at the default level, so a
     definition that has stopped naming anything would otherwise look exactly like one that
-    works. Both of the pass's "only you can fix this" lists mark a row.
+    works. The row asks the collection itself, as it is drawn: a pass's report is gone by
+    the next pass and with the process, and a marker read from it went with it.
     """
 
     @pytest.fixture
     def picker(self, col, qapp, widget_parent, stub_mw):
-        """A stored config and a way to run the pass and build the row it produces."""
-        from copy_anywhere.hooks import rename_hooks
+        """A stored config and a way to run the pass and build a row after it."""
         from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
 
         stub_mw.addonManager.configs[ADDON_TAG] = dict(DEFAULT_CONFIG)
         config = Config()
         config.load()
-        previous = rename_hooks._last_result
 
         def run(definition):
             config.data["copy_definitions"] = [definition]
-            rename_hooks._last_result = reconcile(config, mw.col)
-            return DefinitionRow(widget_parent, definition, 0), rename_hooks._last_result
+            result = reconcile(config, mw.col)
+            return DefinitionRow(widget_parent, definition, 0), result
 
-        try:
-            yield config, run
-        finally:
-            rename_hooks._last_result = previous
+        return config, run
 
     def test_a_deck_that_was_deleted_marks_the_row(self, col, picker):
         config, run = picker
@@ -459,10 +544,76 @@ class TestThePickerMarksADefinition:
         row, result = run(definition)
 
         # Gone rather than unresolved: the first pass snapshotted the deck, so the second
-        # knows it was deleted. The marker covers both lists.
+        # knows it was deleted. The row does not need to know which.
         assert [stale.name for stale in result.gone] == ["Other"]
         assert row.stale_marker.text() != ""
         assert "Other" in row.stale_marker.toolTip()
+
+    def a_deleted_trigger_note_type(self, col, run):
+        """A definition on VOCAB and a second note type, the second deleted after a pass."""
+        other = real_anki.make_note_type(
+            col, "CA Doomed", ["Word"], [("Card 1", "{{Word}}", "{{Word}}")]
+        )
+        definition = d.staged(
+            "Marked",
+            note_types=[d.object_ref(VOCAB), d.object_ref("CA Doomed", other["id"])],
+        )
+        run(definition)
+        col.models.remove(other["id"])
+        return definition
+
+    def test_a_deleted_trigger_note_type_stays_marked_after_a_later_pass(self, col, picker):
+        """Finding 2: the second pass after a deletion reports nothing, since its snapshot
+        no longer has the note type; the marker must not go with the report."""
+        _config, run = picker
+        definition = self.a_deleted_trigger_note_type(col, run)
+        _row, first = run(definition)
+        assert [stale.name for stale in first.gone] == ["CA Doomed"]
+
+        row, second = run(definition)
+
+        assert second.gone == []
+        assert "note type 'CA Doomed'" in row.stale_marker.toolTip()
+
+    def test_a_deleted_trigger_note_type_is_marked_with_no_pass_since(
+        self, col, picker, widget_parent
+    ):
+        """As on the next start of Anki: no pass has run over the deletion yet in this
+        process, and no pass result is kept anywhere to consult."""
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        _config, run = picker
+        definition = self.a_deleted_trigger_note_type(col, run)
+
+        row = DefinitionRow(widget_parent, definition, 0)
+
+        assert "note type 'CA Doomed'" in row.stale_marker.toolTip()
+
+    def test_a_definition_fixed_since_clears_on_refresh(self, col, picker):
+        _config, run = picker
+        definition = self.a_deleted_trigger_note_type(col, run)
+        row, _result = run(definition)
+        assert row.stale_marker.text() != ""
+        fixed = copy.deepcopy(definition)
+        fixed["triggers"]["note_types"] = [d.object_ref(VOCAB)]
+
+        row.refresh(fixed)
+
+        assert row.stale_marker.text() == "" and row.stale_marker.toolTip() == ""
+
+    def test_a_name_in_the_tooltip_is_shown_as_text(self, col, picker, widget_parent):
+        from aqt.qt import Qt
+        from copy_anywhere.ui.pick_copy_definition_dialog import DefinitionRow
+
+        _config, _run = picker
+        definition = d.staged("Marked", note_types=[d.object_ref("<b>Q&A", GONE_ID)])
+
+        tooltip = DefinitionRow(widget_parent, definition, 0).stale_marker.toolTip()
+
+        # A tooltip is rich text only when Qt guesses so from its first line, which here is
+        # fixed; so the name goes in as it is, and an escaped one would show its entities.
+        assert "note type '<b>Q&A'" in tooltip
+        assert not Qt.mightBeRichText(tooltip)
 
     def reading(self, value) -> dict:
         """A definition that reads its trigger's fields through this one expression."""
@@ -542,7 +693,7 @@ class TestThePickerMarksADefinition:
         _row, result = run(definition)
         assert [stale.name for stale in result.unresolved] == ["Nonsuch"]
         # What the editor's save writes: a note type this collection does have. No pass
-        # runs over a config write, so the last result still names this definition.
+        # runs over a config write, so only the collection can say it is fixed now.
         model = col.models.by_name(VOCAB)
         definition["triggers"]["note_types"] = [d.object_ref(VOCAB, model["id"])]
 
@@ -837,8 +988,6 @@ class ADefinitionBrokenByARename:
     @pytest.fixture
     def broken(self, col, stub_mw):
         """A definition triggering on two note types, marked by a rename in one of them."""
-        from copy_anywhere.hooks import rename_hooks
-
         real_anki.make_note_type(
             col, self.OTHER, ["Word", "Meaning"], [("Card 1", "{{Word}}", "{{Meaning}}")]
         )
@@ -857,13 +1006,9 @@ class ADefinitionBrokenByARename:
         model = col.models.by_name(VOCAB)
         model["flds"][0]["name"] = "Term"
         col.models.update_dict(model)
-        previous = rename_hooks._last_result
-        rename_hooks._last_result = reconcile(config, mw.col)
+        reconcile(config, mw.col)
         assert BROKEN_KEY in definition
-        try:
-            yield config, definition
-        finally:
-            rename_hooks._last_result = previous
+        return config, definition
 
     def dialog(self, widget_parent, config, *more):
         from copy_anywhere.ui.pick_copy_definition_dialog import PickCopyDefinitionDialog
@@ -1058,7 +1203,8 @@ class TestATriggerFieldSomeTriggerNoteTypesLack(ADefinitionBrokenByARename):
         document = StageDocument(
             definition,
             known_fields=known_fields_for,
-            unresolved_refs=unresolved_reference_problems,
+            unresolved_refs=unresolved_reference_warnings,
+            trigger_names=trigger_name_blockers,
         )
         assert any("Nonsuch" in blocker for blocker in document.save_blockers())
 
@@ -1197,6 +1343,15 @@ class TestThePickerMarksAStaleSearch:
         assert row.broken_marker.text() == ""
         assert row.stale_marker.text() == ""
         assert row.search_marker.text() not in ("", row.stale_marker.text())
+
+    def test_a_name_in_the_tooltip_is_shown_as_text(self, col, qapp, widget_parent):
+        from aqt.qt import Qt
+
+        row = self.row(widget_parent, self.searching('deck:"<b>Q&A"'))
+
+        # Plain text: Qt guesses rich text from the first line only, which here is fixed.
+        assert "deck '<b>Q&A'" in row.search_marker.toolTip().splitlines()
+        assert not Qt.mightBeRichText(row.search_marker.toolTip())
 
     def test_a_field_the_collection_lacks_marks_the_row(self, col, qapp, widget_parent):
         row = self.row(widget_parent, self.searching("Nonsuch:neko"))
