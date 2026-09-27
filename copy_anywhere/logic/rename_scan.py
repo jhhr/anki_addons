@@ -126,21 +126,20 @@ class Hit:
 def hit_blocks_run(hit_kind: str, rename: Rename, multi_trigger: bool) -> bool:
     """Whether a warning for this hit stops the definition from running (SPEC decisions 4, 5).
 
-    Blocks: any code hit; a `deck:` or `note:` term; a deleted field or card type spelled
-    anywhere; a trigger token or slot of a definition on several trigger note types. Warns
+    Blocks: any code hit; a `deck:` or `note:` term; a trigger token or slot of a definition
+    on several trigger note types, or naming a field or card type that was deleted. Warns
     only: `card:` and field terms, a sort field or a query note's field, and a field or card
     type spelled through another binding -- names that are not unique across note types,
-    spelled where the pass cannot know which note types are meant.
+    spelled where the pass cannot know which note types are meant. That holds for a deletion
+    too: another note type the search or the binding reaches may still have the name.
 
     A trigger token or slot of a one-trigger definition is followed by the pass rather than
     warned about, so it only reaches here as a deletion.
     """
     if hit_kind in (CODE_LITERAL, DECK_TERM, NOTE_TERM):
         return True
-    if rename.new is None and rename.kind in (KIND_FIELD, KIND_CARD_TYPE):
-        return True
     if hit_kind in (TRIGGER_TOKEN, TRIGGER_SLOT):
-        return multi_trigger
+        return multi_trigger or rename.new is None
     return False
 
 
@@ -462,6 +461,19 @@ def _tokens(code: str) -> Optional[list[tokenize.TokenInfo]]:
     return tokens
 
 
+def code_is_readable(code: Any) -> bool:
+    """Whether `find_in_code` can read this code, so that finding nothing in it means the
+    name is not there.
+
+    Code that does not tokenize finds nothing too, and a caller dropping a warning because
+    its text no longer spells the name must not read "cannot tell" as "gone". No code at
+    all is readable: there is nothing in it to spell a name.
+    """
+    if not isinstance(code, str) or not code:
+        return True
+    return _tokens(code) is not None
+
+
 def find_in_code(code: Any, rename: Rename) -> list[Hit]:
     """The string literals in Python code that spell the old name, or a search naming it.
 
@@ -546,6 +558,7 @@ __all__ = [
     "Rename",
     "apply",
     "apply_with_spans",
+    "code_is_readable",
     "find_in_code",
     "find_in_query",
     "find_in_search",

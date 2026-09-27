@@ -504,6 +504,22 @@ class TestFieldWritesWithoutAGuid:
 
         assert one == other
 
+    def test_a_card_action_without_one_is_given_one_too(self):
+        # Its code is a location a rename warning is filed under (`card_action_key`).
+        kept = {"guid": "kept", "use_code": True, "action_code": ""}
+        missing = {"use_code": True, "action_code": ""}
+        definition = d.staged(
+            definition_name="actions",
+            stages=[d.edit_note("trigger", card_actions=[kept, missing])],
+        )
+        definition["stages"][0]["guid"] = "stage"
+
+        assert fill_in_missing_stage_guids(definition) is True
+
+        assert kept["guid"] == "kept"
+        assert missing["guid"] == "def-actions::card-action-1"
+        assert fill_in_missing_stage_guids(definition) is False
+
     def test_a_guid_already_taken_is_not_handed_out_again(self):
         definition = self.a_definition_with_writes_that_have_no_guid()
         definition["stages"][0]["fields"][1]["guid"] = "def-writes::field-write-1"

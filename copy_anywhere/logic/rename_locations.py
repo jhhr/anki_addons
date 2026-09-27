@@ -20,11 +20,6 @@ from typing import Final
 #: The anchor of every key about the definition's triggers.
 TRIGGERS_ANCHOR: Final = "triggers"
 
-#: Where the pass files what it cannot yet place at a location: the whole definition.
-#: Temporary -- it is how the marks the pass has always made (which are about a definition,
-#: not a text) are carried into this store until the pass learns where each one is spelled.
-DEFINITION_KEY: Final = "definition"
-
 
 def stage_key(stage_guid: str, path: str) -> str:
     """A location in a stage, e.g. `query.text`, `value.code`, `selection.sort_field`."""
@@ -49,14 +44,13 @@ def trigger_key(path: str) -> str:
 def split_key(key: str) -> tuple[str, str]:
     """`(anchor, path)`: the guid (or `triggers`) a key is anchored on, and the rest.
 
-    A key with no path, like `DEFINITION_KEY`, comes back with an empty one.
+    A key with no path comes back with an empty one.
     """
     anchor, _dot, path = key.partition(".")
     return anchor, path
 
 
 __all__ = [
-    "DEFINITION_KEY",
     "TRIGGERS_ANCHOR",
     "card_action_key",
     "field_write_key",

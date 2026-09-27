@@ -39,7 +39,6 @@ from copy_anywhere.logic.object_refs import (
     resolve_card_type,
 )
 from copy_anywhere.logic.query_terms import stale_search_terms
-from copy_anywhere.logic.rename_locations import DEFINITION_KEY
 from copy_anywhere.logic.rename_reconcile import reconcile
 from copy_anywhere.logic.rename_warnings import WARNINGS_KEY, blocking_messages, blocking_tooltip
 from copy_anywhere.ui.stage_document import StageDocument, default_stage
@@ -58,6 +57,9 @@ ADDON_TAG = "copy_anywhere"
 #: An id no collection this suite builds can have, so a reference carrying it resolves by
 #: neither half.
 GONE_ID = 999999
+
+#: A location no stage of these definitions has, as a warning whose stage was deleted is.
+ORPHAN_LOCATION = "definition"
 
 
 def triggers_editor(col, widget_parent, **triggers):
@@ -877,7 +879,7 @@ class TestTheEditorShowsTheMarks:
             ],
         )
         if marks:
-            definition[WARNINGS_KEY] = {DEFINITION_KEY: list(marks)}
+            definition[WARNINGS_KEY] = {ORPHAN_LOCATION: list(marks)}
         return definition
 
     def save(self, dialog):
@@ -907,7 +909,7 @@ class TestTheEditorShowsTheMarks:
         assert dialog.marks_banner.messages() == [second["message"]]
         # One left: Dismiss does the same, so Dismiss all is not offered.
         assert dialog.marks_banner.dismiss_all_button.isHidden()
-        assert self.save(dialog)[WARNINGS_KEY] == {DEFINITION_KEY: [second]}
+        assert self.save(dialog)[WARNINGS_KEY] == {ORPHAN_LOCATION: [second]}
 
     def test_two_marks_with_one_message_are_dismissed_one_at_a_time(self, open_editor):
         same = "Field was renamed"
@@ -919,7 +921,7 @@ class TestTheEditorShowsTheMarks:
 
         dismiss_button(dialog.marks_banner, 1).click()
 
-        saved = self.save(dialog)[WARNINGS_KEY][DEFINITION_KEY]
+        saved = self.save(dialog)[WARNINGS_KEY][ORPHAN_LOCATION]
         assert [entry["old"] for entry in saved] == ["Word"]
 
     def test_dismiss_all_takes_every_mark_off_and_the_banner_away(self, open_editor):
@@ -954,7 +956,7 @@ class TestTheEditorShowsTheMarks:
         # The dict handed in is the stored one (`run_definition_editor` passes the config's
         # own), and a cancelled editor hands nothing back.
         assert not dialog.result()
-        assert definition[WARNINGS_KEY] == {DEFINITION_KEY: marks}
+        assert definition[WARNINGS_KEY] == {ORPHAN_LOCATION: marks}
 
     def test_an_unmarked_definition_has_no_banner(self, open_editor):
         dialog = open_editor(self.marked())
@@ -974,7 +976,7 @@ class TestTheEditorShowsTheMarks:
 
         assert dialog.marks_banner.messages() == [first["message"], second["message"]]
         dismiss_button(dialog.marks_banner, 1).click()
-        assert self.save(dialog)[WARNINGS_KEY] == {DEFINITION_KEY: [first]}
+        assert self.save(dialog)[WARNINGS_KEY] == {ORPHAN_LOCATION: [first]}
 
     def test_a_message_is_shown_as_text(self, open_editor):
         from aqt.qt import QLabel

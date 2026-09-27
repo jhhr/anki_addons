@@ -129,8 +129,10 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     them to close this dialog unread. The picker and the editor go on showing every mark,
     and the log lists them all.
 
-    One line per mark, under the definition's name: which field or card type was renamed or
-    deleted, and in which note type. It says the definitions are not run meanwhile
+    One line per mark, under the definition's name: which field, card type, deck or note
+    type was renamed or deleted. A definition spelling the name in several places has a
+    mark at each, which the editor shows where it is; here they would be the same line
+    again, so each line is said once. It says the definitions are not run meanwhile
     (`copy_fields.refused_for_rename`) and how that ends -- the user updates each one and
     dismisses its mark in the definition editor -- since this dialog is where the user
     learns that.
@@ -138,10 +140,15 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     blocking = [stale for stale in result.newly_marked if stale.blocks_run]
     if not blocking:
         return None
-    lines = [html.escape(f"'{stale.definition_name}': {stale.message}") for stale in blocking]
+    lines = list(
+        dict.fromkeys(
+            html.escape(f"'{stale.definition_name}': {stale.message}") for stale in blocking
+        )
+    )
     return (
-        "These copy definitions use a field or card type that was renamed or deleted, in a"
-        " way that could not be followed into them, so they are marked and not run:"
+        "These copy definitions use a field, card type, deck or note type that was renamed or"
+        " deleted, in a way that could not be followed into them, so they are marked and not"
+        " run:"
         "<br><br>"
         + "<br>".join(lines)
         + "<br><br>Update each definition, then dismiss its mark in the definition editor;"
@@ -164,9 +171,10 @@ def on_operation_did_execute(changes: Any, handler: Any) -> None:
     """Anki says only *that* a note type or a deck changed, which is reason enough to look
     -- at a deck change, once the decks are seen to differ (see the module docstring).
 
-    After a note type change -- saving the Fields dialog is one -- a mark the pass just
-    added is said so in a dialog, since the log is not read at the default level. Not after
-    a deck change: no mark is ever about a deck.
+    After either -- saving the Fields dialog, renaming a deck -- a mark the pass just added
+    is said so in a dialog, since the log is not read at the default level. A deck rename
+    marks a definition whose search or code spells the deck's old name. An answer, which
+    reports a deck change too, never gets this far: its decks are the ones already seen.
     """
     notetype_changed = bool(getattr(changes, "notetype", False))
     if not notetype_changed:
@@ -179,7 +187,7 @@ def on_operation_did_execute(changes: Any, handler: Any) -> None:
             logger.exception("Could not compare the decks with the last reconcile pass")
             return
     result = run_reconcile()
-    if not notetype_changed or result is None:
+    if result is None:
         return
     try:
         text = broken_definitions_warning(result)

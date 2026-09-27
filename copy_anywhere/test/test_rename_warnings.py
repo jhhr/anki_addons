@@ -10,7 +10,6 @@ import pytest
 import definitions as d
 from copy_anywhere.hooks.rename_hooks import broken_definitions_warning
 from copy_anywhere.logic.rename_locations import (
-    DEFINITION_KEY,
     card_action_key,
     field_write_key,
     split_key,
@@ -63,8 +62,12 @@ class TestLocationKeys:
             "on_unfocus.add_fields",
         )
 
-    def test_the_definition_key_has_no_path(self):
-        assert split_key(DEFINITION_KEY) == ("definition", "")
+    def test_a_key_with_no_path_splits_to_an_empty_one(self):
+        assert split_key("definition") == ("definition", "")
+
+
+#: Where `d.warned` files entries by default; the readers do not look at the key.
+LOCATION = "definition"
 
 
 class TestTheReaders:
@@ -123,8 +126,8 @@ class TestRemovingOne:
 
         assert remove_rename_warning(definition, second) is True
 
-        assert definition[WARNINGS_KEY] == {DEFINITION_KEY: [first]}
-        assert definition[WARNINGS_KEY][DEFINITION_KEY][0] is first
+        assert definition[WARNINGS_KEY] == {LOCATION: [first]}
+        assert definition[WARNINGS_KEY][LOCATION][0] is first
 
     def test_an_emptied_location_goes_and_the_others_stay(self):
         kept = d.rename_warning("kept")
@@ -150,7 +153,7 @@ class TestRemovingOne:
         definition = d.warned(d.staged(), stored)
 
         assert remove_rename_warning(definition, d.rename_warning("stored")) is False
-        assert definition[WARNINGS_KEY] == {DEFINITION_KEY: [stored]}
+        assert definition[WARNINGS_KEY] == {LOCATION: [stored]}
 
 
 class TestTheWarningAfterANoteTypeOperation:

@@ -28,6 +28,7 @@ from copy_anywhere.logic.rename_scan import (
     Rename,
     apply,
     apply_with_spans,
+    code_is_readable,
     find_in_code,
     find_in_query,
     find_in_search,
@@ -467,6 +468,12 @@ class TestCode:
     )
     def test_code_that_does_not_tokenize_finds_nothing(self, code):
         assert find_in_code(code, WORD) == []
+        # ... and says it could not read it, so "nothing found" is not taken for "gone".
+        assert code_is_readable(code) is False
+
+    @pytest.mark.parametrize("code", ["x = 'Term'", "", None, "# just a comment"])
+    def test_code_that_tokenizes_is_readable(self, code):
+        assert code_is_readable(code) is True
 
     def test_a_deletion_is_found_and_not_replaceable(self):
         hits = find_in_code("note['Word']", Rename(KIND_FIELD, "Word"))
@@ -493,9 +500,20 @@ class TestSlotsAndBlocking:
             (TRIGGER_TOKEN, WORD, True, True),
             (TRIGGER_SLOT, WORD, True, True),
             (TRIGGER_TOKEN, WORD, False, False),
-            (FIELD_TERM, Rename(KIND_FIELD, "Word"), False, True),
-            (CARD_TERM, Rename(KIND_CARD_TYPE, "Recognition"), False, True),
-            (BINDING_TOKEN, Rename(KIND_CARD_TYPE, "Recognition"), False, True),
+            # A deletion blocks where the name can only mean the deleted object: the
+            # trigger note type's own slots and tokens, and code.
+            (TRIGGER_TOKEN, Rename(KIND_FIELD, "Word"), False, True),
+            (TRIGGER_SLOT, Rename(KIND_FIELD, "Word"), False, True),
+            (TRIGGER_TOKEN, Rename(KIND_CARD_TYPE, "Recognition"), False, True),
+            (CODE_LITERAL, Rename(KIND_FIELD, "Word"), False, True),
+            (DECK_TERM, Rename(KIND_DECK, "JP Vocab"), False, True),
+            (NOTE_TERM, Rename(KIND_NOTE_TYPE, "CA Vocab"), False, True),
+            # Elsewhere another note type may still have the name, as for a rename.
+            (FIELD_TERM, Rename(KIND_FIELD, "Word"), False, False),
+            (CARD_TERM, Rename(KIND_CARD_TYPE, "Recognition"), False, False),
+            (BINDING_TOKEN, Rename(KIND_CARD_TYPE, "Recognition"), False, False),
+            (BINDING_TOKEN, Rename(KIND_FIELD, "Word"), True, False),
+            (OTHER_SLOT, Rename(KIND_FIELD, "Word"), False, False),
         ],
     )
     def test_what_blocks(self, kind, rename, multi, blocks):

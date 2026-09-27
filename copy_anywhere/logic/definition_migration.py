@@ -172,17 +172,18 @@ def _give_parts_guids(format_1: dict, definition_guid: str) -> None:
 
 
 def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
-    """Give every stage, and every field write of an Edit Note stage, that has no guid one.
-    True if any had none.
+    """Give every stage, every field write of an Edit Note stage and every card action that
+    has no guid one. True if any had none.
 
     For definitions converted before `_give_parts_guids` existed: their variables and file
     writes can have an empty guid, and nothing else would ever give them one. An export the
     user made of such a stage names no stage either, so it is pointed at the repaired stage
-    whose result it takes. A field write needs one because a rename warning about its text
-    is filed under it (`rename_locations.field_write_key`), and only a migrated write or
-    one the editor added since carries one. Derived like the stage guids, so that two
-    devices repairing the same definition agree. Safe to run on every start: a definition
-    with every guid in place comes back untouched.
+    whose result it takes. A field write and a card action need one because a rename
+    warning about their text is filed under it (`rename_locations.field_write_key`,
+    `card_action_key`), and only a migrated write or one the editor added since carries
+    one. Derived like the stage guids, so that two devices repairing the same definition
+    agree. Safe to run on every start: a definition with every guid in place comes back
+    untouched.
     """
     definition_guid = definition.get("guid") or ""
     stages = definition.get("stages") or []
@@ -193,18 +194,27 @@ def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
         for write in stage.get("fields") or []
         if isinstance(write, dict)
     ]
+    actions = [
+        action
+        for stage in walk_stages(stages)
+        for action in stage.get("card_actions") or []
+        if isinstance(action, dict)
+    ]
     taken = {stage.get("guid") for stage in walk_stages(stages) if stage.get("guid")}
-    taken |= {write.get("guid") for write in writes if write.get("guid")}
-    write_counter = 0
-    for write in writes:
-        if write.get("guid"):
-            continue
-        guid = ""
-        while not guid or guid in taken:
-            write_counter += 1
-            guid = _child_guid(definition_guid, f"field-write-{write_counter}")
-        write["guid"] = guid
-        taken.add(guid)
+    taken |= {part.get("guid") for part in writes + actions if part.get("guid")}
+    part_counter = 0
+    for role, parts in (("field-write", writes), ("card-action", actions)):
+        counter = 0
+        for part in parts:
+            if part.get("guid"):
+                continue
+            guid = ""
+            while not guid or guid in taken:
+                counter += 1
+                guid = _child_guid(definition_guid, f"{role}-{counter}")
+            part["guid"] = guid
+            taken.add(guid)
+            part_counter += 1
     repaired_roots: dict[str, str] = {}
     root_ids = {id(stage) for stage in stages}
     counter = 0
@@ -221,7 +231,7 @@ def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
             for result in stage_result_names(stage):
                 repaired_roots.setdefault(result, guid)
     if not counter:
-        return bool(write_counter)
+        return bool(part_counter)
     for export in definition.get("exports") or []:
         if not isinstance(export, dict) or export.get("stage_guid"):
             continue
