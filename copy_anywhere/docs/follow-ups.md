@@ -356,36 +356,46 @@ readers that go through them, the reconcile pass, and the editor's reporting.
 
 **What the reconcile pass turned out to be** (`logic/rename_reconcile.py`, registered in
 `hooks/rename_hooks.py` on `collection_did_load` and on `operation_did_execute` when
-`changes.notetype or changes.deck`). It binds a null id whose name resolves, refreshes the
-cached name of every reference whose id still resolves, follows a renamed field or card
-type of a trigger note type into that definition's field slots and its `{{trigger....}}`
-tokens -- the whole rename map applied in one step, so a swap of two names is correct --
-and reports the rest: a reference that resolves to nothing, a deleted object, a field or
-template with no id to be followed by, and code still mentioning an old name. Only an
-expression's `text` is rewritten, never its `code` and never a search term, which is (a)'s
-job kept where a rewrite would be a guess.
+`changes.notetype`, or on `changes.deck` once the decks' ids or names differ from the last
+pass's, since answering a card reports a deck change too). It binds a null id whose name
+resolves, refreshes the cached name of every reference whose id still resolves, and follows
+a renamed field or card type of a trigger note type into the field slots and
+`{{trigger....}}` tokens of a definition with **one** trigger note type -- the whole rename
+map applied in one step, so a swap of two names is correct. A definition with several
+trigger note types is never rewritten: it spells a name once for all of them, and every
+rule that tried to decide for it decided wrongly somewhere, so it is marked
+(`broken_by_rename`) when it spells the old name, and not run until the user has updated it
+and dismissed the mark in the editor. A deleted field or card type it spells, and code
+still mentioning an old name, mark a definition the same way. The rest is reported: a
+reference that resolves to nothing, a deleted note type, deck or card action's card type,
+and a field or template with no id to be followed by. Only an expression's `text` is
+rewritten, never its `code` and never a search term, which is (a)'s job kept where a
+rewrite would be a guess.
 
 Both names of a rename come out of `name_snapshot` in the addon config -- per referenced
 note type id, its name and its fields' and templates' names by *their* ids, plus a name per
 referenced deck id -- which is tier (c)'s snapshot, kept in step by `_save_definitions` so
 it is never older than the last save. That is what makes a rename visible with no hook at
 all, including one synced in from another device and one undone with Ctrl+Z, which is just
-a second rename the same pass follows back. The pass writes the config only when something
-changed, and never while a dialog is still open, so a cancelled Fields dialog is a
-non-problem.
+a second rename the same pass follows back. The snapshot is stamped with the collection's
+path, because the config is shared by every profile and the ids are not; so a config
+synced between desktops reads as another collection's there, and a rename it has not seen
+is not followed (`docs/staged-definitions.md`, "Several profiles"). The pass writes the
+config only when something changed, and never while a dialog is still open, so a cancelled
+Fields dialog is a non-problem.
 
 **Where (a)'s report ended up.** The pass writes everything into one operation log, which
 is invisible at the default log level, so the three findings a user can act on were put
 where they already look. A structured reference that resolves to nothing is shown in the
-editor under the name it was written with, marked `(not found)`, and blocks the save; a
-query stage carries an amber note listing what its search spells that the collection does
-not have; and the definition picker marks a definition that names something unresolved,
-with the names in its tooltip -- its references checked live as the picker is drawn, the
-last pass's `gone` entries only while the definition still names them
-(`rename_reconcile.still_names`), and redrawn when a definition is saved from the picker.
-A definition marked `broken_by_rename` is not run on any run path (the editor's preview
-still runs it), and the picker shows it with its own icon and a checkbox that cannot be
-ticked (`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
+editor under the name it was written with, marked `(not found)`, and warned about, not
+refused, since at run time it only matches nothing; a query stage carries an amber note
+listing what its search spells that the collection does not have; and the definition
+picker marks a definition that names something unresolved, with the names in its tooltip
+-- checked live as the picker is drawn, never taken from a pass, and redrawn when a
+definition is saved from the picker. A definition marked `broken_by_rename` is not run on
+any run path (the editor's preview still runs it), the picker shows it with its own icon
+and a checkbox that cannot be ticked, and the editor shows its marks at the top, each with
+a Dismiss (`docs/staged-definitions.md`, "Following a rename in Anki"). The search scan
 (`logic/query_terms.py`) checks `deck:`, `note:` and `card:` terms and field searches by
 exact name only -- a term holding
 a wildcard, a regex or an unresolved `{{...}}` reference is skipped rather than guessed at,

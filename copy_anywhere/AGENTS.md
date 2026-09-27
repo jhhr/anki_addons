@@ -19,17 +19,22 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 
 | path | role |
 | --- | --- |
-| `__init__.py` | at import: `migrate_config()`, `init_browser_hooks()`, `init_sync_hook()`, `init_note_hooks()` |
+| `__init__.py` | at import: `migrate_config()`, `init_browser_hooks()`, `init_sync_hook()`, `init_note_hooks()`, `init_rename_hooks()` |
 | `configuration.py` | TypedDicts for the whole config shape (`CopyDefinition` and its parts), `Config` (saves on every mutation), `migrate_config` |
 | `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 50), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger |
 | `hooks/browser_hooks.py` | Edit-menu action, context submenu with one action per definition, a "CustomData" reset submenu |
 | `hooks/note_hooks.py` | add / review / unfocus handlers; wraps `Editor.cleanup` and `V3Scheduler.answer_card` (guarded by a `copy_anywhere_wrapped` attribute) |
 | `hooks/sync_hook.py` | runs every `copy_on_sync` definition at sync start and finish; one combined tooltip |
+| `hooks/rename_hooks.py` | when the reconcile pass runs: every collection load (a rename synced in arrives with no other hook), every operation that changed a note type, and a deck-only change only when the decks' ids or names differ from what the last completed pass saw (an answer reports a deck change); after a note type change, a dialog listing only the marks that pass added |
+| `logic/object_refs.py` | note type, deck and card type references (`{id, name}`, `{note_type_id, template_id, name}`) and the one rule every reader resolves them by: the id while it exists, the name only when it does not. Fields are names, not references |
+| `logic/rename_reconcile.py` | the reconcile pass: binds null ids, refreshes cached names, diffs `name_snapshot` by id, follows a trigger field or card type rename into a definition with one trigger note type, and marks (`broken_by_rename`) the rest; the snapshot and its collection stamp (the path); the mark readers every run path uses; `unresolved_references` and `trigger_names_not_on_every_note_type` for the editor and the picker |
+| `logic/query_terms.py` | the `deck:`, `note:`, `card:` and field terms a search spells that the collection does not have, exact names only; `CollectionNames` is the name list a caller shares across many scans |
 | `logic/copy_fields.py` | the engine (about 1600 lines) |
 | `logic/execute_code_wrappers.py` | validates code-mode return shapes for files and card actions over the shared `execute_code_core` |
 | `logic/*_process.py`, `FatalProcessError.py` | the five chain steps; `FatalProcessError` aborts a whole run |
 | `utils/` | `duplicate_note`, `merge_cards`, `move_card_to_deck`, media-folder helpers, `replace_custom_field_values` |
 | `ui/` | `pick_copy_definition_dialog` (run, edit, duplicate, reorder), `edit_copy_definition_dialog` and one editor module per tab, `edit_state.EditState` shared between tabs |
+| `ui/rename_marks_banner.py` | the marks at the top of the definition editor, one Dismiss per mark: the only way a mark goes besides undoing the rename; Save stores the dismissal, Cancel drops it |
 
 Engine call chain for a bulk run:
 
@@ -58,8 +63,22 @@ Engine call chain for a bulk run:
   entry, a documented limitation.
 - The review handler merges into the recorded Answer Card undo step, folds card-action edits
   into the reviewed card with `merge_cards` before the single `update_card`, then sets
-  `fc=1`, or `fc=-1` when sync-only definitions remain. The sync sweep ends by setting every
-  `fc` of 0 or -1 to 1.
+  `fc=1`, or `fc=-1` when sync-only definitions remain. When it refused a marked on-review
+  definition for this note, it leaves `fc` as the scheduler set it, so the card stays
+  queued for the run after the fix. The sync sweep ends by setting every `fc` of 0 or -1
+  to 1, except on the note types a refused definition triggers on
+  (`note_type_ids_held_for_rename`).
+- **A definition carrying a `broken_by_rename` mark is not run on any path.** Every run
+  path asks `copy_fields.refused_for_rename`: the add, review and unfocus hooks before they
+  pick a way to run it (`once_per_session=True`, so a hook firing per note cannot fill the
+  50-file log cap with one refusal), and `copy_for_single_trigger_note` as the backstop for
+  the bulk and sync runs. `call_definition` refuses a marked callee (`evaluator.py`); the
+  picker and the browser menu disable it. A new run path must ask too. Read a mark only
+  through `broken_by_rename_entries` / `_messages`: stored entries come in more than one
+  shape, and anything with a message counts.
+- The pass never re-derives a mark, and nothing else does either (`_save_definitions`
+  saves marks as they stand). An entry goes only when its object is called `old` again
+  (the rename undone) or the user dismisses it in the editor.
 - The unfocus handler is a filter hook: return `changed or we_changed`. It never runs
   other-note definitions on a new note, runs "Source to destinations" through
   `copy_fields(trigger_notes=[note])` because the editor's note can be ahead of the database,
@@ -110,12 +129,18 @@ root `testpaths`. Reuse, do not reinvent:
   `source_to_destinations`, `field_to_field`, `field_to_file`, `field_to_variable`,
   `card_action`, `regex_process`, `fonts_check_process`, `quoted_list`.
 - `test_anki/conftest.py`: `real_mw`, `addon_config`, `restore_stub_mw`.
+- Renames: `test/test_rename_reconcile.py` (the pass and `rename_hooks`; helpers `store`,
+  `rename_field`, `rename_template`, `saves`, `FakeChanges`, `answer_a_card`) and
+  `test/test_rename_editor.py` (the picker's marks, the editor's banner, warnings and
+  blockers).
 
 These are characterization tests: they pin current behaviour, including behaviour that
 looks odd. A test that fails after your change is a behaviour change to justify, not a test
 to update. Not covered at all: everything in `ui/` except the picker's note counts
-(`test/test_pick_dialog_note_source.py`), `migrate_config`, the `Config` CRUD
-methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`.
+(`test/test_pick_dialog_note_source.py`) and the rename marks, warnings and banner
+(`test/test_rename_editor.py`, which also covers the browser menu's disabled entry),
+`migrate_config`, the `Config` CRUD methods, the rest of `hooks/browser_hooks.py`,
+`utils/replace_custom_field_values.py`.
 
 ## Known rough edges
 

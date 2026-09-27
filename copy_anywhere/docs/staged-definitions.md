@@ -312,94 +312,149 @@ definition calls it.
 Anki has one rename hook -- for a field -- and it fires while the Fields dialog is still
 open, so a cancelled dialog leaves it having lied; a note type, a card type and a deck
 rename fire nothing at all, and a rename made on another device arrives as "something
-changed". So no rename hook is used. Instead, the objects with a stable id are stored as
-references and resolved by id (above), and one **reconcile pass** keeps the rest honest.
+changed". So no rename hook is used. Instead, the objects with a stable id -- note types,
+decks and card types -- are stored as references and resolved by id (above), so renaming
+one changes nothing about what a definition does; only the name it shows goes stale. A
+field has no reference: it is the name you spelled, in a field slot or a `{{trigger.Word}}`
+token, and so is a card type inside `{{trigger.Recognition__Card_Due}}`. A rename of one of
+those has to be carried into the definition or the definition goes on spelling a name that
+is gone. One **reconcile pass** does that where it can be done mechanically, marks the
+definition where it cannot, and reports the rest.
 
-The pass runs when the collection is opened and after any operation that reports changing a
-note type or a deck -- which covers every dialog that can rename one, its undo and its redo,
-and the everything-changed operation a sync ends with. It:
+**When it runs.** When the collection is opened, which is where a rename made on another
+device and synced in before Anki started is seen; after any operation that reports changing
+a note type -- every dialog that can rename a field, a card type or a note type, its undo
+and its redo, and the everything-changed operation a sync ends with; and after an operation
+that reports changing only a deck, if the decks' ids or names differ from what the last
+completed pass saw. That last condition is there because answering a card reports a deck
+change (the deck's counts changed), so without it every answer would read the config and
+scan every definition to find nothing; comparing the decks costs one listing. A pass that
+failed remembers no decks, so the next deck change tries again.
+
+The pass:
 
 1. **binds** a reference whose `id` is null but whose name resolves, which is how an example
    definition, a hand-written one and a definition kept for a note type you had not made
    yet pick up their ids;
 2. **refreshes** the cached `name` of every reference whose id still resolves, so a picker
    never shows a name the collection has stopped using;
-3. **follows a renamed field or card type** of a trigger note type into that definition's
-   field slots -- a field write on the trigger, the unfocus lists, each write's trigger
-   fields -- and into every `{{trigger.Word}}` and `{{trigger.Recognition__Card_Due}}` token
-   in an expression's **text**. The whole rename map is applied in one step, so two fields
-   that swap names swap correctly.
-
-   A definition that triggers on **several** note types spells each field once for all of
-   them, so a field renamed in only some of them breaks it whichever name it spells. Such a
-   rename is followed only when every trigger note type has the new name; until then the
-   definition is left as it was and marked (`broken_by_rename`, with a line such as
-   `Field "Word" is no longer present on both note types "A" & "B"`), a marked definition
-   is not run (below), and a dialog after the note type operation lists every marked
-   definition. Renaming the field in the other note types too makes the rename followable,
-   and it is followed then; undoing the rename, or editing the definition so it no longer
-   spells the name or no longer triggers on the note type that lacks it, clears the mark as
-   well. The mark is checked again whenever definitions are saved, so a reworked definition
-   is cleared as it is saved, not at the next note type operation;
-4. **reports** everything else: a reference that resolves to nothing, an object that has been
-   deleted, a field or template with no id (note types saved before Anki 23.10 can have
-   them, and nothing can follow a name with no id behind it), and code that still mentions
-   an old name.
+3. **follows or marks** each field or card type of a trigger note type that was renamed or
+   deleted, for every definition that triggers on that note type:
+   * A definition that stores **one** trigger note type has a rename **followed** into its
+     field slots -- a field write on the trigger, the unfocus lists, a write's only-if-empty
+     field -- and into every `{{trigger.Word}}` and `{{trigger.Recognition__Card_Due}}`
+     token in an expression's **text**. The whole rename map is applied in one step, so two
+     fields that swap names swap correctly. If an expression's **code** still mentions the
+     old name, the definition is followed and **marked** as well: code is not rewritten
+     (below), so it is only half followed.
+   * A definition that stores **several** trigger note types is **never rewritten**. It
+     spells each field once for all of them, so a rename in one leaves it wrong whichever
+     name it spells, and every rule that tried to decide for it -- follow once all of them
+     agree, hold back while another note type has both names -- found a way to decide
+     wrongly and quietly: a swap traded back, a name redirected to a field that already had
+     it. So it is **marked** if it spells the old name or its code mentions it, and you
+     decide; one that does not spell it is left alone. The note types are counted as
+     stored, resolved or not: a definition whose second note type is missing today still
+     spells its names for both.
+   * A field or card type **deleted** from a trigger note type marks every definition that
+     spells it or mentions it in code, whatever its number of trigger note types.
+4. **reports** everything else into its log: a reference that resolves to nothing, a note
+   type, deck or card action's card type that was deleted, a field or template with no id
+   (note types saved before Anki 23.10 can have them, and nothing can follow a name with no
+   id behind it), every mark a definition carries, and the stale names in its searches.
 
    *Deleted* means the snapshot (below) knew the object's id and the collection no longer
-   has it: a trigger note type or deck, a field or card type of a trigger note type, or the
-   card type a card action names -- whether its note type was deleted or only that card
-   type. The log says it "has been deleted". A name the snapshot never knew -- a typo, a
+   has it; the log says it "has been deleted". A name the snapshot never knew -- a typo, a
    note type you have not made yet, a definition imported from another collection -- is
-   one "this collection does not have" instead. The difference lasts one pass: the pass
-   rebuilds the snapshot from what is still there, so from the next pass on a note type,
-   deck or card type reference left naming a deleted object reads as one this collection
-   does not have, and a deleted field or card type of a trigger note type is not reported
-   again.
+   one "this collection does not have" instead. For a note type, a deck or a card action's
+   card type the difference lasts one pass: the pass rebuilds the snapshot from what is
+   still there, so from the next pass on a reference left naming a deleted one reads as
+   one this collection does not have. A deleted field or card type of a trigger note type
+   is a mark instead, which stays until you dismiss it.
 
 What it never rewrites is a search term, `selection.sort_field`, or code. A query is free
 text read by Anki's own grammar -- `col.replace_in_search_node` swaps every term of a kind
 and so cannot rename one deck inside a query naming two -- and `note['Word']` is a spelling
-of a field name that no `{{...}}` rewrite can see. Those are reported and fixed by hand.
+of a field name that no `{{...}}` rewrite can see. Code is what a mark is for; search terms
+and the sort field are reported and fixed by hand.
 
-**A definition marked as broken is not run.** Whichever name it spells, one of the note
-types it triggers on lacks it, so it would fail on that note type's notes and go on writing
-into the others' as if nothing had happened. So every run refuses it before it does
-anything to a note -- from the definition list, the browser's menu, the add, review and
-unfocus hooks and a sync alike -- and logs one error per marked field: the definition's
-name, the marked line exactly as stored, and what to do.
+**A mark** is a list on the definition, `broken_by_rename`, with one entry per field or
+card type: `{"kind", "note_type_id", "id", "old", "new", "message"}`, `new` null for a
+deletion. Its message is written once, with the names as they were then:
 
-    Error in copy fields: 'both' was not run: Field "Word" is no longer present on both
-    note types "A" & "B". Rename the field in the other note types too, undo the rename,
-    or edit the definition.
+    Field "Word" of note type "A" was renamed to "Term"
+    Card type "Recognition" of note type "A" was renamed to "Reading"
+    Field "Word" of note type "A" was deleted
+    Field "Word" of note type "A" was renamed to "Term", and code in this definition still
+    mentions "Word"
+    Field "Word" of note type "A" was renamed to "Term"; its {{...}} references were
+    followed, but code in this definition still mentions "Word"
 
-It is an error, not a quiet skip, so a run you start from the definition list or the
-browser's menu opens the log on it, and a run over many notes stops after that one line
-instead of repeating it for every note; the other definitions of that run still run. A run
-the addon starts by itself -- as a note is added, a card answered or a field left, and
-during a sync -- writes the same line into its log file but does not open it, except when
-leaving a field runs a definition that writes other notes, which reports like a run you
-start. The note being added is still added, and the other definitions still run on it. For
-those runs, the definition list and the dialog after the note type operation are what say
-that a definition is not being run.
+(the last is the one-trigger case). Nothing re-derives a mark: the pass cannot tell an
+edit that fixed the definition from one that did not, so whether it now says what it
+should is yours to decide. Two things change one by themselves. The same object renamed
+again updates the entry's new name and message. And an object called by its old name
+again -- the rename undone, or renamed back by hand -- **removes** the entry: that is the
+only way a mark goes without you. Renaming the field in the other trigger note types too
+does not, nor does editing the definition.
+
+**A marked definition is not run**, on any path: its checkbox in the definition list is
+cleared and cannot be ticked, the browser's "Copy anywhere" menu lists it disabled, the
+add, review and unfocus hooks and a sync pass it over, and a `call_definition` of it
+fails (below). Each refusal logs one error per mark: the definition's
+name, the stored message, and what to do.
+
+    Error in copy fields: 'both' was not run: Field "Word" of note type "A" was renamed to
+    "Term". Update the definition, then dismiss the mark in the definition editor.
+
+The add, review and unfocus hooks log it the first time they meet the definition in a
+session, and again only when its marks change, since each of those events opens its own
+log file and one refusal per answer would soon fill the fifty kept files with the same
+line. A sync logs it at every sync, and stops that definition after the one line rather
+than repeating it for every note; the other definitions of the run still run. None of
+these runs opens the log, so the definition list and the dialog after the note type
+operation (below) are what say that a definition is not being run. The note being added is
+still added, and the other definitions still run on it.
+
+A card whose review refused a definition keeps its `fc` as the scheduler set it, and a
+sync's closing sweep leaves the cards of a refused definition's trigger note types
+waiting, so the first sync after the mark is dismissed runs it on the cards it missed. The
+cost, meanwhile: another definition that runs on both review and sync runs again on such a
+note at every sync.
 
 A definition that calls a marked one fails at its `call_definition` stage with the same
 explanation, and its run on that note writes nothing -- not even what it changed before the
-call -- rather than running the rest of a chain around the gap. The editor still opens a
-marked definition, since editing it is one of the ways out, and its preview still runs it,
-so a fix can be tried before it is saved; a call to a marked definition fails in the
-preview too. It does not save one that is still broken (next paragraph).
+call -- rather than running the rest of a chain around the gap. The editor opens a marked
+definition, since that is where it is fixed, and its preview still runs it, so a fix can be
+tried before it is saved; a call to a marked definition fails in the preview too.
+
+**Dismissing a mark.** The definition editor shows the marks at the top, above the
+triggers: that the definition is not run while any mark is left, then one line per mark
+with a **Dismiss** button, and **Dismiss all** when there are two or more. Dismiss a mark
+once you have updated the definition for it. Save stores the definition without it; Cancel
+keeps it. A mark does not stop the save, but a definition on several note types still has
+to pass the next check.
+
+**The warning after a note type edit.** After an operation that changed a note type, a
+dialog lists the marks that pass added, one line per mark under the definition's name, and
+says to update each definition and dismiss its mark. Only the new ones: a mark stays until
+you dismiss it, and listing it again after every unrelated note type edit would teach you to
+close the dialog unread. There is none after a deck change, since no mark is about a deck,
+nor when the collection is opened: a mark a synced-in rename left there is shown by the
+definition list and the editor.
 
 **A definition on several note types can only use a field all of them have.** It spells a
 trigger field once for every note type it triggers on, so the editor refuses to save one
 that uses a field some of those note types lack, and says which: `Field "Term" is not on
-note type "B", which this definition also triggers on`. Every place a trigger field is
-named is checked -- a field write on the trigger, the unfocus lists, a write's
-only-if-empty field, and each `{{trigger.X}}` in a value. This is what a marked definition
-runs into when opened, and it is also what stops a half-fix: rewriting `{{trigger.Word}}`
-to `{{trigger.Term}}` after renaming `Word` in only one note type clears the mark, but the
-other note type still has no `Term`. A field none of the trigger note types has is reported
-as before, as a reference the note types cannot answer to; a definition on one note type is
+note type "B", which this definition also triggers on; use a field all of them have, or
+rename it in the others too.` Every place a trigger field is named is checked -- a field
+write on the trigger, the unfocus lists, a write's only-if-empty field, and each
+`{{trigger.X}}` in a value -- and a card type spelled in a `{{trigger.<Card type>__<Key>}}`
+token is held to the same rule. This is what a definition marked for a rename made in only
+some of its note types runs into when it is opened, and it is what stops a half-fix:
+`{{trigger.Word}}` rewritten to `{{trigger.Term}}` cannot be saved while another trigger
+note type still has no `Term`. A field none of the trigger note types has is reported as
+before, as a reference the note types cannot answer to; a definition on one note type is
 not affected.
 
 **Where the report reaches you.** The pass writes all of it into one operation log, which
@@ -407,36 +462,35 @@ you only see with the log level turned up, so the things you can act on are also
 you already look:
 
 - a reference that resolves to nothing is shown in the editor under the name it was
-  written with, marked `(not found)`, and **blocks the save** until you pick another or
-  remove it. Picking a live entry from the same box clears it. A card action whose card
-  type was deleted is one of these;
+  written with, marked `(not found)`, and listed under the stages as worth knowing, with
+  what a run does about it: `Note type 'X' is not in this collection, so nothing triggers
+  this definition on it until it is.` It does not stop the save. At run time such a
+  reference fails quietly -- a note type matches no note, a whitelist deck no deck, a card
+  action's card type no card -- and it may be a note type you have not made yet or one a
+  sync will bring. Picking a live entry from the same box clears it;
 - a query stage shows an amber note under the search naming what it spells that this
   collection does not have -- `deck:`, `note:` and `card:` terms and field searches, exact
   names only: a term with a wildcard, a regex or a `{{...}}` reference in it is left alone.
   It is a note, not a blocker: a query may name something you have not made yet;
-- the definition list marks a definition that names something the collection does not
-  have with an amber triangle after its name, the names in its tooltip. Its references are
-  resolved against the collection as the list is drawn. A field or card type the last pass
-  saw deleted is added for as long as the definition still names it -- in a field slot or
-  an unfocus list, a `{{trigger....}}` token, a card action, or anywhere in code, where
-  any mention counts -- and only until the next pass, which no longer knows it was deleted
-  (see "Deleted" above). A name inside a search has its own mark, next;
+- the definition list marks a definition with a reference that resolves to nothing with an
+  amber ⚠ after its name, the names in its tooltip. It is asked of the collection as the
+  list is drawn, never taken from a pass, so a later pass or a restart cannot lose it. A
+  deleted note type, deck or card action's card type is one of these; a deleted field or
+  card type of a trigger note type is a mark, next but one;
 - the definition list also marks a definition whose searches name something the collection
   does not have -- the same terms the query stage's note lists, from every query stage and
   every search condition -- with a blue ⓘ after its name, the names in its tooltip. The
   definition still runs; that part of the search just matches nothing, which is why the
-  mark is neither the triangle nor the ✖;
-- a definition marked as broken (above) shows a red ✖ after its name, and its checkbox is
-  cleared and cannot be ticked. Both carry the same tooltip: that it is not run until it is
-  fixed, the marked lines, and the three ways out. Edit, Duplicate and Delete still work.
-  The browser's "Copy anywhere" context menu lists it the same way: disabled, with the same
+  mark is neither the ⚠ nor the ✖;
+- a marked definition shows a red ✖ after its name, and its checkbox is cleared and
+  cannot be ticked. Both carry the same tooltip: that it is not run while it is marked,
+  the marks' messages, and what to do. Edit, Duplicate and Delete still work. The
+  browser's "Copy anywhere" context menu lists it the same way: disabled, with the same
   tooltip.
 
-All three marks follow an edit made from the definition list: when you save a definition
-there, its row is redrawn from the definition as saved, so a fix clears the triangle, the ⓘ
-or the ✖ -- and a cleared ✖ gives back a checkbox you can tick -- while a definition that
-still names something missing, or still spells a field one of its note types lacks, keeps
-it.
+All three follow an edit made from the definition list: when you save a definition there,
+its row is redrawn from the definition as saved, so a fix clears the ⚠ or the ⓘ, and a save
+with every mark dismissed clears the ✖ and gives back a checkbox you can tick.
 
 A sort field is still not rewritten and still sorts a note that lacks it as empty -- a
 query legitimately mixes note types -- but a run where *no* selected note had the field
@@ -453,10 +507,24 @@ profile, while a note type id, a deck id and a field id belong to the collection
 them -- and a collection restored from a backup as a second profile answers to the first
 one's ids under whatever names it has been given since. So the snapshot records which
 collection it was taken of, and a pass that opens on a different one does not read it at
-all: no name in it is an old name here, nothing is rewritten, every reference is re-bound by
-the usual rule -- the id while it still exists, the name when it does not -- and the snapshot
-is replaced with this collection's names. A rename is only ever followed inside the
-collection it happened in, so switching profiles leaves each one's definitions as they were.
+all: no name in it is an old name here, nothing is rewritten or marked, every reference is
+re-bound by the usual rule -- the id while it still exists, the name when it does not -- and
+the snapshot is replaced with this collection's names. A rename is only ever followed inside
+the collection it happened in, so switching profiles leaves each one's definitions as they
+were.
+
+The collection is recorded by its path. Its creation time, which would travel with the
+collection, was tried and dropped: Anki rounds it to the start of the day, so two profiles
+made on the same day would read as one. The known cost: a config synced in from another
+desktop (`addon_config_sync` copies it whole) carries that desktop's path, so the first
+pass after it arrives reads its snapshot as another collection's. A rename that reached
+this collection without a pass seeing it -- one made on a phone, say -- is then neither
+followed nor marked. The definitions go on resolving their note types, decks and card types
+by id; only the field and card type names they spell are left as they were.
+
+Marks stored by an earlier build of this feature carry a message but no ids. They are shown
+and refused like any other, but neither a second rename nor an undo changes them: dismiss
+them in the editor.
 
 ## The startup migration
 
@@ -693,5 +761,6 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `ui/stage_triggers_editor.py` | the trigger settings at the top |
 | `ui/stage_exports_editor.py` | the definition-level exports panel |
 | `ui/stage_preview.py` | the preview pane: note picker, run control, trace |
-| `ui/edit_staged_definition_dialog.py` | the dialog, and what blocks a save |
+| `ui/edit_staged_definition_dialog.py` | the dialog, what blocks a save and what it warns of |
+| `ui/rename_marks_banner.py` | the marks a rename left, one Dismiss each, atop the dialog |
 | `ui/pick_copy_definition_dialog.py` | the definition list, and its three marks |
