@@ -46,6 +46,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Opt
 from ..shared.interpolate.interpolate_fields import (
     DESTINATION_PREFIX,
     FROM_TEXT_FIELD_REGEX,
+    INTR_PREFIX,
+    INTR_SUFFIX,
     QUERY_NOTE_INDEX,
     TARGET_NOTES_COUNT,
     intr_format,
@@ -1105,6 +1107,51 @@ def rewrite_references(text: str, rewrite: Callable[[str], str]) -> str:
     )
 
 
+#: What `reference_spans` brackets each reference's inside with while `rewrite_references`
+#: walks it: control characters nobody types into an expression.
+_SPAN_OPEN = "\x02"
+_SPAN_CLOSE = "\x03"
+
+
+def reference_spans(text: str) -> list[tuple[int, int, str]]:
+    """`(start, end, inside)` of every reference `rewrite_references` hands over, in order.
+
+    `start` and `end` cover the whole `{{...}}`; `inside` is what stands between the braces.
+    The rename scanner (`rename_scan.py`) needs to say *where* a reference is, for a warning
+    to be cleared and a replacement shown as a diff, and a second walker counting its own
+    offsets would be a second definition of what a reference is -- one that could disagree
+    with the rewrite about a cloze. So this runs the rewrite itself, with every reference's
+    inside bracketed by two marker characters, and reads the offsets off the result.
+
+    Finds nothing when the text already holds a marker character or when the walk does not
+    give the text back unchanged around the markers (a cloze it re-spells), rather than
+    report offsets that could be wrong.
+    """
+    if not text or _SPAN_OPEN in text or _SPAN_CLOSE in text:
+        return []
+    marked = rewrite_references(text, lambda inside: f"{_SPAN_OPEN}{inside}{_SPAN_CLOSE}")
+    spans: list[tuple[int, int, str]] = []
+    plain: list[str] = []
+    opened: list[int] = []
+    for character in marked:
+        if character == _SPAN_OPEN:
+            opened.append(len(plain))
+        elif character == _SPAN_CLOSE and opened:
+            inside_start = opened.pop()
+            spans.append(
+                (
+                    inside_start - len(INTR_PREFIX),
+                    len(plain) + len(INTR_SUFFIX),
+                    "".join(plain[inside_start:]),
+                )
+            )
+        else:
+            plain.append(character)
+    if "".join(plain) != text:
+        return []
+    return sorted(spans)
+
+
 def _promote_reference(
     reference: str,
     source: str,
@@ -1339,5 +1386,6 @@ __all__ = [
     "promote_definition",
     "promote_expression",
     "promote_stage",
+    "reference_spans",
     "rewrite_references",
 ]

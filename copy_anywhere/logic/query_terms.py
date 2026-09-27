@@ -68,37 +68,55 @@ class StaleTerm:
         return f"{self.kind} '{self.name}'"
 
 
-def _split_terms(query: str) -> Iterator[str]:
-    """The query's terms, with quoting honoured and grouping punctuation dropped.
+def term_spans(query: str) -> Iterator[tuple[int, int, str]]:
+    """`(start, end, term)` for each of the query's terms, in order.
 
-    Anki lets a quote start anywhere, so `deck:"JP vocab"` and `"deck:JP vocab"` are the
-    same term; the quotes come out here and what is left is the term as it was meant.
+    The term is what `_split_terms` gives; `start` and `end` cover it as it was written, a
+    leading `-` and every quote included, so the rename scanner (`rename_scan.py`) can
+    replace a whole term without leaving a stray quote behind. Grouping parentheses and the
+    whitespace between terms are outside every span.
     """
     term: list[str] = []
+    start: Optional[int] = None
     quoted = False
     escaped = False
-    for character in query:
+    for index, character in enumerate(query):
         if escaped:
             term.append("\\")
             term.append(character)
             escaped = False
         elif character == "\\":
             escaped = True
+            start = index if start is None else start
         elif character == '"':
             quoted = not quoted
+            start = index if start is None else start
         elif not quoted and (character.isspace() or character in "()"):
-            if term:
-                yield "".join(term)
-                term = []
+            if term and start is not None:
+                yield start, index, "".join(term)
+            term = []
+            start = None
         else:
             term.append(character)
+            start = index if start is None else start
     if escaped:
         term.append("\\")
-    if term:
-        yield "".join(term)
+    if term and start is not None:
+        yield start, len(query), "".join(term)
 
 
-def _is_skipped(text: str) -> bool:
+def _split_terms(query: str) -> Iterator[str]:
+    """The query's terms, with quoting honoured and grouping punctuation dropped.
+
+    Anki lets a quote start anywhere, so `deck:"JP vocab"` and `"deck:JP vocab"` are the
+    same term; the quotes come out here and what is left is the term as it was meant.
+    Escapes stay in, for `split_at_colon` and `is_skipped` to read.
+    """
+    for _start, _end, term in term_spans(query):
+        yield term
+
+
+def is_skipped(text: str) -> bool:
     """Whether this term is one the scan deliberately does not judge.
 
     A wildcard or a regex means the term was never an exact name, and a `{{...}}` reference
@@ -113,7 +131,7 @@ def _is_skipped(text: str) -> bool:
     return False
 
 
-def _split_at_colon(text: str) -> Optional[tuple[str, str]]:
+def split_at_colon(text: str) -> Optional[tuple[str, str]]:
     """The term's key and value, or None when the term holds no key/value colon.
 
     Only an *unescaped* colon separates a key from a value: `foo\\:bar` is a plain-text
@@ -131,7 +149,7 @@ def _split_at_colon(text: str) -> Optional[tuple[str, str]]:
     return None
 
 
-def _unescape(text: str) -> str:
+def unescape(text: str) -> str:
     result: list[str] = []
     escaped = False
     for character in text:
@@ -219,11 +237,11 @@ def stale_search_terms(
     found: list[StaleTerm] = []
     for raw in _split_terms(query_text):
         text = raw.lstrip("-")
-        split = _split_at_colon(text)
-        if split is None or _is_skipped(text):
+        split = split_at_colon(text)
+        if split is None or is_skipped(text):
             continue
-        key = _unescape(split[0])
-        value = _unescape(split[1])
+        key = unescape(split[0])
+        value = unescape(split[1])
         # `re:...` is a regex over the whole note and `Word:re:neko` one over a field;
         # neither is a name. An empty value is `deck:` with nothing after it.
         if not value or key.lower() == "re" or value.lower().startswith("re:"):
@@ -238,4 +256,14 @@ def stale_search_terms(
     return found
 
 
-__all__ = ["CollectionNames", "StaleTerm", "stale_search_terms"]
+__all__ = [
+    "DECK_PSEUDO_NAMES",
+    "SEARCH_KEYWORDS",
+    "CollectionNames",
+    "StaleTerm",
+    "is_skipped",
+    "split_at_colon",
+    "stale_search_terms",
+    "term_spans",
+    "unescape",
+]
