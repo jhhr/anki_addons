@@ -159,8 +159,10 @@ say so in your report instead of implying coverage that does not exist.
 - One logical change per commit. A move into `anki_shared/` and the call-site updates are
   one change.
 - Commit research tooling; do not commit one-off plans, reports or generated output.
-- Work happens on `main` or a short-lived feature branch merged into it. Do not push or open
-  a PR unless asked. Use the `gh` CLI for anything on GitHub.
+- Work happens on `main` or a short-lived feature branch merged into it. In a local session,
+  do not push or open a PR unless asked. A Claude Code cloud session always works on a branch
+  of its own: push that branch as its commits land, and open a PR only when asked. Use the
+  `gh` CLI for anything on GitHub.
 
 ## Keeping these docs true
 
