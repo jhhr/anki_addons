@@ -41,7 +41,9 @@ from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 # reach Anki's error report exactly as it always did.
 try:
     from .utils import get_field_config  # noqa: E402
-    from .call_logging import in_bulk_op, start_call_log  # noqa: E402
+    from .configuration import ADDON_USER_FILES_DIR, capture_versions  # noqa: E402
+    from .call_logging import current_log_path, in_bulk_op, start_call_log  # noqa: E402
+    from .async_api_ops import capture  # noqa: E402
 
     from .async_api_ops.clean_meaning import clean_meaning_in_note  # noqa: E402
     from .async_api_ops.translate_field import translate_sentence_in_note  # noqa: E402
@@ -133,15 +135,19 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     field_name = note_type["flds"][field_idx]["name"]
     cur_field_value = note[field_name]
 
+    # The note in the editor may not be added yet (id 0): its calls then have no note, rather
+    # than all sharing a note 0
     if note_type_name == "Kanji draw":
         story_field = get_field_config(config, "story_field", note_type)
         if field_name == story_field and cur_field_value == "":
-            return make_story_for_note(config, note, {}, {})
+            with capture.note_scope(note.id or None):
+                return make_story_for_note(config, note, {}, {})
 
     if note_type_name == "Japanese vocab note":
         translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
         if field_name == translated_sentence_field and cur_field_value == "":
-            return translate_sentence_in_note(config, note, {}, {})
+            with capture.note_scope(note.id or None):
+                return translate_sentence_in_note(config, note, {}, {})
 
 
 def run_op_on_add_note(note: Note):
@@ -179,13 +185,15 @@ def run_op_on_add_note(note: Note):
         # note reads the file and writes it back - the bulk ops do the same around a run.
         all_generated_meanings_dict = load_meanings_dict_from_file()
         try:
-            clean_meaning_in_note(
-                config, note, {}, notes_to_update_dict, all_generated_meanings_dict
-            )
-            write_meanings_dict_to_file(all_generated_meanings_dict)
-            # The lexicon is read here rather than cached: the user rebuilds it from the
-            # collection now and then, and one added note is one small json read.
-            extract_words_op()(config, note, {}, notes_to_update_dict)
+            # Not added yet, so id 0: its calls are recorded with no note, not against note 0
+            with capture.note_scope(note.id or None):
+                clean_meaning_in_note(
+                    config, note, {}, notes_to_update_dict, all_generated_meanings_dict
+                )
+                write_meanings_dict_to_file(all_generated_meanings_dict)
+                # The lexicon is read here rather than cached: the user rebuilds it from the
+                # collection now and then, and one added note is one small json read.
+                extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True
@@ -202,6 +210,28 @@ def add_tools_menu_actions():
     action = QAction("AI ops: generate test data", mw)
     qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
     mw.form.menuTools.addAction(action)
+
+
+def install_capture_store():
+    # Per profile, and the config is read only here: a change takes effect at the next profile
+    # open. The store is diagnostics, so nothing here may keep a profile from opening.
+    try:
+        config = mw.addonManager.getConfig(__name__) or {}
+        if not config.get("capture_calls", True):
+            return
+        capture.install(
+            os.path.join(ADDON_USER_FILES_DIR, "capture.sqlite3"),
+            keep_days=config.get("capture_keep_days", 90),
+            versions=capture_versions(),
+            log_path=current_log_path,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("The capture store was not installed", exc_info=True)
+
+
+def shutdown_capture_store():
+    # Waits a moment for the writer to commit what is queued; never raises
+    capture.shutdown()
 
 
 # Every hook below calls something the guarded imports bind, so with a package missing each
@@ -224,6 +254,10 @@ if MISSING_PACKAGE is None:
     gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
 
     gui_hooks.main_window_did_init.append(add_tools_menu_actions)
+
+    # The AI calls' record, user_files/capture.sqlite3, open while a profile is
+    gui_hooks.profile_did_open.append(install_capture_store)
+    gui_hooks.profile_will_close.append(shutdown_capture_store)
 else:
     logging.getLogger(__name__).warning(
         "loaded without its operations: %s could not be imported", MISSING_PACKAGE

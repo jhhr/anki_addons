@@ -7,13 +7,19 @@ the run's own handler back afterwards, so the phases either side of a phase log 
 file and the phase table is still one grep.
 """
 
+import io
 import logging
+import os
+import tempfile
+import types
 import unittest
+from unittest import mock
 
 # Imported for the side effect: it puts the add-on's vendored lib/ on sys.path
-from addon_modules import load_ops_module
+from addon_modules import load_ops_module, mw
 
 cl = load_ops_module("call_logging", "")
+capture = load_ops_module("capture")
 
 
 class FakeHandler(logging.Handler):
@@ -162,6 +168,85 @@ class PhaseLogTests(LoggingTestCase):
                 self.assertIn(foreign, self.logger.handlers)
         finally:
             self.logger.removeHandler(foreign)
+
+
+class CaptureIdsTests(LoggingTestCase):
+    """The handlers call_logging makes, as they are: every line carries the capture ids, and
+    the run's file is the path the capture store records."""
+
+    def setUp(self):
+        super().setUp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.config = {"log_level": "DEBUG", "log_to_console": False}
+        manager = types.SimpleNamespace(getConfig=lambda _name: self.config)
+        # call_logging puts its files beside itself, under user_files/logs
+        for target, name, value in (
+            (mw, "addonManager", manager),
+            (cl, "__file__", os.path.join(directory.name, "call_logging.py")),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def attach(self, log_to_console: bool) -> logging.Handler:
+        self.config["log_to_console"] = log_to_console
+        handler = self.real_create("call")
+        self.addCleanup(handler.close)
+        if log_to_console:
+            self.stream = io.StringIO()
+            handler.setStream(self.stream)
+        self.logger.addHandler(handler)
+        return handler
+
+    def written(self, handler: logging.Handler) -> str:
+        if isinstance(handler, logging.FileHandler):
+            handler.flush()
+            with open(handler.baseFilename, encoding="utf-8") as file:
+                return file.read()
+        return self.stream.getvalue()
+
+    def test_a_record_with_no_ids_has_a_dash(self):
+        for log_to_console in (True, False):
+            with self.subTest(log_to_console=log_to_console):
+                handler = self.attach(log_to_console)
+
+                self.logger.warning("nothing current")
+
+                self.assertRegex(
+                    self.written(handler),
+                    r" - WARNING - \[-\] nothing current\n$",
+                )
+                self.logger.removeHandler(handler)
+
+    def test_a_child_logger_s_record_has_the_ids_where_it_was_logged(self):
+        """The filter is on the handler: a logger's own filters never see its children's."""
+        handler = self.attach(log_to_console=True)
+        child = logging.getLogger(f"{cl.ADDON_MODULE}.async_api_ops.base_ops")
+
+        with capture.run_scope(12), capture.note_scope(1712345678901):
+            child.info("inside")
+
+        self.assertIn(" - INFO - [r12 n1712345678901] inside\n", self.written(handler))
+
+    def test_the_log_path_is_the_file_handler_s(self):
+        self.assertIsNone(cl.current_log_path())
+        # Not the addon's: a developer's or Anki's own file is not the run's log
+        foreign_path = os.path.join(os.path.dirname(cl.__file__), "anki.log")
+        foreign = logging.FileHandler(foreign_path, delay=True)
+        self.logger.addHandler(foreign)
+        self.addCleanup(foreign.close)
+        self.assertIsNone(cl.current_log_path())
+
+        handler = self.attach(log_to_console=False)
+
+        self.assertEqual(cl.current_log_path(), handler.baseFilename)
+        self.assertTrue(handler.baseFilename.endswith(".log"))
+
+    def test_console_logging_has_no_log_path(self):
+        self.attach(log_to_console=True)
+
+        self.assertIsNone(cl.current_log_path())
 
 
 if __name__ == "__main__":

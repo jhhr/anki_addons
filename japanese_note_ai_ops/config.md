@@ -7,6 +7,12 @@
 - `multi_op_dialog_shortcut`: Default is `""` (none). A key sequence such as `"Ctrl+Shift+J"`
   for the browser's Edit > "Japanese AI ops..." dialog, which runs several ops in a row on the
   selected notes or on every note of the current search. Read when a browser window opens.
+- `capture_calls`: Default is `true`. Records every AI call (prompt, answer, outcome, timing,
+  the note and run it was for) in `user_files/capture.sqlite3`, for debugging and for
+  building tests and evals from real runs. No API keys.
+- `capture_keep_days`: Default is `90`. Runs older than this are deleted from that file; `0`
+  keeps every run. Both are read when the profile opens: a change takes effect on the next
+  profile load or restart.
 
 ## models
 

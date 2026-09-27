@@ -33,6 +33,7 @@ from typing import Iterator, Optional
 
 from aqt import mw
 
+from .async_api_ops import capture
 from .async_api_ops.diagnostics import WORKER_THREAD_PREFIX
 
 ADDON_MODULE = __name__.split(".")[0]
@@ -41,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 # Marks the handlers this addon attaches, so they can be found and closed again
 _ADDON_HANDLER_FLAG = "_simple_anki_ai_prompts_handler"
+
+# The ids in brackets are the capture store's run, note and call (`r12 n1712345678901 c4567`,
+# or `-`), set on every record by the CaptureContextFilter each handler carries: they are what
+# joins a line of the log to the rows it was written for
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [%(capture_ids)s] %(message)s"
 
 
 # How long to keep waiting for a run's threads before closing its log file anyway. Long enough
@@ -146,9 +152,7 @@ def create_call_log_handler(function_name: str) -> logging.Handler:
         # Create console handler
         handler: logging.Handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(log_level)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
+        _add_capture_ids(handler)
         setattr(handler, _ADDON_HANDLER_FLAG, True)
         return handler
 
@@ -167,12 +171,34 @@ def create_call_log_handler(function_name: str) -> logging.Handler:
     # actually logged - building the context menu shouldn't leave an empty log file behind.
     handler = logging.FileHandler(log_file, encoding="utf-8", delay=True)
     handler.setLevel(log_level)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
+    _add_capture_ids(handler)
     setattr(handler, _ADDON_HANDLER_FLAG, True)
 
     return handler
+
+
+def _add_capture_ids(handler: logging.Handler) -> None:
+    """The format with the capture ids, and the filter that sets them. On the handler, not the
+    addon logger: a logger's filters never see the records of the loggers under it, which is
+    every module's. The format needs the filter, or a record fails to format."""
+    handler.addFilter(capture.CaptureContextFilter())
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+
+def current_log_path() -> Optional[str]:
+    """The file the addon's records go to now: the first of its own handlers that writes to
+    one. None when they go to the console, or nowhere yet.
+
+    The capture store asks at each run's start and records it with the run, so a run's row
+    names the log whose lines carry its ids. Only reads: a FileHandler made with delay=True
+    has its path before its file exists.
+    """
+    for handler in list(addon_logger().handlers):
+        if getattr(handler, _ADDON_HANDLER_FLAG, False):
+            path = getattr(handler, "baseFilename", None)
+            if path:
+                return str(path)
+    return None
 
 
 def start_call_log(function_name: str) -> None:

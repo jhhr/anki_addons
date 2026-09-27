@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Optional, Callable, Coroutine, Any, NamedTuple, Union
 from functools import partial
 
@@ -16,7 +17,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Container, Iterable, Iterator, Sequence
 
 from . import capture
 from .api_client import (
@@ -1841,7 +1842,7 @@ def make_inner_bulk_op(
                 except Exception as e:
                     logger.error("Inner process op error, passing to handle_op_error: %s", e)
                     handle_op_error(e)
-                    # The task's note is in its context (see error_subject in the drivers)
+                    # The task's note is in its context (see note_context in the drivers)
                     report_exception(e)
                     return False
                 finally:
@@ -1901,11 +1902,26 @@ class NotePlan(NamedTuple):
     flush: Optional[Callable[[], bool]] = None
 
 
+@contextmanager
+def note_context(note: Note) -> Iterator[None]:
+    """`note` as what the work inside is for: its errors are titled with it (`error_subject`)
+    and its AI calls recorded against it (`capture.note_scope`). Both are ContextVars, so a
+    task created or a `to_thread` worker started inside carries them; entering them together
+    keeps the two from naming different notes.
+
+    A note not added yet has id 0, and its calls are recorded with no note rather than all
+    against a note 0.
+    """
+    with error_subject(NoteSubject(note)), capture.note_scope(getattr(note, "id", None) or None):
+        yield
+
+
 def _spawning_for(note: Note, spawn: Callable[[list], None]) -> Callable[[list], None]:
-    """`spawn` creating its tasks with `note` in their context, so their errors name it."""
+    """`spawn` creating its tasks with `note` in their context, so their errors and AI calls
+    name it."""
 
     def spawn_for_note(tasks: list) -> None:
-        with error_subject(NoteSubject(note)):
+        with note_context(note):
             spawn(tasks)
 
     return spawn_for_note
@@ -2312,7 +2328,7 @@ def sync_bulk_notes_op(
                 break
             paused_s += time.time() - paused_at
         # Named in the context too, for whatever the op reports itself
-        with error_subject(NoteSubject(note)):
+        with note_context(note):
             try:
                 op(
                     config=config,
@@ -2477,8 +2493,9 @@ async def bulk_notes_op(
                     cancel_state=cancel_state,
                     one_task_per_op=True,
                 )
-                # The task copies the context as it is created, so its errors name the note
-                with error_subject(NoteSubject(note)):
+                # The task copies the context as it is created, so its errors and calls name
+                # the note
+                with note_context(note):
                     tasks.append(
                         asyncio.create_task(
                             process_note(
@@ -2975,7 +2992,7 @@ def add_new_notes(
                         except Exception as e:
                             logger.error(f"Error adding note {index}: {e}")
                             print_error_traceback(e, logger)
-                            with error_subject(NoteSubject(note)):
+                            with note_context(note):
                                 report_exception(e, "Adding the note")
                             failed_cnt += 1
                         else:
@@ -3123,6 +3140,23 @@ def tidy_markers(
     return op_changes, [note.id for note in renamed_notes]
 
 
+def _op_names(phases: Sequence[OpPhase]) -> Optional[list[str]]:
+    """The phases' bulk op function names, for the capture run's row. A `functools.partial` has
+    no `__name__`, so it goes by the function it wraps, and a callable object by its class.
+    Never raises: it runs on the op thread before the try whose finally ends the run."""
+    try:
+        names = []
+        for phase in phases:
+            op: Any = phase.bulk_op
+            while isinstance(op, partial):
+                op = op.func
+            name = getattr(op, "__name__", None)
+            names.append(name if isinstance(name, str) else type(op).__name__)
+        return names
+    except Exception:
+        return None
+
+
 def selected_notes_op(
     done_text: str,
     bulk_op: Union[
@@ -3184,6 +3218,19 @@ def selected_notes_op(
         # that starts after a cancelled one must not report its tasks as having returned
         # minutes after a cancel that belongs to the previous run.
         clear_cancel_time()
+        # The capture store's row for this run (None with capture off, which makes every
+        # capture call below a no-op). Never raises, and must not: the try whose finally ends
+        # the run above has not started yet.
+        capture_run = capture.begin_run(
+            done_text,
+            ops=_op_names(phases),
+            chain_step=chain.title if chain is not None else None,
+            note_count=len(nids),
+            config=config,
+        )
+        # Set by the except clauses below for the finally, which cannot tell a caught
+        # RunCancelled or an exception on its way out from a run that returned
+        capture_outcome: Optional[str] = None
 
         async def async_wrapper():
             nonlocal edited_nids, edited_other_nids, new_notes, cancelled
@@ -3394,15 +3441,23 @@ def selected_notes_op(
         loop.set_default_executor(executor)
         set_run_executor(executor)
         try:
-            with bulk_op_logging():
+            # The capture run is current in the task run_until_complete makes, which copies
+            # this context, and so in every task and to_thread worker beneath it, the cleanup
+            # included. Reset before the teardown: this thread goes back to Anki's pool.
+            with capture.run_scope(capture_run), bulk_op_logging():
                 return loop.run_until_complete(async_wrapper())
         except RunCancelled as e:
+            capture_outcome = "abandoned"
             # A cancel that landed on a collection read this thread makes outside the cleanup
             # phase, so the op unwound before it could save anything. There is nothing left to
             # write, but being cancelled is a normal outcome rather than an error: end the
             # operation quietly instead of showing the user a traceback.
             logger.info("Bulk op abandoned after cancellation: %s", e)
             return OpChanges()
+        except BaseException:
+            # Only noted, for the capture run; the same exception goes on out
+            capture_outcome = "failed"
+            raise
         finally:
             teardown_started = time.monotonic()
             logger.debug("[phase] teardown starting, %d threads alive", threading.active_count())
@@ -3445,6 +3500,11 @@ def selected_notes_op(
             # which forgets the run on this thread (run_cancelled would then say no).
             if run_is_cancelled(run) or mw.progress.want_cancel():
                 cancelled = True
+            # After that flag's last word, so a cancelled note adding and a run that ended
+            # paused are recorded as cancelled. Never raises, so end_run below always runs.
+            capture.end_run(
+                capture_run, capture_outcome or ("cancelled" if cancelled else "completed")
+            )
             # Last, so everything above still logs as part of the run it belongs to. This
             # thread is Anki's and goes back to a pool that runs other work, including our own
             # single-note ops, so its membership of this run must not outlive it: leaving it
