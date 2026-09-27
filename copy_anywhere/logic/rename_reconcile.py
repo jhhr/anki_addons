@@ -86,17 +86,18 @@ from .object_refs import (
 from .query_terms import CollectionNames, stale_search_terms
 from .rename_locations import card_action_key, field_write_key, stage_key, trigger_key
 from .rename_scan import (
-    OTHER_SLOT,
+    READ_AS_CODE,
+    READ_AS_DECK_SLOT,
+    READ_AS_OTHER_SLOT,
+    READ_AS_QUERY,
+    READ_AS_TEXT,
+    READ_AS_TRIGGER_SLOT,
     TRIGGER_SLOT,
     TRIGGER_TOKEN,
-    Hit,
     Rename,
-    find_in_code,
-    find_in_deck_slot,
-    find_in_query,
-    find_in_slot,
-    find_in_template,
+    find_at,
     hit_blocks_run,
+    still_spelled,
 )
 from .rename_warnings import WARNINGS_KEY, rename_warning_entries
 
@@ -967,20 +968,6 @@ def _warning_message(kind: str, old: str, new: Optional[str], note_type_name: st
     return what + (" was deleted" if new is None else f' was renamed to "{new}"')
 
 
-# How a location's value is read, which picks the scanner (`rename_scan.py`).
-_READ_AS_TEXT = "text"
-#: An Anki search that can also hold `{{...}}` references: a query, a note query predicate.
-_READ_AS_QUERY = "query"
-_READ_AS_CODE = "code"
-#: Field names of the trigger note, one or a list: the unfocus lists, the migrated gates,
-#: a field write's target when it writes the trigger note.
-_READ_AS_TRIGGER_SLOT = "trigger slot"
-#: A field name of notes whose note types the pass cannot know: a sort field, a field
-#: write's target on a note from a query.
-_READ_AS_OTHER_SLOT = "other slot"
-#: A deck name: a card action's `change_deck`, which moves the card by name.
-_READ_AS_DECK_SLOT = "deck slot"
-
 #: The hits a definition's own trigger note types are spelled through. A rename of a field
 #: or card type of the one note type a definition triggers on is followed there, and a
 #: definition that does not trigger on the note type spells its own trigger's names there.
@@ -992,6 +979,7 @@ class _Location:
     """One text or slot of a definition, under the key a warning about it is filed at."""
 
     key: str
+    #: How the value is read, one of `rename_scan`'s `READ_AS_*`.
     read_as: str
     value: Any
 
@@ -1010,7 +998,7 @@ def _locations(definition: CopyDefinitionV2) -> Iterator[_Location]:
     if isinstance(unfocus, dict):
         for path in ("edit_fields", "add_fields"):
             yield _Location(
-                trigger_key(f"on_unfocus.{path}"), _READ_AS_TRIGGER_SLOT, unfocus.get(path)
+                trigger_key(f"on_unfocus.{path}"), READ_AS_TRIGGER_SLOT, unfocus.get(path)
             )
     for stage in walk_stages(definition.get("stages") or []):
         guid = stage.get("guid")
@@ -1032,15 +1020,15 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
     selection = stage.get("selection")
     if stage.get("type") in (STAGE_NOTE_QUERY, STAGE_CARD_QUERY) and isinstance(selection, dict):
         yield _Location(
-            key("selection.sort_field"), _READ_AS_OTHER_SLOT, selection.get("sort_field")
+            key("selection.sort_field"), READ_AS_OTHER_SLOT, selection.get("sort_field")
         )
     # The migrated unfocus gate names editor fields, which are the trigger note's whichever
     # note the stage goes on to write (see `_rewrite`).
     for path in ("unfocus_trigger_fields", "write_if_field"):
         if path in stage:
-            yield _Location(key(path), _READ_AS_TRIGGER_SLOT, stage.get(path))
+            yield _Location(key(path), READ_AS_TRIGGER_SLOT, stage.get(path))
     if stage.get("type") == STAGE_EDIT_NOTE:
-        target_kind = _READ_AS_TRIGGER_SLOT if _targets_the_trigger(stage) else _READ_AS_OTHER_SLOT
+        target_kind = READ_AS_TRIGGER_SLOT if _targets_the_trigger(stage) else READ_AS_OTHER_SLOT
         for write in stage.get("fields") or []:
             write_guid = write.get("guid") if isinstance(write, dict) else None
             if not isinstance(write_guid, str) or not write_guid:
@@ -1055,7 +1043,7 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
             if "unfocus_trigger_fields" in write:
                 yield _Location(
                     write_key("unfocus_trigger_fields"),
-                    _READ_AS_TRIGGER_SLOT,
+                    READ_AS_TRIGGER_SLOT,
                     write.get("unfocus_trigger_fields"),
                 )
     for action in stage.get("card_actions") or []:
@@ -1067,11 +1055,11 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
         # so the stored `change_deck` is only what moves the card when no code does.
         code = action.get("action_code")
         if action.get("use_code"):
-            yield _Location(card_action_key(action_guid, "action_code"), _READ_AS_CODE, code)
+            yield _Location(card_action_key(action_guid, "action_code"), READ_AS_CODE, code)
         if not (action.get("use_code") and isinstance(code, str) and code.strip()):
             yield _Location(
                 card_action_key(action_guid, "change_deck"),
-                _READ_AS_DECK_SLOT,
+                READ_AS_DECK_SLOT,
                 action.get("change_deck"),
             )
 
@@ -1085,25 +1073,44 @@ def _expression_location(
     nothing, and a blocking warning about it would stop a definition that works.
     """
     if expression_is_code(expression):
-        return _Location(key(f"{name}.code"), _READ_AS_CODE, expression.get("code"))
-    read_as = _READ_AS_QUERY if search else _READ_AS_TEXT
+        return _Location(key(f"{name}.code"), READ_AS_CODE, expression.get("code"))
+    read_as = READ_AS_QUERY if search else READ_AS_TEXT
     return _Location(key(f"{name}.text"), read_as, expression.get("text"))
 
 
-def _hits(location: _Location, rename: Rename) -> list[Hit]:
-    """Where one location spells the old name, as the scanner for its kind of text finds it."""
-    if location.read_as == _READ_AS_CODE:
-        return find_in_code(location.value, rename)
-    if location.read_as == _READ_AS_QUERY:
-        return find_in_query(location.value, rename)
-    if location.read_as == _READ_AS_TEXT:
-        return find_in_template(location.value, rename)
-    if location.read_as == _READ_AS_OTHER_SLOT:
-        return find_in_slot(location.value, rename, OTHER_SLOT)
-    if location.read_as == _READ_AS_DECK_SLOT:
-        return find_in_deck_slot(location.value, rename)
-    names = location.value if isinstance(location.value, list) else [location.value]
-    return [hit for name in names for hit in find_in_slot(name, rename, TRIGGER_SLOT)]
+def drop_cleared_warnings(definition: CopyDefinitionV2) -> CopyDefinitionV2:
+    """The definition without the warnings whose location no longer spells the old name.
+
+    Run when the definition editor saves (SPEC decision 6), on the definition it is about to
+    store, which it changes in place and returns. The user fixed the text, so the warning
+    has nothing left to point at; keeping it would leave a blocked definition that only a
+    Dismiss nobody knew was needed could unblock. Each location is read by the same walk
+    and the same scanner as the pass that filed the warning (`still_spelled`), so what a
+    save drops is exactly what the pass would not have filed: a location the walk no longer
+    reaches -- its stage deleted, its expression switched to the other side, its card
+    action switched to code -- spells nothing that runs and loses its warnings too. Code
+    that cannot be read keeps them. Never run on Cancel, and never by the pass itself,
+    which does not re-derive a warning.
+    """
+    stored = definition.get(WARNINGS_KEY)
+    if not isinstance(stored, dict):
+        return definition
+    locations = {location.key: location for location in _locations(definition)}
+    for key in list(stored):
+        location = locations.get(key)
+        entries = stored[key]
+        kept = (
+            [entry for entry in entries if still_spelled(location.read_as, location.value, entry)]
+            if location is not None and isinstance(entries, list)
+            else []
+        )
+        if kept:
+            stored[key] = kept
+        else:
+            del stored[key]
+    if not rename_warning_entries(definition):
+        definition.pop(WARNINGS_KEY, None)
+    return definition
 
 
 @dataclass(frozen=True)
@@ -1162,7 +1169,7 @@ def _warnings_for(definition: CopyDefinitionV2, scans: list[_Scan]) -> list[tupl
             rename = scan.change.rename
             hits = [
                 hit
-                for hit in _hits(location, rename)
+                for hit in find_at(location.read_as, location.value, rename)
                 if scan.through_trigger or hit.kind not in _TRIGGER_HIT_KINDS
             ]
             if hits:
@@ -1649,6 +1656,7 @@ __all__ = [
     "StaleName",
     "build_name_snapshot",
     "definitions_hold_references",
+    "drop_cleared_warnings",
     "log_result",
     "reconcile",
     "referenced_object_ids",

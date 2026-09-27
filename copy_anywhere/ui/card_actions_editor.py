@@ -38,12 +38,16 @@ from ..logic.object_refs import (
     not_found_label,
     resolve_card_type,
 )
+from ..logic.rename_locations import card_action_key
+from ..logic.rename_scan import READ_AS_CODE, READ_AS_DECK_SLOT
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.loading_indicator import LoadingIndicator
 from .discard import discard_widget
 from .labels import wrapping
 from .code_notices import CARD_ACTION_CODE_NOTICE
 from .outline import outline_frame
+from .rename_indicator import LiveLocation, RenameIndicator
+from .stage_document import StageDocument
 from .stage_edit_state import StageEditState
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.toggle_switch import ToggleSwitch
@@ -106,15 +110,19 @@ class CardActionsEditor(QWidget):
         state: StageEditState,
         copy_definition: Optional[CopyDefinition],
         single_card_mode: bool = False,
+        rename_document: Optional[StageDocument] = None,
     ):
         """
         :param single_card_mode: edit actions that apply to one already-chosen card rather
             than to a note's cards of a given type. A format-2 `edit_card` stage names the
             card itself (§5.12), so there is no card type to pick and the actions are keyed
             by their own guid instead of by a card type name.
+        :param rename_document: the definition editor's document, whose rename warnings
+            each action's code and deck show, filed under the action's own guid.
         """
         super().__init__(parent)
         self.state = state
+        self.rename_document = rename_document
         self.copy_definition = copy_definition
         self.single_card_mode = single_card_mode
         self.initialized = False
@@ -560,9 +568,11 @@ class CardActionsEditor(QWidget):
             cloze_note.setWordWrap(True)
             frame_layout.addWidget(cloze_note)
 
-        # Code mode toggle
+        # Code mode toggle, with the code's rename indicator beside it
         use_code_toggle = ToggleSwitch("Execute as Python code")
-        frame_layout.addWidget(use_code_toggle)
+        toggle_row = QHBoxLayout()
+        toggle_row.addWidget(use_code_toggle)
+        frame_layout.addLayout(toggle_row)
 
         # --- Form mode container ---
         form_mode_container = QWidget(frame)
@@ -579,11 +589,20 @@ class CardActionsEditor(QWidget):
             # A deck id rather than a name can only come from a hand-edited config; as text it
             # finds nothing and the combo stays on "-", where PyQt raised TypeError.
             index = deck_combo.findText(str(current_deck))
+            if index < 0 and isinstance(current_deck, str):
+                # A deck renamed or deleted in Anki since: kept as its own item, as the
+                # trigger editor keeps a whitelisted deck it cannot offer. Falling back to
+                # "-" saved the action with no move at all, silently, and took the rename
+                # warning about that deck with it.
+                deck_combo.addItem(current_deck)
+                index = deck_combo.count() - 1
             if index >= 0:
                 deck_combo.setCurrentIndex(index)
         else:
             deck_combo.setCurrentIndex(0)
-        form_layout.addRow(QLabel("<b>Move card to deck:</b>", form_mode_container), deck_combo)
+        deck_row = QHBoxLayout()
+        deck_row.addWidget(deck_combo)
+        form_layout.addRow(QLabel("<b>Move card to deck:</b>", form_mode_container), deck_row)
 
         # 2. Set Flag button group
         flag_group = QButtonGroup(form_mode_container)
@@ -731,6 +750,16 @@ class CardActionsEditor(QWidget):
 
         use_code_toggle.toggled.connect(on_use_code_toggled)
 
+        code_indicator, deck_indicator = self._rename_indicators(
+            frame, action, use_code_toggle, code_editor, deck_combo
+        )
+        if code_indicator is not None:
+            toggle_row.addWidget(code_indicator)
+        if deck_indicator is not None:
+            deck_row.addWidget(deck_indicator)
+        toggle_row.addStretch(1)
+        deck_row.addStretch(1)
+
         # Delete button
         delete_button = QPushButton("Delete this card action", frame)
         delete_button.clicked.connect(lambda: self.delete_action(card_type_name))
@@ -761,7 +790,55 @@ class CardActionsEditor(QWidget):
             "dr_string_input": dr_string_input,
             "code_editor": code_editor,
             "cloze_note": cloze_note,
+            "code_indicator": code_indicator,
+            "deck_indicator": deck_indicator,
         }
+
+    def _rename_indicators(
+        self,
+        frame: QWidget,
+        action: CardAction,
+        use_code_toggle: ToggleSwitch,
+        code_editor: CodeEditLayout,
+        deck_combo: QComboBox,
+    ) -> tuple[Optional[RenameIndicator], Optional[RenameIndicator]]:
+        """The rename indicators of an action's code and of its deck, or none outside the
+        definition editor.
+
+        In effect as the pass reads them (`rename_reconcile._stage_locations`): the code
+        only while the action runs it, the deck only while no code decides the action.
+        """
+        guid = action.get("guid")
+        if self.rename_document is None or not isinstance(guid, str) or not guid:
+            return None, None
+
+        def code() -> Optional[str]:
+            return code_editor.get_text() if use_code_toggle.isChecked() else None
+
+        def deck() -> Optional[str]:
+            text = code()
+            if text is not None and text.strip():
+                return None
+            return deck_combo.currentText()
+
+        code_key = card_action_key(guid, "action_code")
+        deck_key = card_action_key(guid, "change_deck")
+        document = self.rename_document
+        indicators = (
+            RenameIndicator(
+                frame, document, lambda: [LiveLocation(code_key, READ_AS_CODE, code())]
+            ),
+            RenameIndicator(
+                frame, document, lambda: [LiveLocation(deck_key, READ_AS_DECK_SLOT, deck())]
+            ),
+        )
+        # Either one follows all three controls: the toggle and the code decide whether the
+        # deck is in effect at all.
+        for indicator in indicators:
+            deck_combo.currentIndexChanged.connect(indicator.refresh)
+            use_code_toggle.toggled.connect(indicator.refresh)
+            code_editor.text_edit.textChanged.connect(indicator.refresh)
+        return indicators
 
     def save_action(self, card_type_name: str):
         """Save a specific action from its UI components"""

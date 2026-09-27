@@ -39,6 +39,7 @@ from copy_anywhere.logic.object_refs import (
     resolve_card_type,
 )
 from copy_anywhere.logic.query_terms import stale_search_terms
+from copy_anywhere.logic.rename_locations import field_write_key
 from copy_anywhere.logic.rename_reconcile import reconcile
 from copy_anywhere.logic.rename_warnings import WARNINGS_KEY, blocking_messages, blocking_tooltip
 from copy_anywhere.ui.stage_document import StageDocument, default_stage
@@ -60,6 +61,11 @@ GONE_ID = 999999
 
 #: A location no stage of these definitions has, as a warning whose stage was deleted is.
 ORPHAN_LOCATION = "definition"
+
+#: The guid of the one field write `TestTheEditorShowsTheMarks.marked` gives its definition,
+#: and the location of that write's value text.
+MARKED_WRITE = "marked-write"
+WRITE_VALUE = field_write_key(MARKED_WRITE, "value.text")
 
 
 def triggers_editor(col, widget_parent, **triggers):
@@ -871,15 +877,15 @@ class TestTheEditorShowsTheMarks:
             dialog._refresh_timer.stop()
 
     def marked(self, *marks) -> dict:
+        """Marks filed where the pass would file them: at a write whose value still spells
+        both names, so that a save keeps what was not dismissed (`drop_cleared_warnings`)."""
+        write = d.write("Meaning", d.text("{{trigger.Word}} {{trigger.Note}}"))
+        write["guid"] = MARKED_WRITE
         definition = d.staged(
-            "Marked",
-            note_types=[VOCAB],
-            stages=[
-                d.edit_note("trigger", fields=[d.write("Meaning", d.text("{{trigger.Word}}"))])
-            ],
+            "Marked", note_types=[VOCAB], stages=[d.edit_note("trigger", fields=[write])]
         )
         if marks:
-            definition[WARNINGS_KEY] = {ORPHAN_LOCATION: list(marks)}
+            definition[WARNINGS_KEY] = {WRITE_VALUE: list(marks)}
         return definition
 
     def save(self, dialog):
@@ -909,7 +915,7 @@ class TestTheEditorShowsTheMarks:
         assert dialog.marks_banner.messages() == [second["message"]]
         # One left: Dismiss does the same, so Dismiss all is not offered.
         assert dialog.marks_banner.dismiss_all_button.isHidden()
-        assert self.save(dialog)[WARNINGS_KEY] == {ORPHAN_LOCATION: [second]}
+        assert self.save(dialog)[WARNINGS_KEY] == {WRITE_VALUE: [second]}
 
     def test_two_marks_with_one_message_are_dismissed_one_at_a_time(self, open_editor):
         same = "Field was renamed"
@@ -921,7 +927,7 @@ class TestTheEditorShowsTheMarks:
 
         dismiss_button(dialog.marks_banner, 1).click()
 
-        saved = self.save(dialog)[WARNINGS_KEY][ORPHAN_LOCATION]
+        saved = self.save(dialog)[WARNINGS_KEY][WRITE_VALUE]
         assert [entry["old"] for entry in saved] == ["Word"]
 
     def test_dismiss_all_takes_every_mark_off_and_the_banner_away(self, open_editor):
@@ -956,7 +962,7 @@ class TestTheEditorShowsTheMarks:
         # The dict handed in is the stored one (`run_definition_editor` passes the config's
         # own), and a cancelled editor hands nothing back.
         assert not dialog.result()
-        assert definition[WARNINGS_KEY] == {ORPHAN_LOCATION: marks}
+        assert definition[WARNINGS_KEY] == {WRITE_VALUE: marks}
 
     def test_an_unmarked_definition_has_no_banner(self, open_editor):
         dialog = open_editor(self.marked())
@@ -969,14 +975,14 @@ class TestTheEditorShowsTheMarks:
         self, open_editor
     ):
         first = rename_mark("Word", "Term")
-        second = rename_mark("Note", None)
+        second = rename_mark("Meaning", None)
         definition = self.marked(first)
-        definition[WARNINGS_KEY]["some-stage.value.text"] = [second]
+        definition[WARNINGS_KEY][field_write_key(MARKED_WRITE, "field")] = [second]
         dialog = open_editor(definition)
 
         assert dialog.marks_banner.messages() == [first["message"], second["message"]]
         dismiss_button(dialog.marks_banner, 1).click()
-        assert self.save(dialog)[WARNINGS_KEY] == {ORPHAN_LOCATION: [first]}
+        assert self.save(dialog)[WARNINGS_KEY] == {WRITE_VALUE: [first]}
 
     def test_a_message_is_shown_as_text(self, open_editor):
         from aqt.qt import QLabel

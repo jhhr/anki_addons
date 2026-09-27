@@ -19,6 +19,7 @@ from aqt import mw
 from aqt.qt import (
     QCheckBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QWidget,
     pyqtSignal,
@@ -36,9 +37,13 @@ from ..logic.object_refs import (
     resolve_deck_id,
     resolve_note_type,
 )
+from ..logic.rename_locations import trigger_key
+from ..logic.rename_scan import READ_AS_TRIGGER_SLOT
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .labels import wrapping
+from .rename_indicator import LiveLocation, RenameIndicator
+from .stage_document import StageDocument
 
 
 def quoted_items(names) -> list[str]:
@@ -118,9 +123,17 @@ class TriggersEditor(QWidget):
 
     changed = pyqtSignal()
 
-    def __init__(self, parent: Optional[QWidget], definition: CopyDefinitionV2) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        definition: CopyDefinitionV2,
+        rename_document: Optional[StageDocument] = None,
+    ) -> None:
+        """`rename_document` is the definition editor's, whose rename warnings about the
+        unfocus lists show beside them."""
         super().__init__(parent)
         self.definition = definition
+        self.rename_indicators: list[RenameIndicator] = []
         triggers: Triggers = definition.setdefault(
             "triggers",
             {
@@ -224,12 +237,13 @@ class TriggersEditor(QWidget):
         # a wrapped label the height its extra lines need, so the end of it was cut off.
         form.addRow(
             QLabel("<h4>Run when leaving a field, editing a note</h4>", self),
-            self.unfocus_edit,
+            self._with_indicator(self.unfocus_edit, 0, rename_document),
         )
         self.unfocus_add = MultiComboBox(self, placeholder_text="No fields (never)")
         self.unfocus_add.currentTextChanged.connect(self._on_changed)
         form.addRow(
-            QLabel("<h4>Run when leaving a field, adding a note</h4>", self), self.unfocus_add
+            QLabel("<h4>Run when leaving a field, adding a note</h4>", self),
+            self._with_indicator(self.unfocus_add, 1, rename_document),
         )
         form.addRow(
             "",
@@ -257,6 +271,53 @@ class TriggersEditor(QWidget):
         self._offered_unfocus: list[Optional[list[str]]] = [None, None]
         self._refresh_dependent_boxes()
 
+    # -- rename warnings -----------------------------------------------------------------
+
+    #: Where each unfocus list stores its names, in the order of `_chosen_unfocus`.
+    UNFOCUS_PATHS = ("on_unfocus.edit_fields", "on_unfocus.add_fields")
+
+    def _with_indicator(
+        self, box: MultiComboBox, index: int, document: Optional[StageDocument]
+    ) -> QWidget:
+        """The box, with the rename indicator of the list it edits beside it."""
+        if document is None:
+            return box
+        key = trigger_key(self.UNFOCUS_PATHS[index])
+        indicator = RenameIndicator(
+            self,
+            document,
+            lambda: [LiveLocation(key, READ_AS_TRIGGER_SLOT, self._live_unfocus(index))],
+        )
+        self.rename_indicators.append(indicator)
+        box.currentTextChanged.connect(indicator.refresh)
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(box, 1)
+        layout.addWidget(indicator)
+        return row
+
+    def _live_unfocus(self, index: int) -> list[str]:
+        """What `apply` would store for one unfocus list now, without folding it back.
+
+        The chosen names outside what the box offers are kept whatever the box shows, so a
+        name the note type no longer has -- the one a rename warning is about -- is still
+        spelled until the user replaces or dismisses it.
+        """
+        chosen = getattr(self, "_chosen_unfocus", None)
+        if chosen is None:
+            # Asked while the boxes are being built, before anything is chosen in them.
+            return []
+        offered = self._offered_unfocus[index]
+        box = (self.unfocus_edit, self.unfocus_add)[index]
+        if offered is None:
+            return list(chosen[index])
+        return [name for name in chosen[index] if name not in offered] + selected_names(box)
+
+    def refresh_rename_indicators(self) -> None:
+        for indicator in self.rename_indicators:
+            indicator.refresh()
+
     # -- reacting ------------------------------------------------------------------------
 
     def _on_changed(self, *_args) -> None:
@@ -271,6 +332,8 @@ class TriggersEditor(QWidget):
         self._refresh_decks(note_types)
         self._refresh_unfocus(note_types)
         self._refresh_warning(note_types)
+        # The boxes were refilled with their signals blocked.
+        self.refresh_rename_indicators()
 
     def _take_choice(
         self, box: MultiComboBox, chosen: list[str], offered: Optional[list[str]]

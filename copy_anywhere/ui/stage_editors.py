@@ -12,6 +12,7 @@ it writes, so every editor starts with the binding it acts on.
 """
 
 import html
+from functools import partial
 from typing import Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
@@ -65,6 +66,8 @@ from ..logic.definition_schema import (
     value_expression,
 )
 from ..logic.query_terms import CollectionNames, stale_search_terms
+from ..logic.rename_locations import field_write_key, stage_key
+from ..logic.rename_scan import READ_AS_OTHER_SLOT, READ_AS_TRIGGER_SLOT
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
@@ -78,7 +81,8 @@ from .code_notices import (
     SELECT_NOTE_CODE_NOTICE,
 )
 from .stage_edit_state import StageEditState
-from .stage_document import new_guid
+from .rename_indicator import LiveLocation, RenameIndicator
+from .stage_document import StageDocument, new_guid
 from .stage_editor_context import NoteTypesFor, StageEditorContext
 from .stage_triggers_editor import quoted_items, selected_names
 from .tag_editor import TagEditor
@@ -147,10 +151,14 @@ class StageEditorEnvironment:
         note_types_for: NoteTypesFor,
         definitions: Optional[Sequence[CopyDefinitionV2]] = None,
         own_guid: str = "",
+        document: Optional[StageDocument] = None,
     ) -> None:
         self.note_types_for = note_types_for
         self.definitions = list(definitions or [])
         self.own_guid = own_guid
+        #: The document being edited, whose rename warnings the editors' parts show. None
+        #: where an editor is built on its own, which then shows none.
+        self.document = document
 
     def definition(self, guid: str) -> Optional[CopyDefinitionV2]:
         for definition in self.definitions:
@@ -174,6 +182,22 @@ class StageEditorEnvironment:
 # --------------------------------------------------------------------------------------
 # Small shared controls
 # --------------------------------------------------------------------------------------
+
+
+def _expression_key(key: Callable[[str, str], str], guid: str, location: str, side: str) -> str:
+    """The key of one side (`text`, `code`) of the expression at `location` in an object."""
+    return key(guid, f"{location}.{side}")
+
+
+def rename_indicator(
+    parent: QWidget,
+    environment: StageEditorEnvironment,
+    locations: Callable[[], Sequence[LiveLocation]],
+) -> Optional[RenameIndicator]:
+    """A rename indicator over `locations`, or None for an editor built outside the dialog."""
+    if environment.document is None:
+        return None
+    return RenameIndicator(parent, environment.document, locations)
 
 
 def binding_combo(
@@ -331,11 +355,55 @@ class StageEditor(QWidget):
 
     # -- helpers for subclasses ----------------------------------------------------------
 
-    def expression_editor(self, expression, label: str, **kwargs) -> ValueExpressionEditor:
-        editor = ValueExpressionEditor(self, expression, self.context, self.state, label, **kwargs)
+    def expression_editor(
+        self,
+        expression,
+        label: str,
+        location: Optional[str] = None,
+        text_is_search: bool = False,
+        **kwargs,
+    ) -> ValueExpressionEditor:
+        """`location` is the key the expression is stored under in the stage (`query`,
+        `value` ...), which its rename warnings are filed under with the stage's guid."""
+        guid = self.stage.get("guid")
+        rename_key: Optional[Callable[[str], str]] = None
+        if location and isinstance(guid, str) and guid:
+            rename_key = partial(_expression_key, stage_key, guid, location)
+        editor = ValueExpressionEditor(
+            self,
+            expression,
+            self.context,
+            self.state,
+            label,
+            rename_document=self.environment.document,
+            rename_key=rename_key,
+            text_is_search=text_is_search,
+            **kwargs,
+        )
         editor.changed.connect(self.changed)
         self._expression_editors.append(editor)
         return editor
+
+    def stage_location(self, path: str) -> Optional[str]:
+        """The location key of `path` in this stage, or None for a stage with no guid."""
+        guid = self.stage.get("guid")
+        return stage_key(guid, path) if isinstance(guid, str) and guid else None
+
+    def slot_indicator(
+        self, path: str, read_as: str, combo: QComboBox
+    ) -> Optional[RenameIndicator]:
+        """An indicator for a picker holding one name at `path` in this stage, following it."""
+        key = self.stage_location(path)
+        if key is None:
+            return None
+        indicator = rename_indicator(
+            self,
+            self.environment,
+            lambda: [LiveLocation(key, read_as, combo.currentText() or None)],
+        )
+        if indicator is not None:
+            combo.currentTextChanged.connect(indicator.refresh)
+        return indicator
 
     def add_row(self, label, widget) -> QLabel:
         made = QLabel(label, self) if isinstance(label, str) else label
@@ -381,6 +449,7 @@ class VariableStageEditor(StageEditor):
         self.value = self.expression_editor(
             stage.setdefault("value", value_expression()),
             "Its value",
+            location="value",
             description="Anything in scope above this stage can be referenced here.",
             process_names=ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,
         )
@@ -409,6 +478,8 @@ class QueryStageEditor(StageEditor):
         self.query = self.expression_editor(
             stage.setdefault("query", value_expression()),
             "Search",
+            location="query",
+            text_is_search=True,
             description=(
                 "An ordinary Anki search. It runs against the collection as saved:"
                 " edits earlier stages made are not searchable, though their values can be"
@@ -471,6 +542,11 @@ class QueryStageEditor(StageEditor):
         sort_row.addWidget(self.sort_field)
         sort_row.addWidget(self.sort_order)
         sort_row.addWidget(self.sort_numeric)
+        self.sort_field_indicator = self.slot_indicator(
+            "selection.sort_field", READ_AS_OTHER_SLOT, self.sort_field
+        )
+        if self.sort_field_indicator is not None:
+            sort_row.addWidget(self.sort_field_indicator)
         sort_row.addStretch()
         self.add_row("Then sort by", self._wrap(sort_row))
 
@@ -584,8 +660,19 @@ class FieldWriteRow(QFrame):
         self.write_if.currentIndexChanged.connect(self.changed)
         remove = QPushButton("Remove", self)
         remove.clicked.connect(lambda: self.removed.emit(self))
+        # Each of this write's parts shows its own rename warnings, filed under the write's
+        # guid; a write with none (only a definition the startup repair never reached) has
+        # nowhere a warning could be filed.
+        write_guid = field_write.get("guid")
+        self.write_guid = write_guid if isinstance(write_guid, str) and write_guid else None
         header.addWidget(QLabel("Write", self))
         header.addWidget(self.field)
+        self.field_indicator = self._slot_indicator(
+            "field", self._target_read_as, lambda: self.field.currentText() or None
+        )
+        if self.field_indicator is not None:
+            self.field.currentTextChanged.connect(self.field_indicator.refresh)
+            header.addWidget(self.field_indicator)
         header.addWidget(self.write_if)
         header.addStretch()
         header.addWidget(remove)
@@ -598,6 +685,12 @@ class FieldWriteRow(QFrame):
             parent.state,
             label="to",
             process_names=ALL_FIELD_TO_FIELD_PROCESS_NAMES,
+            rename_document=parent.environment.document,
+            rename_key=(
+                partial(_expression_key, field_write_key, self.write_guid, "value")
+                if self.write_guid
+                else None
+            ),
         )
         self.value.changed.connect(self.changed)
         layout.addWidget(self.value)
@@ -609,6 +702,7 @@ class FieldWriteRow(QFrame):
         # not this one, so the definition ran and every migrated write in it was skipped --
         # silently, because the tags and card actions beside them are not gated.
         self.unfocus_fields: Optional[MultiComboBox] = None
+        self.unfocus_indicator: Optional[RenameIndicator] = None
         if "unfocus_trigger_fields" in field_write:
             self.unfocus_fields = MultiComboBox(
                 self, placeholder_text="No fields (this write never runs on unfocus)"
@@ -618,8 +712,32 @@ class FieldWriteRow(QFrame):
             watched = QHBoxLayout()
             watched.addWidget(QLabel("only when leaving", self))
             watched.addWidget(self.unfocus_fields)
+            unfocus_fields = self.unfocus_fields
+            self.unfocus_indicator = self._slot_indicator(
+                "unfocus_trigger_fields",
+                lambda: READ_AS_TRIGGER_SLOT,
+                lambda: selected_names(unfocus_fields),
+            )
+            if self.unfocus_indicator is not None:
+                unfocus_fields.currentTextChanged.connect(self.unfocus_indicator.refresh)
+                watched.addWidget(self.unfocus_indicator)
             watched.addStretch()
             layout.addLayout(watched)
+
+    def _target_read_as(self) -> str:
+        """How the pass reads the target: a field of the trigger note, or of a queried one."""
+        target = self.owner.target.currentText()
+        return READ_AS_TRIGGER_SLOT if target == "trigger" else READ_AS_OTHER_SLOT
+
+    def _slot_indicator(
+        self, path: str, read_as: Callable[[], str], value: Callable[[], object]
+    ) -> Optional[RenameIndicator]:
+        if self.write_guid is None:
+            return None
+        key = field_write_key(self.write_guid, path)
+        return rename_indicator(
+            self, self.owner.environment, lambda: [LiveLocation(key, read_as(), value())]
+        )
 
     def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
         """Offer the trigger note's fields: these name editor fields, not the write's target.
@@ -713,6 +831,7 @@ class EditNoteStageEditor(StageEditor):
             self,
             self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
+            rename_document=environment.document,
         )
         self.card_actions.initialize_ui_state()
         self.card_actions.changed.connect(self.changed)
@@ -796,6 +915,7 @@ class EditCardStageEditor(StageEditor):
             self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
             single_card_mode=True,
+            rename_document=environment.document,
         )
         self.card_actions.initialize_ui_state()
         self.card_actions.changed.connect(self.changed)
@@ -833,6 +953,7 @@ class SelectStageEditor(StageEditor):
         self.index = self.expression_editor(
             stage.setdefault("index", value_expression(text="0")),
             "Which one",
+            location="index",
             description=(
                 f"A number: 0 is the first {what}, 1 the second, -1 the last. As code,"
                 f" return the number, or None to select no {what}; the list is `{items}`."
@@ -867,6 +988,7 @@ class ReadFileStageEditor(StageEditor):
         self.filename = self.expression_editor(
             stage.setdefault("filename", value_expression()),
             "File in the media folder",
+            location="filename",
             description=(
                 "Path separators and '..' are refused; the file must be UTF-8."
                 f" {MEDIA_PREFIX_NOTE}"
@@ -892,6 +1014,7 @@ class WriteFileStageEditor(StageEditor):
         self.filename = self.expression_editor(
             stage.setdefault("filename", value_expression()),
             "File in the media folder",
+            location="filename",
             description=(
                 "Leave this empty only if the content is code that returns its own"
                 f" (filename, content) pairs. {MEDIA_PREFIX_NOTE}"
@@ -903,6 +1026,7 @@ class WriteFileStageEditor(StageEditor):
         self.content = self.expression_editor(
             stage.setdefault("content", value_expression()),
             "Its whole contents",
+            location="content",
             description=(
                 "A write replaces the file. To append, read it into a variable first and"
                 " build the new contents from that."
@@ -958,7 +1082,7 @@ class StoreStageEditor(StageEditor):
         self.target.currentTextChanged.connect(self.notify)
         self.add_row("Append to", self.target)
         self.value = self.expression_editor(
-            stage.setdefault("value", value_expression()), "The value to append"
+            stage.setdefault("value", value_expression()), "The value to append", location="value"
         )
         self.form.addRow(self.value)
 
@@ -1063,6 +1187,7 @@ class ReduceStageEditor(StageEditor):
         self.initial = self.expression_editor(
             stage.setdefault("initial", value_expression()),
             "Starting from",
+            location="initial",
             is_required=False,
             allow_process_chain=False,
         )
@@ -1078,6 +1203,7 @@ class ReduceStageEditor(StageEditor):
         self.value = self.expression_editor(
             stage.setdefault("value", value_expression(mode="code")),
             "The next running value",
+            location="value",
             description=(
                 "Runs once per item and returns the next running value. It cannot change"
                 " any note: a fold that has to write is a loop with a Store in it."
@@ -1151,6 +1277,8 @@ class ConditionStageEditor(StageEditor):
         self.predicate = self.expression_editor(
             stage.setdefault("predicate", value_expression(mode="code")),
             "Run the first branch when",
+            location="predicate",
+            text_is_search=is_search,
             description=(
                 "Code returning true or false, or text that counts as true when it is not"
                 " empty."
@@ -1166,6 +1294,9 @@ class ConditionStageEditor(StageEditor):
         # A search is text run through `find_notes`; there is no code form of it, and an
         # expression has no note to be matched against.
         self.predicate.set_code_allowed(not is_search)
+        # A search is read for its terms as well as its references, as the pass reads a
+        # note query predicate.
+        self.predicate.set_text_is_search(is_search)
         self.predicate.set_label(
             "An Anki search the note has to match" if is_search else "Run the first branch when"
         )

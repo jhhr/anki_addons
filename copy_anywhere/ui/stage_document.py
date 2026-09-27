@@ -563,6 +563,10 @@ class StageDocument:
         """The warnings a rename left on this definition, each with its location key."""
         return rename_warning_entries(self.definition)
 
+    def rename_marks_at(self, key: str) -> list[dict]:
+        """The warnings filed under one location key, for the editor part that holds it."""
+        return [entry for location, entry in self.rename_marks() if location == key]
+
     def dismiss_rename_mark(self, entry: dict) -> None:
         """Take one warning off: the user says they have updated the definition for it.
 

@@ -7,9 +7,10 @@ editor: a mode toggle, an interpolated text edit, a code edit, and the process c
 runs after either.
 """
 
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from aqt.qt import (
+    QHBoxLayout,
     QVBoxLayout,
     QWidget,
     pyqtSignal,
@@ -22,11 +23,14 @@ from ..logic.definition_schema import (
     ValueExpression,
     value_expression,
 )
+from ..logic.rename_scan import READ_AS_CODE, READ_AS_QUERY, READ_AS_TEXT
 from ..shared.ui.code_edit_layout import CodeEditLayout
 from ..shared.ui.interpolated_text_edit import InterpolatedTextEditLayout
 from ..shared.ui.toggle_switch import ToggleSwitch
 from .code_notices import FIELD_CODE_NOTICE
 from .edit_extra_processing_dialog import EditExtraProcessingWidget
+from .rename_indicator import LiveLocation, RenameIndicator
+from .stage_document import StageDocument
 from .stage_edit_state import StageEditState
 from .stage_editor_context import StageEditorContext
 
@@ -57,7 +61,16 @@ class ValueExpressionEditor(QWidget):
         allow_process_chain: bool = True,
         height: Optional[int] = None,
         placeholder_text: Optional[str] = None,
+        rename_document: Optional[StageDocument] = None,
+        rename_key: Optional[Callable[[str], str]] = None,
+        text_is_search: bool = False,
     ) -> None:
+        """`rename_key` turns `text` or `code` into the location key of that side of this
+        expression (`rename_locations`, from the guid of the stage or field write that
+        holds it), and with `rename_document` puts a rename indicator over the editor;
+        only the owner knows whose expression this is. `text_is_search` says the text is
+        an Anki search, which is read for search terms as well as references.
+        """
         super().__init__(parent)
         self.expression: ValueExpression = expression if expression is not None else value_expression()
         self.expression.setdefault("mode", MODE_TEXT)
@@ -70,10 +83,15 @@ class ValueExpressionEditor(QWidget):
         self.vbox = QVBoxLayout(self)
         self.vbox.setContentsMargins(0, 0, 0, 0)
 
+        # The mode toggle and the rename indicator share a line above both modes' boxes,
+        # so the indicator stays in one place whichever box is showing.
+        self.header = QHBoxLayout()
+        self.header.setContentsMargins(0, 0, 0, 0)
+        self.vbox.addLayout(self.header)
         self.use_code_toggle: Optional[ToggleSwitch] = None
         if allow_code:
             self.use_code_toggle = ToggleSwitch("Execute content as Python code", self)
-            self.vbox.addWidget(self.use_code_toggle)
+            self.header.addWidget(self.use_code_toggle)
 
         self.text_container = QWidget(self)
         self.text_layout = InterpolatedTextEditLayout(
@@ -125,7 +143,41 @@ class ValueExpressionEditor(QWidget):
         if self.code_layout is not None:
             self.code_layout.text_edit.textChanged.connect(self.changed)
 
+        self.text_is_search = text_is_search
+        self.rename_indicator: Optional[RenameIndicator] = None
+        if rename_document is not None and rename_key is not None:
+            key = rename_key
+            self.rename_indicator = RenameIndicator(
+                self, rename_document, lambda: self._rename_locations(key)
+            )
+            self.header.addWidget(self.rename_indicator)
+            self.changed.connect(self.rename_indicator.refresh)
+        self.header.addStretch(1)
+
     # -- state ---------------------------------------------------------------------------
+
+    def _rename_locations(self, key: Callable[[str], str]) -> list[LiveLocation]:
+        """Both sides, with only the one `apply` would store as the mode in effect.
+
+        The other side is kept for switching back but never runs, and the pass reads and a
+        save keeps only the side that does (`rename_reconcile._expression_location`).
+        """
+        code = self.is_code_mode()
+        text_read_as = READ_AS_QUERY if self.text_is_search else READ_AS_TEXT
+        code_text = self.code_layout.get_text() if self.code_layout is not None else None
+        return [
+            LiveLocation(key("text"), text_read_as, None if code else self.text_layout.get_text()),
+            LiveLocation(key("code"), READ_AS_CODE, code_text if code else None),
+        ]
+
+    def refresh_rename_indicator(self) -> None:
+        if self.rename_indicator is not None:
+            self.rename_indicator.refresh()
+
+    def set_text_is_search(self, is_search: bool) -> None:
+        """Read the text as an Anki search from now on, or stop: a condition can switch."""
+        self.text_is_search = is_search
+        self.refresh_rename_indicator()
 
     def _apply_mode(self, use_code: bool) -> None:
         self.text_container.setVisible(not use_code)
@@ -158,6 +210,7 @@ class ValueExpressionEditor(QWidget):
             return
         self.use_code_toggle.setVisible(allowed)
         self._apply_mode(allowed and self.use_code_toggle.isChecked())
+        self.refresh_rename_indicator()
 
     def is_code_mode(self) -> bool:
         return bool(

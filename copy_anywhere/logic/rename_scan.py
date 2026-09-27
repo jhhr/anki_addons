@@ -568,7 +568,67 @@ def apply(text: str, hits: Iterable[Hit]) -> str:
     return apply_with_spans(text, hits)[0]
 
 
+# Reading a location ----------------------------------------------------------------------------
+#
+# How a location's value is read, which picks the scanner. The pass names each location's
+# with one of these as it walks a definition (`rename_reconcile._locations`), and the editor
+# part showing a location names the same one, so the part hides a warning exactly when a
+# save would drop it.
+
+READ_AS_TEXT = "text"
+#: An Anki search that can also hold `{{...}}` references: a query, a note query predicate.
+READ_AS_QUERY = "query"
+READ_AS_CODE = "code"
+#: Field names of the trigger note, one or a list: the unfocus lists, the migrated gates,
+#: a field write's target when it writes the trigger note.
+READ_AS_TRIGGER_SLOT = "trigger slot"
+#: A field name of notes whose note types the pass cannot know: a sort field, a field
+#: write's target on a note from a query.
+READ_AS_OTHER_SLOT = "other slot"
+#: A deck name: a card action's `change_deck`, which moves the card by name.
+READ_AS_DECK_SLOT = "deck slot"
+
+
+def find_at(read_as: str, value: Any, rename: Rename) -> list[Hit]:
+    """Where a location's value spells the old name, read the way `read_as` says."""
+    if read_as == READ_AS_CODE:
+        return find_in_code(value, rename)
+    if read_as == READ_AS_QUERY:
+        return find_in_query(value, rename)
+    if read_as == READ_AS_TEXT:
+        return find_in_template(value, rename)
+    if read_as == READ_AS_OTHER_SLOT:
+        return find_in_slot(value, rename, OTHER_SLOT)
+    if read_as == READ_AS_DECK_SLOT:
+        return find_in_deck_slot(value, rename)
+    names = value if isinstance(value, list) else [value]
+    return [hit for name in names for hit in find_in_slot(name, rename, TRIGGER_SLOT)]
+
+
+def still_spelled(read_as: str, value: Any, entry: Any) -> bool:
+    """Whether a stored warning still has its old name to point at in the location's value.
+
+    What an editor part asks to decide whether to show a warning, and what a save asks to
+    decide whether to keep it (SPEC decision 6). Both lean towards keeping: code that does
+    not tokenize finds nothing, but that is "cannot tell" and not "gone" -- code is mid-edit
+    far more often than it is fixed -- and an entry that does not say which rename it is
+    about cannot be checked at all, so it stays for the user to dismiss.
+    """
+    rename = Rename.from_entry(entry)
+    if rename is None:
+        return True
+    if read_as == READ_AS_CODE and not code_is_readable(value):
+        return True
+    return bool(find_at(read_as, value, rename))
+
+
 __all__ = [
+    "READ_AS_CODE",
+    "READ_AS_DECK_SLOT",
+    "READ_AS_OTHER_SLOT",
+    "READ_AS_QUERY",
+    "READ_AS_TEXT",
+    "READ_AS_TRIGGER_SLOT",
     "BINDING_TOKEN",
     "CARD_TERM",
     "CODE_LITERAL",
@@ -589,7 +649,9 @@ __all__ = [
     "find_in_query",
     "find_in_search",
     "find_in_slot",
+    "find_at",
     "find_in_template",
     "hit_blocks_run",
     "object_term",
+    "still_spelled",
 ]
