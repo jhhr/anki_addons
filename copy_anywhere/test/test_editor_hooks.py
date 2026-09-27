@@ -50,7 +50,6 @@ from copy_anywhere.hooks.note_hooks import (
     run_copy_fields_on_unfocus_field,
 )
 from copy_anywhere.logic import copy_fields as copy_fields_module
-from copy_anywhere.logic.rename_reconcile import BROKEN_KEY
 
 ADDON_TAG = "copy_anywhere"
 
@@ -874,7 +873,7 @@ class TestADefinitionARenameMarkedIsRefused:
             on_unfocus={"edit_fields": ["Word"], "add_fields": ["Word"]},
             stages=[d.edit_note("trigger", [d.write("Note", d.text("marked ran"))])],
         )
-        definition[BROKEN_KEY] = [{"field": "Word", "message": message}]
+        d.warned(definition, d.rename_warning(message, old="Word"))
         definition["effects"].update(effects)
         return definition
 
@@ -917,7 +916,7 @@ class TestADefinitionARenameMarkedIsRefused:
         run_copy_fields_on_unfocus_field(False, note, WORD)
         assert len(hook_logger.errors) == 1
 
-        definition[BROKEN_KEY] = [{"field": "Word", "message": "Something else now"}]
+        d.warned(definition, d.rename_warning("Something else now", old="Word"))
         run_copy_fields_on_unfocus_field(False, note, WORD)
 
         assert len(hook_logger.errors) == 2

@@ -41,7 +41,6 @@ from copy_anywhere.hooks.note_hooks import (
     get_copy_definitions_for_add_note,
     run_copy_fields_on_add,
 )
-from copy_anywhere.logic.rename_reconcile import BROKEN_KEY
 
 ADDON_TAG = "copy_anywhere"
 
@@ -428,7 +427,7 @@ class TestADefinitionBrokenByARenameOnAdd:
             stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("broken ran"))])],
             on_add=True,
         )
-        broken[BROKEN_KEY] = [{"field": "Word", "message": 'Field "Word" is no longer here'}]
+        d.warned(broken, d.rename_warning('Field "Word" is no longer here', old="Word"))
         whole = d.staged(
             "whole",
             stages=[
@@ -455,7 +454,7 @@ class TestADefinitionBrokenByARenameOnAdd:
             stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("broken ran"))])],
             on_add=True,
         )
-        definition[BROKEN_KEY] = [{"field": "Word", "message": message}]
+        d.warned(definition, d.rename_warning(message, old="Word"))
         definition["effects"].update(effects)
         return definition
 
@@ -486,7 +485,7 @@ class TestADefinitionBrokenByARenameOnAdd:
         run_copy_fields_on_add(new_note(col, Word="inu"), deck(col))
         assert len(hook_logger.errors) == 1
 
-        broken[BROKEN_KEY] = [{"field": "Word", "message": "Something else now"}]
+        d.warned(broken, d.rename_warning("Something else now", old="Word"))
         note = new_note(col, Word="tori")
         run_copy_fields_on_add(note, deck(col))
 

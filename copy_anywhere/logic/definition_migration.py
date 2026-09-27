@@ -170,17 +170,39 @@ def _give_parts_guids(format_1: dict, definition_guid: str) -> None:
 
 
 def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
-    """Give every stage of a staged definition that has no guid one. True if any had none.
+    """Give every stage, and every field write of an Edit Note stage, that has no guid one.
+    True if any had none.
 
     For definitions converted before `_give_parts_guids` existed: their variables and file
     writes can have an empty guid, and nothing else would ever give them one. An export the
     user made of such a stage names no stage either, so it is pointed at the repaired stage
-    whose result it takes. Safe to run on every start: a definition with every guid in
-    place comes back untouched.
+    whose result it takes. A field write needs one because a rename warning about its text
+    is filed under it (`rename_locations.field_write_key`), and only a migrated write or
+    one the editor added since carries one. Derived like the stage guids, so that two
+    devices repairing the same definition agree. Safe to run on every start: a definition
+    with every guid in place comes back untouched.
     """
     definition_guid = definition.get("guid") or ""
     stages = definition.get("stages") or []
+    writes = [
+        write
+        for stage in walk_stages(stages)
+        if stage.get("type") == STAGE_EDIT_NOTE
+        for write in stage.get("fields") or []
+        if isinstance(write, dict)
+    ]
     taken = {stage.get("guid") for stage in walk_stages(stages) if stage.get("guid")}
+    taken |= {write.get("guid") for write in writes if write.get("guid")}
+    write_counter = 0
+    for write in writes:
+        if write.get("guid"):
+            continue
+        guid = ""
+        while not guid or guid in taken:
+            write_counter += 1
+            guid = _child_guid(definition_guid, f"field-write-{write_counter}")
+        write["guid"] = guid
+        taken.add(guid)
     repaired_roots: dict[str, str] = {}
     root_ids = {id(stage) for stage in stages}
     counter = 0
@@ -197,7 +219,7 @@ def fill_in_missing_stage_guids(definition: CopyDefinitionV2) -> bool:
             for result in stage_result_names(stage):
                 repaired_roots.setdefault(result, guid)
     if not counter:
-        return False
+        return bool(write_counter)
     for export in definition.get("exports") or []:
         if not isinstance(export, dict) or export.get("stage_guid"):
             continue

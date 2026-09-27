@@ -220,6 +220,27 @@ def test_duplicate_blanks_the_output_names_of_a_call():
     assert copy["outputs"] == [{"export": "H1", "result": ""}]
 
 
+def test_duplicate_gives_its_field_writes_and_card_actions_fresh_guids():
+    # A rename warning is filed under the guid of the write or action whose text spells the
+    # name, so a copy sharing one would show the original's warnings as its own.
+    edit = default_stage(STAGE_EDIT_NOTE, "edit")
+    edit["fields"] = [
+        {"guid": "w1", "field": "Note", "value": value_expression(), "write_if": "always"},
+        {"field": "Meaning", "value": value_expression(), "write_if": "always"},
+    ]
+    edit["card_actions"] = [{"guid": "a1", "set_flag": 2}]
+    doc = document(edit)
+
+    copy = doc.duplicate_stage("edit")
+
+    assert copy is not None
+    copied_guids = [write["guid"] for write in copy["fields"]] + [copy["card_actions"][0]["guid"]]
+    assert len(set(copied_guids)) == 3
+    assert not set(copied_guids) & {"w1", "a1", "edit", copy["guid"]}
+    assert [write.get("guid") for write in edit["fields"]] == ["w1", None]
+    assert edit["card_actions"][0]["guid"] == "a1"
+
+
 def test_move_within_block_stops_at_the_block_edges():
     doc = document(
         default_stage(STAGE_VARIABLE, "a"),

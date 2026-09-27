@@ -121,9 +121,10 @@ def run_reconcile() -> Optional[ReconcileResult]:
 
 
 def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
-    """What to tell the user about the marks this pass added, if any.
+    """What to tell the user about the blocking marks this pass added, if any.
 
-    Only the new ones (`ReconcileResult.newly_marked`): a mark stays until the user
+    Only the new ones (`ReconcileResult.newly_marked`), and only those that keep a
+    definition from running, which is what this dialog says: a mark stays until the user
     dismisses it, and listing it again after every unrelated note type edit would teach
     them to close this dialog unread. The picker and the editor go on showing every mark,
     and the log lists them all.
@@ -134,12 +135,10 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     dismisses its mark in the definition editor -- since this dialog is where the user
     learns that.
     """
-    if not result.newly_marked:
+    blocking = [stale for stale in result.newly_marked if stale.blocks_run]
+    if not blocking:
         return None
-    lines = [
-        html.escape(f"'{stale.definition_name}': {stale.message}")
-        for stale in result.newly_marked
-    ]
+    lines = [html.escape(f"'{stale.definition_name}': {stale.message}") for stale in blocking]
     return (
         "These copy definitions use a field or card type that was renamed or deleted, in a"
         " way that could not be followed into them, so they are marked and not run:"

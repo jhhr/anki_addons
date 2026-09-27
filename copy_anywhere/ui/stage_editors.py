@@ -78,6 +78,7 @@ from .code_notices import (
     SELECT_NOTE_CODE_NOTICE,
 )
 from .stage_edit_state import StageEditState
+from .stage_document import new_guid
 from .stage_editor_context import NoteTypesFor, StageEditorContext
 from .stage_triggers_editor import quoted_items, selected_names
 from .tag_editor import TagEditor
@@ -734,7 +735,14 @@ class EditNoteStageEditor(StageEditor):
         return row
 
     def _on_add_field(self) -> None:
-        field_write: FieldWrite = {"field": "", "value": value_expression(), "write_if": "always"}
+        # A guid from the start, as a stage has: a rename warning about this write's text
+        # is filed under it (`rename_locations.field_write_key`).
+        field_write: FieldWrite = {
+            "guid": new_guid(),
+            "field": "",
+            "value": value_expression(),
+            "write_if": "always",
+        }
         self.stage.setdefault("fields", []).append(field_write)
         self._add_field_row(field_write)
         self.changed.emit()

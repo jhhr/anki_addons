@@ -26,10 +26,10 @@ mechanical. A definition on several spells a field or a card type once for all o
 a rename in one leaves it wrong whichever name it spells, and every rule that tried to
 decide for it (follow once all of them agree, withhold when another has both names) found
 a way to decide wrongly and quietly. So it is not rewritten at all: it is marked
-(`BROKEN_KEY`), as is a one-trigger definition whose code still mentions the old name and
-any definition spelling a field or card type that was deleted. A marked definition is not
-run until the user has updated it and dismissed the mark in the definition editor. The
-pass never re-derives a mark; the only one it takes back is a rename undone.
+(`rename_warnings.py`), as is a one-trigger definition whose code still mentions the old
+name and any definition spelling a field or card type that was deleted. A marked definition
+is not run until the user has updated it and dismissed the mark in the definition editor.
+The pass never re-derives a mark; the only one it takes back is a rename undone.
 
 Nothing here runs while a dialog is still open: the pass reads the collection as Anki saved
 it, so a rename the user cancels was never made, and one undone later is just a second
@@ -41,7 +41,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Any, Final, Iterator, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union, cast
 
 from ..shared.interpolate.interpolate_fields import CARD_VALUE_RE, CARD_VALUES_DICT
 from .definition_migration import STAGE_EXPRESSION_KEYS, rewrite_references
@@ -76,6 +76,8 @@ from .object_refs import (
     resolve_note_type,
 )
 from .query_terms import CollectionNames, stale_search_terms
+from .rename_locations import DEFINITION_KEY
+from .rename_warnings import WARNINGS_KEY, rename_warning_entries
 
 if TYPE_CHECKING:  # pragma: no cover -- the import would close a cycle at run time
     from ..configuration import Config
@@ -94,18 +96,6 @@ _TRIGGER_NOTE_TYPE = "trigger note type"
 #: the collection's path; `_collection_path` says why, and what that costs.
 SNAPSHOT_KEY = "name_snapshot"
 
-#: Where a definition keeps the renames and deletions this pass could not follow into it,
-#: one entry per field or template: `{"kind", "note_type_id", "id", "old", "new",
-#: "message"}`, `new` None for a deletion. Written once, with the names as they were then,
-#: and never re-derived: a rename in a definition with several trigger note types, a name
-#: its code still mentions, a field or card type it spells that was deleted. The user
-#: updates the definition and dismisses the mark in the editor; the pass itself only drops
-#: an entry whose object is called `old` again (the rename undone) and updates one renamed
-#: a second time. Entries a version before this one stored (`{"field"}` or `{"card_type"}`
-#: with a message, and no `"id"`) are read for their message and otherwise left alone. See
-#: "Following a rename in Anki" in `docs/staged-definitions.md`.
-BROKEN_KEY: Final = "broken_by_rename"
-
 
 @dataclass(frozen=True)
 class StaleName:
@@ -117,6 +107,8 @@ class StaleName:
     name: str
     #: Why, for the entries that have more to say than their kind and name.
     message: str = ""
+    #: For a stored rename warning: whether it keeps the definition from running.
+    blocks_run: bool = False
 
 
 @dataclass
@@ -148,9 +140,9 @@ class ReconcileResult:
     #: than only after a rename: a query can go stale on another device, and nothing else
     #: ever looks inside search text (`query_terms.py`).
     stale_terms: list[StaleName] = dataclass_field(default_factory=list)
-    #: Every mark a definition carries after this pass (`BROKEN_KEY`), named by the name the
-    #: definition spells. Listed for as long as the definition stays marked, not only on the
-    #: pass that marked it.
+    #: Every blocking warning a definition carries after this pass (`rename_warnings.py`),
+    #: named by the name the definition spells. Listed for as long as the definition stays
+    #: marked, not only on the pass that marked it.
     broken: list[StaleName] = dataclass_field(default_factory=list)
     #: The marks this pass added, which is what the user has not been told about yet. An
     #: entry it only updated (the object renamed again) is not new.
@@ -776,8 +768,8 @@ def trigger_names_not_on_every_note_type(definition: CopyDefinitionV2, col: Any)
     A definition spells a trigger field once for every note type it triggers on, so a field
     one of them lacks makes it fail on that note type's notes and write into the others'
     as if nothing were wrong. That is what a rename in only some of the note types leaves
-    behind (the pass marks it, `BROKEN_KEY`), and what an edit that trades one name for
-    another can do just as well: `{{trigger.Word}}` rewritten to `{{trigger.Term}}` while
+    behind (the pass marks it, `rename_warnings.py`), and what an edit that trades one name
+    for another can do just as well: `{{trigger.Word}}` rewritten to `{{trigger.Term}}` while
     the other note type still says `Word`. So the editor refuses it, at every slot the
     rewrite walks -- field writes on the trigger, the unfocus lists, `write_if_field`, and
     `{{trigger....}}` tokens in text. The card type a `{{trigger.<Card type>__<Key>}}`
@@ -872,24 +864,35 @@ def _mark_message(
 
 
 def _mark_key(entry: Any) -> Optional[tuple[int, str, int]]:
-    """The object an entry is about, `(note_type_id, kind, id)`, if it names one.
+    """The object an entry is about, `(note_type_id, kind, object_id)`, if it names one.
 
-    The entries an earlier version stored name no object this way (`BROKEN_KEY`), so they
-    have no key: nothing here updates or removes them.
+    An entry edited by hand into naming no field or card type has no key: nothing here
+    updates or removes it.
     """
     if not isinstance(entry, dict) or not isinstance(entry.get("old"), str):
         return None
     kind = entry.get("kind")
     note_type_id = _as_int(entry.get("note_type_id"))
-    object_id = _as_int(entry.get("id"))
+    object_id = _as_int(entry.get("object_id"))
     if kind not in (KIND_FIELD, KIND_CARD_TYPE) or note_type_id is None or object_id is None:
         return None
     return note_type_id, kind, object_id
 
 
+def _stored_warnings(definition: CopyDefinitionV2) -> Iterator[tuple[str, list]]:
+    """Each location of the store with its stored list, however little the entries say."""
+    stored = definition.get(WARNINGS_KEY)
+    for key, entries in (stored.items() if isinstance(stored, dict) else []):
+        if isinstance(entries, list):
+            yield key, entries
+
+
 def _mark_keys(definition: CopyDefinitionV2) -> set[tuple[int, str, int]]:
-    stored = definition.get(BROKEN_KEY)
-    keys = {_mark_key(entry) for entry in (stored if isinstance(stored, list) else [])}
+    keys = {
+        _mark_key(entry)
+        for _location, entries in _stored_warnings(definition)
+        for entry in entries
+    }
     return {key for key in keys if key is not None}
 
 
@@ -903,44 +906,49 @@ def _refresh_marks(definition: CopyDefinitionV2, col: Any) -> bool:
     since the pass cannot tell a fix from a mistake. An entry whose note type is gone is
     left as it is.
     """
-    stored = definition.get(BROKEN_KEY)
-    if not isinstance(stored, list):
+    stored = definition.get(WARNINGS_KEY)
+    if not isinstance(stored, dict):
         return False
     changed = False
-    kept: list = []
-    for entry in stored:
-        key = _mark_key(entry)
-        model = None if key is None else col.models.get(key[0])
-        if key is None or model is None:
-            kept.append(entry)
-            continue
-        _note_type_id, kind, object_id = key
-        live = _live_names_by_id(model.get("flds" if kind == KIND_FIELD else "tmpls")).get(
-            object_id
-        )
-        old = entry["old"]
-        if live is not None and _same_name(kind, live, old):
-            changed = True
-            continue
-        if live != entry.get("new"):
-            entry["new"] = live
-            entry["message"] = _mark_message(
-                kind,
-                str(model.get("name", "")),
-                old,
-                live,
-                followed=live is not None and _stored_trigger_count(definition) == 1,
-                in_code=_code_mentions(definition, old),
+    for location, entries in list(_stored_warnings(definition)):
+        kept: list = []
+        dropped = False
+        for entry in entries:
+            key = _mark_key(entry)
+            model = None if key is None else col.models.get(key[0])
+            if key is None or model is None:
+                kept.append(entry)
+                continue
+            _note_type_id, kind, object_id = key
+            live = _live_names_by_id(model.get("flds" if kind == KIND_FIELD else "tmpls")).get(
+                object_id
             )
-            changed = True
-        kept.append(entry)
-    if not changed:
-        return False
-    if kept:
-        definition[BROKEN_KEY] = kept
-    else:
-        del definition[BROKEN_KEY]
-    return True
+            old = entry["old"]
+            if live is not None and _same_name(kind, live, old):
+                dropped = True
+                continue
+            if live != entry.get("new"):
+                entry["new"] = live
+                entry["message"] = _mark_message(
+                    kind,
+                    str(model.get("name", "")),
+                    old,
+                    live,
+                    followed=live is not None and _stored_trigger_count(definition) == 1,
+                    in_code=_code_mentions(definition, old),
+                )
+                changed = True
+            kept.append(entry)
+        if not dropped:
+            continue
+        changed = True
+        if kept:
+            stored[location] = kept
+        else:
+            del stored[location]
+    if changed and not stored:
+        del definition[WARNINGS_KEY]
+    return changed
 
 
 def _marks_for(
@@ -957,7 +965,8 @@ def _marks_for(
     wherever the definition spells the old name or its code mentions it. A deletion is
     marked wherever it is spelled or mentioned, followed or not. `recorded` is what the
     definition spelled before any rewrite, since a rename in the same save can hand a
-    deleted field's name to another one.
+    deleted field's name to another one. Every one of them blocks a run: each is a name
+    the definition spells for a note type in which it no longer means what it did.
     """
     note_type_name = str(model.get("name", ""))
     found: list[tuple[str, int, str, Optional[str]]] = [
@@ -974,10 +983,11 @@ def _marks_for(
         entries.append(
             {
                 "kind": kind,
+                "object_id": object_id,
                 "note_type_id": model["id"],
-                "id": object_id,
                 "old": old,
                 "new": new,
+                "blocks_run": True,
                 "message": _mark_message(kind, note_type_name, old, new, rewritten, in_code),
             }
         )
@@ -996,101 +1006,45 @@ def _add_marks(
     its entry updated or taken back already (`_refresh_marks`), and a rename the snapshot
     shows for it is that same change seen from the other side: undoing a swap is a swap,
     and marking it again would put back the entry the undo just removed.
+
+    Filed under `DEFINITION_KEY`: a mark here is about the definition as a whole -- what it
+    spells anywhere and whether its code mentions the name -- not about one text in it.
     """
-    stored = definition.get(BROKEN_KEY)
-    marks = stored if isinstance(stored, list) else []
-    added = False
+    present = _mark_keys(definition)
+    added: list[dict] = []
     for entry in entries:
         key = _mark_key(entry)
-        if key in known or any(_mark_key(existing) == key for existing in marks):
+        if key is None or key in known or key in present:
             continue
-        marks.append(entry)
+        added.append(entry)
+        present.add(key)
         result.newly_marked.append(_mark_as_stale(definition, entry))
-        added = True
-    if added:
-        definition[BROKEN_KEY] = marks
-    return added
+    if not added:
+        return False
+    stored = definition.get(WARNINGS_KEY)
+    if not isinstance(stored, dict):
+        stored = definition[WARNINGS_KEY] = {}
+    located = stored.get(DEFINITION_KEY)
+    stored[DEFINITION_KEY] = (located if isinstance(located, list) else []) + added
+    return True
 
 
 def _mark_as_stale(definition: CopyDefinitionV2, entry: dict) -> StaleName:
-    """One mark entry as the report lists it, whichever version stored it."""
-    if isinstance(entry.get("old"), str):
-        kind = KIND_CARD_TYPE if entry.get("kind") == KIND_CARD_TYPE else KIND_FIELD
-        name = entry["old"]
-    else:
-        kind = KIND_CARD_TYPE if "field" not in entry and "card_type" in entry else KIND_FIELD
-        name = str(entry.get("card_type" if kind == KIND_CARD_TYPE else "field", ""))
+    """One stored entry as the report lists it."""
     return StaleName(
         definition_guid=definition.get("guid", ""),
         definition_name=definition.get("definition_name", ""),
-        kind=kind,
-        name=name,
+        kind=KIND_CARD_TYPE if entry.get("kind") == KIND_CARD_TYPE else KIND_FIELD,
+        name=str(entry.get("old", "")),
         message=str(entry.get("message", "")),
+        blocks_run=entry.get("blocks_run") is True,
     )
 
 
 def _report_broken(definition: CopyDefinitionV2, result: ReconcileResult) -> None:
-    stored = definition.get(BROKEN_KEY)
-    for entry in stored if isinstance(stored, list) else []:
-        if isinstance(entry, dict):
+    for _location, entry in rename_warning_entries(definition):
+        if entry.get("blocks_run") is True:
             result.broken.append(_mark_as_stale(definition, entry))
-
-
-#: What the user can do about a definition marked `BROKEN_KEY`, said after the stored
-#: message wherever a run refuses it. Undoing the rename takes the mark back too
-#: (`_refresh_marks`), but the advice is for keeping the rename, which is the usual case.
-BROKEN_ADVICE = "Update the definition, then dismiss the mark in the definition editor."
-
-
-def broken_by_rename_messages(definition: Any) -> list[str]:
-    """The stored messages of a definition a rename left marked, or none if it is whole.
-
-    A marked definition is not run: a name it spells, or its code mentions, no longer means
-    what it did in some note type it triggers on, so it would fail on that note type's notes
-    or read another field, and go on writing as if nothing had happened, while the user
-    still has to decide what it should say. The mark is read as stored, never re-derived: it
-    is the user's to dismiss. Any entry with a message counts, including the shapes earlier
-    versions stored. A mark that has been mangled by hand -- not a list, entries that are
-    not dicts, no message -- counts only for its well-formed entries: one with nothing to
-    say does not stop the run.
-    """
-    return [message for _entry, message in broken_by_rename_entries(definition)]
-
-
-def broken_by_rename_entries(definition: Any) -> list[tuple[dict, str]]:
-    """Each stored mark entry that has something to say, with its message, in stored order.
-
-    The entries themselves rather than their messages, for the editor, which dismisses one
-    entry at a time: two entries can carry the same message (a stored list edited by hand,
-    or shapes from two versions), and dismissing one must not take the other with it.
-    """
-    if not isinstance(definition, dict):
-        return []
-    stored = definition.get(BROKEN_KEY)
-    if not isinstance(stored, list):
-        return []
-    found: list[tuple[dict, str]] = []
-    for entry in stored:
-        message = entry.get("message") if isinstance(entry, dict) else None
-        if isinstance(message, str) and message.strip():
-            found.append((entry, message))
-    return found
-
-
-def broken_by_rename_tooltip(messages: list[str]) -> str:
-    """The marked lines as a list reads them where a definition is offered to be run.
-
-    The definition list and the browser's menu both refuse a marked definition and say why
-    in the same words, so a user who meets it in one recognises it in the other.
-    """
-    return "\n".join(["This definition is not run while it is marked:"] + messages + [BROKEN_ADVICE])
-
-
-def broken_by_rename_explanation(messages: list[str]) -> str:
-    """The stored messages as one explanation: each unchanged, then what to do about it."""
-    text = "; ".join(messages)
-    end = "" if text.rstrip().endswith((".", "!", "?")) else "."
-    return f"{text}{end} {BROKEN_ADVICE}"
 
 
 # The snapshot -------------------------------------------------------------------------------
@@ -1340,8 +1294,6 @@ def log_result(result: ReconcileResult) -> None:
 
 
 __all__ = [
-    "BROKEN_ADVICE",
-    "BROKEN_KEY",
     "KIND_CARD_TYPE",
     "KIND_DECK",
     "KIND_FIELD",
@@ -1349,10 +1301,6 @@ __all__ = [
     "SNAPSHOT_KEY",
     "ReconcileResult",
     "StaleName",
-    "broken_by_rename_entries",
-    "broken_by_rename_explanation",
-    "broken_by_rename_tooltip",
-    "broken_by_rename_messages",
     "build_name_snapshot",
     "definitions_hold_references",
     "log_result",

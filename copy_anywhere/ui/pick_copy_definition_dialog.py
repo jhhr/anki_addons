@@ -231,8 +231,8 @@ class DefinitionRow(QWidget):
         self._mark_stale_search_terms()
 
     def _mark_if_broken(self) -> None:
-        """Mark, and refuse to select, a definition the reconcile pass marked for a renamed
-        or deleted field or card type (`rename_reconcile.BROKEN_KEY`).
+        """Mark, and refuse to select, a definition the reconcile pass left a blocking
+        warning on for a renamed or deleted field or card type (`logic/rename_warnings.py`).
 
         Such a definition is not run (`copy_fields.refused_for_rename`) until it has been
         updated and every mark dismissed in the editor: a run would only log the same
@@ -240,16 +240,16 @@ class DefinitionRow(QWidget):
         and the icon beside it say why -- a disabled checkbox still shows its tooltip. Edit,
         Duplicate and Delete stay, since the editor is the way out.
         """
-        from ..logic.rename_reconcile import broken_by_rename_messages, broken_by_rename_tooltip
+        from ..logic.rename_warnings import blocking_messages, blocking_tooltip
 
-        messages = broken_by_rename_messages(self.definition)
+        messages = blocking_messages(self.definition)
         if not messages:
             self.broken_marker.setText("")
             self.broken_marker.setToolTip("")
             self.checkbox.setToolTip("")
             self.checkbox.setEnabled(True)
             return
-        explanation = broken_by_rename_tooltip(messages)
+        explanation = blocking_tooltip(messages)
         self.checkbox.setChecked(False)
         self.checkbox.setEnabled(False)
         self.checkbox.setToolTip(explanation)

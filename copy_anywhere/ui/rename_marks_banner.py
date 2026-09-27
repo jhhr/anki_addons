@@ -1,10 +1,11 @@
 """The marks a rename left on a definition, shown at the top of its editor.
 
-The reconcile pass marks a definition it could not follow a rename or deletion for
-(`rename_reconcile.BROKEN_KEY`), and a marked definition is not run. Nothing re-derives a
-mark: whether the definition now says what it should is the user's call, so the editor is
-where they make it, one Dismiss per mark. Dismissing edits the document only; Save stores
-the definition without the mark, Cancel throws the document away with the dismissal.
+The reconcile pass leaves a warning on a definition it could not follow a rename or
+deletion for (`logic/rename_warnings.py`), and a definition with a blocking one is not run.
+Nothing re-derives a mark: whether the definition now says what it should is the user's
+call, so the editor is where they make it, one Dismiss per mark. Dismissing edits the
+document only; Save stores the definition without the mark, Cancel throws the document away
+with the dismissal.
 """
 
 from __future__ import annotations
@@ -45,7 +46,8 @@ class RenameMarksBanner(QWidget):
         #: The row for each mark still shown, with the stored entry it dismisses and the
         #: message it shows.
         self.rows: list[tuple[dict, QWidget, str]] = []
-        for entry, message in document.rename_marks():
+        for _location, entry in document.rename_marks():
+            message = entry["message"]
             row = self._row(entry, message)
             self.rows.append((entry, row, message))
             layout.addWidget(row)

@@ -48,7 +48,7 @@ from .definition_schema import STAGE_CALL_DEFINITION, CopyDefinitionV2, is_forma
 from .execution.context import ExecutionSession
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 from .object_refs import resolve_deck_id, resolve_note_type
-from .rename_reconcile import broken_by_rename_explanation, broken_by_rename_messages
+from .rename_warnings import blocking_explanation, blocking_messages, blocks_run
 
 # Re-exported: these moved out into `copy_primitives` when the executor was split, and
 # everything that has always imported them from here keeps working.
@@ -651,14 +651,14 @@ def refused_for_rename(copy_definition: AnyCopyDefinition, once_per_session: boo
     """Whether a rename's mark refuses this definition a run, logging why if it does.
 
     Every run path asks this one question and answers it in the same words, so the log reads
-    alike whichever path met the mark. The mark is read through `broken_by_rename_messages`,
+    alike whichever path met the mark. The mark is read through `blocking_messages`,
     which knows every entry shape; a format-1 definition is never marked and passes.
 
     :param once_per_session: the per-note hooks' mode. The error is logged the first time
         this session a definition is refused, and again only when its messages change,
         which is when the user has something new to read.
     """
-    messages = broken_by_rename_messages(copy_definition)
+    messages = blocking_messages(copy_definition)
     key = str(copy_definition.get("guid") or copy_definition.get("definition_name") or "")
     if not messages:
         # Forgotten once it runs again, so a mark that comes back is reported again.
@@ -674,7 +674,7 @@ def refused_for_rename(copy_definition: AnyCopyDefinition, once_per_session: boo
         logger.error(
             "Error in copy fields: '%s' was not run: %s",
             copy_definition.get("definition_name", ""),
-            broken_by_rename_explanation([message]),
+            blocking_explanation([message]),
         )
     return True
 
@@ -692,7 +692,7 @@ def note_type_ids_held_for_rename(copy_definitions: Sequence[AnyCopyDefinition])
     """
     held: set[int] = set()
     for copy_definition in copy_definitions:
-        if not broken_by_rename_messages(copy_definition):
+        if not blocks_run(copy_definition):
             continue
         for ref in definition_note_type_refs(copy_definition):
             note_type = resolve_note_type(ref, mw.col)
@@ -751,7 +751,7 @@ def copy_for_single_trigger_note(
         return False
 
     # A rename or deletion left this definition spelling a name that no longer means what it
-    # did (`rename_reconcile.BROKEN_KEY`), so whatever it wrote would go wrong somewhere.
+    # did (`rename_warnings.py`), so whatever it wrote would go wrong somewhere.
     # A failure rather than a benign skip: the error is what opens the log that tells the
     # user to fix it, and False stops a bulk run after one line instead of one per note.
     # Before the deck whitelist, so a run over notes the whitelist skips still says so.

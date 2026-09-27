@@ -577,7 +577,7 @@ def migrate_config():
 
 
 def repair_stage_guids(config: "Config") -> None:
-    """Give a guid to every stage that has none, on every start rather than once.
+    """Give a guid to every stage and field write that has none, on every start, not once.
 
     Not a versioned step: definitions converted before the conversion minted guids for
     format-1 parts that lacked one are already past every version, and a stage can also lose
@@ -882,7 +882,7 @@ class Config:
         in one profile cannot be read as a rename in the next: this config is shared by all
         of them, and the ids in it are not.
 
-        A definition a rename left marked (`rename_reconcile.BROKEN_KEY`) is saved with its
+        A definition a rename left marked (`logic/rename_warnings.py`) is saved with its
         marks as they stand: a mark is only ever taken off by the user in the editor (or by
         the pass, when the rename is undone), never re-derived here.
 

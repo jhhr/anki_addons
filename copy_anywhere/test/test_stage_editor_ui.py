@@ -581,6 +581,19 @@ def test_the_dialog_round_trips_an_edit_note_stage(dialog):
     assert saved["effects"]["add_note_compatible"] is True
 
 
+def test_a_field_write_added_in_the_editor_is_saved_with_a_guid_of_its_own(dialog):
+    # A rename warning about its text is filed under it (`rename_locations.field_write_key`).
+    dialog.stage_tree.add_stage(STAGE_EDIT_NOTE, None, None)
+    guid = dialog.document.root_block()[0]["guid"]
+    editor = dialog.stage_tree.rows[guid].editor
+    editor._on_add_field()
+    editor._on_add_field()
+    saved = dialog.get_copy_definition()
+    write_guids = [write.get("guid") for write in saved["stages"][0]["fields"]]
+    assert all(write_guids)
+    assert len(set(write_guids + [guid])) == 3
+
+
 def test_the_dialog_writes_the_trigger_settings_as_arrays(col, dialog):
     dialog.triggers_editor.on_review.setChecked(True)
     dialog.triggers_editor.include_subdecks.setChecked(True)

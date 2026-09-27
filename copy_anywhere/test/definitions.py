@@ -465,3 +465,30 @@ def staged(
     # Built as a plain dict like every other builder here, so a test can add or break any key.
     definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
     return definition
+
+
+def rename_warning(
+    message: str,
+    old: str = "Word",
+    new: Optional[str] = None,
+    blocks_run: bool = True,
+    kind: str = "field",
+    object_id: int = 1,
+    note_type_id: Optional[int] = 1,
+) -> dict:
+    """One entry of a definition's `rename_warnings`, blocking unless told otherwise."""
+    return {
+        "kind": kind,
+        "object_id": object_id,
+        "note_type_id": note_type_id,
+        "old": old,
+        "new": new,
+        "blocks_run": blocks_run,
+        "message": message,
+    }
+
+
+def warned(definition: dict, *entries: dict, location: str = "definition") -> dict:
+    """The definition with exactly these warnings, all under one location, replacing any."""
+    definition["rename_warnings"] = {location: list(entries)}
+    return definition

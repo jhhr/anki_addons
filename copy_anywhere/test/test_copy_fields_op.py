@@ -41,7 +41,7 @@ from anki_shared.testing import real_anki
 from note_types import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic import copy_fields as copy_fields_module
 from copy_anywhere.logic.copy_fields import copy_fields, make_copy_fields_undo_text
-from copy_anywhere.logic.rename_reconcile import BROKEN_ADVICE, BROKEN_KEY
+from copy_anywhere.logic.rename_warnings import BLOCKING_ADVICE, WARNINGS_KEY
 
 
 @pytest.fixture
@@ -907,7 +907,7 @@ class TestARefusedDefinitionInASyncRun:
             on_sync=True,
             on_review=True,
         )
-        definition[BROKEN_KEY] = [{"field": "Kanji", "message": message}]
+        d.warned(definition, d.rename_warning(message, old="Kanji"))
         return definition
 
     @pytest.fixture
@@ -950,7 +950,7 @@ class TestARefusedDefinitionInASyncRun:
 
         assert logger.errors == [
             "Error in copy fields: 'marked' was not run: Field \"Kanji\" is no longer here."
-            f" {BROKEN_ADVICE}"
+            f" {BLOCKING_ADVICE}"
         ] * 2
 
     def test_once_the_mark_is_gone_the_next_sync_runs_it_and_flags_the_cards(
@@ -960,7 +960,7 @@ class TestARefusedDefinitionInASyncRun:
         definition = self.marked()
         self.sync(run_copy_fields, definition)
 
-        del definition[BROKEN_KEY]
+        del definition[WARNINGS_KEY]
         self.sync(run_copy_fields, definition)
 
         assert col.get_note(kanji.id)["Keyword"] == "neko"

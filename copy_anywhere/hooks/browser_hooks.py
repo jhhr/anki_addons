@@ -10,7 +10,7 @@ from aqt.qt import QAction, qconnect, QMenu
 
 from ..configuration import Config
 from ..logic.copy_fields import copy_fields
-from ..logic.rename_reconcile import broken_by_rename_messages, broken_by_rename_tooltip
+from ..logic.rename_warnings import blocking_messages, blocking_tooltip
 from ..utils.replace_custom_field_values import replace_custom_field_values
 from ..ui.pick_copy_definition_dialog import show_copy_dialog
 
@@ -102,10 +102,10 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     for copy_definition in config.copy_definitions:
         copy_fields_action = QAction(copy_definition["definition_name"], browser)
         qconnect(copy_fields_action.triggered, make_copy_fields_runner(copy_definition))
-        broken = broken_by_rename_messages(copy_definition)
+        broken = blocking_messages(copy_definition)
         if broken:
             copy_fields_action.setEnabled(False)
-            copy_fields_action.setToolTip(broken_by_rename_tooltip(broken))
+            copy_fields_action.setToolTip(blocking_tooltip(broken))
         copy_fields_menu.addAction(copy_fields_action)
 
 

@@ -38,7 +38,7 @@ from ..definition_schema import (
     export_result_name,
     stage_result_name,
 )
-from ..rename_reconcile import broken_by_rename_explanation, broken_by_rename_messages
+from ..rename_warnings import blocking_explanation, blocking_messages
 from . import actions
 from .context import (
     Cancelled,
@@ -318,14 +318,14 @@ def _run_call(
         raise frame.error(
             f"definition '{callee_guid}' is not in format 2 and cannot be called", stage
         )
-    broken = broken_by_rename_messages(callee)
+    broken = blocking_messages(callee)
     if broken:
         # Refused the way a direct run of it is, and for the same reason: a callee a rename
         # left spelling a field its note types disagree on would go wrong somewhere, and the
         # caller failing loudly beats it running the rest of a chain around the gap.
         raise frame.error(
             f"calls definition '{callee.get('definition_name') or callee_guid}', which was"
-            f" not run: {broken_by_rename_explanation(broken)}",
+            f" not run: {blocking_explanation(broken)}",
             stage,
         )
 

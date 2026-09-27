@@ -39,11 +39,9 @@ from copy_anywhere.logic.object_refs import (
     resolve_card_type,
 )
 from copy_anywhere.logic.query_terms import stale_search_terms
-from copy_anywhere.logic.rename_reconcile import (
-    BROKEN_KEY,
-    broken_by_rename_messages,
-    reconcile,
-)
+from copy_anywhere.logic.rename_locations import DEFINITION_KEY
+from copy_anywhere.logic.rename_reconcile import reconcile
+from copy_anywhere.logic.rename_warnings import WARNINGS_KEY, blocking_messages, blocking_tooltip
 from copy_anywhere.ui.stage_document import StageDocument, default_stage
 from copy_anywhere.ui.stage_editor_context import (
     build_contexts,
@@ -775,7 +773,7 @@ class TestThePickerMarksADefinition:
         fixed["stages"][0]["fields"][0]["value"] = d.text("{{trigger.Word}}")
         # What dismissing the mark in the editor leaves: nothing re-derives it, so the fix
         # alone would keep it.
-        del fixed[BROKEN_KEY]
+        del fixed[WARNINGS_KEY]
 
         self.save_through(monkeypatch, dialog, definition, fixed)
 
@@ -823,7 +821,7 @@ class TestThePickerMarksADefinition:
         monkeypatch.setattr(dialog, "run_definition_editor", dismiss_and_save)
         assert dialog.edit_definition_by_guid(definition["guid"]) == 0
 
-        assert BROKEN_KEY not in dialog.copy_definitions[0]
+        assert WARNINGS_KEY not in dialog.copy_definitions[0]
         assert row.broken_marker.text() == "" and row.checkbox.isEnabled()
 
 
@@ -832,10 +830,11 @@ def rename_mark(old: str, new: Optional[str], message: Optional[str] = None) -> 
     done = f'renamed to "{new}"' if new else "deleted"
     return {
         "kind": "field",
+        "object_id": 2,
         "note_type_id": 1,
-        "id": 2,
         "old": old,
         "new": new,
+        "blocks_run": True,
         "message": message or f'Field "{old}" of note type "{VOCAB}" was {done}',
     }
 
@@ -878,7 +877,7 @@ class TestTheEditorShowsTheMarks:
             ],
         )
         if marks:
-            definition[BROKEN_KEY] = list(marks)
+            definition[WARNINGS_KEY] = {DEFINITION_KEY: list(marks)}
         return definition
 
     def save(self, dialog):
@@ -908,7 +907,7 @@ class TestTheEditorShowsTheMarks:
         assert dialog.marks_banner.messages() == [second["message"]]
         # One left: Dismiss does the same, so Dismiss all is not offered.
         assert dialog.marks_banner.dismiss_all_button.isHidden()
-        assert self.save(dialog)[BROKEN_KEY] == [second]
+        assert self.save(dialog)[WARNINGS_KEY] == {DEFINITION_KEY: [second]}
 
     def test_two_marks_with_one_message_are_dismissed_one_at_a_time(self, open_editor):
         same = "Field was renamed"
@@ -920,28 +919,29 @@ class TestTheEditorShowsTheMarks:
 
         dismiss_button(dialog.marks_banner, 1).click()
 
-        assert [entry["old"] for entry in self.save(dialog)[BROKEN_KEY]] == ["Word"]
+        saved = self.save(dialog)[WARNINGS_KEY][DEFINITION_KEY]
+        assert [entry["old"] for entry in saved] == ["Word"]
 
     def test_dismiss_all_takes_every_mark_off_and_the_banner_away(self, open_editor):
         # An entry with nothing to say is never shown; it goes with the rest.
         dialog = open_editor(
-            self.marked(rename_mark("Word", "Term"), {"field": "Note"}, rename_mark("Note", None))
+            self.marked(rename_mark("Word", "Term"), {"old": "Note"}, rename_mark("Note", None))
         )
 
         dialog.marks_banner.dismiss_all_button.click()
 
         assert dialog.marks_banner.isHidden()
-        assert BROKEN_KEY not in self.save(dialog)
+        assert WARNINGS_KEY not in self.save(dialog)
 
     def test_dismissing_the_last_one_takes_the_banner_away_and_the_key_with_it(
         self, open_editor
     ):
-        dialog = open_editor(self.marked(rename_mark("Word", "Term"), {"field": "Note"}))
+        dialog = open_editor(self.marked(rename_mark("Word", "Term"), {"old": "Note"}))
 
         dismiss_button(dialog.marks_banner, 0).click()
 
         assert dialog.marks_banner.isHidden()
-        assert BROKEN_KEY not in self.save(dialog)
+        assert WARNINGS_KEY not in self.save(dialog)
 
     def test_cancel_keeps_the_marks(self, open_editor):
         marks = [rename_mark("Word", "Term"), rename_mark("Note", None)]
@@ -954,22 +954,27 @@ class TestTheEditorShowsTheMarks:
         # The dict handed in is the stored one (`run_definition_editor` passes the config's
         # own), and a cancelled editor hands nothing back.
         assert not dialog.result()
-        assert definition[BROKEN_KEY] == marks
+        assert definition[WARNINGS_KEY] == {DEFINITION_KEY: marks}
 
     def test_an_unmarked_definition_has_no_banner(self, open_editor):
         dialog = open_editor(self.marked())
 
         assert dialog.marks_banner.isHidden()
         assert dialog.marks_banner.messages() == []
-        assert BROKEN_KEY not in self.save(dialog)
+        assert WARNINGS_KEY not in self.save(dialog)
 
-    def test_an_older_shape_of_entry_is_shown_and_dismissable(self, open_editor):
-        old = {"field": "Word", "message": f'Field "Word" is no longer present in "{VOCAB}"'}
-        dialog = open_editor(self.marked(old))
+    def test_dismissing_the_last_of_a_location_takes_only_that_location_away(
+        self, open_editor
+    ):
+        first = rename_mark("Word", "Term")
+        second = rename_mark("Note", None)
+        definition = self.marked(first)
+        definition[WARNINGS_KEY]["some-stage.value.text"] = [second]
+        dialog = open_editor(definition)
 
-        assert dialog.marks_banner.messages() == [old["message"]]
-        dismiss_button(dialog.marks_banner, 0).click()
-        assert BROKEN_KEY not in self.save(dialog)
+        assert dialog.marks_banner.messages() == [first["message"], second["message"]]
+        dismiss_button(dialog.marks_banner, 1).click()
+        assert self.save(dialog)[WARNINGS_KEY] == {DEFINITION_KEY: [first]}
 
     def test_a_message_is_shown_as_text(self, open_editor):
         from aqt.qt import QLabel
@@ -1007,7 +1012,7 @@ class ADefinitionBrokenByARename:
         model["flds"][0]["name"] = "Term"
         col.models.update_dict(model)
         reconcile(config, mw.col)
-        assert BROKEN_KEY in definition
+        assert WARNINGS_KEY in definition
         return config, definition
 
     def dialog(self, widget_parent, config, *more):
@@ -1030,7 +1035,7 @@ class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename)
         row = self.dialog(widget_parent, config).definition_ui_components["def-both"]["widget"]
 
         assert row.broken_marker.text() != ""
-        for message in broken_by_rename_messages(definition):
+        for message in blocking_messages(definition):
             assert message in row.broken_marker.toolTip().splitlines()
 
     def test_its_checkbox_is_disabled_unticked_and_says_why(
@@ -1078,12 +1083,12 @@ class TestThePickerRefusesADefinitionBrokenByARename(ADefinitionBrokenByARename)
         # dismissed, as the editor leaves it: a save does not re-derive a mark.
         reworked = copy.deepcopy(definition)
         reworked["triggers"]["note_types"] = [d.object_ref(self.OTHER)]
-        del reworked[BROKEN_KEY]
+        del reworked[WARNINGS_KEY]
         monkeypatch.setattr(dialog, "run_definition_editor", lambda _d, _c: reworked)
 
         dialog.edit_definition_by_guid("def-both")
 
-        assert BROKEN_KEY not in row.definition
+        assert WARNINGS_KEY not in row.definition
         assert row.broken_marker.text() == "" and row.broken_marker.toolTip() == ""
         assert row.checkbox.isEnabled() and not row.checkbox.isChecked()
         assert row.checkbox.toolTip() == ""
@@ -1285,17 +1290,13 @@ class TestTheBrowserMenuRefusesADefinitionBrokenByARename(ADefinitionBrokenByARe
     def test_a_marked_definition_is_listed_disabled_and_says_why(
         self, broken, stub_mw, qapp, widget_parent
     ):
-        from copy_anywhere.logic.rename_reconcile import broken_by_rename_tooltip
-
         config, definition = broken
         config.data["copy_definitions"].append(d.staged("whole", note_types=[VOCAB]))
 
         copy_menu, actions = self.menu_actions(stub_mw, config, widget_parent)
 
         assert not actions["both"].isEnabled()
-        assert actions["both"].toolTip() == broken_by_rename_tooltip(
-            broken_by_rename_messages(definition)
-        )
+        assert actions["both"].toolTip() == blocking_tooltip(blocking_messages(definition))
         assert actions["whole"].isEnabled()
         assert copy_menu.toolTipsVisible()
 

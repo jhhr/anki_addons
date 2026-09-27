@@ -46,7 +46,7 @@ from anki_shared.testing import real_anki
 from note_types import KANJI, VOCAB
 from copy_anywhere.hooks import note_hooks
 from copy_anywhere.hooks.note_hooks import run_copy_fields_on_review
-from copy_anywhere.logic.rename_reconcile import BROKEN_ADVICE, BROKEN_KEY
+from copy_anywhere.logic.rename_warnings import BLOCKING_ADVICE
 
 ADDON_TAG = "copy_anywhere"
 
@@ -615,7 +615,7 @@ def marked(name="marked", message='Field "Word" is no longer here', **triggers):
         on_review=True,
         **triggers,
     )
-    definition[BROKEN_KEY] = [{"field": "Word", "message": message}]
+    d.warned(definition, d.rename_warning(message, old="Word"))
     return definition
 
 
@@ -639,7 +639,7 @@ class TestADefinitionARenameMarkedIsRefused:
         assert (col.get_note(note.id)["Note"], col.get_note(note.id)["Freq"]) == ("", "neko")
         assert hook_logger.errors == [
             "Error in copy fields: 'marked' was not run: Field \"Word\" is no longer here."
-            f" {BROKEN_ADVICE}"
+            f" {BLOCKING_ADVICE}"
         ]
 
     def test_a_refused_definition_on_review_and_sync_leaves_fc_as_it_was(
@@ -699,7 +699,7 @@ class TestADefinitionARenameMarkedIsRefused:
         run_copy_fields_on_review(reviewed)
         assert len(hook_logger.errors) == 1
 
-        definition[BROKEN_KEY] = [{"field": "Word", "message": "Something else now"}]
+        d.warned(definition, d.rename_warning("Something else now", old="Word"))
         run_copy_fields_on_review(reviewed)
         run_copy_fields_on_review(reviewed)
 

@@ -49,7 +49,7 @@ from ..logic.definition_schema import (
     walk_stages,
 )
 from ..logic.flow_analysis import AnalysisResult, analyze_definition
-from ..logic.rename_reconcile import BROKEN_KEY, broken_by_rename_entries
+from ..logic.rename_warnings import WARNINGS_KEY, remove_rename_warning, rename_warning_entries
 from ..logic.unsaved_note_search import UnjudgeableSearch, UnsavedNoteSearchError, parse_search
 
 #: Human labels for the Add Stage menu and the stage row headers, in menu order (§10).
@@ -226,10 +226,18 @@ def reguid_stage(stage: Stage, make_guid: Callable[[], str] = new_guid) -> Stage
 
     Duplicating a stage has to renumber its whole subtree: two stages sharing a guid would
     make trace correlation and editor focus ambiguous, and exports reference producers by
-    guid.
+    guid. Its field writes and card actions are renumbered too, since a rename warning is
+    filed under the guid of the write or action whose text spells the name
+    (`rename_locations.py`), and one filed under a shared guid would show in both copies.
     """
     copied = deepcopy(stage)
     copied["guid"] = make_guid()
+    for write in copied.get("fields") or []:
+        if isinstance(write, dict):
+            write["guid"] = make_guid()
+    for action in copied.get("card_actions") or []:
+        if isinstance(action, dict) and action.get("guid"):
+            action["guid"] = make_guid()
     for _key, block in stage_body_blocks(copied):
         for index, child in enumerate(block):
             block[index] = reguid_stage(child, make_guid)
@@ -551,26 +559,20 @@ class StageDocument:
     # thing a dismissal changes is what `to_definition` stores, and whether the definition
     # is run afterwards.
 
-    def rename_marks(self) -> list[tuple[dict, str]]:
-        """The marks a rename left on this definition, each entry with its message."""
-        return broken_by_rename_entries(self.definition)
+    def rename_marks(self) -> list[tuple[str, dict]]:
+        """The warnings a rename left on this definition, each with its location key."""
+        return rename_warning_entries(self.definition)
 
     def dismiss_rename_mark(self, entry: dict) -> None:
-        """Take one mark off: the user says they have updated the definition for it.
+        """Take one warning off: the user says they have updated the definition for it.
 
-        Found by identity, not by position or message: two entries can say the same thing,
-        and the editor's rows hold the entries they were built from. Once nothing with a
-        message is left the key goes too, with any entry that has nothing to say -- such an
-        entry does not stop a run and is never shown, so it could never be dismissed.
+        Found by identity (`remove_rename_warning`): two entries can say the same thing,
+        and the editor's rows hold the entries they were built from.
         """
-        stored = self.definition.get(BROKEN_KEY)
-        if isinstance(stored, list):
-            self.definition[BROKEN_KEY] = [kept for kept in stored if kept is not entry]
-        if not self.rename_marks():
-            self.definition.pop(BROKEN_KEY, None)
+        remove_rename_warning(self.definition, entry)
 
     def dismiss_all_rename_marks(self) -> None:
-        self.definition.pop(BROKEN_KEY, None)
+        self.definition.pop(WARNINGS_KEY, None)
 
     # -- saving --------------------------------------------------------------------------
 

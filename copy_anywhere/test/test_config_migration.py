@@ -21,6 +21,7 @@ from copy_anywhere.configuration import (
 )
 from copy_anywhere.logic.definition_migration import (
     SYNTAX_VERSION_LEGACY,
+    fill_in_missing_stage_guids,
     migrate_definition_v1_to_v2,
 )
 from copy_anywhere.logic.definition_schema import (
@@ -456,6 +457,97 @@ class TestStagesWithoutAGuid:
         first = copy.deepcopy(stored(stub_mw)["copy_definitions"])
         migrate_config()
         assert stored(stub_mw)["copy_definitions"] == first
+
+
+class TestFieldWritesWithoutAGuid:
+    """A rename warning about a field write's text is filed under the write's guid, and only
+    a migrated write or one the editor added since has one, so the start repairs the rest."""
+
+    def a_definition_with_writes_that_have_no_guid(self):
+        return d.staged(
+            definition_name="writes",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Note", d.text("a")), d.write("Meaning", d.text("b"))],
+                ),
+                d.for_each_note(
+                    "A1", [d.edit_note("note", fields=[d.write("Note", d.text("c"))])]
+                ),
+            ],
+        )
+
+    def writes(self, definition):
+        return [
+            write
+            for stage in walk_stages(definition["stages"])
+            if stage["type"] == "edit_note"
+            for write in stage["fields"]
+        ]
+
+    def test_every_write_is_given_one_derived_from_the_definition(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+
+        assert fill_in_missing_stage_guids(definition) is True
+
+        guids = [write["guid"] for write in self.writes(definition)]
+        assert guids == [f"def-writes::field-write-{n}" for n in (1, 2, 3)]
+        stage_guids = {stage["guid"] for stage in walk_stages(definition["stages"])}
+        assert not stage_guids & set(guids)
+
+    def test_two_repairs_of_the_same_definition_agree(self):
+        one = self.a_definition_with_writes_that_have_no_guid()
+        other = copy.deepcopy(one)
+
+        fill_in_missing_stage_guids(one)
+        fill_in_missing_stage_guids(other)
+
+        assert one == other
+
+    def test_a_guid_already_taken_is_not_handed_out_again(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        definition["stages"][0]["fields"][1]["guid"] = "def-writes::field-write-1"
+
+        fill_in_missing_stage_guids(definition)
+
+        guids = [write["guid"] for write in self.writes(definition)]
+        assert len(set(guids)) == 3
+        assert guids[1] == "def-writes::field-write-1"
+
+    def test_a_complete_definition_is_left_untouched(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        fill_in_missing_stage_guids(definition)
+        repaired = copy.deepcopy(definition)
+
+        assert fill_in_missing_stage_guids(definition) is False
+        assert definition == repaired
+
+    def test_a_migrated_write_keeps_its_own(self):
+        definition = migrate_definition_v1_to_v2(
+            d.within_note(field_to_field_defs=[d.field_to_field("Meaning", "{{Word}}")])
+        )
+        before = [write["guid"] for write in self.writes(definition)]
+
+        assert fill_in_missing_stage_guids(definition) is False
+        assert [write["guid"] for write in self.writes(definition)] == before
+        assert before == ["ftf-Meaning-{{Word}}"]
+
+    def test_the_start_repairs_them_and_a_second_start_changes_nothing(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_definition_with_writes_that_have_no_guid()]
+        config["version"] = CONFIG_VERSION
+
+        migrate_config()
+        (definition,) = stored(stub_mw)["copy_definitions"]
+        assert all(write.get("guid") for write in self.writes(definition))
+        first = copy.deepcopy(stored(stub_mw)["copy_definitions"])
+        migrate_config()
+
+        assert stored(stub_mw)["copy_definitions"] == first
+
+    def test_a_write_without_one_still_validates(self):
+        # Stored definitions without write guids must load until the repair has run.
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        assert validate_definition_structure(definition) == []
 
 
 class TestTheBackup:
