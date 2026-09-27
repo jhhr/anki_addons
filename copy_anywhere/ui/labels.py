@@ -18,6 +18,11 @@ else:  # pragma: no cover -- Anki 2.1.49 and older
     ElideRight = Qt.ElideRight  # type: ignore[attr-defined]
 
 
+#: The most an `ElidedLabel` asks for, in average characters: enough for a summary of a stage
+#: or two fields, and no more.
+HINT_CHARACTERS = 60
+
+
 def wrapping(label: QLabel) -> QLabel:
     """`label`, set to wrap its text at the width it is given."""
     label.setWordWrap(True)
@@ -52,8 +57,13 @@ class ElidedLabel(QLabel):
         return QSize(self.fontMetrics().horizontalAdvance("…") * 3, hint.height())
 
     def sizeHint(self) -> QSize:  # noqa: N802 -- Qt's name
+        # Capped, because the definition editor opens as wide as its contents ask: a summary
+        # listing a dozen fields asked for 3333px and opened the editor as wide as the
+        # screen, only to be cut off with "…" anyway.
         hint = super().sizeHint()
-        return QSize(self.fontMetrics().horizontalAdvance(self._full_text), hint.height())
+        metrics = self.fontMetrics()
+        wanted = metrics.horizontalAdvance(self._full_text)
+        return QSize(min(wanted, metrics.averageCharWidth() * HINT_CHARACTERS), hint.height())
 
     def resizeEvent(self, event: Optional[QResizeEvent]) -> None:  # noqa: N802 -- Qt's name
         super().resizeEvent(event)
