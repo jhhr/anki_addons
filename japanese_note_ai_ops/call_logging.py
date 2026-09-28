@@ -215,9 +215,11 @@ def start_call_log(function_name: str) -> None:
     the previous one left attached.
 
     A file that cannot be made leaves the previous handler in place: the log is diagnostics, and
-    this runs right before an op starts, which must not fail for want of one.
+    this runs right before an op starts, which must not fail for want of one. The name is this
+    op's either way, so a phase it opens a file for is named after it, not the op before.
     """
     global _log_name
+    _log_name = function_name
     try:
         handler = create_call_log_handler(function_name)
     except Exception as e:
@@ -225,7 +227,6 @@ def start_call_log(function_name: str) -> None:
         return
     if not handler:
         return
-    _log_name = function_name
     logger_instance = addon_logger()
     # Replace the previous run's handler rather than stacking another one on top
     close_previous_log_handlers(logger_instance)

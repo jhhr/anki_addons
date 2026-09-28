@@ -215,7 +215,8 @@ class LogNameTests(LoggingTestCase):
         cl.start_call_log("translate_sentence")
         self.assertEqual(self.logger.handlers, [self.created[0]])
         self.assertFalse(self.created[0].closed)
-        self.assertEqual(cl.phase_log_name("add_note_phase"), "match_words_add_note_phase")
+        # Still the new op's name: its phase's file is its own, not named after the op before
+        self.assertEqual(cl.phase_log_name("add_note_phase"), "translate_sentence_add_note_phase")
 
 
 class CaptureIdsTests(LoggingTestCase):
