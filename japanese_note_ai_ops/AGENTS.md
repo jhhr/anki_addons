@@ -45,7 +45,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
-| `dev/` | dev-only, excluded from the zip: `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel), `capture_run.py` is its CLI for capture runs. Run from the addon root, like the research scripts. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open |
+| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and `user_files/fixtures/` (the owner's, gitignored), each twice. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -203,14 +204,31 @@ cheap no-op and nothing is recorded.
   the cleanup's start, before its first write, or right after the marker tidying's lookup
   (`word_index.sort_base_note_ids`), which finds notes the run did not write, still as they were;
   never a note the run added (`note.added`). Event kinds: `environment` (dictionary files, the
-  collection's size), `search`, `note.missing`, `note.added` (placeholder -> id), `note.removed`,
-  `match.decision` and `match.rated` (per word target, its `word_path`, result, quality),
-  `meanings.read`/`meanings.final` (the first value read and the last written of each key of the
-  generated meanings file: `load_meanings_dict_from_file` hands a notes run a
-  `capture_notes.MeaningsRecorder`, and it is the only loader of that file), `phase`
-  (`log_phase`), `undo` (at the cleanup's start and end), `notetype` and `decks` (of every note
-  recorded, at the end). The capture never infers: an exporter that finds a note it needs
-  without a snapshot has found a capture gap, to be fixed here and recorded again.
+  collection's size, and `records`, `capture_notes.RECORDS`: the kinds of record this capture
+  makes, so an exporter tells a run that looked nothing up from one captured before lookups were
+  recorded; add to it with a new kind), `search`, `note.missing`, `note.added` (placeholder ->
+  id), `note.removed`, `match.decision` and `match.rated` (per word target, its `word_path`,
+  result, quality), `meanings.read`/`meanings.final` (the first value read and the last written
+  of each key of the generated meanings file: `load_meanings_dict_from_file` hands a notes run a
+  `capture_notes.MeaningsRecorder`, and it is the only loader of that file),
+  `dictionary.lookup` (each `mdx_helper.get_definition_text` answer, the text the prompt is built
+  from, or its error), `phase` (`log_phase`), `undo` (at the cleanup's start and end),
+  `notetype` and `decks` (of every note recorded, at the end). The capture never infers: an
+  exporter that finds a note it needs without a snapshot has found a capture gap, to be fixed
+  here and recorded again.
+- **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:
+  `corpus.json` (the notes the run read, their note types and decks under generic names but the
+  hardcoded ones, note ids synthetic in every field, the run's config, meanings read, dictionary
+  lookups), `cassette.json` (the answers by `request_key`, in the order received) and
+  `expected.json` (the notes as the run left them, new notes' ids and placeholders as symbols).
+  It raises `CaptureGap` rather than guess. `replay(fixture)` builds the corpus in a fresh
+  collection, points every module's `mdx_helper` at the corpus's lookups, answers every
+  `get_response` from the cassette through `base_ops.set_responder` (the one seam: a responder
+  replaces the provider inside the capture block, on the calling thread; None from it is a
+  failed call), runs the op through its `NotesRunSpec`, and reports each difference, a request
+  the cassette cannot answer, an answer never asked for and a lookup it lacks. A fixture holds
+  the collection owner's note text: exported to the gitignored `user_files/fixtures/` unless
+  told otherwise, and committed only when the owner says so.
 - Outcomes: `ok`; `refused` (final non-200, body in `error`); `unreadable` (a 200 whose answer
   text could not be found); `unparseable` (not JSON even after the corrector); `no_response`
   (every attempt timed out or lost its connection, or the CLI gave up retrying); `cancelled`;

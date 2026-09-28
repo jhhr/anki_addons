@@ -1,0 +1,667 @@
+"""Fixtures from capture runs, and replaying them with no network (issue #11, stage 3).
+
+A fixture is what a replay of one capture run needs, as three JSON files a person can review:
+
+- corpus.json: the collection as the run found it, cut down to the notes it read, with their
+  note types and decks; the config it ran with; the generated meanings it read; the dictionary
+  lookups it made. Note ids are synthetic, in every field that holds one.
+- cassette.json: every AI call's answer, by its request key (capture_store.request_key: the
+  call's kind and the values its prompt was built from, so a reworded prompt still finds it),
+  in the order the run received them.
+- expected.json: every note as the run left it, normalized (`normalized_notes`): the ids a
+  replay cannot know, the new notes' and their placeholders', replaced by symbols.
+
+`export_fixture` makes one from a capture store; `replay` builds the corpus in a fresh
+collection, runs the op over its selected notes with the cassette answering every
+`get_response` (`base_ops.set_responder`) and the corpus answering every dictionary lookup, and
+reports what differed. Strict: a request the cassette has no answer left for, an answer nothing
+asked for, and a lookup the corpus lacks are each reported, and answered as a failure would be,
+never by a guess. The export is strict the same way: a run that dropped records or has no note
+snapshots is refused (`CaptureGap`), and so is a note the run needs that it never recorded.
+
+Names from the user's collection are replaced: note types, but the ones the addon hardcodes,
+and decks by generic names, and note ids by synthetic ones. The note text stays the user's own:
+whether a fixture may be committed is the user's decision, so `export_fixture` writes where it
+is told and commits nothing.
+
+The replay runs in this process, with the stub `mw` of real_anki; `headless` must be imported
+first (in a script) or the root conftest must have run (in a test).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import sqlite3
+import tempfile
+import threading
+from collections import defaultdict
+from contextlib import closing
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+FORMAT = 1
+# Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
+SYNTHETIC_BASE = 1_000_000_000_000
+# Note ids found in fields without a note of the corpus behind them (a word linked to a note the
+# run never read): still ids, still replaced, from a range of their own
+SYNTHETIC_UNKNOWN_BASE = 1_500_000_000_000
+# A note id in a field: 13 digits standing alone. Anki's ids are milliseconds since 1970, 13
+# digits from 2001 to 2286
+ID_RE = re.compile(r"(?<![\d.])(\d{13})(?![\d.])")
+# Note types the addon's code names, which a fixture keeps: renaming one would change what runs
+HARDCODED_NOTETYPES = frozenset({"Japanese vocab note", "Kanji draw"})
+# The config key naming the deck new notes go into, in a note type's config
+DECK_CONFIG_KEY = "insert_deck"
+
+
+class CaptureGap(Exception):
+    """The capture lacks something a replay needs. Fixed in the capture, then recorded again:
+    an exporter never makes up what a run did not record."""
+
+
+@dataclass
+class Fixture:
+    corpus: dict
+    cassette: dict
+    expected: dict
+
+    FILES = ("corpus", "cassette", "expected")
+
+    def write(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in self.FILES:
+            text = json.dumps(getattr(self, name), ensure_ascii=False, indent=1, sort_keys=True)
+            (directory / f"{name}.json").write_text(text + "\n", encoding="utf-8")
+
+    @classmethod
+    def read(cls, directory: Path) -> "Fixture":
+        parts = {
+            name: json.loads((directory / f"{name}.json").read_text(encoding="utf-8"))
+            for name in cls.FILES
+        }
+        return cls(**parts)
+
+
+# --- export ------------------------------------------------------------------------------
+
+
+class _IdMap:
+    """Real note id -> synthetic, handed out in the order asked, so an export is the same
+    every time: the corpus notes first, in id order, then any other id met in a field."""
+
+    def __init__(self, corpus_ids: Iterable[int]) -> None:
+        self.ids: dict[int, int] = {
+            nid: SYNTHETIC_BASE + 10 * index for index, nid in enumerate(sorted(corpus_ids))
+        }
+        self._unknown = 0
+
+    def __call__(self, nid: int) -> int:
+        synthetic = self.ids.get(nid)
+        if synthetic is None:
+            synthetic = SYNTHETIC_UNKNOWN_BASE + 10 * self._unknown
+            self._unknown += 1
+            self.ids[nid] = synthetic
+        return synthetic
+
+    def text(self, value: str, keep: Optional[Mapping[int, str]] = None) -> str:
+        """`value` with each note id replaced: by `keep`'s symbol for the ids in it, else by its
+        synthetic id."""
+        symbols = keep or {}
+
+        def swap(match: re.Match) -> str:
+            nid = int(match.group(1))
+            return symbols[nid] if nid in symbols else str(self(nid))
+
+        return ID_RE.sub(swap, value)
+
+
+def export_fixture(store_path: Path, run_id: int) -> Fixture:
+    """The fixture of run `run_id` in the capture store at `store_path`. Raises CaptureGap when
+    the run cannot be replayed from what it recorded."""
+    with closing(sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        run = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise CaptureGap(f"no run {run_id} in {store_path}")
+        if not run["notes"]:
+            raise CaptureGap(f"run {run_id} recorded no notes (config capture_notes was off)")
+        if run["dropped"]:
+            raise CaptureGap(f"run {run_id} dropped {run['dropped']} records at a full queue")
+        snapshots = connection.execute(
+            "SELECT note_id, stage, text FROM note_snapshots JOIN blobs ON hash = note_hash"
+            " WHERE run_id = ? ORDER BY snapshot_id",
+            (run_id,),
+        ).fetchall()
+        events = [
+            (row["kind"], row["note_id"], json.loads(row["payload_json"] or "null"))
+            for row in connection.execute(
+                "SELECT kind, note_id, payload_json FROM events WHERE run_id = ?"
+                " ORDER BY event_id",
+                (run_id,),
+            )
+        ]
+        calls = connection.execute(
+            "SELECT kind, request_key, prompt_key, inputs_json, response_json, outcome FROM calls"
+            " WHERE run_id = ? ORDER BY started, call_id",
+            (run_id,),
+        ).fetchall()
+    config = json.loads(run["config_json"] or "{}")
+
+    pre: dict[int, dict] = {}
+    selected: list[int] = []
+    final: dict[int, dict] = {}
+    for row in snapshots:
+        record = json.loads(row["text"])
+        nid, stage = row["note_id"], row["stage"]
+        if stage in ("selected", "read") and nid not in pre and not record.get("missing"):
+            pre[nid] = record
+            if stage == "selected":
+                selected.append(nid)
+        elif stage == "final":
+            final[nid] = record
+    added: dict[int, Optional[int]] = {}
+    removed: set[int] = set()
+    notetypes: dict[int, dict] = {}
+    decks_of: dict[str, list[int]] = {}
+    deck_names: dict[str, str] = {}
+    meanings: dict[str, Any] = {}
+    meanings_final: dict[str, Any] = {}
+    lookups: list[dict] = []
+    records: list[str] = []
+    for kind, nid, payload in events:
+        if kind == "environment":
+            records = payload.get("records") or []
+        elif kind == "note.added":
+            added[payload["note_id"]] = payload.get("placeholder")
+        elif kind == "note.removed":
+            removed.update(payload["note_ids"])
+        elif kind == "notetype":
+            notetypes[payload["mid"]] = payload
+        elif kind == "decks":
+            decks_of = payload["notes"]
+            deck_names = payload["names"]
+        elif kind == "meanings.read":
+            meanings.setdefault(payload["key"], payload["value"])
+        elif kind == "meanings.final":
+            meanings_final[payload["key"]] = payload["value"]
+        elif kind == "dictionary.lookup" and payload not in lookups:
+            lookups.append(payload)
+    if config.get("mdx_filenames") and "dictionary.lookup" not in records:
+        raise CaptureGap(
+            f"run {run_id} read dictionaries but predates the recording of their lookups"
+        )
+    for nid in added:
+        pre.pop(nid, None)
+    unrecorded = sorted(nid for nid in final if nid not in pre and nid not in added)
+    if unrecorded:
+        raise CaptureGap(f"run {run_id} wrote notes it has no state before for: {unrecorded}")
+    if not selected:
+        raise CaptureGap(f"run {run_id} recorded no selected notes")
+
+    ids = _IdMap(pre)
+    type_names = _names(
+        (notetypes[mid]["name"] for mid in sorted(notetypes)), "Note type", HARDCODED_NOTETYPES
+    )
+    deck_rename = _names((deck_names[did] for did in sorted(deck_names, key=int)), "Deck")
+
+    def notetype_of(record: dict) -> str:
+        info = notetypes.get(record["mid"])
+        if info is None:
+            raise CaptureGap(f"run {run_id} recorded no note type {record['mid']}")
+        return type_names[info["name"]]
+
+    def deck_of(nid: int) -> str:
+        dids = decks_of.get(str(nid)) or []
+        return deck_rename.get(deck_names.get(str(dids[0]), ""), "Default") if dids else "Default"
+
+    corpus_notes = []
+    for nid in sorted(pre):
+        record = pre[nid]
+        corpus_notes.append(
+            {
+                "id": ids(nid),
+                "notetype": notetype_of(record),
+                "deck": deck_of(nid),
+                "guid": record["guid"],
+                "fields": {name: ids.text(value) for name, value in record["fields"].items()},
+                "tags": sorted(record["tags"]),
+                "selected": nid in selected,
+            }
+        )
+
+    # The run's final state, in the same names; new notes by symbol (normalized_notes)
+    new_ids = {nid: placeholder for nid, placeholder in added.items() if nid in final}
+    after: list[dict] = []
+    for nid in sorted(set(pre) | set(new_ids)):
+        if nid in removed:
+            continue
+        record = final.get(nid) or pre[nid]
+        after.append(
+            {
+                "id": nid,
+                "notetype": notetype_of(record),
+                "deck": deck_of(nid),
+                "fields": record["fields"],
+                "tags": record["tags"],
+            }
+        )
+    expected_notes = normalized_notes(after, new_ids, ids=ids)
+
+    corpus = {
+        "format": FORMAT,
+        "op": "match_words",
+        "source": {
+            "run_id": run_id,
+            "label": run["label"],
+            "outcome": run["outcome"],
+            "versions": json.loads(run["versions_json"] or "null"),
+        },
+        "config": _renamed_config(config, type_names, deck_rename),
+        "notetypes": [
+            {
+                "name": type_names[info["name"]],
+                "fields": info["fields"],
+                "sort_field": info["sort_field"],
+                "templates": info["templates"],
+            }
+            for _, info in sorted(notetypes.items())
+        ],
+        "decks": sorted(set(deck_rename.values())),
+        "notes": corpus_notes,
+        "meanings": {key: value for key, value in sorted(meanings.items()) if value is not None},
+        "dictionary": lookups,
+    }
+    cassette = {"format": FORMAT, "entries": _cassette_entries(calls)}
+    expected = {
+        "format": FORMAT,
+        "notes": expected_notes,
+        "meanings": dict(sorted(meanings_final.items())),
+        "new_notes": len(new_ids),
+    }
+    return Fixture(corpus, cassette, expected)
+
+
+def _names(originals: Iterable[str], generic: str, keep: frozenset = frozenset()) -> dict:
+    renamed: dict[str, str] = {}
+    for name in originals:
+        if name not in renamed:
+            renamed[name] = name if name in keep else f"{generic} {len(renamed) + 1}"
+    return renamed
+
+
+def _renamed_config(config: dict, type_names: dict, deck_names: dict) -> dict:
+    """The run's config with its note type keys and their decks under the fixture's names. A
+    note type config of a type the run never saw is dropped: its name is the user's."""
+    renamed: dict[str, Any] = {}
+    for key, value in config.items():
+        if isinstance(value, dict):
+            if key not in type_names:
+                continue
+            value = dict(value)
+            if value.get(DECK_CONFIG_KEY) in deck_names:
+                value[DECK_CONFIG_KEY] = deck_names[value[DECK_CONFIG_KEY]]
+            renamed[type_names[key]] = value
+        elif not key.startswith("//"):
+            renamed[key] = value
+    return renamed
+
+
+def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
+    """One entry per request key, its answers in the order the run received them."""
+    by_key: dict[str, dict] = {}
+    for call in calls:
+        entry = by_key.setdefault(
+            call["request_key"],
+            {
+                "kind": call["kind"],
+                "request_key": call["request_key"],
+                "inputs": json.loads(call["inputs_json"] or "null"),
+                "answers": [],
+            },
+        )
+        entry["answers"].append(
+            {
+                "response": json.loads(call["response_json"] or "null"),
+                "outcome": call["outcome"],
+                "prompt_key": call["prompt_key"],
+            }
+        )
+    return sorted(by_key.values(), key=lambda entry: (entry["kind"], entry["request_key"]))
+
+
+# --- normalizing ---------------------------------------------------------------------------
+
+
+def normalized_notes(
+    notes: Iterable[Mapping[str, Any]],
+    new_notes: Mapping[int, Optional[int]],
+    ids: Optional[Callable[..., Any]] = None,
+) -> list[dict]:
+    """Notes as a replay can compare them: each `{"id", "notetype", "deck", "fields", "tags"}`,
+    `new_notes` the run's added notes (id -> the placeholder it replaced, or None).
+
+    A new note's id is whatever the collection handed out, and its placeholder was random, so
+    both become symbols: `new-N`, numbered in the order of the notes' content (ids masked),
+    and `placeholder:new-N`, wherever they appear. `ids`, given, maps every other id in a field
+    (`_IdMap.text`); a replay's are synthetic already. Tags sorted; the list in note order.
+    """
+    notes = list(notes)
+
+    def content(note: Mapping[str, Any]) -> str:
+        masked = {name: ID_RE.sub("#", value) for name, value in note["fields"].items()}
+        return json.dumps([note["notetype"], masked], ensure_ascii=False, sort_keys=True)
+
+    new = sorted((note for note in notes if note["id"] in new_notes), key=content)
+    symbols = {int(note["id"]): f"new-{index + 1}" for index, note in enumerate(new)}
+    placeholders = {
+        str(placeholder): f"placeholder:{symbols[nid]}"
+        for nid, placeholder in new_notes.items()
+        if placeholder is not None and nid in symbols
+    }
+
+    def text(value: str) -> str:
+        if ids is not None:
+            value = ids.text(value, keep=symbols)  # type: ignore[attr-defined]
+        else:
+            value = ID_RE.sub(lambda m: symbols.get(int(m.group(1)), m.group(1)), value)
+        for placeholder, symbol in placeholders.items():
+            value = re.sub(rf"(?<![\d-]){re.escape(placeholder)}(?!\d)", symbol, value)
+        return value
+
+    normalized = []
+    for note in notes:
+        nid = int(note["id"])
+        if nid in symbols:
+            key = symbols[nid]
+        elif ids is not None:
+            key = str(ids(nid))
+        else:
+            key = str(nid)
+        normalized.append(
+            {
+                "note": key,
+                "notetype": note["notetype"],
+                "deck": note["deck"],
+                "fields": {name: text(value) for name, value in note["fields"].items()},
+                "tags": sorted(note["tags"]),
+            }
+        )
+    return sorted(normalized, key=lambda note: note["note"])
+
+
+# --- replay --------------------------------------------------------------------------------
+
+
+@dataclass
+class Cassette:
+    """The answers of a fixture, handed out by request key, each as many times as the run
+    received it, in the same order. What it cannot answer it records and answers with None,
+    as a failed call is answered."""
+
+    entries: list[dict]
+    misses: list[dict] = field(default_factory=list)
+    used: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        self._by_key = {entry["request_key"]: entry for entry in self.entries}
+
+    def __call__(self, request: Any) -> Any:
+        from japanese_note_ai_ops.async_api_ops.capture_store import request_key
+
+        key = request_key(request.kind, request.inputs)
+        with self._lock:
+            entry = self._by_key.get(key)
+            index = self.used[key]
+            if entry is None or index >= len(entry["answers"]):
+                self.misses.append(
+                    {"kind": request.kind, "request_key": key, "inputs": request.inputs,
+                     "known": entry is not None}
+                )
+                return None
+            self.used[key] = index + 1
+            return entry["answers"][index]["response"]
+
+    def unused(self) -> list[dict]:
+        return [
+            {"kind": entry["kind"], "request_key": entry["request_key"],
+             "left": len(entry["answers"]) - self.used[entry["request_key"]]}
+            for entry in self.entries
+            if self.used[entry["request_key"]] < len(entry["answers"])
+        ]
+
+
+class Dictionary:
+    """The dictionary lookups of a fixture, answered as the run was answered, in place of the
+    MDX files; a lookup the fixture lacks is recorded and answered as not found."""
+
+    def __init__(self, lookups: Iterable[Mapping[str, Any]]) -> None:
+        self._answers = {
+            (lookup["word"], lookup["reading"], lookup["pick"], lookup["max_length"]): lookup
+            for lookup in lookups
+        }
+        self.misses: list[dict] = []
+        self._lock = threading.Lock()
+
+    def load_mdx_dictionaries_if_needed(self, *args: Any, **kwargs: Any) -> "Dictionary":
+        return self
+
+    def get_definition_text(
+        self,
+        word: str,
+        reading: Optional[str] = None,
+        pick_dictionary: str = "all",
+        max_length: Optional[int] = None,
+    ) -> Optional[str]:
+        from japanese_note_ai_ops.sync_local_ops.mdx_dictionary import MDXLookupError
+
+        lookup = self._answers.get((word, reading, pick_dictionary, max_length))
+        if lookup is None:
+            with self._lock:
+                self.misses.append(
+                    {"word": word, "reading": reading, "pick": pick_dictionary,
+                     "max_length": max_length}
+                )
+            return None
+        if "error" in lookup:
+            raise MDXLookupError(lookup["error"])
+        return lookup.get("text")
+
+
+@dataclass
+class ReplayResult:
+    notes: list[dict]
+    meanings: dict[str, Any]
+    misses: list[dict]
+    unused: list[dict]
+    dictionary_misses: list[dict]
+    new_notes: int
+    decisions: list[dict]
+    # What the run reported without failing (run_errors): a replay reproducing the run's own
+    # errors is still a replay, so these are for reading, not compared
+    errors: list[str]
+
+    def differences(self, expected: Mapping[str, Any]) -> list[str]:
+        """What differs from the fixture's expected state, as lines a test can print; empty
+        when the replay reproduced the run."""
+        problems = [f"cassette had no answer: {miss}" for miss in self.misses]
+        problems += [f"cassette answer never asked for: {entry}" for entry in self.unused]
+        problems += [f"dictionary had no lookup: {miss}" for miss in self.dictionary_misses]
+        if self.new_notes != expected["new_notes"]:
+            problems.append(f"new notes: {self.new_notes}, expected {expected['new_notes']}")
+        want = {note["note"]: note for note in expected["notes"]}
+        have = {note["note"]: note for note in self.notes}
+        for key in sorted(set(want) | set(have)):
+            if want.get(key) != have.get(key):
+                problems.append(
+                    f"note {key}:\n  expected {json.dumps(want.get(key), ensure_ascii=False)}"
+                    f"\n  replayed {json.dumps(have.get(key), ensure_ascii=False)}"
+                )
+        for key in sorted(set(expected["meanings"]) | set(self.meanings)):
+            if expected["meanings"].get(key) != self.meanings.get(key):
+                problems.append(f"meanings {key}: expected {expected['meanings'].get(key)!r},"
+                                f" replayed {self.meanings.get(key)!r}")
+        return problems
+
+
+def build_collection(corpus: Mapping[str, Any], path: Path):
+    """A fresh collection at `path` holding the corpus: its note types (one card template
+    each), decks and notes, each note under its synthetic id."""
+    from anki_shared.testing import real_anki
+
+    col = real_anki.open_collection(path)
+    assert col.db is not None
+    for notetype in corpus["notetypes"]:
+        real_anki.make_note_type(
+            col,
+            notetype["name"],
+            notetype["fields"],
+            templates=[(notetype["templates"][0] if notetype["templates"] else "Card 1",
+                        "{{%s}}" % notetype["fields"][0], "{{FrontSide}}")],
+        )
+        model = col.models.by_name(notetype["name"])
+        assert model is not None
+        model["sortf"] = notetype["sort_field"]
+        col.models.update_dict(model)
+    for deck in corpus["decks"]:
+        col.decks.id(deck)
+    for record in corpus["notes"]:
+        model = col.models.by_name(record["notetype"])
+        assert model is not None
+        note = col.new_note(model)
+        note.guid = record["guid"]
+        for name, value in record["fields"].items():
+            note[name] = value
+        note.tags = list(record["tags"])
+        deck_id = col.decks.id(record["deck"])
+        assert deck_id is not None
+        col.add_note(note, deck_id)
+        # Anki hands out the ids; the fields name the corpus's
+        col.db.execute("update cards set nid = ? where nid = ?", record["id"], note.id)
+        col.db.execute("update notes set id = ? where id = ?", record["id"], note.id)
+    return col
+
+
+def replay(fixture: Fixture, workdir: Optional[Path] = None) -> ReplayResult:
+    """Build the fixture's corpus in a fresh collection under `workdir` (a temporary directory
+    by default), run the op over its selected notes with nothing reaching a network, and return
+    the collection's state after it, normalized as the fixture's expected state is."""
+    from anki_shared.testing import real_anki
+    from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
+    from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
+    from japanese_note_ai_ops.configuration import MEANINGS_DICT_FILE
+    from japanese_note_ai_ops.sync_local_ops import mdx_dictionary
+
+    corpus = fixture.corpus
+    owned = workdir is None
+    root = Path(tempfile.mkdtemp(prefix="jnaio_replay_")) if workdir is None else workdir
+    stub = real_anki.install()
+    saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
+    saved_profile, saved_helper = stub.pm._profile_folder, mdx_dictionary.mdx_helper
+    # Its own capture, notes and all, is how the replay learns which notes it added and what
+    # it decided, the way the export read them from the capture run
+    config = dict(corpus["config"], capture_calls=True, capture_notes=True, log_to_console=False)
+    cassette = Cassette(fixture.cassette["entries"])
+    dictionary = Dictionary(corpus["dictionary"])
+    errors: list[str] = []
+    col = build_collection(corpus, root / "collection.anki2")
+    try:
+        stub.col = col
+        stub.addonManager.configs[_package()] = config
+        stub.pm.set_profile_folder(root / "profile")
+        (stub.pm.media_folder() / MEANINGS_DICT_FILE).write_text(
+            json.dumps(corpus["meanings"], ensure_ascii=False), encoding="utf-8"
+        )
+        # The modules that use it imported it by name, and hold their own reference
+        _point_modules_at(dictionary)
+        store = root / "capture.sqlite3"
+        if not capture.install(str(store), keep_days=None):
+            raise RuntimeError(f"the replay's capture store {store} did not open")
+        run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
+        base_ops.set_responder(cassette)
+        nids = [record["id"] for record in corpus["notes"] if record["selected"]]
+        run, _ = match_words_spec().notes_run(nids)
+        run(col)
+        capture.shutdown(timeout=30.0)
+        events = _run_events(store)
+        return ReplayResult(
+            notes=normalized_notes(_collection_notes(col), events.added),
+            meanings=dict(sorted(events.meanings.items())),
+            misses=cassette.misses,
+            unused=cassette.unused(),
+            dictionary_misses=dictionary.misses,
+            new_notes=len(events.added),
+            decisions=events.decisions,
+            errors=errors,
+        )
+    finally:
+        base_ops.set_responder(None)
+        run_errors.deliver_with(None)
+        capture.shutdown(timeout=5.0)
+        _point_modules_at(saved_helper)
+        stub.col = saved_col
+        stub.addonManager.configs = saved_configs
+        stub.pm._profile_folder = saved_profile
+        col.close()
+        if owned:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _package() -> str:
+    return Path(__file__).resolve().parents[1].name
+
+
+def _point_modules_at(helper: Any) -> None:
+    """Make `helper` the dictionary of every module of the addon that holds `mdx_helper`:
+    mdx_dictionary's own, and those that imported it by name."""
+    import sys
+
+    for name, module in list(sys.modules.items()):
+        if name.startswith(_package() + ".") and getattr(module, "mdx_helper", None) is not None:
+            setattr(module, "mdx_helper", helper)
+
+
+@dataclass
+class _RunEvents:
+    added: dict[int, Optional[int]] = field(default_factory=dict)
+    decisions: list[dict] = field(default_factory=list)
+    meanings: dict[str, Any] = field(default_factory=dict)
+
+
+def _run_events(store: Path) -> _RunEvents:
+    """What the replay's own capture recorded, read as the export reads a capture run's."""
+    with closing(sqlite3.connect(str(store))) as connection:
+        rows = connection.execute(
+            "SELECT kind, note_id, task_id, payload_json FROM events ORDER BY event_id"
+        ).fetchall()
+    events = _RunEvents()
+    for kind, note_id, task_id, payload_json in rows:
+        payload = json.loads(payload_json or "null")
+        if kind == "note.added":
+            events.added[payload["note_id"]] = payload.get("placeholder")
+        elif kind == "match.decision":
+            events.decisions.append({"note": note_id, "task": task_id, **payload})
+        elif kind == "meanings.final":
+            events.meanings[payload["key"]] = payload["value"]
+    return events
+
+
+def _collection_notes(col: Any) -> list[dict]:
+    decks = {int(deck.id): deck.name for deck in col.decks.all_names_and_ids()}
+    notes = []
+    for nid in col.find_notes(""):
+        note = col.get_note(nid)
+        did = col.db.scalar("select did from cards where nid = ? order by ord limit 1", nid)
+        notes.append(
+            {
+                "id": int(nid),
+                "notetype": note.note_type()["name"],
+                "deck": decks.get(int(did), "Default") if did is not None else "Default",
+                "fields": dict(note.items()),
+                "tags": list(note.tags),
+            }
+        )
+    return notes
