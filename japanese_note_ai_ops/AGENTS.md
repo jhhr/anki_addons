@@ -204,7 +204,8 @@ dir); without one every capture function is a cheap no-op and nothing is recorde
   its rows NULL): what reading or applying the answer needs that the prompt does not show, e.g.
   which note each numbered meaning came from. Not in either key, and nothing the prompt is built
   from (that is `inputs`). Note ids are ints; a note not added yet is its negative placeholder
-  (`new_note_id_field`), which is what a word array links it by until cleanup. Per kind:
+  (`new_note_id_field`), which is what a word array links it by until cleanup, or 0 when it
+  has none (a vocab note added by hand, which clean_meaning keys by 0). Per kind:
   - `match.meanings`: `word_path` (the word's element, `arr[p[0]][5][p[1]]...`;
     `match_targets.word_path`); `meanings`, one per `inputs.meanings` item in the same order,
     each `note_id` (null for a generated meaning), `m_number` (its sort field's (mN), 0 without;

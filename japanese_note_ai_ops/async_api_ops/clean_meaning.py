@@ -1068,8 +1068,20 @@ def clean_meaning_in_note(
             all_meaning_notes = other_meaning_notes + [note]
 
         def meaning_note_key(n: Note) -> NoteId:
-            """The note's id, or the placeholder id it carries until it has been added."""
-            return n.id if n.id != 0 else NoteId(int(n[new_note_id_field]))
+            """The note's id, or the placeholder id it carries until it has been added.
+
+            A note not added that carries no placeholder is keyed by its id, 0: a vocab note
+            added by hand, which the add-note hook cleans with its field empty, raised here and
+            lost its word extraction with it. Only the match op's pending notes carry a
+            placeholder, so there is at most one such note, and 0 is neither a placeholder
+            (negative) nor an added note's id.
+            """
+            if n.id != 0:
+                return n.id
+            try:
+                return NoteId(int(n[new_note_id_field]))
+            except (KeyError, ValueError, TypeError):
+                return n.id
 
         meaning_sentences_dict = {
             meaning_note_key(n): WordAndSentences(

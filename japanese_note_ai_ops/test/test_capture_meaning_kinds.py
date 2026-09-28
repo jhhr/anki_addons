@@ -575,6 +575,35 @@ class CleanNoteTests(unittest.TestCase):
                     self.assertEqual(written, (jp, en))
 
 
+    def test_a_note_not_added_with_no_placeholder_is_cleaned_under_id_0(self):
+        # A vocab note added by hand reaches the add-note hook with id 0 and an empty new note
+        # id field; reading that field as a placeholder raised and cost the note its cleaning
+        jp, en = NEW_MEANING
+        for kind, entry, answer in (
+            ("clean_meaning.extract", ENTRY, {"cleaned_meaning": jp, "english_meaning": en}),
+            ("clean_meaning.generate", None, {"new_meaning": jp, "english_meaning": en}),
+        ):
+            with self.subTest(kind=kind):
+                note = WordNote(0, "", "")
+                _, kwargs = self.clean(note, [], entry, answer).one()
+
+                self.assertEqual(kwargs["kind"], kind)
+                self.assertEqual(kwargs["context"], {"note_id": 0})
+                self.assertEqual((note["meaning_field"], note["english_meaning_field"]), (jp, en))
+
+    def test_a_note_not_added_with_no_placeholder_takes_its_reworked_meaning(self):
+        pull = WordNote(PULL_NOTE, "手元へ寄せる。", "to pull")
+        added = WordNote(0, "くじを抜く。", "to draw lots")
+        jp, en = NEW_MEANING
+        reworked = {"meaning_index": 1, "jp_meaning": jp, "en_meaning": en}
+
+        _, kwargs = self.clean(added, [pull], ENTRY, {"meanings": [reworked]}).one()
+
+        self.assertEqual(kwargs["context"]["note_ids"], [0, PULL_NOTE])
+        self.assertEqual(added["meaning_field"], jp)
+        self.assertEqual(pull["meaning_field"], "手元へ寄せる。")
+
+
 class StoreTests(unittest.TestCase):
     """Two of the calls through the real get_response with a store installed: the rows' inputs
     give back the rows' prompts."""
