@@ -656,7 +656,7 @@ def note_passes_deck_whitelist(
 # What the note hooks have already said about each refused definition this session: its
 # guid, and the messages it was refused for. A hook fires on every add, answer and unfocus,
 # and each one opens its own operation log, so one line per event would be one new file per
-# event, and the 50-file cap would soon hold nothing but the same refusal.
+# event, and the log cap would soon hold nothing but the same refusal.
 _refusals_logged: dict[str, frozenset[str]] = {}
 
 

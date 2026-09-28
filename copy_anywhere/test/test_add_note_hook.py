@@ -477,7 +477,7 @@ class TestADefinitionBrokenByARenameOnAdd:
         self, col, set_definitions, hook_logger
     ):
         # Each add opens its own operation log, so a line per add would be a new file per
-        # add, and the 50-file cap would soon hold nothing else.
+        # add, and the log cap would soon hold nothing else.
         broken = self.marked()
         set_definitions(broken)
 

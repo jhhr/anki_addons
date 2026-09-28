@@ -907,7 +907,7 @@ class TestADefinitionARenameMarkedIsRefused:
         self, col, set_definitions, hook_logger
     ):
         # Each unfocus opens its own operation log, so a line per unfocus would be a new file
-        # per field left, and the 50-file cap would soon hold nothing else.
+        # per field left, and the log cap would soon hold nothing else.
         definition = self.marked()
         set_definitions(definition)
         note = existing_note(col, Word="neko")

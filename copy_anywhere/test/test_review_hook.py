@@ -691,7 +691,7 @@ class TestADefinitionARenameMarkedIsRefused:
         self, col, set_definitions, hook_logger
     ):
         # Each review opens its own operation log, so a line per review would be a new file
-        # per review, and the 50-file cap would soon hold nothing else.
+        # per review, and the log cap would soon hold nothing else.
         note, reviewed = review(col)
         definition = marked()
         set_definitions(definition, within())
