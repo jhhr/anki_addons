@@ -511,6 +511,49 @@ class HttpProviderTests(CallCaptureTestCase):
             self.assertNotIn(API_KEY.encode("utf-8"), path.read_bytes(), path.name)
 
 
+class GeminiKeyTests(CallCaptureTestCase):
+    """The Gemini key rides in a header. It was in the URL's query string, and a dropped
+    connection's exception text carries the URL, which post_with_retry logs: every such log
+    line held the key, in the files users are asked to share."""
+
+    def test_the_key_is_sent_in_a_header_and_not_in_the_url(self):
+        provider = PROVIDERS[0]
+        session = self.serve(provider, answer(provider))
+        self.assertEqual(self.ask(provider.model), ANSWER)
+
+        [sent] = session.calls
+        self.assertNotIn(API_KEY, sent["url"])
+        self.assertTrue(sent["url"].endswith(f"/models/{provider.model}:generateContent"))
+        self.assertEqual(sent["headers"]["x-goog-api-key"], API_KEY)
+
+    def test_a_dropped_connection_logs_no_key(self):
+        provider = PROVIDERS[0]
+
+        class DroppingSession(FakeSession):
+            def post(self, url, headers=None, json=None, timeout=None):  # noqa: A002
+                self.calls.append({"url": url, "headers": headers})
+                # What requests says: the URL, query string included, is in the text
+                raise requests.exceptions.ConnectionError(
+                    f"HTTPSConnectionPool(host='generativelanguage.googleapis.com', port=443):"
+                    f" Max retries exceeded with url: {url}"
+                )
+
+        api._sessions[provider.name] = DroppingSession()
+        records = Records()
+        api.logger.addHandler(records)
+        self.addCleanup(api.logger.removeHandler, records)
+        level = api.logger.level
+        api.logger.setLevel(logging.DEBUG)
+        self.addCleanup(api.logger.setLevel, level)
+
+        self.assertIsNone(self.ask(provider.model))
+
+        messages = [r.getMessage() for r in records.records]
+        self.assertTrue(any("Max retries exceeded" in m for m in messages), messages)
+        for message in messages:
+            self.assertNotIn(API_KEY, message)
+
+
 class TerminalProviderTests(CallCaptureTestCase):
     def setUp(self) -> None:
         super().setUp()

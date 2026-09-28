@@ -573,11 +573,6 @@ def get_response_from_gemini(
             "Using response schema %s", json.dumps(response_schema, ensure_ascii=False, indent=2)
         )
 
-    headers = {
-        "Content-Type": "application/json",
-        # "x-goog-api-key": google_api_key,
-    }
-
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         print("No configuration found for the addon.")
@@ -585,11 +580,16 @@ def get_response_from_gemini(
         return None
     google_api_key = config.get("google_api_key", "")
 
+    # The key goes in a header, never the URL: a failed request's exception text carries its
+    # URL, and post_with_retry logs that text, so a key in the query string was written into
+    # every log of a dropped connection or timeout
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": google_api_key,
+    }
+
     # Make the API call
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={google_api_key}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     response = post_to_api(
         provider=GEMINI,
         model=model,
