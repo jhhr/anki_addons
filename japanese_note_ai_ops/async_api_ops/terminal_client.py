@@ -74,8 +74,8 @@ CLI_ENV = {
 }
 RETRY_STATUSES = frozenset({429, 529})
 # Wording of the subscription usage limit, which no retry clears before its reset time, so the
-# run pauses until then. Not seen in a real response yet, only in the CLI's strings: "You've
-# hit your ... limit", "resets ...".
+# run pauses until then. A real run got "You've hit your session limit · resets 12:50am",
+# paused on it and resumed at 00:50; the other wordings are from the CLI's strings.
 USAGE_LIMIT_RE = re.compile(r"hit your .*limit|usage limit|limit reached|limit will reset", re.I)
 # The reset time in that message: "resets 5pm", "resets 5:30pm", "resets at 5 pm",
 # "resets 17:00". A timezone after it, "(Europe/Helsinki)", is ignored: the CLI prints the

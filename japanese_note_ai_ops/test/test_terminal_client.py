@@ -266,6 +266,8 @@ class UsageLimitResumeTimeTests(unittest.TestCase):
         cases = [
             ("You've hit your session limit · resets 5pm", local(17, 0)),
             ("You've hit your session limit · resets 5:30pm", local(17, 30)),
+            # The message a real run paused on; 12:50am is hour 0, not 12
+            ("You've hit your session limit · resets 12:50am", local(0, 50, day=24)),
             ("Usage limit reached, resets at 5 pm", local(17, 0)),
             ("Your limit will reset at 17:00", local(17, 0)),
             ("You've hit your limit · resets 5pm (Europe/Helsinki)", local(17, 0)),
