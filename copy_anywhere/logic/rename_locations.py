@@ -50,10 +50,17 @@ def split_key(key: str) -> tuple[str, str]:
     return anchor, path
 
 
+def reanchor_key(key: str, anchor: str) -> str:
+    """The same location in another object: the key with its anchor replaced, as a stage
+    duplicated with new guids holds the texts its original did."""
+    return f"{anchor}.{split_key(key)[1]}"
+
+
 __all__ = [
     "TRIGGERS_ANCHOR",
     "card_action_key",
     "field_write_key",
+    "reanchor_key",
     "split_key",
     "stage_key",
     "trigger_key",

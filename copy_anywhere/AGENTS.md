@@ -40,7 +40,7 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | `logic/rename_reconcile.py` | the reconcile pass: binds null ids, refreshes cached names, diffs `name_snapshot` by id, follows a trigger field or card type rename into a definition with one trigger note type, and files a warning at every location (`_locations`) that still spells a renamed or deleted field, card type, deck or note type; the snapshot and its collection stamp (the path); `drop_cleared_warnings` for the editor's save; `unresolved_references` and `trigger_names_not_on_every_note_type` for the editor and the picker |
 | `logic/rename_warnings.py` | `definition["rename_warnings"]` (location key -> entries) and its only readers: `rename_warning_entries`, `blocks_run` / `blocking_messages` (every run path, the picker's ✖, the browser menu, `call_definition`), `non_blocking_messages` (the picker's ⓘ), `remove_rename_warning` |
 | `logic/rename_locations.py` | the one builder of location keys, `<guid>.<path>` or `triggers.<path>`, for the pass and every editor part alike |
-| `logic/rename_scan.py` | the scanners the pass, the indicators, the save and Replace share: where a template, search, code or slot spells a name, `hit_blocks_run` (which hits block), and the replacement text |
+| `logic/rename_scan.py` | the scanners the pass, the indicators, the save and Replace share: where a template, search, code or slot spells a name, `hit_blocks_run` (which hits block), `entry_hits` (which of them a stored entry counts), `names_equal` and `read_reference` (the name and reference rules the pass follows by too), and the replacement text |
 | `logic/query_terms.py` | the `deck:`, `note:`, `card:` and field terms a search spells that the collection does not have, exact names only; `CollectionNames` is the name list a caller shares across many scans |
 | `logic/*_process.py`, `FatalProcessError.py` | the five process-chain steps; `FatalProcessError` aborts a whole run |
 | `ui/` | the picker (`pick_copy_definition_dialog`), `edit_staged_definition_dialog` and its parts: `stage_document`, `stage_list`, `stage_editors` (one editor per stage type), `stage_preview`, the triggers and exports panels, `rename_marks_banner` (a definition's rename warnings grouped by location, click to open, one Dismiss each) |
@@ -96,10 +96,12 @@ Call chain for a bulk run:
   (`note_type_ids_held_for_rename`).
 - **A definition with a blocking rename warning is not run on any path.** Warnings live in
   `definition["rename_warnings"]`, keyed by location; each entry says whether it
-  `blocks_run`, and a warn-only one changes nothing about a run. Every run path asks
+  `blocks_run` and whether its location is `inactive` (no run reads it: an expression's
+  other side, a switched-off stage), and only `rename_warnings.entry_blocks_run` puts the
+  two together. A warn-only or inactive one changes nothing about a run. Every run path asks
   `copy_fields.refused_for_rename`: the add, review and unfocus hooks before they pick a way
-  to run it (`once_per_session=True`, so a hook firing per note cannot fill the 50-file log
-  cap with one refusal), and `copy_for_single_trigger_note` as the backstop for the bulk
+  to run it (`once_per_session=True`, so a hook firing per note cannot fill the log cap with
+  one refusal), and `copy_for_single_trigger_note` as the backstop for the bulk
   and sync runs. `call_definition` refuses a blocked callee (`evaluator.py`); the picker
   and the browser menu disable it. A new run path must ask too. Read the store only through
   `logic/rename_warnings.py` (a hand-mangled value must read alike everywhere, and an entry
@@ -109,7 +111,12 @@ Call chain for a bulk run:
   saves them as they stand). An entry goes when its object is called `old` again (the
   rename undone), when the user dismisses it in the editor, or when the editor saves and
   its location no longer spells the old name (`drop_cleared_warnings`, the same scanner the
-  pass used; code that does not parse keeps its warnings).
+  pass used; code that does not parse keeps its warnings). What an entry counts as a
+  spelling is `rename_scan.entry_hits`, for the indicator, the save and Replace alike: an
+  entry filed with `through_trigger: false` does not count the definition's own trigger
+  tokens and slots. After a Replace in a swap or chain of renames the text spells the old
+  names again, so the document remembers what Apply answered (`settle_rename_marks`) and
+  the save drops those unless the text was put back.
 - The unfocus handler is a filter hook: return `changed or we_changed`. It runs definitions
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.

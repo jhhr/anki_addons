@@ -23,6 +23,7 @@ from aqt.qt import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget, pyqtS
 from ..logic.definition_schema import walk_stages
 from ..logic.object_refs import card_action_card_type
 from ..logic.rename_locations import TRIGGERS_ANCHOR, split_key
+from ..logic.rename_warnings import entry_blocks_run
 from .discard import discard_widget
 from .labels import wrapping
 from .rename_indicator import BLOCKING_ICON, WARNING_ICON
@@ -177,7 +178,7 @@ class RenameMarksBanner(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         # Rich text for the icon, so the message is escaped: it quotes names from the
         # collection, and a field may well be called "<b>".
-        icon = BLOCKING_ICON if entry.get("blocks_run") is True else WARNING_ICON
+        icon = BLOCKING_ICON if entry_blocks_run(entry) else WARNING_ICON
         label = wrapping(QLabel(f"{icon} {html.escape(message)}", row))
         layout.addWidget(label, 1)
         button = QPushButton("Dismiss", row)
@@ -228,7 +229,7 @@ class RenameMarksBanner(QWidget):
         discard_widget(row)
 
     def _show_what_is_left(self) -> None:
-        blocking = any(entry.get("blocks_run") is True for entry, _row, _message in self.rows)
+        blocking = any(entry_blocks_run(entry) for entry, _row, _message in self.rows)
         self.header.setText(f"{BLOCKING_ICON if blocking else WARNING_ICON} {BANNER_TEXT}")
         self.dismiss_all_button.setVisible(len(self.rows) >= 2)
         self.setVisible(bool(self.rows))

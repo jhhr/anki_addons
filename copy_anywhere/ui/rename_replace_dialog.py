@@ -42,7 +42,8 @@ from ..logic.rename_scan import (
     Rename,
     applied_hits,
     apply_with_spans,
-    find_at,
+    entry_hits,
+    names_equal,
 )
 from .labels import wrapping
 
@@ -61,6 +62,13 @@ class Replacement:
     `after` is what Apply writes. For a text, `written` pairs each hit replaced with where
     its replacement stands in `after`; for a slot, `swapped` lists each name and the one
     that takes its place. `left` says, a sentence each, what stays for the user to fix.
+
+    `settled` lists the entries Apply answers that a later scan could not see answered:
+    every spelling of the entry's old name was replaced, but its old name is also another
+    entry's new one here -- a swap, `Word` → `Term` and `Term` → `Word`, or a chain -- so the
+    replaced text still spells it. The part tells the document (`StageDocument.
+    settle_rename_marks`), which hides them and lets a save drop them while the text is not
+    put back as it was.
     """
 
     read_as: str
@@ -69,14 +77,46 @@ class Replacement:
     written: list[tuple[Hit, tuple[int, int]]] = field(default_factory=list)
     swapped: list[tuple[str, str]] = field(default_factory=list)
     left: list[str] = field(default_factory=list)
+    settled: list[dict] = field(default_factory=list)
 
     @property
     def changes(self) -> bool:
         return bool(self.written or self.swapped)
 
 
-def _renames(entries: Sequence[dict]) -> list[Rename]:
-    return [rename for rename in map(Rename.from_entry, entries) if rename is not None]
+def _usable(entries: Sequence[dict]) -> list[tuple[dict, Rename]]:
+    """The entries with a rename to act on, each with it."""
+    found = []
+    for entry in entries:
+        rename = Rename.from_entry(entry)
+        if rename is not None:
+            found.append((entry, rename))
+    return found
+
+
+def _in_a_chain(rename: Rename, renames: Sequence[Rename]) -> bool:
+    """Whether another rename here gives `rename`'s old name as its new one."""
+    return any(
+        other is not rename
+        and other.kind == rename.kind
+        and other.new is not None
+        and names_equal(rename.kind, other.new, rename.old)
+        for other in renames
+    )
+
+
+def _settled(
+    usable: Sequence[tuple[dict, Rename]], hits_of: dict[int, list[Hit]], done: list[Hit]
+) -> list[dict]:
+    """The chained entries all of whose hits Apply writes (`Replacement.settled`)."""
+    renames = [rename for _entry, rename in usable]
+    return [
+        entry
+        for entry, rename in usable
+        if hits_of.get(id(entry))
+        and _in_a_chain(rename, renames)
+        and all(hit in done for hit in hits_of[id(entry)])
+    ]
 
 
 def _where(text: str, hit: Hit) -> str:
@@ -95,10 +135,14 @@ def _why_left(rename: Rename, hit: Hit) -> str:
     return "it overlaps another replacement; press Replace again afterwards"
 
 
-def _plan_text(read_as: str, text: str, renames: Sequence[Rename]) -> Replacement:
+def _plan_text(read_as: str, text: str, usable: Sequence[tuple[dict, Rename]]) -> Replacement:
     found: list[tuple[Hit, Rename]] = []
-    for rename in renames:
-        for hit in find_at(read_as, text, rename):
+    hits_of: dict[int, list[Hit]] = {}
+    for entry, rename in usable:
+        # The entry's own hits: a definition's `{{trigger.Word}}` is not a spelling of
+        # another note type's `Word` its warning is about, and must not be rewritten to it.
+        hits_of[id(entry)] = entry_hits(read_as, text, entry)
+        for hit in hits_of[id(entry)]:
             # Two warnings about one object (a field renamed the same way in two note types)
             # find the same spelling twice; it is one replacement, not an overlap.
             if all(hit != seen for seen, _rename in found):
@@ -112,26 +156,37 @@ def _plan_text(read_as: str, text: str, renames: Sequence[Rename]) -> Replacemen
         for hit, rename in found
         if hit not in replaced
     ]
-    return Replacement(read_as, text, after, written=written, left=left)
+    return Replacement(
+        read_as,
+        text,
+        after,
+        written=written,
+        left=left,
+        settled=_settled(usable, hits_of, replaced),
+    )
 
 
-def _plan_slot(read_as: str, value: Any, renames: Sequence[Rename]) -> Replacement:
+def _plan_slot(read_as: str, value: Any, usable: Sequence[tuple[dict, Rename]]) -> Replacement:
     names = list(value) if isinstance(value, list) else [value]
     after: list[Any] = []
     swapped: list[tuple[str, str]] = []
     left: list[str] = []
+    hits_of: dict[int, list[Hit]] = {}
+    done: list[Hit] = []
     for name in names:
         new_name = name
-        for rename in renames:
-            hits = find_at(read_as, name, rename)
+        for entry, rename in usable:
+            hits = entry_hits(read_as, name, entry)
             if not hits:
                 continue
+            hits_of.setdefault(id(entry), []).extend(hits)
             replacement = hits[0].replacement
             if replacement is None:
                 left.append(f"“{name}”: {_why_left(rename, hits[0])}")
             else:
                 new_name = replacement
                 swapped.append((name, replacement))
+                done.extend(hits)
             break
         # A list that already held the new name as well does not end up holding it twice.
         if new_name not in after:
@@ -142,6 +197,7 @@ def _plan_slot(read_as: str, value: Any, renames: Sequence[Rename]) -> Replaceme
         after if isinstance(value, list) else after[0],
         swapped=swapped,
         left=left,
+        settled=_settled(usable, hits_of, done),
     )
 
 
@@ -151,13 +207,13 @@ def plan_replacement(read_as: str, value: Any, entries: Sequence[dict]) -> Repla
     Every warning with a usable rename is applied in the one go, so a search naming both a
     renamed deck and a renamed note type is fixed by one Apply.
     """
-    renames = _renames(entries)
+    usable = _usable(entries)
     if read_as in TEXT_READS:
         text = value if isinstance(value, str) else ""
-        return _plan_text(read_as, text, renames)
+        return _plan_text(read_as, text, usable)
     if value is None or value == [] or value == "":
         return Replacement(read_as, value, value)
-    return _plan_slot(read_as, value, renames)
+    return _plan_slot(read_as, value, usable)
 
 
 def diff_pieces(replacement: Replacement) -> list[tuple[str, str]]:

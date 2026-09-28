@@ -4,10 +4,14 @@ The reconcile pass (`rename_reconcile.py`) files each warning under the location
 spells the old name (`rename_locations.py`), as `definition["rename_warnings"]`:
 
     {"<location key>": [{"kind", "object_id", "note_type_id", "old", "new", "blocks_run",
-                         "message"}, ...], ...}
+                         "through_trigger", "message", "inactive"?}, ...], ...}
 
 `new` is None for a deletion; `note_type_id` is the note type a field or card type belongs
-to. A warning with `blocks_run` keeps the definition from running on every path until it
+to; `through_trigger` says whether the definition's own trigger tokens and slots counted as
+spelling the name (`rename_scan.entry_hits`). `blocks_run` says whether the warning would
+block where a run reads its location; `inactive` is there while none does (the other side
+of an expression, a switched-off stage), and then it does not. A warning that blocks
+(`entry_blocks_run`) keeps the definition from running on every path until it
 is gone: the editor drops it on save once its location no longer spells the old name
 (`rename_reconcile.drop_cleared_warnings`), or the user dismisses it. The store is read
 only through the functions here: every run path, the picker, the browser menu and
@@ -22,6 +26,8 @@ from __future__ import annotations
 from typing import Any, Final
 
 WARNINGS_KEY: Final = "rename_warnings"
+#: Set on an entry while no run reads its location (`rename_reconcile._Location.active`).
+INACTIVE_KEY: Final = "inactive"
 
 #: What the user can do about a definition a blocking warning holds back, said after the
 #: stored message wherever a run refuses it. Undoing the rename takes the warning back too
@@ -55,6 +61,16 @@ def rename_warning_entries(definition: Any) -> list[tuple[str, dict]]:
     return found
 
 
+def entry_blocks_run(entry: Any) -> bool:
+    """Whether this one entry keeps its definition from running: it would block where it
+    is, and a run reads where it is."""
+    return (
+        isinstance(entry, dict)
+        and entry.get("blocks_run") is True
+        and entry.get(INACTIVE_KEY) is not True
+    )
+
+
 def blocking_messages(definition: Any) -> list[str]:
     """The messages of the warnings that keep this definition from running, or none.
 
@@ -67,7 +83,7 @@ def blocking_messages(definition: Any) -> list[str]:
     return [
         entry["message"]
         for _key, entry in rename_warning_entries(definition)
-        if entry.get("blocks_run") is True
+        if entry_blocks_run(entry)
     ]
 
 
@@ -82,7 +98,7 @@ def non_blocking_messages(definition: Any) -> list[str]:
     return [
         entry["message"]
         for _key, entry in rename_warning_entries(definition)
-        if entry.get("blocks_run") is not True
+        if not entry_blocks_run(entry)
     ]
 
 
@@ -97,9 +113,8 @@ def blocking_tooltip(messages: list[str]) -> str:
     The definition list and the browser's menu both refuse such a definition and say why in
     the same words, so a user who meets it in one recognises it in the other.
     """
-    return "\n".join(
-        ["This definition is not run while it has these rename warnings:"] + messages + [BLOCKING_ADVICE]
-    )
+    header = "This definition is not run while it has these rename warnings:"
+    return "\n".join([header, *messages, BLOCKING_ADVICE])
 
 
 def blocking_explanation(messages: list[str]) -> str:
@@ -138,11 +153,13 @@ def remove_rename_warning(definition: Any, entry: dict) -> bool:
 
 __all__ = [
     "BLOCKING_ADVICE",
+    "INACTIVE_KEY",
     "WARNINGS_KEY",
     "blocking_explanation",
     "blocking_messages",
     "blocking_tooltip",
     "blocks_run",
+    "entry_blocks_run",
     "non_blocking_messages",
     "remove_rename_warning",
     "rename_warning_entries",

@@ -49,6 +49,9 @@ from ..logic.definition_schema import (
     walk_stages,
 )
 from ..logic.flow_analysis import AnalysisResult, analyze_definition
+from ..logic.rename_locations import reanchor_key, split_key
+from ..logic.rename_reconcile import Replaced
+from ..logic.rename_scan import still_spelled
 from ..logic.rename_warnings import WARNINGS_KEY, remove_rename_warning, rename_warning_entries
 from ..logic.unsaved_note_search import UnjudgeableSearch, UnsavedNoteSearchError, parse_search
 
@@ -221,7 +224,11 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
     return stage
 
 
-def reguid_stage(stage: Stage, make_guid: Callable[[], str] = new_guid) -> Stage:
+def reguid_stage(
+    stage: Stage,
+    make_guid: Callable[[], str] = new_guid,
+    new_guids: Optional[dict[str, str]] = None,
+) -> Stage:
     """A deep copy of a stage subtree with every guid replaced.
 
     Duplicating a stage has to renumber its whole subtree: two stages sharing a guid would
@@ -229,18 +236,27 @@ def reguid_stage(stage: Stage, make_guid: Callable[[], str] = new_guid) -> Stage
     guid. Its field writes and card actions are renumbered too, since a rename warning is
     filed under the guid of the write or action whose text spells the name
     (`rename_locations.py`), and one filed under a shared guid would show in both copies.
+    `new_guids`, when given, collects each old guid with the one that replaced it.
     """
+    guids = {} if new_guids is None else new_guids
+
+    def renumber(holder: Any) -> None:
+        old = holder.get("guid")
+        holder["guid"] = make_guid()
+        if isinstance(old, str) and old:
+            guids[old] = holder["guid"]
+
     copied = deepcopy(stage)
-    copied["guid"] = make_guid()
+    renumber(copied)
     for write in copied.get("fields") or []:
         if isinstance(write, dict):
-            write["guid"] = make_guid()
+            renumber(write)
     for action in copied.get("card_actions") or []:
         if isinstance(action, dict) and action.get("guid"):
-            action["guid"] = make_guid()
+            renumber(action)
     for _key, block in stage_body_blocks(copied):
         for index, child in enumerate(block):
-            block[index] = reguid_stage(child, make_guid)
+            block[index] = reguid_stage(child, make_guid, guids)
     return copied
 
 
@@ -280,6 +296,8 @@ class StageDocument:
         self._unresolved_refs = unresolved_refs
         self._trigger_names = trigger_names
         self._analysis: Optional[AnalysisResult] = None
+        #: `(location key, value before, entry)` per warning a Replace answered.
+        self._settled: list[Replaced] = []
 
     # -- analysis ------------------------------------------------------------------------
 
@@ -440,7 +458,8 @@ class StageDocument:
         stage = self.stage(guid)
         if location is None or stage is None:
             return None
-        copy = reguid_stage(stage, self._make_guid)
+        new_guids: dict[str, str] = {}
+        copy = reguid_stage(stage, self._make_guid, new_guids)
         # Result names are unique per block, so a duplicate cannot keep the original's.
         # Blanking is the honest move: the analyser then asks for a name.
         _blank_result_names(copy)
@@ -448,8 +467,24 @@ class StageDocument:
         if block is None:
             return None
         block.insert(location.position + 1, copy)
+        self._copy_rename_marks(new_guids)
         self.invalidate()
         return copy
+
+    def _copy_rename_marks(self, new_guids: dict[str, str]) -> None:
+        """File a copy of every warning about the duplicated texts under the copy's guids.
+
+        The copy spells what the original spells, so it needs the same warnings; without
+        them, fixing only the original and saving dropped the last warning and let the
+        definition run the copy's old name.
+        """
+        stored = self.definition.get(WARNINGS_KEY)
+        if not isinstance(stored, dict):
+            return
+        for key, entries in list(stored.items()):
+            anchor = split_key(key)[0]
+            if anchor in new_guids and isinstance(entries, list):
+                stored[reanchor_key(key, new_guids[anchor])] = deepcopy(entries)
 
     def set_enabled(self, guid: str, enabled: bool) -> bool:
         stage = self.stage(guid)
@@ -577,6 +612,27 @@ class StageDocument:
 
     def dismiss_all_rename_marks(self) -> None:
         self.definition.pop(WARNINGS_KEY, None)
+
+    def settle_rename_marks(self, key: str, before: Any, entries: Iterable[dict]) -> None:
+        """Remember that a Replace at `key` answered these entries, the location having
+        read `before` until then (`rename_replace_dialog.Replacement.settled`).
+
+        Kept here rather than taken off the store at once, because the text box's own undo
+        can put the old text back: the entries then show again, and a save keeps them.
+        """
+        self._settled.extend((key, before, entry) for entry in entries)
+
+    def rename_mark_is_live(self, key: str, read_as: str, value: Any, entry: dict) -> bool:
+        """Whether an editor part reading `value` at `key` should show this warning: its old
+        name is still spelled there, and it is not one a Replace answered since."""
+        for settled_key, before, settled in self._settled:
+            if settled_key == key and settled is entry and value != before:
+                return False
+        return still_spelled(read_as, value, entry)
+
+    def settled_rename_marks(self) -> list[Replaced]:
+        """The entries a Replace answered, as a save hands them to `drop_cleared_warnings`."""
+        return list(self._settled)
 
     # -- saving --------------------------------------------------------------------------
 

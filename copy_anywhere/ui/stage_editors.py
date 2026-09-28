@@ -222,6 +222,38 @@ def warned_field_name(
     return warned
 
 
+def trigger_field_names(environment: StageEditorEnvironment) -> list[str]:
+    """The fields of every trigger note type, each name once, in note type order."""
+    offered: list[str] = []
+    assert mw is not None and mw.col is not None
+    for model in note_types_of("trigger", environment.note_types_for):
+        for name in mw.col.models.field_names(model):
+            if name not in offered:
+                offered.append(name)
+    return offered
+
+
+def fill_unfocus_fields(
+    box: MultiComboBox, stored: Sequence[str], environment: StageEditorEnvironment
+) -> None:
+    """Offer the trigger note's fields in a migrated unfocus gate, with `stored` chosen.
+
+    A `MultiComboBox` can only offer what is in it, so a stored name the trigger note
+    type no longer has would be dropped on the way through. It is added as its own item
+    instead, the way the trigger editor keeps a whitelisted deck it cannot offer.
+    """
+    chosen = [name for name in stored if name]
+    offered = trigger_field_names(environment)
+    offered += [name for name in chosen if name not in offered]
+    # Quoted item texts, as every other name box in this editor holds them: that is the
+    # form `selected_names` reads back, and a field name can contain a comma.
+    box.blockSignals(True)
+    box.clear()
+    box.addItems(quoted_items(offered))
+    box.setCurrentText(", ".join(quoted_items(chosen)))
+    box.blockSignals(False)
+
+
 def binding_combo(
     parent: QWidget, names: Sequence[str], current: str, placeholder: str
 ) -> RequiredCombobox:
@@ -394,6 +426,11 @@ class StageEditor(QWidget):
         #: editor whose shape depends on a choice can hide a row whole rather than leaving a
         #: caption over nothing.
         self.row_labels: dict[str, QLabel] = {}
+        #: The migrated unfocus gate's controls, when the stage has one (`add_gate_rows`).
+        self.gate_fields: Optional[MultiComboBox] = None
+        self.gate_fields_indicator: Optional[RenameIndicator] = None
+        self.gate_write_if_field: Optional[QComboBox] = None
+        self.gate_write_if_indicator: Optional[RenameIndicator] = None
 
     # -- helpers for subclasses ----------------------------------------------------------
 
@@ -454,6 +491,82 @@ class StageEditor(QWidget):
             combo.currentTextChanged.connect(indicator.refresh)
         return indicator
 
+    def add_gate_rows(self) -> None:
+        """Rows for the unfocus gate a migrated stage carries, when it carries one.
+
+        The migrator copies a format-1 write's gate onto the stages that feed it (which
+        editor fields start it, and the field whose being filled skips it), and the run
+        still honours both. A rename leaves its warnings on them like on any other slot, so
+        they need a part to be shown and replaced in: without one the only way out of a
+        blocking warning there was Dismiss.
+        """
+        if "unfocus_trigger_fields" in self.stage:
+            box = MultiComboBox(
+                self, placeholder_text="No fields (this stage never runs on unfocus)"
+            )
+            self.gate_fields = box
+            fill_unfocus_fields(
+                box, self.stage.get("unfocus_trigger_fields") or [], self.environment
+            )
+            box.currentTextChanged.connect(self.notify)
+            indicator = self._gate_indicator(
+                "unfocus_trigger_fields",
+                lambda: selected_names(box),
+                lambda names: select_names(box, names),
+            )
+            if indicator is not None:
+                box.currentTextChanged.connect(indicator.refresh)
+            self.gate_fields_indicator = indicator
+            self.add_row("Only when leaving", self._with_indicator(box, indicator))
+        if "write_if_field" in self.stage:
+            combo = QComboBox(self)
+            self.gate_write_if_field = combo
+            self._fill_gate_write_if_field()
+            combo.currentTextChanged.connect(self.notify)
+            indicator = self.slot_indicator("write_if_field", READ_AS_TRIGGER_SLOT, combo)
+            self.gate_write_if_indicator = indicator
+            self.add_row("Skipped when filled", self._with_indicator(combo, indicator))
+
+    def _gate_indicator(
+        self, path: str, value: Callable[[], Any], replace: Callable[[Any], None]
+    ) -> Optional[RenameIndicator]:
+        key = self.stage_location(path)
+        if key is None:
+            return None
+        return rename_indicator(
+            self,
+            self.environment,
+            lambda: [LiveLocation(key, READ_AS_TRIGGER_SLOT, value(), replace)],
+        )
+
+    def _with_indicator(self, widget: QWidget, indicator: Optional[RenameIndicator]) -> QWidget:
+        if indicator is None:
+            return widget
+        holder = QWidget(self)
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(widget, 1)
+        row.addWidget(indicator)
+        return holder
+
+    def _fill_gate_write_if_field(self) -> None:
+        """The trigger note's fields, keeping the one stored even when no note type has it:
+        a renamed name is what its warning points at, and Replace swaps it for the new one."""
+        combo = self.gate_write_if_field
+        if combo is None:
+            return
+        current = combo.currentText() or str(self.stage.get("write_if_field") or "")
+        offered = trigger_field_names(self.environment)
+        # An empty name too: a combo that cannot find its text shows its first item, and
+        # the next apply would store that.
+        if current not in offered:
+            offered.append(current)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(offered)
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
+
     def add_row(self, label, widget) -> QLabel:
         made = QLabel(label, self) if isinstance(label, str) else label
         self.form.addRow(made, widget)
@@ -470,6 +583,10 @@ class StageEditor(QWidget):
         """Write every control back into the stage dict."""
         for editor in self._expression_editors:
             editor.apply()
+        if self.gate_fields is not None:
+            self.stage["unfocus_trigger_fields"] = selected_names(self.gate_fields)
+        if self.gate_write_if_field is not None:
+            self.stage["write_if_field"] = self.gate_write_if_field.currentText()
 
     def set_context(self, context: StageEditorContext) -> None:
         self.context = context
@@ -482,6 +599,11 @@ class StageEditor(QWidget):
         self.state.set_selected_models(list(self.environment.note_types_for("trigger") or []))
         for editor in self._expression_editors:
             editor.set_context(context)
+        if self.gate_fields is not None:
+            fill_unfocus_fields(
+                self.gate_fields, selected_names(self.gate_fields), self.environment
+            )
+        self._fill_gate_write_if_field()
 
 
 # --------------------------------------------------------------------------------------
@@ -808,32 +930,13 @@ class FieldWriteRow(QFrame):
         )
 
     def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
-        """Offer the trigger note's fields: these name editor fields, not the write's target.
-
-        A `MultiComboBox` can only offer what is in it, so a stored name the trigger note
-        type no longer has would be dropped on the way through. It is added as its own item
-        instead, the way the trigger editor keeps a whitelisted deck it cannot offer.
-        """
-        box = self.unfocus_fields
-        if box is None:
-            return
-        stored = [name for name in self.field_write.get("unfocus_trigger_fields") or [] if name]
-        offered: list[str] = []
-        assert mw is not None and mw.col is not None
-        for model in note_types_of("trigger", self.owner.environment.note_types_for):
-            for name in mw.col.models.field_names(model):
-                if name not in offered:
-                    offered.append(name)
-        for name in stored:
-            if name not in offered:
-                offered.append(name)
-        # Quoted item texts, as every other name box in this editor holds them: that is the
-        # form `selected_names` reads back, and a field name can contain a comma.
-        box.blockSignals(True)
-        box.clear()
-        box.addItems(quoted_items(offered))
-        box.setCurrentText(", ".join(quoted_items(stored)))
-        box.blockSignals(False)
+        """Offer the trigger note's fields: these name editor fields, not the write's target."""
+        if self.unfocus_fields is not None:
+            fill_unfocus_fields(
+                self.unfocus_fields,
+                self.field_write.get("unfocus_trigger_fields") or [],
+                self.owner.environment,
+            )
 
     def apply(self) -> FieldWrite:
         self.field_write["field"] = self.field.currentText()
@@ -1559,6 +1662,8 @@ def make_stage_editor(
     factory = STAGE_EDITOR_CLASSES.get(stage.get("type", ""))
     if factory is None:
         return None
-    return factory(parent, stage, context, environment)
+    editor = factory(parent, stage, context, environment)
+    editor.add_gate_rows()
+    return editor
 
 

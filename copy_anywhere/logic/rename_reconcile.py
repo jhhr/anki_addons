@@ -45,9 +45,8 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional, Union, cast
 
-from ..shared.interpolate.interpolate_fields import CARD_VALUE_RE, CARD_VALUES_DICT
 from .definition_migration import (
     STAGE_EXPRESSION_KEYS,
     fill_in_missing_stage_guids,
@@ -93,14 +92,20 @@ from .rename_scan import (
     READ_AS_QUERY,
     READ_AS_TEXT,
     READ_AS_TRIGGER_SLOT,
-    TRIGGER_SLOT,
-    TRIGGER_TOKEN,
     Rename,
+    counted_hits,
     find_at,
     hit_blocks_run,
+    names_equal,
+    read_reference,
     still_spelled,
 )
-from .rename_warnings import WARNINGS_KEY, rename_warning_entries
+from .rename_warnings import (
+    INACTIVE_KEY,
+    WARNINGS_KEY,
+    entry_blocks_run,
+    rename_warning_entries,
+)
 
 if TYPE_CHECKING:  # pragma: no cover -- the import would close a cycle at run time
     from ..configuration import Config
@@ -512,15 +517,17 @@ class _Renames:
         """
         if not isinstance(name, str) or not name:
             return None
-        lowered = name.lower()
         for old_name, new_name in self.fields.items():
-            if old_name.lower() == lowered:
+            if names_equal(KIND_FIELD, old_name, name):
                 return new_name
         return None
 
     def new_template_name(self, name: str) -> Optional[str]:
         """What this card type is called now, matched exactly (see `new_field_name`)."""
-        return self.templates.get(name)
+        for old_name, new_name in self.templates.items():
+            if names_equal(KIND_CARD_TYPE, old_name, name):
+                return new_name
+        return None
 
 
 def _live_names_by_id(entries: Any) -> dict[int, str]:
@@ -601,17 +608,21 @@ class _Change:
     #: That note type as it is called now, for the message.
     note_type_name: str = ""
 
-    def entry(self, blocks_run: bool) -> dict:
+    def entry(self, blocks_run: bool, through_trigger: bool, inactive: bool) -> dict:
         rename = self.rename
-        return {
+        entry = {
             "kind": rename.kind,
             "object_id": self.object_id,
             "note_type_id": self.note_type_id,
             "old": rename.old,
             "new": rename.new,
             "blocks_run": blocks_run,
+            "through_trigger": through_trigger,
             "message": _warning_message(rename.kind, rename.old, rename.new, self.note_type_name),
         }
+        if inactive:
+            entry[INACTIVE_KEY] = True
+        return entry
 
 
 def _field_changes(note_type_id: int, model: dict, renamed: _Renames) -> list[_Change]:
@@ -627,7 +638,7 @@ def _field_changes(note_type_id: int, model: dict, renamed: _Renames) -> list[_C
         _Change(Rename(kind, old, new), renamed.ids[(kind, old)], note_type_id, note_type_name)
         for kind, renames in ((KIND_FIELD, renamed.fields), (KIND_CARD_TYPE, renamed.templates))
         for old, new in renames.items()
-        if not _same_name(kind, old, new)
+        if not names_equal(kind, old, new)
     ]
     changes += [
         _Change(Rename(kind, old), object_id, note_type_id, note_type_name)
@@ -658,7 +669,7 @@ def _object_changes(snapshot: dict, live: _LiveNames, deleted: dict) -> list[_Ch
                 changes.append(_Change(Rename(kind, old), object_id))
                 continue
             new = live_names().get(object_id)
-            if new is not None and not _same_name(kind, old, new):
+            if new is not None and not names_equal(kind, old, new):
                 changes.append(_Change(Rename(kind, old, new), object_id))
     return changes
 
@@ -690,21 +701,21 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def _rewrite_reference(reference: str, renamed: _Renames) -> str:
-    """One `{{...}}` reference, with a renamed field or card type of the trigger followed."""
-    head, dot, rest = reference.partition(".")
-    if not dot or head != TRIGGER_BINDING:
+    """One `{{...}}` reference, with a renamed field or card type of the trigger followed.
+
+    Read by `rename_scan.read_reference`, the reading the scanners warn by: a field name,
+    or a card value naming its card type as a prefix (`Recognition__Card_Due`).
+    """
+    parsed = read_reference(reference)
+    if parsed is None or parsed.binding != TRIGGER_BINDING:
         return reference
-    new_field = renamed.new_field_name(rest)
+    new_field = renamed.new_field_name(parsed.field)
     if new_field is not None:
-        return f"{head}.{new_field}"
-    # A card value names its card type as a prefix: `Recognition__Card_Due`. The key is
-    # checked against the real ones, as the interpolation checks it, so a field whose own
-    # name happens to contain a double underscore is not read as one.
-    match = CARD_VALUE_RE.match(rest)
-    if match and match.group(2) in CARD_VALUES_DICT:
-        new_template = renamed.new_template_name(match.group(1))
+        return parsed.with_field(new_field)
+    if parsed.card_type is not None:
+        new_template = renamed.new_template_name(parsed.card_type)
         if new_template is not None:
-            return f"{head}.{new_template}{rest[len(match.group(1)):]}"
+            return parsed.with_card_type(new_template)
     return reference
 
 
@@ -951,12 +962,6 @@ def _stored_trigger_count(definition: CopyDefinitionV2) -> int:
     return len(stored) if isinstance(stored, list) else 0
 
 
-def _same_name(kind: str, one: str, other: str) -> bool:
-    """As each kind is matched: a card type exactly, a field, deck or note type without
-    regard to case (the interpolation, Anki's searches and its name lookups all do)."""
-    return one == other if kind == KIND_CARD_TYPE else one.lower() == other.lower()
-
-
 def _warning_message(kind: str, old: str, new: Optional[str], note_type_name: str = "") -> str:
     """The sentence a warning carries, with the names as they are when it is written.
 
@@ -969,12 +974,6 @@ def _warning_message(kind: str, old: str, new: Optional[str], note_type_name: st
     return what + (" was deleted" if new is None else f' was renamed to "{new}"')
 
 
-#: The hits a definition's own trigger note types are spelled through. A rename of a field
-#: or card type of the one note type a definition triggers on is followed there, and a
-#: definition that does not trigger on the note type spells its own trigger's names there.
-_TRIGGER_HIT_KINDS = frozenset({TRIGGER_TOKEN, TRIGGER_SLOT})
-
-
 @dataclass(frozen=True)
 class _Location:
     """One text or slot of a definition, under the key a warning about it is filed at."""
@@ -983,13 +982,20 @@ class _Location:
     #: How the value is read, one of `rename_scan`'s `READ_AS_*`.
     read_as: str
     value: Any
+    #: Whether a run reads it: False for the side of an expression its mode does not use,
+    #: the code or the deck of a card action that the other one decides, and anything in a
+    #: switched-off stage. A name left there breaks nothing until it is switched back on,
+    #: so a warning there does not block (`rename_warnings.entry_blocks_run`) -- but it is
+    #: still filed and kept, or switching back would run the old name unwarned.
+    active: bool = True
 
 
 def _locations(definition: CopyDefinitionV2) -> Iterator[_Location]:
     """Every text and slot of a definition that can spell a name, each once.
 
     The one walk the pass finds names with, keyed by `rename_locations` as the editor part
-    showing the location keys it, so the two cannot drift. Nested stages are walked too.
+    showing the location keys it, so the two cannot drift. Nested stages are walked too,
+    and switched-off stages and the sides no run reads, as inactive locations (`_Location`).
     A field write or card action with no guid has no key and is not walked; the pass gives
     every one a guid before it walks (`fill_in_missing_stage_guids`), so that is only a
     definition the repair could not reach.
@@ -1001,13 +1007,24 @@ def _locations(definition: CopyDefinitionV2) -> Iterator[_Location]:
             yield _Location(
                 trigger_key(f"on_unfocus.{path}"), READ_AS_TRIGGER_SLOT, unfocus.get(path)
             )
-    for stage in walk_stages(definition.get("stages") or []):
+    stages = definition.get("stages") or []
+    # A stage under a switched-off one is not run either, whatever its own flag says.
+    running = {id(stage) for stage in walk_stages(stages, include_disabled=False)}
+    for stage in walk_stages(stages):
         guid = stage.get("guid")
         if isinstance(guid, str) and guid:
-            yield from _stage_locations(stage, guid)
+            yield from _stage_locations(stage, guid, id(stage) in running)
 
 
-def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
+def _stage_locations(stage: Stage, guid: str, running: bool) -> Iterator[_Location]:
+    for location in _stage_locations_in_effect(stage, guid):
+        if running:
+            yield location
+        else:
+            yield _Location(location.key, location.read_as, location.value, active=False)
+
+
+def _stage_locations_in_effect(stage: Stage, guid: str) -> Iterator[_Location]:
     def key(path: str) -> str:
         return stage_key(guid, path)
 
@@ -1015,7 +1032,7 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
     for name in STAGE_EXPRESSION_KEYS.get(stage.get("type", ""), ()):
         expression = stage.get(name)
         if isinstance(expression, dict):
-            yield _expression_location(
+            yield from _expression_locations(
                 key, name, cast(ValueExpression, expression), id(expression) in searches
             )
     selection = stage.get("selection")
@@ -1040,7 +1057,7 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
 
             yield _Location(write_key("field"), target_kind, write.get("field"))
             if isinstance(write.get("value"), dict):
-                yield _expression_location(write_key, "value", write["value"], False)
+                yield from _expression_locations(write_key, "value", write["value"], False)
             if "unfocus_trigger_fields" in write:
                 yield _Location(
                     write_key("unfocus_trigger_fields"),
@@ -1051,35 +1068,46 @@ def _stage_locations(stage: Stage, guid: str) -> Iterator[_Location]:
         action_guid = action.get("guid") if isinstance(action, dict) else None
         if not isinstance(action_guid, str) or not action_guid:
             continue
-        # The code runs only when the action says so (`copy_primitives`); code kept beside
-        # a switched-off action breaks nothing. Code that runs returns the action itself,
-        # so the stored `change_deck` is only what moves the card when no code does.
+        # The code runs only when the action says so (`copy_primitives`). Code that runs
+        # returns the action itself, so the stored `change_deck` is only what moves the
+        # card when no code does.
         code = action.get("action_code")
-        if action.get("use_code"):
-            yield _Location(card_action_key(action_guid, "action_code"), READ_AS_CODE, code)
-        if not (action.get("use_code") and isinstance(code, str) and code.strip()):
-            yield _Location(
-                card_action_key(action_guid, "change_deck"),
-                READ_AS_DECK_SLOT,
-                action.get("change_deck"),
-            )
+        uses_code = bool(action.get("use_code"))
+        yield _Location(
+            card_action_key(action_guid, "action_code"), READ_AS_CODE, code, active=uses_code
+        )
+        yield _Location(
+            card_action_key(action_guid, "change_deck"),
+            READ_AS_DECK_SLOT,
+            action.get("change_deck"),
+            active=not (uses_code and isinstance(code, str) and code.strip()),
+        )
 
 
-def _expression_location(
+def _expression_locations(
     key: Callable[[str], str], name: str, expression: ValueExpression, search: bool
-) -> _Location:
-    """The side of an expression that runs: its code in code mode, its text otherwise.
+) -> Iterator[_Location]:
+    """Both sides of an expression: the one its mode runs, and the other one, inactive.
 
     The other side is kept for switching back but never read, so a name left in it breaks
     nothing, and a blocking warning about it would stop a definition that works.
     """
-    if expression_is_code(expression):
-        return _Location(key(f"{name}.code"), READ_AS_CODE, expression.get("code"))
+    code_mode = expression_is_code(expression)
+    yield _Location(
+        key(f"{name}.code"), READ_AS_CODE, expression.get("code"), active=code_mode
+    )
     read_as = READ_AS_QUERY if search else READ_AS_TEXT
-    return _Location(key(f"{name}.text"), read_as, expression.get("text"))
+    yield _Location(key(f"{name}.text"), read_as, expression.get("text"), active=not code_mode)
 
 
-def drop_cleared_warnings(definition: CopyDefinitionV2) -> CopyDefinitionV2:
+#: An entry a Replace in the editor has already answered, as `(location key, the location's
+#: value before it, the entry)` (`drop_cleared_warnings`).
+Replaced = tuple[str, Any, dict]
+
+
+def drop_cleared_warnings(
+    definition: CopyDefinitionV2, replaced: Iterable[Replaced] = ()
+) -> CopyDefinitionV2:
     """The definition without the warnings whose location no longer spells the old name.
 
     Run when the definition editor saves ("How a warning goes away" in
@@ -1088,28 +1116,51 @@ def drop_cleared_warnings(definition: CopyDefinitionV2) -> CopyDefinitionV2:
     has nothing left to point at; keeping it would leave a blocked definition that only a
     Dismiss nobody knew was needed could unblock. Each location is read by the same walk
     and the same scanner as the pass that filed the warning (`still_spelled`), so what a
-    save drops is exactly what the pass would not have filed: a location the walk no longer
-    reaches -- its stage deleted, its expression switched to the other side, its card
-    action switched to code -- spells nothing that runs and loses its warnings too. Code
-    that cannot be read keeps them. Never run on Cancel, and never by the pass itself,
-    which does not re-derive a warning.
+    save drops is exactly what the pass would not have filed. A location the walk no longer
+    reaches at all -- its stage, field write or card action deleted -- loses its warnings.
+    One it still reaches but no run reads -- an expression switched to its other side, a
+    switched-off stage -- keeps them, marked inactive so they do not block, and a location
+    switched back on has the mark taken off again. Code that cannot be read keeps them.
+
+    `replaced` lists the entries a Replace answered whose old name a scan cannot tell apart
+    from the new one: a swap, or a chain of renames, where one name's replacement is
+    another's old name (`rename_replace_dialog.Replacement.settled`). Such an entry is
+    dropped unless its location reads again exactly what it did before the Replace -- the
+    user undid it. Never run on Cancel, and never by the pass itself, which does not
+    re-derive a warning.
     """
     stored = definition.get(WARNINGS_KEY)
     if not isinstance(stored, dict):
         return definition
+    answered = list(replaced)
     locations = {location.key: location for location in _locations(definition)}
+
+    def cleared(location: _Location, entry: Any) -> bool:
+        for key, before, settled in answered:
+            if key == location.key and settled == entry and location.value != before:
+                return True
+        return not still_spelled(location.read_as, location.value, entry)
+
     for key in list(stored):
         location = locations.get(key)
         entries = stored[key]
         kept = (
-            [entry for entry in entries if still_spelled(location.read_as, location.value, entry)]
+            [entry for entry in entries if not cleared(location, entry)]
             if location is not None and isinstance(entries, list)
             else []
         )
-        if kept:
-            stored[key] = kept
-        else:
+        if not kept:
             del stored[key]
+            continue
+        assert location is not None
+        for entry in kept:
+            if not isinstance(entry, dict):
+                continue
+            if location.active:
+                entry.pop(INACTIVE_KEY, None)
+            else:
+                entry[INACTIVE_KEY] = True
+        stored[key] = kept
     if not rename_warning_entries(definition):
         definition.pop(WARNINGS_KEY, None)
     return definition
@@ -1122,9 +1173,10 @@ class _Scan:
     change: _Change
     #: Whether the definition's trigger slots and tokens count as spelling it.
     through_trigger: bool
-    #: Whether the definition triggers on the note type a field or card type belongs to,
-    #: which is what makes its code's spelling of one more than a guess (`hit_blocks_run`).
-    on_trigger_note_type: bool
+    #: Whether the definition is known to use the object: it triggers on the note type a
+    #: field or card type belongs to, or references the deck or note type by id. That is
+    #: what makes its code's spelling of one more than a guess (`hit_blocks_run`).
+    uses_object: bool
 
 
 def _changes_to_scan(
@@ -1143,7 +1195,8 @@ def _changes_to_scan(
     not trigger on the note type spells *its* trigger's names there, but a search, another
     binding, a sort field or code can still reach the note type's notes, so those are
     scanned for every definition -- as a guess, which only warns. A deck or a note type is
-    spelled in a search, in code or in a card action's deck, of any definition.
+    spelled in a search, in code or in a card action's deck, of any definition; one the
+    definition binds by id (`_bind`) is one it is known to use.
     """
     followed = _stored_trigger_count(definition) == 1
     scans: list[_Scan] = []
@@ -1153,7 +1206,9 @@ def _changes_to_scan(
         for change in changes:
             through_trigger = triggering and not (followed and change.rename.new is not None)
             scans.append(_Scan(change, through_trigger, triggering))
-    scans += [_Scan(change, False, False) for change in object_changes]
+    for change in object_changes:
+        holders = referenced.get((change.rename.kind, change.object_id)) or []
+        scans.append(_Scan(change, False, any(holder is definition for holder in holders)))
     return scans
 
 
@@ -1163,24 +1218,27 @@ def _warnings_for(definition: CopyDefinitionV2, scans: list[_Scan]) -> list[tupl
     Read before anything is followed, since a rename in the same save can hand a deleted
     field's name to another one, and the text that is rewritten to spell it never meant the
     deleted field. An entry blocks when any of its location's hits does
-    (`rename_scan.hit_blocks_run`).
+    (`rename_scan.hit_blocks_run`), and it says whether trigger hits counted, so that the
+    editor and a save count the same hits (`rename_scan.entry_hits`).
+
+    Every location is split into its terms, strings or references once, however many
+    changes are looked for in it (`rename_scan` remembers them).
     """
     multi_trigger = _stored_trigger_count(definition) > 1
     found: list[tuple[str, dict]] = []
     for location in _locations(definition):
         for scan in scans:
             rename = scan.change.rename
-            hits = [
-                hit
-                for hit in find_at(location.read_as, location.value, rename)
-                if scan.through_trigger or hit.kind not in _TRIGGER_HIT_KINDS
-            ]
+            hits = counted_hits(
+                find_at(location.read_as, location.value, rename), scan.through_trigger
+            )
             if hits:
                 blocks = any(
-                    hit_blocks_run(hit.kind, rename, multi_trigger, scan.on_trigger_note_type)
+                    hit_blocks_run(hit.kind, rename, multi_trigger, scan.uses_object)
                     for hit in hits
                 )
-                found.append((location.key, scan.change.entry(blocks)))
+                entry = scan.change.entry(blocks, scan.through_trigger, not location.active)
+                found.append((location.key, entry))
     return found
 
 
@@ -1275,7 +1333,7 @@ def _refresh_marks(
                 continue
             live_name, note_type_name = found
             kind, old = key[1], entry["old"]
-            if live_name is not None and _same_name(kind, live_name, old):
+            if live_name is not None and names_equal(kind, live_name, old):
                 dropped = True
                 undone.add(key[1:])
                 continue
@@ -1361,7 +1419,7 @@ def _mark_as_stale(definition: CopyDefinitionV2, entry: dict, location: str) -> 
         kind=kind if isinstance(kind, str) and kind in _WARNING_KINDS else KIND_FIELD,
         name=str(entry.get("old", "")),
         message=str(entry.get("message", "")),
-        blocks_run=entry.get("blocks_run") is True,
+        blocks_run=entry_blocks_run(entry),
         location=location,
     )
 

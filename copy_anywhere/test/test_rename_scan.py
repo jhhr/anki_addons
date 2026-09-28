@@ -18,6 +18,7 @@ from copy_anywhere.logic.rename_scan import (
     BINDING_TOKEN,
     CARD_TERM,
     CODE_LITERAL,
+    CODE_SEARCH,
     DECK_SLOT,
     DECK_TERM,
     FIELD_TERM,
@@ -30,6 +31,7 @@ from copy_anywhere.logic.rename_scan import (
     apply,
     apply_with_spans,
     code_is_readable,
+    entry_hits,
     find_in_code,
     find_in_deck_slot,
     find_in_query,
@@ -37,7 +39,10 @@ from copy_anywhere.logic.rename_scan import (
     find_in_slot,
     find_in_template,
     hit_blocks_run,
+    names_equal,
     object_term,
+    read_reference,
+    still_spelled,
 )
 
 WORD = Rename(KIND_FIELD, "Word", "Term")
@@ -422,6 +427,42 @@ class TestCode:
         code = "ids = find_notes('deck:\"JP Vocab\" Word:x')"
         hits = find_in_code(code, JP)
         assert apply(code, hits) == "ids = find_notes('\"deck:JP Words\" Word:x')"
+        # A search names its object unmistakably, a bare name may be anything else too.
+        assert [hit.kind for hit in hits] == [CODE_SEARCH]
+        assert [hit.kind for hit in find_in_code("by_name('JP Vocab')", JP)] == [CODE_LITERAL]
+
+    @pytest.mark.parametrize(
+        "code, rename",
+        [
+            ('x = f"Wordlist {x}"', WORD),
+            ('x = f"{x} Words"', WORD),
+            ('x = f"JPN {x}"', Rename(KIND_DECK, "JP", "Japanese")),
+        ],
+    )
+    def test_an_f_string_part_holding_a_longer_name_is_not_a_hit(self, code, rename):
+        # Held to the rule a whole literal is: `"Wordlist"` is not a hit either.
+        assert find_in_code(code, rename) == []
+
+    def test_an_f_string_part_holding_a_search_is_a_search_hit(self):
+        hits = find_in_code(r'x = f"deck:\"JP Vocab\" {rest}"', JP)
+        assert [hit.kind for hit in hits] == [CODE_SEARCH]
+
+    def test_each_text_is_read_once_for_every_rename(self, monkeypatch):
+        from copy_anywhere.logic import rename_scan
+
+        code = "a = 'JP::C1'\nb = f\"deck:JP::C2 {x}\"\n" + "x = 1\n" * 50
+        calls = []
+        real = rename_scan._tokens
+        monkeypatch.setattr(
+            rename_scan, "_tokens", lambda text: calls.append(text) or real(text)
+        )
+        rename_scan._code_strings.cache_clear()
+        renames = [Rename(KIND_DECK, f"JP::C{n}", f"Japanese::C{n}") for n in range(50)]
+
+        found = [hit for rename in renames for hit in find_in_code(code, rename)]
+
+        assert len(calls) == 1
+        assert [hit.kind for hit in found] == [CODE_LITERAL, CODE_SEARCH]
 
     @pytest.mark.parametrize(
         "code, new, expected",
@@ -493,6 +534,9 @@ class TestSlotsAndBlocking:
         "kind, rename, multi, blocks",
         [
             (CODE_LITERAL, WORD, False, True),
+            (CODE_SEARCH, WORD, False, True),
+            (CODE_LITERAL, JP, False, True),
+            (CODE_LITERAL, VOCAB_NOTE, False, True),
             (DECK_TERM, JP, False, True),
             (NOTE_TERM, VOCAB_NOTE, False, True),
             (CARD_TERM, RECOGNITION, True, False),
@@ -528,12 +572,18 @@ class TestSlotsAndBlocking:
             # Code naming a field or card type of a note type the definition does not
             # trigger on is a guess: another note type may have the name.
             (CODE_LITERAL, WORD, False),
+            (CODE_SEARCH, WORD, False),
             (CODE_LITERAL, Rename(KIND_FIELD, "Word"), False),
             (CODE_LITERAL, RECOGNITION, False),
-            # A deck and a note type have unique names: code naming one is that object.
-            (CODE_LITERAL, JP, True),
-            (CODE_LITERAL, Rename(KIND_DECK, "JP Vocab"), True),
-            (CODE_LITERAL, VOCAB_NOTE, True),
+            # A string that is only a deck's or note type's name may be any other string
+            # too (`'default'`) in a definition that does not reference it ...
+            (CODE_LITERAL, JP, False),
+            (CODE_LITERAL, Rename(KIND_DECK, "JP Vocab"), False),
+            (CODE_LITERAL, VOCAB_NOTE, False),
+            # ... while a search naming one is that object.
+            (CODE_SEARCH, JP, True),
+            (CODE_SEARCH, Rename(KIND_DECK, "JP Vocab"), True),
+            (CODE_SEARCH, VOCAB_NOTE, True),
             (DECK_TERM, JP, True),
             (DECK_SLOT, JP, True),
             (DECK_SLOT, Rename(KIND_DECK, "JP Vocab"), True),
@@ -543,6 +593,64 @@ class TestSlotsAndBlocking:
     )
     def test_what_blocks_in_a_definition_not_on_the_note_type(self, kind, rename, blocks):
         assert hit_blocks_run(kind, rename, False, False) is blocks
+
+
+def an_entry(rename: Rename, through_trigger=None) -> dict:
+    entry = {"kind": rename.kind, "old": rename.old, "new": rename.new, "message": "m"}
+    if through_trigger is not None:
+        entry["through_trigger"] = through_trigger
+    return entry
+
+
+class TestAnEntryCountsTheHitsThePassCounted:
+    """A definition not triggering on the renamed field's note type spells its own trigger's
+    names in `{{trigger....}}`; the pass does not count them, and neither may the editor, the
+    save or Replace, or `Word:{{trigger.Word}}` would be rewritten to a field its trigger note
+    type does not have, and the warning would never clear."""
+
+    QUERY = '"note:CA Vocab" Word:{{trigger.Word}}'
+
+    def test_an_entry_filed_without_the_trigger_leaves_trigger_tokens_out(self):
+        hits = entry_hits("query", self.QUERY, an_entry(WORD, through_trigger=False))
+        assert [hit.kind for hit in hits] == [FIELD_TERM]
+
+    def test_an_entry_filed_through_the_trigger_counts_them(self):
+        hits = entry_hits("query", self.QUERY, an_entry(WORD, through_trigger=True))
+        assert sorted(hit.kind for hit in hits) == [FIELD_TERM, TRIGGER_TOKEN]
+        # An entry that does not say counts everything.
+        assert len(entry_hits("query", self.QUERY, an_entry(WORD))) == 2
+
+    def test_fixing_what_the_entry_is_about_clears_it(self):
+        fixed = '"note:CA Vocab" Term:{{trigger.Word}}'
+        assert still_spelled("query", fixed, an_entry(WORD, through_trigger=False)) is False
+        assert still_spelled("query", fixed, an_entry(WORD, through_trigger=True)) is True
+        assert still_spelled("trigger slot", ["Word"], an_entry(WORD, False)) is False
+
+
+class TestOneReadingForThePassAndTheScanners:
+    @pytest.mark.parametrize(
+        "kind, one, other, same",
+        [
+            (KIND_FIELD, "Word", "word", True),
+            (KIND_DECK, "JP", "jp", True),
+            (KIND_NOTE_TYPE, "CA Vocab", "ca vocab", True),
+            (KIND_CARD_TYPE, "Recognition", "recognition", False),
+            (KIND_CARD_TYPE, "Recognition", "Recognition", True),
+        ],
+    )
+    def test_names_equal(self, kind, one, other, same):
+        assert names_equal(kind, one, other) is same
+
+    def test_a_reference_reads_as_a_field_and_as_a_card_value(self):
+        reference = read_reference("trigger.Recognition__Card_Due")
+        assert reference is not None
+        assert (reference.binding, reference.card_type) == ("trigger", "Recognition")
+        assert reference.with_card_type("Reading") == "trigger.Reading__Card_Due"
+        assert reference.with_field("Term") == "trigger.Term"
+        # A double underscore that is not followed by a card value key is a field name.
+        plain = read_reference("note.My__Field")
+        assert plain is not None and plain.card_type is None
+        assert read_reference("nobinding") is None
 
     @pytest.mark.parametrize("value", ["JP Vocab", "jp vocab"])
     def test_a_deck_slot_matches_the_deck_in_any_case(self, value):

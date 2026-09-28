@@ -37,7 +37,7 @@ from aqt.qt import (
     QWidget,
 )
 
-from ..logic.rename_scan import still_spelled
+from ..logic.rename_warnings import entry_blocks_run
 from .rename_replace_dialog import RenameReplaceDialog, Replacement, plan_replacement
 from .stage_document import StageDocument
 
@@ -144,6 +144,8 @@ class RenameIndicator(QWidget):
         self.shown: list[tuple[LiveLocation, dict]] = []
         #: What Replace would do, per location it can act on, with how that location takes it.
         self.replacements: list[tuple[Replacement, Callable[[Any], None]]] = []
+        #: The location key of each of `replacements`, in the same order.
+        self.replacement_keys: list[str] = []
         self.refresh()
 
     def refresh(self, *_args) -> None:
@@ -151,9 +153,13 @@ class RenameIndicator(QWidget):
             (location, entry)
             for location in self._locations()
             for entry in self.document.rename_marks_at(location.key)
-            if still_spelled(location.read_as, location.value, entry)
+            if self.document.rename_mark_is_live(
+                location.key, location.read_as, location.value, entry
+            )
         ]
-        self.replacements = self._replacements()
+        planned = self._replacements()
+        self.replacements = [(replacement, write) for _key, replacement, write in planned]
+        self.replacement_keys = [key for key, _replacement, _write in planned]
         self.replace_button.setVisible(bool(self.replacements))
         self.setVisible(bool(self.shown))
         if not self.shown:
@@ -166,7 +172,7 @@ class RenameIndicator(QWidget):
             "\n".join([BLOCKING_HEADER if blocking else WARNING_HEADER] + self.messages())
         )
 
-    def _replacements(self) -> list[tuple[Replacement, Callable[[Any], None]]]:
+    def _replacements(self) -> list[tuple[str, Replacement, Callable[[Any], None]]]:
         by_key: dict[str, tuple[LiveLocation, list[dict]]] = {}
         for location, entry in self.shown:
             by_key.setdefault(location.key, (location, []))[1].append(entry)
@@ -176,17 +182,32 @@ class RenameIndicator(QWidget):
                 continue
             replacement = plan_replacement(location.read_as, location.value, entries)
             if replacement.changes:
-                planned.append((replacement, location.replace))
+                planned.append((location.key, replacement, location.replace))
         return planned
 
     def replace_dialog(self) -> RenameReplaceDialog:
         """The dialog the Replace button opens, for what the part says right now.
 
         Parented to the window, not to this widget: Apply hides the indicator, and the
-        dialog must not go with it.
+        dialog must not go with it. Its Apply also tells the document which entries it
+        answered that a scan of the new text cannot see answered (`Replacement.settled`),
+        from the plan it showed: Apply's own edit refreshes this indicator first.
         """
         self.refresh()
-        return RenameReplaceDialog(self.window(), self.replacements)
+        planned = [
+            (key, replacement)
+            for key, (replacement, _write) in zip(self.replacement_keys, self.replacements)
+            if replacement.settled
+        ]
+        dialog = RenameReplaceDialog(self.window(), self.replacements)
+
+        def settle() -> None:
+            for key, replacement in planned:
+                self.document.settle_rename_marks(key, replacement.before, replacement.settled)
+            self.refresh()
+
+        dialog.accepted.connect(settle)
+        return dialog
 
     def _on_replace(self) -> None:
         self.replace_dialog().exec()
@@ -200,7 +221,7 @@ class RenameIndicator(QWidget):
         return [entry["message"] for entry in self.entries()]
 
     def is_blocking(self) -> bool:
-        return any(entry.get("blocks_run") is True for entry in self.entries())
+        return any(entry_blocks_run(entry) for entry in self.entries())
 
 
 __all__ = [

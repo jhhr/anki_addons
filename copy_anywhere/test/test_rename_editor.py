@@ -1439,7 +1439,9 @@ class TestThePickerMarksAStaleSearch:
         config.load()
         definition = self.searching("deck:Nonsuch")
         config.data["copy_definitions"] = [definition]
-        dialog = PickCopyDefinitionDialog(widget_parent, list(config.copy_definitions), every_note())
+        dialog = PickCopyDefinitionDialog(
+            widget_parent, list(config.copy_definitions), every_note()
+        )
         row = dialog.definition_ui_components[definition["guid"]]["widget"]
         assert row.search_marker.text() != ""
         fixed = copy.deepcopy(definition)

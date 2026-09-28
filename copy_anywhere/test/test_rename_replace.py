@@ -364,6 +364,45 @@ class TestATextPart:
 # -- Pickers ----------------------------------------------------------------------------------
 
 
+class TestASwap:
+    """Two renames trading names, `Word` → `Reading` and back: after Replace the text spells
+    both old names again, so a rescan cannot tell it was fixed."""
+
+    KEY = stage_key("v", "value.text")
+    TEXT = "{{trigger.Word}} {{trigger.Reading}}"
+
+    def open_swap(self, open_editor):
+        definition = d.staged(
+            "W", note_types=[VOCAB], stages=[d.variable("v", d.text(self.TEXT), guid="v")]
+        )
+        warnings = [field_warning("Word", "Reading"), field_warning("Reading", "Word")]
+        return open_editor(with_warnings(definition, {self.KEY: warnings}))
+
+    def test_apply_answers_both_and_save_drops_them(self, open_editor):
+        dialog = self.open_swap(open_editor)
+        indicator = one_warning(dialog)
+
+        indicator.replace_dialog().apply()
+
+        text_edit = editor(dialog, "v").value.text_layout.text_edit
+        assert text_edit.toPlainText() == "{{trigger.Reading}} {{trigger.Word}}"
+        assert indicator.isHidden()
+        # A second Replace would swap the text back; there is none to press.
+        assert shown_indicators(dialog) == []
+        assert WARNINGS_KEY not in save(dialog)
+
+    def test_undo_brings_them_back_and_save_keeps_them(self, open_editor):
+        dialog = self.open_swap(open_editor)
+        indicator = one_warning(dialog)
+        text_edit = editor(dialog, "v").value.text_layout.text_edit
+
+        indicator.replace_dialog().apply()
+        text_edit.undo()
+
+        assert not indicator.isHidden()
+        assert len(save(dialog)[WARNINGS_KEY][self.KEY]) == 2
+
+
 class TestAPicker:
     def test_the_dialog_shows_old_and_new_on_one_line(self, open_editor):
         dialog = open_editor(PARTS["sort field"].definition())
@@ -513,6 +552,36 @@ def renamed(config, definition: dict, rename) -> dict:
 
 
 class TestAfterARealRename:
+    def test_a_definitions_own_trigger_token_is_left_alone(self, col, config, open_editor):
+        # A definition on another note type with a field of the same name: its
+        # `{{trigger.Word}}` is its own trigger's field, not the one renamed.
+        other = "CA Other"
+        real_anki.make_note_type(col, other, ["Word"], [("Card 1", "{{Word}}", "")])
+        definition = d.staged(
+            "W",
+            note_types=[other],
+            stages=[d.note_query("found", f'"note:{VOCAB}" Word:{{{{trigger.Word}}}}', guid="q")],
+        )
+        # The pass only sees field renames of a note type some definition triggers on.
+        on_vocab = d.staged("V", note_types=[VOCAB], stages=[])
+        config.data["copy_definitions"] = [definition, on_vocab]
+        reconcile(config, mw.col)
+        model = col.models.by_name(VOCAB)
+        model["flds"][0]["name"] = "Term"
+        col.models.update_dict(model)
+        reconcile(config, mw.col)
+        [entry] = definition[WARNINGS_KEY][stage_key("q", "query.text")]
+        assert entry["through_trigger"] is False
+
+        dialog = open_editor(definition)
+        indicator = one_warning(dialog)
+        indicator.replace_dialog().apply()
+
+        text = editor(dialog, "q").query.text_layout.get_text()
+        assert text == f'"note:{VOCAB}" Term:{{{{trigger.Word}}}}'
+        assert indicator.isHidden()
+        assert WARNINGS_KEY not in save(dialog)
+
     def test_a_renamed_deck_in_a_search_is_replaced_and_the_warning_goes_on_save(
         self, col, config, open_editor
     ):

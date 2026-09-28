@@ -54,7 +54,12 @@ from copy_anywhere.logic.rename_locations import (
     stage_key,
     trigger_key,
 )
-from copy_anywhere.logic.rename_warnings import BLOCKING_ADVICE, WARNINGS_KEY, blocking_messages
+from copy_anywhere.logic.rename_warnings import (
+    BLOCKING_ADVICE,
+    WARNINGS_KEY,
+    blocking_messages,
+    entry_blocks_run,
+)
 
 ADDON_TAG = "copy_anywhere"
 
@@ -115,9 +120,10 @@ def marks(definition) -> list:
 
 
 def located(definition) -> dict:
-    """Where each warning is filed, and what it says: `{key: [(old, new, blocks_run)]}`."""
+    """Where each warning is filed, and what it says: `{key: [(old, new, blocks)]}`, where
+    `blocks` is whether it keeps the definition from running now (`entry_blocks_run`)."""
     return {
-        key: [(entry["old"], entry["new"], entry["blocks_run"]) for entry in entries]
+        key: [(entry["old"], entry["new"], entry_blocks_run(entry)) for entry in entries]
         for key, entries in definition.get(WARNINGS_KEY, {}).items()
     }
 
@@ -166,7 +172,11 @@ class TestBindingAReferenceThatHasNoIdYet:
     def test_a_card_action_is_bound_too(self, col, config):
         note_type = col.models.by_name(VOCAB)
         action = d.card_action_ref(note_type, note_type["tmpls"][0], set_flag=2)
-        action["card_type"] = {"note_type_id": None, "template_id": None, "name": action["card_type"]["name"]}
+        action["card_type"] = {
+            "note_type_id": None,
+            "template_id": None,
+            "name": action["card_type"]["name"],
+        }
         definition = d.staged(
             note_types=[VOCAB],
             stages=[d.edit_note("trigger", card_actions=[action])],
@@ -676,6 +686,7 @@ class TestAFieldOfTheTriggerNoteTypeIsRenamed:
                 "old": "Word",
                 "new": "Term",
                 "blocks_run": True,
+                "through_trigger": False,
                 "message": f'Field "Word" of note type "{VOCAB}" was renamed to "Term"',
             }
         ]
@@ -733,7 +744,9 @@ class TestAFieldOfTheTriggerNoteTypeIsRenamed:
         other = d.staged(
             definition_name="kanji",
             note_types=[KANJI],
-            stages=[d.edit_note("trigger", fields=[d.write("Keyword", d.text("{{trigger.Word}}"))])],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Keyword", d.text("{{trigger.Word}}"))])
+            ],
         )
         store(config, other)
         reconcile(config, mw.col)
@@ -922,7 +935,9 @@ class TestARenameInADefinitionOnSeveralNoteTypesIsMarked:
             "old": old,
             "new": new,
             "blocks_run": True,
-            "message": message or f'Field "{old}" of note type "{note_type}" was renamed to "{new}"',
+            "through_trigger": True,
+            "message": message
+            or f'Field "{old}" of note type "{note_type}" was renamed to "{new}"',
         }
 
     @pytest.fixture
@@ -1084,6 +1099,7 @@ class TestARenameInADefinitionOnSeveralNoteTypesIsMarked:
                 "old": "Recognition",
                 "new": "Reading",
                 "blocks_run": True,
+                "through_trigger": True,
                 "message": f'Card type "Recognition" of note type "{VOCAB}" was renamed to'
                 ' "Reading"',
             }
@@ -1258,6 +1274,7 @@ class TestADeletedFieldOrCardTypeIsMarked:
             "old": "Freq",
             "new": None,
             "blocks_run": True,
+            "through_trigger": True,
             "message": f'Field "Freq" of note type "{VOCAB}" was deleted',
         }
         assert marks(single) == [expected]
@@ -1383,7 +1400,8 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         gated = d.variable("gated", d.text("{{trigger.Word}}"), guid="gated")
         gated["unfocus_trigger_fields"] = ["Word"]
         gated["write_if_field"] = "Word"
-        # Kept for switching back, never run: nothing there breaks.
+        # Kept for switching back, never run: warned about, since switching back would run
+        # it, but nothing there breaks while it is not.
         switched_off = d.variable("off", d.text("plain"), guid="off")
         switched_off["value"]["code"] = "return trigger['Word']"
         return d.staged(
@@ -1438,6 +1456,11 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         card_action_key("action", "action_code"),
         stage_key("cond-code", "predicate.code"),
     }
+    #: Sides no run reads: warned about, never blocking.
+    INACTIVE = {
+        stage_key("off", "value.code"),
+        card_action_key("action-off", "action_code"),
+    }
     #: The trigger's own slots and tokens.
     THROUGH_THE_TRIGGER = {
         trigger_key("on_unfocus.edit_fields"),
@@ -1458,7 +1481,7 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         warnings = self.renamed(col, config, definition)
 
         assert warnings == {
-            **{key: [("Word", "Term", False)] for key in self.WARN_ONLY},
+            **{key: [("Word", "Term", False)] for key in self.WARN_ONLY | self.INACTIVE},
             **{key: [("Word", "Term", True)] for key in self.CODE | self.THROUGH_THE_TRIGGER},
         }
         # Nothing was followed into it.
@@ -1470,7 +1493,7 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         warnings = self.renamed(col, config, definition)
 
         assert warnings == {
-            **{key: [("Word", "Term", False)] for key in self.WARN_ONLY},
+            **{key: [("Word", "Term", False)] for key in self.WARN_ONLY | self.INACTIVE},
             **{key: [("Word", "Term", True)] for key in self.CODE},
         }
         assert definition["stages"][1]["write_if_field"] == "Term"
@@ -1491,7 +1514,7 @@ class TestEachLocationIsWarnedWhereItSpellsTheName:
         # Decision 4 as corrected: a field search or another binding may reach a note type
         # that still has the name, so a deletion only warns there.
         assert located(definition) == {
-            **{key: [("Word", None, False)] for key in self.WARN_ONLY},
+            **{key: [("Word", None, False)] for key in self.WARN_ONLY | self.INACTIVE},
             **{key: [("Word", None, True)] for key in self.CODE | self.THROUGH_THE_TRIGGER},
         }
         assert definition["stages"][1]["write_if_field"] == "Word"
@@ -1573,7 +1596,9 @@ def rename_note_type(col, old_name: str, new_name: str) -> None:
 
 class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
     """A deck or note type is referenced by id and followed silently; a search or code that
-    spells its name cannot be, so it is warned about there, and blocks."""
+    spells its name cannot be, so it is warned about there. A search term blocks; a string
+    of code that is only the name blocks only in a definition that references the object,
+    since the same string can be anything else too."""
 
     def searching(self) -> dict:
         return d.staged(
@@ -1611,6 +1636,7 @@ class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
                     "old": "JP vocab",
                     "new": "Japanese",
                     "blocks_run": True,
+                    "through_trigger": False,
                     "message": 'Deck "JP vocab" was renamed to "Japanese"',
                 }
             ]
@@ -1637,24 +1663,51 @@ class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
 
         assert located(definition) == {
             stage_key("query", "query.text"): [(VOCAB, "Vocab", True)],
-            stage_key("kanji", "value.code"): [(KANJI, "Kanji", True)],
+            # The definition does not reference Kanji: the string may mean something else.
+            stage_key("kanji", "value.code"): [(KANJI, "Kanji", False)],
         }
         assert definition["triggers"]["note_types"][0]["name"] == "Vocab"
         assert marks(definition)[0]["message"] == f'Note type "{VOCAB}" was renamed to "Vocab"'
 
-    def test_a_deleted_deck_or_note_type_blocks(self, col, config, definition):
+    def test_a_deleted_deck_or_note_type_blocks_in_a_search(self, col, config, definition):
         col.decks.remove([col.decks.id_for_name("Other")])
         col.models.remove(col.models.id_for_name(KANJI))
         reconcile(config, mw.col)
 
         assert located(definition) == {
             stage_key("code", "value.code"): [("Other", None, True)],
-            stage_key("kanji", "value.code"): [(KANJI, None, True)],
+            stage_key("kanji", "value.code"): [(KANJI, None, False)],
         }
         assert [entry["message"] for entry in marks(definition)] == [
             'Deck "Other" was deleted',
             f'Note type "{KANJI}" was deleted',
         ]
+
+    def test_a_string_of_code_naming_what_the_definition_references_blocks(self, col, config):
+        definition = d.staged(
+            definition_name="names its own",
+            note_types=[VOCAB],
+            deck_names=["JP vocab"],
+            stages=[
+                d.variable("note type", d.code("return 'CA Vocab'"), guid="note-type"),
+                d.variable("deck", d.code("return 'JP vocab'"), guid="deck"),
+                # A common word that is also a deck's name, in a definition not using it.
+                d.variable("setting", d.code("return get('mode', 'Other')"), guid="setting"),
+            ],
+        )
+        store(config, definition)
+        reconcile(config, mw.col)
+
+        rename_note_type(col, VOCAB, "Vocab")
+        col.decks.rename(col.decks.id_for_name("JP vocab"), "Japanese")
+        col.decks.rename(col.decks.id_for_name("Other"), "Elsewhere")
+        reconcile(config, mw.col)
+
+        assert located(definition) == {
+            stage_key("note-type", "value.code"): [(VOCAB, "Vocab", True)],
+            stage_key("deck", "value.code"): [("JP vocab", "Japanese", True)],
+            stage_key("setting", "value.code"): [("Other", "Elsewhere", False)],
+        }
 
     def test_renamed_again_updates_and_renamed_back_removes(self, col, config, definition):
         other = col.decks.id_for_name("Other")
@@ -1718,7 +1771,7 @@ class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
             card_action_key("move", "change_deck"): [("Other", None, True)]
         }
 
-    def test_a_deck_the_action_does_not_move_to_by_that_name_is_not_warned(self, col, config):
+    def test_a_deck_the_action_does_not_move_to_by_that_name_does_not_block(self, col, config):
         other_id = col.decks.id_for_name("Other")
         definition = self.moving(
             # Code that runs returns the action; the stored deck is not what moves the card.
@@ -1734,8 +1787,11 @@ class TestADeckOrNoteTypeRenameIsWarnedInSearchesAndCode:
         col.decks.rename(other_id, "Elsewhere")
         reconcile(config, mw.col)
 
+        # The coded action's deck is warned about, since switching the code off would move
+        # the card by it, but does not block while the code decides.
         assert located(definition) == {
-            card_action_key("blank-code", "change_deck"): [("Other", "Elsewhere", True)]
+            card_action_key("coded", "change_deck"): [("Other", "Elsewhere", False)],
+            card_action_key("blank-code", "change_deck"): [("Other", "Elsewhere", True)],
         }
 
     def test_a_definition_that_spells_nothing_is_untouched_and_nothing_saves_after(

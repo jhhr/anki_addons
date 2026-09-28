@@ -378,7 +378,10 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         "How a warning goes away" in `docs/staged-definitions.md`).
 
         Only a Save comes here (the picker asks only an accepted dialog), so a warning
-        survives a Cancel however the text was left.
+        survives a Cancel however the text was left. The entries a Replace answered in a
+        swap go too, unless the text was put back (`StageDocument.settle_rename_marks`).
         """
         self.apply_editors()
-        return drop_cleared_warnings(self.document.to_definition())
+        return drop_cleared_warnings(
+            self.document.to_definition(), self.document.settled_rename_marks()
+        )

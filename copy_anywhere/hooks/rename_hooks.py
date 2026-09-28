@@ -126,8 +126,8 @@ def broken_definitions_warning(result: ReconcileResult) -> Optional[str]:
     Only the new ones (`ReconcileResult.newly_marked`), and only those that keep a
     definition from running, which is what this dialog says: a mark stays until the user
     replaces the name and saves or dismisses it, and listing it again after every unrelated
-    note type edit would teach them to close this dialog unread. The picker and the editor go on showing every mark,
-    and the log lists them all.
+    note type edit would teach them to close this dialog unread. The picker and the editor
+    go on showing every mark, and the log lists them all.
 
     One line per mark, under the definition's name: which field, card type, deck or note
     type was renamed or deleted. A definition spelling the name in several places has a

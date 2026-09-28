@@ -22,7 +22,7 @@ from copy_anywhere.logic.rename_locations import (
     trigger_key,
 )
 from copy_anywhere.logic.rename_reconcile import drop_cleared_warnings
-from copy_anywhere.logic.rename_warnings import WARNINGS_KEY
+from copy_anywhere.logic.rename_warnings import INACTIVE_KEY, WARNINGS_KEY, blocks_run
 from copy_anywhere.ui.rename_indicator import (
     BLOCKING_HEADER,
     BLOCKING_ICON,
@@ -238,6 +238,29 @@ def _parts() -> dict[str, Part]:
             field_write_key("w1", "unfocus_trigger_fields"),
             field_warning(),
             lambda dialog: editor(dialog, "e").field_rows[0].unfocus_indicator,
+        ),
+        "stage unfocus gate": Part(
+            [
+                {
+                    **d.variable("x", d.text("{{trigger.Meaning}}"), guid="g"),
+                    "unfocus_trigger_fields": ["Word", "Note"],
+                }
+            ],
+            stage_key("g", "unfocus_trigger_fields"),
+            field_warning(),
+            lambda dialog: editor(dialog, "g").gate_fields_indicator,
+        ),
+        "stage write-if field": Part(
+            [
+                {
+                    **d.variable("x", d.text("{{trigger.Meaning}}"), guid="g"),
+                    "write_if": "empty",
+                    "write_if_field": "Word",
+                }
+            ],
+            stage_key("g", "write_if_field"),
+            field_warning(),
+            lambda dialog: editor(dialog, "g").gate_write_if_indicator,
         ),
         "card action code": Part(
             [
@@ -481,12 +504,57 @@ class TestDropClearedWarnings:
             field_write_key("w1", "value.code"): [warning]
         }
 
-    def test_the_side_of_an_expression_that_does_not_run_loses_it(self):
+    def test_the_side_of_an_expression_that_does_not_run_loses_it_once_it_is_fixed(self):
         definition = self.definition(
             d.text("x"), {field_write_key("w1", "value.code"): [field_warning()]}
         )
 
         assert WARNINGS_KEY not in drop_cleared_warnings(definition)
+
+    def test_the_side_that_does_not_run_keeps_it_without_blocking_until_switched_back(self):
+        # Saved in code mode with the text still spelling the name, then switched back:
+        # dropping it on the first save let the second one run the old name unwarned.
+        value = d.text("{{trigger.Word}}")
+        value["mode"], value["code"] = "code", "return 'x'"
+        definition = self.definition(
+            value, {field_write_key("w1", "value.text"): [field_warning()]}
+        )
+
+        drop_cleared_warnings(definition)
+        [entry] = definition[WARNINGS_KEY][field_write_key("w1", "value.text")]
+        assert entry[INACTIVE_KEY] is True
+        assert not blocks_run(definition)
+
+        value["mode"] = "text"
+        drop_cleared_warnings(definition)
+        assert INACTIVE_KEY not in entry
+        assert blocks_run(definition)
+
+    def test_a_switched_off_stage_keeps_it_without_blocking(self):
+        definition = self.definition(
+            d.text("{{trigger.Word}}"), {field_write_key("w1", "value.text"): [field_warning()]}
+        )
+        definition["stages"][0]["enabled"] = False
+
+        drop_cleared_warnings(definition)
+
+        assert definition[WARNINGS_KEY][field_write_key("w1", "value.text")][0][INACTIVE_KEY]
+        assert not blocks_run(definition)
+
+    def test_an_entry_a_replace_answered_goes_unless_the_text_was_put_back(self):
+        # A swap: after Replace, the text spells both old names again, so only the record
+        # of the Replace can say the entries were answered.
+        before = "{{note.A}} {{note.B}}"
+        key = field_write_key("w1", "value.text")
+        a_to_b, b_to_a = field_warning("A", "B", False), field_warning("B", "A", False)
+
+        swapped = self.definition(d.text("{{note.B}} {{note.A}}"), {key: [a_to_b, b_to_a]})
+        drop_cleared_warnings(swapped, [(key, before, a_to_b), (key, before, b_to_a)])
+        assert WARNINGS_KEY not in swapped
+
+        undone = self.definition(d.text(before), {key: [a_to_b, b_to_a]})
+        drop_cleared_warnings(undone, [(key, before, a_to_b), (key, before, b_to_a)])
+        assert undone[WARNINGS_KEY] == {key: [a_to_b, b_to_a]}
 
     def test_an_orphaned_location_is_dropped(self):
         definition = self.definition(d.text("{{trigger.Word}}"), {ORPHAN: [field_warning()]})
@@ -502,6 +570,53 @@ class TestDropClearedWarnings:
         assert drop_cleared_warnings(definition)[WARNINGS_KEY] == {
             field_write_key("w1", "value.text"): [unreadable]
         }
+
+
+class TestADuplicatedStageKeepsItsWarnings:
+    def test_the_copy_gets_the_originals_warnings_under_its_own_guids(self):
+        from copy_anywhere.ui.stage_document import StageDocument
+
+        warning = deck_warning()
+        definition = d.staged(
+            "W",
+            stages=[
+                d.note_query("found", "deck:Old", guid="q"),
+                d.edit_note(
+                    "trigger",
+                    fields=[a_write("Meaning", d.text("{{trigger.Word}}"))],
+                    card_actions=[an_action(change_deck="Old")],
+                    guid="e",
+                ),
+            ],
+        )
+        with_warnings(
+            definition,
+            {
+                stage_key("q", "query.text"): [warning],
+                field_write_key("w1", "value.text"): [field_warning()],
+                card_action_key("a1", "change_deck"): [deck_warning()],
+            },
+        )
+        document = StageDocument(definition)
+
+        query_copy = document.duplicate_stage("q")
+        edit_copy = document.duplicate_stage("e")
+
+        assert query_copy is not None and edit_copy is not None
+        write_guid = edit_copy["fields"][0]["guid"]
+        action_guid = edit_copy["card_actions"][0]["guid"]
+        assert document.rename_marks_at(stage_key(query_copy["guid"], "query.text")) == [warning]
+        assert document.rename_marks_at(field_write_key(write_guid, "value.text"))
+        assert document.rename_marks_at(card_action_key(action_guid, "change_deck"))
+        # Copies, so dismissing one leaves the other.
+        [copied] = document.rename_marks_at(stage_key(query_copy["guid"], "query.text"))
+        document.dismiss_rename_mark(copied)
+        assert document.rename_marks_at(stage_key("q", "query.text")) == [warning]
+
+        # Fixing only the original and saving leaves the copy's warning, so it still blocks.
+        document.stage("q")["query"]["text"] = "deck:New"
+        saved = drop_cleared_warnings(document.to_definition())
+        assert blocks_run(saved)
 
 
 class TestTheDialogSaves:

@@ -388,12 +388,23 @@ that holds it. The locations:
   `deck:JP::Vocab` is found through the child's rename;
 - code: a string literal whose value is the name, or that reads as a search naming it.
   Python's own tokenizer finds the literals, so a comment, an identifier or a longer name
-  holding the old one is never a hit;
+  holding the old one is never a hit. Each literal part of an f-string is held to the same
+  rule: `f"Wordlist {x}"` is not a hit for `Word`;
 - a query's sort field, a field write's target field;
-- a card action's code, when it uses code, and its deck when no code decides it.
+- a card action's code and its deck.
 
-Only the side of an expression that runs is read -- its code in code mode, its text
-otherwise -- since a name left in the other side breaks nothing.
+Some locations are not read by any run: the side of an expression its mode does not use
+(the code in text mode, the text in code mode), a card action's code while it does not use
+code, its deck while its code decides the move, and everything in a switched-off stage or
+under one. A name left there breaks nothing until it is switched back, so a warning there
+never blocks; it is still filed and kept, or switching back would run the old name with no
+warning at all. Once a save finds the location read again, the warning blocks as it would
+anywhere.
+
+A `{{trigger.Word}}` in a definition that does not trigger on the renamed field's note type
+spells its own trigger's `Word`, so a warning about another note type's `Word` never counts
+it: the entry says so (`through_trigger: false`), and the editor, a save and Replace all
+leave that token alone.
 
 A field or card type of note type N is looked for in every definition that triggers on N,
 except in a slot or token the pass has just followed; and in the searches, other bindings'
@@ -409,8 +420,8 @@ only tells you (**warn-only**):
 | blocks the run | warns only |
 | --- | --- |
 | a `deck:` or `note:` term; a card action's deck | a `card:` term; a field term |
-| code spelling a deck or a note type | a query's sort field; a field write's target on another note |
-| code spelling a field or card type, in a definition that triggers on its note type | code spelling one in a definition that does not |
+| a search in code naming a deck or a note type | a query's sort field; a field write's target on another note |
+| code spelling what the definition uses: a field or card type of a note type it triggers on, a deck or note type it references | code spelling anything else |
 | a trigger slot or token of a definition with several trigger note types | `{{<binding>.Word}}` for a note a query found |
 | a trigger slot or token naming a field or card type that was deleted | |
 
@@ -419,15 +430,18 @@ object, and a run with it would search for something that is not there. A field 
 name is not unique across note types, and the pass cannot know which note types a search,
 another binding or a sort field reaches: the hit is a guess, which is worth a warning and
 not a refusal. That holds for a deleted one too, since another note type may still have the
-name. Code blocks by choice, although a code hit is only a string that equals a name: a
-wrong read in code is the hardest to notice. For a field or card type, only where the
-definition triggers on its note type -- anywhere else a field called `Word` in code is too
-likely another note type's.
+name. Code blocks by choice where the definition is known to use the object, although a
+code hit is only a string that equals a name: a wrong read in code is the hardest to
+notice. Anywhere else a string in code that equals a name is too likely something else --
+`'default'` is a deck's name and also any setting's, a field called `Word` another note
+type's -- so it only warns, unless it reads as a search, whose `deck:` or `note:` term
+names its object unmistakably.
 
 **The warning.** A definition's warnings are stored under `rename_warnings`, a dict from a
 location key to its entries, each
-`{"kind", "object_id", "note_type_id", "old", "new", "blocks_run", "message"}`, `new` null for
-a deletion. A key is anchored on the guid of what holds the text -- `<stage guid>.query.text`,
+`{"kind", "object_id", "note_type_id", "old", "new", "blocks_run", "through_trigger",
+"message"}`, `new` null for a deletion, plus `"inactive": true` while no run reads the location
+(`blocks_run` then says what it would do once one does). A key is anchored on the guid of what holds the text -- `<stage guid>.query.text`,
 `<field write guid>.value.code`, `<card action guid>.change_deck`,
 `triggers.on_unfocus.edit_fields` -- and is built only by `logic/rename_locations.py`, for the
 pass and the editor alike: a key spelled any other way matches nothing and shows nothing.
@@ -458,7 +472,7 @@ blocking warning: the definition's name, the stored message, and what to do.
 
 The add, review and unfocus hooks log it the first time they meet the definition in a
 session, and again only when its blocking messages change, since each of those events opens
-its own log file and one refusal per answer would soon fill the fifty kept files with the
+its own log file and one refusal per answer would soon fill the kept log files with the
 same line. A sync logs it at every sync, and stops that definition after the one line rather
 than repeating it for every note; the other definitions of the run still run. None of these
 runs opens the log, so the definition list and the dialog after the operation (below) are
@@ -490,8 +504,9 @@ warning stays stored until you save. The sort field and a field write's target k
 field name the note types no longer have, under "Renamed or deleted in Anki", while a warning
 there is about it; a card action keeps a deck name the collection does not have, and the
 unfocus lists keep a name the note types do not offer. So a renamed name is shown
-rather than silently blanked and saved away. A migrated stage's only-if-empty and unfocus
-fields have no part of their own and show in the banner only.
+rather than silently blanked and saved away. A migrated stage that carries a write's gate
+shows it as two rows of its own, "Only when leaving" and "Skipped when filled", each with its
+icon and Replace.
 
 **Replace.** Where a warning has a new name and the scanner can spell it in, a **Replace**
 button sits beside the icon. It opens a read-only dialog with the part's whole text, each old
@@ -503,6 +518,12 @@ Anki's own search writer does, keeps a leading `-`, and keeps a field term's val
 written. It never touches a deletion, which has no new name, or an f-string that
 interpolates, whose meaning depends on what it interpolates: a part holding only those has no
 Replace button, and beside a replaceable hit the dialog lists them as left to fix by hand.
+Two renames trading names (`A` → `B` and `B` → `A`, or a chain) leave text that spells the old
+names again after Replace, so the editor remembers that Apply answered them: their icon hides,
+and Save drops them unless the text has been put back as it was.
+
+**Duplicating a stage** copies the warnings about its texts to the copy, which spells the same
+names.
 
 **The banner.** Above the triggers, the editor says that the definition is not run while any
 ✖ is left and that an ⓘ does not stop it, then lists every warning grouped by location, each
@@ -515,11 +536,12 @@ definition without it, Cancel keeps it.
 
 **How a warning goes away.**
 
-- **Save**: a warning whose location no longer spells the old name -- because you replaced it,
-  edited it by hand, deleted its stage, switched its expression to the other side or its
-  card action to code -- is dropped when the editor saves, read by the same scanner the pass
-  used. Code that does not parse keeps its warnings: it cannot be read, so it cannot be seen
-  to be fixed. Cancel drops nothing.
+- **Save**: a warning whose location no longer spells the old name -- because you replaced it
+  or edited it by hand -- or whose stage, field write or card action you deleted, is dropped
+  when the editor saves, read by the same scanner the pass used. Switching an expression to
+  its other side or a stage off keeps it, not blocking (see above). Code that does not parse
+  keeps its warnings: it cannot be read, so it cannot be seen to be fixed. Cancel drops
+  nothing.
 - **Dismiss**, for a hit that is not the renamed name, or one you have decided is fine.
 - **Undoing the rename** in Anki, or renaming the object back.
 
