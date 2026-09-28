@@ -99,7 +99,10 @@ class StubAddonManager:
     """`mw.addonManager`, backed by a plain dict per addon.
 
     Addon modules resolve their config key with `addonFromModule(__name__)`, so the key is
-    the first dotted segment of the module name -- the addon's directory name.
+    the first dotted segment of the module name -- the addon's directory name. `getConfig` and
+    `writeConfig` take either, as aqt's do: japanese_note_ai_ops passes each module's own
+    `__name__`, and a stub keyed by the string it was given handed every module but the
+    addon's root an empty config of its own.
     """
 
     def __init__(self, configs: Optional[dict[str, dict]] = None) -> None:
@@ -110,9 +113,10 @@ class StubAddonManager:
         return module.split(".")[0]
 
     def getConfig(self, tag: str) -> dict:
-        return self.configs.setdefault(tag, {})
+        return self.configs.setdefault(self.addonFromModule(tag), {})
 
     def writeConfig(self, tag: str, data: dict) -> None:
+        tag = self.addonFromModule(tag)
         self.configs[tag] = data
         self.written.append((tag, data))
 
