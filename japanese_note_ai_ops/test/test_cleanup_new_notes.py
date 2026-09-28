@@ -1200,6 +1200,30 @@ class SiblingMarkersTests(NewNoteHarness):
     the cleanup's marker tidying does, as it tidies every word a saved note has markers for.
     """
 
+    def test_a_new_meaning_is_cleaned_with_every_note_matched_and_the_run_s_caches(self):
+        # All the word's meanings, the first one without an (mN) marker included, so that the
+        # new one is cleaned knowing what it must not repeat; the caches because the sentences
+        # are gathered for each of those notes
+        seen: dict = {}
+
+        def clean_meaning_in_note(**kwargs):
+            seen.update(kwargs)
+            return True
+
+        sentence_cache, note_cache = object(), object()
+        first = vocab_note(f"{self.WORD}", 1)
+        second = vocab_note(f"{self.WORD} (m2)", 2)
+        args = {**self.args(), "sentence_cache": sentence_cache, "note_cache": note_cache}
+        with mock.patch.object(mwtn, "clean_meaning_in_note", clean_meaning_in_note):
+            mwtn.create_new_note_from_matched_note(
+                CONFIG, second, [first, second], 3, "意味", "sense", "", args
+            )
+
+        self.assertEqual(seen["other_meaning_notes"], [first, second])
+        self.assertIs(seen["note"], self.to_add[self.WORD][-1])
+        self.assertIs(seen["sentence_cache"], sentence_cache)
+        self.assertIs(seen["note_cache"], note_cache)
+
     def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():

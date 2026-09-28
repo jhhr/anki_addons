@@ -1055,17 +1055,23 @@ def clean_meaning_in_note(
         word_generated_meanings = all_generated_meanings_dict.get(word_key, None)
 
         all_meaning_notes: list[Note] = [note]
-        if other_meaning_notes is None and allow_update_all_meanings:
-            other_meaning_notes = get_other_meaning_notes(
-                config=config,
-                note=note,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                allow_reupdate_existing=allow_reupdate_existing,
-                include_pending_notes=True,
-                word_note_index=word_note_index,
-            )
-            all_meaning_notes = other_meaning_notes + [note]
+        if allow_update_all_meanings:
+            if other_meaning_notes is None:
+                other_meaning_notes = get_other_meaning_notes(
+                    config=config,
+                    note=note,
+                    notes_to_add_dict=notes_to_add_dict,
+                    notes_to_update_dict=notes_to_update_dict,
+                    allow_reupdate_existing=allow_reupdate_existing,
+                    include_pending_notes=True,
+                    word_note_index=word_note_index,
+                )
+            # A caller's list replaces the fetch, and is used. It used to skip the fetch and then
+            # be dropped, so the match op's CREATE NEW cleaned its new note alone: mapped with no
+            # sight of the generated meanings its siblings already hold, it could take one of
+            # theirs, and the new note duplicated a meaning the word already had. The note
+            # itself is never among the others, as the fetch never returns it
+            all_meaning_notes = [n for n in other_meaning_notes if n is not note] + [note]
 
         def meaning_note_key(n: Note) -> NoteId:
             """The note's id, or the placeholder id it carries until it has been added.

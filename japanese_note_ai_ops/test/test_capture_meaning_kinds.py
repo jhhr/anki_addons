@@ -575,6 +575,83 @@ class CleanNoteTests(unittest.TestCase):
                     self.assertEqual(written, (jp, en))
 
 
+    def clean_with_siblings(
+        self, note: WordNote, siblings: list, entry, answer, generated=None
+    ) -> Recorder:
+        """As the match op's CREATE NEW cleans its new note: with the notes it matched given,
+        so that nothing is fetched."""
+        recorder = Recorder(answer)
+
+        def sentences(config, n: WordNote, **kwargs) -> list[dict]:
+            return [{"jp_sentence": n["sentence_field"], "en_sentence": ""}]
+
+        def no_fetch(**kwargs):
+            raise AssertionError("the caller's notes replace the fetch")
+
+        with (
+            no_mdx_load(),
+            mdx_entry(entry),
+            mock.patch.object(cm, "get_other_meaning_notes", no_fetch),
+            mock.patch.object(cm, "get_sentences_for_note", sentences),
+            mock.patch.object(cm, "get_response", recorder),
+        ):
+            cm.clean_meaning_in_note(
+                config=self.CONFIG,
+                note=note,
+                notes_to_add_dict={},
+                notes_to_update_dict={},
+                all_generated_meanings_dict={WORD_KEY: generated} if generated else {},
+                allow_update_all_meanings=True,
+                allow_reupdate_existing=True,
+                other_meaning_notes=siblings,
+            )
+        return recorder
+
+    def test_the_notes_a_caller_gives_are_reworked_with_the_note(self):
+        # They were dropped: the new note was cleaned alone, from the dictionary entry, with no
+        # sight of the meanings the word already has
+        pull = WordNote(PULL_NOTE, "手元へ寄せる。", "to pull")
+        draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
+        new = WordNote(0, "くじを抜く。", "to draw lots", placeholder="-5550009")
+        jp, en = NEW_MEANING
+        reworked = {"meaning_index": 1, "jp_meaning": jp, "en_meaning": en}
+
+        recorder = self.clean_with_siblings(new, [pull, draw], ENTRY, {"meanings": [reworked]})
+        _, kwargs = recorder.one()
+
+        self.assertEqual(kwargs["kind"], "clean_meaning.rework")
+        self.assertEqual(kwargs["context"]["note_ids"], [-5550009, PULL_NOTE, DRAW_NOTE])
+        listed = [m["en_meaning"] for m in kwargs["inputs"]["meanings"]]
+        self.assertEqual(listed, ["to draw lots", "to pull", "to draw"])
+        self.assertEqual((new["meaning_field"], new["english_meaning_field"]), (jp, en))
+
+    def test_the_new_note_is_mapped_seeing_the_generated_meanings_its_siblings_hold(self):
+        # What the list is for: mapped alone, the new note could take a generated meaning a
+        # sibling already has, and the word would hold that meaning twice
+        pull = WordNote(PULL_NOTE, "物に手をかけて近くへ寄せる。", "to pull")
+        draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
+        new = WordNote(0, "くじを抜く。", "to draw lots", placeholder="-5550009")
+        mapping = {
+            "meanings": [
+                {"used_meaning_index": 1, "possible_meaning_index": 3, "mapping_score": 5},
+                {"used_meaning_index": 3, "possible_meaning_index": 2, "mapping_score": 5},
+            ]
+        }
+
+        recorder = self.clean_with_siblings(
+            new, [pull, draw], ENTRY, mapping, generated_meanings()
+        )
+
+        prompt, kwargs = recorder.calls[0][1], recorder.calls[0][2]
+        self.assertEqual(kwargs["kind"], "clean_meaning.map")
+        self.assertEqual(kwargs["context"]["note_ids"], [-5550009, PULL_NOTE, DRAW_NOTE])
+        self.assertEqual(len(kwargs["inputs"]["meanings"]), 3)
+        # The pull note's meaning is the first generated one, shown as taken
+        self.assertIn("Possible meaning index 1 (ALREADY MAPPED)", prompt)
+        self.assertEqual(new["english_meaning_field"], "to draw (lots)")
+        self.assertEqual(draw["english_meaning_field"], "to draw (a line)")
+        self.assertEqual(pull["english_meaning_field"], "to pull")
+
     def test_a_note_not_added_with_no_placeholder_is_cleaned_under_id_0(self):
         # A vocab note added by hand reaches the add-note hook with id 0 and an empty new note
         # id field; reading that field as a placeholder raised and cost the note its cleaning
