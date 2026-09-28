@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # in this field of its note type's config (match_words_to_notes' new_note_id_field)
 PLACEHOLDER_FIELD_KEY = "new_note_id_field"
 
+# What a notes run records beyond its notes, named in its `environment` event, so an exporter
+# can tell a run that looked nothing up from one captured before lookups were recorded. Add a
+# name here when a new kind of record is added
+RECORDS = ["dictionary.lookup"]
+
 
 def note_record(note: "Note") -> dict[str, Any]:
     """A note as the capture stores it: what building it again in another collection needs.
@@ -217,7 +222,10 @@ def record_environment(col: "Collection", config: Mapping[str, Any]) -> None:
         if col.db is not None:
             count, last_mod = col.db.first("select count(), max(mod) from notes") or (None, None)
             collection = {"notes": count, "last_mod": last_mod}
-        capture.event("environment", {"dictionaries": dictionaries, "collection": collection})
+        capture.event(
+            "environment",
+            {"dictionaries": dictionaries, "collection": collection, "records": RECORDS},
+        )
     except Exception:
         logger.warning("Capture: the run's environment was not recorded", exc_info=True)
 

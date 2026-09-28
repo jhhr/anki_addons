@@ -16,6 +16,7 @@ except ImportError:
 
 from ..html_stripping import strip_html_advanced
 from ..configuration import ADDON_USER_FILES_DIR
+from ..async_api_ops import capture
 from ..async_api_ops.concurrency import cpu_bound_section
 from .mdx_memo import DefinitionMemo
 
@@ -865,9 +866,34 @@ class AnkiMDXHelper:
                 pick_dictionary,
                 e,
             )
+            self._record(word, reading, pick_dictionary, max_length, error=repr(e))
             raise
         logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
-        return self._format_definition_text(word, reading, result.value, max_length)
+        text = self._format_definition_text(word, reading, result.value, max_length)
+        self._record(word, reading, pick_dictionary, max_length, text=text)
+        return text
+
+    @staticmethod
+    def _record(
+        word: str,
+        reading: Optional[str],
+        pick_dictionary: PickDictionaryResult,
+        max_length: Optional[int],
+        text: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """A run that records its notes records what each lookup answered, the text the prompt
+        is then built from: a replay without the dictionary files answers the same from it."""
+        if not capture.notes_on():
+            return
+        lookup: dict[str, Any] = {
+            "word": word,
+            "reading": reading,
+            "pick": pick_dictionary,
+            "max_length": max_length,
+        }
+        lookup["error" if error is not None else "text"] = error if error is not None else text
+        capture.event("dictionary.lookup", lookup)
 
     def _scan(
         self,

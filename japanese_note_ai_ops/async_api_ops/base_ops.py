@@ -211,6 +211,33 @@ class DialogCancelState:
         return bool(mw.progress.want_cancel())
 
 
+class ResponseRequest(NamedTuple):
+    """One `get_response` as a responder is handed it (`set_responder`)."""
+
+    kind: str
+    inputs: Any
+    model: str
+    prompt: str
+    # As sent: DEFAULT_SYSTEM_INSTRUCTION when the caller gave none, as the capture records it
+    instructions: str
+    schema: Optional[dict]
+    params: dict
+
+
+# Answers every get_response in place of the providers while set: a replay's cassette, the
+# benchmark's timed one. None in Anki, always
+_responder: Optional[Callable[[ResponseRequest], Any]] = None
+
+
+def set_responder(responder: Optional[Callable[[ResponseRequest], Any]]) -> None:
+    """Answer every `get_response` with `responder(request)` instead of a provider, or, given
+    None, go back to the providers. For replays and benchmarks: the call is recorded, cancel and
+    the op's handling of the answer are as they are for a provider's, and nothing goes out.
+    `responder` runs on the calling thread, a pool worker; None from it is a failed call."""
+    global _responder
+    _responder = responder
+
+
 def get_response(
     model: str,
     prompt: str,
@@ -241,33 +268,39 @@ def get_response(
     Returns:
         A dict containing the parsed JSON response, or None if there was an error.
     """
+    # What every provider sends when it is given none, so the record is what was sent
+    sent_instructions = instructions or DEFAULT_SYSTEM_INSTRUCTION
+    params = {"max_output_tokens": max_output_tokens, "temperature": temperature, "effort": effort}
     with capture.call(
         kind,
         inputs,
         model=model,
         prompt=prompt,
-        # What every provider sends when it is given none, so the record is what was sent
-        instructions=instructions or DEFAULT_SYSTEM_INSTRUCTION,
+        instructions=sent_instructions,
         schema=response_schema,
-        params={
-            "max_output_tokens": max_output_tokens,
-            "temperature": temperature,
-            "effort": effort,
-        },
+        params=params,
         context=context,
     ) as trace:
         try:
-            result = _dispatch_response(
-                model,
-                prompt,
-                cancel_state=cancel_state,
-                instructions=instructions,
-                response_schema=response_schema,
-                max_output_tokens=max_output_tokens,
-                temperature=temperature,
-                json_result_corrector=json_result_corrector,
-                effort=effort,
-            )
+            responder = _responder
+            if responder is not None:
+                result = responder(
+                    ResponseRequest(
+                        kind, inputs, model, prompt, sent_instructions, response_schema, params
+                    )
+                )
+            else:
+                result = _dispatch_response(
+                    model,
+                    prompt,
+                    cancel_state=cancel_state,
+                    instructions=instructions,
+                    response_schema=response_schema,
+                    max_output_tokens=max_output_tokens,
+                    temperature=temperature,
+                    json_result_corrector=json_result_corrector,
+                    effort=effort,
+                )
         except Exception:
             if trace is not None:
                 # The row records the exception as the outcome; the trace never sees it
