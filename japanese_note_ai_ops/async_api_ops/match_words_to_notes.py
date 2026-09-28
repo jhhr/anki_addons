@@ -2731,6 +2731,26 @@ async def bulk_match_words_to_notes(
         nonlocal all_generated_meanings_dict
         # Write updated meanings dictionary to file after successful operation
         write_meanings_dict_to_file(all_generated_meanings_dict)
+        # The run's caches as data, for a benchmark: they only log now and then, and go with
+        # this closure
+        if capture.notes_on():
+            capture.event(
+                "metrics.caches",
+                {
+                    "note_cache": {
+                        "asked": note_cache.asked,
+                        "from_cache": note_cache.hits,
+                        "fetched": note_cache.fetched,
+                        "held": len(note_cache),
+                    },
+                    "sentence_cache": {
+                        "asked": sentence_cache.asked,
+                        "scanned": sentence_cache.scanned,
+                        "held": len(sentence_cache),
+                    },
+                    "word_indexes_built": len(word_note_index_cache._indexes),
+                },
+            )
 
     return await bulk_nested_notes_op(
         message=message,

@@ -45,8 +45,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
-| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs |
-| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and `user_files/fixtures/` (the owner's, gitignored), each twice. Excluded from the zip |
+| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted) and optionally a fixed free memory for the gate, and appends each run's figures to `user_files/benchmarks/<fixture>.jsonl` with the commit and machine |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds); `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and `user_files/fixtures/` (the owner's, gitignored), each twice. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -212,8 +212,13 @@ cheap no-op and nothing is recorded.
   of each key of the generated meanings file: `load_meanings_dict_from_file` hands a notes run a
   `capture_notes.MeaningsRecorder`, and it is the only loader of that file),
   `dictionary.lookup` (each `mdx_helper.get_definition_text` answer, the text the prompt is built
-  from, or its error), `phase` (`log_phase`), `undo` (at the cleanup's start and end),
-  `notetype` and `decks` (of every note recorded, at the end). The capture never infers: an
+  from, or its error), `phase` (`log_phase`, with the process's `rss` at the phase's end), `undo`
+  (at the cleanup's start and end), `notetype` and `decks` (of every note recorded, at the end),
+  and the run's figures, which otherwise only reach DEBUG lines or die with the run:
+  `metrics.gate` (`ConcurrencyGate.stats`: raises, halvings, holds under pressure, collection
+  latches, each ceiling change, the seconds at each limit, the collection's share and turns,
+  counted where each move is logged; `base_ops.record_gate` after `gate.finish()`) and
+  `metrics.caches` (the match op's note and sentence caches and word indexes, at its `on_end`). The capture never infers: an
   exporter that finds a note it needs without a snapshot has found a capture gap, to be fixed
   here and recorded again.
 - **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:

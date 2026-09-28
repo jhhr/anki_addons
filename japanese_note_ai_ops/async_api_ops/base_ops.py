@@ -53,7 +53,7 @@ from .chain_types import (
     StepOutcome,
 )
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
-from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size
+from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size, process_memory
 from .diagnostics import (
     clear_cancel_time,
     diagnostic_level,
@@ -179,10 +179,28 @@ def log_phase(label: str, started: float, **extra) -> float:
         if since_cancel is not None:
             details += f" since_cancel={since_cancel:.1f}s"
         logger.log(level, "[phase] %s took %.3fs%s", label, now - started, details)
-    # The same, in a run that records its notes, for the phase table of a replay's benchmark
+    # The same, in a run that records its notes, for the phase table of a replay's benchmark,
+    # with the process's memory at the phase's end: nothing else samples it at phase boundaries
     if capture.notes_on():
-        capture.event("phase", {"label": label, "seconds": now - started, **extra})
+        capture.event(
+            "phase",
+            {"label": label, "seconds": now - started, "rss": process_memory(), **extra},
+        )
     return now
+
+
+def record_gate(gate: Any) -> None:
+    """A run that records its notes records what its gate did (`ConcurrencyGate.stats`) as a
+    `metrics.gate` event. A gate without stats (a test's stand-in) records nothing."""
+    if not capture.notes_on():
+        return
+    stats = getattr(gate, "stats", None)
+    if stats is None:
+        return
+    try:
+        capture.event("metrics.gate", stats())
+    except Exception:
+        logger.warning("Capture: the gate's figures were not recorded", exc_info=True)
 
 
 class CancelState:
@@ -2288,6 +2306,7 @@ async def bulk_nested_notes_op(
     finally:
         marker = time.monotonic()
         gate.finish()
+        record_gate(gate)
         marker = log_phase("nested op: gate.finish", marker)
         progress_updater.gate = None
 
@@ -2562,6 +2581,7 @@ async def bulk_notes_op(
     finally:
         marker = time.monotonic()
         gate.finish()
+        record_gate(gate)
         marker = log_phase("bulk op: gate.finish", marker)
         progress_updater.gate = None
 

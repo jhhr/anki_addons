@@ -36,11 +36,12 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from collections import defaultdict
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, ContextManager, Iterable, Mapping, Optional
 
 FORMAT = 1
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
@@ -144,8 +145,8 @@ def export_fixture(store_path: Path, run_id: int) -> Fixture:
             )
         ]
         calls = connection.execute(
-            "SELECT kind, request_key, prompt_key, inputs_json, response_json, outcome FROM calls"
-            " WHERE run_id = ? ORDER BY started, call_id",
+            "SELECT kind, request_key, prompt_key, inputs_json, response_json, outcome,"
+            " latency_ms FROM calls WHERE run_id = ? ORDER BY started, call_id",
             (run_id,),
         ).fetchall()
     config = json.loads(run["config_json"] or "{}")
@@ -327,6 +328,8 @@ def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
                 "response": json.loads(call["response_json"] or "null"),
                 "outcome": call["outcome"],
                 "prompt_key": call["prompt_key"],
+                # How long the answer took to come, for a timed replay (benchmark.py)
+                "latency_ms": round(call["latency_ms"] or 0.0),
             }
         )
     return sorted(by_key.values(), key=lambda entry: (entry["kind"], entry["request_key"]))
@@ -395,35 +398,88 @@ def normalized_notes(
 # --- replay --------------------------------------------------------------------------------
 
 
+# The inputs that say what a request is about when its exact inputs were never seen: which word,
+# in which sentence. A replay of a run whose notes contended for a word (two sentences, one new
+# note) can ask about it with another list of meanings than the capture did, lock order being
+# timing; a benchmark still wants an answer of the kind for it (Cassette's `lenient`)
+LOOSE_INPUTS = ("word", "reading", "sentence")
+
+
+def _loose_key(kind: str, inputs: Any) -> tuple:
+    if not isinstance(inputs, dict):
+        return (kind,)
+    return (kind,) + tuple(json.dumps(inputs.get(name), ensure_ascii=False) for name in LOOSE_INPUTS)
+
+
 @dataclass
 class Cassette:
     """The answers of a fixture, handed out by request key, each as many times as the run
     received it, in the same order. What it cannot answer it records and answers with None,
-    as a failed call is answered."""
+    as a failed call is answered.
+
+    `lenient`, for benchmarks: a request with no exact answer left gets one of the same kind
+    about the same word and sentence (`LOOSE_INPUTS`), else any answer of its kind, in turn, so
+    the run does the work the capture run did; each is counted (`counts`), not failed.
+    `latency(answer)` is how long to wait before answering, in seconds: on the calling thread,
+    which is the pool worker a provider's request blocks too."""
 
     entries: list[dict]
+    lenient: bool = False
+    latency: Optional[Callable[[dict], float]] = None
     misses: list[dict] = field(default_factory=list)
     used: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self._by_key = {entry["request_key"]: entry for entry in self.entries}
+        self._by_loose: dict[tuple, list[dict]] = defaultdict(list)
+        self._by_kind: dict[str, list[dict]] = defaultdict(list)
+        for entry in self.entries:
+            for answer in entry["answers"]:
+                self._by_loose[_loose_key(entry["kind"], entry["inputs"])].append(answer)
+                self._by_kind[entry["kind"]].append(answer)
+        self._turns: dict[Any, int] = defaultdict(int)
 
     def __call__(self, request: Any) -> Any:
+        answer = self._answer(request)
+        if answer is None:
+            return None
+        if self.latency is not None:
+            seconds = self.latency(answer)
+            if seconds > 0:
+                time.sleep(seconds)
+        return answer["response"]
+
+    def _answer(self, request: Any) -> Optional[dict]:
         from japanese_note_ai_ops.async_api_ops.capture_store import request_key
 
         key = request_key(request.kind, request.inputs)
         with self._lock:
             entry = self._by_key.get(key)
             index = self.used[key]
-            if entry is None or index >= len(entry["answers"]):
-                self.misses.append(
-                    {"kind": request.kind, "request_key": key, "inputs": request.inputs,
-                     "known": entry is not None}
+            if entry is not None and index < len(entry["answers"]):
+                self.used[key] = index + 1
+                self.counts["exact"] += 1
+                return entry["answers"][index]
+            if self.lenient:
+                loose = _loose_key(request.kind, request.inputs)
+                pools: tuple[tuple[Any, Optional[list[dict]], str], ...] = (
+                    (loose, self._by_loose.get(loose), "loose"),
+                    (request.kind, self._by_kind.get(request.kind), "by kind"),
                 )
-                return None
-            self.used[key] = index + 1
-            return entry["answers"][index]["response"]
+                for pool_key, answers, tally in pools:
+                    if answers:
+                        turn = self._turns[pool_key]
+                        self._turns[pool_key] = turn + 1
+                        self.counts[tally] += 1
+                        return answers[turn % len(answers)]
+            self.counts["missed"] += 1
+            self.misses.append(
+                {"kind": request.kind, "request_key": key, "inputs": request.inputs,
+                 "known": entry is not None}
+            )
+            return None
 
     def unused(self) -> list[dict]:
         return [
@@ -483,6 +539,11 @@ class ReplayResult:
     # What the run reported without failing (run_errors): a replay reproducing the run's own
     # errors is still a replay, so these are for reading, not compared
     errors: list[str]
+    # How long the op's run took, and what the cassette answered how (Cassette.counts)
+    seconds: float = 0.0
+    answered: dict[str, int] = field(default_factory=dict)
+    # What `replay`'s `read_store` made of the replay's own capture store
+    store_data: Any = None
 
     def differences(self, expected: Mapping[str, Any]) -> list[str]:
         """What differs from the fixture's expected state, as lines a test can print; empty
@@ -545,10 +606,20 @@ def build_collection(corpus: Mapping[str, Any], path: Path):
     return col
 
 
-def replay(fixture: Fixture, workdir: Optional[Path] = None) -> ReplayResult:
+def replay(
+    fixture: Fixture,
+    workdir: Optional[Path] = None,
+    cassette: Optional[Cassette] = None,
+    around_run: Optional[Callable[[], ContextManager[Any]]] = None,
+    read_store: Optional[Callable[[Path], Any]] = None,
+) -> ReplayResult:
     """Build the fixture's corpus in a fresh collection under `workdir` (a temporary directory
     by default), run the op over its selected notes with nothing reaching a network, and return
-    the collection's state after it, normalized as the fixture's expected state is."""
+    the collection's state after it, normalized as the fixture's expected state is.
+
+    For a benchmark: `cassette` answers in place of a strict one of the fixture's own (a timed
+    or lenient one), the run happens inside `around_run()` (a memory profile), and
+    `read_store(path)` reads the replay's own capture store before it is deleted."""
     from anki_shared.testing import real_anki
     from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
@@ -564,7 +635,8 @@ def replay(fixture: Fixture, workdir: Optional[Path] = None) -> ReplayResult:
     # Its own capture, notes and all, is how the replay learns which notes it added and what
     # it decided, the way the export read them from the capture run
     config = dict(corpus["config"], capture_calls=True, capture_notes=True, log_to_console=False)
-    cassette = Cassette(fixture.cassette["entries"])
+    if cassette is None:
+        cassette = Cassette(fixture.cassette["entries"])
     dictionary = Dictionary(corpus["dictionary"])
     errors: list[str] = []
     col = build_collection(corpus, root / "collection.anki2")
@@ -584,7 +656,10 @@ def replay(fixture: Fixture, workdir: Optional[Path] = None) -> ReplayResult:
         base_ops.set_responder(cassette)
         nids = [record["id"] for record in corpus["notes"] if record["selected"]]
         run, _ = match_words_spec().notes_run(nids)
-        run(col)
+        with around_run() if around_run is not None else nullcontext():
+            started = time.monotonic()
+            run(col)
+            seconds = time.monotonic() - started
         capture.shutdown(timeout=30.0)
         events = _run_events(store)
         return ReplayResult(
@@ -596,6 +671,9 @@ def replay(fixture: Fixture, workdir: Optional[Path] = None) -> ReplayResult:
             new_notes=len(events.added),
             decisions=events.decisions,
             errors=errors,
+            seconds=seconds,
+            answered=dict(cassette.counts),
+            store_data=read_store(store) if read_store is not None else None,
         )
     finally:
         base_ops.set_responder(None)

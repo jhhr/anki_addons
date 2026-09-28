@@ -12,6 +12,7 @@ convincingly; the fixtures of real capture runs (test_replay.py) cover it.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 from contextlib import closing
@@ -179,6 +180,28 @@ def test_a_request_the_cassette_lacks_is_reported_and_answered_as_a_failure(capt
     assert [miss["kind"] for miss in result.misses] == ["match.rating"]
     assert any(line.startswith("cassette had no answer") for line in
                result.differences(fixture.expected))
+
+
+def test_a_timed_benchmark_run_does_the_same_work_every_time_and_records_its_figures(captured):
+    import benchmark
+
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    args = argparse.Namespace(latency="fixed:5", scale=1.0, memory="free:8")
+
+    runs = [benchmark.run_once(fixture, args) for _ in range(2)]
+
+    for run in runs:
+        # The counts, never the seconds: those are the machine's
+        assert run["answered"] == {"exact": 2}
+        assert (run["calls_total"], run["decisions"], run["new_notes"]) == (2, 1, 0)
+        assert sorted(metric["kind"] for metric in run["metrics"]) == [
+            "metrics.caches",
+            "metrics.gate",
+        ]
+        assert all(phase["rss"] for phase in run["phases"])
+        [gate] = [metric for metric in run["metrics"] if metric["kind"] == "metrics.gate"]
+        assert sum(gate["dwell_seconds"].values()) > 0
 
 
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):
