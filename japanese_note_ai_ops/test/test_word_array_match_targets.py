@@ -706,7 +706,6 @@ class CancelledMatchRunTests(unittest.TestCase):
         fake_mw = mock.MagicMock()
         fake_mw.progress = mw.progress
         fake_mw.addonManager.getConfig.return_value = self.config
-        fake_mw.pm.profileFolder.return_value = "/nonexistent-profile"
 
         async def run():
             runner = asyncio.ensure_future(
@@ -740,6 +739,8 @@ class CancelledMatchRunTests(unittest.TestCase):
                 "write_meanings_dict_to_file",
                 lambda _: writes_at_on_end.append(cancelled.array_writes),
             ),
+            # No meanings generated yet, and no profile folder to read them from
+            mock.patch.object(self.mwtn, "load_meanings_dict_from_file", dict),
             mock.patch.object(self.mwtn, "mw", fake_mw),
             mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
             mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),

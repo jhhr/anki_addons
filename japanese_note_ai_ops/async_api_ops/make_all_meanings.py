@@ -23,6 +23,7 @@ from ..configuration import (
 )
 from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
+from . import capture_notes
 from .api_client import run_cancelled
 from .collection_access import (
     find_notes as col_find_notes,
@@ -133,13 +134,15 @@ def correct_meanings_array_json_result(json_result: str) -> str:
 
 
 def load_meanings_dict_from_file() -> GeneratedMeaningsDictType:
+    """The generated meanings file of the profile, as a run holds it: in a run that records
+    its notes, one that records what it reads and writes (capture_notes.MeaningsRecorder)."""
     media_path = Path(mw.pm.profileFolder(), "collection.media")
     all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
-    if not all_meanings_dict_path.exists():
-        return {}
-
-    with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    data: GeneratedMeaningsDictType = {}
+    if all_meanings_dict_path.exists():
+        with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    return capture_notes.record_meanings(data)
 
 
 def make_meaning_dict_key(word: str, reading: str) -> str:
@@ -603,6 +606,7 @@ def merge_meanings_in_note(
 
 
 def write_meanings_dict_to_file(all_meanings_dict: GeneratedMeaningsDictType):
+    capture_notes.record_final_meanings(all_meanings_dict)
     media_path = Path(mw.pm.profileFolder(), "collection.media")
     all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
     # Sort the dictionary by keys before writing to file for consistency

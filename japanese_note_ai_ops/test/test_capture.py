@@ -298,6 +298,9 @@ class RunTests(CaptureTestCase):
                 # end_run was given no extra, and does not wipe begin_run's
                 "extra_json": '{"source":"menu"}',
                 "profile": PROFILE,
+                # A run that records no notes counts no drops for them
+                "notes": 0,
+                "dropped": None,
             },
         )
 
@@ -347,6 +350,146 @@ class RunTests(CaptureTestCase):
 
         [run] = self.rows("runs")
         self.assertEqual((run["run_id"], run["log_path"]), (run_id, None))
+
+
+def note(note_id, word="食べる", mid=1500000000000):
+    return {"id": note_id, "mid": mid, "fields": {"Word": word}, "tags": ["jp"]}
+
+
+class NoteTests(CaptureTestCase):
+    """A run begun with `notes` records its notes and events; any other run records neither."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.store = self.install()
+        self.built: list[tuple[str, int]] = []
+
+    def builder(self, stage, note_id, word="食べる"):
+        def build():
+            self.built.append((stage, note_id))
+            return note(note_id, word)
+
+        return build
+
+    def test_a_run_without_notes_records_none_and_builds_nothing(self):
+        run_id = capture.begin_run("run")
+        with capture.run_scope(run_id):
+            self.assertFalse(capture.notes_on())
+            capture.snapshot_note("read", 1, self.builder("read", 1))
+            capture.reference_notes([2])
+            capture.event("phase", {"name": "plan"})
+            self.assertEqual(capture.unread_references(), [])
+        capture.end_run(run_id, "completed")
+
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.rows("note_snapshots", "snapshot_id"), [])
+        self.assertEqual(self.rows("events", "event_id"), [])
+        [run] = self.rows("runs")
+        self.assertEqual((run["notes"], run["dropped"]), (0, None))
+
+    def test_a_note_is_recorded_once_per_stage_and_stored_once_while_unchanged(self):
+        run_id = capture.begin_run("run", notes=True)
+        with capture.run_scope(run_id):
+            self.assertTrue(capture.notes_on())
+            capture.snapshot_note("read", 1, self.builder("read", 1))
+            # Fetched again by another task: the first fetch is every fetch
+            capture.snapshot_note("read", 1, self.builder("read", 1))
+            capture.snapshot_note("final", 1, self.builder("final", 1))
+            capture.snapshot_note("proposed", -5, self.builder("proposed", -5, "飲む"))
+        capture.end_run(run_id, "completed")
+
+        self.assertEqual(self.built, [("read", 1), ("final", 1), ("proposed", -5)])
+        rows = self.rows("note_snapshots", "snapshot_id")
+        for row in rows:
+            self.assertGreaterEqual(row.pop("t"), 0.0)
+            row.pop("snapshot_id")
+        unchanged = capture_store.text_hash(capture_store.canonical_json(note(1)))
+        new = capture_store.text_hash(capture_store.canonical_json(note(-5, "飲む")))
+        version = capture_store.SCHEMA_VERSION
+        self.assertEqual(
+            rows,
+            [
+                {"v": version, "run_id": run_id, "note_id": 1, "stage": "read",
+                 "mid": 1500000000000, "note_hash": unchanged},
+                {"v": version, "run_id": run_id, "note_id": 1, "stage": "final",
+                 "mid": 1500000000000, "note_hash": unchanged},
+                {"v": version, "run_id": run_id, "note_id": -5, "stage": "proposed",
+                 "mid": 1500000000000, "note_hash": new},
+            ],
+        )
+        blobs = {row["hash"]: row["text"] for row in self.rows("blobs")}
+        self.assertEqual(set(blobs), {unchanged, new})
+        [run] = self.rows("runs")
+        self.assertEqual((run["notes"], run["dropped"]), (1, 0))
+
+    def test_the_notes_only_referenced_are_the_ones_left_to_fetch(self):
+        run_id = capture.begin_run("run", notes=True)
+        with capture.run_scope(run_id):
+            capture.snapshot_note("selected", 1, self.builder("selected", 1))
+            capture.snapshot_note("read", 2, self.builder("read", 2))
+            capture.snapshot_note("proposed", 3, self.builder("proposed", 3))
+            capture.reference_notes([4, 1, 3, 2])
+            capture.reference_notes(iter([5]))
+
+            self.assertEqual(capture.unread_references(), [3, 4, 5])
+            capture.snapshot_note("read", 4, self.builder("read", 4))
+            self.assertEqual(capture.unread_references(), [3, 5])
+        capture.end_run(run_id, "completed")
+
+    def test_an_event_names_its_note_and_task_and_keeps_its_order(self):
+        run_id = capture.begin_run("run", notes=True)
+        with capture.run_scope(run_id):
+            capture.event("phase", {"name": "plan"})
+            with capture.note_scope(NOTE_ID), capture.task_scope("食べる|たべる"):
+                capture.event("match.decision", {"ok": True, "result": ["食べる", "たべる", 7]})
+                capture.event("note.added", {"placeholder": -5, "note_id": 9}, note_id=9)
+        capture.end_run(run_id, "completed")
+
+        events = [
+            (e["run_id"], e["note_id"], e["task_id"], e["kind"], e["payload_json"])
+            for e in self.rows("events", "event_id")
+        ]
+        self.assertEqual(
+            events,
+            [
+                (run_id, None, None, "phase", '{"name":"plan"}'),
+                (run_id, NOTE_ID, "食べる|たべる", "match.decision",
+                 '{"ok":true,"result":["食べる","たべる",7]}'),
+                (run_id, 9, "食べる|たべる", "note.added", '{"note_id":9,"placeholder":-5}'),
+            ],
+        )
+
+    def test_a_run_counts_the_records_dropped_while_it_ran(self):
+        # One before the run is not its
+        self.store._count_dropped()
+        run_id = capture.begin_run("run", notes=True)
+        with capture.run_scope(run_id):
+            self.store._count_dropped()
+            self.store._count_dropped()
+        capture.end_run(run_id, "completed")
+
+        [run] = self.rows("runs")
+        self.assertEqual(run["dropped"], 2)
+
+    def test_after_its_end_a_run_records_no_more_notes(self):
+        run_id = capture.begin_run("run", notes=True)
+        capture.end_run(run_id, "completed")
+        with capture.run_scope(run_id):
+            self.assertFalse(capture.notes_on())
+            capture.snapshot_note("read", 1, self.builder("read", 1))
+
+        self.assertEqual(self.built, [])
+
+    def test_a_record_that_cannot_be_built_is_skipped_with_a_warning(self):
+        def broken():
+            raise KeyError("Word")
+
+        run_id = capture.begin_run("run", notes=True)
+        with capture.run_scope(run_id), self.assertLogs(PACKAGE_LOGGER, "WARNING"):
+            capture.snapshot_note("read", 1, broken)
+        capture.end_run(run_id, "completed")
+
+        self.assertEqual(self.rows("note_snapshots", "snapshot_id"), [])
 
 
 class ImplicitRunTests(CaptureTestCase):

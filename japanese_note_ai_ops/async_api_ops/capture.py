@@ -101,12 +101,15 @@ def install(
     versions: Optional[Mapping[str, Any]] = None,
     log_path: Optional[Callable[[], Optional[str]]] = None,
     profile: Optional[str] = None,
+    max_queue: Optional[int] = None,
 ) -> bool:
     """Record from now on into the store at `path`; True when it opened and is recording.
 
     `versions` and `profile` (the Anki profile's name) are written on every run; `log_path()`
     is asked at each run's start for the text log it writes to. `keep_days` is taken as the
-    config holds it (`CaptureStore`). A store already installed is closed first. Its writer
+    config holds it (`CaptureStore`). `max_queue` replaces the store's bound on records waiting
+    for its writer: a script that records a big run's notes gives a larger one rather than lose
+    them. A store already installed is closed first. Its writer
     may still be busy after that, and the new store's ids start past every id a store before
     it in this process handed out, so the two never write the same one. Never raises.
     """
@@ -117,7 +120,8 @@ def install(
             _installed = None
             _retire(previous.store, REPLACE_TIMEOUT_SECONDS)
         try:
-            store = CaptureStore(path, keep_days=keep_days, first_ids=_id_floor)
+            options: dict[str, Any] = {} if max_queue is None else {"max_queue": max_queue}
+            store = CaptureStore(path, keep_days=keep_days, first_ids=_id_floor, **options)
         except Exception as e:
             logger.warning(
                 "Capture store %s could not be created (%s: %s); nothing is recorded this"
@@ -273,16 +277,19 @@ def begin_run(
     note_count: Optional[int] = None,
     config: Optional[Mapping[str, Any]] = None,
     extra: Optional[Mapping[str, Any]] = None,
+    notes: bool = False,
 ) -> Optional[int]:
     """Record the start of a run and return its id, None with capture off.
 
     `config` is recorded through `scrub_config`; the install's versions and profile and the
     current log path are added. Enter `run_scope(run_id)` for the work that belongs to it.
+    With `notes`, the run also records its notes and events (`snapshot_note`, `event`), which
+    do nothing in any other run.
     """
     state = _active()
     if state is None:
         return None
-    return _begin_run(
+    run_id = _begin_run(
         state,
         label,
         implicit=implicit,
@@ -291,18 +298,27 @@ def begin_run(
         note_count=note_count,
         config=config,
         extra=extra,
+        notes=notes,
     )
+    if notes and run_id is not None:
+        with _note_runs_lock:
+            _note_runs[run_id] = _RunNotes(run_id, state.store.dropped)
+    return run_id
 
 
 def end_run(
     run_id: Optional[int], outcome: Optional[str], *, extra: Optional[Mapping[str, Any]] = None
 ) -> None:
-    """Record a run's end and outcome. `extra`, when given, replaces the one `begin_run` had."""
+    """Record a run's end and outcome. `extra`, when given, replaces the one `begin_run` had.
+    A run that recorded its notes also records how many records the store dropped meanwhile."""
     if run_id is None:
         return
+    with _note_runs_lock:
+        notes = _note_runs.pop(run_id, None)
     state = _active()
     if state is not None:
-        _end_run(state.store, run_id, outcome, extra)
+        dropped = None if notes is None else state.store.dropped - notes.dropped_at_start
+        _end_run(state.store, run_id, outcome, extra, dropped=dropped)
 
 
 def _begin_run(
@@ -315,6 +331,7 @@ def _begin_run(
     note_count: Optional[int] = None,
     config: Optional[Mapping[str, Any]] = None,
     extra: Optional[Mapping[str, Any]] = None,
+    notes: bool = False,
 ) -> Optional[int]:
     try:
         store = state.store
@@ -333,6 +350,7 @@ def _begin_run(
                 "log_path": _current_log_path(state),
                 "extra_json": _json(extra, "a run's extra"),
                 "profile": state.profile,
+                "notes": 1 if notes else 0,
             }
         )
         return run_id
@@ -346,12 +364,15 @@ def _end_run(
     run_id: int,
     outcome: Optional[str],
     extra: Optional[Mapping[str, Any]] = None,
+    dropped: Optional[int] = None,
 ) -> None:
     try:
         columns: dict[str, Any] = {"ended": time.time(), "outcome": outcome}
         # Left out rather than None, which would wipe what begin_run recorded
         if extra is not None:
             columns["extra_json"] = _json(extra, "a run's extra")
+        if dropped is not None:
+            columns["dropped"] = dropped
         store.update_run(run_id, **columns)
     except Exception:
         _warn_limited("end run", "Capture: a run's end could not be recorded", exc_info=True)
@@ -377,6 +398,173 @@ def _current_log_path(state: _Installed) -> Optional[str]:
         _warn_limited("log path", "Capture: the log path could not be read", exc_info=True)
         return None
     return None if path is None else str(path)
+
+
+# --- notes and events ---------------------------------------------------------------------
+
+# A note's state before the run changed anything: taken where the run first fetched it
+# (`read`), or for a selected note where the run loaded it (`selected`). A run writes nothing to
+# the collection before its cleanup, so the first fetch of a note is every fetch of it.
+READ_STAGES = ("selected", "read")
+# The others: `proposed`, what the cleanup is about to write (a new note under its placeholder
+# id); `final`, what the collection holds after the cleanup, an added note under its real id.
+STAGES = READ_STAGES + ("proposed", "final")
+
+
+class _RunNotes:
+    """What a run that records its notes has recorded, so each note is snapshotted once per
+    stage, and the notes it only learned the ids of can be fetched for it before its cleanup
+    writes anything."""
+
+    __slots__ = ("run_id", "dropped_at_start", "_lock", "_seen", "_referenced", "_added")
+
+    def __init__(self, run_id: int, dropped_at_start: int) -> None:
+        self.run_id = run_id
+        self.dropped_at_start = dropped_at_start
+        self._lock = threading.Lock()
+        self._seen: set[tuple[str, int]] = set()
+        self._referenced: set[int] = set()
+        self._added: set[int] = set()
+
+    def first(self, stage: str, note_id: int) -> bool:
+        key = (stage, note_id)
+        with self._lock:
+            if key in self._seen:
+                return False
+            self._seen.add(key)
+            return True
+
+    def reference(self, note_ids: Iterator[int]) -> None:
+        with self._lock:
+            self._referenced.update(note_ids)
+
+    def add(self, note_ids: Iterator[int]) -> None:
+        with self._lock:
+            self._added.update(note_ids)
+
+    def unread(self) -> list[int]:
+        with self._lock:
+            read = {note_id for stage, note_id in self._seen if stage in READ_STAGES}
+            return sorted(self._referenced - read - self._added)
+
+    def recorded(self) -> list[int]:
+        with self._lock:
+            return sorted({note_id for _, note_id in self._seen if note_id > 0})
+
+
+_note_runs: dict[int, _RunNotes] = {}
+_note_runs_lock = threading.Lock()
+
+
+def _current_notes() -> Optional[_RunNotes]:
+    run = _run.get()
+    if run is None:
+        return None
+    # A plain dict read: begin_run and end_run are the only writers, under the lock
+    return _note_runs.get(run[0])
+
+
+def notes_on() -> bool:
+    """Whether the current run records its notes: the check before building anything for
+    `snapshot_note`, `reference_notes` or `event`."""
+    return _current_notes() is not None and _active() is not None
+
+
+def snapshot_note(stage: str, note_id: int, record: Callable[[], Mapping[str, Any]]) -> None:
+    """Record note `note_id` at `stage` (see `STAGES`), once per run and stage; `record()`
+    builds it, and is called only when it will be recorded.
+
+    The record is plain JSON (`capture_notes.note_record` makes it from an Anki note), stored
+    once as a blob however many runs or stages see it unchanged. `note_id` is the note's id, or
+    a new note's placeholder id (negative) before it is added. Never raises.
+    """
+    notes = _current_notes()
+    state = _active()
+    if notes is None or state is None or not notes.first(stage, note_id):
+        return
+    try:
+        value = record()
+        store = state.store
+        store.insert_snapshot(
+            {
+                "run_id": notes.run_id,
+                "note_id": note_id,
+                "stage": stage,
+                "t": _run_seconds(),
+                "mid": value.get("mid"),
+                "note_hash": store.put_blob(dict(value)),
+            }
+        )
+    except Exception:
+        _warn_limited("snapshot", "Capture: a note could not be recorded", exc_info=True)
+
+
+def reference_notes(note_ids: Any) -> None:
+    """Note that the run learned of these notes without fetching them (a search, an index
+    lookup): `unread_references` hands them to the cleanup to fetch. Never raises."""
+    notes = _current_notes()
+    if notes is None:
+        return
+    try:
+        notes.reference(int(note_id) for note_id in note_ids)
+    except Exception:
+        _warn_limited("reference", "Capture: note ids could not be recorded", exc_info=True)
+
+
+def unread_references() -> list[int]:
+    """The ids `reference_notes` was given that no `selected` or `read` snapshot has, bar the
+    notes the run added, in id order; empty in a run that does not record its notes."""
+    notes = _current_notes()
+    return [] if notes is None else notes.unread()
+
+
+def note_added(placeholder: Optional[int], note_id: int) -> None:
+    """The run added note `note_id`, which its word arrays named `placeholder` until then: a
+    `note.added` event, and the note is never fetched as one the run read. Never raises."""
+    notes = _current_notes()
+    if notes is None:
+        return
+    try:
+        notes.add(iter([int(note_id)]))
+    except Exception:
+        _warn_limited("added", "Capture: an added note could not be recorded", exc_info=True)
+        return
+    event("note.added", {"placeholder": placeholder, "note_id": note_id}, note_id=note_id)
+
+
+def recorded_note_ids() -> list[int]:
+    """The ids of every note the run has snapshotted at any stage, in id order."""
+    notes = _current_notes()
+    return [] if notes is None else notes.recorded()
+
+
+def event(kind: str, payload: Any = None, *, note_id: Optional[int] = None) -> None:
+    """Record something the run did, in the order recorded: `kind` names it (`match.decision`,
+    `phase`, `note.added`), `payload` is plain JSON. The note is `note_id`, else the current
+    one; the task is the current one. Only in a run that records its notes. Never raises."""
+    notes = _current_notes()
+    state = _active()
+    if notes is None or state is None:
+        return
+    try:
+        tasks = _tasks.get()
+        state.store.insert_event(
+            {
+                "run_id": notes.run_id,
+                "note_id": _note.get() if note_id is None else note_id,
+                "task_id": tasks[-1] if tasks else None,
+                "kind": kind,
+                "t": _run_seconds(),
+                "payload_json": _json(payload, f"a {kind} event"),
+            }
+        )
+    except Exception:
+        _warn_limited("event", "Capture: an event could not be recorded", exc_info=True)
+
+
+def _run_seconds() -> Optional[float]:
+    run = _run.get()
+    return None if run is None else time.monotonic() - run[1]
 
 
 # --- calls --------------------------------------------------------------------------------

@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import re
-from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -25,7 +24,6 @@ from rapidfuzz.distance import Levenshtein  # type: ignore
 
 from ..configuration import (
     MEANING_MAPPED_TAG,
-    MEANINGS_DICT_FILE,
     NO_DICTIONARY_ENTRY_TAG,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
@@ -79,6 +77,7 @@ from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, w
 from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
 from .clean_meaning import clean_meaning_in_note
 from .make_all_meanings import (
+    load_meanings_dict_from_file,
     make_all_meanings_for_word,
     make_meaning_dict_key,
     write_meanings_dict_to_file,
@@ -2380,7 +2379,7 @@ def plan_word_array_matching(
         # cleaned on the way included, are told apart from the note's other words'. Set in this
         # task's own context, which its to_thread workers copy
         with capture.task_scope(f"{target.word}|{target.reading}"):
-            return await match_single_word_in_word_tuple(
+            matched = await match_single_word_in_word_tuple(
                 config=config,
                 word_lock=word_lock,
                 word_locks_dict=word_locks_dict,
@@ -2408,6 +2407,21 @@ def plan_word_array_matching(
                     cancel_state=cancel_state,
                 ),
             )
+            # What the word got, whichever of the many ways out of the match it took: the
+            # tuple save_finished writes into the element, the placeholder of a new note, or
+            # nothing. The calls that decided it are in the same task
+            if capture.notes_on():
+                capture.event(
+                    "match.decision",
+                    {
+                        "word_path": match_targets.word_path(arr, target.elem),
+                        "ok": matched,
+                        "result": results.get(target_index),
+                        "quality": qualities.get(target_index),
+                    },
+                    note_id=note.id,
+                )
+            return matched
 
     async def rate_op(
         _,
@@ -2429,6 +2443,12 @@ def plan_word_array_matching(
                 log_prefix=log_prefix,
                 word_path=match_targets.word_path(arr, target.elem),
             )
+            if capture.notes_on():
+                capture.event(
+                    "match.rated",
+                    {"word_path": match_targets.word_path(arr, target.elem), "quality": quality},
+                    note_id=note.id,
+                )
         if quality is None:
             return False
         ratings[target_index] = quality
@@ -2658,13 +2678,7 @@ async def bulk_match_words_to_notes(
         return None
     model = config.get("match_words_model", "")
     message = "Matching words"
-    media_path = Path(mw.pm.profileFolder(), "collection.media")
-    all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
-
-    all_generated_meanings_dict: GeneratedMeaningsDictType = {}
-    if all_meanings_dict_path.exists():
-        with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
-            all_generated_meanings_dict = json.load(f)
+    all_generated_meanings_dict = load_meanings_dict_from_file()
 
     # Dictionary to track locks per word to prevent race conditions
     word_locks_dict: dict[str, asyncio.Lock] = {}

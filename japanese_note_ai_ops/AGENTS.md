@@ -29,7 +29,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
-| `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
+| `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, a notes run's `snapshot_note`, `event`, `reference_notes`, `note_added`, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
+| `async_api_ops/capture_notes.py` | a notes run's records built from Anki notes and the collection (`note_record`, `fetch_unread`, `record_final`, `record_collection`, `MeaningsRecorder`); nothing outside a notes run. anki only under TYPE_CHECKING |
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
@@ -89,7 +90,12 @@ that runs no `selected_notes_op` and writes no notes is a `MenuOnlyAction` in
 `selected_notes_op` wraps the run in one `CollectionOp`: a fresh asyncio loop, one
 `ThreadPoolExecutor` whose workers call `join_run(run)`, and all collection writes
 (`update_notes`, `remove_notes`, `add_note`, `merge_undo_entries`) in a cleanup phase after
-every op has finished.
+every op has finished. The run itself is `notes_run(...)`, which returns the function the
+`CollectionOp` runs and the `RunResult` it fills in (edited ids, new-note counts, cancelled)
+for the success handler; `selected_notes_op` adds only the UI: the `run_errors` start, the
+dialog's controls and title, the end message. A script runs the same run by calling that
+function on its own thread with a collection it opened and a stand-in `mw`
+(`anki_shared/testing/real_anki.py`): no `CollectionOp`, no dialog, no `tooltip`.
 
 ### Chains: the multi-op dialog
 
@@ -174,13 +180,36 @@ cheap no-op and nothing is recorded.
 
 | table | one row is |
 | --- | --- |
-| `runs` | one `selected_notes_op` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
+| `runs` | one `notes_run` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name), `notes` (1 when it recorded its notes), `dropped` (a notes run's records a full queue dropped; a replay needs 0). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
 | `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
-| `blobs` | instructions and response schemas, stored once by sha1 |
+| `blobs` | instructions, response schemas and snapshotted notes, stored once by sha1 |
+| `note_snapshots` | a notes run's note at one stage, once per run, note and stage: `run_id`, `note_id` (a new note's negative placeholder before it is added), `stage`, `t` (seconds into the run), `mid`, `note_hash` (the blob of `capture_notes.note_record`: id, guid, mid, fields by name, tags) |
+| `events` | a notes run's other facts, in the order recorded: `run_id`, `note_id`, `task_id`, `kind`, `t`, `payload_json` |
 
-- Schema version 3: 2 added `calls.context_json`, 3 `runs.profile`, each last in its table. An
-  older file is brought up to date when it opens (`capture_store._MIGRATIONS`, one transaction; a
-  version 1 file goes through 2 to 3), its old rows NULL in the new columns.
+- Schema version 4: 2 added `calls.context_json`, 3 `runs.profile`, 4 `runs.notes`/`dropped`
+  and the two notes tables, each column last in its table. An older file is brought up to date
+  when it opens (`capture_store._MIGRATIONS`, one transaction, step by step), its old rows NULL
+  in the new columns (`notes` 0). A run's snapshots and events are pruned with it, and a note blob
+  stays while any snapshot names it.
+- A **notes run** (config `capture_notes`, off by default, read at each run's start: a run's
+  notes are a copy of much of the collection) records what a replay of it needs besides its calls
+  (`capture.begin_run(notes=True)`; `capture_notes` builds the records and does nothing in any
+  other run). Stages: `selected` (the run's notes as loaded), `read` (every note it first fetched
+  through `collection_access`, on the calling thread, never the cleanup's reads, which come after
+  its writes), `proposed` (what the cleanup is about to write, new notes by placeholder),
+  `final` (every note saved, added or tidied, re-read after the cleanup). A note the run only
+  learned the id of (a search, a word index lookup: `capture_notes.found`) is fetched as `read` at
+  the cleanup's start, before its first write, or right after the marker tidying's lookup
+  (`word_index.sort_base_note_ids`), which finds notes the run did not write, still as they were;
+  never a note the run added (`note.added`). Event kinds: `environment` (dictionary files, the
+  collection's size), `search`, `note.missing`, `note.added` (placeholder -> id), `note.removed`,
+  `match.decision` and `match.rated` (per word target, its `word_path`, result, quality),
+  `meanings.read`/`meanings.final` (the first value read and the last written of each key of the
+  generated meanings file: `load_meanings_dict_from_file` hands a notes run a
+  `capture_notes.MeaningsRecorder`, and it is the only loader of that file), `phase`
+  (`log_phase`), `undo` (at the cleanup's start and end), `notetype` and `decks` (of every note
+  recorded, at the end). The capture never infers: an exporter that finds a note it needs
+  without a snapshot has found a capture gap, to be fixed here and recorded again.
 - Outcomes: `ok`; `refused` (final non-200, body in `error`); `unreadable` (a 200 whose answer
   text could not be found); `unparseable` (not JSON even after the corrector); `no_response`
   (every attempt timed out or lost its connection, or the CLI gave up retrying); `cancelled`;
@@ -416,7 +445,9 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
   skip. Copy it for another dialog rather than un-stubbing the suite.
 - Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys),
   `test_capture.py` (the API), `test_capture_calls.py` (`get_response` through each provider
-  over a fake session or Popen), `test_capture_runs.py` (a real `selected_notes_op` run),
+  over a fake session or Popen), `test_capture_runs.py` (a real `selected_notes_op` run, and
+  `notes_run` called directly as a script does), `test_capture_notes.py` (a notes run's records
+  and the read points),
   `test_capture_kinds.py` and `test_capture_meaning_kinds.py` (each call site's kind, inputs and
   context, the prompts pinned byte for byte, the AST scan); `test_call_logging.py` covers the
   ids in the log format. A test that installs a store puts it in a

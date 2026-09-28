@@ -33,6 +33,8 @@ RUN_COLUMNS = [
     "note_count", "config_json", "versions_json", "log_path", "outcome", "extra_json",
     # Schema version 3, last in a new file as in a migrated one
     "profile",
+    # Schema version 4
+    "notes", "dropped",
 ]
 CALL_COLUMNS = [
     "call_id", "v", "run_id", "note_id", "task_id", "parent_task_id", "kind", "request_key",
@@ -43,6 +45,9 @@ CALL_COLUMNS = [
     "context_json",
 ]
 BLOB_COLUMNS = ["hash", "text"]
+# Schema version 4's tables
+SNAPSHOT_COLUMNS = ["snapshot_id", "v", "run_id", "note_id", "stage", "t", "mid", "note_hash"]
+EVENT_COLUMNS = ["event_id", "v", "run_id", "note_id", "task_id", "kind", "t", "payload_json"]
 
 # The schema version 1 files were made with, as that code created it: what a v1 file holds
 V1_SCHEMA = [
@@ -93,6 +98,16 @@ V2_SCHEMA = [
     "PRAGMA user_version = 2",
 ]
 
+# A new file of schema version 3 as that code created it
+V3_SCHEMA = [
+    "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, v INTEGER NOT NULL, started REAL,"
+    " ended REAL, label TEXT, implicit INTEGER DEFAULT 0, ops_json TEXT, chain_step TEXT,"
+    " note_count INTEGER, config_json TEXT, versions_json TEXT, log_path TEXT, outcome TEXT,"
+    " extra_json TEXT, profile TEXT)",
+    *V2_SCHEMA[1:-1],
+    "PRAGMA user_version = 3",
+]
+
 DAY = 86400.0
 # A fixed "now" for the prune function, so its cutoff is exact
 NOW = 1_800_000_000.0
@@ -141,13 +156,14 @@ class SchemaTests(StoreTestCase):
         self.assertTrue(store.enabled)
         self.assertTrue(store.flush())
 
+        tables = ("runs", "calls", "blobs", "note_snapshots", "events")
         with closing(sqlite3.connect(self.path)) as connection:
             columns = {
                 table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
-                for table in ("runs", "calls", "blobs")
+                for table in tables
             }
             indexed = set()
-            for table in ("runs", "calls"):
+            for table in tables:
                 for index in connection.execute(f"PRAGMA index_list({table})").fetchall():
                     for info in connection.execute(f"PRAGMA index_info({index[1]})"):
                         indexed.add((table, info[2]))
@@ -155,7 +171,14 @@ class SchemaTests(StoreTestCase):
             mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
 
         self.assertEqual(
-            columns, {"runs": RUN_COLUMNS, "calls": CALL_COLUMNS, "blobs": BLOB_COLUMNS}
+            columns,
+            {
+                "runs": RUN_COLUMNS,
+                "calls": CALL_COLUMNS,
+                "blobs": BLOB_COLUMNS,
+                "note_snapshots": SNAPSHOT_COLUMNS,
+                "events": EVENT_COLUMNS,
+            },
         )
         self.assertLessEqual(
             {
@@ -168,6 +191,11 @@ class SchemaTests(StoreTestCase):
                 # The prune's, beyond the spec's list
                 ("calls", "instructions_hash"),
                 ("calls", "schema_hash"),
+                ("note_snapshots", "run_id"),
+                ("note_snapshots", "note_id"),
+                ("note_snapshots", "note_hash"),
+                ("events", "run_id"),
+                ("events", "kind"),
             },
             indexed,
         )
@@ -210,6 +238,10 @@ class MigrationTests(StoreTestCase):
         )
         self.assertTrue(store.flush())
 
+        store.insert_snapshot({"run_id": run_id, "note_id": 7, "stage": "read"})
+        store.insert_event({"run_id": run_id, "kind": "phase"})
+        self.assertTrue(store.flush())
+
         # Their columns in the order a new file has them, so the two read alike
         self.assertEqual([row[1] for row in self.rows("PRAGMA table_info(runs)")], RUN_COLUMNS)
         self.assertEqual([row[1] for row in self.rows("PRAGMA table_info(calls)")], CALL_COLUMNS)
@@ -220,18 +252,25 @@ class MigrationTests(StoreTestCase):
             self.rows("SELECT call_id, v, kind, context_json FROM calls ORDER BY call_id"),
             [(8, old_version, "match.meanings", None), (9, version, "match.rating", '{"a":1}')],
         )
+        # An old run recorded no notes
         self.assertEqual(
-            self.rows("SELECT run_id, v, label, profile FROM runs ORDER BY run_id"),
-            [(4, old_version, "old run", None), (5, version, "new run", "User 1")],
+            self.rows("SELECT run_id, v, label, profile, notes FROM runs ORDER BY run_id"),
+            [(4, old_version, "old run", None, 0), (5, version, "new run", "User 1", 0)],
         )
+        self.assertEqual(self.rows("SELECT note_id, stage FROM note_snapshots"), [(7, "read")])
+        self.assertEqual(self.rows("SELECT kind FROM events"), [("phase",)])
 
-    def test_a_version_1_file_is_brought_through_2_to_3_and_keeps_its_rows(self):
+    def test_a_version_1_file_is_brought_up_to_date_and_keeps_its_rows(self):
         self.make_old_file(V1_SCHEMA, 1)
         self.assert_brought_up_to_date(1)
 
-    def test_a_version_2_file_gains_the_profile_column_and_keeps_its_rows(self):
+    def test_a_version_2_file_is_brought_up_to_date_and_keeps_its_rows(self):
         self.make_old_file(V2_SCHEMA, 2)
         self.assert_brought_up_to_date(2)
+
+    def test_a_version_3_file_gains_the_note_tables_and_keeps_its_rows(self):
+        self.make_old_file(V3_SCHEMA, 3)
+        self.assert_brought_up_to_date(3)
 
     def test_a_migration_that_fails_leaves_the_file_at_its_version(self):
         self.make_old_file(V1_SCHEMA, 1)
@@ -519,6 +558,26 @@ class PruneTests(StoreTestCase):
         self.assertEqual(self.ids("runs"), [2])
         self.assertEqual(self.ids("calls"), [3, 4, 5])
         self.assertEqual(self.ids("blobs"), [blob["shared"]])
+
+    def test_a_run_s_snapshots_and_events_go_with_it_and_a_note_stays_while_named(self):
+        store = self.open_store(keep_days=None)
+        note = {name: store.put_blob({"fields": {"Word": name}}) for name in ("old", "both")}
+        store.insert_run({"run_id": 1, "started": NOW - 100 * DAY, "notes": 1})
+        store.insert_run({"run_id": 2, "started": NOW - 10 * DAY, "notes": 1})
+        store.insert_snapshot({"run_id": 1, "note_id": 1, "stage": "read", "note_hash": note["old"]})
+        store.insert_snapshot({"run_id": 1, "note_id": 2, "stage": "read", "note_hash": note["both"]})
+        # The same note unchanged in a later run: one blob for both
+        store.insert_snapshot({"run_id": 2, "note_id": 2, "stage": "read", "note_hash": note["both"]})
+        store.insert_event({"run_id": 1, "kind": "phase"})
+        store.insert_event({"run_id": 2, "kind": "phase"})
+        self.assertTrue(store.close())
+
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            capture_store.prune(connection, keep_days=90, now=NOW)
+
+        self.assertEqual(self.rows("SELECT run_id, note_id FROM note_snapshots"), [(2, 2)])
+        self.assertEqual(self.rows("SELECT run_id FROM events"), [(2,)])
+        self.assertEqual(self.ids("blobs"), [note["both"]])
 
     def test_the_calls_delete_looks_runs_up_in_the_run_id_index(self):
         # Not a scan of the calls table, whose rows hold whole prompts and answers

@@ -309,6 +309,73 @@ class RunLogTests(CaptureRunTestCase):
             self.assertTrue(any(reference in line for line in lines), (reference, lines))
 
 
+class NotesRunTests(CaptureRunTestCase):
+    """`notes_run` called on this thread with a collection, as a script calls it with no
+    CollectionOp and no dialog, and a config that records the run's notes."""
+
+    def test_a_run_records_its_notes_from_selected_to_final_and_what_it_leaves(self):
+        from test_capture_notes import Collection, Note
+
+        self.install()
+        col = Collection(Note(1, {"Word": "本"}), Note(2, {"Word": "箱"}))
+        config = dict(CONFIG, capture_notes=True)
+
+        async def edits_one(col, notes, edited_nids, progress_updater, **dicts):
+            note = notes[0]
+            note._fields["Word"] = "本棚"
+            dicts["notes_to_update_dict"][note.id] = note
+            return 1, {}, dicts["notes_to_update_dict"], []
+
+        updater = base_ops.AsyncTaskProgressUpdater(title="Async AI op: Editing")
+        with (
+            mock.patch.object(mw, "col", col, create=True),
+            mock.patch.object(
+                mw, "addonManager", types.SimpleNamespace(getConfig=lambda _: config)
+            ),
+        ):
+            run, result = base_ops.notes_run(DONE_TEXT, edits_one, [1, 2], updater)
+            run(col)
+
+        self.assertEqual((result.edited_nids, result.cancelled), ([1], False))
+        self.assertEqual(col.updated, [1])
+        store = capture.current_store()
+        self.assertTrue(store.flush())
+        with closing(sqlite3.connect(self.path)) as connection:
+            snapshots = connection.execute(
+                "SELECT note_id, stage, text FROM note_snapshots"
+                " JOIN blobs ON blobs.hash = note_hash ORDER BY snapshot_id"
+            ).fetchall()
+            kinds = [row[0] for row in connection.execute("SELECT kind FROM events")]
+        words = [(nid, stage, json.loads(text)["fields"]["Word"]) for nid, stage, text in snapshots]
+        self.assertEqual(
+            words,
+            [(1, "selected", "本"), (2, "selected", "箱"), (1, "proposed", "本棚"),
+             (1, "final", "本棚")],
+        )
+        self.assertIn("environment", kinds)
+        self.assertEqual([kind for kind in kinds if kind == "undo"], ["undo", "undo"])
+        run_row = self.the_run()
+        self.assertEqual(
+            (run_row["notes"], run_row["dropped"], run_row["outcome"]), (1, 0, "completed")
+        )
+
+    def test_a_run_without_capture_notes_records_its_calls_only(self):
+        from test_capture_notes import Collection, Note
+
+        self.install()
+        col = Collection(Note(1, {"Word": "本"}))
+        updater = base_ops.AsyncTaskProgressUpdater(title="Async AI op: Asking")
+        with mock.patch.object(mw, "col", col, create=True):
+            run, _ = base_ops.notes_run(DONE_TEXT, bulk_returns, [1], updater)
+            run(col)
+
+        self.assertEqual(self.rows("runs")[0]["notes"], 0)
+        with closing(sqlite3.connect(self.path)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM note_snapshots").fetchone(), (0,)
+            )
+
+
 class NoteContextTests(unittest.TestCase):
     def setUp(self) -> None:
         # A chain step's title, left by another test, would lead the error title

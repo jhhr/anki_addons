@@ -1,7 +1,5 @@
 import logging
-import json
 import re
-from pathlib import Path
 from typing import Any, Mapping, Optional, Union, Sequence
 from anki.notes import Note, NoteId
 from anki.collection import Collection
@@ -26,7 +24,6 @@ from .base_ops import (
 )
 from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..configuration import (
-    MEANINGS_DICT_FILE,
     NO_DICTIONARY_ENTRY_TAG,
     MEANING_MAPPED_TAG,
     GeneratedMeaningsDictType,
@@ -36,6 +33,7 @@ from ..configuration import (
     MakeMeaningsResult,
 )
 from .make_all_meanings import (
+    load_meanings_dict_from_file,
     write_meanings_dict_to_file,
     make_meaning_dict_key,
     revise_meanings_for_word,
@@ -1252,12 +1250,7 @@ def bulk_clean_notes_op(
         return
     message = "Cleaning meaning"
 
-    media_path = Path(mw.pm.profileFolder(), "collection.media")
-    all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
-    all_generated_meanings_dict: GeneratedMeaningsDictType = {}
-    if all_meanings_dict_path.exists():
-        with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
-            all_generated_meanings_dict = json.load(f)
+    all_generated_meanings_dict = load_meanings_dict_from_file()
     # This op scans for the same note's sentences once per note it cleans, exactly as the
     # matching op does, so it gets the same run-scoped caches. Both die with the closure.
     sentence_cache = SentenceCache()

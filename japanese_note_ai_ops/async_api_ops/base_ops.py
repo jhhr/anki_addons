@@ -19,7 +19,7 @@ from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
 from collections.abc import Container, Iterable, Iterator, Sequence
 
-from . import capture
+from . import capture, capture_notes
 from .api_client import (
     ANTHROPIC,
     DEFAULT_MAX_RETRIES,
@@ -179,6 +179,9 @@ def log_phase(label: str, started: float, **extra) -> float:
         if since_cancel is not None:
             details += f" since_cancel={since_cancel:.1f}s"
         logger.log(level, "[phase] %s took %.3fs%s", label, now - started, details)
+    # The same, in a run that records its notes, for the phase table of a replay's benchmark
+    if capture.notes_on():
+        capture.event("phase", {"label": label, "seconds": now - started, **extra})
     return now
 
 
@@ -3024,6 +3027,8 @@ def add_new_notes(
         # re-arm still queued when it raised does nothing once it lands.
         progress_updater.end_cleanup_cancel()
     counts = NewNotesCounts(len(added_notes), failed_cnt, len(not_added))
+    # Which placeholder each added note replaces, before new_notes_op resolves them
+    capture_notes.record_added(added_notes, config)
     if not_added:
         logger.info(
             f"The adding was cancelled: {len(not_added)} of {counts.prepared} new notes not added"
@@ -3163,55 +3168,58 @@ def _op_names(phases: Sequence[OpPhase]) -> Optional[list[str]]:
         return None
 
 
-def selected_notes_op(
+BulkOp = Union[Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]], Sequence[OpPhase]]
+
+
+class RunResult:
+    """What a run over notes leaves for its success handler: filled in on the op thread while
+    it runs, read on the main thread once the op has returned."""
+
+    def __init__(self) -> None:
+        # The selected notes the run saved, and the other notes it saved, for the end message
+        self.edited_nids: list[NoteId] = []
+        self.edited_other_nids: list[NoteId] = []
+        self.new_notes = NewNotesCounts()
+        # Whether the run was cancelled, for a chain step's outcome
+        self.cancelled = False
+
+
+def notes_run(
     done_text: str,
-    bulk_op: Union[
-        Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]], Sequence[OpPhase]
-    ],
+    bulk_op: BulkOp,
     nids: Sequence[NoteId],
-    parent: Browser,
     progress_updater: AsyncTaskProgressUpdater,
     new_notes_op: Optional[NewNotesOp] = None,
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
-    on_success: Optional[Callable] = None,
     unadded_notes_op: Optional[NewNotesOp] = None,
     tidy_markers_op: Optional[NewNotesOp] = None,
-    chain: Optional[ChainStep] = None,
-):
-    """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
+    chain_title: Optional[str] = None,
+) -> tuple[Callable[[Collection], OpChanges], RunResult]:
+    """A run of a bulk op, or a list of `OpPhase`s, over notes, without its UI: the function a
+    `CollectionOp` runs, and the `RunResult` it fills in.
+
+    Everything a run does but open its dialog and show its end: the event loop and thread
+    pool, the phases, the cleanup's writes into one undo entry, the capture run. Called with
+    the collection on the thread that is to run it, and returns once all of that is over.
+    `selected_notes_op` hands it to a `CollectionOp`; a script runs it on its own thread
+    against a collection it opened, with a stand-in `mw` (the headless capture runs, the
+    replay tests), and so runs the same code a run from the menu does. `chain_title` is the
+    chain step it is, for the capture run's row.
 
     A list of phases runs them in order over the same notes and finishes with the same
     cleanup as a single op - see `run_op_phases` for what they share and what they do not.
     The new notes are added by `add_new_notes`, which says what the three note ops are for.
     `tidy_markers_op` gets every note the cleanup saved and added, last (see `tidy_markers`).
-
-    With `chain`, the run is one step of a chain: its dialog title starts with the step's
-    label, it shows no end message, and `chain.on_done` hears how it went, exactly once, on
-    the main thread, after the progress is finished - on success, cancel, stop and exception
-    alike. Without one, nothing here differs from a run from the menu.
     """
     phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
-    edited_nids: list[NoteId] = []
-    edited_other_nids: list[NoteId] = []
+    run_result = RunResult()
     notes_to_add_dict: dict[str, list[Note]] = {}
     notes_to_update_dict: dict[NoteId, Note] = {}
     notes_to_remove: set[NoteId] = set()
-    new_notes = NewNotesCounts()
     config = mw.addonManager.getConfig(__name__) or {}
     nids_set = set(nids)
-    # The errors that do not fail the run are kept for its end message: a run from the menu
-    # keeps its own, a chain's step adds to the chain's (run_op_chain starts those)
-    if chain is None:
-        start_run()
-    else:
-        set_step(chain.title)
-    # Whether the run was cancelled, for a chain step's outcome. Set on the op thread, read by
-    # the success handler on the main thread once the op has returned.
-    cancelled = False
 
-    # Create a wrapper function that handles the async operation
     def run_bulk_op(col: Collection) -> OpChanges:
-        nonlocal cancelled
         # Every operation enters here, which makes this the only place that can promise a run
         # starts uncancelled. bulk_notes_op and bulk_nested_notes_op used to do the clearing,
         # but an op is free to read the collection before it gets that far - the single-word
@@ -3230,24 +3238,27 @@ def selected_notes_op(
         capture_run = capture.begin_run(
             done_text,
             ops=_op_names(phases),
-            chain_step=chain.title if chain is not None else None,
+            chain_step=chain_title,
             note_count=len(nids),
             config=config,
+            # Off by default: a run's notes are a copy of much of the collection
+            notes=bool(config.get("capture_notes", False)),
         )
         # Set by the except clauses below for the finally, which cannot tell a caught
         # RunCancelled or an exception on its way out from a run that returned
         capture_outcome: Optional[str] = None
 
         async def async_wrapper():
-            nonlocal edited_nids, edited_other_nids, new_notes, cancelled
             # Loaded once and handed to every phase, so a later phase sees the earlier
             # ones' writes and each note is written back to the collection only in cleanup
             notes = [mw.col.get_note(nid) for nid in nids]
+            capture_notes.record_environment(col, config)
+            capture_notes.snapshot_notes("selected", notes)
             result = await run_op_phases(
                 phases,
                 col,
                 notes=notes,
-                edited_nids=edited_nids,
+                edited_nids=run_result.edited_nids,
                 progress_updater=progress_updater,
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
@@ -3269,7 +3280,7 @@ def selected_notes_op(
             # on that flag alone without ever cancelling the run, so run_is_cancelled is not
             # enough.
             if mw.progress.want_cancel():
-                cancelled = True
+                run_result.cancelled = True
             pos, res_notes_to_add_dict, res_notes_to_update_dict, res_notes_to_remove = result
 
             sanitized_notes_to_remove: list[NoteId] = []
@@ -3312,12 +3323,12 @@ def selected_notes_op(
             logger.debug(f"notes_to_update_dict keys: {notes_to_update_dict.keys()}")
             for nid in res_notes_to_update_dict.keys():
                 if nid not in nids_set:
-                    edited_other_nids.append(nid)
+                    run_result.edited_other_nids.append(nid)
             for nid in sanitized_notes_to_remove:
                 if nid not in nids_set:
-                    edited_other_nids.append(nid)
-            edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
-            edited_nids.extend(
+                    run_result.edited_other_nids.append(nid)
+            run_result.edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
+            run_result.edited_nids.extend(
                 nid
                 for nid in dict.fromkeys(sanitized_notes_to_remove)
                 if nid in nids_set and nid not in notes_to_update_dict
@@ -3346,6 +3357,16 @@ def selected_notes_op(
             cleanup_started = log_phase(
                 "cleanup: collect notes", cleanup_started, notes=len(all_updated_notes)
             )
+            # A run that records its notes: the notes it only learned the ids of, while the
+            # collection still holds what the run read, then what it is about to write
+            capture_notes.fetch_unread(mw.col)
+            capture_notes.snapshot_notes("proposed", all_updated_notes)
+            capture_notes.snapshot_new_notes(
+                "proposed",
+                [note for word_notes in res_notes_to_add_dict.values() for note in word_notes],
+                config,
+            )
+            capture_notes.record_undo_status(mw.col, "cleanup start")
             # This write has been the visible symptom of every cancellation hang so far, taking
             # minutes even with nothing to write. Record what the rest of the process is doing
             # on either side of it: an empty write cannot be slow by itself, so whatever is
@@ -3394,14 +3415,17 @@ def selected_notes_op(
                     unadded_notes_op=unadded_notes_op,
                     notes_to_remove=notes_to_remove,
                 )
-                new_notes = added.counts
+                run_result.new_notes = added.counts
                 if added.op_changes is not None:
                     op_changes = added.op_changes
-                count_new_notes_edits(added, nids_set, edited_nids, edited_other_nids)
+                count_new_notes_edits(
+                    added, nids_set, run_result.edited_nids, run_result.edited_other_nids
+                )
                 saved_notes.extend(added.added_notes)
                 saved_notes.extend(added.saved_notes)
                 added_nids = {note.id for note in added.added_notes}
                 cleanup_started = time.monotonic()
+            tidied_nids: list[NoteId] = []
             if tidy_markers_op is not None and saved_notes:
                 tidy_changes, tidied_nids = tidy_markers(
                     mw.col,
@@ -3418,10 +3442,17 @@ def selected_notes_op(
                 count_edits(
                     [nid for nid in tidied_nids if nid not in added_nids],
                     nids_set,
-                    edited_nids,
-                    edited_other_nids,
+                    run_result.edited_nids,
+                    run_result.edited_other_nids,
                 )
                 cleanup_started = time.monotonic()
+            # What the collection holds now of every note the run wrote, added or removed
+            capture_notes.record_final(
+                mw.col,
+                [*(note.id for note in saved_notes), *tidied_nids],
+                removed=notes_to_remove,
+            )
+            capture_notes.record_undo_status(mw.col, "cleanup end")
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes
 
@@ -3505,11 +3536,12 @@ def selected_notes_op(
             # greyed Cancel, nothing else sets it. Before end_run,
             # which forgets the run on this thread (run_cancelled would then say no).
             if run_is_cancelled(run) or mw.progress.want_cancel():
-                cancelled = True
+                run_result.cancelled = True
             # After that flag's last word, so a cancelled note adding and a run that ended
             # paused are recorded as cancelled. Never raises, so end_run below always runs.
             capture.end_run(
-                capture_run, capture_outcome or ("cancelled" if cancelled else "completed")
+                capture_run,
+                capture_outcome or ("cancelled" if run_result.cancelled else "completed"),
             )
             # Last, so everything above still logs as part of the run it belongs to. This
             # thread is Anki's and goes back to a pool that runs other work, including our own
@@ -3520,21 +3552,63 @@ def selected_notes_op(
             # ones that must keep seeing the cancellation.
             end_run()
 
+    return run_bulk_op, run_result
+
+
+def selected_notes_op(
+    done_text: str,
+    bulk_op: BulkOp,
+    nids: Sequence[NoteId],
+    parent: Browser,
+    progress_updater: AsyncTaskProgressUpdater,
+    new_notes_op: Optional[NewNotesOp] = None,
+    filter_new_notes_op: Optional[FilterNewNotesOp] = None,
+    on_success: Optional[Callable] = None,
+    unadded_notes_op: Optional[NewNotesOp] = None,
+    tidy_markers_op: Optional[NewNotesOp] = None,
+    chain: Optional[ChainStep] = None,
+):
+    """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation: the
+    `notes_run` in a `CollectionOp`, with its progress dialog and its end.
+
+    With `chain`, the run is one step of a chain: its dialog title starts with the step's
+    label, it shows no end message, and `chain.on_done` hears how it went, exactly once, on
+    the main thread, after the progress is finished - on success, cancel, stop and exception
+    alike. Without one, nothing here differs from a run from the menu.
+    """
+    # The errors that do not fail the run are kept for its end message: a run from the menu
+    # keeps its own, a chain's step adds to the chain's (run_op_chain starts those)
+    if chain is None:
+        start_run()
+    else:
+        set_step(chain.title)
+    run_bulk_op, run_result = notes_run(
+        done_text,
+        bulk_op,
+        nids,
+        progress_updater,
+        new_notes_op,
+        filter_new_notes_op,
+        unadded_notes_op,
+        tidy_markers_op,
+        chain_title=chain.title if chain is not None else None,
+    )
     collection_op = CollectionOp(
         parent=parent,
         op=run_bulk_op,
     ).success(
+        # Read when the op has returned: run_result is filled in on the op thread
         lambda out: on_bulk_success(
             out,
             done_text,
-            edited_nids,
-            edited_other_nids,
+            run_result.edited_nids,
+            run_result.edited_other_nids,
             nids,
             parent,
             on_success,
-            new_notes=new_notes,
+            new_notes=run_result.new_notes,
             chain=chain,
-            cancelled=cancelled,
+            cancelled=run_result.cancelled,
         )
     )
     if chain is not None:

@@ -17,6 +17,11 @@
   number in quotes (`"30"`) counts as that number; anything else (`true`, text) as `90`, with a
   warning in the log. Both are read when the profile opens: a change takes effect on the next
   profile load or restart.
+- `capture_notes`: Default is `false`. With `capture_calls` on, each run also records every note
+  it read, what it was about to write, and every note it saved or added as the collection held
+  it after, with the words' match decisions, into the same file. That is a copy of much of the
+  collection per run, for building replay tests; meant for a copied profile, not everyday runs.
+  Read when a run starts.
 
 ## models
 

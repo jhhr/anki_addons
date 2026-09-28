@@ -28,5 +28,6 @@
   "log_level": "ERROR",
   "log_to_console": true,
   "capture_calls": true,
-  "capture_keep_days": 90
+  "capture_keep_days": 90,
+  "capture_notes": false
 }

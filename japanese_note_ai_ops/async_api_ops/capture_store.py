@@ -1,4 +1,5 @@
-"""The capture store: a record of every AI call, in one SQLite file written by one thread.
+"""The capture store: a record of every AI call, in one SQLite file written by one thread. A run
+that records its notes also leaves a snapshot of each note it read and wrote, and its events.
 
 `get_response` runs in hundreds of pool threads at once during a bulk run, and on the main
 thread from the editor's hooks, so recording a call must cost a caller no more than hashing, a
@@ -42,8 +43,8 @@ from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# 2: calls.context_json; 3: runs.profile
-SCHEMA_VERSION = 3
+# 2: calls.context_json; 3: runs.profile; 4: note_snapshots, events
+SCHEMA_VERSION = 4
 
 # What a keep_days that is no number of days is read as (see _days_to_keep)
 DEFAULT_KEEP_DAYS = 90.0
@@ -141,6 +142,11 @@ RUN_COLUMNS: dict[str, str] = {
     # Version 3. Every profile writes to the one file, and a note id means nothing without its
     # collection. Last, as calls.context_json is, for the migration's ALTER TABLE
     "profile": "TEXT",
+    # Version 4: 1 for a run that recorded its notes, and how many of its records (snapshots,
+    # events, calls) a full queue dropped, counted at its end. A run whose notes are to be
+    # replayed needs 0: a dropped snapshot is a note the replay cannot build
+    "notes": "INTEGER DEFAULT 0",
+    "dropped": "INTEGER",
 }
 
 CALL_COLUMNS: dict[str, str] = {
@@ -175,10 +181,41 @@ CALL_COLUMNS: dict[str, str] = {
 
 BLOB_COLUMNS: dict[str, str] = {"hash": "TEXT PRIMARY KEY", "text": "TEXT"}
 
+# Version 4, for a run that records its notes (capture.begin_run's `notes`): one row per note
+# and stage, the note itself a blob, so a note read by run after run, or left as it was read, is
+# stored once. The rowid is the order the rows were queued in; nothing else names a row.
+SNAPSHOT_COLUMNS: dict[str, str] = {
+    "snapshot_id": "INTEGER PRIMARY KEY",
+    "v": "INTEGER NOT NULL",
+    "run_id": "INTEGER",
+    "note_id": "INTEGER",
+    # selected, read, proposed, final: see capture.snapshot_note
+    "stage": "TEXT",
+    # Seconds into the run, as calls.started
+    "t": "REAL",
+    "mid": "INTEGER",
+    "note_hash": "TEXT",
+}
+
+# Version 4: what a run did besides its calls, in the order it was queued: the decisions its
+# notes' words got, its phases, the ids of the notes it added, its undo status
+EVENT_COLUMNS: dict[str, str] = {
+    "event_id": "INTEGER PRIMARY KEY",
+    "v": "INTEGER NOT NULL",
+    "run_id": "INTEGER",
+    "note_id": "INTEGER",
+    "task_id": "TEXT",
+    "kind": "TEXT",
+    "t": "REAL",
+    "payload_json": "TEXT",
+}
+
 _TABLES: dict[str, dict[str, str]] = {
     "runs": RUN_COLUMNS,
     "calls": CALL_COLUMNS,
     "blobs": BLOB_COLUMNS,
+    "note_snapshots": SNAPSHOT_COLUMNS,
+    "events": EVENT_COLUMNS,
 }
 
 _INDEXES = (
@@ -192,14 +229,25 @@ _INDEXES = (
     # reads every call row, prompts and answers included, at every profile open
     ("calls_instructions_hash", "calls", "instructions_hash"),
     ("calls_schema_hash", "calls", "schema_hash"),
+    ("note_snapshots_run_id", "note_snapshots", "run_id"),
+    ("note_snapshots_note_id", "note_snapshots", "note_id"),
+    # The prune's, as the calls' hashes are
+    ("note_snapshots_note_hash", "note_snapshots", "note_hash"),
+    ("events_run_id", "events", "run_id"),
+    ("events_kind", "events", "kind"),
 )
 
 
 # What brings a file of schema version N to N+1, keyed by N. A new file gets the current schema
-# whole from _schema_statements instead
+# whole from _schema_statements instead, and a migrated one gets its new tables and indexes
+# from them too, after its steps: a step only alters the tables that were there
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: ("ALTER TABLE calls ADD COLUMN context_json TEXT",),
     2: ("ALTER TABLE runs ADD COLUMN profile TEXT",),
+    3: (
+        "ALTER TABLE runs ADD COLUMN notes INTEGER DEFAULT 0",
+        "ALTER TABLE runs ADD COLUMN dropped INTEGER",
+    ),
 }
 
 
@@ -225,13 +273,20 @@ def _schema_statements() -> list[str]:
 # index (EXPLAIN QUERY PLAN: SEARCH calls USING COVERING INDEX calls_run_id); a condition
 # tested on every call row scans the table, whose rows carry whole prompts and answers
 _PRUNE_CALLS = "DELETE FROM calls WHERE run_id IN (SELECT run_id FROM runs WHERE started < ?)"
+# A run's snapshots and events go with it, as its calls do
+_PRUNE_SNAPSHOTS = (
+    "DELETE FROM note_snapshots WHERE run_id IN (SELECT run_id FROM runs WHERE started < ?)"
+)
+_PRUNE_EVENTS = "DELETE FROM events WHERE run_id IN (SELECT run_id FROM runs WHERE started < ?)"
 _PRUNE_RUNS = "DELETE FROM runs WHERE started < ?"
 # NOT EXISTS rather than NOT IN: most calls have no schema, and one NULL in a NOT IN list
-# makes it match nothing
+# makes it match nothing. A note a snapshot still names is kept too: one blob serves every
+# run that saw the note unchanged
 _PRUNE_BLOBS = (
     "DELETE FROM blobs"
     " WHERE NOT EXISTS (SELECT 1 FROM calls WHERE calls.instructions_hash = blobs.hash)"
     " AND NOT EXISTS (SELECT 1 FROM calls WHERE calls.schema_hash = blobs.hash)"
+    " AND NOT EXISTS (SELECT 1 FROM note_snapshots WHERE note_snapshots.note_hash = blobs.hash)"
 )
 
 
@@ -246,13 +301,16 @@ def prune(
     `started`. `keep_days` None, 0 or less deletes nothing: keeping everything is the safe
     reading of a 0 in the config. A call goes with its run and only with it, its `started`
     counting from the run's: a call with no `run_id`, or whose run row was never written (dropped
-    at a full queue, refused), has no age to go by and stays.
+    at a full queue, refused), has no age to go by and stays. A run's note snapshots and events go
+    with it too, uncounted.
     """
     if keep_days is None or keep_days <= 0:
         return (0, 0, 0)
     cutoff = (now - keep_days * DAY_SECONDS,)
     # Calls first: which of them go is read from the runs about to be deleted
     calls = connection.execute(_PRUNE_CALLS, cutoff).rowcount
+    connection.execute(_PRUNE_SNAPSHOTS, cutoff)
+    connection.execute(_PRUNE_EVENTS, cutoff)
     runs = connection.execute(_PRUNE_RUNS, cutoff).rowcount
     blobs = connection.execute(_PRUNE_BLOBS).rowcount
     return (runs, calls, blobs)
@@ -446,6 +504,19 @@ class CaptureStore:
     def insert_call(self, row: Mapping[str, Any]) -> int:
         return self._insert("calls", "call_id", self.new_call_id, row)
 
+    def insert_snapshot(self, row: Mapping[str, Any]) -> None:
+        self._append("note_snapshots", row)
+
+    def insert_event(self, row: Mapping[str, Any]) -> None:
+        self._append("events", row)
+
+    @property
+    def dropped(self) -> int:
+        """How many records a full queue has dropped since the store opened: a run that
+        records its notes compares it at its end with its start, to know whether it lost any."""
+        with self._warn_lock:
+            return self._dropped
+
     def put_blob(self, text: Any) -> Optional[str]:
         """Store a text once and return its hash; anything but a str is stored as its
         canonical JSON (a response schema). None only for a value that has no JSON text.
@@ -489,6 +560,18 @@ class CaptureStore:
         if self._accepting:
             self._offer(("insert", table, record))
         return record[key]
+
+    def _append(self, table: str, row: Mapping[str, Any]) -> None:
+        """A row nothing refers to by id: its rowid is its place in the queue's order."""
+        if not self._accepting:
+            return
+        try:
+            record = dict(row)
+        except Exception as e:
+            self._caller_error(f"insert into {table}", e)
+            return
+        record["v"] = SCHEMA_VERSION
+        self._offer(("insert", table, record))
 
     def _offer(self, item: tuple[str, str, Any]) -> None:
         try:
