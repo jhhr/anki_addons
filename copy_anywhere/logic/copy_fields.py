@@ -45,7 +45,8 @@ from .copy_primitives import (
 )
 from .definition_migration import MigrationError
 from .definition_schema import STAGE_CALL_DEFINITION, CopyDefinitionV2, is_format_2, walk_stages
-from .execution.context import ExecutionSession
+from .execution.commit import write_queued_files
+from .execution.context import ExecutionSession, QueuedFiles
 from .execution.runner import as_format_2, run_definition_for_trigger_note
 from .object_refs import resolve_deck_id, resolve_note_type
 from .rename_warnings import blocking_explanation, blocking_messages, blocks_run
@@ -283,6 +284,7 @@ def copy_fields(
 
         copied_into_cards_dict: dict[int, Card] = {}
         copied_into_notes: list[Note] = []
+        copied_into_files: QueuedFiles = {}
         # If an undo_entry isn't passed, create one
         nonlocal undo_entry
         if undo_entry is None:
@@ -317,6 +319,7 @@ def copy_fields(
                 field_only=field_only,
                 unfocus_is_add=unfocus_is_add,
                 progress_title=progress_title,
+                copied_into_files=copied_into_files,
             )
             # Update each modified note after every operation, so that if multiple ops are updating
             # the same note, all changes are saved
@@ -330,6 +333,12 @@ def copy_fields(
             # This must be done after each operation, so that if subsequent use card data as source,
             # the final result depends on the order of the ops
             mw.col.update_cards(take_edited_cards(copied_into_cards_dict))
+            # Only now that the notes and cards they go with are saved: a definition that
+            # failed partway through its trigger notes used to leave the files of the ones
+            # before on disk and none of their note changes.
+            file_error = write_queued_files(copied_into_files)
+            if file_error:
+                logger.error(file_error)
             # undo_entry has to be updated after every undoable op or the last_step will
             # increment causing an "target undo op not found" error!
             results.changes = mw.col.merge_undo_entries(undo_entry)
@@ -419,6 +428,7 @@ def copy_fields_in_background(
     unfocus_is_add: bool = False,
     progress_title: Optional[str] = None,
     definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
+    copied_into_files: Optional[QueuedFiles] = None,
 ) -> CacheResults:
     """
     Function run to copy stuff into many notes at once.
@@ -427,6 +437,8 @@ def copy_fields_in_background(
         cards a card action edited
     :param copied_into_notes: An initially empty list of notes that will be appended to with the
         notes that were copied into
+    :param copied_into_files: An initially empty dict the files to write are put in, for the
+        caller to write once it has saved `copied_into_notes`
     :param results: The results object to update with the final result text
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
     :param trigger_notes: Notes to use as they are instead of fetching them by their ids. They
@@ -548,6 +560,7 @@ def copy_fields_in_background(
             progress_updater=progress_updater,
             definitions_for_calls=definitions_for_calls,
             definition_lookup=call_lookup,
+            copied_into_files=copied_into_files,
         )
 
         progress_updater.maybe_render_update()
@@ -715,6 +728,7 @@ def copy_for_single_trigger_note(
     definitions_for_calls: Optional[Sequence[AnyCopyDefinition]] = None,
     definition_lookup=None,
     add_note_compatible_only: bool = False,
+    copied_into_files: Optional[QueuedFiles] = None,
 ) -> bool:
     """Run one copy definition for one trigger note.
 
@@ -739,6 +753,9 @@ def copy_for_single_trigger_note(
         definition over many notes. Built here when it is not given
     :param add_note_compatible_only: refuse to commit anything but changes to the trigger
         note, as both hooks need while the note does not exist yet
+    :param copied_into_files: filled with the files to write, by name, for the caller to
+        write with `write_queued_files` once it has saved the notes and cards. Omitted, the
+        files are written when the run commits
     :return: True when the note is done -- written into or benignly skipped -- and False
         when the definition failed and the caller's bulk loop should stop
     """
@@ -791,6 +808,7 @@ def copy_for_single_trigger_note(
         definition_lookup=lookup,
         want_cancel=mw.progress.want_cancel,
         add_note_compatible_only=add_note_compatible_only,
+        copied_into_files=copied_into_files,
     )
     return run_definition_for_trigger_note(
         definition=staged_definition,

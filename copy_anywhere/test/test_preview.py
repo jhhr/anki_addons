@@ -68,6 +68,40 @@ class TestPreviewRun:
         assert run.succeeded is False
         assert any("Nope" in message for message in run.messages)
 
+    def test_an_error_another_thread_logs_meanwhile_is_not_the_previews(
+        self, col, note, monkeypatch
+    ):
+        # A copy operation's worker, or another addon logging through the shared
+        # `jp_text_processing` logger, may report an error while the preview runs.
+        import logging
+        import threading
+
+        from copy_anywhere.logic.execution import actions
+
+        original = actions.run_variable
+
+        def meanwhile(*args):
+            elsewhere = threading.Thread(
+                target=lambda: [
+                    logging.getLogger("copy_anywhere.logic.copy_fields").error("a worker's"),
+                    logging.getLogger("jp_text_processing").error("another addon's"),
+                ]
+            )
+            elsewhere.start()
+            elsewhere.join()
+            return original(*args)
+
+        monkeypatch.setattr(actions, "run_variable", meanwhile)
+        definition = d.staged(stages=[
+            d.variable("v"),
+            d.edit_note("trigger", [d.write("Nope", d.text("x"))]),
+        ])
+
+        run = run_preview(definition, preview_note(note.id))
+
+        assert len(run.messages) == 1
+        assert "Nope" in run.messages[0]
+
     def test_a_note_the_deck_whitelist_rejects_says_so_instead_of_running(self, col, note):
         definition = d.staged(
             stages=[d.edit_note("trigger", [d.write("Note", d.text("x"))])],

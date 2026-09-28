@@ -389,7 +389,7 @@ None of this is a substitute for the log. A run that has something to report wri
 under the addon's `user_files/logs/`, named after what triggered it; a run you started from
 the browser opens it when it is finished. At the default `log_level` of `error` a clean run
 writes nothing at all and no file is created. Raise it to `info` or `debug` when you want to
-see every stage of every note. The newest fifty files are kept.
+see every stage of every note. The newest two hundred files are kept.
 
 ## 7. Files
 
@@ -404,16 +404,21 @@ What to know before using them:
   writing, and in the error that says a file is missing. No note refers to these files, and
   the `_` is what keeps Anki's Check Media from deleting them as unused.
 - Files are written as UTF-8, with no byte-order mark and no newline translation.
-- A filename resolves inside the media folder. A path separator or a `..` segment is refused.
+- A filename resolves inside the media folder. A path separator or a `..` segment is refused,
+  and so is anything Windows would not write as given: `< > : " | ? *`, a control character,
+  or a trailing dot. Names that differ only in case are one file, as they are on Windows and
+  macOS.
 - There is no append. Read the file, build the new content, write it back with *overwrite*.
 - A stage can be told to skip if the file exists, or to refuse to overwrite. Both questions
   count a file an earlier stage of the same run has queued as already there.
-- File writes happen after the collection changes and are **outside Anki's undo**. Undoing
-  the operation puts the notes and cards back; it does not put the files back.
-- If a write fails — a full disk, a read-only folder — the run stops there and reports
-  failure naming the file. The note and card changes it had already made are kept, the files
-  written before it stay written, and that file and the ones queued after it are not
-  attempted.
+- File writes happen once the note and card changes are saved, and are **outside Anki's
+  undo**. Undoing the operation puts the notes and cards back; it does not put the files
+  back. Over several notes, a definition's files are written after it has run over all of
+  them, and a note later in the run reads and checks the files an earlier one wrote as if
+  they were already there.
+- If a write fails — a full disk, a read-only folder — the error names the file. The note
+  and card changes are kept, the files written before it stay written, and that file and the
+  ones queued after it are not attempted.
 
 ## 8. Migrating from format 1
 
@@ -474,6 +479,9 @@ to change is the Python around them. Change as little as you can.
 - `copy_definitions`: the format-2 definitions, which are what runs. The full specification
   is [`docs/staged-definitions.md`](docs/staged-definitions.md). Do not edit `effects`; it is
   derived.
+- `migration_warnings`, on a converted definition: what the conversion could not carry
+  over (a regex process's "use all notes", `Least_reps`). Report these to the user; they
+  are not in code.
 - `pre_stage_migration_copy_definitions`: the format-1 originals, as they were before the
   conversion. Written once and never touched again; do not edit it. Compare every piece of
   code you change with its original here. A converted definition keeps its original's
@@ -516,11 +524,12 @@ runs for.
 | *Within note*, file write | the trigger before the field writes | the trigger after them | the trigger | not defined |
 | *Source to destinations*, field write | **the trigger** | **the note being written**, as the stage started | the note being written | its place among the found notes, their number |
 | *Source to destinations*, file write | **the trigger** | **the found note the loop is on** | the trigger | the same |
-| *Destination to sources*, field write | the source note | the source note | the trigger | its place among the sources, their number |
+| *Destination to sources*, field write | the source note | the source note | the trigger | its place among the sources, their number; not defined when it reads one note |
 | *Destination to sources*, file write | the source note | the source note | the trigger | the same |
 
 `cards` is the cards of whatever `note` is, as it was in format 1, so it changed exactly
-where `note` did.
+where `note` did. Format-1 code had neither `index` nor `count`, so no converted code uses them;
+`{{__Query_Note_Index}}` is 1 in the one-note shape, as it was.
 
 **The trap is *Source to destinations*.** Its edits run inside a loop whose item is called
 `note`, and `note` means the loop's note there. Format-1 code that read the note the

@@ -164,15 +164,19 @@ definition calls it.
   query. Without that rule, what a definition did would depend on when a flush happened.
 * **Reads see pending edits.** A later stage, and code, read the working note, so an edit an
   earlier stage made is visible. Within one `edit_note` stage every right-hand side reads the
-  note as it was when the stage started, which is what lets one stage swap two fields.
+  note as it was when the stage started, under whatever name it reads it by -- the target's
+  own, or a query's or loop's that found the same note -- which is what lets one stage swap
+  two fields.
 * **Two references to one note converge.** However a note was reached, a run holds one
   working copy of it, so two stages editing it both land.
 * **Nothing is written until the definition finishes.** Notes, cards and files are committed
-  together once the whole definition has run; a failure anywhere commits none of it. File
-  writes are applied after the collection changes and are outside Anki's undo. A media
-  write that fails (a full disk, a read-only folder) fails the run and names the file: the
-  note and card changes are kept, the files queued before it are on disk, and it and the
-  files queued after it are not written.
+  together once the whole definition has run; a failure anywhere commits none of it. Files
+  reach the disk only after the notes and cards they go with are saved, and are outside
+  Anki's undo: a bulk run or a hook collects them and writes them after its `update_notes`,
+  and a later trigger note of the same bulk run reads the ones already collected as if they
+  were on disk. A media write that fails (a full disk, a read-only folder) is reported with
+  the file's name: the note and card changes are kept, the files queued before it are on
+  disk, and it and the files queued after it are not written.
 * **A run that commits nothing leaves the trigger note as it was.** The trigger is the one
   note the run edits in place: it is the caller's own object, and the Add dialog and the
   editor save that object whatever the run's result. So a run that fails, is cancelled, is
@@ -198,7 +202,9 @@ definition calls it.
   stages wrote counts once and a card three actions changed counts once. Across trigger
   notes they add up, as format 1 counted: a note two trigger notes wrote counts twice.
 * **Files are UTF-8, no BOM, no newline translation**, and a filename resolves inside the
-  media folder -- a path separator or a `..` segment is refused. There is no append mode:
+  media folder -- a path separator or a `..` segment is refused, as is anything Windows would
+  not write as given (`< > : " | ? *`, a control character, a trailing dot), on every
+  system. Names that differ only in case are one file to a run. There is no append mode:
   `read_file`, build the new content, `write_file` with `overwrite: true`.
 * **Every file name starts with `_`.** Reading and writing both add one to a name that has
   none -- a stage's filename and each name file code returns -- and a missing-file error

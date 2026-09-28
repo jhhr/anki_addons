@@ -16,6 +16,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union, cast
 
 from anki.cards import Card
+from anki.errors import SearchError
 from anki.notes import Note
 
 from ...shared.interpolate.interpolate_fields import TARGET_NOTES_COUNT
@@ -317,6 +318,17 @@ def _search_text(resolved: Optional[str]) -> str:
     return (resolved or "").strip()
 
 
+def _search_refused(frame, stage: Stage, what: str, error: SearchError):
+    """A search Anki would not run, as the stage's error.
+
+    A search is text interpolated from note fields, so a field holding a lone `"` is enough
+    to make one Anki cannot parse. Raised as it came, the error left the stage error path:
+    the trigger kept the edits of the stages before it, and a note hook that raised was
+    dropped by Anki for the rest of the session.
+    """
+    return frame.error(f"Error in copy fields: {what} is not a search Anki can run: {error}", stage)
+
+
 def run_query(stage: Stage, env: dict, frame, is_card_query: bool) -> list:
     session = frame.session
     kind = "cards" if is_card_query else "notes"
@@ -338,7 +350,10 @@ def run_query(stage: Stage, env: dict, frame, is_card_query: bool) -> list:
 
     if session.check_cancel():
         raise Cancelled()
-    ids = session.find_cards(query) if is_card_query else session.find_notes(query)
+    try:
+        ids = session.find_cards(query) if is_card_query else session.find_notes(query)
+    except SearchError as error:
+        raise _search_refused(frame, stage, f"Query '{query}'", error) from error
     session.record_detail("query", query)
     session.record_detail("found", len(ids))
     if not ids:
@@ -450,13 +465,15 @@ def run_edit_note(stage: Stage, env: dict, frame) -> None:
     # Every right-hand side in this stage reads the note as it was when the stage started,
     # which is what lets one stage swap two fields (§5.3).
     snapshot = duplicate_note(target)
-    # Inside this stage the target's own binding names the snapshot, so `{{trigger.Word}}`
-    # on the right of a write reads the value the stage started with rather than one an
-    # earlier write in the same stage has already replaced.
-    write_env = dict(env)
-    target_name = binding_name(stage.get("target"))
-    if target_name:
-        write_env[target_name] = snapshot
+    # Inside this stage every binding that holds the target names the snapshot, so
+    # `{{trigger.Word}}` on the right of a write reads the value the stage started with
+    # rather than one an earlier write in the same stage has already replaced. Every one, not
+    # just the target's own: a query that finds the trigger binds the same working note, and
+    # a loop or a Select Note over it read the trigger's new values under the other name,
+    # so swapping two fields through it wrote one value into both.
+    write_env = {
+        name: snapshot if value is target else value for name, value in env.items()
+    }
 
     field_writes = []
     for field_write in stage.get("fields") or []:
@@ -759,7 +776,12 @@ def evaluate_predicate(stage: Stage, env: dict, frame) -> bool:
         # than the implicit AND, so `a OR b nid:X` is `a OR (b nid:X)` and would match any
         # note `a` finds.
         search = f"({interpolated}) nid:{target.id}"
-        note_ids = session.find_notes(search)
+        try:
+            note_ids = session.find_notes(search)
+        except SearchError as error:
+            raise _search_refused(
+                frame, stage, f"Condition query '{raw_query}'", error
+            ) from error
         session.record_detail("query", search)
         session.record_detail("found", len(note_ids))
         if not note_ids:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator, Optional, Sequence
 
@@ -42,14 +43,21 @@ class _MessageCollector(logging.Handler):
 
     Only errors, as the debug-level chatter of a run is the trace's job here: the pane shows
     what each stage did, and a message is for what went wrong.
+
+    Only this thread's, too. The preview runs on the thread that asked for it, while a
+    copy operation's worker or another addon's -- which logs through the same
+    `jp_text_processing` logger -- may be logging at the same moment, and their errors were
+    shown as the previewed definition's.
     """
 
     def __init__(self, messages: list[str]) -> None:
         super().__init__(level=logging.ERROR)
         self.messages = messages
+        self.thread = threading.get_ident()
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
+        if record.thread == self.thread:
+            self.messages.append(record.getMessage())
 
 
 @contextmanager

@@ -1,6 +1,6 @@
 import functools
 import logging
-from typing import Optional, Union, Tuple
+from typing import Any, Callable, Optional, Union, Tuple
 from anki.hooks import (
     wrap,
     note_will_be_added,
@@ -42,6 +42,8 @@ from ..logic.copy_fields import (
 )
 from ..logic.object_refs import resolve_note_type
 from ..logic.copy_primitives import take_edited_cards
+from ..logic.execution.commit import write_queued_files
+from ..logic.execution.context import QueuedFiles
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,48 @@ def definition_triggers_on(copy_definition: CopyDefinition, note_type: dict) -> 
         (resolve_note_type(ref, mw.col) or {}).get("id") == note_type["id"]
         for ref in definition_note_type_refs(copy_definition)
     )
+
+
+def run_one_definition(**kwargs) -> bool:
+    """`copy_for_single_trigger_note`, for a hook: a definition that raises is logged, not
+    raised.
+
+    Anki removes a hook callback that raises from its hook for the rest of the session, so
+    one definition whose search Anki could not parse, or whose code had a bug, used to stop
+    every definition on every later add, answer or unfocus -- and in this call the ones after
+    it in the loop. The runner has already put the trigger note back as it was.
+    """
+    try:
+        return copy_for_single_trigger_note(**kwargs)
+    except Exception:  # noqa: BLE001 -- see above; the traceback goes to the log
+        definition = kwargs.get("copy_definition") or {}
+        logger.exception(
+            "Error in copy fields: definition '%s' failed", definition.get("definition_name", "")
+        )
+        return False
+
+
+def write_files_after_saving(copied_into_files: QueuedFiles) -> None:
+    """Write the files a definition queued, now that the notes they go with are saved."""
+    file_error = write_queued_files(copied_into_files)
+    if file_error:
+        logger.error(file_error)
+
+
+def contained(
+    what: str, hook: Callable[..., Any], fallback: Callable[..., Any]
+) -> Callable[..., Any]:
+    """`hook`, made safe to hand to Anki: what it raises is logged and `fallback(*args)`
+    returned instead, so Anki keeps calling it (see `run_one_definition`)."""
+
+    def wrapper(*args):
+        try:
+            return hook(*args)
+        except Exception:  # noqa: BLE001 -- see above; the traceback goes to the log
+            logger.exception("Error in copy fields: copying %s failed", what)
+            return fallback(*args)
+
+    return wrapper
 
 
 def get_copy_definitions_for_add_note(note: Note) -> list[CopyDefinition]:
@@ -118,7 +162,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
             if not definition_is_add_note_compatible(copy_definition):
                 editing_other_notes_definitions.append(copy_definition)
                 continue
-            copy_for_single_trigger_note(
+            run_one_definition(
                 copy_definition=copy_definition,
                 trigger_note=note,
                 deck_id=deck_id,
@@ -137,15 +181,17 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
         for copy_definition in editing_other_notes_definitions:
             copied_into_notes: list[Note] = []
             copied_into_cards_dict: dict[int, Card] = {}
+            copied_into_files: QueuedFiles = {}
             # Can't use copy_fields here as it'd lead to a
             # "bug: run_in_background not called from main thread" exception
             # TODO: non CollectionOp version of copy_fields
-            copy_for_single_trigger_note(
+            run_one_definition(
                 copy_definition=copy_definition,
                 trigger_note=note,
                 copied_into_notes=copied_into_notes,
                 copied_into_cards_dict=copied_into_cards_dict,
                 deck_id=deck_id,
+                copied_into_files=copied_into_files,
             )
             # Only source to destinations definitions get here and their destinations come from a
             # query, which can't find the unsaved note. Still, an id 0 note would make
@@ -156,6 +202,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 # Nothing was written into other notes (the query matched nothing or the deck
                 # whitelist rejected the note), and no card action changed a card either, so
                 # there's nothing to undo and an empty entry would only clutter the undo stack.
+                write_files_after_saving(copied_into_files)
                 continue
 
             if undo_entry is None:
@@ -180,6 +227,7 @@ def run_copy_fields_on_add(note: Note, deck_id: int):
                 mw.col.update_cards(edited_cards)
             # Merge after every write, or the entry's step falls behind and can't be found
             mw.col.merge_undo_entries(undo_entry)
+            write_files_after_saving(copied_into_files)
 
 
 # The card id and undo step of the latest answer, recorded by the wrapped
@@ -273,12 +321,14 @@ def run_copy_fields_on_review(card: Card):
 
         copied_into_notes: list[Note] = []
         copied_into_cards_dict: dict[int, Card] = {}
+        copied_into_files: QueuedFiles = {}
         for copy_definition in copy_definitions_to_run:
-            copy_for_single_trigger_note(
+            run_one_definition(
                 copy_definition=copy_definition,
                 trigger_note=note,
                 copied_into_notes=copied_into_notes,
                 copied_into_cards_dict=copied_into_cards_dict,
+                copied_into_files=copied_into_files,
             )
             # After each copy_definition, update notes and cards so that subsequent copy_definitions
             # operate on the latest data
@@ -296,6 +346,7 @@ def run_copy_fields_on_review(card: Card):
             # any entry another reviewer_did_answer_card listener added after it, as Anki merges
             # every step newer than the target
             mw.col.merge_undo_entries(answer_card_undo_entry)
+            write_files_after_saving(copied_into_files)
         # In order to not have on_sync definitions run twice, we'll set a different fc value
         fc_value = -1 if has_definitions_to_process_on_sync else 1
         # A refused definition leaves the flag as the scheduler set it, so the card stays
@@ -433,7 +484,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                     editing_other_notes_definitions.append(copy_definition)
                 else:
                     copied_into_cards_dict: dict[int, Card] = {}
-                    copy_for_single_trigger_note(
+                    run_one_definition(
                         copy_definition=copy_definition,
                         trigger_note=note,
                         copied_into_notes=[],
@@ -487,7 +538,7 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
                 gated_cards_dict: dict[int, Card] = {}
                 # Either within note or destination to sources, we can run these right away
                 # without an undo entry needed
-                copy_for_single_trigger_note(
+                run_one_definition(
                     copy_definition=gated_definition,
                     trigger_note=note,
                     copied_into_notes=[],
@@ -531,6 +582,10 @@ def run_copy_fields_on_unfocus_field(changed: bool, note: Note, field_idx: int) 
         return changed or we_changed
 
 
+def _nothing(*_args) -> None:
+    return None
+
+
 def init_note_hooks():
     editor_did_load_note.append(on_editor_did_load_note)
     # There's no gui hook for an editor closing, but the browser, the add cards dialog and the
@@ -540,6 +595,19 @@ def init_note_hooks():
         Editor.cleanup = wrap(Editor.cleanup, on_editor_will_cleanup, "before")
         Editor.cleanup.copy_anywhere_wrapped = True
     track_answer_undo_steps()
-    note_will_be_added.append(lambda _col, note, deck_id: run_copy_fields_on_add(note, deck_id))
-    reviewer_did_answer_card.append(lambda reviewer, card, ease: run_copy_fields_on_review(card))
-    editor_did_unfocus_field.append(run_copy_fields_on_unfocus_field)
+    note_will_be_added.append(
+        contained(
+            "on add", lambda _col, note, deck_id: run_copy_fields_on_add(note, deck_id), _nothing
+        )
+    )
+    reviewer_did_answer_card.append(
+        contained(
+            "on review", lambda reviewer, card, ease: run_copy_fields_on_review(card), _nothing
+        )
+    )
+    # A filter: on failure it passes on what it was given, as if it had not been there.
+    editor_did_unfocus_field.append(
+        contained(
+            "on unfocus", run_copy_fields_on_unfocus_field, lambda changed, *_: changed
+        )
+    )

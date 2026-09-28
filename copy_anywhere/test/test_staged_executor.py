@@ -164,6 +164,40 @@ class TestPendingEditsAreVisible:
         run(definition, note)
         assert (note["Word"], note["Meaning"]) == ("cat", "neko")
 
+    @pytest.mark.parametrize(
+        "reach, meaning, word",
+        [
+            # A query that finds the trigger binds the same working note under another name.
+            (
+                lambda body: d.for_each_note("found", item_binding="it", body=[body]),
+                d.text("{{it.Word}}"),
+                d.text("{{it.Meaning}}"),
+            ),
+            (
+                lambda body: [d.select_note("found", "it"), body],
+                d.text("{{it.Word}}"),
+                d.text("{{it.Meaning}}"),
+            ),
+            (
+                lambda body: [d.select_note("found", "it"), body],
+                d.code("return it['Word']"),
+                d.code("return it['Meaning']"),
+            ),
+        ],
+        ids=["loop", "select", "select, code"],
+    )
+    def test_the_snapshot_is_read_under_any_name_the_note_has(
+        self, note, reach, meaning, word
+    ):
+        swap = d.edit_note("trigger", [d.write("Meaning", meaning), d.write("Word", word)])
+        reached = reach(swap)
+        definition = d.staged(stages=[
+            d.note_query("found", "Word:neko"),
+            *(reached if isinstance(reached, list) else [reached]),
+        ])
+        assert run(definition, note)[0] is True
+        assert (note["Word"], note["Meaning"]) == ("cat", "neko")
+
     def test_the_trigger_can_be_edited_before_and_after_a_loop(self, col, note):
         real_anki.add_note(col, VOCAB, {"Word": "a", "Meaning": "A"})
         definition = d.staged(stages=[
@@ -589,6 +623,17 @@ class TestASearchConditionsPredicate:
 
         assert ok is True
         assert note["Note"] == "matched"
+
+    def test_a_search_anki_cannot_parse_fails_the_stage(self, col, logger):
+        # A lone quote in the field made a search Anki refuses, and its error left the
+        # stage error path: the run raised rather than reporting the condition.
+        note = real_anki.add_note(col, VOCAB, {"Word": "neko", "Note": '"unterminated'})
+
+        ok, _copied = run(d.staged(stages=[self.gate("{{trigger.Note}}")]), note)
+
+        assert ok is False
+        assert logger.has_error("Condition query '{{trigger.Note}}' is not a search Anki")
+        assert note["Note"] == '"unterminated'
 
     def test_a_reference_to_nothing_in_scope_says_so(self, col, logger):
         note = real_anki.add_note(col, VOCAB, {"Word": "neko"})
@@ -1378,6 +1423,90 @@ class TestTheFileAReadLooksFor:
         assert logger.has_error(
             "Filename 'sub/dictionary.txt' must not contain a path separator"
         ), logger.errors
+
+
+class TestANameTheFileSystemRefuses:
+    """A file name is made from note fields, and the file system can refuse one. What it
+    raised was not the file stages' own error, so it went past their error handling: the
+    run aborted with a traceback, the trigger kept the stages' earlier edits, and the
+    preview failed rather than showing the stage."""
+
+    def run_with(self, note, stage):
+        return run(d.staged(stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("edited"))]),
+            stage,
+        ]), note)
+
+    @pytest.mark.parametrize(
+        "filename, said",
+        [
+            ("data", "'_data' is a folder in the media folder, not a file"),
+            # Refused by name now, before the file system is asked.
+            ("a\x00b.txt", "must not contain '\\x00'"),
+            ("x" * 300 + ".txt", "cannot be used"),
+        ],
+        ids=["a folder", "a NUL", "too long"],
+    )
+    def test_a_read_fails_the_stage(self, col, note, media_dir, logger, filename, said):
+        (media_dir / "_data").mkdir()
+
+        ok, _ = self.run_with(note, d.read_file("content", filename))
+
+        assert ok is False
+        assert logger.has_error(said), logger.errors
+        assert note["Note"] == ""
+
+    @pytest.mark.parametrize(
+        "extra", [{"overwrite": False}, {"skip_if_exists": True}], ids=["no overwrite", "skip"]
+    )
+    def test_so_does_a_write_that_checks_for_the_file(self, col, note, media_dir, logger, extra):
+        stage = d.write_file("x" * 300 + ".txt", d.text("content"), **extra)
+
+        ok, _ = self.run_with(note, stage)
+
+        assert ok is False
+        assert logger.has_error("cannot be used"), logger.errors
+        assert note["Note"] == ""
+
+
+class TestANameWindowsWouldNotWriteAsGiven:
+    """Names Windows refuses, or reads as something else, are refused everywhere.
+
+    They passed the name check and the preview, and on Windows then failed at commit, or
+    for `:` wrote a hidden stream of another file. Refused by name, the definition fails the
+    same way on every system, and before anything is written.
+    """
+
+    @pytest.mark.parametrize(
+        "filename", ["a:b.txt", "a?.txt", "a*.txt", 'a"b.txt', "a<b>.txt", "a|b.txt", "a\tb", "a."]
+    )
+    def test_a_write_fails_the_stage(self, col, note, media_dir, logger, filename):
+        ok, _ = run(d.staged(stages=[d.write_file(filename, d.text("x"))]), note)
+
+        assert ok is False
+        assert logger.has_error(f"Filename '{filename}' must not"), logger.errors
+        assert list(media_dir.glob("_a*")) == []
+
+    def test_one_run_does_not_tell_names_apart_by_case(self, col, note, media_dir, logger):
+        # On Windows and macOS these are one file, so the second write replaced the first
+        # although the stage said not to overwrite.
+        ok, _ = run(d.staged(stages=[
+            d.write_file("Foo.txt", d.text("first"), overwrite=False),
+            d.write_file("foo.txt", d.text("second"), overwrite=False),
+        ]), note)
+
+        assert ok is False
+        assert logger.has_error("already written earlier in this run"), logger.errors
+
+    def test_and_a_read_under_the_other_case_sees_the_write(self, col, note, media_dir):
+        ok, _ = run(d.staged(stages=[
+            d.write_file("Foo.txt", d.text("first")),
+            d.read_file("read", "foo.txt"),
+            d.edit_note("trigger", [d.write("Note", d.text("{{read}}"))]),
+        ]), note)
+
+        assert ok is True
+        assert note["Note"] == "first"
 
 
 class TestCalls:

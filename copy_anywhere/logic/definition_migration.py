@@ -715,7 +715,8 @@ def _source_to_destinations_stages(
 
 def _destination_to_sources_stages(
     definition: dict, definition_guid: str, warnings: list[str]
-) -> list[Stage]:
+) -> tuple[list[Stage], bool]:
+    """The stages, and whether they are the one-source shape: one selected note, no loop."""
     separator = definition.get("select_card_separator")
     if separator is None:
         separator = DEFAULT_SELECT_CARD_SEPARATOR
@@ -723,7 +724,7 @@ def _destination_to_sources_stages(
     selection = stages[0].get("selection") or {}
     _warn_about_reading_all_notes(definition, selection, warnings)
     if _takes_one_source(definition, selection):
-        return stages + _one_source_stages(definition, definition_guid)
+        return stages + _one_source_stages(definition, definition_guid), True
 
     join_index = 0
     field_writes = _field_writes(definition, modifies_other_notes=False)
@@ -790,7 +791,7 @@ def _destination_to_sources_stages(
         )
         stages.append(file_stage)
 
-    return stages
+    return stages, False
 
 
 def _takes_one_source(definition: dict, selection: Selection) -> bool:
@@ -807,12 +808,6 @@ def _takes_one_source(definition: dict, selection: Selection) -> bool:
         and not selection.get("selection_error")
         and not definition.get("run_also_if_no_sources_found", False)
     )
-
-
-def _selects_one_source(stages: list[Stage], definition_guid: str) -> bool:
-    """Whether the stages are the one-source shape, which a copy condition may wrap."""
-    guid = _child_guid(definition_guid, "select-source")
-    return any(stage.get("guid") == guid for stage in walk_stages(stages))
 
 
 def _one_source_stages(definition: dict, definition_guid: str) -> list[Stage]:
@@ -915,6 +910,7 @@ def migrate_definition_v1_to_v2(
     copy_mode = format_1.get("copy_mode")
     across_mode_direction = format_1.get("across_mode_direction")
     warnings: list[str] = []
+    selects_one_source = False
 
     if copy_mode == COPY_MODE_WITHIN_NOTE:
         body = _within_note_stages(format_1, definition_guid)
@@ -922,7 +918,9 @@ def migrate_definition_v1_to_v2(
         if across_mode_direction == DIRECTION_SOURCE_TO_DESTINATIONS:
             body = _source_to_destinations_stages(format_1, definition_guid, warnings)
         elif across_mode_direction == DIRECTION_DESTINATION_TO_SOURCES:
-            body = _destination_to_sources_stages(format_1, definition_guid, warnings)
+            body, selects_one_source = _destination_to_sources_stages(
+                format_1, definition_guid, warnings
+            )
         else:
             raise MigrationError("Error in copy fields: missing across mode direction value")
     else:
@@ -993,8 +991,7 @@ def migrate_definition_v1_to_v2(
             # join's loop did.
             "query_note_index_default": (
                 1
-                if copy_mode == COPY_MODE_WITHIN_NOTE
-                or _selects_one_source(stages, definition_guid)
+                if copy_mode == COPY_MODE_WITHIN_NOTE or selects_one_source
                 else None
             ),
         },

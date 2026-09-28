@@ -26,7 +26,7 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | --- | --- |
 | `__init__.py` | at import: `migrate_config()`, `init_browser_hooks()`, `init_sync_hook()`, `init_note_hooks()`, `init_rename_hooks()` |
 | `configuration.py` | `Config` (saves on every mutation), format-1 TypedDicts, the trigger accessors both formats go through, `migrate_config` |
-| `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 50), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger |
+| `logging_setup.py` | one log file per triggered operation under `user_files/logs` (keeps 200, pruned when one is written), reference-counted; a ContextVar supplies the `[definition][NID:n]` prefix; also captures the `jp_text_processing` logger's lines from inside its own runs, and never raises that shared logger's level |
 | `hooks/` | browser menus, add / review / unfocus handlers (`note_hooks.py` wraps `Editor.cleanup` and `V3Scheduler.answer_card`, guarded by a `copy_anywhere_wrapped` attribute), the sync sweep, and when the rename pass runs (`rename_hooks.py`) |
 | `logic/definition_schema.py` | format-2 types, stage-type constants, structural validation |
 | `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and the guid repair for stages, field writes and card actions |
@@ -59,11 +59,13 @@ Call chain for a bulk run:
 ## Invariants
 
 - **Evaluation never writes to the database.** Stages edit the session's working note and
-  card objects and queue file writes; `commit.py` hands the notes and cards to the caller's
-  `copied_into_notes` / `copied_into_cards_dict` and puts files on disk. A failure anywhere
-  leaves the collection alone, and preview runs the real evaluator and simply does not
-  commit. A caller that passes no lists gets no note write, on purpose: on add, Anki saves
-  the note; on unfocus, the editor does. Tests therefore assert on returned objects, not on
+  card objects and queue file writes; `commit.py` hands the notes, cards and files to the
+  caller's `copied_into_notes` / `copied_into_cards_dict` / `copied_into_files`, and the
+  caller writes the files with `write_queued_files` after its `update_notes` (a caller
+  passing no files dict has them written at commit). A failure anywhere leaves the
+  collection alone, and preview runs the real evaluator and simply does not commit. A
+  caller that passes no lists gets no note write, on purpose: on add, Anki saves the note;
+  on unfocus, the editor does. Tests therefore assert on returned objects, not on
   a re-fetched note, except at the `copy_fields` level.
 - `update_notes`, `update_cards` and `merge_undo_entries` run after **every** definition.
   Later definitions re-fetch from the database, and a skipped merge ends in "target undo op
@@ -112,7 +114,11 @@ Call chain for a bulk run:
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
 - Return contract of a run: `True` is success **or a benign skip** (deck whitelist, unmet
-  condition, `skip_block`); `False` aborts the bulk loop.
+  condition, `skip_block`); `False` aborts the bulk loop. An exception the evaluator did not
+  raise itself still restores the trigger before it propagates.
+- Anki removes a hook callback that raises, for the rest of the session. The three note
+  hooks are registered through `contained` and run each definition through
+  `run_one_definition`, which log what they catch; keep new hook code behind them.
 - Multi-value format-1 strings (note types, decks, tags, trigger fields) are stored as
   `A", "B`, the format `MultiComboBox` emits; format 2 stores JSON arrays under `triggers`.
   Parse the former with a helper that drops `""` (`split_tags` does); a bare split of an

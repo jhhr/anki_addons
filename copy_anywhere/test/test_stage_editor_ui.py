@@ -225,7 +225,8 @@ def test_an_elided_label_shows_what_fits_and_says_the_rest_on_hover(qapp):
     assert label.text() == text
     assert label.toolTip() == text
 
-    label.resize(label.sizeHint().width() + 10, label.height())
+    # Wider than the label asks for: its size hint is capped short of a text this long.
+    label.resize(label.fontMetrics().horizontalAdvance(text) + 10, label.height())
 
     assert QLabel.text(label) == text
     assert label.toolTip() == ""
@@ -467,6 +468,32 @@ def test_on_a_narrow_screen_the_dialog_fits_and_the_preview_keeps_its_width():
     size = initial_size(_screen(1000, 700), 870, 325, 20)
     assert size.width == 1000
     assert size.stages_width == 1000 - 20 - 325
+
+
+def test_a_crowded_stage_summary_does_not_widen_the_dialog_it_opens_in(col, qapp, monkeypatch):
+    # Cut off with "…" once open, the summary of a dozen fields still asked for its whole
+    # 3333px when the dialog sized itself, and the editor opened as wide as the screen.
+    from copy_anywhere.ui import edit_staged_definition_dialog as module
+
+    def stages_width_asked_for(field_count):
+        asked = []
+        real = module.initial_size
+        monkeypatch.setattr(module, "initial_size", lambda *args: asked.append(args) or real(*args))
+        stage = default_stage(STAGE_EDIT_NOTE, "e")
+        stage["fields"] = [
+            {"field": f"sentence-{n}-kanjified-furigana-processed",
+             "value": value_expression(text="x"), "write_if": "always"}
+            for n in range(field_count)
+        ]
+        definition = new_definition("d", "A definition", stages=[stage])
+        definition["triggers"]["note_types"] = [VOCAB]
+        built = module.EditStagedDefinitionDialog(None, definition)
+        built._refresh_timer.stop()
+        built.deleteLater()
+        monkeypatch.undo()
+        return asked[-1][1]
+
+    assert stages_width_asked_for(12) == stages_width_asked_for(2)
 
 
 def test_the_open_dialog_fits_on_its_screen(dialog):

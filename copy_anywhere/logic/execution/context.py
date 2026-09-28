@@ -25,11 +25,16 @@ from aqt import mw
 
 from ...utils.media_files import (
     MediaFileError,
+    file_key,
     media_file_exists,
     normalize_media_filename,
     read_media_file,
 )
 from ..definition_schema import CopyDefinitionV2, Stage
+
+#: Files runs have committed and their caller has yet to write: `file_key(name)` -> the name
+#: to write it under and its content. See `commit.py`.
+QueuedFiles = dict[str, tuple[str, str]]
 
 #: The key an unsaved note is held under. A note being added has id 0, so its identity is
 #: the object itself; anything else would collide with every other unsaved note.
@@ -238,6 +243,7 @@ class ExecutionSession:
         want_cancel: Optional[Callable[[], bool]] = None,
         collect_trace: bool = False,
         add_note_compatible_only: bool = False,
+        copied_into_files: Optional[QueuedFiles] = None,
     ) -> None:
         self.is_sync = is_sync
         self.field_only = field_only
@@ -257,11 +263,16 @@ class ExecutionSession:
 
         self.notes: dict[NoteKey, Note] = {}
         self.cards: dict[int, Card] = {}
+        #: Keyed by `file_key`, as the caller's `copied_into_files` is.
         self.file_overlay: dict[str, str] = {}
 
         self.modified_notes: dict[NoteKey, Note] = {}
         self.edited_cards: dict[int, Card] = {}
         self.pending_files: list[dict] = []
+        #: The caller's queue of files earlier trigger notes committed and it has not written
+        #: yet, because their notes are not saved yet (see `commit.py`). Read like the disk:
+        #: to a later trigger note they are already there. None when commit writes them.
+        self.copied_into_files = copied_into_files
 
         #: The trigger note's fields and tags as the run found them, for `discard` to put
         #: back. Set by `remember_trigger` before the first stage runs.
@@ -339,15 +350,22 @@ class ExecutionSession:
     def file_is_already_there(self, filename: str) -> bool:
         """Whether a `skip_if_exists` write of `filename` has something to skip.
 
-        A file this run has already queued counts. It lands the moment the trigger commits,
-        so a later stage writing over it is doing exactly what `skip_if_exists` said not to
+        A file this run has already queued counts, and so does one an earlier trigger note
+        of the same bulk run committed. Each lands once its notes are saved, so a later
+        stage writing over it is doing exactly what `skip_if_exists` said not to
         -- and the user cannot see the difference afterwards, only the second content in a
         file the first stage thought it had written. The overlay is keyed by the stored
         name, the one with the leading underscore `write_to_media_folder` adds, which is why
         this normalizes rather than leaving it to the caller.
         """
         name = normalize_media_filename(filename)
-        return name in self.file_overlay or media_file_exists(name)
+        return self._written_in_this_run(name) or media_file_exists(name)
+
+    def _written_in_this_run(self, name: str) -> bool:
+        key = file_key(name)
+        return key in self.file_overlay or (
+            self.copied_into_files is not None and key in self.copied_into_files
+        )
 
     def queue_file_write(
         self, filename: str, content: str, overwrite: bool = True, skip_if_exists: bool = False
@@ -366,7 +384,7 @@ class ExecutionSession:
             # Spelled out rather than routed through `file_is_already_there`, because the two
             # cases need different words: a name that is only in the overlay is not in the
             # media folder yet, and sending the user to look for it there explains nothing.
-            if name in self.file_overlay:
+            if self._written_in_this_run(name):
                 raise MediaFileError(
                     f"File '{name}' was already written earlier in this run and the stage"
                     " does not overwrite"
@@ -375,7 +393,7 @@ class ExecutionSession:
                 raise MediaFileError(
                     f"File '{name}' already exists and the stage does not overwrite"
                 )
-        self.file_overlay[name] = content
+        self.file_overlay[file_key(name)] = content
         self.pending_files.append({"filename": name, "content": content})
         if self.recording:
             # Recorded here rather than in the stage, because the name the write lands
@@ -386,8 +404,11 @@ class ExecutionSession:
     def read_file(self, filename: str) -> Optional[str]:
         """The file's content, reading through the overlay so a queued write is visible."""
         name = normalize_media_filename(filename)
-        if name in self.file_overlay:
-            return self.file_overlay[name]
+        key = file_key(name)
+        if key in self.file_overlay:
+            return self.file_overlay[key]
+        if self.copied_into_files is not None and key in self.copied_into_files:
+            return self.copied_into_files[key][1]
         return read_media_file(name)
 
     def remember_trigger(self, note: Note) -> None:

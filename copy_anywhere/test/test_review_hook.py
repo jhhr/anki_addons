@@ -414,6 +414,7 @@ class TestWhichDefinitionsRun:
         assert ran.kwarg_names() == [
             [
                 "copied_into_cards_dict",
+                "copied_into_files",
                 "copied_into_notes",
                 "copy_definition",
                 "trigger_note",
@@ -1131,3 +1132,34 @@ class TestTheRestOfTheDefinition:
         run_copy_fields_on_review(reviewed)
         assert col.get_note(note.id)["Note"] == "neko"
         assert custom_data(col, reviewed.id) == {"fc": 1}
+
+
+class TestFilesAreWrittenAfterTheNotes:
+    def test_a_file_a_definition_writes_lands_once_the_note_is_saved(
+        self, col, set_definitions, media_dir, monkeypatch
+    ):
+        # The hook collects the files and writes them itself, after its update_notes; one it
+        # forgot to write would never reach the disk at all.
+        on_disk_when_saved = []
+        original = col.update_notes
+
+        def update_notes(notes, **kwargs):
+            on_disk_when_saved.append((media_dir / "_review.txt").exists())
+            return original(notes, **kwargs)
+
+        monkeypatch.setattr(col, "update_notes", update_notes)
+        set_definitions(d.staged(
+            "reviewed",
+            on_review=True,
+            stages=[
+                d.edit_note("trigger", [d.write("Note", d.text("reviewed"))]),
+                d.write_file("review.txt", d.text("{{trigger.Word}}")),
+            ],
+        ))
+        note, reviewed = review(col)
+
+        run_copy_fields_on_review(reviewed)
+
+        assert on_disk_when_saved == [False]
+        assert (media_dir / "_review.txt").read_text(encoding="utf-8") == note["Word"]
+        assert col.get_note(note.id)["Note"] == "reviewed"

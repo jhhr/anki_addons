@@ -1062,3 +1062,134 @@ class TestCancellation:
         run_copy_fields(copy_definitions=[write_into_note("a")], note_ids=[note.id])
 
         assert col.get_note(note.id)["Note"] == "neko"
+
+
+class TestFilesLandAfterTheirNotes:
+    """A bulk run writes a definition's files once the notes and cards they go with are saved.
+
+    The commit of each trigger note used to write its files straight away, while the notes
+    were saved once the definition had run over them all. A run that then raised on a later
+    trigger note left the earlier notes' files on disk and none of their note changes.
+    """
+
+    def writing(self, *extra_stages, filename="out_{{trigger.Word}}.txt", **write):
+        return d.staged("files", stages=[
+            d.edit_note("trigger", [d.write("Note", d.text("written"))]),
+            d.write_file(filename, d.text("{{trigger.Word}};"), **write),
+            *extra_stages,
+        ])
+
+    def notes(self, col, *words):
+        return [real_anki.add_note(col, VOCAB, {"Word": word}) for word in words]
+
+    def test_a_run_that_raises_writes_no_file(self, col, run_copy_fields, media_dir, monkeypatch):
+        from copy_anywhere.logic.execution import actions
+
+        original = actions.run_variable
+
+        def breaks_on_the_last(stage, env, frame):
+            if frame.trigger_note["Word"] == "ccc":
+                raise RuntimeError("a bug in a stage")
+            return original(stage, env, frame)
+
+        monkeypatch.setattr(actions, "run_variable", breaks_on_the_last)
+        notes = self.notes(col, "aaa", "bbb", "ccc")
+
+        with pytest.raises(RuntimeError):
+            run_copy_fields(
+                copy_definitions=[self.writing(d.variable("v"))],
+                note_ids=[note.id for note in notes],
+            )
+
+        assert sorted(path.name for path in media_dir.glob("_out_*")) == []
+        assert [col.get_note(note.id)["Note"] for note in notes] == ["", "", ""]
+
+    def test_the_notes_are_saved_before_the_files_are_written(
+        self, col, run_copy_fields, media_dir, monkeypatch
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+        on_disk_when_saved = []
+        original = col.update_notes
+
+        def update_notes(saved, **kwargs):
+            on_disk_when_saved.append(sorted(path.name for path in media_dir.glob("_out_*")))
+            return original(saved, **kwargs)
+
+        monkeypatch.setattr(col, "update_notes", update_notes)
+
+        run_copy_fields(copy_definitions=[self.writing()], note_ids=[note.id for note in notes])
+
+        assert on_disk_when_saved == [[]]
+        assert sorted(path.name for path in media_dir.glob("_out_*")) == [
+            "_out_aaa.txt",
+            "_out_bbb.txt",
+        ]
+
+    def test_a_later_trigger_note_reads_what_an_earlier_one_wrote(
+        self, col, run_copy_fields, media_dir
+    ):
+        # Appending across trigger notes reads the file an earlier one queued, which is not
+        # on disk yet.
+        notes = self.notes(col, "aaa", "bbb")
+        definition = d.staged("append", stages=[
+            d.read_file("log", "log.txt"),
+            d.write_file("log.txt", d.text("{{log}}{{trigger.Word}};")),
+        ])
+
+        run_copy_fields(copy_definitions=[definition], note_ids=[note.id for note in notes])
+
+        written = (media_dir / "_log.txt").read_text(encoding="utf-8")
+        assert sorted(written.split(";")) == ["", "aaa", "bbb"]
+
+    def test_nor_does_not_overwriting_let_a_later_one_replace_it(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="one.txt", overwrite=False)],
+            note_ids=[note.id for note in notes],
+        )
+
+        assert logger.has_error("already written earlier in this run"), logger.errors
+        assert (media_dir / "_one.txt").read_text(encoding="utf-8") == "aaa;"
+
+    def test_or_a_later_skip_if_exists_write_it_again(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        notes = self.notes(col, "aaa", "bbb")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="one.txt", skip_if_exists=True)],
+            note_ids=[note.id for note in notes],
+        )
+
+        assert logger.errors == []
+        assert (media_dir / "_one.txt").read_text(encoding="utf-8") == "aaa;"
+        assert [col.get_note(note.id)["Note"] for note in notes] == ["written", "written"]
+
+    def test_a_later_one_writing_the_name_in_another_case_is_refused_too(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        [first, second] = self.notes(col, "One", "one")
+
+        run_copy_fields(
+            copy_definitions=[self.writing(filename="{{trigger.Word}}.txt", overwrite=False)],
+            note_ids=[first.id, second.id],
+        )
+
+        assert logger.has_error("already written earlier in this run"), logger.errors
+        assert [path.name for path in media_dir.glob("_*ne.txt")] == ["_One.txt"]
+
+    def test_a_write_that_fails_says_the_notes_were_kept(
+        self, col, run_copy_fields, media_dir, logger
+    ):
+        (media_dir / "_data").mkdir()
+        [note] = self.notes(col, "aaa")
+
+        run_copy_fields(copy_definitions=[self.writing(filename="data")], note_ids=[note.id])
+
+        assert logger.has_error(
+            "The note and card changes are kept; this file was not written."
+        ), logger.errors
+        assert col.get_note(note.id)["Note"] == "written"

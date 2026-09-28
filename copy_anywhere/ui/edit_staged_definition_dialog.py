@@ -96,11 +96,11 @@ def initial_size(
     height = max(available.height() - TITLE_BAR_ALLOWANCE, 0)
     wanted = stages_width + preview_width + chrome_width
     width = min(max(wanted, int(available.width() * MIN_WIDTH_SHARE)), available.width())
-    inside = width - chrome_width
-    # On a screen too narrow for both, the preview keeps what it asks for and the stage list
-    # scrolls; the preview is what shows the run, and it has no scroll bar of its own for
-    # width.
-    stages = min(max(stages_width, inside - preview_width), inside - min(preview_width, inside))
+    # The preview gets what it asks for and the stage list the rest, which the width above
+    # already made at least `stages_width` wherever the screen has room for both. On a screen
+    # too narrow for both, the stage list is the one that scrolls: the preview is what shows
+    # the run, and it has no scroll bar of its own for width.
+    stages = width - chrome_width - preview_width
     return InitialSize(width, height, max(stages, 0))
 
 
@@ -261,8 +261,9 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         blockers.extend(self._cycle_blockers())
         self.ok_button.setEnabled(not blockers)
         self.status_label.setText(self._status_html(blockers))
-        # Anything that reached here changed the definition, so whatever the preview last
-        # ran is no longer what this definition does (§9).
+        # Not everything that reaches here is an edit -- the dialog opening and Save come
+        # through too -- so the preview is handed the definition and compares it with the
+        # one it ran, rather than being told it is out of date (§9).
         self.preview.set_definition(self.document.definition)
         self.preview.mark_stale()
         # Each indicator follows its own part as it is typed in; this catches what changed

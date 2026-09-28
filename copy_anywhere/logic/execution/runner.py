@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Optional
 
 from anki.notes import Note
 
+from ...logging_setup import running_a_definition
 from ..definition_schema import CopyDefinitionV2, is_format_2
 from ..definition_migration import MigrationError, migrate_definition_v1_to_v2
 from .commit import CollectionCommitter
@@ -62,7 +63,8 @@ def run_definition_for_trigger_note(
     # puts it back; a run that commits never does, or the writes it just made would be lost.
     session.remember_trigger(frame.trigger_note)
     try:
-        execute_definition(frame)
+        with running_a_definition():
+            execute_definition(frame)
     except TriggerSkipped:
         # The deck whitelist or a copy condition said this note is not one the definition
         # applies to. Benign: nothing is written, nothing is committed, the loop goes on. A
@@ -81,6 +83,13 @@ def run_definition_for_trigger_note(
             logger.debug("copy_for_single_trigger_note: failed at %s", context)
         session.discard()
         return False
+    except Exception:
+        # Something the evaluator did not raise itself: a bug in a process, a stage's code
+        # failing. It keeps its type and traceback, but the trigger does not keep the edits
+        # the stages before it made -- they land on the caller's own note object, which the
+        # editor or the Add dialog would save.
+        session.discard()
+        raise
 
     if session.add_note_compatible_only:
         trigger_key = session.note_key(frame.trigger_note)
@@ -100,7 +109,9 @@ def run_definition_for_trigger_note(
         # Format 1 counted the trigger note as the one source in every mode but
         # Destination-to-sources, where the query result was the source list.
         session.update_counts(processed_sources_inc=1)
-    result = committer.commit(session, copied_into_notes, copied_into_cards_dict)
+    result = committer.commit(
+        session, copied_into_notes, copied_into_cards_dict, session.copied_into_files
+    )
     # Counted from what the commit published rather than as stages ran, so a note two stages
     # wrote is one destination and a card three actions changed is one card. Per trigger
     # note, as format 1 counted: a note two trigger notes both wrote counts twice. Counted
