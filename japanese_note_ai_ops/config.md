@@ -13,8 +13,10 @@
   the note and run it was for) in `user_files/capture.sqlite3`, for debugging and for
   building tests and evals from real runs. No API keys.
 - `capture_keep_days`: Default is `90`. Runs older than this many days are deleted from that
-  file, with their calls, when a profile opens; `0` or less keeps every run. Both are read when
-  the profile opens: a change takes effect on the next profile load or restart.
+  file, with their calls, when a profile opens; `0` or less, or `null`, keeps every run. A
+  number in quotes (`"30"`) counts as that number; anything else (`true`, text) as `90`, with a
+  warning in the log. Both are read when the profile opens: a change takes effect on the next
+  profile load or restart.
 
 ## models
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import datetime
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -30,6 +31,8 @@ diagnostics = load_ops_module("diagnostics")
 RUN_COLUMNS = [
     "run_id", "v", "started", "ended", "label", "implicit", "ops_json", "chain_step",
     "note_count", "config_json", "versions_json", "log_path", "outcome", "extra_json",
+    # Schema version 3, last in a new file as in a migrated one
+    "profile",
 ]
 CALL_COLUMNS = [
     "call_id", "v", "run_id", "note_id", "task_id", "parent_task_id", "kind", "request_key",
@@ -63,6 +66,31 @@ V1_SCHEMA = [
     "CREATE INDEX calls_instructions_hash ON calls(instructions_hash)",
     "CREATE INDEX calls_schema_hash ON calls(schema_hash)",
     "PRAGMA user_version = 1",
+]
+
+# A new file of schema version 2 as that code created it (a v1 file it migrated differs only in
+# the text sqlite keeps for the ALTERed table)
+V2_SCHEMA = [
+    "CREATE TABLE runs (run_id INTEGER PRIMARY KEY, v INTEGER NOT NULL, started REAL,"
+    " ended REAL, label TEXT, implicit INTEGER DEFAULT 0, ops_json TEXT, chain_step TEXT,"
+    " note_count INTEGER, config_json TEXT, versions_json TEXT, log_path TEXT, outcome TEXT,"
+    " extra_json TEXT)",
+    "CREATE TABLE calls (call_id INTEGER PRIMARY KEY, v INTEGER NOT NULL, run_id INTEGER,"
+    " note_id INTEGER, task_id TEXT, parent_task_id TEXT, kind TEXT, request_key TEXT,"
+    " prompt_key TEXT, model TEXT, params_json TEXT, inputs_json TEXT, instructions_hash TEXT,"
+    " prompt TEXT, schema_hash TEXT, response_raw TEXT, response_json TEXT, outcome TEXT,"
+    " error TEXT, started REAL, latency_ms REAL, attempts INTEGER, usage_json TEXT,"
+    " extra_json TEXT, context_json TEXT)",
+    "CREATE TABLE blobs (hash TEXT PRIMARY KEY, text TEXT)",
+    "CREATE INDEX runs_started ON runs(started)",
+    "CREATE INDEX calls_run_id ON calls(run_id)",
+    "CREATE INDEX calls_note_id ON calls(note_id)",
+    "CREATE INDEX calls_kind ON calls(kind)",
+    "CREATE INDEX calls_request_key ON calls(request_key)",
+    "CREATE INDEX calls_prompt_key ON calls(prompt_key)",
+    "CREATE INDEX calls_instructions_hash ON calls(instructions_hash)",
+    "CREATE INDEX calls_schema_hash ON calls(schema_hash)",
+    "PRAGMA user_version = 2",
 ]
 
 DAY = 86400.0
@@ -158,43 +186,57 @@ class SchemaTests(StoreTestCase):
 
 
 class MigrationTests(StoreTestCase):
-    def make_v1_file(self, *extra_statements):
-        """A file as the version 1 store left it: its schema, a run and a call."""
+    def make_old_file(self, schema, version):
+        """A file as an older store left it: its schema, a run and a call."""
         os.makedirs(os.path.dirname(self.path))
         with closing(sqlite3.connect(self.path)) as connection:
-            for statement in V1_SCHEMA + list(extra_statements):
+            for statement in schema:
                 connection.execute(statement)
-            connection.execute("INSERT INTO runs (run_id, v, label) VALUES (4, 1, 'old run')")
             connection.execute(
-                "INSERT INTO calls (call_id, v, run_id, kind) VALUES (8, 1, 4, 'match.meanings')"
+                "INSERT INTO runs (run_id, v, label) VALUES (4, ?, 'old run')", (version,)
+            )
+            connection.execute(
+                "INSERT INTO calls (call_id, v, run_id, kind) VALUES (8, ?, 4, 'match.meanings')",
+                (version,),
             )
             connection.commit()
 
-    def test_a_version_1_file_gains_the_context_column_and_keeps_its_rows(self):
-        self.make_v1_file()
-
+    def assert_brought_up_to_date(self, old_version):
         store = self.open_store()
         self.assertTrue(store.enabled)
-        call_id = store.insert_call({"run_id": 4, "kind": "match.rating", "context_json": {"a": 1}})
+        run_id = store.insert_run({"label": "new run", "profile": "User 1"})
+        call_id = store.insert_call(
+            {"run_id": run_id, "kind": "match.rating", "context_json": {"a": 1}}
+        )
         self.assertTrue(store.flush())
 
-        # Its columns in the order a new file has them, so the two read alike
+        # Their columns in the order a new file has them, so the two read alike
+        self.assertEqual([row[1] for row in self.rows("PRAGMA table_info(runs)")], RUN_COLUMNS)
         self.assertEqual([row[1] for row in self.rows("PRAGMA table_info(calls)")], CALL_COLUMNS)
         self.assertEqual(self.rows("PRAGMA user_version"), [(capture_store.SCHEMA_VERSION,)])
-        self.assertEqual(call_id, 9, "ids carry on after the old rows")
+        self.assertEqual((run_id, call_id), (5, 9), "ids carry on after the old rows")
+        version = capture_store.SCHEMA_VERSION
         self.assertEqual(
             self.rows("SELECT call_id, v, kind, context_json FROM calls ORDER BY call_id"),
-            [
-                (8, 1, "match.meanings", None),
-                (9, capture_store.SCHEMA_VERSION, "match.rating", '{"a":1}'),
-            ],
+            [(8, old_version, "match.meanings", None), (9, version, "match.rating", '{"a":1}')],
         )
-        self.assertEqual(self.rows("SELECT run_id, v, label FROM runs"), [(4, 1, "old run")])
+        self.assertEqual(
+            self.rows("SELECT run_id, v, label, profile FROM runs ORDER BY run_id"),
+            [(4, old_version, "old run", None), (5, version, "new run", "User 1")],
+        )
+
+    def test_a_version_1_file_is_brought_through_2_to_3_and_keeps_its_rows(self):
+        self.make_old_file(V1_SCHEMA, 1)
+        self.assert_brought_up_to_date(1)
+
+    def test_a_version_2_file_gains_the_profile_column_and_keeps_its_rows(self):
+        self.make_old_file(V2_SCHEMA, 2)
+        self.assert_brought_up_to_date(2)
 
     def test_a_migration_that_fails_leaves_the_file_at_its_version(self):
-        self.make_v1_file()
-        v1_columns = self.rows("PRAGMA table_info(calls)")
-        # A statement that fails after the ALTER TABLE has run
+        self.make_old_file(V1_SCHEMA, 1)
+        v1_columns = [self.rows(f"PRAGMA table_info({table})") for table in ("runs", "calls")]
+        # A statement that fails after both ALTER TABLEs have run
         statements = capture_store._schema_statements() + ["NOT A STATEMENT"]
 
         with (
@@ -206,7 +248,9 @@ class MigrationTests(StoreTestCase):
         self.assertIn(self.path, logs.output[0])
         self.assertFalse(store.enabled)
         self.assertEqual(self.rows("PRAGMA user_version"), [(1,)])
-        self.assertEqual(self.rows("PRAGMA table_info(calls)"), v1_columns)
+        self.assertEqual(
+            [self.rows(f"PRAGMA table_info({table})") for table in ("runs", "calls")], v1_columns
+        )
         self.assertEqual(self.rows("SELECT call_id, v FROM calls"), [(8, 1)])
 
 
@@ -225,6 +269,43 @@ class IdTests(StoreTestCase):
         reopened = self.open_store()
         # Ids handed out but never written (the run ids 1 and 2) are not remembered
         self.assertEqual((reopened.new_run_id(), reopened.new_call_id()), (4, 8))
+
+    def test_a_new_run_never_takes_the_id_of_a_missing_run_its_calls_still_name(self):
+        store = self.open_store()
+        store.insert_run({"run_id": 1})
+        # Run 2's row was dropped at a full queue; its call was written
+        store.insert_call({"call_id": 1, "run_id": 2})
+        self.assertTrue(store.close())
+
+        self.assertEqual(self.open_store().new_run_id(), 3)
+
+    def test_first_ids_are_a_floor_under_what_the_file_gives(self):
+        store = self.open_store()
+        store.insert_run({"run_id": 5})
+        store.insert_call({"call_id": 5})
+        self.assertTrue(store.close())
+
+        above = self.open_store(first_ids=(10, 20))
+        self.assertEqual((above.new_run_id(), above.new_call_id()), (10, 20))
+        self.assertTrue(above.close())
+        below = self.open_store(first_ids=(2, 2))
+        self.assertEqual((below.new_run_id(), below.new_call_id()), (6, 6))
+        self.assertTrue(below.close())
+        # A store that could not open has nothing of the file's, and still keeps above the floor
+        with mock.patch.object(capture_store.CaptureStore, "_open", return_value=None):
+            unopened = self.open_store(first_ids=(10, 20))
+        self.assertFalse(unopened.enabled)
+        self.assertEqual((unopened.new_run_id(), unopened.new_call_id()), (10, 20))
+
+    def test_next_ids_takes_the_next_of_each_so_neither_is_handed_out(self):
+        store = self.open_store()
+        handed_out = [store.new_run_id(), store.new_call_id()]
+        self.assertTrue(store.close())
+
+        run_id, call_id = store.next_ids()
+        self.assertEqual((run_id, call_id), (handed_out[0] + 1, handed_out[1] + 1))
+        # Still handed out once closed, as a store that is off does, but past them
+        self.assertEqual((store.new_run_id(), store.new_call_id()), (run_id + 1, call_id + 1))
 
 
 class WriteTests(StoreTestCase):
@@ -290,6 +371,28 @@ class WriteTests(StoreTestCase):
             [(1, "first"), (2, "after it")],
         )
         self.assertIn("refused", logs.output[0])
+
+    def test_text_with_a_lone_surrogate_is_written_with_it_escaped(self):
+        # What json.loads makes of a JSON "\ud800" without its pair; sqlite cannot bind it
+        answer = '{"meaning": "x\ud800y"}'
+        result = {"meaning": "x\ud800y"}
+        store = self.open_store()
+        store.insert_call(
+            {"call_id": 1, "response_raw": answer, "response_json": result, "prompt": "食べる"}
+        )
+        store.insert_run({"run_id": 1, "label": "\udc80"})
+        self.assertTrue(store.flush())
+
+        [(raw, response_json, prompt)] = self.rows(
+            "SELECT response_raw, response_json, prompt FROM calls"
+        )
+        self.assertEqual(raw, '{"meaning": "x\\ud800y"}')
+        self.assertEqual(response_json, '{"meaning":"x\\ud800y"}')
+        # The escape is JSON's own, so the text parses back to the value that was recorded
+        self.assertEqual(json.loads(raw), result)
+        self.assertEqual(json.loads(response_json), result)
+        self.assertEqual(prompt, "食べる")
+        self.assertEqual(self.rows("SELECT label FROM runs"), [("\\udc80",)])
 
     def test_a_batch_that_cannot_be_written_turns_the_store_off(self):
         store = self.open_store()
@@ -365,6 +468,22 @@ class BlobTests(StoreTestCase):
         self.assertTrue(store.flush())
         self.assertEqual(self.rows("SELECT text FROM blobs"), [(text,)])
 
+    def test_a_blob_with_a_lone_surrogate_is_stored_under_the_hash_put_blob_returned(self):
+        store = self.open_store()
+        text = "Answer in JSON.\ud800"
+
+        digest = store.put_blob(text)
+        # Named by it, as a call's instructions_hash would
+        store.insert_call({"call_id": 1, "instructions_hash": digest})
+        self.assertTrue(store.flush())
+
+        self.assertEqual(digest, capture_store.text_hash(text))
+        self.assertEqual(self.rows("SELECT hash, text FROM blobs"),
+                         [(digest, "Answer in JSON.\\ud800")])
+        self.assertEqual(
+            self.rows("SELECT COUNT(*) FROM calls JOIN blobs ON instructions_hash = hash"), [(1,)]
+        )
+
     def test_a_value_with_no_json_text_gives_no_hash_and_no_raise(self):
         store = self.open_store()
         with self.assertLogs(capture_store.logger, "WARNING"):
@@ -383,9 +502,9 @@ class PruneTests(StoreTestCase):
         store.insert_call({"call_id": 2, "run_id": 1, "instructions_hash": blob["shared"]})
         # Its schema_hash is NULL, which in a NOT IN list would have kept every blob
         store.insert_call({"call_id": 3, "run_id": 2, "instructions_hash": blob["shared"]})
-        # Its run is not there
+        # Its run row was never written (dropped at a full queue, say): no age to go by
         store.insert_call({"call_id": 4, "run_id": 99})
-        # No run at all, so no age to go by
+        # No run at all, so no age either
         store.insert_call({"call_id": 5})
         self.assertTrue(store.close())
         return blob
@@ -396,10 +515,42 @@ class PruneTests(StoreTestCase):
         with closing(sqlite3.connect(self.path)) as connection, connection:
             counts = capture_store.prune(connection, keep_days=90, now=NOW)
 
-        self.assertEqual(counts, (1, 3, 3))
+        self.assertEqual(counts, (1, 2, 3))
         self.assertEqual(self.ids("runs"), [2])
-        self.assertEqual(self.ids("calls"), [3, 5])
+        self.assertEqual(self.ids("calls"), [3, 4, 5])
         self.assertEqual(self.ids("blobs"), [blob["shared"]])
+
+    def test_the_calls_delete_looks_runs_up_in_the_run_id_index(self):
+        # Not a scan of the calls table, whose rows hold whole prompts and answers
+        with closing(sqlite3.connect(":memory:")) as connection:
+            for statement in capture_store._schema_statements():
+                connection.execute(statement)
+            plan = [
+                row[3]
+                for row in connection.execute(
+                    "EXPLAIN QUERY PLAN " + capture_store._PRUNE_CALLS, (NOW,)
+                )
+            ]
+
+        self.assertTrue(any("INDEX calls_run_id" in step for step in plan), plan)
+        self.assertFalse(
+            any(step.startswith(("SCAN calls", "SCAN TABLE calls")) for step in plan), plan
+        )
+
+    def test_a_recent_call_whose_run_row_is_missing_outlives_the_next_open(self):
+        now = time.time()
+        first = self.open_store(keep_days=None)
+        first.insert_run({"run_id": 1, "started": now - 100 * DAY})
+        first.insert_call({"call_id": 1, "run_id": 1})
+        # Run 2's row was dropped at a full queue a minute ago
+        first.insert_call({"call_id": 2, "run_id": 2})
+        self.assertTrue(first.close())
+
+        second = self.open_store(keep_days=90)
+        self.assertTrue(second.flush())
+
+        self.assertEqual(self.ids("runs"), [])
+        self.assertEqual(self.ids("calls"), [2])
 
     def test_keep_days_of_zero_or_none_keeps_everything(self):
         self.fill(self.open_store(keep_days=None), NOW)
@@ -429,6 +580,45 @@ class PruneTests(StoreTestCase):
 
         self.assertEqual(self.ids("runs"), [2, 3])
         self.assertEqual(self.ids("calls"), [2, 3])
+
+
+class KeepDaysTests(StoreTestCase):
+    """keep_days comes from the user's config as typed there."""
+
+    def test_a_number_or_a_numeric_string_is_its_float_and_none_keeps_all(self):
+        for given, taken in [(None, None), (30, 30.0), (7.5, 7.5), ("30", 30.0), (" 2.5 ", 2.5)]:
+            with self.subTest(given=given):
+                store = self.open_held_store(keep_days=given)
+                self.assertEqual(store._keep_days, taken)
+                self.assertIs(type(store._keep_days), type(taken))
+
+    def test_anything_else_is_the_default_with_a_warning(self):
+        for given in [True, False, "thirty", "", [30], {"days": 30}, 10**400]:
+            with self.subTest(given=given):
+                with self.assertLogs(capture_store.logger, "WARNING") as logs:
+                    store = self.open_held_store(keep_days=given)
+                self.assertEqual(store._keep_days, capture_store.DEFAULT_KEEP_DAYS)
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn(self.path, logs.output[0])
+
+    def fill_and_reopen(self, keep_days):
+        now = time.time()
+        first = self.open_store(keep_days=None)
+        first.insert_run({"run_id": 1, "started": now - 100 * DAY})
+        first.insert_run({"run_id": 2, "started": now - 40 * DAY})
+        first.insert_run({"run_id": 3, "started": now - 10 * DAY})
+        for run_id in (1, 2, 3):
+            first.insert_call({"call_id": run_id, "run_id": run_id})
+        self.assertTrue(first.close())
+        self.assertTrue(self.open_store(keep_days=keep_days).flush())
+        return self.ids("runs"), self.ids("calls")
+
+    def test_a_store_given_a_numeric_string_prunes(self):
+        self.assertEqual(self.fill_and_reopen("30"), ([3], [3]))
+
+    def test_a_store_given_true_prunes_by_the_default_not_by_one_day(self):
+        with self.assertLogs(capture_store.logger, "WARNING"):
+            self.assertEqual(self.fill_and_reopen(True), ([2, 3], [2, 3]))
 
 
 class FailureTests(StoreTestCase):
@@ -511,6 +701,34 @@ class LifecycleTests(StoreTestCase):
         store.insert_run({"run_id": 2})
         self.assertFalse(store.flush())
         self.assertEqual(self.ids("runs"), [1])
+
+    def test_a_writer_close_could_not_queue_its_stop_for_ends_once_it_has_drained(self):
+        store = self.open_store(max_queue=2, batch_size=1)
+        # Past its prune, so that it is the first record that meets the lock
+        self.assertTrue(store.flush())
+        blocker = sqlite3.connect(self.path, isolation_level=None, timeout=0.1)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN IMMEDIATE")
+
+        with (
+            mock.patch.object(capture_store, "_IDLE_POLL_SECONDS", 0.02),
+            self.assertLogs(capture_store.logger, "WARNING") as logs,
+        ):
+            store.insert_run({"run_id": 1})
+            # The writer took it and waits on the lock, so the next two fill the queue
+            deadline = time.monotonic() + 2.0
+            while store._queue.qsize() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            store.insert_run({"run_id": 2})
+            store.insert_run({"run_id": 3})
+            self.assertTrue(store._queue.full())
+            self.assertFalse(store.close(timeout=0.05))
+            blocker.execute("COMMIT")
+            store._thread.join(5.0)
+
+        self.assertFalse(store._thread.is_alive())
+        self.assertIn("still busy", logs.output[0])
+        self.assertEqual(self.ids("runs"), [1, 2, 3])
 
     def test_the_writer_is_a_daemon_that_closing_a_log_does_not_wait_for(self):
         store = self.open_store()

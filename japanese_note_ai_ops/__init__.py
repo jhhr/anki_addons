@@ -239,6 +239,7 @@ def install_capture_store():
             keep_days=config.get("capture_keep_days", 90),
             versions=capture_versions(),
             log_path=current_log_path,
+            profile=getattr(mw.pm, "name", None),
         )
     except Exception:
         logging.getLogger(__name__).warning("The capture store was not installed", exc_info=True)

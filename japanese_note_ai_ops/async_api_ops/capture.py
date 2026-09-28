@@ -36,6 +36,7 @@ from types import TracebackType
 from typing import Any, Callable, Optional
 
 from .capture_store import (
+    DEFAULT_KEEP_DAYS,
     WARNING_INTERVAL_SECONDS,
     CaptureStore,
     canonical_json,
@@ -45,8 +46,9 @@ from .capture_store import (
 
 logger = logging.getLogger(__name__)
 
-# How long a re-install waits for the previous store's writer. The usual path has none to
-# wait for: profile_will_close has shut it down before the next profile opens
+# How long a re-install waits for the previous store's writer before it opens the next store
+# anyway, their ids kept apart by _id_floor. The usual path has none to wait for:
+# profile_will_close has shut it down before the next profile opens
 REPLACE_TIMEOUT_SECONDS = 2.0
 
 # Matched against a config key lowercased with "_", "-" and " " taken out, so that "apiKey" and
@@ -64,56 +66,58 @@ _WORD_SEPARATORS = re.compile(r"[^a-z0-9]+")
 
 class _Installed:
     """The store and what install() was told to put on every run, swapped as one reference so
-    a reader never sees one store with another install's versions."""
+    a reader never sees one store with another install's versions or profile."""
 
-    __slots__ = ("store", "versions_json", "log_path")
+    __slots__ = ("store", "versions_json", "log_path", "profile")
 
     def __init__(
         self,
         store: CaptureStore,
         versions_json: Optional[str],
         log_path: Optional[Callable[[], Optional[str]]],
+        profile: Optional[str],
     ) -> None:
         self.store = store
         self.versions_json = versions_json
         self.log_path = log_path
+        self.profile = profile
 
 
 # Read without the lock on every call (one attribute read is atomic); the lock only keeps two
 # install/shutdown calls from interleaving their close and open
 _installed: Optional[_Installed] = None
 _install_lock = threading.Lock()
+# The (run, call) ids from which no store closed in this process handed any out: where the
+# next store's ids start (CaptureStore's first_ids). A closed store's writer can still be
+# writing when the next one opens, and a store seeded from the file alone would hand out the
+# ids of rows not written yet. Under _install_lock
+_id_floor: Optional[tuple[int, int]] = None
 
 
 def install(
     path: Any,
     *,
-    keep_days: Optional[float] = 90.0,
+    keep_days: Any = DEFAULT_KEEP_DAYS,
     versions: Optional[Mapping[str, Any]] = None,
     log_path: Optional[Callable[[], Optional[str]]] = None,
+    profile: Optional[str] = None,
 ) -> bool:
     """Record from now on into the store at `path`; True when it opened and is recording.
 
-    `versions` is written on every run; `log_path()` is asked at each run's start for the
-    text log it writes to. A store already installed is closed first. If its writer is still
-    busy after that, nothing is opened: the new store's ids are seeded from the rows already in
-    the file, and the old writer may still hold rows with the same ids. Never raises.
+    `versions` and `profile` (the Anki profile's name) are written on every run; `log_path()`
+    is asked at each run's start for the text log it writes to. `keep_days` is taken as the
+    config holds it (`CaptureStore`). A store already installed is closed first. Its writer
+    may still be busy after that, and the new store's ids start past every id a store before
+    it in this process handed out, so the two never write the same one. Never raises.
     """
     global _installed
     with _install_lock:
         previous = _installed
         if previous is not None:
             _installed = None
-            if not _close(previous.store, REPLACE_TIMEOUT_SECONDS):
-                logger.warning(
-                    "Capture store %s was still writing when %s was to replace it; nothing is"
-                    " recorded this session",
-                    previous.store.path,
-                    path,
-                )
-                return False
+            _retire(previous.store, REPLACE_TIMEOUT_SECONDS)
         try:
-            store = CaptureStore(path, keep_days=keep_days)
+            store = CaptureStore(path, keep_days=keep_days, first_ids=_id_floor)
         except Exception as e:
             logger.warning(
                 "Capture store %s could not be created (%s: %s); nothing is recorded this"
@@ -125,24 +129,25 @@ def install(
             return False
         if not store.enabled:
             # The store has logged why
-            _close(store, REPLACE_TIMEOUT_SECONDS)
+            _retire(store, REPLACE_TIMEOUT_SECONDS)
             logger.warning("Capture store %s is not recording; capture is off", store.path)
             return False
-        _installed = _Installed(store, _json(versions, "the versions"), log_path)
+        _installed = _Installed(store, _json(versions, "the versions"), log_path, profile)
     logger.info("Capture store %s: recording AI calls", store.path)
     return True
 
 
 def shutdown(timeout: float = 2.0) -> bool:
     """Close the installed store and forget it; True when its writer stopped (or none was
-    installed). Calls still in flight keep their reference and find the store closed."""
+    installed). Calls still in flight keep their reference and find the store closed. A writer
+    still busy finishes on its own, and the next install's ids start past its."""
     global _installed
     with _install_lock:
         state = _installed
         _installed = None
         if state is None:
             return True
-        return _close(state.store, timeout)
+        return _retire(state.store, timeout)
 
 
 def installed() -> bool:
@@ -163,12 +168,28 @@ def _active() -> Optional[_Installed]:
     return state
 
 
-def _close(store: CaptureStore, timeout: float) -> bool:
+def _retire(store: CaptureStore, timeout: float) -> bool:
+    """Close a store and raise the id floor past its ids; whether its writer stopped.
+    Under _install_lock."""
+    global _id_floor
     try:
-        return store.close(timeout)
+        stopped = store.close(timeout)
     except Exception:
         logger.warning("Capture store %s could not be closed", store.path, exc_info=True)
-        return False
+        stopped = False
+    try:
+        # After the close, not before: until the store stops taking records, an id handed out
+        # after next_ids() can still be queued and written by its writer
+        run_id, call_id = store.next_ids()
+    except Exception:
+        logger.warning(
+            "Capture store %s: its next ids could not be read", store.path, exc_info=True
+        )
+        return stopped
+    if _id_floor is not None:
+        run_id, call_id = max(run_id, _id_floor[0]), max(call_id, _id_floor[1])
+    _id_floor = (run_id, call_id)
+    return stopped
 
 
 # --- where the work is --------------------------------------------------------------------
@@ -255,8 +276,8 @@ def begin_run(
 ) -> Optional[int]:
     """Record the start of a run and return its id, None with capture off.
 
-    `config` is recorded through `scrub_config`; the install's versions and the current log
-    path are added. Enter `run_scope(run_id)` for the work that belongs to it.
+    `config` is recorded through `scrub_config`; the install's versions and profile and the
+    current log path are added. Enter `run_scope(run_id)` for the work that belongs to it.
     """
     state = _active()
     if state is None:
@@ -311,6 +332,7 @@ def _begin_run(
                 "versions_json": state.versions_json,
                 "log_path": _current_log_path(state),
                 "extra_json": _json(extra, "a run's extra"),
+                "profile": state.profile,
             }
         )
         return run_id

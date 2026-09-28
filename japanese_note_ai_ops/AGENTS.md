@@ -161,19 +161,26 @@ Every `get_response` call is recorded in the capture store, below.
 ### Capture store
 
 A record of every AI call, for debugging and for building tests and evals from real runs:
-`user_files/capture.sqlite3`, one file per addon install, so every profile writes to it.
+`user_files/capture.sqlite3`, one file per addon install, so every profile writes to it and each
+run records which (`runs.profile`, `mw.pm.name`: a note id means nothing without its collection).
 `__init__.py` installs it at `profile_did_open` when config `capture_calls` is on (the default)
 and shuts it down at `profile_will_close`. When its writer starts, it deletes the runs older
-than `capture_keep_days` (default 90; 0 or less keeps everything), their calls, and the blobs no
-call uses. Tests and research scripts install no store unless they mean to (tests: in a temp
-dir); without one every capture function is a cheap no-op and nothing is recorded.
+than `capture_keep_days` (default 90; 0 or less, or null, keeps everything), their calls, and the
+blobs no call uses. A call goes with its run only: one whose run row is missing (dropped at a full
+queue) has no age and stays. The store reads `capture_keep_days` as a number or a numeric string
+(`"30"`); anything else (`true`, text) is 90, with a warning. Tests and research scripts install
+no store unless they mean to (tests: in a temp dir); without one every capture function is a
+cheap no-op and nothing is recorded.
 
 | table | one row is |
 | --- | --- |
-| `runs` | one `selected_notes_op` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
+| `runs` | one `selected_notes_op` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
 | `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
 | `blobs` | instructions and response schemas, stored once by sha1 |
 
+- Schema version 3: 2 added `calls.context_json`, 3 `runs.profile`, each last in its table. An
+  older file is brought up to date when it opens (`capture_store._MIGRATIONS`, one transaction; a
+  version 1 file goes through 2 to 3), its old rows NULL in the new columns.
 - Outcomes: `ok`; `refused` (final non-200, body in `error`); `unreadable` (a 200 whose answer
   text could not be found); `unparseable` (not JSON even after the corrector); `no_response`
   (every attempt timed out or lost its connection, or the CLI gave up retrying); `cancelled`;
@@ -182,13 +189,18 @@ dir); without one every capture function is a cheap no-op and nothing is recorde
   `report_unreadable`, `decode_answer`, the terminal client's failure paths) also notes it with
   `capture.note_outcome`, and the last noted wins; a new failure path in a provider notes its own.
 - Keys: `request_key` is the sha1 of `kind` and `canonical_json(inputs)`: what was asked, the
-  same after the prompt is reworded. `prompt_key` hashes model, instructions, prompt, schema and
-  params: what was sent. `capture_store.research_cache_key(model, prompt)` is the research
-  scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no column holds it.
+  same after the prompt is reworded. `prompt_key` hashes what was requested: the model,
+  instructions, prompt, schema and params as `get_response` was given them, not as sent, since a
+  provider drops a parameter its model does not take (Anthropic's temperature fallback, OpenAI's
+  fixed-temperature models, the claude CLI). `capture_store.research_cache_key(model, prompt)`
+  is the research scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no
+  column holds it.
 - Log ids: every line of the addon's log carries `[r<run> n<note> c<call>]`, only the ids there
   are (`n` shows with capture off too), or `[-]`. Each captured call ends with
   `call <id> <kind> <outcome> <seconds>s`, the line that names its row, logged at INFO inside
-  the call; the default `log_level` ERROR hides it, and the store's own warnings too.
+  the call; the default `log_level` ERROR hides it, and the store's own warnings too. A profile
+  switch in one process carries the ids on from the previous store's, whose writer may still be
+  finishing rows the file does not hold yet, so the two never hand out the same id.
 - The ids travel in ContextVars, not arguments. `selected_notes_op`'s `run_bulk_op` begins the
   run and enters `capture.run_scope` around `run_until_complete`; each driver enters
   `base_ops.note_context(note)` (`error_subject` and `capture.note_scope` together) where it
@@ -200,12 +212,12 @@ dir); without one every capture function is a cheap no-op and nothing is recorde
   clean_meaning and make_all_meanings calls a match target makes for a word note carry the
   sentence note's id and the target's task; the notes a call changes are in its context
   (below). A note not added yet (id 0) is recorded as none.
-- Context (`context_json`, schema version 2; a version 1 file gains the column when it opens,
-  its rows NULL): what reading or applying the answer needs that the prompt does not show, e.g.
-  which note each numbered meaning came from. Not in either key, and nothing the prompt is built
-  from (that is `inputs`). Note ids are ints; a note not added yet is its negative placeholder
-  (`new_note_id_field`), which is what a word array links it by until cleanup, or 0 when it
-  has none (a vocab note added by hand, which clean_meaning keys by 0). Per kind:
+- Context (`context_json`, schema version 2): what reading or applying the answer needs that
+  the prompt does not show, e.g. which note each numbered meaning came from. Not in either key,
+  and nothing the prompt is built from (that is `inputs`). Note ids are ints; a note not added
+  yet is its negative placeholder (`new_note_id_field`), which is what a word array links it by
+  until cleanup, or 0 when it has none (a vocab note added by hand, which clean_meaning keys by
+  0). Per kind:
   - `match.meanings`: `word_path` (the word's element, `arr[p[0]][5][p[1]]...`;
     `match_targets.word_path`); `meanings`, one per `inputs.meanings` item in the same order,
     each `note_id` (null for a generated meaning), `m_number` (its sort field's (mN), 0 without;

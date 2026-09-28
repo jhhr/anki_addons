@@ -40,6 +40,8 @@ KIND = "match.meanings"
 INPUTS = {"word": "食べる", "reading": "たべる", "sentence": "パンを食べる。"}
 VERSIONS = {"addon": "1.2.3", "anki": "25.02", "python": "3.9.18", "platform": "linux"}
 LOG_PATH = "logs/match_words_20260927_120000.log"
+# Anki's name for the first profile of a new install
+PROFILE = "User 1"
 NOTE_ID = 1712345678901
 API_KEY = "sk-capture-test-0123456789abcdef"
 
@@ -74,6 +76,7 @@ class CaptureTestCase(unittest.TestCase):
     def install(self, path=None, **options):
         options.setdefault("versions", VERSIONS)
         options.setdefault("log_path", lambda: LOG_PATH)
+        options.setdefault("profile", PROFILE)
         self.assertTrue(capture.install(path or self.path, **options))
         self.addCleanup(capture.shutdown)
         return capture.current_store()
@@ -155,19 +158,54 @@ class InstallTests(CaptureTestCase):
         self.assertIs(capture.current_store(), second)
         self.assertEqual(second.path, second_path)
 
-    def test_a_previous_writer_still_busy_means_no_new_store(self):
+    def check_a_store_opened_while_the_last_writer_is_busy(self, shut_down_first):
+        """The next profile's store on the same file, while the last one's writer still holds
+        rows the file does not: its ids must be past every id the last store handed out."""
         first = self.install()
-        # Closed for real once the patch is gone
-        self.addCleanup(first.close)
-        second_path = os.path.join(self.directory, "other", "capture.sqlite3")
+        # Past its prune, so that it is the run's rows that meet the lock
+        self.assertTrue(first.flush())
+        blocker = sqlite3.connect(self.path, isolation_level=None, timeout=0.1)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN IMMEDIATE")
 
-        with mock.patch.object(first, "close", return_value=False):
-            with self.assertLogs(capture.logger, "WARNING") as logs:
-                self.assertFalse(capture.install(second_path))
+        with (
+            mock.patch.object(capture, "REPLACE_TIMEOUT_SECONDS", 0.05),
+            self.assertLogs(PACKAGE_LOGGER, "WARNING") as logs,
+        ):
+            first_run = capture.begin_run("first")
+            with capture.run_scope(first_run):
+                first_call = record_call(result="first").call_id
+            if shut_down_first:
+                self.assertFalse(capture.shutdown(timeout=0.05))
+            second = self.install()
+            self.assertIsNot(second, first)
+            second_run = capture.begin_run("second")
+            with capture.run_scope(second_run):
+                second_call = record_call(result="second").call_id
 
-        self.assertIn("still writing", logs.output[0])
-        self.assertIsNone(capture.current_store())
-        self.assertFalse(os.path.exists(second_path))
+            self.assertTrue(first._thread.is_alive(), "the first writer was to be busy")
+            self.assertGreater(second_run, first_run)
+            self.assertGreater(second_call, first_call)
+            blocker.execute("COMMIT")
+            first._thread.join(10.0)
+            self.assertFalse(first._thread.is_alive())
+            self.assertTrue(second.flush(10.0))
+
+        self.assertEqual(
+            [(run["run_id"], run["label"]) for run in self.rows("runs")],
+            [(first_run, "first"), (second_run, "second")],
+        )
+        self.assertEqual(
+            [(call["call_id"], call["response_json"]) for call in self.rows("calls")],
+            [(first_call, '"first"'), (second_call, '"second"')],
+        )
+        self.assertEqual([line for line in logs.output if "refused" in line], [])
+
+    def test_installing_again_while_the_writer_is_busy_opens_a_store_past_its_ids(self):
+        self.check_a_store_opened_while_the_last_writer_is_busy(shut_down_first=False)
+
+    def test_installing_after_a_shutdown_that_timed_out_opens_a_store_past_its_ids(self):
+        self.check_a_store_opened_while_the_last_writer_is_busy(shut_down_first=True)
 
 
 class RunTests(CaptureTestCase):
@@ -259,6 +297,7 @@ class RunTests(CaptureTestCase):
                 "outcome": "completed",
                 # end_run was given no extra, and does not wipe begin_run's
                 "extra_json": '{"source":"menu"}',
+                "profile": PROFILE,
             },
         )
 
@@ -275,6 +314,20 @@ class RunTests(CaptureTestCase):
         self.assertLessEqual(0.0, calls[0]["started"])
         self.assertLessEqual(calls[0]["started"], calls[1]["started"])
         self.assertEqual(len(self.rows("runs")), 1)
+
+    def test_each_run_records_the_profile_its_store_was_installed_for(self):
+        self.install(profile="User 2")
+        capture.begin_run("in User 2")
+        self.assertTrue(capture.shutdown())
+        self.install(profile=None)
+        capture.begin_run("with no profile given")
+        record_call(kind="translate.sentence", result="implicit")
+
+        self.assertEqual(
+            [(run["label"], run["profile"]) for run in self.rows("runs")],
+            [("in User 2", "User 2"), ("with no profile given", None),
+             ("translate.sentence", None)],
+        )
 
     def test_end_run_extra_replaces_the_one_begin_run_had(self):
         self.install()
@@ -315,6 +368,7 @@ class ImplicitRunTests(CaptureTestCase):
         self.assertIsNotNone(run["ended"])
         self.assertEqual(run["versions_json"], capture_store.canonical_json(VERSIONS))
         self.assertEqual(run["log_path"], LOG_PATH)
+        self.assertEqual(run["profile"], PROFILE)
         self.assertEqual((call["run_id"], call["started"]), (run_id, 0.0))
         self.assertEqual(call["outcome"], "cancelled")
 
@@ -448,6 +502,21 @@ class CaptureFailureTests(CaptureTestCase):
 
         [call] = self.rows("calls")
         self.assertEqual((call["outcome"], call["response_json"]), ("ok", None))
+
+    def test_a_call_with_a_lone_surrogate_is_recorded_and_names_a_blob_that_is_there(self):
+        self.install()
+        # sqlite cannot bind either; json.loads makes such text of a JSON "\ud800"
+        instructions = INSTRUCTIONS + "\ud800"
+        with capture.call(KIND, INPUTS, **call_args(instructions=instructions)) as trace:
+            capture.note_response(raw='{"meaning": "\ud800"}')
+            trace.finish({"meaning": "\ud800"})
+
+        [call] = self.rows("calls")
+        self.assertEqual(call["response_raw"], '{"meaning": "\\ud800"}')
+        self.assertEqual(call["outcome"], "ok")
+        self.assertEqual(call["instructions_hash"], capture_store.text_hash(instructions))
+        blobs = {row["hash"]: row["text"] for row in self.rows("blobs")}
+        self.assertEqual(blobs[call["instructions_hash"]], INSTRUCTIONS + "\\ud800")
 
     def test_a_context_with_no_json_text_is_recorded_without_it(self):
         self.install()

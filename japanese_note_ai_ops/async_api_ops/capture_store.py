@@ -11,7 +11,10 @@ the only other one.
 Run and call ids are handed out here, from counters seeded with `max(...)+1` when the store
 opens, so a caller has its id at once (for its log lines and its calls' rows) instead of
 waiting on the writer. That is sound only because one process writes the file, the Anki
-profile that opened it; readers (research scripts, a DB browser) are fine under WAL.
+profile that opened it; readers (research scripts, a DB browser) are fine under WAL. Within
+that process a store can open while the previous one's writer is still finishing, with rows
+the file does not hold yet, so the new store is given the old one's next ids (`first_ids`,
+`next_ids`) as a floor.
 
 The store is diagnostics and never fails an op. A file it cannot open, a schema newer than
 this code, a batch that cannot be written: each is logged with the path and turns the store
@@ -39,8 +42,11 @@ from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# 2: calls.context_json
-SCHEMA_VERSION = 2
+# 2: calls.context_json; 3: runs.profile
+SCHEMA_VERSION = 3
+
+# What a keep_days that is no number of days is read as (see _days_to_keep)
+DEFAULT_KEEP_DAYS = 90.0
 
 # Not diagnostics.WORKER_THREAD_PREFIX: call_logging waits for every thread with that prefix
 # to end before it closes a run's log file, and this one lives as long as the profile
@@ -58,6 +64,11 @@ WARNING_INTERVAL_SECONDS = 60.0
 # How often a flush waiting on the writer checks that it is still alive, so a writer that
 # stopped on a failed batch does not hold the caller for the whole timeout
 _POLL_SECONDS = 0.05
+
+# How long an idle writer waits on the queue before it checks whether the store was closed.
+# close() cannot queue its stop behind a full queue, and a writer waiting on the queue with no
+# timeout then waits forever once it has drained it, its connection open for the session
+_IDLE_POLL_SECONDS = 0.5
 
 DAY_SECONDS = 86400.0
 
@@ -99,7 +110,9 @@ def request_key(kind: str, inputs: Any) -> str:
 def prompt_key(
     model: str, instructions: Optional[str], prompt: str, schema: Any, params: Any
 ) -> str:
-    """What was sent: equal only for the same model given the same request, byte for byte."""
+    """What was requested: equal only for the same model, instructions, prompt, schema and
+    parameters as the caller asked for them, byte for byte. Not what was sent, which a provider
+    may change after the key is taken (a parameter the model does not take is dropped)."""
     return text_hash(canonical_json([model, instructions, prompt, schema, params]))
 
 
@@ -125,6 +138,9 @@ RUN_COLUMNS: dict[str, str] = {
     "log_path": "TEXT",
     "outcome": "TEXT",
     "extra_json": "TEXT",
+    # Version 3. Every profile writes to the one file, and a note id means nothing without its
+    # collection. Last, as calls.context_json is, for the migration's ALTER TABLE
+    "profile": "TEXT",
 }
 
 CALL_COLUMNS: dict[str, str] = {
@@ -183,6 +199,7 @@ _INDEXES = (
 # whole from _schema_statements instead
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: ("ALTER TABLE calls ADD COLUMN context_json TEXT",),
+    2: ("ALTER TABLE runs ADD COLUMN profile TEXT",),
 }
 
 
@@ -202,13 +219,13 @@ def _schema_statements() -> list[str]:
 
 # --- pruning -----------------------------------------------------------------------------
 
+# The calls of the runs about to go, not the calls whose run is missing: a run row dropped at a
+# full queue or refused would take its calls with it at the next open, however recent. Written
+# as `run_id IN (...)` so that sqlite looks each pruned run up in the narrow calls(run_id)
+# index (EXPLAIN QUERY PLAN: SEARCH calls USING COVERING INDEX calls_run_id); a condition
+# tested on every call row scans the table, whose rows carry whole prompts and answers
+_PRUNE_CALLS = "DELETE FROM calls WHERE run_id IN (SELECT run_id FROM runs WHERE started < ?)"
 _PRUNE_RUNS = "DELETE FROM runs WHERE started < ?"
-# Through the call_id subquery so that sqlite scans the narrow calls(run_id) index; the plain
-# `DELETE ... WHERE run_id NOT IN` scans the table, whose rows carry whole prompts and answers
-_PRUNE_CALLS = (
-    "DELETE FROM calls WHERE call_id IN (SELECT call_id FROM calls"
-    " WHERE run_id NOT IN (SELECT run_id FROM runs))"
-)
 # NOT EXISTS rather than NOT IN: most calls have no schema, and one NULL in a NOT IN list
 # makes it match nothing
 _PRUNE_BLOBS = (
@@ -221,27 +238,56 @@ _PRUNE_BLOBS = (
 def prune(
     connection: sqlite3.Connection, *, keep_days: Optional[float], now: float
 ) -> tuple[int, int, int]:
-    """Delete the runs started more than `keep_days` before `now`, the calls whose run is
-    gone, then the blobs no call references; return how many of each went.
+    """Delete the runs started more than `keep_days` before `now` with their calls, then the
+    blobs no call references; return how many runs, calls and blobs went.
 
     Opens no transaction of its own. The store runs it in one on the writer's connection
     before it writes anything, so nothing this session records can be taken, whatever its
     `started`. `keep_days` None, 0 or less deletes nothing: keeping everything is the safe
-    reading of a 0 in the config. A call with no `run_id` has no age to go by and stays.
+    reading of a 0 in the config. A call goes with its run and only with it, its `started`
+    counting from the run's: a call with no `run_id`, or whose run row was never written (dropped
+    at a full queue, refused), has no age to go by and stays.
     """
     if keep_days is None or keep_days <= 0:
         return (0, 0, 0)
-    runs = connection.execute(_PRUNE_RUNS, (now - keep_days * DAY_SECONDS,)).rowcount
-    calls = connection.execute(_PRUNE_CALLS).rowcount
+    cutoff = (now - keep_days * DAY_SECONDS,)
+    # Calls first: which of them go is read from the runs about to be deleted
+    calls = connection.execute(_PRUNE_CALLS, cutoff).rowcount
+    runs = connection.execute(_PRUNE_RUNS, cutoff).rowcount
     blobs = connection.execute(_PRUNE_BLOBS).rowcount
     return (runs, calls, blobs)
 
 
+def _days_to_keep(value: Any, path: str) -> Optional[float]:
+    """`keep_days` as `prune` takes it, from whatever the user's config holds.
+
+    A number or a numeric string ("30") is its float; None keeps everything. Anything else is
+    the default, with a warning: given to `prune` as it is, a string raised at every open, so
+    nothing was ever pruned, and `true` counted as one day. A str that is no number, or an int
+    too large for a float, is anything else; a NaN or an infinity prunes nothing.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+        try:
+            return float(value)
+        except (ValueError, OverflowError):
+            pass
+    logger.warning(
+        "Capture store %s: keep_days %r is not a number of days; keeping %g",
+        path,
+        value,
+        DEFAULT_KEEP_DAYS,
+    )
+    return DEFAULT_KEEP_DAYS
+
+
 # --- the store ---------------------------------------------------------------------------
 
-# A row the database refuses on its own (a duplicate id, an int past 64 bits, text with a lone
-# surrogate) is that row's fault: skipping it keeps the rest of the session's capture. Any
-# other error is the file's or the connection's, and it will not mend mid-session.
+# A row the database refuses on its own (a duplicate id, an int past 64 bits) is that row's
+# fault: skipping it keeps the rest of the session's capture. Any other error is the file's or
+# the connection's, and it will not mend mid-session. Text with a lone surrogate, which sqlite
+# would refuse too, is escaped before it gets there (_storable_text).
 _ROW_ERRORS = (
     sqlite3.IntegrityError,
     sqlite3.InterfaceError,
@@ -268,11 +314,33 @@ _STOP = object()
 
 
 def _sql_value(value: Any) -> Any:
-    # A dict or list for a *_json column is the expected case; anything else sqlite cannot
-    # bind (a tuple, a Path) would otherwise cost the whole row
-    if value is None or isinstance(value, (str, int, float, bytes)):
+    if value is None or isinstance(value, (int, float, bytes)):
         return value
-    return canonical_json(value)
+    if not isinstance(value, str):
+        # A dict or list for a *_json column is the expected case; anything else sqlite cannot
+        # bind (a tuple, a Path) would otherwise cost the whole row
+        value = canonical_json(value)
+    return _storable_text(value)
+
+
+def _storable_text(text: str) -> str:
+    """The text, or, when it has a lone surrogate, the text with each one escaped as `\\udXXX`.
+
+    sqlite binds text as UTF-8, and a lone surrogate has none, so the whole row was refused;
+    a decoded answer can hold one (a JSON `\\ud83d` without its pair), and `text_hash` takes it
+    on purpose. A blob keeps the hash of the text as given, which the calls name it by.
+    The escape rather than U+FFFD: it keeps which character it was, and it is the JSON escape a
+    provider sends one as, so an answer or result stored this way parses back to the value
+    `get_response` saw.
+    """
+    # isascii() reads a flag of the string; the encode that proves the rest copies it
+    if text.isascii():
+        return text
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text
 
 
 class CaptureStore:
@@ -285,19 +353,24 @@ class CaptureStore:
     `new_call_id`, the counters being all that keeps ids unique. When the store is off every
     recording method still returns what it would have (ids, hashes), so a caller needs no
     second path, but ids from a store that could not open are not unique across sessions.
+
+    `keep_days` is taken as the config holds it (see `_days_to_keep`). `first_ids`, a (run,
+    call) pair, is the least the counters start at, whatever the file holds: the previous
+    store's `next_ids()` when that store's writer may still hold rows the file does not have.
     """
 
     def __init__(
         self,
         path: Union[str, os.PathLike[str]],
         *,
-        keep_days: Optional[float] = 90.0,
+        keep_days: Any = DEFAULT_KEEP_DAYS,
         batch_seconds: float = 0.5,
         batch_size: int = 200,
         max_queue: int = 5000,
+        first_ids: Optional[tuple[int, int]] = None,
     ) -> None:
         self.path = os.fspath(path)
-        self._keep_days = keep_days
+        self._keep_days = _days_to_keep(keep_days, self.path)
         self._batch_seconds = max(0.0, batch_seconds)
         self._batch_size = max(1, batch_size)
         # A maxsize of 0 is unbounded, the one thing the bound is there to prevent
@@ -316,9 +389,9 @@ class CaptureStore:
         self._closed = False
         self._accepting = False
 
-        first_ids: Optional[tuple[int, int]] = None
+        opened: Optional[tuple[int, int]] = None
         try:
-            first_ids = self._open()
+            opened = self._open()
         except Exception as e:
             logger.warning(
                 "Capture store %s could not be opened (%s: %s); nothing is recorded this session",
@@ -326,10 +399,13 @@ class CaptureStore:
                 type(e).__name__,
                 e,
             )
-        first_run, first_call = first_ids or (1, 1)
+        first_run, first_call = opened or (1, 1)
+        if first_ids is not None:
+            first_run = max(first_run, first_ids[0])
+            first_call = max(first_call, first_ids[1])
         self._run_ids: Iterator[int] = itertools.count(first_run)
         self._call_ids: Iterator[int] = itertools.count(first_call)
-        if first_ids is not None:
+        if opened is not None:
             self._accepting = True
             self._start_writer()
 
@@ -348,6 +424,17 @@ class CaptureStore:
         with self._id_lock:
             return next(self._call_ids)
 
+    def next_ids(self) -> tuple[int, int]:
+        """Take the next run id and the next call id, so that this store never hands either
+        out, and return them: the `first_ids` of a store opened after this one.
+
+        Take them once this store has stopped taking records (after `close()`). An id handed
+        out before that may still be queued and written by this store's writer; one handed out
+        after it never is, so every row this store writes has an id below them.
+        """
+        with self._id_lock:
+            return (next(self._run_ids), next(self._call_ids))
+
     def insert_run(self, row: Mapping[str, Any]) -> int:
         return self._insert("runs", "run_id", self.new_run_id, row)
 
@@ -361,7 +448,8 @@ class CaptureStore:
 
     def put_blob(self, text: Any) -> Optional[str]:
         """Store a text once and return its hash; anything but a str is stored as its
-        canonical JSON (a response schema). None only for a value that has no JSON text."""
+        canonical JSON (a response schema). None only for a value that has no JSON text.
+        A text with a lone surrogate is stored escaped (`_storable_text`), under this hash."""
         try:
             if not isinstance(text, str):
                 text = canonical_json(text)
@@ -465,8 +553,9 @@ class CaptureStore:
         """Stop taking records, let the writer write what is queued, and stop it.
 
         Returns whether the writer has stopped; if it is still writing after `timeout`, it
-        finishes on its own (a daemon thread). Idempotent, and safe from any thread,
-        including after the writer died.
+        finishes on its own (a daemon thread), and ends once the queue is drained even when
+        the stop could not be queued behind a full queue. Idempotent, and safe from any
+        thread, including after the writer died.
         """
         with self._close_lock:
             first = not self._closed
@@ -546,9 +635,15 @@ class CaptureStore:
                 logger.warning(
                     "Capture store %s: journal mode is %s, not wal", self.path, mode
                 )
-            last_run = connection.execute("SELECT MAX(run_id) FROM runs").fetchone()[0]
+            last_run = max(
+                connection.execute("SELECT MAX(run_id) FROM runs").fetchone()[0] or 0,
+                # A call whose run row was dropped at a full queue or refused keeps its run_id,
+                # and prune leaves it: a new run given that id would take the call for its own.
+                # One lookup at the end of the calls(run_id) index
+                connection.execute("SELECT MAX(run_id) FROM calls").fetchone()[0] or 0,
+            )
             last_call = connection.execute("SELECT MAX(call_id) FROM calls").fetchone()[0]
-            return ((last_run or 0) + 1, (last_call or 0) + 1)
+            return (last_run + 1, (last_call or 0) + 1)
         finally:
             connection.close()
 
@@ -622,9 +717,16 @@ class CaptureStore:
             )
 
     def _next_batch(self) -> list[Any]:
-        """Block for the first item, then take more until the batch is full, its time is up,
-        or a flush or stop ends it early."""
-        first = self._queue.get()
+        """Wait for the first item, then take more until the batch is full, its time is up,
+        or a flush or stop ends it early. A closed store whose queue stays empty gives a stop
+        of its own, for the stop close() could not queue (_IDLE_POLL_SECONDS)."""
+        while True:
+            try:
+                first = self._queue.get(timeout=_IDLE_POLL_SECONDS)
+                break
+            except queue.Empty:
+                if self._closed:
+                    return [_STOP]
         batch = [first]
         if not isinstance(first, tuple):
             return batch
