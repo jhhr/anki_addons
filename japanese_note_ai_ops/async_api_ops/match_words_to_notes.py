@@ -59,6 +59,7 @@ from .base_ops import (
     BulkOpResult,
     CancelState,
     NotePlan,
+    NotesRunSpec,
     run_once,
     bulk_nested_notes_op,
     get_response,
@@ -2762,22 +2763,32 @@ def match_words_to_notes_from_selected(
     Returns:
         What selected_notes_op returns for the run.
     """
-    progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Matching words to notes")
-    done_text = "Matched words to notes"
-    bulk_op = bulk_match_words_to_notes
-    new_notes_op = update_fake_note_ids
-    filter_new_notes_op = deduplicate_notes_list
+    spec = match_words_spec()
     return selected_notes_op(
-        done_text,
-        bulk_op,
+        spec.done_text,
+        spec.bulk_op,
         nids,
         parent,
-        progress_updater,
-        new_notes_op,
-        filter_new_notes_op,
+        AsyncTaskProgressUpdater(title=spec.title),
+        spec.new_notes_op,
+        spec.filter_new_notes_op,
+        unadded_notes_op=spec.unadded_notes_op,
+        tidy_markers_op=spec.tidy_markers_op,
+        chain=chain,
+    )
+
+
+def match_words_spec() -> NotesRunSpec:
+    """The match op's run, as the menu starts it and as a script does (`NotesRunSpec`). Built
+    when called, so that it takes the module's functions as they are then."""
+    return NotesRunSpec(
+        done_text="Matched words to notes",
+        title="Async AI op: Matching words to notes",
+        bulk_op=bulk_match_words_to_notes,
+        new_notes_op=update_fake_note_ids,
+        filter_new_notes_op=deduplicate_notes_list,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
-        chain=chain,
     )
 
 

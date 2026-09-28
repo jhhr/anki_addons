@@ -45,6 +45,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
+| `dev/` | dev-only, excluded from the zip: `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel), `capture_run.py` is its CLI for capture runs. Run from the addon root, like the research scripts. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing

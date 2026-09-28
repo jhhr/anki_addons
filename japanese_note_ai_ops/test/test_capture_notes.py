@@ -246,7 +246,8 @@ class ReadPointTests(CaptureNotesTestCase):
         patcher = mock.patch.object(mw, "col", col, create=True)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.run = api.begin_run()
+        # This thread is the op's, enrolled in the run whose reads collection_access serves
+        api.begin_run()
         self.addCleanup(api.end_run)
         ca.end_cleanup_phase()
         self.addCleanup(ca.end_cleanup_phase)

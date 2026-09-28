@@ -3555,6 +3555,37 @@ def notes_run(
     return run_bulk_op, run_result
 
 
+class NotesRunSpec(NamedTuple):
+    """How an op's entry function starts its run: everything `selected_notes_op` and
+    `notes_run` take but the notes, so a script starts the same run the menu does. The entry
+    function still calls its module's `selected_notes_op` with these (test_op_registry pins
+    that every entry function does)."""
+
+    done_text: str
+    # The progress dialog's title, which is also the updater's
+    title: str
+    bulk_op: BulkOp
+    new_notes_op: Optional[NewNotesOp] = None
+    filter_new_notes_op: Optional[FilterNewNotesOp] = None
+    unadded_notes_op: Optional[NewNotesOp] = None
+    tidy_markers_op: Optional[NewNotesOp] = None
+
+    def notes_run(
+        self, nids: Sequence[NoteId], chain_title: Optional[str] = None
+    ) -> tuple[Callable[[Collection], OpChanges], RunResult]:
+        return notes_run(
+            self.done_text,
+            self.bulk_op,
+            nids,
+            AsyncTaskProgressUpdater(title=self.title),
+            self.new_notes_op,
+            self.filter_new_notes_op,
+            self.unadded_notes_op,
+            self.tidy_markers_op,
+            chain_title=chain_title,
+        )
+
+
 def selected_notes_op(
     done_text: str,
     bulk_op: BulkOp,
