@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.5
+Policy version: 0.7
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -66,7 +66,7 @@ needs a split asks (a policy question); it never splits on its own.
 ## KANA: leave in kana (un-kanjify if a label kanjified it)
 
 - KANA-1 The copula: だ, です, and である in all forms (であった, であり, であって, であれば,
-  であろう). It is the copula, not で + 有る.
+  であろう). It is the copula, not で + 有る. The classical copula なり (〜なり, 〜なるべし) too, not 也.
 - KANA-2 ない as the negative auxiliary: 食べない, ではない / じゃない / ではなかった after nouns
   and na-adjectives, くない / くなかった after i-adjectives. Not 無い in kana, but grammar.
 - KANA-3 て-form helper verbs in all their forms: ている, てある, てみる, てくる, ていく, てくれる,
@@ -83,12 +83,17 @@ needs a split asks (a policy question); it never splits on its own.
 - KANA-7 そんな, こんな, あんな, どんな (and そんなに etc.).
 - KANA-8 なんか as a filler or particle that could be dropped (今日なんか暑い); もう as an
   exclamation (もう！, もう、やめてよ); もっと.
-- KANA-9 Auxiliaries: れる / られる, せる / させる, ます, た, たい, らしい, ようだ's だ, ぬ, まい.
-  A kanjified one is a slip (れる written as 様). Pending Q5: べし, ごとし, classical なり, the
-  そう of appearance and hearsay (降りそう, 来るそうだ).
+- KANA-9 Auxiliaries: れる / られる, せる / させる, ます, た, たい, らしい, ようだ's だ, ぬ, まい, and
+  the そう of appearance and hearsay (降りそう, 来るそうだ): they inflect or join and add no meaning a
+  kanji could carry. A kanjified one is a slip (れる written as 様). The auxiliaries that have a
+  dictionary spelling and a meaning of their own are kanjified instead (KANJI-17).
 - KANA-10 Particles (は, が, を, に, で, と, も, の, へ, や, か, ね, よ, しか, さえ, こそ...).
 - KANA-11 Loanwords (gairaigo) stay katakana unless KANJI-16 kanjifies them.
 - KANA-12 Names of people, places, works and brands, however they are written.
+- KANA-13 そう is always kana, the demonstrative adverb too (そう言う, そうする, そうですね): 然う
+  only spells the demonstrative, and telling it from the そう of appearance or hearsay is a
+  call not worth making in every sentence. 言う and 為る after it are still kanjified:
+  そう<k> 言[い]う</k>. Pending Q8: こう and ああ as adverbs (こう言う, ああする) likewise, draft kana.
 
 ## KANJI: kanjify
 
@@ -108,11 +113,15 @@ needs a split asks (a policy question); it never splits on its own.
   なければならない / なくてはならない (探らなければ成らない), いかなくなる (行かなく成る). Only the
   て-pattern てはならない stays kana. But 実が生る (fruit grows) is 生る, a different word.
 - KANJI-5 The formal nouns in every use, grammatical ones included: 事 (こと), 物 (もの, もん:
-  SPLIT-もの), 為 (ため), 様 (よう, also ような, ように, ようだ), 所 (ところ). Pending Q6: the
-  other formal nouns and the conjunctions and endings made from them.
+  SPLIT-もの), 為 (ため), 様 (よう, also ような, ように, ようだ), 所 (ところ), and every other
+  formal noun with a dictionary kanji: 訳 (わけ), 筈 (はず), 積もり (つもり), 内 (うち), 儘 (まま),
+  癖 (くせ), 方 (ほう), 通り (とおり), 所為 (せい), 御蔭 (おかげ), 程 (ほど), 許り (ばかり). So are
+  the conjunctions and sentence endings made from them: 所が, 所で, 物の, 事に, 事だ, and a
+  sentence-final もの / もん (嫌なんだ物[もん]).
 - KANJI-6 The demonstratives: 此の / 其の / 彼の / 何の, 此れ / 其れ / 彼れ / 何れ, 此処 / 其処 /
-  彼処 / 何処, 此方 / 其方 / 彼方 / 何方, the adverbs 斯う, 然う, 如何 (どう, also in どうも,
-  どうして, どうにも), and いう after them as 言う (然う言う, 如何言う). どうぞ is not どう + ぞ.
+  彼処 / 何処, 此方 / 其方 / 彼方 / 何方, the adverb 如何 (どう, also in どうも, どうして,
+  どうにも), and いう after these and after そう / こう / ああ as 言う (如何言う, そう言う).
+  そう, こう, ああ themselves stay kana (KANA-13). どうぞ is not どう + ぞ.
 - KANJI-7 Particle-like words and set phrases with a kanji spelling: まで 迄, だけ 丈, くらい /
   ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, まま 儘, など 等, ら 等 (plural: 彼等, 其奴等),
   たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いつ 何時, まるで 丸で.
@@ -140,6 +149,9 @@ needs a split asks (a policy question); it never splits on its own.
   (KANA-12), whatever kanji they once had (亜米利加, 仏蘭西). The same loanword is kanjified in
   every sentence or in none: extract_words records a kanjified one under its kanji and a
   katakana one under its katakana, so a mix splits one word over two notes.
+- KANJI-17 An auxiliary with a dictionary spelling and a meaning of its own: べし 可し (in every
+  form: 可き, 可く, 可からず), ごとし 如し (如き, 如く), よう 様 (KANJI-5), みたい 見たい
+  (KANJI-7).
 
 ## FMT: how the result is written
 
@@ -174,10 +186,6 @@ with the question's id.
   and method are 由る: settled.)
 - Q4 Loanwords: only a kanji spelling JMdict doesn't mark rare (KANJI-16's draft), or every
   spelling SOURCE-1 accepts, the rare ones too?
-- Q5 Auxiliaries with a kanji spelling: べし 可し, ごとし 如し, よう 様, みたい 見たい kanjified;
-  れる...らしい, だ / です, classical なり and the そう of appearance or hearsay in kana?
-- Q6 Formal nouns: every one with a dictionary kanji in every use (訳, 筈, 積もり, 内, 儘, 癖,
-  方, 通り, 所為, 御蔭, 程, 許り), with the conjunctions and endings made from them (所が, 所で,
-  物の, 事に, sentence-final 物[もん])?
 - Q7 Honorific verbs after a verb stem: kanjified (寝為さい, 御待ち下さい, 御覧頂く), only the
   て-form keeps helpers in kana?
+- Q8 こう and ああ as demonstrative adverbs: kana like そう (KANA-13's draft), or 斯う / 彼あ?
