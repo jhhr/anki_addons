@@ -37,7 +37,7 @@ import sqlite3
 import sys
 import threading
 import time
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, TextIO
 
@@ -195,7 +195,10 @@ class Headless:
     `profile_dir` stands in for the profile folder; `meanings_from`, the generated meanings file
     it starts from when its collection.media has none yet (the meanings file the collection's
     own profile holds, copied once, so that the collection and its meanings agree). Use as a
-    context manager, which closes the store and the collection.
+    context manager, which closes the store and the collection and puts back what the session
+    replaced (the stub `mw`'s collection, progress, config and profile folder, and where run
+    errors are shown). A constructor that raises has put them back already: it closed the
+    collection it opened, which a raise left open and locked for the rest of the process.
     """
 
     def __init__(
@@ -209,35 +212,58 @@ class Headless:
         out: TextIO = sys.stderr,
     ) -> None:
         self.out = out
-        self.mw = real_anki.install()
-        self.mw.addonManager.configs[PACKAGE] = config
-        self.progress = ConsoleProgress(out)
-        self.mw.progress = self.progress
-        self.mw.pm.set_profile_folder(profile_dir)
-        meanings = self.mw.pm.media_folder() / configuration.MEANINGS_DICT_FILE
-        if meanings_from is not None and not meanings.exists():
-            shutil.copy2(meanings_from, meanings)
-        self.meanings_path = meanings
-        self.col = real_anki.open_collection(collection_path)
-        self.mw.col = self.col
-        self.capture_path = capture_path
-        if capture_path is not None:
-            installed = capture.install(
-                str(capture_path),
-                # Capture runs are kept until deleted by hand: they are what the fixtures
-                # and evals are made from
-                keep_days=None,
-                versions=configuration.capture_versions(),
-                log_path=call_logging.current_log_path,
-                profile=Path(collection_path).stem,
-                max_queue=capture_max_queue,
-            )
-            if not installed:
-                raise RuntimeError(f"the capture store {capture_path} did not open")
-        # What the dialog's error pane would have shown; run_errors keeps only what a pane did
         self._errors_lock = threading.Lock()
         self.errors = 0
-        run_errors.deliver_with(self._print_error)
+        with ExitStack() as undo:
+            self.mw = real_anki.install()
+            undo.callback(
+                self._restore_mw,
+                self.mw.col,
+                self.mw.progress,
+                self.mw.addonManager.configs.get(PACKAGE),
+                self.mw.pm._profile_folder,
+            )
+            self.mw.addonManager.configs[PACKAGE] = config
+            self.progress = ConsoleProgress(out)
+            self.mw.progress = self.progress
+            self.mw.pm.set_profile_folder(profile_dir)
+            meanings = self.mw.pm.media_folder() / configuration.MEANINGS_DICT_FILE
+            if meanings_from is not None and not meanings.exists():
+                shutil.copy2(meanings_from, meanings)
+            self.meanings_path = meanings
+            self.col = real_anki.open_collection(collection_path)
+            undo.callback(self.col.close)
+            self.mw.col = self.col
+            self.capture_path = capture_path
+            if capture_path is not None:
+                installed = capture.install(
+                    str(capture_path),
+                    # Capture runs are kept until deleted by hand: they are what the fixtures
+                    # and evals are made from
+                    keep_days=None,
+                    versions=configuration.capture_versions(),
+                    log_path=call_logging.current_log_path,
+                    profile=Path(collection_path).stem,
+                    max_queue=capture_max_queue,
+                )
+                if not installed:
+                    raise RuntimeError(f"the capture store {capture_path} did not open")
+                undo.callback(capture.shutdown, timeout=30.0)
+            # What the dialog's error pane would have shown; run_errors keeps only what a pane
+            # did
+            undo.callback(run_errors.deliver_with, run_errors.deliver_with(self._print_error))
+            self._undo = undo.pop_all()
+
+    def _restore_mw(
+        self, col: Any, progress: Any, config: Optional[dict], profile_folder: Any
+    ) -> None:
+        self.mw.col = col
+        self.mw.progress = progress
+        if config is None:
+            self.mw.addonManager.configs.pop(PACKAGE, None)
+        else:
+            self.mw.addonManager.configs[PACKAGE] = config
+        self.mw.pm._profile_folder = profile_folder
 
     def _print_error(self, title: str, text: str) -> None:
         with self._errors_lock:
@@ -252,8 +278,8 @@ class Headless:
         self.close()
 
     def close(self) -> None:
-        capture.shutdown(timeout=30.0)
-        self.col.close()
+        """The store shut down, the collection closed, the stub `mw` as it was. Idempotent."""
+        self._undo.close()
 
     def run(self, spec: NotesRunSpec, nids: list[NoteId], log_name: str) -> "RunReport":
         """Run `spec` over `nids`, as the menu would, on a thread of this process, and wait for

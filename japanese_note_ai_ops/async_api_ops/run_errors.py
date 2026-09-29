@@ -256,10 +256,14 @@ def exception_text(error: BaseException, what: str = "") -> str:
 _deliver: Optional[Callable[[str, str], None]] = None
 
 
-def deliver_with(deliver: Optional[Callable[[str, str], None]]) -> None:
-    """Set what shows a reported error: `deliver(title, text)`, called on the reporting thread."""
+def deliver_with(
+    deliver: Optional[Callable[[str, str], None]],
+) -> Optional[Callable[[str, str], None]]:
+    """Set what shows a reported error: `deliver(title, text)`, called on the reporting thread.
+    Returns the one it replaces, for a caller that sets its own for a while."""
     global _deliver
-    _deliver = deliver
+    previous, _deliver = _deliver, deliver
+    return previous
 
 
 def report_error(text: str, where: str = "") -> None:
