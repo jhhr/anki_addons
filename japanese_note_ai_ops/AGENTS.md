@@ -19,7 +19,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | --- | --- |
 | `__init__.py` | strict order, see below |
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
-| `call_logging.py` | per-call log files in `user_files/logs/`, `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
+| `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
 | `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
@@ -252,6 +252,11 @@ cheap no-op and nothing is recorded.
   writes expected_copy_anywhere.json from a replay with its add definitions on
   (`replay.copy_anywhere_on_add`); the capture run had none on, so that file is a regression
   baseline, not a capture.
+- **Logs.** A replay writes its logs to `user_files/replay_logs/` beside each addon's own
+  `logs/` (`replay.REPLAY_LOGS`, by pointing `call_logging.logs_dir` and CopyAnywhere's
+  `logging_setup.logs_dir` there): a replay's run is not one of the user's, and CopyAnywhere
+  keeps only its newest 200, so a benchmark's adds pruned the logs of the user's own. The
+  replay opens its own call log (`start_call_log(corpus["op"])`) and closes it at the end.
 - **Where fixtures live.** A fixture of a real collection holds its note text and excerpts of
   the MDX dictionaries it looked words up in, so it never goes into this public repo. They
   live in the private test data repo (`jhhr/anki_addons_test_data`), cloned to the gitignored

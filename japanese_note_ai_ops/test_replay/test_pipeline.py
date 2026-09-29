@@ -17,7 +17,7 @@ import argparse
 import json
 import sqlite3
 import tempfile
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -457,6 +457,42 @@ def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
     assert kept["stages"][0]["card_actions"][0]["change_deck"] == "Unseen deck 2"
     assert "Unseen deck 1" not in fixture.corpus["decks"]
     assert replay.replay(fixture).differences(fixture.expected) == []
+
+
+def test_a_replay_logs_beside_the_addons_own_logs_and_leaves_nothing_attached(
+    captured, tmp_path, monkeypatch
+):
+    from copy_anywhere import logging_setup
+
+    from japanese_note_ai_ops import call_logging
+
+    # Where the addons' own logs are: the user's, which a replay's run is not one of
+    monkeypatch.setattr(call_logging, "logs_dir", lambda: str(tmp_path / "jnaio" / "logs"))
+    monkeypatch.setattr(logging_setup, "logs_dir", lambda: str(tmp_path / "ca" / "logs"))
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id, copy_anywhere={"copy_definitions": []})
+    fixture.corpus["config"]["log_level"] = "INFO"
+    seen = []
+
+    @contextmanager
+    def probe():
+        seen.append(logging_setup.logs_dir())
+        yield
+
+    assert replay.replay(fixture, around_run=probe).differences(fixture.expected) == []
+
+    [log] = (tmp_path / "jnaio" / replay.REPLAY_LOGS).iterdir()
+    assert log.name.startswith("match_words_") and log.read_text(encoding="utf-8")
+    assert not (tmp_path / "jnaio" / "logs").exists()
+    # Nothing after the replay writes into its folder
+    assert not [h for h in call_logging.addon_logger().handlers
+                if getattr(h, call_logging._ADDON_HANDLER_FLAG, False)]
+    # CopyAnywhere's, for as long as its definitions are on the add hook
+    stub = real_anki.install()
+    with replay.copy_anywhere_on_add(stub, {"copy_definitions": []}):
+        seen.append(logging_setup.logs_dir())
+    assert seen == [str(tmp_path / "ca" / "logs"), str(tmp_path / "ca" / replay.REPLAY_LOGS)]
+    assert logging_setup.logs_dir() == str(tmp_path / "ca" / "logs")
 
 
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):

@@ -143,6 +143,17 @@ def close_previous_log_handlers(logger_instance: logging.Logger) -> None:
             _close_handler_when_idle(handler)
 
 
+def logs_dir() -> str:
+    """The directory the call log files are written to.
+
+    Under user_files because that is the only directory Anki carries across an addon update;
+    everything else is sent to the trash and re-extracted, which took every log with it exactly
+    when a user was being asked for one. A function, as CopyAnywhere's is, so a replay can send
+    its logs elsewhere (dev/replay.py `replay_logs`).
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_files", "logs")
+
+
 def create_call_log_handler(function_name: str) -> logging.Handler:
     """Create a new file handler for a specific function call"""
     config = mw.addonManager.getConfig(ADDON_MODULE) or {}
@@ -165,16 +176,12 @@ def create_call_log_handler(function_name: str) -> logging.Handler:
         setattr(handler, _ADDON_HANDLER_FLAG, True)
         return handler
 
-    # Create logs directory. Under user_files because that is the only directory Anki carries
-    # across an addon update; everything else is sent to the trash and re-extracted, which
-    # took every log with it exactly when a user was being asked for one.
-    addon_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(addon_dir, "user_files", "logs")
-    os.makedirs(logs_dir, exist_ok=True)
+    directory = logs_dir()
+    os.makedirs(directory, exist_ok=True)
 
     # Create unique log file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"{function_name}_{timestamp}.log")
+    log_file = os.path.join(directory, f"{function_name}_{timestamp}.log")
 
     # Create handler. delay=True so the file isn't opened (or created) until something is
     # actually logged - building the context menu shouldn't leave an empty log file behind.

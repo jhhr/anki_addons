@@ -102,6 +102,10 @@ PRIVATE_CONFIG_KEYS = frozenset({"claude_cli_path"})
 PRIVATE_CONFIG_SUFFIX = "_query"
 # CopyAnywhere's key for its definitions, in its addon config
 COPY_DEFINITIONS_KEY = "copy_definitions"
+# Where a replay's logs go: this folder beside each addon's own `logs`, in its user_files. A
+# replay's run is not one of the user's, and CopyAnywhere keeps only its newest 200 logs, so
+# the hundred adds of one benchmark in the user's folder pruned the logs of their own adds
+REPLAY_LOGS = "replay_logs"
 
 
 class CaptureGap(Exception):
@@ -1088,13 +1092,14 @@ def replay_in_anki(
 def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
     """CopyAnywhere's add-note definitions run on every note added inside the block, as they do
     in Anki: its handler on `note_will_be_added`, and only that one (its editor and review hooks
-    have no use here), with `config` as its addon config.
+    have no use here), with `config` as its addon config. Its logs go to `REPLAY_LOGS`.
 
     For issue #11's stage 5: the match op's cleanup adds its notes with `col.add_note`, which
     fires the hook for each, so its cost lands in the add phase, and what CopyAnywhere reads it
     reads from the whole collection, as in Anki. A script's `headless` registered the
     copy_anywhere package; under pytest the root conftest did."""
     from anki.hooks import note_will_be_added
+    from copy_anywhere import logging_setup
     from copy_anywhere.hooks import note_hooks
 
     configs = mw.addonManager.configs
@@ -1107,13 +1112,28 @@ def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
     )
     note_will_be_added.append(handler)
     try:
-        yield
+        with replay_logs(logging_setup):
+            yield
     finally:
         note_will_be_added.remove(handler)
         if saved is None:
             configs.pop(COPY_ANYWHERE, None)
         else:
             configs[COPY_ANYWHERE] = saved
+
+
+@contextmanager
+def replay_logs(module: Any) -> Iterator[None]:
+    """`module.logs_dir()`, an addon's log folder (call_logging's, CopyAnywhere's
+    logging_setup's), as `REPLAY_LOGS` beside it for the block. Both ask it for each file they
+    open, so everything the block runs logs there."""
+    saved = module.logs_dir
+    directory = str(Path(saved()).parent / REPLAY_LOGS)
+    module.logs_dir = lambda: directory
+    try:
+        yield
+    finally:
+        module.logs_dir = saved
 
 
 @contextmanager
@@ -1148,6 +1168,28 @@ def _replay(
     estimates: Optional[dict] = None,
     background_ids: frozenset[int] = frozenset(),
 ) -> ReplayResult:
+    from japanese_note_ai_ops import call_logging
+
+    with replay_logs(call_logging):
+        return _replay_logged(
+            fixture, col, media, root, set_config, run_op, cassette, read_store, estimates,
+            background_ids,
+        )
+
+
+def _replay_logged(
+    fixture: Fixture,
+    col: Any,
+    media: Path,
+    root: Path,
+    set_config: Callable[[dict], None],
+    run_op: RunOp,
+    cassette: Optional[Cassette],
+    read_store: Optional[Callable[[Path], Any]],
+    estimates: Optional[dict],
+    background_ids: frozenset[int],
+) -> ReplayResult:
+    from japanese_note_ai_ops import call_logging
     from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.configuration import MEANINGS_DICT_FILE
@@ -1168,6 +1210,10 @@ def _replay(
     set_config(
         dict(corpus["config"], capture_calls=True, capture_notes=True, log_to_console=False)
     )
+    # A file of its own, at the corpus's log level, as the menu opens one for the op it starts.
+    # Without it the run's records went to whatever file the process had opened last, outside
+    # the replay's folder; closed at the end, so nothing after the replay writes into it
+    call_logging.start_call_log(corpus["op"])
     media.mkdir(parents=True, exist_ok=True)
     (media / MEANINGS_DICT_FILE).write_text(
         json.dumps(corpus["meanings"], ensure_ascii=False), encoding="utf-8"
@@ -1212,6 +1258,7 @@ def _replay(
         run_errors.deliver_with(previous_deliver)
         capture.shutdown(timeout=5.0)
         _point_modules_at(saved_helper)
+        call_logging.close_previous_log_handlers(call_logging.addon_logger())
 
 
 def _point_modules_at(helper: Any) -> None:
