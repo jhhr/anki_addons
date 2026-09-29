@@ -24,7 +24,8 @@ material is in [`docs/`](docs/):
                              uses its main checkout's
     conftest.py              makes every addon importable under pytest without Anki
     pytest.ini  mypy.ini  requirements-dev*.txt
-    .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only
+    .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only,
+                             and the kanjify golden set's subagent types (agents/)
     anki_shared/             shared packages; no __init__.py, not an addon
       jp_text_processing/    git submodule, its own repo (see below)
     <addon>/

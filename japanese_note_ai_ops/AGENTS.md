@@ -517,7 +517,10 @@ with those decisions (`batch_template.md`); `agent_queue.py` runs a rendered que
 `claude -p` (resumable, shardable across machines by `--shard I/N`, stopped cleanly by the
 usage limit or a STOP file), and agents look things up only through the read-only
 `kanjify_lookup.py`. Everything they read and write is in `evals/kanjify_golden/` of the test
-data checkout.
+data checkout. A cloud session has no `claude` CLI, so it runs the same queues as its own
+subagents instead (`agent_items.py` takes and saves items, the types in the repo's
+`.claude/agents/kanjify-*.md` fix model, effort and tools; `kanjify_agents/cloud_runbook.md` is
+what such a session follows), writing the same result files.
 
 ## Tests and types
 

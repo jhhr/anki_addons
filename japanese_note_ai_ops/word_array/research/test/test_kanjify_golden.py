@@ -1,14 +1,18 @@
 """The kanjify golden set's checks: what a labelled row must pass, what a program flags in a
 sentence's furigana, how a queue is split between machines and what an agent may run."""
 
+import json
 import sys
+import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 # See the note in test_vocab_morphology.py: the suite already has a `conftest` of its own, so
 # the path is set here rather than in one more file by that name.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import agent_items  # noqa: E402
 import agent_queue  # noqa: E402
 import kanjify_golden as golden  # noqa: E402
 import kanjify_golden_render as render  # noqa: E402
@@ -106,6 +110,61 @@ class CommandTest(unittest.TestCase):
 
     def test_the_machine_fills_the_python_command(self):
         self.assertEqual(agent_queue.fill("run {PYTHON} x.py", "py -3.10"), "run py -3.10 x.py")
+
+
+class AgentItemsTest(unittest.TestCase):
+    """A cloud session's take and save write what agent_queue writes."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        saved = (golden.QUEUES, golden.RESULTS, agent_items.OUTPUT)
+        golden.QUEUES, golden.RESULTS = root / "queues", root / "results"
+        agent_items.OUTPUT = root / "output"
+
+        def restore():
+            golden.QUEUES, golden.RESULTS, agent_items.OUTPUT = saved
+
+        self.addCleanup(restore)
+        item = {"id": "w1", "prompt": "run {PYTHON} word_array/research/kanjify_lookup.py jmdict x",
+                "schema": "word_schema.json", "effort": "xhigh", "tools": "lookup+web",
+                "meta": {"policy_version": "9"}}  # fmt: skip
+        golden.write_jsonl(golden.QUEUES / "words.jsonl", [item])
+        self.root = root
+
+    def run_command(self, *argv: str) -> str:
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), unittest.mock.patch.object(sys, "argv", ["x", *argv]):
+            agent_items.main()
+        return out.getvalue()
+
+    def test_take_then_save(self):
+        line = self.run_command("take", "words").strip()
+        item_id, kind, prompt_file = line.split("\t")
+        self.assertEqual((item_id, kind), ("w1", "kanjify-word"))
+        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        self.assertIn("python japanese_note_ai_ops/word_array/research/kanjify_lookup.py", prompt)
+        self.assertIn('"required"', prompt)  # the schema is appended
+        self.assertIn("nothing left", self.run_command("take", "words"))  # claimed
+        answer = {"word": "a", "kana": "a", "uses": [], "not_this_word": [], "questions": [],
+                  "summary": "s"}  # fmt: skip
+        file = self.root / "answer.txt"
+        file.write_text("Done.\n" + json.dumps(answer), encoding="utf-8")
+        self.assertIn("saved", self.run_command("save", "words", "w1", str(file)))
+        result = json.loads((golden.RESULTS / "words" / "w1.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["structured"], answer)
+        self.assertEqual(result["meta"], {"policy_version": "9"})
+
+    def test_an_answer_missing_a_key_is_not_saved(self):
+        self.run_command("take", "words")
+        file = self.root / "answer.txt"
+        file.write_text(json.dumps({"word": "a"}), encoding="utf-8")
+        self.assertIn("ask the subagent again", self.run_command("save", "words", "w1", str(file)))
+        self.assertFalse((golden.RESULTS / "words" / "w1.json").exists())
 
 
 class SampleUsesTest(unittest.TestCase):
