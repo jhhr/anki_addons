@@ -293,6 +293,33 @@ def test_background_notes_change_nothing_the_run_does(captured):
     assert result.differences(fixture.expected) == []
 
 
+def test_a_note_added_past_the_background_notes_is_the_run_s(captured, tmp_path):
+    # A note added in a millisecond whose id a note already has gets max(id) + 1 from Anki,
+    # which with background notes in the collection is past them, and a note added from 2033
+    # on has an id in their range: a replay left either out of its notes, by the range
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    # Not collection.anki2: the capture run's collection is that
+    col, background_ids = replay.build_collection(
+        fixture.corpus, tmp_path / "replayed.anki2", background=3
+    )
+    try:
+        added = [max(background_ids) + 1, replay.BACKGROUND_BASE + 5]
+        for new_id in added:
+            note = real_anki.add_note(col, NOTETYPE, {FIELDS["word_sort_field"]: str(new_id)})
+            col.db.execute("update cards set nid = ? where nid = ?", new_id, note.id)
+            col.db.execute("update notes set id = ? where id = ?", new_id, note.id)
+
+        ids = {note["id"] for note in replay._collection_notes(col, background_ids)}
+    finally:
+        col.close()
+
+    assert len(background_ids) == 3
+    assert set(added) <= ids
+    assert not ids & background_ids
+    assert len(ids) == len(fixture.corpus["notes"]) + len(added)
+
+
 def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
     # The new note's deck is missing, so its add fails and the sentence keeps its placeholder,
     # a random number every run: a fixture holding it could never replay

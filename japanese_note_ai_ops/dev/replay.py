@@ -867,16 +867,23 @@ class ReplayResult:
         return problems
 
 
-def build_collection(corpus: Mapping[str, Any], path: Path, background: int = 0):
+def build_collection(
+    corpus: Mapping[str, Any], path: Path, background: int = 0
+) -> tuple[Any, frozenset[int]]:
     """A fresh collection at `path` holding the corpus (`fill_collection`) and `background`
-    notes no request of the run can find (`background_notes`)."""
+    notes no request of the run can find (`background_notes`), and the background notes' ids.
+
+    The ids themselves, not their range: a note added in a millisecond whose id a note already
+    has gets `max(id) + 1` from Anki, which with background notes in the collection is past
+    them, and from 2033 every new note's id is in their range anyway."""
     from anki_shared.testing import real_anki
 
     col = real_anki.open_collection(path)
+    notes = background_notes(corpus, background)
     fill_collection(col, corpus)
-    if background:
-        fill_collection(col, {"notetypes": [], "decks": [], "notes": background_notes(corpus, background)})
-    return col
+    if notes:
+        fill_collection(col, {"notetypes": [], "decks": [], "notes": notes})
+    return col, frozenset(note["id"] for note in notes)
 
 
 # Background notes' ids, clear of the corpus's and of the ids its fields name
@@ -1006,7 +1013,7 @@ def replay(
     stub = real_anki.install()
     saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
     saved_profile = stub.pm._profile_folder
-    col = build_collection(fixture.corpus, root / "collection.anki2", background)
+    col, background_ids = build_collection(fixture.corpus, root / "collection.anki2", background)
     try:
         stub.col = col
         stub.pm.set_profile_folder(root / "profile")
@@ -1026,7 +1033,7 @@ def replay(
 
         return _replay(
             fixture, col, stub.pm.media_folder(), root, set_config, run_op, cassette,
-            read_store, estimates,
+            read_store, estimates, background_ids,
         )
     finally:
         stub.col = saved_col
@@ -1126,6 +1133,7 @@ def _replay(
     cassette: Optional[Cassette],
     read_store: Optional[Callable[[Path], Any]],
     estimates: Optional[dict] = None,
+    background_ids: frozenset[int] = frozenset(),
 ) -> ReplayResult:
     from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
@@ -1163,7 +1171,9 @@ def _replay(
         capture.shutdown(timeout=30.0)
         events = _run_events(store)
         return ReplayResult(
-            notes=normalized_notes(_collection_notes(col), events.added, failed=events.failed),
+            notes=normalized_notes(
+                _collection_notes(col, background_ids), events.added, failed=events.failed
+            ),
             meanings=dict(sorted(events.meanings.items())),
             misses=cassette.misses,
             unused=cassette.unused(),
@@ -1223,11 +1233,12 @@ def _run_events(store: Path) -> _RunEvents:
     return events
 
 
-def _collection_notes(col: Any) -> list[dict]:
+def _collection_notes(col: Any, background_ids: frozenset[int] = frozenset()) -> list[dict]:
+    """Every note of the collection but the background notes (`build_collection`)."""
     decks = {int(deck.id): deck.name for deck in col.decks.all_names_and_ids()}
     notes = []
     for nid in col.find_notes(""):
-        if BACKGROUND_BASE <= nid < BACKGROUND_LINK_BASE:
+        if nid in background_ids:
             continue
         note = col.get_note(nid)
         did = col.db.scalar("select did from cards where nid = ? order by ord limit 1", nid)
