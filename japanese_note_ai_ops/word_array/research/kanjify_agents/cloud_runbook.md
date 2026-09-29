@@ -27,20 +27,23 @@ All commands run from the repo root. `$R` is `japanese_note_ai_ops/word_array/re
 
 ## The loop
 
-Keep K subagents running (6 is a good start; fewer if the session slows):
+Keep K subagents running (6 is a good start, 10 for a session that is the only one; fewer if
+the session slows). Your own context gets one line per item, so the loop can run for hours:
 
 1. `python $R/agent_items.py take QUEUE --shard I/N --count K` prints one line per item: its
-   id, the subagent type, the prompt file. It claims them, so they are never handed out twice.
+   id, the subagent type, the prompt file and the answer file. It claims them, so they are
+   never handed out twice. Leave `--shard` out when yours is the only session (it is 0/1).
 2. For each line start a background subagent of that type (`kanjify-word`,
    `kanjify-batch-high`, ...; they are in `.claude/agents/` and fix model, effort and tools)
-   with the prompt: `Read <prompt file> and do what it says. Your final message is only the
-   JSON object.` Do not paste the prompt itself: it is long, and the file is what it reads.
-3. When one finishes, write its final message, unchanged, to
-   `japanese_note_ai_ops/output/agent_items/answers/<id>.txt` and run
-   `python $R/agent_items.py save QUEUE <id> <that file>`. It writes the result file. If it
-   says to ask again, send the subagent the reason and save its new answer; if that fails
-   too, leave the item: its claim expires after 90 minutes and a later `take` hands it out
-   again. Rows `save` warns will be rejected are kept; collate sorts them out.
+   with the prompt: `Read <prompt file> and do what it says.` Do not paste the prompt itself:
+   it is long, and the file is what it reads.
+3. A subagent writes its answer to its answer file and replies `written <id>`: then run
+   `python $R/agent_items.py save QUEUE <id>`. It checks the answer and writes the result
+   file. If a subagent replied with the JSON itself instead, write that reply, unchanged, to a
+   file and pass it: `save QUEUE <id> <file>`. If `save` says to ask again, send the subagent
+   the reason; if that fails too, leave the item: its claim expires after 90 minutes and a
+   later `take` hands it out again. Rows `save` warns will be rejected are kept; collate sorts
+   them out.
 4. Take one more item for each one finished.
 5. Every 10 saves, and before you stop, push the results (only your result files: never
    `collated/`, `decisions.jsonl`, a queue you rendered, or anything under `output/`):

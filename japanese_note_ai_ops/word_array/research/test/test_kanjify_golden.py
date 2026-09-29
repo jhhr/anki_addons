@@ -144,20 +144,38 @@ class AgentItemsTest(unittest.TestCase):
 
     def test_take_then_save(self):
         line = self.run_command("take", "words").strip()
-        item_id, kind, prompt_file = line.split("\t")
+        item_id, kind, prompt_file, answer_file = line.split("\t")
         self.assertEqual((item_id, kind), ("w1", "kanjify-word"))
         prompt = Path(prompt_file).read_text(encoding="utf-8")
         self.assertIn("python japanese_note_ai_ops/word_array/research/kanjify_lookup.py", prompt)
         self.assertIn('"required"', prompt)  # the schema is appended
+        self.assertIn(Path(answer_file).as_posix(), prompt)
         self.assertIn("nothing left", self.run_command("take", "words"))  # claimed
         answer = {"word": "a", "kana": "a", "uses": [], "not_this_word": [], "questions": [],
                   "summary": "s"}  # fmt: skip
-        file = self.root / "answer.txt"
-        file.write_text("Done.\n" + json.dumps(answer), encoding="utf-8")
-        self.assertIn("saved", self.run_command("save", "words", "w1", str(file)))
+        Path(answer_file).write_text(json.dumps(answer), encoding="utf-8")
+        self.assertIn("saved", self.run_command("save", "words", "w1"))
         result = json.loads((golden.RESULTS / "words" / "w1.json").read_text(encoding="utf-8"))
         self.assertEqual(result["structured"], answer)
         self.assertEqual(result["meta"], {"policy_version": "9"})
+
+    def test_a_reply_saved_by_the_lead_counts_too(self):
+        self.run_command("take", "words")
+        answer = {"word": "a", "kana": "a", "uses": [], "not_this_word": [], "questions": [],
+                  "summary": "s"}  # fmt: skip
+        file = self.root / "reply.txt"
+        file.write_text("Done." + chr(10) + json.dumps(answer), encoding="utf-8")
+        self.assertIn("saved", self.run_command("save", "words", "w1", str(file)))
+
+    def test_the_template_hands_in_through_the_file(self):
+        golden.write_jsonl(golden.QUEUES / "words.jsonl", [{
+            "id": "w2", "schema": "word_schema.json",
+            "prompt": "x. " + agent_items.FINAL_MESSAGE + ".",
+        }])  # fmt: skip
+        prompt_file = self.run_command("take", "words").split(chr(9))[2]
+        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        self.assertNotIn(agent_items.FINAL_MESSAGE, prompt)
+        self.assertIn("written w2", prompt)
 
     def test_an_answer_missing_a_key_is_not_saved(self):
         self.run_command("take", "words")

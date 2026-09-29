@@ -37,6 +37,7 @@ import agent_queue
 import kanjify_golden as golden
 
 CLAIM = ".claim"
+FINAL_MESSAGE = "Your final message is the JSON object the output schema asks for, and nothing else"
 # A subagent starts where its session does, the repo root, so the lookup runs by its full path;
 # the agent types allow that one command and nothing else
 LOOKUP_FROM_ROOT = "python japanese_note_ai_ops/word_array/"
@@ -72,14 +73,22 @@ def work_dir(path: Path) -> Path:
     return work
 
 
-def schema_text(item: dict) -> str:
+def answer_path(path: Path, item_id: str) -> Path:
+    return work_dir(path) / "answers" / f"{item_id}.json"
+
+
+def output_text(item: dict, answer: Path) -> str:
+    """How the subagent hands its answer back: into a file, so that its lead's context gets one
+    line per item instead of every answer, which over hundreds of items a lead re-reads on every
+    turn. The schema goes with it, since no CLI enforces one here."""
     schema = item.get("schema")
-    if not schema:
-        return ""
-    text = (agent_queue.AGENTS_DIR / schema).read_text(encoding="utf-8")
+    text = (agent_queue.AGENTS_DIR / schema).read_text(encoding="utf-8") if schema else "{}"
     return (
-        "\n\n## Output schema\n\nYour final message is one JSON object valid against this schema,"
-        " with nothing before or after it:\n\n```json\n" + text.strip() + "\n```\n"
+        "\n\n## Handing in\n\nThe JSON object the prompt asks for, valid against the schema"
+        f" below and nothing else, goes into the file `{answer.as_posix()}`: write it with the"
+        f" Write tool. Then reply with only the line `written {item['id']}`.\n\n```json\n"
+        + text.strip()
+        + "\n```\n"
     )
 
 
@@ -103,11 +112,18 @@ def take(args) -> int:
         if (out / f"{item['id']}.json").exists() or claimed(work, item["id"], args.stale):
             continue
         prompt = item["prompt"].replace("{PYTHON} word_array/", LOOKUP_FROM_ROOT)
-        prompt = agent_queue.fill(prompt, "python") + schema_text(item)
+        # The templates hand the answer back as the final message, which the CLI reads; here it
+        # goes into a file (output_text), and two instructions would leave the agent guessing
+        prompt = prompt.replace(FINAL_MESSAGE, "Your answer is the JSON object the output schema"
+                                " asks for (see Handing in at the end)")
+        answer = answer_path(path, item["id"])
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.unlink(missing_ok=True)  # an old one would be saved as this item's answer
+        prompt = agent_queue.fill(prompt, "python") + output_text(item, answer)
         file = prompts / f"{item['id']}.md"
         file.write_text(prompt, encoding="utf-8")
         (work / f"{item['id']}{CLAIM}").write_text(time.strftime("%Y-%m-%dT%H:%M:%S"))
-        print(f"{item['id']}\t{agent_type(item)}\t{file}")
+        print(f"{item['id']}\t{agent_type(item)}\t{file}\t{answer}")
         taken += 1
     if not taken:
         print("nothing left to take in this shard")
@@ -131,7 +147,11 @@ def save(args) -> int:
     if item is None:
         print(f"no item {args.id} in {path.name}")
         return 1
-    text = Path(args.answer).read_text(encoding="utf-8")
+    answer_file = Path(args.answer) if args.answer else answer_path(path, args.id)
+    if not answer_file.exists():
+        print(f"{args.id}: no answer file {answer_file}; save its final message to a file and pass it")
+        return 1
+    text = answer_file.read_text(encoding="utf-8")
     answer = agent_queue.terminal_client.last_json_object(text)
     if answer is None:
         print(f"{args.id}: no JSON object in the answer; ask the subagent again")
@@ -199,7 +219,7 @@ def main() -> int:
     p = sub.add_parser("save")
     p.add_argument("queue")
     p.add_argument("id")
-    p.add_argument("answer")
+    p.add_argument("answer", nargs="?", help="default: the file the subagent was told to write")
     p.add_argument("--seconds", type=float)
     p = sub.add_parser("status")
     p.add_argument("queues", nargs="+")
