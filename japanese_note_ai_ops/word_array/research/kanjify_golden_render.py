@@ -125,7 +125,7 @@ def decision_block(d: dict) -> str:
 SINGLE_STEPS = """3. No word decisions are given: decide each word yourself from the policy and the
    dictionaries (the JMdict lookup, and WebSearch / WebFetch on jisho.org, weblio.jp,
    kotobank.jp). The policy's rules still bind you: never invent a split or a rule.
-4. A use that turns on a pending question (Q1 to Q7 at the end of the policy) is written as the
+4. A use that turns on a pending question (listed at the end of the policy) is written as the
    policy's draft answer says and listed under `pending` with the question id. A word the
    policy leaves truly open is left as the input has it and listed under `pending`."""
 

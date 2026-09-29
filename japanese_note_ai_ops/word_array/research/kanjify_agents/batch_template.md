@@ -20,7 +20,7 @@ For each sentence:
    sentence and write it that way.
 4. A word the policy does not settle and no decision covers is not yours to decide: leave it as
    the input has it and list it under `pending` with the reason. So is a use that turns on a
-   pending question (Q1 to Q7 at the end of the policy): write it as the policy's draft answer
+   pending question (listed at the end of the policy): write it as the policy's draft answer
    says and list the question id under `pending`.
 5. Write the sentence in the field format (FMT rules): everything outside your `<k>` spans stays
    exactly as the input has it, turning your spans back into kana must give the input, and

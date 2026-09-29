@@ -52,7 +52,7 @@ nothing you run can change anything.
    what SOURCE and SPELL need: whether the word has a kanji spelling at all, whether it is one
    dictionary word or several homophones, and which spelling is the main one. Say what you
    checked (`evidence`).
-3. When a use turns on a pending question (Q1 to Q7 at the end of the policy), write it as the
+3. When a use turns on a pending question (listed at the end of the policy), write it as the
    policy's draft answer says, set `rule` to that question's id, and lower the confidence.
 4. When the policy does not settle a use and choosing would be your own taste (a split the
    SPLIT list does not have, a spelling the dictionaries disagree on, a use neither grammar nor

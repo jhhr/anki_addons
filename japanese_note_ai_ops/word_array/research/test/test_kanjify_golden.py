@@ -13,6 +13,9 @@ import agent_queue  # noqa: E402
 import kanjify_golden as golden  # noqa: E402
 import kanjify_golden_render as render  # noqa: E402
 
+BACKSLASH = chr(92)
+# The escapes spelled out: a tool that decodes JSON would turn a literal one into kana again
+ESCAPED_YORU = BACKSLASH + "u3088" + BACKSLASH + "u308b"
 SENTENCE = "これは 本[ほん]です。"
 
 
@@ -113,7 +116,7 @@ class TemplatesTest(unittest.TestCase):
         # for, and the agents were told "write Japanese as escapes (yoru is <yoru in kana>)"
         for name in ("word_template.md", "batch_template.md"):
             text = (golden.AGENTS_DIR / name).read_text(encoding="utf-8")
-            self.assertIn(r"`よる`", text, name)
+            self.assertIn("`" + ESCAPED_YORU + "`", text, name)
 
     def test_no_template_names_a_machines_folders(self):
         for path in Path(golden.AGENTS_DIR).parent.glob("*_agents/*.md"):
