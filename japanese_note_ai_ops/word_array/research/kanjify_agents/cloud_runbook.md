@@ -30,6 +30,9 @@ All commands run from the repo root. `$R` is `japanese_note_ai_ops/word_array/re
 Keep K subagents running (6 is a good start, 10 for a session that is the only one; fewer if
 the session slows). Your own context gets one line per item, so the loop can run for hours:
 
+0. Before each `take`, merge the test data's `main`: `git -C test_data pull -q --no-edit -X ours
+   origin main`. The user's machine merges every session's results there and works a shard
+   whose session has stopped, so this is how you learn which items are done elsewhere.
 1. `python $R/agent_items.py take QUEUE --shard I/N --count K` prints one line per item: its
    id, the subagent type, the prompt file and the answer file. It claims them, so they are
    never handed out twice. Leave `--shard` out when yours is the only session (it is 0/1).
@@ -90,7 +93,8 @@ these that applies, then end your turn. The pilot and the choice of step 2's set
 yours in this mode; the user's own session does them and publishes the result.
 
 1. Update: `git pull --no-edit origin claude/kanjify-golden-set-framework-e393e1` (this runbook
-   may have changed; read it again if it did) and `git -C test_data fetch origin`.
+   may have changed; read it again if it did) and `git -C test_data pull -q --no-edit -X ours
+   origin main`.
 2. If you are already in the middle of a queue's loop, go on with it.
 3. If `words` has items left in your shard (`status words --shard I/N`), run the loop on
    `words` until none are left.
