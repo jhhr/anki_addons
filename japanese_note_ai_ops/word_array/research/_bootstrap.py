@@ -6,6 +6,7 @@ imports like `..shared.jp_text_processing` then resolve as they do inside Anki.
 """
 
 import importlib
+import importlib.util
 import io
 import sys
 from pathlib import Path
@@ -13,6 +14,9 @@ from types import ModuleType
 
 ADDON_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "jnaio_dev"
+# The scripts' reports, logs and undo files; eval data only on a machine without the test data
+# checkout (`eval_file`)
+OUTPUT = ADDON_ROOT / "output"
 
 # Japanese output on a Windows console: every script that imports this gets utf-8 stdout, so
 # none of them repeats the call. The check is what makes it safe when stdout is not a console
@@ -53,3 +57,36 @@ def load_root(name: str) -> ModuleType:
 def load_shared(dotted: str) -> ModuleType:
     """A shared module, e.g. load_shared("jp_text_processing.word.use_tag_cleaning")."""
     return _import(f"shared.{dotted}")
+
+
+def eval_file(name: str) -> Path:
+    """An eval set, hand-label file, hand-checked corpus or answer cache, by file name: in
+    `japanese_note_ai_ops/evals/` of the private test data checkout (dev/data_paths.py) when
+    this machine has one, else in `output/`.
+
+    They are hand work, paid answers and a pre-migration export that exist nowhere else, and
+    they hold the collection's text, so they are kept in that repo rather than in one
+    machine's gitignored output/: commit and push there after a script changes one. A file
+    only output/ has, such as a new "Export kanjify test data" from the menu, is used from
+    there until it is moved; one both have is used from evals/, with a warning when output/'s
+    is newer."""
+    spec = importlib.util.spec_from_file_location(
+        "jnaio_data_paths", ADDON_ROOT / "dev" / "data_paths.py"
+    )
+    assert spec is not None and spec.loader is not None
+    data_paths = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(data_paths)
+    local = OUTPUT / name
+    evals = data_paths.data_dir("evals")
+    if evals is None:
+        return local
+    kept = evals / name
+    if not kept.exists():
+        if local.exists():
+            print(f"{name}: using output/'s; move it to {evals} to keep it", file=sys.stderr)
+            return local
+        return kept
+    if local.exists() and local.stat().st_mtime > kept.stat().st_mtime:
+        print(f"{name}: output/ has a newer copy, not used; move it to {evals} to use it",
+              file=sys.stderr)
+    return kept

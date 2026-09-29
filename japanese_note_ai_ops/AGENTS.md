@@ -247,9 +247,10 @@ cheap no-op and nothing is recorded.
 - **Where fixtures live.** A fixture of a real collection holds its note text and excerpts of
   the MDX dictionaries it looked words up in, so it never goes into this public repo. They
   live in the private test data repo (`jhhr/anki_addons_test_data`), cloned to the gitignored
-  `<repo>/test_data/`, or wherever `ANKI_ADDONS_TEST_DATA` points (`replay.data_root`), under
-  `japanese_note_ai_ops/fixtures/` (replayed strictly by test_replay) and
-  `japanese_note_ai_ops/corpora/` (benchmark.py's). The exporter writes there by default; a
+  `<repo>/test_data/`, or wherever `ANKI_ADDONS_TEST_DATA` points (`dev/data_paths.py`), under
+  `japanese_note_ai_ops/fixtures/` (replayed strictly by test_replay),
+  `japanese_note_ai_ops/corpora/` (benchmark.py's) and `japanese_note_ai_ops/evals/` (the
+  research scripts' eval data; see the research scripts under "word_array"). The exporter writes there by default; a
   checkout without the clone skips test_replay's real fixtures and runs only the synthetic
   pipeline test. `test_replay/fixtures/` is for a fixture its collection's owner has chosen to
   publish; there is none yet. Commit and push a new fixture in the test data repo: the capture
@@ -465,7 +466,16 @@ as `research.old_word_lists`, relative imports, excluded from mypy); `research/c
 the corpus loader the other scripts read their sentences through. Collection repair scripts talk to
 a running Anki over AnkiConnect, list changes by default, write only with `--apply`, undo
 with `--revert`, and log to `output/`. Never run one with `--apply` unless the user asked for
-that run. Commit the tooling; do not commit one-off reports or plans it produces
+that run. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
+pre-migration export and its hand-checked subset (`corpora.py`), `kanjify_sentence_data.jsonl`
+and the answer caches (`*_eval_results.jsonl`, `vocab_reading_judge_results.jsonl`) are hand
+work and paid answers found nowhere else, so they live in `japanese_note_ai_ops/evals/` of the
+private test data checkout (below), and a script reaches each through
+`_bootstrap.eval_file(name)`, which falls back to `output/` on a machine without the checkout.
+Commit and push there after a script changes one. The menu's "Export kanjify test data" still
+writes `output/kanjify_sentence_data.jsonl`; `eval_file` uses it from there only while evals/
+has none, and warns while it is newer than evals/' copy, which stays the eval set until the new
+export is moved over it. Commit the tooling; do not commit one-off reports or plans it produces
 (`generated_examples.md` and `gold_examples.md` are the committed exceptions).
 
 ## Tests and types

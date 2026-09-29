@@ -1,6 +1,6 @@
 """Scoring the word matching judge against the hand-checked export.
 
-`output/extract_words_migration_data_checked.jsonl` holds old word lists checked by hand, so they
+`evals/extract_words_migration_data_checked.jsonl` holds old word lists checked by hand, so they
 stand in for the judge's ground truth (the user's call): a word of the generated array that an
 old entry fits was judged worth a note, `match`; a word no entry fits was left out on purpose,
 `dontmatch`. Particles and the copula were listed unevenly, so a word of those parts of speech
@@ -10,15 +10,15 @@ shown to the judge as context and score nothing.
     py -3.10 word_array/research/judge_eval.py build
     python word_array/research/judge_eval.py run [--model MODEL] [-n COUNT] [--workers 8]
 
-`build` writes `output/word_matching_judge_eval.jsonl`, one row per sentence: the sentence, its
+`build` writes `evals/word_matching_judge_eval.jsonl`, one row per sentence: the sentence, its
 array with every word unjudged, and `expected`, a label or null per word in `iter_words` order.
 It needs SudachiPy, hence `py -3.10`. `run` sends each word's judge prompt to the model (the op's
 own `word_matching_judge_model`, else `extract_words_model`, from the add-on's config) through
 the op's request code, caches the responses by model and prompt in
-`output/word_matching_judge_eval_results.jsonl` so that a rerun only pays for prompts that
+`evals/word_matching_judge_eval_results.jsonl` so that a rerun only pays for prompts that
 changed, and prints the scores and the words the judge got wrong most often.
 
-Words judged by hand in `hand_judge.py` (`output/word_matching_judge_hand_labels.jsonl`) replace
+Words judged by hand in `hand_judge.py` (`evals/word_matching_judge_hand_labels.jsonl`) replace
 the checked export's label for their word, and a sentence judged by hand outside the checked export
 becomes a row expecting only those words, so `run` asks about nothing else in it. Such words are
 also scored on a line of their own, HAND.
@@ -36,10 +36,10 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple, Optional
 
 import hand_labels
-from _bootstrap import ADDON_ROOT
+from _bootstrap import ADDON_ROOT, eval_file
 
-EVAL_SET = ADDON_ROOT / "output" / "word_matching_judge_eval.jsonl"
-RESULTS = ADDON_ROOT / "output" / "word_matching_judge_eval_results.jsonl"
+EVAL_SET = eval_file("word_matching_judge_eval.jsonl")
+RESULTS = eval_file("word_matching_judge_eval_results.jsonl")
 NO_EXPECTATION_POS = ("particle", "copula")
 
 

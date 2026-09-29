@@ -1,5 +1,5 @@
 """Collection-wide kanjification survey (task 22): the kanjify audit's word classes over every
-note sentence in the migration export (`output/extract_words_migration_data.jsonl`, the
+note sentence in the migration export (`evals/extract_words_migration_data.jsonl`, the
 `sentence-kanjified-furigana` field of the whole collection), not just the checked rows.
 
   policy     grammar uses kanjified that the kanjify policy (task 20) wants kana, counted per
@@ -27,7 +27,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Callable
 
-from _bootstrap import ADDON_ROOT, load, load_root
+from _bootstrap import ADDON_ROOT, eval_file, load, load_root
 
 import kanjify_audit as audit
 
@@ -36,7 +36,7 @@ jmdict = load("jmdict_index")
 html_stripping = load_root("html_stripping")
 
 OUTPUT = ADDON_ROOT / "output"
-EXPORT = OUTPUT / "extract_words_migration_data.jsonl"
+EXPORT = eval_file("extract_words_migration_data.jsonl")
 CONTENT_POS = {
     "名詞", "代名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "接続詞", "感動詞", "接頭辞",
     "接尾辞",

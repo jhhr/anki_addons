@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -61,13 +60,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Optional
 
+# Where the test data checkout is; the other dev scripts and the tests reach it through here
+from data_paths import DATA_ROOT_ENV, DEFAULT_ROOT, data_dir, data_root  # noqa: F401
+
 # 2: expected.json holds only the notes the run changed, added or removed; 1 held every note
 FORMAT = 2
-ADDON_DIR = Path(__file__).resolve().parents[1]
-# The test data checkout: <repo>/test_data, gitignored, unless this names another directory
-DATA_ROOT_ENV = "ANKI_ADDONS_TEST_DATA"
-# This addon's directory in it: the repo's name for the addon, whatever Anki's folder is called
-DATA_ADDON = "japanese_note_ai_ops"
 COPY_ANYWHERE = "copy_anywhere"
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
 SYNTHETIC_BASE = 1_000_000_000_000
@@ -88,19 +85,6 @@ class CaptureGap(Exception):
     an exporter never makes up what a run did not record."""
 
 
-def data_root() -> Optional[Path]:
-    """The test data checkout, or None on a machine without one."""
-    configured = os.environ.get(DATA_ROOT_ENV)
-    root = Path(configured) if configured else ADDON_DIR.parent / "test_data"
-    return root if root.is_dir() else None
-
-
-def data_dir(kind: str) -> Optional[Path]:
-    """`fixtures` or `corpora` of this addon in the test data checkout, if there is one."""
-    root = data_root()
-    return root / DATA_ADDON / kind if root is not None else None
-
-
 def find_fixture(name: str) -> Path:
     """A fixture's or corpus's directory: `name` itself when it is one, else the one of that
     name in the test data checkout."""
@@ -111,7 +95,7 @@ def find_fixture(name: str) -> Path:
         directory = data_dir(kind)
         if directory is not None and Fixture.exists(directory / name):
             return directory / name
-    where = data_root() or f"{ADDON_DIR.parent / 'test_data'} (absent; or set {DATA_ROOT_ENV})"
+    where = data_root() or f"{DEFAULT_ROOT} (absent; or set {DATA_ROOT_ENV})"
     raise FileNotFoundError(f"no fixture or corpus {name!r}, as a path or in {where}")
 
 

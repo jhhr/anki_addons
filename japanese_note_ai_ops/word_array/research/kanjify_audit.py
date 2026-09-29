@@ -22,7 +22,7 @@ word's furigana groups into kana (`note_edits.span_kana`); a format fix takes th
 
     py -3.10 word_array/research/kanjify_audit.py [--rows FILE] [-n COUNT]
 
-Reads `output/kanjify_sentence_data.jsonl`, else the old fine-tuning files (no nids: fixes are
+Reads `evals/kanjify_sentence_data.jsonl`, else the old fine-tuning files (no nids: fixes are
 listed but can't be written to notes).
 """
 
@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, Optional
 
-from _bootstrap import ADDON_ROOT, load
+from _bootstrap import ADDON_ROOT, eval_file, load
 
 import note_edits
 
@@ -49,7 +49,7 @@ generator = load("generator")
 text_map = load("text_map")
 
 OUTPUT = ADDON_ROOT / "output"
-EXPORT = OUTPUT / "kanjify_sentence_data.jsonl"
+EXPORT = eval_file("kanjify_sentence_data.jsonl")
 OLD_FILES = [
     OUTPUT / "kanjify_sentence_fine_tuning.jsonl",
     OUTPUT / "kanjify_sentence_fine_tuning_validation.jsonl",

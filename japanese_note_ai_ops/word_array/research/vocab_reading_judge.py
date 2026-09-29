@@ -20,7 +20,7 @@ Only `array` is written from here, through `vocab_reading_fix`'s own repair path
 is the verdict this script can act on without touching a word array. `note` and `split` are
 reported for the array-side pass.
 
-Responses are cached by model and prompt in `output/vocab_reading_judge_results.jsonl`, so a
+Responses are cached by model and prompt in `evals/vocab_reading_judge_results.jsonl`, so a
 rerun costs nothing for questions already asked.
 
     py -3.10 word_array/research/vocab_reading_judge.py            # list the questions
@@ -42,7 +42,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple, Optional
 
-from _bootstrap import ADDON_ROOT, load_shared
+from _bootstrap import ADDON_ROOT, eval_file, load_shared
 
 import anki_connect
 import vocab_dupes
@@ -53,7 +53,7 @@ import vocab_unlink
 
 to_hiragana = load_shared("jp_text_processing.mecab_controller.kana_conv").to_hiragana
 
-RESULTS = ADDON_ROOT / "output" / "vocab_reading_judge_results.jsonl"
+RESULTS = eval_file("vocab_reading_judge_results.jsonl")
 REPORT = ADDON_ROOT / "output" / "vocab_reading_judge_report.txt"
 UNDO = ADDON_ROOT / "output" / "vocab_reading_judge_undo.jsonl"
 

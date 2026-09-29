@@ -55,7 +55,7 @@ def main(argv: list[str]) -> int:
         if directory is None:
             print(
                 f"No test data checkout: clone the test data repo to"
-                f" {replay.ADDON_DIR.parent / 'test_data'}, set {replay.DATA_ROOT_ENV}, or"
+                f" {replay.DEFAULT_ROOT}, set {replay.DATA_ROOT_ENV}, or"
                 " give --out",
                 file=sys.stderr,
             )

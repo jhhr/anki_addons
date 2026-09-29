@@ -6,7 +6,7 @@ Serves a page on localhost that shows one word at a time from sentences of the m
 taken in random order and generated on the spot: the sentence with the word marked (the words it
 is a component of underlined), its dictionary form, reading and part of speech, the words it is
 part of and made of, and the judge's rules for its group. Match / Don't match go into
-`output/word_matching_judge_hand_labels.jsonl` (`hand_labels.py`), which `judge_eval.py build`
+`evals/word_matching_judge_hand_labels.jsonl` (`hand_labels.py`), which `judge_eval.py build`
 lays over the checked export's labels. Only the groups ticked on the page are offered, and a word
 already judged `--per-word` times in the same group and parent is not offered again, so a few
 hundred judgements cover many different words. Skip is not saved; Undo takes back the last one.
