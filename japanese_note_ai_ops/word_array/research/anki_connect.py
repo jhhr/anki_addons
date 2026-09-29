@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Sequence
 
-from _bootstrap import ADDON_ROOT
+from _bootstrap import ADDON_ROOT, data_paths
 
 URL = "http://127.0.0.1:8765"
 VERSION = 6
@@ -84,6 +84,13 @@ def nids_query(nids: Sequence[int]) -> str:
 def load_config(root: Path = ADDON_ROOT) -> dict:
     config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     meta = root / "meta.json"
+    if not meta.exists():
+        # A linked worktree (a Claude Code session's) has no meta.json, which Anki writes into
+        # the checkout it loads the addon from: without the main checkout's, a script there saw
+        # none of the user's note types and found nothing to do
+        main = data_paths().main_checkout(root.parent)
+        if main is not None:
+            meta = main / root.name / "meta.json"
     if meta.exists():
         config.update(json.loads(meta.read_text(encoding="utf-8")).get("config", {}))
     return config
