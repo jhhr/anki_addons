@@ -6,7 +6,7 @@ across all of them, following the kanjification policy below. Work through every
 
 ## Tools
 
-Work from `C:\Users\jrk\AppData\Roaming\Anki2\addons21\anki_addons\japanese_note_ai_ops`. Use the
+Work from `{ADDON_DIR}`. Use the
 **PowerShell** tool for commands. **Never put Japanese text on a command line** (it gets mangled);
 Japanese only ever goes through files written with the Write tool.
 
@@ -48,40 +48,7 @@ The field is a Japanese sentence with furigana as `漢字[かな]`, a space befo
 
 ## Kanjification policy
 
-The basic test: **kanjify a word when it carries a meaning of its own; leave it in kana when it only
-does grammar.** Whether the word conjugates is not the test.
-
-Kana (do not kanjify; un-kanjify if a label did):
-- the copula である in all forms (である, であった, であり, であって, であれば, であろう); だ, です.
-- ない as the negative auxiliary: 食べない, ではない / じゃない / ではなかった, 高くない / くなかった.
-- て-form helper verbs: ている, てある, てみる, てくる, ていく, てくれる, てしまう, ておく, てもらう,
-  ていただく, てください, てあげる, てやる, ておる, ていらっしゃる, てまいる, and contractions (てる,
-  とく, ちゃう, とる = ておる). The helper's kana goes inside the preceding verb's `<k>` when that verb is
-  kanjified: `<k> 為[し]てみます</k>`.
-- て-form patterns: てほしい, てもいい / てもよい, てはいけない, てはならない, てもかまわない, てはだめ.
-- として (no 為る in it), あげる meaning "to give", そんな/こんな/あんな/どんな, filler なんか, exclamatory
-  もう, もっと, particles.
-- Auxiliaries (れる/られる/せる/させる/ます/た/たい/らしい/ようだ's だ) are kana. A kanjification of one of
-  these is a labelling slip (e.g. れる written as 様).
-
-Kanji (do kanjify):
-- 無い as a standalone word (しかない, 必要ない, 見たことない → 無い; なかった, なくて too).
-- 居る, 行く, 有る as standalone verbs (家にいる, あっちにいく, 本がある).
-- する as 為る everywhere, suru-verbs included (勉強する → 勉強<k> 為[す]る</k>, した → 為[し]た,
-  しよう → 為[し]よう, どうしよう → 如何 + 為[し]よう, not 仕様).
-- 成る in all uses: ようになる, ことになる, くなる, となる. But 実が生る (fruit grows) is 生る.
-- The formal nouns 事/物/為/様/所 (こと/もの/ため/よう/ところ) in all uses, grammatical ones included.
-- による/によって/により/によれば/によると: 因る when it gives a cause (事故に因って壊れた), 依る for
-  means / "depending on" / "according to" (人に依って違う, 天気予報に依ると).
-- Words with several kanji spellings take the kanji that fits the meaning here: 有る (possession,
-  occurrence) vs 在る (location, existence somewhere); 付く (attach) vs 就く (take a position, に就いて
-  = about) vs 突く vs 吐く; 言う vs 行う; 内 (within) vs 家 (home); 達 vs 等 (plural); 貴方 vs 方; 置く
-  vs 於く; 始め vs 初め; 稍 vs 漸; 物 vs 者 (もの/もん: thing vs person).
-- Also kanjified: 此の/其の/彼の, 此れ/其れ/彼れ, 何 (なに/なん, どの → 何の, なんて/なんか as 何か when it
-  means "something"), 如何 (どう), 然う (そう), 迄, 丈 (だけ), 位 (くらい: the particle くらい/ぐらい IS
-  kanjified as 位 — this is a word with meaning "about, extent"), 等 (など, ら), 乍ら, 遣る, 御 (お/ご),
-  唯/只, 亦 (また), 嗚呼 (ああ), 否 (いや), 君, 時, 方, 序で, 御蔭/御陰 (use 御蔭), 済む, 彼奴, 出来る,
-  振り, 小父/叔父/伯父 by meaning, やすい as 易い.
+{POLICY}
 
 When the policy says nothing about a use, apply the basic test and keep the majority spelling of
 this word across the notes (given under "This word") unless it is clearly wrong there.
