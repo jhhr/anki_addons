@@ -149,6 +149,41 @@ class NoteRecordTests(CaptureNotesTestCase):
         self.assertLess(second, -(10**14))
 
 
+class LostRecordTests(CaptureNotesTestCase):
+    """A record the run could not make is counted with those the store dropped: seen before it
+    was built, the note is never recorded again, and a run that said it lost nothing was
+    exported without it."""
+
+    def dropped(self):
+        capture.end_run(self.run_id, "completed")
+        return self.rows(f"SELECT dropped FROM runs WHERE run_id = {self.run_id}")[0][0]
+
+    def test_a_note_whose_record_raises_is_lost_and_not_retried(self):
+        def broken():
+            raise IndexError("a note stored short of its fields")
+
+        with self.assertLogs(capture.logger, "WARNING"):
+            capture.snapshot_note("read", 7, broken)
+        capture.snapshot_note("read", 7, lambda: {"id": 7})
+
+        self.assertEqual(self.snapshots(), [])
+        self.assertEqual(capture.unread_references(), [])
+        self.assertEqual(self.dropped(), 1)
+
+    def test_an_event_whose_payload_has_no_json_is_lost(self):
+        with self.assertLogs(capture.logger, "WARNING"):
+            # Keys of two types cannot be sorted into the one JSON text
+            capture.event("phase", {1: "one", "two": 2})
+
+        self.assertEqual(self.rows("SELECT kind, payload_json FROM events"), [("phase", None)])
+        self.assertEqual(self.dropped(), 1)
+
+    def test_a_run_that_lost_nothing_says_so(self):
+        capture_notes.snapshot_notes("read", [Note(2, {"Word": "本"})])
+
+        self.assertEqual(self.dropped(), 0)
+
+
 class ReferenceTests(CaptureNotesTestCase):
     def test_a_note_only_referenced_is_fetched_once_as_read_and_a_missing_one_noted(self):
         known = Note(3, {"Word": "箱"})

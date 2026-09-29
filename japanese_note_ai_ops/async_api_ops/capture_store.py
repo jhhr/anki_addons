@@ -145,8 +145,9 @@ RUN_COLUMNS: dict[str, str] = {
     # collection. Last, as calls.context_json is, for the migration's ALTER TABLE
     "profile": "TEXT",
     # Version 4: 1 for a run that recorded its notes, and how many of its records (snapshots,
-    # events, calls) a full queue dropped, counted at its end. A run whose notes are to be
-    # replayed needs 0: a dropped snapshot is a note the replay cannot build
+    # events, calls) were lost, counted at its end: dropped at a full queue, or never made (a
+    # note whose record raised). A run whose notes are to be replayed needs 0: a lost snapshot
+    # is a note the replay cannot build
     "notes": "INTEGER DEFAULT 0",
     "dropped": "INTEGER",
 }

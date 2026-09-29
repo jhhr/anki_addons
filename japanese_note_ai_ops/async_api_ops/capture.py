@@ -310,14 +310,19 @@ def end_run(
     run_id: Optional[int], outcome: Optional[str], *, extra: Optional[Mapping[str, Any]] = None
 ) -> None:
     """Record a run's end and outcome. `extra`, when given, replaces the one `begin_run` had.
-    A run that recorded its notes also records how many records the store dropped meanwhile."""
+    A run that recorded its notes also records how many of its records were lost: dropped by
+    the store meanwhile, or never made (`_RunNotes.lose`)."""
     if run_id is None:
         return
     with _note_runs_lock:
         notes = _note_runs.pop(run_id, None)
     state = _active()
     if state is not None:
-        dropped = None if notes is None else state.store.dropped - notes.dropped_at_start
+        dropped = (
+            None
+            if notes is None
+            else state.store.dropped - notes.dropped_at_start + notes.lost
+        )
         _end_run(state.store, run_id, outcome, extra, dropped=dropped)
 
 
@@ -416,11 +421,15 @@ class _RunNotes:
     stage, and the notes it only learned the ids of can be fetched for it before its cleanup
     writes anything."""
 
-    __slots__ = ("run_id", "dropped_at_start", "_lock", "_seen", "_referenced", "_added")
+    __slots__ = ("run_id", "dropped_at_start", "lost", "_lock", "_seen", "_referenced", "_added")
 
     def __init__(self, run_id: int, dropped_at_start: int) -> None:
         self.run_id = run_id
         self.dropped_at_start = dropped_at_start
+        # Records that could not be made (a note whose record raised), counted with the ones
+        # the store dropped: the note is marked seen before its record is built, so it is never
+        # recorded later, and a run that says it lost nothing was exported without it
+        self.lost = 0
         self._lock = threading.Lock()
         self._seen: set[tuple[str, int]] = set()
         self._referenced: set[int] = set()
@@ -433,6 +442,10 @@ class _RunNotes:
                 return False
             self._seen.add(key)
             return True
+
+    def lose(self) -> None:
+        with self._lock:
+            self.lost += 1
 
     def reference(self, note_ids: Iterator[int]) -> None:
         with self._lock:
@@ -496,6 +509,9 @@ def snapshot_note(stage: str, note_id: int, record: Callable[[], Mapping[str, An
             }
         )
     except Exception:
+        # Not retried: seen, a note is not recorded at this stage again, and a later read of it
+        # need not be what the run read. Counted, so that its run says it lost a record
+        notes.lose()
         _warn_limited("snapshot", "Capture: a note could not be recorded", exc_info=True)
 
 
@@ -508,6 +524,7 @@ def reference_notes(note_ids: Any) -> None:
     try:
         notes.reference(int(note_id) for note_id in note_ids)
     except Exception:
+        notes.lose()
         _warn_limited("reference", "Capture: note ids could not be recorded", exc_info=True)
 
 
@@ -527,6 +544,7 @@ def note_added(placeholder: Optional[int], note_id: int) -> None:
     try:
         notes.add(iter([int(note_id)]))
     except Exception:
+        notes.lose()
         _warn_limited("added", "Capture: an added note could not be recorded", exc_info=True)
         return
     event("note.added", {"placeholder": placeholder, "note_id": note_id}, note_id=note_id)
@@ -548,6 +566,11 @@ def event(kind: str, payload: Any = None, *, note_id: Optional[int] = None) -> N
         return
     try:
         tasks = _tasks.get()
+        payload_json = _json(payload, f"a {kind} event")
+        if payload is not None and payload_json is None:
+            # Stored all the same, the kind and the order being facts too, but what it said is
+            # gone as a lost snapshot is
+            notes.lose()
         state.store.insert_event(
             {
                 "run_id": notes.run_id,
@@ -555,10 +578,11 @@ def event(kind: str, payload: Any = None, *, note_id: Optional[int] = None) -> N
                 "task_id": tasks[-1] if tasks else None,
                 "kind": kind,
                 "t": _run_seconds(),
-                "payload_json": _json(payload, f"a {kind} event"),
+                "payload_json": payload_json,
             }
         )
     except Exception:
+        notes.lose()
         _warn_limited("event", "Capture: an event could not be recorded", exc_info=True)
 
 
