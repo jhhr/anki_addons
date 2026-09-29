@@ -878,11 +878,16 @@ def build_collection(
     them, and from 2033 every new note's id is in their range anyway."""
     from anki_shared.testing import real_anki
 
-    col = real_anki.open_collection(path)
     notes = background_notes(corpus, background)
-    fill_collection(col, corpus)
-    if notes:
-        fill_collection(col, {"notetypes": [], "decks": [], "notes": notes})
+    col = real_anki.open_collection(path)
+    try:
+        fill_collection(col, corpus)
+        if notes:
+            fill_collection(col, {"notetypes": [], "decks": [], "notes": notes})
+    except BaseException:
+        # Left open, the file stays locked for as long as the exception is kept
+        col.close()
+        raise
     return col, frozenset(note["id"] for note in notes)
 
 
@@ -1013,8 +1018,12 @@ def replay(
     stub = real_anki.install()
     saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
     saved_profile = stub.pm._profile_folder
-    col, background_ids = build_collection(fixture.corpus, root / "collection.anki2", background)
+    col: Any = None
     try:
+        # Inside the try: a corpus that fails to build still has its directory removed
+        col, background_ids = build_collection(
+            fixture.corpus, root / "collection.anki2", background
+        )
         stub.col = col
         stub.pm.set_profile_folder(root / "profile")
 
@@ -1039,7 +1048,8 @@ def replay(
         stub.col = saved_col
         stub.addonManager.configs = saved_configs
         stub.pm._profile_folder = saved_profile
-        col.close()
+        if col is not None:
+            col.close()
         if owned:
             shutil.rmtree(root, ignore_errors=True)
 

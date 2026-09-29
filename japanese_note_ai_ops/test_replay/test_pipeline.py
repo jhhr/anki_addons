@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -318,6 +319,35 @@ def test_a_note_added_past_the_background_notes_is_the_run_s(captured, tmp_path)
     assert set(added) <= ids
     assert not ids & background_ids
     assert len(ids) == len(fixture.corpus["notes"]) + len(added)
+
+
+def unbuildable_fixture() -> replay.Fixture:
+    """A fixture whose corpus names a note type it does not hold, which fill_collection
+    refuses."""
+    note = {"id": replay.SYNTHETIC_BASE, "notetype": "Missing", "deck": "Default",
+            "guid": "g", "fields": {}, "tags": [], "selected": True}
+    corpus = {"config": {}, "meanings": {}, "dictionary": [], "decks": [], "notetypes": [],
+              "notes": [note]}
+    return replay.Fixture(corpus, {"entries": []}, {"notes": [], "meanings": {}, "new_notes": 0})
+
+
+def test_a_corpus_that_fails_to_build_leaves_its_collection_closed(tmp_path):
+    # It was opened before the try that closes it, and stayed locked while the exception lived,
+    # which pytest keeps for a failed test
+    with pytest.raises(AssertionError) as raised:
+        replay.replay(unbuildable_fixture(), workdir=tmp_path)
+
+    assert raised.value is not None
+    real_anki.open_collection(tmp_path / "collection.anki2").close()
+
+
+def test_a_corpus_that_fails_to_build_leaves_no_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    with pytest.raises(AssertionError):
+        replay.replay(unbuildable_fixture())
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
