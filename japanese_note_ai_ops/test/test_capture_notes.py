@@ -40,6 +40,13 @@ class Note:
     def items(self):
         return list(self._fields.items())
 
+    def keys(self):
+        return list(self._fields)
+
+    @property
+    def fields(self):
+        return list(self._fields.values())
+
     def note_type(self):
         return self._type
 

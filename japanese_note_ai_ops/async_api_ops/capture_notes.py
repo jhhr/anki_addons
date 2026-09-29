@@ -47,12 +47,16 @@ def note_record(note: "Note") -> dict[str, Any]:
 
     `mod` and `usn` are left out: they are the collection's bookkeeping, and with them a note
     read unchanged by two runs would be stored twice.
+
+    The fields are the ones the note holds, by name: a note saved before fields were added to
+    its note type holds fewer values than the type has fields, and `items()`, which reads one
+    per field, raised for it and cost the run the note's record.
     """
     return {
         "id": int(note.id),
         "guid": note.guid,
         "mid": int(note.mid),
-        "fields": dict(note.items()),
+        "fields": dict(zip(note.keys(), note.fields)),
         "tags": list(note.tags),
     }
 
