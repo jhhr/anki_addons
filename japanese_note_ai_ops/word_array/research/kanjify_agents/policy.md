@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.10
+Policy version: 0.11
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -8,8 +8,8 @@ set's word and sentence agents, the label-fix agents); it is the only place it i
 rule has an id (`KANJI-3`, `SPLIT-よる`) that an agent cites for the choice it made. Examples
 here are short generic phrases; examples from real sentences belong in the word decisions.
 
-Rules marked **pending Qn** wait for the user's answer. A use that turns on one is not decided:
-the agent names the question instead (see "Pending questions" at the end).
+Rules marked **pending Qn** wait for the user's answer. A use that turns on one is written as
+the rule's draft says and named with the question (see "Pending questions" at the end).
 
 ## BASIC: the test
 
@@ -91,11 +91,11 @@ needs a split asks (a policy question); it never splits on its own.
 - KANA-10 Particles (は, が, を, に, で, と, も, の, へ, や, か, ね, よ, しか, さえ, こそ...).
 - KANA-11 Loanwords (gairaigo) stay katakana unless KANJI-16 kanjifies them.
 - KANA-12 Names of people, places, works and brands, however they are written.
-- KANA-13 そう is always kana, the demonstrative adverb too (そう言う, そうする, そうですね): 然う
-  only spells the demonstrative, and telling it from the そう of appearance or hearsay is a
-  call not worth making in every sentence. 言う and 為る after it are still kanjified:
-  そう<k> 言[い]う</k>. Pending Q8: こう and ああ as adverbs (こう言う, ああする) likewise, draft kana.
-
+- KANA-13 そう and ああ as adverbs are always kana, the demonstrative too (そう言う, そうする,
+  そうですね, ああ言う): 然う only spells the demonstrative, and telling it from the そう of
+  appearance or hearsay is a call not worth making in every sentence; ああ has no spelling that
+  fits either. 言う and 為る after them are still kanjified: そう<k> 言[い]う</k>. Their sibling
+  こう is kanjified (KANJI-6): the user's choice, since 斯う fits it in every use.
 ## KANJI: kanjify
 
 - KANJI-1 無い as a word of its own, in every form (なかった, なくて, なく): after a noun and は, が,
@@ -120,9 +120,9 @@ needs a split asks (a policy question); it never splits on its own.
   the conjunctions and sentence endings made from them: 所が, 所で, 物の, 事に, 事だ, and a
   sentence-final もの / もん (嫌なんだ物[もん]).
 - KANJI-6 The demonstratives: 此の / 其の / 彼の / 何の, 此れ / 其れ / 彼れ / 何れ, 此処 / 其処 /
-  彼処 / 何処, 此方 / 其方 / 彼方 / 何方, the adverb 如何 (どう, also in どうも, どうして,
-  どうにも), and いう after these and after そう / こう / ああ as 言う (如何言う, そう言う).
-  そう, こう, ああ themselves stay kana (KANA-13). どうぞ is not どう + ぞ.
+  彼処 / 何処, 此方 / 其方 / 彼方 / 何方, the adverbs 斯う (こう, also 斯う言う, 斯う為て) and 如何
+  (どう, also in どうも, どうして, どうにも), and いう after these and after そう / ああ as 言う
+  (如何言う, そう言う). そう and ああ themselves stay kana (KANA-13). どうぞ is not どう + ぞ.
 - KANJI-7 Particle-like words and set phrases with a kanji spelling: まで 迄, だけ 丈, くらい /
   ぐらい 位, ばかり 許り, ほど 程, ながら 乍ら, まま 儘, など 等, ら 等 (plural: 彼等, 其奴等),
   たち 達, とても 迚も, について に就いて, という と言う, みたい 見たい, いつ 何時, まるで 丸で.
@@ -187,7 +187,5 @@ needs a split asks (a policy question); it never splits on its own.
 
 ## Pending questions
 
-Put to the user; until answered, a use that turns on one is left as the input has it and named
-with the question's id.
-
-- Q8 こう and ああ as demonstrative adverbs: kana like そう (KANA-13's draft), or 斯う / 彼あ?
+None: every question put to the user so far is answered above. A use the policy does not settle
+is still not the agent's to decide: a word agent asks, a sentence agent hands the word back.
