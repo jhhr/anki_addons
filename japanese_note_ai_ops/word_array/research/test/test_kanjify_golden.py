@@ -108,6 +108,13 @@ class SampleUsesTest(unittest.TestCase):
 
 
 class TemplatesTest(unittest.TestCase):
+    def test_the_escape_example_is_an_escape(self):
+        # Written through a tool that decodes JSON, the example once became the kana it stands
+        # for, and the agents were told "write Japanese as escapes (yoru is <yoru in kana>)"
+        for name in ("word_template.md", "batch_template.md"):
+            text = (golden.AGENTS_DIR / name).read_text(encoding="utf-8")
+            self.assertIn(r"`よる`", text, name)
+
     def test_no_template_names_a_machines_folders(self):
         for path in Path(golden.AGENTS_DIR).parent.glob("*_agents/*.md"):
             text = path.read_text(encoding="utf-8")

@@ -1,11 +1,12 @@
-"""Read-only lookups for the kanjify golden set's agents: JMdict's entries with their senses, a
-step 1 word's uses, and a search of the dumped sentences.
+"""Read-only lookups for the kanjify golden set's agents: JMdict's entries with their senses,
+Sudachi's reading of a text, a step 1 word's uses, and a search of the dumped sentences.
 
 The agents run headless with no write tool and no other command, so everything they need to
 look up offline is here. Japanese on a Windows command line is mangled, so a word may be given
 as `\\u` escapes (`\\u3088\\u308b` for よる); plain text works where the shell passes it.
 
     py -3.10 word_array/research/kanjify_lookup.py jmdict WORD [--all]
+    py -3.10 word_array/research/kanjify_lookup.py sudachi TEXT
     py -3.10 word_array/research/kanjify_lookup.py uses WID [--kind kana|kanjified]
     py -3.10 word_array/research/kanjify_lookup.py grep TEXT [--max 40]
 
@@ -13,7 +14,8 @@ as `\\u` escapes (`\\u3088\\u308b` for よる); plain text works where the shell
 used, oK outdated, sK search-only, ateji, common), its readings, and each sense's part of
 speech, notes and glosses, a sense limited to some spellings saying which. The first run builds
 the sense index from `user_files/jmdict/JMdict_e.gz` into `jmdict_senses.pkl` beside it (about
-a minute). `uses` prints every use of an inventory word; `grep` finds TEXT in the dump's input
+a minute). `sudachi` prints each token's reading and normalized form: whether Sudachi reads a
+kanji spelling as the word meant (a loanword's, KANJI-16 of the policy). `uses` prints every use of an inventory word; `grep` finds TEXT in the dump's input
 sentences and current kanjified fields (furigana and tags dropped for the search).
 """
 
@@ -170,6 +172,8 @@ def main() -> int:
     p = sub.add_parser("jmdict")
     p.add_argument("word")
     p.add_argument("--all", action="store_true", help="also entries without kanji")
+    p = sub.add_parser("sudachi")
+    p.add_argument("text")
     p = sub.add_parser("uses")
     p.add_argument("wid")
     p.add_argument("--kind", choices=("kana", "kanjified"))
@@ -180,6 +184,10 @@ def main() -> int:
 
     if args.command == "jmdict":
         print(jmdict_text(decode_arg(args.word), args.all))
+    elif args.command == "sudachi":
+        generator = load("generator")
+        for m in generator.tokenize(decode_arg(args.text)):
+            print(f"{m.surface}\treading {m.reading}\tnormalized {m.norm}\t{','.join(m.pos[:2])}")
     elif args.command == "uses":
         word = read_words().get(args.wid)
         if word is None:

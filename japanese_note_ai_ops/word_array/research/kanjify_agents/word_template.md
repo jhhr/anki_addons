@@ -36,9 +36,10 @@ nothing you run can change anything.
   明鏡 and other 国語辞典), wiktionary. Use them to check which spellings the dictionaries give
   for each sense, which one is the main headword, and what the policy's SOURCE rule accepts.
 - Read-only lookups, run with the Bash tool exactly as shown. Japanese on the command line is
-  mangled, so write a Japanese argument as `\u` escapes (よる is `よる`):
+  mangled, so write a Japanese argument as `\u` escapes (よる is `\u3088\u308b`):
   - `{PYTHON} word_array/research/kanjify_lookup.py jmdict WORD` every JMdict entry of WORD
     with its senses (`--all` adds entries that have no kanji spelling)
+  - `{PYTHON} word_array/research/kanjify_lookup.py sudachi TEXT` how Sudachi reads TEXT
   - `{PYTHON} word_array/research/kanjify_lookup.py uses {WID}` every use of this word
   - `{PYTHON} word_array/research/kanjify_lookup.py grep TEXT` sentences holding TEXT
 
