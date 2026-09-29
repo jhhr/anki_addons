@@ -72,6 +72,19 @@ def test_a_linked_addon_s_shared_is_its_own(root, names):
     assert f"{name}.shared" not in sys.modules
 
 
+def test_the_suites_anki_shared_reaches_its_packages_by_attribute():
+    # The root conftest imported this helper as anki_shared.testing.packages, which made
+    # anki_shared a namespace package before it registered its own over it: the registered one
+    # had no `testing`, and a patch by dotted name raised AttributeError
+    from unittest import mock
+
+    from anki_shared.testing import real_anki
+
+    with mock.patch("anki_shared.testing.real_anki.is_available", return_value=False):
+        assert real_anki.is_available() is False
+    assert sys.modules["anki_shared"].testing is sys.modules["anki_shared.testing"]
+
+
 def test_keep_existing_leaves_a_registered_package_as_it_is(root, names):
     name = names("fresh")
     first = packages.register_package(name, root / "fresh")
