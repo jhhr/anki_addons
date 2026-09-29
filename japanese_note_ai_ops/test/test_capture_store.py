@@ -318,6 +318,21 @@ class IdTests(StoreTestCase):
 
         self.assertEqual(self.open_store().new_run_id(), 3)
 
+    def test_a_new_run_never_takes_an_id_only_snapshots_or_events_name(self):
+        # A notes run whose row went missing: its snapshots and events were attached to the
+        # next session's run given the same id, and an export of that run read them as its own
+        for table, insert in (("note_snapshots", "insert_snapshot"), ("events", "insert_event")):
+            with self.subTest(table=table):
+                store = self.open_store()
+                store.insert_run({"run_id": store.new_run_id()})
+                orphan = store.new_run_id()
+                getattr(store, insert)({"run_id": orphan, "note_id": 5})
+                self.assertTrue(store.close())
+
+                reopened = self.open_store()
+                self.assertEqual(reopened.new_run_id(), orphan + 1)
+                self.assertTrue(reopened.close())
+
     def test_first_ids_are_a_floor_under_what_the_file_gives(self):
         store = self.open_store()
         store.insert_run({"run_id": 5})

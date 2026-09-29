@@ -745,12 +745,13 @@ class CaptureStore:
                 logger.warning(
                     "Capture store %s: journal mode is %s, not wal", self.path, mode
                 )
+            # Every table's: a call, snapshot or event whose run row is missing (the store went
+            # off before writing it, or refused it) keeps its run_id, and prune leaves it; a new
+            # run given that id would take those rows for its own, an export of it among them.
+            # One lookup at the end of each table's run_id index
             last_run = max(
-                connection.execute("SELECT MAX(run_id) FROM runs").fetchone()[0] or 0,
-                # A call whose run row was dropped at a full queue or refused keeps its run_id,
-                # and prune leaves it: a new run given that id would take the call for its own.
-                # One lookup at the end of the calls(run_id) index
-                connection.execute("SELECT MAX(run_id) FROM calls").fetchone()[0] or 0,
+                connection.execute(f"SELECT MAX(run_id) FROM {table}").fetchone()[0] or 0
+                for table in ("runs", "calls", "note_snapshots", "events")
             )
             last_call = connection.execute("SELECT MAX(call_id) FROM calls").fetchone()[0]
             return (last_run + 1, (last_call or 0) + 1)
