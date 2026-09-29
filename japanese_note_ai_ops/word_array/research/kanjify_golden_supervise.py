@@ -75,8 +75,20 @@ def script(name: str, *args: str) -> subprocess.CompletedProcess:
 
 
 def cloud_branches() -> list[str]:
-    return [b.strip() for b in git("branch", "-r").splitlines()
-            if b.strip().startswith("origin/claude/")]  # fmt: skip
+    """The golden set's sessions' branches: those whose own commits say so. Other jobs' cloud
+    sessions push `claude/` branches to the same repo, and merging one into main would publish
+    work its owner never meant to."""
+    out = []
+    for line in git("branch", "-r").splitlines():
+        branch = line.strip()
+        if not branch.startswith("origin/claude/"):
+            continue
+        # only what the branch has that main has not: a branch started from main carries the
+        # golden set's merged commits too
+        subjects = git("log", "--format=%s", f"origin/main..{branch}")
+        if "kanjify golden set" in subjects:
+            out.append(branch)
+    return out
 
 
 def sync() -> None:
@@ -100,15 +112,15 @@ def sync() -> None:
 
 
 def branch_activity() -> dict[tuple[str, int, int], float]:
-    """(queue, shard, of) -> when its branch last pushed results, from the commit subjects."""
+    """(queue, shard, of) -> when a session last pushed that shard's results, from the commit
+    subjects on every remote branch, main included (a merged branch's commits are there)."""
     out: dict[tuple[str, int, int], float] = {}
-    for branch in cloud_branches():
-        for line in git("log", "-50", "--format=%ct %s", branch).splitlines():
-            stamp, _, subject = line.partition(" ")
-            m = SHARD_RE.search(subject)
-            if m:
-                key = (m[1], int(m[2]), int(m[3]))
-                out[key] = max(out.get(key, 0.0), float(stamp))
+    for line in git("log", "--remotes", "-400", "--format=%ct %s").splitlines():
+        stamp, _, subject = line.partition(" ")
+        m = SHARD_RE.search(subject)
+        if m:
+            key = (m[1], int(m[2]), int(m[3]))
+            out[key] = max(out.get(key, 0.0), float(stamp))
     return out
 
 
