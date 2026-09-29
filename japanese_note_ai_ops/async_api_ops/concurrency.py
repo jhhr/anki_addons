@@ -1173,7 +1173,9 @@ class ConcurrencyGate:
         # What the run did with its limit, for `stats`: counted where each move is logged, the
         # time spent at each limit, and the collection's share across the run. Otherwise these
         # are only DEBUG lines, and a benchmark cannot compare DEBUG lines across commits
-        self._started = time.monotonic()
+        # perf_counter, as CollectionPressure times: monotonic resolves to 15.6ms on Windows,
+        # and a limit can hold for less
+        self._started = time.perf_counter()
         self.moves = {"raised": 0, "halved": 0, "held_under_pressure": 0, "latched": 0}
         self.ceiling_changes: list[tuple[float, int, int]] = []
         self._dwell: dict[int, float] = {}
@@ -1331,7 +1333,7 @@ class ConcurrencyGate:
 
     def _account_dwell(self) -> None:
         """Charge the time since the last move to the limit that held through it."""
-        now = time.monotonic()
+        now = time.perf_counter()
         self._dwell[self._dwell_limit] = (
             self._dwell.get(self._dwell_limit, 0.0) + now - self._dwell_since
         )
@@ -1349,7 +1351,7 @@ class ConcurrencyGate:
         from, to); the seconds spent at each limit; the collection's share of the run and its
         turns. For a benchmark to compare across commits what the logs only narrate."""
         self._account_dwell()
-        elapsed = time.monotonic() - self._started
+        elapsed = time.perf_counter() - self._started
         held, turns = collection_pressure.totals()
         held -= self._collection_at_start[0]
         turns -= self._collection_at_start[1]
@@ -1444,7 +1446,7 @@ class ConcurrencyGate:
             new_max,
         )
         previous_max = self.max_limit
-        self.ceiling_changes.append((time.monotonic() - self._started, previous_max, new_max))
+        self.ceiling_changes.append((time.perf_counter() - self._started, previous_max, new_max))
         self.max_limit = new_max
         self._ceiling_from_budget = new_max
         if self.limit > self.max_limit:
