@@ -3,7 +3,8 @@ a real collection and so cannot go into this public repo (replay fixtures, bench
 eval sets, hand labels, answer caches).
 
 It is `<repo>/test_data`, gitignored, unless ANKI_ADDONS_TEST_DATA names another directory, which
-must then exist (a relative one is taken from the repo root). This addon's files are under
+must then exist (a relative one is taken from the repo root). A linked git worktree without one
+of its own uses its main checkout's (`main_checkout`). This addon's files are under
 `japanese_note_ai_ops/` in it: `fixtures/` and `corpora/` (replay.py), `evals/` (the research
 scripts, `word_array/research/_bootstrap.eval_file`).
 
@@ -40,7 +41,38 @@ def data_root() -> Optional[Path]:
                 " test data repo there, or unset it"
             )
         return root
-    return DEFAULT_ROOT if DEFAULT_ROOT.is_dir() else None
+    if DEFAULT_ROOT.is_dir():
+        return DEFAULT_ROOT
+    # A linked worktree (a Claude Code session's, under .claude/worktrees/) has no test_data of
+    # its own, being a gitignored clone: without this its sessions skipped every private fixture
+    # and wrote the research scripts' paid answers into an output/ deleted with the worktree
+    main = main_checkout(REPO_ROOT)
+    if main is not None and (main / "test_data").is_dir():
+        return main / "test_data"
+    return None
+
+
+def main_checkout(repo: Path) -> Optional[Path]:
+    """The main working tree of `repo` when `repo` is a linked worktree of it, else None.
+
+    A linked worktree's `.git` is a file, `gitdir: <main>/.git/worktrees/<name>`, and that
+    directory's `commondir` leads to the main one's `.git`. A submodule's `.git` is a file too,
+    but its gitdir has no `commondir`."""
+    dot_git = repo / ".git"
+    try:
+        if not dot_git.is_file():
+            return None
+        line = dot_git.read_text(encoding="utf-8").strip()
+        if not line.startswith("gitdir:"):
+            return None
+        # Absolute as git writes it; a relative one is from the worktree
+        gitdir = repo / line[len("gitdir:"):].strip()
+        commondir = gitdir / "commondir"
+        if not commondir.is_file():
+            return None
+        return (gitdir / commondir.read_text(encoding="utf-8").strip()).resolve().parent
+    except OSError:
+        return None
 
 
 def data_dir(kind: str) -> Optional[Path]:

@@ -74,6 +74,52 @@ class DataRootTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, self.paths.DATA_ROOT_ENV):
             self.root("test_dta")
 
+    def worktree(self, name: str = "wt") -> Path:
+        """A linked worktree of `self.repo`, laid out as `git worktree add` lays it out, as the
+        repo root: its `.git` file, and the main .git's worktrees/<name> with `commondir`."""
+        gitdir = self.repo / ".git" / "worktrees" / name
+        gitdir.mkdir(parents=True)
+        (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+        tree = self.repo / ".claude" / "worktrees" / name
+        tree.mkdir(parents=True)
+        (tree / ".git").write_text(f"gitdir: {gitdir.as_posix()}\n", encoding="utf-8")
+        for attribute, value in (("REPO_ROOT", tree), ("DEFAULT_ROOT", tree / "test_data")):
+            patch = mock.patch.object(self.paths, attribute, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+        return tree
+
+    def test_a_worktree_without_test_data_uses_its_main_checkout_s(self):
+        # The worktree's own is never there, test_data being a gitignored clone: its sessions
+        # skipped every private fixture and kept the eval data in an output/ deleted with it
+        (self.repo / "test_data").mkdir()
+        self.worktree()
+
+        self.assertEqual(self.root(), (self.repo / "test_data").resolve())
+
+    def test_a_worktree_s_own_test_data_comes_first(self):
+        (self.repo / "test_data").mkdir()
+        tree = self.worktree()
+        (tree / "test_data").mkdir()
+
+        self.assertEqual(self.root(), tree / "test_data")
+
+    def test_a_worktree_of_a_main_checkout_without_one_has_none(self):
+        self.worktree()
+
+        self.assertIsNone(self.root())
+
+    def test_a_submodule_s_git_file_names_no_main_checkout(self):
+        # Its gitdir, under the superproject's .git/modules, has no commondir
+        gitdir = self.repo / ".git" / "modules" / "sub"
+        gitdir.mkdir(parents=True)
+        sub = self.repo / "sub"
+        sub.mkdir()
+        (sub / ".git").write_text("gitdir: ../.git/modules/sub\n", encoding="utf-8")
+
+        self.assertIsNone(self.paths.main_checkout(sub))
+        self.assertIsNone(self.paths.main_checkout(self.repo))
+
 
 if __name__ == "__main__":
     unittest.main()

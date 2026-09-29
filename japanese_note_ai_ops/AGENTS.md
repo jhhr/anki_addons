@@ -255,8 +255,9 @@ cheap no-op and nothing is recorded.
 - **Where fixtures live.** A fixture of a real collection holds its note text and excerpts of
   the MDX dictionaries it looked words up in, so it never goes into this public repo. They
   live in the private test data repo (`jhhr/anki_addons_test_data`), cloned to the gitignored
-  `<repo>/test_data/`, or wherever `ANKI_ADDONS_TEST_DATA` points (`dev/data_paths.py`; taken
-  from the repo root when relative, and an error when set to no directory), under
+  `<repo>/test_data/` (a linked worktree without one uses its main checkout's), or wherever
+  `ANKI_ADDONS_TEST_DATA` points (`dev/data_paths.py`; taken from the repo root when relative,
+  and an error when set to no directory), under
   `japanese_note_ai_ops/fixtures/` (replayed strictly by test_replay),
   `japanese_note_ai_ops/corpora/` (benchmark.py's) and `japanese_note_ai_ops/evals/` (the
   research scripts' eval data; see the research scripts under "word_array"). The exporter writes there by default; a
