@@ -12,6 +12,8 @@ its own, in the middle of the run's; whether the run's merge then still finds it
 exactly what the add and merge being recorded apart is for.
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from contextlib import closing

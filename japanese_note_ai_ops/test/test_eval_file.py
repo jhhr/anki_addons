@@ -1,6 +1,8 @@
 """Where the research scripts keep their eval data: the private test data checkout's evals/,
 else output/ (word_array/research/_bootstrap.eval_file)."""
 
+from __future__ import annotations
+
 import contextlib
 import io
 import os

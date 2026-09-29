@@ -8,6 +8,8 @@ process as the stub suites is `anki_shared/testing/running_anki.py`'s; what is h
 packages hold a `mw`, which hooks CopyAnywhere appends to, and the note type the tests use.
 """
 
+from __future__ import annotations
+
 import sys
 from typing import Any, Iterator
 

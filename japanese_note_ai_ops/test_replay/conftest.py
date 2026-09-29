@@ -3,6 +3,8 @@ mode, and the dev/ modules by bare name, as the dev scripts import each other. W
 anki package there is nothing to replay into, and the suite is not collected.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

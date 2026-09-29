@@ -19,6 +19,8 @@ failed add or merge; comparing its CopyAnywhere fields with a headless replay's 
 two JSON lines side by side.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
