@@ -138,4 +138,6 @@ def fonts_check_process(
             )
         return ""
 
-    return f'["{join_str.join(valid_fonts)}"]'
+    # Sorted: a set's order follows the string hash, which each process seeds anew, so the same
+    # note got its fonts in another order in every Anki session and in every replay
+    return f'["{join_str.join(sorted(valid_fonts))}"]'
