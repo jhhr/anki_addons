@@ -62,9 +62,10 @@ KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
 KANJI_GROUP_RE = re.compile(r"[\d々ヶヵ〆一-龯㐀-䶿]+\[([^\]]*)\]")  # space before it or not
 KANA_RE = re.compile(r"[ぁ-ゖァ-ヺー]")
 
+# 下さる is not one: the policy kanjifies てください (kanjify_agents/policy.md, KANJI-15)
 HELPER_NORMS = {
     "居る", "有る", "見る", "来る", "行く", "呉れる", "仕舞う", "おく", "置く", "貰う", "頂く",
-    "下さる", "上げる", "遣る", "参る", "いらっしゃる",
+    "上げる", "遣る", "参る", "いらっしゃる",
 }  # fmt: skip
 PATTERNS = {  # norm -> particles allowed between て and it ("" = none)
     "欲しい": {""},

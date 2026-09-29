@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.7
+Policy version: 0.8
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -70,10 +70,10 @@ needs a split asks (a policy question); it never splits on its own.
 - KANA-2 ない as the negative auxiliary: 食べない, ではない / じゃない / ではなかった after nouns
   and na-adjectives, くない / くなかった after i-adjectives. Not 無い in kana, but grammar.
 - KANA-3 て-form helper verbs in all their forms: ている, てある, てみる, てくる, ていく, てくれる,
-  てしまう, ておく, てもらう, ていただく, てください, てあげる, てやる, ておる, ていらっしゃる,
-  てまいる, and their contractions (てる, とく, ちゃう, ちまう, とる = ておる). Alone the same
-  verbs keep their meaning and are kanjified (見る, 来る, 置く, 貰う, 呉れる, 遣る, 仕舞う, 頂く,
-  下さい): 見てみる, not 見て見る.
+  てしまう, ておく, てもらう, ていただく, てあげる, てやる, ておる, ていらっしゃる, てまいる, and
+  their contractions (てる, とく, ちゃう, ちまう, とる = ておる). Alone the same verbs keep their
+  meaning and are kanjified (見る, 来る, 置く, 貰う, 呉れる, 遣る, 仕舞う, 頂く): 見てみる, not
+  見て見る. The one exception is くださる, kanjified after て too, in every form (KANJI-15).
 - KANA-4 て-form patterns: てほしい, てもいい / てもよい, てはいけない, てはならない, てもかまわない,
   てはだめ. Alone the words are kanjified (欲しい, 良い, 行けない, 構わない, 駄目).
 - KANA-5 として meaning "as, in the role of" (教師として): it holds no する. An adverb or noun +
@@ -104,7 +104,7 @@ needs a split asks (a policy question); it never splits on its own.
   ある as a verb of its own, 有る or 在る by SPLIT-ある.
 - KANJI-3 する is 為る everywhere, suru-verbs included: in every form and whatever follows
   (勉強為る, 為た, 為よう, 為て, 為ない, 為ず, 為ぬ, passive and causative 為れる / 為せる,
-  為なさい), before a て-helper or ください (約束為てください), after a noun already in kanji (関為て,
+  為なさい), before a て-helper or ください (約束為てみる, 約束為て下さい), after a noun already in kanji (関為て,
   支給為れる), after お / ご + noun (御願い為る), after kana words and onomatopoeia (にこにこ為る),
   after a volitional form ("try to": 立ち上がろうと為た) and after an adverb or noun + と
   (平然と為て). どうして is 如何為て; どうしよう is 如何 + 為よう. But どうしようもない is 如何 +
@@ -139,8 +139,12 @@ needs a split asks (a policy question); it never splits on its own.
 - KANJI-14 Native Japanese and Sino-Japanese words written in katakana are kanjified with the
   katakana kept in the furigana: 林檎[リンゴ], 塵[ゴミ], 奴[ヤツ], 駄目[ダメ], 馬鹿[バカ],
   不味[マズ]い.
-- KANJI-15 Pending Q7: honorific verbs after a verb stem (寝なさい, お待ちください, お帰りになる,
-  お持ちする, ご覧いただく). お〜になる and お〜する already follow KANJI-4 and KANJI-3.
+- KANJI-15 Honorific verbs are kanjified wherever they are not a て-helper (KANA-3), after a
+  verb stem too: 為さる (なさる) in every use (勉強為さる, 如何為さいました, 寝為さい: 寝[ね]<k>
+  為[な]さい</k>), 下さる (御待ち下さい), 頂く (御見せ頂く), and お〜になる / お〜する by KANJI-4 and
+  KANJI-3 (御帰りに成る, 御持ち為る). くださる is kanjified after て as well, in every form (教えて
+  下さい, 為て下さい: `<k> 為[し]て 下[くだ]さい</k>`, 下さいませ): the user's exception to
+  KANA-3, for this verb alone; ていただく, てくれる, てもらう stay kana.
 - KANJI-16 A loanword (gairaigo) is kanjified, the katakana kept in the reading, when JMdict
   gives it a kanji spelling not marked rarely used or search-only, or a Japanese dictionary
   has one as its headword: 珈琲[コーヒー], 煙草[タバコ], 麦酒[ビール], 頁[ページ],
@@ -186,6 +190,4 @@ with the question's id.
   and method are 由る: settled.)
 - Q4 Loanwords: only a kanji spelling JMdict doesn't mark rare (KANJI-16's draft), or every
   spelling SOURCE-1 accepts, the rare ones too?
-- Q7 Honorific verbs after a verb stem: kanjified (寝為さい, 御待ち下さい, 御覧頂く), only the
-  て-form keeps helpers in kana?
 - Q8 こう and ああ as demonstrative adverbs: kana like そう (KANA-13's draft), or 斯う / 彼あ?
