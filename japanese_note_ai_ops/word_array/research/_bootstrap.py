@@ -11,6 +11,7 @@ import io
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Optional
 
 ADDON_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "jnaio_dev"
@@ -59,6 +60,24 @@ def load_shared(dotted: str) -> ModuleType:
     return _import(f"shared.{dotted}")
 
 
+_data_paths: Optional[ModuleType] = None
+
+
+def data_paths() -> ModuleType:
+    """dev/data_paths.py, loaded by its path once: it imports nothing of the addon, and dev/ is
+    not on a research script's sys.path."""
+    global _data_paths
+    if _data_paths is None:
+        spec = importlib.util.spec_from_file_location(
+            "jnaio_data_paths", ADDON_ROOT / "dev" / "data_paths.py"
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _data_paths = module
+    return _data_paths
+
+
 def eval_file(name: str) -> Path:
     """An eval set, hand-label file, hand-checked corpus or answer cache, by file name: in
     `japanese_note_ai_ops/evals/` of the private test data checkout (dev/data_paths.py) when
@@ -70,14 +89,8 @@ def eval_file(name: str) -> Path:
     only output/ has, such as a new "Export kanjify test data" from the menu, is used from
     there until it is moved; one both have is used from evals/, with a warning when output/'s
     is newer."""
-    spec = importlib.util.spec_from_file_location(
-        "jnaio_data_paths", ADDON_ROOT / "dev" / "data_paths.py"
-    )
-    assert spec is not None and spec.loader is not None
-    data_paths = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(data_paths)
     local = OUTPUT / name
-    evals = data_paths.data_dir("evals")
+    evals = data_paths().data_dir("evals")
     if evals is None:
         return local
     kept = evals / name

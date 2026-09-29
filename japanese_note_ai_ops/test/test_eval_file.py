@@ -44,10 +44,15 @@ class EvalFileTests(unittest.TestCase):
         return path, warnings.getvalue()
 
     def test_without_a_checkout_it_is_output_as_before(self):
-        path, warnings = self.resolve(self.root / "no_such_checkout")
+        with mock.patch.object(_bootstrap.data_paths(), "data_root", return_value=None):
+            path = _bootstrap.eval_file(NAME)
 
         self.assertEqual(path, self.output / NAME)
-        self.assertEqual(warnings, "")
+
+    def test_a_variable_naming_no_directory_is_an_error_not_output(self):
+        # Taken for "no checkout", a mistyped variable sent the eval data to output/ unsaid
+        with self.assertRaisesRegex(FileNotFoundError, "ANKI_ADDONS_TEST_DATA"):
+            self.resolve(self.root / "no_such_checkout")
 
     def test_with_a_checkout_a_new_file_is_made_in_evals(self):
         self.evals.mkdir(parents=True)
