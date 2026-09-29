@@ -46,6 +46,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
 | `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted) and optionally a fixed free memory for the gate, and appends each run's figures to `user_files/benchmarks/<fixture>.jsonl` with the commit and machine |
+| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included |
 | `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds); `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and `user_files/fixtures/` (the owner's, gitignored), each twice. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
@@ -218,7 +219,12 @@ cheap no-op and nothing is recorded.
   `metrics.gate` (`ConcurrencyGate.stats`: raises, halvings, holds under pressure, collection
   latches, each ceiling change, the seconds at each limit, the collection's share and turns,
   counted where each move is logged; `base_ops.record_gate` after `gate.finish()`) and
-  `metrics.caches` (the match op's note and sentence caches and word indexes, at its `on_end`). The capture never infers: an
+  `metrics.caches` (the match op's note and sentence caches and word indexes, at its `on_end`).
+  `note.add` is each note of the cleanup's adding (`capture_notes.record_note_add`): the add's
+  seconds, which hold every addon's `note_will_be_added` hook, apart from the merge's into the
+  run's undo entry, the undo queue's head before and after, and an `add_error` or a
+  `merge_error`, never both: a failed merge is recorded and raised as it always was. The add
+  loop's phase event carries `add_seconds` and `merge_seconds`. The capture never infers: an
   exporter that finds a note it needs without a snapshot has found a capture gap, to be fixed
   here and recorded again.
 - **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:

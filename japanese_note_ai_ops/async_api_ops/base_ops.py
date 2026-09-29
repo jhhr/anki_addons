@@ -2993,6 +2993,9 @@ def add_new_notes(
     filtered_nids: list[NoteId] = []
     saved_notes: list[Note] = []
     started = time.monotonic()
+    # The add loop's time, split: the adds with their hooks, and the undo merges
+    add_seconds = 0.0
+    merge_seconds = 0.0
 
     try:
         if notes:
@@ -3048,6 +3051,13 @@ def add_new_notes(
                     if insert_deck_id is None:
                         failed_cnt += 1
                     else:
+                        # Timed apart: the add is where every addon's note_will_be_added hook
+                        # runs, and the merge into the run's undo entry is where an entry such
+                        # a hook made of its own can get in the way. A notes run records each
+                        # with the undo queue around it (capture_notes.record_note_add)
+                        recording = capture.notes_on()
+                        undo_before = capture_notes.undo_step(col) if recording else None
+                        add_started = time.perf_counter()
                         try:
                             logger.debug(f"Adding note {index} to deck {insert_deck_id}")
                             col.add_note(note, insert_deck_id)
@@ -3057,9 +3067,32 @@ def add_new_notes(
                             with note_context(note):
                                 report_exception(e, "Adding the note")
                             failed_cnt += 1
+                            if recording:
+                                capture_notes.record_note_add(
+                                    col, note, config, time.perf_counter() - add_started, None,
+                                    undo_before, add_error=repr(e),
+                                )
                         else:
+                            one_add = time.perf_counter() - add_started
+                            add_seconds += one_add
                             added_notes.append(note)
-                            op_changes = col.merge_undo_entries(pos)
+                            merge_started = time.perf_counter()
+                            try:
+                                op_changes = col.merge_undo_entries(pos)
+                            except Exception as e:
+                                # Recorded, and raised as it always was
+                                if recording:
+                                    capture_notes.record_note_add(
+                                        col, note, config, one_add, None, undo_before,
+                                        merge_error=repr(e),
+                                    )
+                                raise
+                            one_merge = time.perf_counter() - merge_started
+                            merge_seconds += one_merge
+                            if recording:
+                                capture_notes.record_note_add(
+                                    col, note, config, one_add, one_merge, undo_before
+                                )
 
                     progress_updater.update_note_adding_progress(
                         notes_added=len(added_notes),
@@ -3072,6 +3105,9 @@ def add_new_notes(
                 added=len(added_notes),
                 failed=failed_cnt,
                 not_added=len(not_added),
+                # Of the loop's time, the adds with their hooks, and the merges
+                add_seconds=round(add_seconds, 3),
+                merge_seconds=round(merge_seconds, 3),
             )
     finally:
         # However the adding ends, a raise included (a note type the config lacks, a failed

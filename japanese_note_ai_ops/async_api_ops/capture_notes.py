@@ -190,6 +190,46 @@ def record_collection(col: "Collection", note_ids: Iterable[int]) -> None:
         )
 
 
+def undo_step(col: "Collection") -> Optional[dict[str, Any]]:
+    """The undo queue's head: what the next undo would be, and the step counter."""
+    try:
+        status = col.undo_status()
+        return {"undo": status.undo, "last_step": status.last_step}
+    except Exception:
+        return None
+
+
+def record_note_add(
+    col: "Collection",
+    note: "Note",
+    config: Mapping[str, Any],
+    seconds: float,
+    merge_seconds: Optional[float],
+    undo_before: Optional[dict[str, Any]],
+    add_error: Optional[str] = None,
+    merge_error: Optional[str] = None,
+) -> None:
+    """One note of the cleanup's adding (`note.add`): how long the add took, every addon's
+    note_will_be_added hook included, and the merge into the run's undo entry, and the undo
+    queue's head before and after them both. A failed add and a failed merge are told apart:
+    an entry a hook makes of its own is what gets in the merge's way."""
+    if not capture.notes_on():
+        return
+    capture.event(
+        "note.add",
+        {
+            "placeholder": placeholder_id(note, config),
+            "seconds": round(seconds, 5),
+            "merge_seconds": None if merge_seconds is None else round(merge_seconds, 5),
+            "undo_before": undo_before,
+            "undo_after": undo_step(col),
+            "add_error": add_error,
+            "merge_error": merge_error,
+        },
+        note_id=int(note.id) or None,
+    )
+
+
 def record_undo_status(col: "Collection", when: str) -> None:
     """The undo queue's state at `when`: what the next undo and redo would be. The run's writes
     merge into one entry, so its label is what the user would undo."""

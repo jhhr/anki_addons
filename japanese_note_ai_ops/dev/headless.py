@@ -92,8 +92,12 @@ def prepare_process() -> None:
     from anki_shared.testing import real_anki
     from anki_shared.utils.vendor_path import add_vendor_paths
 
-    real_anki.qt_offscreen()
-    real_anki.install()
+    import aqt
+
+    # A running Anki's own mw is left alone: install() would put a stub over it
+    if getattr(aqt, "mw", None) is None or isinstance(aqt.mw, real_anki.StubMainWindow):
+        real_anki.qt_offscreen()
+        real_anki.install()
     add_vendor_paths(str(ADDON_DIR))
 
 
@@ -136,6 +140,41 @@ def user_config(overrides: Optional[Mapping[str, Any]] = None, model: Optional[s
             " --model or set them"
         )
     return config
+
+
+COPY_ANYWHERE = "copy_anywhere"
+
+
+def copy_anywhere_on_add(mw: Any) -> Callable[[], None]:
+    """CopyAnywhere's add-note definitions, run on every note added from now on as they are in
+    Anki: its handler on `note_will_be_added` (only that one: the editor and review hooks have no
+    use here), its config the user's (its config.json under its meta.json's, secrets removed).
+    Returns what takes the handler off again.
+
+    For the write path of issue #11's stage 5: the match op's cleanup adds its notes with
+    `col.add_note`, which fires the hook for each, so its cost lands in the add phase, and what
+    CopyAnywhere reads it reads from the whole collection, as in Anki.
+    """
+    from anki.hooks import note_will_be_added
+
+    addon_dir = REPO_ROOT / COPY_ANYWHERE
+    addon = _register(COPY_ANYWHERE, addon_dir)
+    if not (addon_dir / "shared").is_dir() and not hasattr(addon, "shared"):
+        setattr(addon, "shared", _register(f"{COPY_ANYWHERE}.shared", REPO_ROOT / "anki_shared"))
+    config: dict = json.loads((addon_dir / "config.json").read_text(encoding="utf-8"))
+    meta_path = addon_dir / "meta.json"
+    if meta_path.exists():
+        config.update(json.loads(meta_path.read_text(encoding="utf-8")).get("config") or {})
+    mw.addonManager.configs[COPY_ANYWHERE] = capture.scrub_config(config)
+    from copy_anywhere.hooks import note_hooks
+
+    handler = note_hooks.contained(
+        "on add",
+        lambda _col, note, deck_id: note_hooks.run_copy_fields_on_add(note, deck_id),
+        note_hooks._nothing,
+    )
+    note_will_be_added.append(handler)
+    return lambda: note_will_be_added.remove(handler)
 
 
 def model_keys(config: Mapping[str, Any]) -> list[str]:

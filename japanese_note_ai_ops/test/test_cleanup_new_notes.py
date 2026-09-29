@@ -216,6 +216,99 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
         self.assertEqual(col.updated, [])
 
 
+class UndoCountingCollection(FakeCollection):
+    """Keeps an undo step counter the adds move and the merges fold back, and can refuse a
+    merge, as an undo entry some hook made in between can make Anki do."""
+
+    def __init__(self, failing: tuple = (), refuse_merge_after: int = 0):
+        super().__init__(failing)
+        self.step = 3
+        self.refuse_merge_after = refuse_merge_after
+
+    def add_note(self, note, deck_id):
+        super().add_note(note, deck_id)
+        self.step += 1
+
+    def merge_undo_entries(self, pos):
+        if self.refuse_merge_after and len(self.merged) >= self.refuse_merge_after:
+            raise RuntimeError("target undo op not found")
+        self.step = POS
+        return super().merge_undo_entries(pos)
+
+    def undo_status(self):
+        return types.SimpleNamespace(undo="Matching words", redo="", last_step=self.step)
+
+
+class NoteAddRecordTests(unittest.TestCase):
+    """A run that records its notes records each note's add apart from its undo merge, with the
+    undo queue's head around them, so a failed add and a failed merge are told apart."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.capture = load_ops_module("capture")
+        self.capture._quiet_until.clear()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = os.path.join(directory.name, "capture.sqlite3")
+        self.assertTrue(self.capture.install(self.path))
+        self.addCleanup(self.capture.shutdown)
+        run_id = self.capture.begin_run("run", notes=True)
+        scope = self.capture.run_scope(run_id)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+
+    def events(self):
+        import sqlite3
+        from contextlib import closing
+
+        self.assertTrue(self.capture.current_store().flush())
+        with closing(sqlite3.connect(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT note_id, payload_json FROM events WHERE kind = 'note.add'"
+                " ORDER BY event_id"
+            ).fetchall()
+        return [(note_id, json.loads(payload)) for note_id, payload in rows]
+
+    def test_each_add_is_timed_apart_from_its_merge_and_a_failed_add_is_named(self):
+        failing = new_note("-2222222")
+        col = UndoCountingCollection(failing=(failing,))
+
+        base_ops.add_new_notes(
+            col, [new_note("-1111111"), failing], CONFIG, POS, self.updater
+        )
+
+        [(added_id, added), (failed_id, failed)] = self.events()
+        self.assertEqual((added_id, added["placeholder"]), (501, -1111111))
+        self.assertGreaterEqual(added["seconds"], 0)
+        self.assertGreaterEqual(added["merge_seconds"], 0)
+        self.assertEqual(added["undo_before"]["last_step"], 3)
+        self.assertEqual(added["undo_after"]["last_step"], POS)
+        self.assertIsNone(added["add_error"])
+        self.assertEqual((failed_id, failed["placeholder"]), (None, -2222222))
+        self.assertIsNone(failed["merge_seconds"])
+        self.assertIn("refused", failed["add_error"])
+
+    def test_a_refused_merge_is_recorded_as_one_and_raises_as_it_always_did(self):
+        col = UndoCountingCollection(refuse_merge_after=1)
+
+        with self.assertRaises(RuntimeError):
+            base_ops.add_new_notes(
+                col, [new_note("-1111111"), new_note("-2222222")], CONFIG, POS, self.updater
+            )
+
+        [_, (_, refused)] = self.events()
+        self.assertIsNone(refused["add_error"])
+        self.assertIn("target undo op not found", refused["merge_error"])
+        # The add went through: it is the merge that failed
+        self.assertEqual(refused["undo_after"]["last_step"], POS + 1)
+
+
 class ReArmedCancelTests(unittest.TestCase):
     """The real updater over a dialog whose flag a cancel of the API work has set."""
 

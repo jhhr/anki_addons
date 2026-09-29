@@ -48,6 +48,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--note-type", action="append", dest="note_types")
     parser.add_argument("--set", action="append", default=[], dest="overrides", metavar="KEY=JSON")
     parser.add_argument("--no-notes", action="store_true", help="record the calls only")
+    parser.add_argument(
+        "--copy-anywhere",
+        action="store_true",
+        help="run CopyAnywhere's add-note definitions on the notes the run adds, as Anki does",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -114,7 +119,12 @@ def run(argv: list[str], out) -> int:
             return 0
         if not nids:
             return 0
-        report = session.run(spec, nids, args.op)
+        remove_hook = headless.copy_anywhere_on_add(session.mw) if args.copy_anywhere else None
+        try:
+            report = session.run(spec, nids, args.op)
+        finally:
+            if remove_hook is not None:
+                remove_hook()
     summary = headless.capture_summary(args.capture, report.run_id) if report.run_id else {}
     summary.update(
         {
