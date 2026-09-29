@@ -179,6 +179,19 @@ def furigana_suspects(sentence: str) -> list[str]:
     return out
 
 
+def fix_spaces(sentence: str) -> str:
+    """The sentence with a space put before every furigana group written right after kana, the
+    one repair furigana_suspects' first kind has: `つ買[か]` -> `つ 買[か]`."""
+
+    def fix(m: re.Match) -> str:
+        lead = NOT_KANJI_RE.match(m[1])
+        if not lead or not lead[0].strip("ヶヵ"):
+            return m[0]
+        return f"{lead[0]} {m[1][len(lead[0]):]}[{m[2]}]"
+
+    return BASE_RE.sub(fix, sentence)
+
+
 def relative(path: Path) -> str:
     """A path as files and logs record it: from the golden set's directory or the addon root
     when under one, so nothing written names this machine's folders."""

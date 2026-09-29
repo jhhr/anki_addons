@@ -57,6 +57,14 @@ class FuriganaSuspectsTest(unittest.TestCase):
     def test_ke_in_a_counter_is_fine(self):
         self.assertEqual(golden.furigana_suspects(" 一ヶ月[いっかげつ]"), [])
 
+    def test_a_missing_space_is_put_back(self):
+        self.assertEqual(golden.fix_spaces(" 三[みっ]つ買[か]った。"), " 三[みっ]つ 買[か]った。")
+        self.assertEqual(golden.furigana_suspects(golden.fix_spaces("はまだ終[お]わる")), [])
+
+    def test_a_right_sentence_is_left_alone(self):
+        for s in ("<b>つ</b>買[か]った", " 一ヶ月[いっかげつ]", " 本[ほん]です"):
+            self.assertEqual(golden.fix_spaces(s), s)
+
     def test_several_readings(self):
         found = golden.furigana_suspects(" 額[がく, ひたい]は")
         self.assertEqual(len(found), 1)

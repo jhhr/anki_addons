@@ -16,6 +16,12 @@ Reads `results/<queue>/*.json` and writes:
   collated/furigana.jsonl   rows whose input the labeller found broken furigana in, with its
                             fixes: kept out of the set until the note is fixed, since a label of
                             a misread sentence is no reference; a fixed note is a new sentence id
+  collated/furigana_fixes.jsonl  the user's furigana fix list, one row per sentence with any
+                            problem: the program's (`kanjify_golden.furigana_suspects`: a missing
+                            space, repaired in `fixed`, a reading that isn't one kana word, a
+                            kanji with none) and the labellers'. A missing space alone keeps the
+                            row in the set: it changes no reading, and kanjify_eval compares
+                            with whitespace dropped, so the label holds for the fixed sentence
   collated/queue.jsonl      the words step 2 handed back that the inventory has no word for,
                             with their sentences: `kanjify_golden_render.py words` adds them
   collated/questions.md     the policy questions agents raised, by word, for the user
@@ -150,6 +156,30 @@ def op_rows(sentences: dict[str, dict]) -> list[dict]:
     return rows
 
 
+def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
+    """One row per sentence whose furigana a program or a labeller found wrong."""
+    by_sid: dict[str, list[dict]] = defaultdict(list)
+    for row in flagged:
+        by_sid[row["sid"]] += [{**f, "labeller": row["labeller"]} for f in row["furigana"]]
+    out = []
+    for sid, s in sentences.items():
+        program = s.get("furigana_suspects") or golden.furigana_suspects(s["sentence"])
+        if not program and sid not in by_sid:
+            continue
+        fixed = golden.fix_spaces(s["sentence"])
+        out.append(
+            {
+                "sid": sid,
+                "nids": s["nids"],
+                "sentence": s["sentence"],
+                "program": program,
+                "fixed": fixed if fixed != s["sentence"] else None,
+                "labeller": by_sid.get(sid, []),
+            }
+        )
+    return out
+
+
 def agreement(pairs: list[tuple[str, str, str, str]]) -> tuple[dict, list[str]]:
     """(sid, sentence, a, b) -> exact share, span counts with a as the label, and the
     disagreements listed."""
@@ -229,6 +259,8 @@ def main() -> int:
     golden.write_jsonl(golden.COLLATED / "pending.jsonl", pending)
     golden.write_jsonl(golden.COLLATED / "rejected.jsonl", rejected)
     golden.write_jsonl(golden.COLLATED / "furigana.jsonl", furigana)
+    fixes = fix_list(sentences, furigana)
+    golden.write_jsonl(golden.COLLATED / "furigana_fixes.jsonl", fixes)
 
     # the words handed back
     handed: dict[tuple[str, str], dict] = {}
@@ -288,6 +320,8 @@ def main() -> int:
         f"step 2 rows: accepted {len(accepted)} of {len(sentences)} sentences, pending"
         f" {len(pending)}, broken furigana {len(furigana)}, rejected {len(rejected)}; words"
         f" handed back {len(new_words)}",
+        f"furigana fix list: {len(fixes)} sentences"
+        f" ({sum(1 for f in fixes if f['labeller'])} with a labeller's fix)",
         f"rejections: {dict(Counter(r['problem'].split(':')[0][:60] for r in rejected))}",
     ]
 
