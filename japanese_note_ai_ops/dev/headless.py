@@ -19,9 +19,10 @@ What Anki would have provided, and what stands in for it here:
 - A capture store of the caller's: a running Anki writes user_files/capture.sqlite3, and two
   processes on one store hand out the same ids.
 
-Not here: other addons' hooks. `col.add_note` fires note_will_be_added with nothing registered,
-so copy_anywhere's on-add definitions do not fill a new note's fields. The replays run without
-them too; issue #11's stage 5 is where they come in.
+Other addons' hooks only when asked for: `col.add_note` fires note_will_be_added with nothing
+registered, so copy_anywhere's on-add definitions do not fill a new note's fields unless a run
+puts them on (`replay.copy_anywhere_on_add`, with the user's `copy_anywhere_config()` or a
+fixture's). The copy_anywhere package is registered here for that.
 
 Import this module before anything of the addon or of anki: `prepare_process` runs at import.
 """
@@ -65,6 +66,8 @@ SESSION_ENV = (
 # Models go by the name of their config key; this one has no default in config.json
 EXTRA_MODEL_KEYS = ("make_meanings_model",)
 TERMINAL_PREFIX = "terminal-"
+# Registered as a package too, for the runs that put its add definitions on
+COPY_ANYWHERE = "copy_anywhere"
 
 
 def _register(name: str, path: Path) -> types.ModuleType:
@@ -86,9 +89,11 @@ def prepare_process() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     _register("anki_shared", REPO_ROOT / "anki_shared")
-    addon = _register(PACKAGE, ADDON_DIR)
-    if not (ADDON_DIR / "shared").is_dir() and not hasattr(addon, "shared"):
-        setattr(addon, "shared", _register(f"{PACKAGE}.shared", REPO_ROOT / "anki_shared"))
+    for name in (PACKAGE, COPY_ANYWHERE):
+        directory = REPO_ROOT / name if name != PACKAGE else ADDON_DIR
+        addon = _register(name, directory)
+        if not (directory / "shared").is_dir() and not hasattr(addon, "shared"):
+            setattr(addon, "shared", _register(f"{name}.shared", REPO_ROOT / "anki_shared"))
     from anki_shared.testing import real_anki
     from anki_shared.utils.vendor_path import add_vendor_paths
 
@@ -142,39 +147,21 @@ def user_config(overrides: Optional[Mapping[str, Any]] = None, model: Optional[s
     return config
 
 
-COPY_ANYWHERE = "copy_anywhere"
+# CopyAnywhere's copy of every definition as it was before its staged migration
+# (copy_anywhere/configuration.py PRE_STAGE_MIGRATION_KEY): a backup it never reads
+COPY_ANYWHERE_BACKUP_KEY = "pre_stage_migration_copy_definitions"
 
 
-def copy_anywhere_on_add(mw: Any) -> Callable[[], None]:
-    """CopyAnywhere's add-note definitions, run on every note added from now on as they are in
-    Anki: its handler on `note_will_be_added` (only that one: the editor and review hooks have no
-    use here), its config the user's (its config.json under its meta.json's, secrets removed).
-    Returns what takes the handler off again.
-
-    For the write path of issue #11's stage 5: the match op's cleanup adds its notes with
-    `col.add_note`, which fires the hook for each, so its cost lands in the add phase, and what
-    CopyAnywhere reads it reads from the whole collection, as in Anki.
-    """
-    from anki.hooks import note_will_be_added
-
-    addon_dir = REPO_ROOT / COPY_ANYWHERE
-    addon = _register(COPY_ANYWHERE, addon_dir)
-    if not (addon_dir / "shared").is_dir() and not hasattr(addon, "shared"):
-        setattr(addon, "shared", _register(f"{COPY_ANYWHERE}.shared", REPO_ROOT / "anki_shared"))
-    config: dict = json.loads((addon_dir / "config.json").read_text(encoding="utf-8"))
-    meta_path = addon_dir / "meta.json"
+def copy_anywhere_config() -> dict:
+    """CopyAnywhere's config as the user's Anki has it: its config.json under its meta.json's,
+    secrets removed, without the migration's backup, which a fixture need not carry."""
+    directory = REPO_ROOT / COPY_ANYWHERE
+    config: dict = json.loads((directory / "config.json").read_text(encoding="utf-8"))
+    meta_path = directory / "meta.json"
     if meta_path.exists():
         config.update(json.loads(meta_path.read_text(encoding="utf-8")).get("config") or {})
-    mw.addonManager.configs[COPY_ANYWHERE] = capture.scrub_config(config)
-    from copy_anywhere.hooks import note_hooks
-
-    handler = note_hooks.contained(
-        "on add",
-        lambda _col, note, deck_id: note_hooks.run_copy_fields_on_add(note, deck_id),
-        note_hooks._nothing,
-    )
-    note_will_be_added.append(handler)
-    return lambda: note_will_be_added.remove(handler)
+    config.pop(COPY_ANYWHERE_BACKUP_KEY, None)
+    return capture.scrub_config(config)
 
 
 def model_keys(config: Mapping[str, Any]) -> list[str]:

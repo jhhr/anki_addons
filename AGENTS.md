@@ -19,6 +19,8 @@ material is in [`docs/`](docs/):
 
     build.py                 link / install / vendor / dist / check (stdlib only)
     build.local.json         this device's build.py preferences; gitignored, may be absent
+    test_data/               clone of the private test data repo (replay fixtures made from a
+                             real collection); gitignored, may be absent
     conftest.py              makes every addon importable under pytest without Anki
     pytest.ini  mypy.ini  requirements-dev*.txt
     .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only

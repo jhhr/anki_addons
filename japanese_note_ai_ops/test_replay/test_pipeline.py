@@ -157,6 +157,34 @@ def test_a_replay_reproduces_the_capture_run_every_time(captured, tmp_path):
         assert len(result.decisions) == 1
 
 
+@pytest.mark.parametrize("compress", [False, True], ids=["plain", "gzipped"])
+def test_a_fixture_file_holds_only_what_the_run_changed_and_reads_back_whole(
+    captured, tmp_path, compress
+):
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    # A note the run removed, as a deduplicating op's would be
+    [removed] = [n for n in fixture.expected["notes"] if n["fields"]["word_sort"] == "本"]
+    fixture.expected["notes"] = [n for n in fixture.expected["notes"] if n is not removed]
+
+    fixture.write(tmp_path / "fixture", compress=compress)
+
+    suffix = ".json.gz" if compress else ".json"
+    assert sorted(p.name for p in (tmp_path / "fixture").iterdir()) == [
+        f"{name}{suffix}" for name in ("cassette", "corpus", "expected")
+    ]
+    stored = replay._read_json(tmp_path / "fixture" / "expected.json")
+    # Only the sentence note's word list changed
+    assert [note["fields"]["word_sort"] for note in stored["notes"]] == ["店"]
+    assert stored["removed"] == [removed["note"]]
+    read = replay.Fixture.read(tmp_path / "fixture")
+    assert read.expected["notes"] == fixture.expected["notes"]
+    assert (read.corpus, read.cassette) == (fixture.corpus, fixture.cassette)
+    # Written the other way over it, the old form goes: a reader must not find both
+    fixture.write(tmp_path / "fixture", compress=not compress)
+    assert not any(p.name.endswith(suffix) for p in (tmp_path / "fixture").iterdir())
+
+
 def test_a_changed_answer_is_a_difference(captured):
     store, run_id, _ = captured
     fixture = replay.export_fixture(store, run_id)

@@ -1,20 +1,20 @@
 """A fixture's run replayed in a running Anki (issue #11, stage 5): opt-in, by environment.
 
-    JNAIO_REAL_ANKI_REPLAY=<fixture or corpus directory>
+    JNAIO_REAL_ANKI_REPLAY=<fixture or corpus: a name in the test data checkout, or a path>
     JNAIO_REAL_ANKI_SCALE=<factor>        answers after their recorded latency times this, and
                                           a lenient cassette (benchmark.py's); else instant and
                                           strict
-    JNAIO_REAL_ANKI_COPY_ANYWHERE=1       the user's CopyAnywhere definitions, from its
-                                          config.json and meta.json, on the add hook
+    JNAIO_REAL_ANKI_COPY_ANYWHERE=1       the corpus's CopyAnywhere definitions (export
+                                          --copy-anywhere) on the add hook
 
 The run goes the way the menu's does: `selected_notes_op`, a real `CollectionOp` on Anki's
 background thread, the progress manager, and whatever the add hook has attached; the replay
 machinery is dev/replay.py's (`replay_in_anki`). Each run's figures (benchmark.py's, and the
 add phase's per-note records) are appended to `user_files/benchmarks/<fixture>-real-anki.jsonl`.
 
-Strict and without CopyAnywhere, the run must leave the notes as the capture run did: the
-running Anki and the headless replay are the same run. With CopyAnywhere the notes differ from
-the capture by what its definitions write, so the run must only add every note without a
+Strict, the run must leave the notes as the capture run did, or with CopyAnywhere as the
+fixture's expected_copy_anywhere.json has them, which a headless replay recorded: the running
+Anki and the headless replay are the same run. Timed, the run must add every note without a
 failed add or merge; comparing its CopyAnywhere fields with a headless replay's is reading the
 two JSON lines side by side.
 """
@@ -24,7 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import aqt.operations
 import pytest
@@ -43,16 +43,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def user_copy_anywhere_config() -> dict:
-    """CopyAnywhere's config as the user's Anki has it: config.json under meta.json's."""
-    directory = ADDON.parent / "copy_anywhere"
-    config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
-    meta = directory / "meta.json"
-    if meta.exists():
-        config.update(json.loads(meta.read_text(encoding="utf-8")).get("config") or {})
-    return config
-
-
 def test_a_fixture_replays_in_a_running_anki(
     anki_session, anki_mw, config, copy_anywhere_config, tmp_path, monkeypatch
 ):
@@ -60,7 +50,12 @@ def test_a_fixture_replays_in_a_running_anki(
     import benchmark  # noqa: E402 - dev/ is on sys.path only now
     import replay  # noqa: E402
 
-    fixture = replay.Fixture.read(Path(FIXTURE))
+    assert FIXTURE is not None
+    directory = replay.find_fixture(FIXTURE)
+    fixture = replay.Fixture.read(directory)
+    definitions = fixture.corpus.get("copy_anywhere")
+    if WITH_COPY_ANYWHERE and definitions is None:
+        pytest.fail(f"{directory.name} holds no CopyAnywhere definitions (export --copy-anywhere)")
     exceptions: list[BaseException] = []
     monkeypatch.setattr(base_ops, "tooltip", lambda *a, **k: None)
     monkeypatch.setattr(base_ops, "showWarning", lambda *a, **k: None)
@@ -70,7 +65,7 @@ def test_a_fixture_replays_in_a_running_anki(
     def attach_copy_anywhere() -> None:
         from copy_anywhere.hooks import note_hooks
 
-        copy_anywhere_config(**user_copy_anywhere_config())
+        copy_anywhere_config(**(definitions or {}))
         note_hooks.init_note_hooks()
 
     cassette = replay.Cassette(
@@ -113,7 +108,7 @@ def test_a_fixture_replays_in_a_running_anki(
     data = result.store_data or {}
     adds = data.get("note_adds", [])
     summary = {
-        "fixture": Path(FIXTURE).name,
+        "fixture": directory.name,
         "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "where": benchmark.where_it_ran(),
         "real_anki": True,
@@ -132,15 +127,18 @@ def test_a_fixture_replays_in_a_running_anki(
         "new_note_fields": replay.new_note_fields(result.notes),
         **{key: data.get(key) for key in ("calls_total", "phases", "metrics", "decisions")},
     }
-    history = ADDON / "user_files" / "benchmarks" / f"{Path(FIXTURE).name}-real-anki.jsonl"
+    history = ADDON / "user_files" / "benchmarks" / f"{directory.name}-real-anki.jsonl"
     history.parent.mkdir(parents=True, exist_ok=True)
     with history.open("a", encoding="utf-8") as file:
         file.write(json.dumps(summary, ensure_ascii=False) + "\n")
 
     assert exceptions == []
     assert (summary["add_errors"], summary["merge_errors"]) == (0, 0)
-    if SCALE is None and not WITH_COPY_ANYWHERE:
-        differences = result.differences(fixture.expected)
+    expected: Optional[dict] = (
+        fixture.expected_copy_anywhere if WITH_COPY_ANYWHERE else fixture.expected
+    )
+    if SCALE is None and expected is not None:
+        differences = result.differences(expected)
         assert not differences, "\n".join(differences)
 
 

@@ -27,10 +27,12 @@ import argparse
 import json
 import random
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 import headless  # noqa: I001 - first: it prepares the imports of everything below
 
+import replay  # noqa: E402
 from anki.notes import NoteId  # noqa: E402
 
 
@@ -51,7 +53,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--copy-anywhere",
         action="store_true",
-        help="run CopyAnywhere's add-note definitions on the notes the run adds, as Anki does",
+        help="run CopyAnywhere's add-note definitions on the notes the run adds, as Anki does;"
+        " the capture does not record that they ran, so its export replays without them and"
+        " differs by what they wrote",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
@@ -119,12 +123,12 @@ def run(argv: list[str], out) -> int:
             return 0
         if not nids:
             return 0
-        remove_hook = headless.copy_anywhere_on_add(session.mw) if args.copy_anywhere else None
-        try:
+        with ExitStack() as stack:
+            if args.copy_anywhere:
+                stack.enter_context(
+                    replay.copy_anywhere_on_add(session.mw, headless.copy_anywhere_config())
+                )
             report = session.run(spec, nids, args.op)
-        finally:
-            if remove_hook is not None:
-                remove_hook()
     summary = headless.capture_summary(args.capture, report.run_id) if report.run_id else {}
     summary.update(
         {

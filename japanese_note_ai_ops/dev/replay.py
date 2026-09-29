@@ -8,8 +8,24 @@ A fixture is what a replay of one capture run needs, as three JSON files a perso
 - cassette.json: every AI call's answer, by its request key (capture_store.request_key: the
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
-- expected.json: every note as the run left it, normalized (`normalized_notes`): the ids a
-  replay cannot know, the new notes' and their placeholders', replaced by symbols.
+- expected.json: the notes as the run left them, normalized (`normalized_notes`): the ids a
+  replay cannot know, the new notes' and their placeholders', replaced by symbols. The file
+  holds only the notes the run added or changed, and the keys of those it removed; a note it
+  holds no entry for is as the corpus has it (`Fixture.read` puts the whole list together).
+
+Optional, next to them:
+
+- expected_copy_anywhere.json: the notes as a replay with the corpus's CopyAnywhere definitions
+  (`corpus["copy_anywhere"]`, its addon config) on the add hook left them. The capture run did
+  not have them on; this is a replay's result kept to compare later replays with, not a capture.
+- work.json: what a benchmark run of a corpus did, counted (benchmark.py's `work`), to check a
+  run on another machine against.
+
+A big file may be gzipped (`corpus.json.gz`), written with a fixed header so the same content
+is the same bytes. Fixtures of a real collection hold its note text and excerpts of the
+dictionaries it looked words up in, so they are kept out of this public repo, in a checkout of
+the private test data repo (`data_root`): `fixtures/` for the ones test_replay replays strictly,
+`corpora/` for benchmark.py's.
 
 `export_fixture` makes one from a capture store; `replay` builds the corpus in a fresh
 collection, runs the op over its selected notes with the cassette answering every
@@ -30,7 +46,9 @@ first (in a script) or the root conftest must have run (in a test).
 
 from __future__ import annotations
 
+import gzip
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -38,12 +56,19 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Optional
 
-FORMAT = 1
+# 2: expected.json holds only the notes the run changed, added or removed; 1 held every note
+FORMAT = 2
+ADDON_DIR = Path(__file__).resolve().parents[1]
+# The test data checkout: <repo>/test_data, gitignored, unless this names another directory
+DATA_ROOT_ENV = "ANKI_ADDONS_TEST_DATA"
+# This addon's directory in it: the repo's name for the addon, whatever Anki's folder is called
+DATA_ADDON = "japanese_note_ai_ops"
+COPY_ANYWHERE = "copy_anywhere"
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
 SYNTHETIC_BASE = 1_000_000_000_000
 # Note ids found in fields without a note of the corpus behind them (a word linked to a note the
@@ -63,27 +88,130 @@ class CaptureGap(Exception):
     an exporter never makes up what a run did not record."""
 
 
+def data_root() -> Optional[Path]:
+    """The test data checkout, or None on a machine without one."""
+    configured = os.environ.get(DATA_ROOT_ENV)
+    root = Path(configured) if configured else ADDON_DIR.parent / "test_data"
+    return root if root.is_dir() else None
+
+
+def data_dir(kind: str) -> Optional[Path]:
+    """`fixtures` or `corpora` of this addon in the test data checkout, if there is one."""
+    root = data_root()
+    return root / DATA_ADDON / kind if root is not None else None
+
+
+def find_fixture(name: str) -> Path:
+    """A fixture's or corpus's directory: `name` itself when it is one, else the one of that
+    name in the test data checkout."""
+    path = Path(name)
+    if Fixture.exists(path):
+        return path
+    for kind in ("fixtures", "corpora"):
+        directory = data_dir(kind)
+        if directory is not None and Fixture.exists(directory / name):
+            return directory / name
+    where = data_root() or f"{ADDON_DIR.parent / 'test_data'} (absent; or set {DATA_ROOT_ENV})"
+    raise FileNotFoundError(f"no fixture or corpus {name!r}, as a path or in {where}")
+
+
 @dataclass
 class Fixture:
     corpus: dict
     cassette: dict
     expected: dict
+    expected_copy_anywhere: Optional[dict] = None
+    work: Optional[dict] = None
 
     FILES = ("corpus", "cassette", "expected")
+    OPTIONAL_FILES = ("expected_copy_anywhere", "work")
 
-    def write(self, directory: Path) -> None:
+    @staticmethod
+    def exists(directory: Path) -> bool:
+        return any((directory / f"corpus{suffix}").is_file() for suffix in (".json", ".json.gz"))
+
+    def write(self, directory: Path, compress: bool = False) -> None:
+        """The files, the expected ones as the notes that differ from the corpus; `compress`
+        gzips the big ones. A file of the other form, or an optional one this fixture lacks,
+        left by an earlier write is removed: a reader must not take it for this one's."""
         directory.mkdir(parents=True, exist_ok=True)
-        for name in self.FILES:
-            text = json.dumps(getattr(self, name), ensure_ascii=False, indent=1, sort_keys=True)
-            (directory / f"{name}.json").write_text(text + "\n", encoding="utf-8")
+        for name in self.FILES + self.OPTIONAL_FILES:
+            value = getattr(self, name)
+            if value is not None and name.startswith("expected"):
+                value = _changes(self.corpus, value)
+            _write_json(directory / f"{name}.json", value, compress and name != "work")
 
     @classmethod
     def read(cls, directory: Path) -> "Fixture":
-        parts = {
-            name: json.loads((directory / f"{name}.json").read_text(encoding="utf-8"))
-            for name in cls.FILES
-        }
+        parts = {name: _read_json(directory / f"{name}.json") for name in cls.FILES}
+        for name, value in parts.items():
+            if value is None:
+                raise FileNotFoundError(f"{directory}: no {name}.json or {name}.json.gz")
+        parts.update({name: _read_json(directory / f"{name}.json") for name in cls.OPTIONAL_FILES})
+        for name in ("expected", "expected_copy_anywhere"):
+            if parts[name] is not None:
+                parts[name] = _expanded(parts["corpus"], parts[name])
         return cls(**parts)
+
+
+def _write_json(path: Path, value: Any, compress: bool) -> None:
+    gzipped = path.with_name(path.name + ".gz")
+    target, other = (gzipped, path) if compress else (path, gzipped)
+    other.unlink(missing_ok=True)
+    if value is None:
+        target.unlink(missing_ok=True)
+        return
+    data = (json.dumps(value, ensure_ascii=False, indent=1, sort_keys=True) + "\n").encode()
+    # mtime=0: the header holds no time, so rewriting the same content changes nothing in git
+    target.write_bytes(gzip.compress(data, 9, mtime=0) if compress else data)
+
+
+def _read_json(path: Path) -> Any:
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    gzipped = path.with_name(path.name + ".gz")
+    if gzipped.is_file():
+        return json.loads(gzip.decompress(gzipped.read_bytes()).decode("utf-8"))
+    return None
+
+
+def _corpus_as_expected(corpus: Mapping[str, Any]) -> dict[str, dict]:
+    """The corpus's notes as expected.json's, by key: what a note the run left alone is."""
+    return {
+        str(note["id"]): {
+            "note": str(note["id"]),
+            "notetype": note["notetype"],
+            "deck": note["deck"],
+            "fields": note["fields"],
+            "tags": sorted(note["tags"]),
+        }
+        for note in corpus["notes"]
+    }
+
+
+def _changes(corpus: Mapping[str, Any], expected: Mapping[str, Any]) -> dict:
+    """`expected` as its file holds it: the notes that differ from the corpus, and the keys of
+    the corpus notes the run removed. Most notes a run reads it leaves as they were, so the
+    whole list is mostly the corpus again (12 of a 500-note corpus's 29 MB)."""
+    before = _corpus_as_expected(corpus)
+    after = {note["note"]: note for note in expected["notes"]}
+    return {
+        **{key: value for key, value in expected.items() if key != "notes"},
+        "format": FORMAT,
+        "notes": [after[key] for key in sorted(after) if before.get(key) != after[key]],
+        "removed": sorted(set(before) - set(after)),
+    }
+
+
+def _expanded(corpus: Mapping[str, Any], stored: dict) -> dict:
+    """`stored`, an expected file, with every note in it again: what `_changes` left out."""
+    if stored.get("format", 1) < 2:
+        return stored
+    notes = _corpus_as_expected(corpus)
+    for key in stored.get("removed", []):
+        notes.pop(key, None)
+    notes.update({note["note"]: note for note in stored["notes"]})
+    return {**stored, "notes": [notes[key] for key in sorted(notes)]}
 
 
 # --- export ------------------------------------------------------------------------------
@@ -119,9 +247,12 @@ class _IdMap:
         return ID_RE.sub(swap, value)
 
 
-def export_fixture(store_path: Path, run_id: int) -> Fixture:
+def export_fixture(
+    store_path: Path, run_id: int, copy_anywhere: Optional[Mapping[str, Any]] = None
+) -> Fixture:
     """The fixture of run `run_id` in the capture store at `store_path`. Raises CaptureGap when
-    the run cannot be replayed from what it recorded."""
+    the run cannot be replayed from what it recorded. `copy_anywhere`, CopyAnywhere's addon
+    config, goes into the corpus for replays that put its definitions on the add hook."""
     with closing(sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         run = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -275,6 +406,8 @@ def export_fixture(store_path: Path, run_id: int) -> Fixture:
         "meanings": {key: value for key, value in sorted(meanings.items()) if value is not None},
         "dictionary": lookups,
     }
+    if copy_anywhere is not None:
+        corpus["copy_anywhere"] = dict(copy_anywhere)
     cassette = {"format": FORMAT, "entries": _cassette_entries(calls)}
     expected = {
         "format": FORMAT,
@@ -711,16 +844,23 @@ def replay(
     read_store: Optional[Callable[[Path], Any]] = None,
     background: int = 0,
     estimates: Optional[dict] = None,
+    copy_anywhere: bool = False,
 ) -> ReplayResult:
     """Build the fixture's corpus in a fresh collection under `workdir` (a temporary directory
     by default), run the op over its selected notes with nothing reaching a network, and return
     the collection's state after it, normalized as the fixture's expected state is.
+
+    `copy_anywhere` puts the corpus's CopyAnywhere definitions on the add hook for the run
+    (`copy_anywhere_on_add`); the result is then compared with `expected_copy_anywhere`.
 
     For a benchmark: `cassette` answers in place of a strict one of the fixture's own (a timed
     or lenient one), the run happens inside `around_run()` (a memory profile), `background`
     notes bring the collection to a real one's size (`background_notes`), and
     `read_store(path)` reads the replay's own capture store before it is deleted. The
     background notes are left out of the notes returned: nothing may have changed them."""
+    definitions = fixture.corpus.get("copy_anywhere")
+    if copy_anywhere and definitions is None:
+        raise ValueError("the fixture holds no CopyAnywhere definitions (export --copy-anywhere)")
     from anki_shared.testing import real_anki
 
     owned = workdir is None
@@ -738,7 +878,12 @@ def replay(
 
         def run_op(spec: Any, nids: list) -> None:
             run, _ = spec.notes_run(nids)
-            with around_run() if around_run is not None else nullcontext():
+            with ExitStack() as stack:
+                if around_run is not None:
+                    stack.enter_context(around_run())
+                # Around the run only, after the corpus is built: on the notes the run adds
+                if copy_anywhere:
+                    stack.enter_context(copy_anywhere_on_add(stub, definitions or {}))
                 run(col)
 
         return _replay(
@@ -779,6 +924,38 @@ def replay_in_anki(
     return _replay(
         fixture, mw.col, media, workdir, set_config, run_op, cassette, read_store, estimates
     )
+
+
+@contextmanager
+def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
+    """CopyAnywhere's add-note definitions run on every note added inside the block, as they do
+    in Anki: its handler on `note_will_be_added`, and only that one (its editor and review hooks
+    have no use here), with `config` as its addon config.
+
+    For issue #11's stage 5: the match op's cleanup adds its notes with `col.add_note`, which
+    fires the hook for each, so its cost lands in the add phase, and what CopyAnywhere reads it
+    reads from the whole collection, as in Anki. A script's `headless` registered the
+    copy_anywhere package; under pytest the root conftest did."""
+    from anki.hooks import note_will_be_added
+    from copy_anywhere.hooks import note_hooks
+
+    configs = mw.addonManager.configs
+    saved = configs.get(COPY_ANYWHERE)
+    configs[COPY_ANYWHERE] = dict(config)
+    handler = note_hooks.contained(
+        "on add",
+        lambda _col, note, deck_id: note_hooks.run_copy_fields_on_add(note, deck_id),
+        note_hooks._nothing,
+    )
+    note_will_be_added.append(handler)
+    try:
+        yield
+    finally:
+        note_will_be_added.remove(handler)
+        if saved is None:
+            configs.pop(COPY_ANYWHERE, None)
+        else:
+            configs[COPY_ANYWHERE] = saved
 
 
 @contextmanager

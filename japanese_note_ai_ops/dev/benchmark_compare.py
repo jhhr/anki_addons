@@ -51,13 +51,21 @@ def profile(summary: dict) -> dict:
     return {**PROFILE_DEFAULTS, **(summary.get("profile") or {})}
 
 
+# The corpus hashes summaries have held: of what a run is given (inputs_sha1), and before it of
+# the files (sha1), which gzipping or trimming them changed
+CORPUS_HASHES = ("inputs_sha1", "sha1")
+
+
 def comparable(summary: dict, head: dict) -> bool:
-    """The same profile, and the same corpus: by its hash where both summaries have one, else
-    by the fixture's name (a summary from before the hash was recorded)."""
+    """The same profile, and the same corpus: by a hash both summaries have, else by the
+    fixture's name (a summary from before the hash was recorded, or of another kind)."""
     if profile(summary) != profile(head) or summary.get("fixture") != head.get("fixture"):
         return False
-    hashes = [(s.get("corpus") or {}).get("sha1") for s in (summary, head)]
-    return None in hashes or hashes[0] == hashes[1]
+    corpora = [summary.get("corpus") or {}, head.get("corpus") or {}]
+    for key in CORPUS_HASHES:
+        if all(key in corpus for corpus in corpora):
+            return corpora[0][key] == corpora[1][key]
+    return True
 
 
 def phase_seconds(run: dict) -> dict[str, float]:
