@@ -978,8 +978,9 @@ def clean_meaning_in_note(
             async operations and to avoid doing file reading in every op.
     :param allow_update_all_meanings: Allows running the update_all_meanings_for_word function.
     :param allow_reupdate_existing: Allows re-updating notes that are already marked as updated.
-    :param other_meaning_notes: Optional replacement list of notes with meanings for the
-        update_all_meanings_for_word function.
+    :param other_meaning_notes: The word's other meaning notes, in place of the meaning group
+        the cleaning would fetch. Unlike a fetched group they are context only: shown in the
+        rework prompt, never written, and left out of a mapping, which maps the note alone.
     :param word_note_index: The run's word index, if the caller has one. Passed straight to
         get_other_meaning_notes, which uses it instead of a whole-collection search.
     :param sentence_cache: The run's sentence cache, if the caller has one. Passed straight to
@@ -1052,25 +1053,6 @@ def clean_meaning_in_note(
         word_key = make_meaning_dict_key(note[word_field], note[word_reading_field])
         word_generated_meanings = all_generated_meanings_dict.get(word_key, None)
 
-        all_meaning_notes: list[Note] = [note]
-        if allow_update_all_meanings:
-            if other_meaning_notes is None:
-                other_meaning_notes = get_other_meaning_notes(
-                    config=config,
-                    note=note,
-                    notes_to_add_dict=notes_to_add_dict,
-                    notes_to_update_dict=notes_to_update_dict,
-                    allow_reupdate_existing=allow_reupdate_existing,
-                    include_pending_notes=True,
-                    word_note_index=word_note_index,
-                )
-            # A caller's list replaces the fetch, and is used. It used to skip the fetch and then
-            # be dropped, so the match op's CREATE NEW cleaned its new note alone: mapped with no
-            # sight of the generated meanings its siblings already hold, it could take one of
-            # theirs, and the new note duplicated a meaning the word already had. The note
-            # itself is never among the others, as the fetch never returns it
-            all_meaning_notes = [n for n in other_meaning_notes if n is not note] + [note]
-
         def meaning_note_key(n: Note) -> NoteId:
             """The note's id, or the placeholder id it carries until it has been added.
 
@@ -1087,22 +1069,46 @@ def clean_meaning_in_note(
             except (KeyError, ValueError, TypeError):
                 return n.id
 
-        meaning_sentences_dict = {
-            meaning_note_key(n): WordAndSentences(
-                jp_meaning=n[meaning_field],
-                en_meaning=n[english_meaning_field],
-                sentences=get_sentences_for_note(
-                    config, n, sentence_cache=sentence_cache, note_cache=note_cache
-                ),
-            )
-            for n in all_meaning_notes
-        }
+        all_meaning_notes: list[Note] = [note]
+        given_others = other_meaning_notes is not None
+        if allow_update_all_meanings:
+            if other_meaning_notes is None:
+                other_meaning_notes = get_other_meaning_notes(
+                    config=config,
+                    note=note,
+                    notes_to_add_dict=notes_to_add_dict,
+                    notes_to_update_dict=notes_to_update_dict,
+                    allow_reupdate_existing=allow_reupdate_existing,
+                    include_pending_notes=True,
+                    word_note_index=word_note_index,
+                )
+            # The note itself is never among the others, as the fetch never returns it
+            all_meaning_notes = [n for n in other_meaning_notes if n is not note] + [note]
+        # The notes this cleaning writes: the meaning group it fetched, or only the note when a
+        # caller gives the others. The match op's CREATE NEW gives every meaning the word has,
+        # so that a new meaning with no generated ones to map to is reworked seeing them: made
+        # from its own sentence alone, it took in the senses its siblings hold. They are shown,
+        # never written: reworked along with it, studied notes were reworded on every new
+        # meaning of their word
+        written_notes = [note] if given_others else all_meaning_notes
+
+        def meanings_of(notes: Sequence[Note]) -> dict[NoteId, WordAndSentences]:
+            return {
+                meaning_note_key(n): WordAndSentences(
+                    jp_meaning=n[meaning_field],
+                    en_meaning=n[english_meaning_field],
+                    sentences=get_sentences_for_note(
+                        config, n, sentence_cache=sentence_cache, note_cache=note_cache
+                    ),
+                )
+                for n in notes
+            }
 
         def update_all_meanings_from_result_dict(
             update_dict: Mapping[NoteId, Union[tuple[str, str], tuple[str, str, int]]],
         ) -> bool:
             any_changed_inner = False
-            for n in all_meaning_notes:
+            for n in written_notes:
                 note_key = meaning_note_key(n)
                 if note_key in update_dict:
                     # A MatchMeaningsResultType entry carries the mapping score as a third
@@ -1136,7 +1142,7 @@ def clean_meaning_in_note(
                 config,
                 note[word_field],
                 note[word_reading_field],
-                meaning_sentences_dict,
+                meanings_of(all_meaning_notes),
                 jp_mdx_dict_entry,
             )
             any_changed = update_all_meanings_from_result_dict(updated_meanings_dict)
@@ -1154,10 +1160,14 @@ def clean_meaning_in_note(
                 if en_meaning is not None:
                     generated_meanings_by_en_meaning[en_meaning] = gm
 
+            # Only the notes it writes are mapped. Shown as ALREADY MAPPED, a given sibling's
+            # possible meaning is one the prompt forbids the others, so a new note whose sense
+            # a sibling holds was pushed onto a wrong meaning, and its low score revised the
+            # word's generated meanings; alone, a new sense scores low all the same.
             # Check if all notes are already mapped, mapping is determined by note's english meaning
             # matching exactly a generated meaning's english meaning
             all_mapped = True
-            for n in all_meaning_notes:
+            for n in written_notes:
                 # Take this opportunity and update the note tags
                 if n[english_meaning_field] in generated_meanings_by_en_meaning and not n.has_tag(
                     MEANING_MAPPED_TAG
@@ -1184,7 +1194,7 @@ def clean_meaning_in_note(
                 config,
                 note[word_field],
                 note[word_reading_field],
-                meaning_sentences_dict,
+                meanings_of(written_notes),
                 all_generated_meanings_dict,
             )
             any_changed = update_all_meanings_from_result_dict(matched_meanings_dict)

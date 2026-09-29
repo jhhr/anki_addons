@@ -625,16 +625,17 @@ class CleanNoteTests(unittest.TestCase):
         self.assertEqual(listed, ["to draw lots", "to pull", "to draw"])
         self.assertEqual((new["meaning_field"], new["english_meaning_field"]), (jp, en))
 
-    def test_the_new_note_is_mapped_seeing_the_generated_meanings_its_siblings_hold(self):
-        # What the list is for: mapped alone, the new note could take a generated meaning a
-        # sibling already has, and the word would hold that meaning twice
+    def test_a_new_note_is_mapped_alone(self):
+        # Shown with its siblings, a new note whose sense one of them holds was barred from that
+        # sibling's possible meaning (ALREADY MAPPED), mapped onto a wrong one with a low score,
+        # and the word's generated meanings revised; the siblings were remapped along with it
         pull = WordNote(PULL_NOTE, "物に手をかけて近くへ寄せる。", "to pull")
         draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
         new = WordNote(0, "くじを抜く。", "to draw lots", placeholder="-5550009")
         mapping = {
             "meanings": [
                 {"used_meaning_index": 1, "possible_meaning_index": 3, "mapping_score": 5},
-                {"used_meaning_index": 3, "possible_meaning_index": 2, "mapping_score": 5},
+                {"used_meaning_index": 2, "possible_meaning_index": 2, "mapping_score": 5},
             ]
         }
 
@@ -642,15 +643,50 @@ class CleanNoteTests(unittest.TestCase):
             new, [pull, draw], ENTRY, mapping, generated_meanings()
         )
 
-        prompt, kwargs = recorder.calls[0][1], recorder.calls[0][2]
+        prompt, kwargs = recorder.one()
         self.assertEqual(kwargs["kind"], "clean_meaning.map")
-        self.assertEqual(kwargs["context"]["note_ids"], [-5550009, PULL_NOTE, DRAW_NOTE])
-        self.assertEqual(len(kwargs["inputs"]["meanings"]), 3)
-        # The pull note's meaning is the first generated one, shown as taken
-        self.assertIn("Possible meaning index 1 (ALREADY MAPPED)", prompt)
+        self.assertEqual(kwargs["context"]["note_ids"], [-5550009])
+        self.assertNotIn("ALREADY MAPPED", prompt)
         self.assertEqual(new["english_meaning_field"], "to draw (lots)")
-        self.assertEqual(draw["english_meaning_field"], "to draw (a line)")
-        self.assertEqual(pull["english_meaning_field"], "to pull")
+        self.assertEqual(draw["english_meaning_field"], "to draw")
+        self.assertEqual((draw.tags, pull.tags), ([], []))
+
+    def test_a_sibling_the_rework_answers_for_is_left_as_it_was(self):
+        # With no generated meanings the new note is reworked seeing its siblings, and the answer
+        # nearly always reworded one of them too: a studied note, rewritten on every new meaning
+        # of its word
+        pull = WordNote(PULL_NOTE, "手元へ寄せる。", "to pull")
+        draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
+        new = WordNote(0, "くじを抜く。", "to draw lots", placeholder="-5550009")
+        jp, en = NEW_MEANING
+        answer = {
+            "meanings": [
+                {"meaning_index": 2, "jp_meaning": "引き寄せる。", "en_meaning": "to pull in"},
+                {"meaning_index": 1, "jp_meaning": jp, "en_meaning": en},
+            ]
+        }
+
+        self.clean_with_siblings(new, [pull, draw], ENTRY, answer).one()
+
+        self.assertEqual((new["meaning_field"], new["english_meaning_field"]), (jp, en))
+        self.assertEqual(
+            (pull["meaning_field"], pull["english_meaning_field"]), ("手元へ寄せる。", "to pull")
+        )
+        self.assertEqual(pull.tags, [])
+
+    def test_a_new_note_mapped_already_is_not_mapped_again_for_its_siblings(self):
+        # A new note copied from a generated meaning holds it already: a sibling never mapped is
+        # no reason for a call, which could only remap the sibling
+        pull = WordNote(PULL_NOTE, "物に手をかけて近くへ寄せる。", "to pull")
+        draw = WordNote(DRAW_NOTE, "線を描く。", "to draw")
+        new = WordNote(0, "くじなどを抜き取る。", "to draw (lots)", placeholder="-5550009")
+
+        recorder = self.clean_with_siblings(
+            new, [pull, draw], ENTRY, {"meanings": []}, generated_meanings()
+        )
+
+        self.assertEqual(recorder.calls, [])
+        self.assertEqual(draw["english_meaning_field"], "to draw")
 
     def test_a_note_not_added_with_no_placeholder_is_cleaned_under_id_0(self):
         # A vocab note added by hand reaches the add-note hook with id 0 and an empty new note

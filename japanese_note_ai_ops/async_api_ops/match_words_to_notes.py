@@ -1343,9 +1343,11 @@ def create_new_note_from_matched_note(
     # Provide other_meaning_notes to override fetching from DB again as the meanings
     # gathered here can include yet un-added notes which the clean meaning op
     # couldn't get otherwise. They are also every meaning the word has, the first one without
-    # an (mN) marker included, which the fetch's meaning group leaves out: the new meaning is
-    # cleaned knowing each one it must not repeat. The run's caches, as the op's other cleanings
-    # get them: the sentences are gathered for each of those notes now, not only the new one
+    # an (mN) marker included, which the fetch's meaning group leaves out: a new meaning with no
+    # generated ones to map to is reworked seeing each one it must not repeat. They are only
+    # shown, never written, and a mapping maps the new note alone (clean_meaning_in_note says
+    # why). The run's caches, as the op's other cleanings get them: the sentences are gathered
+    # for each of those notes now, not only the new one
     clean_meaning_in_note(
         config=config,
         note=new_note,
