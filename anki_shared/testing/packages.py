@@ -12,7 +12,8 @@ only once `python build.py link` has made it (it is gitignored). Where it is mis
 build step; that view is wider than the linked one, and `build.py check` is what catches an
 undeclared import.
 
-The root conftest registers every addon for the test suites; `japanese_note_ai_ops/dev/headless`
+The root conftest loads this file by its path, so that nothing under `anki_shared` is imported
+before it is registered, and registers every addon for the test suites; `japanese_note_ai_ops/dev/headless`
 registers the two its scripts run, keeping what a conftest already registered when a test
 imports it. Stdlib only: this is imported before anything else can be.
 """

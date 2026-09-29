@@ -77,6 +77,9 @@ from data_paths import DATA_ROOT_ENV, DEFAULT_ROOT, data_dir, data_root  # noqa:
 
 # 2: expected.json holds only the notes the run changed, added or removed; 1 held every note
 FORMAT = 2
+# The addon's package, as the root conftest and headless register it: its directory's name.
+# Worked out once: a Path.resolve() per module of sys.modules cost half a second a scan
+PACKAGE = Path(__file__).resolve().parents[1].name
 COPY_ANYWHERE = "copy_anywhere"
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
 SYNTHETIC_BASE = 1_000_000_000_000
@@ -867,16 +870,28 @@ class ReplayResult:
         return problems
 
 
-def build_collection(corpus: Mapping[str, Any], path: Path, background: int = 0):
+def build_collection(
+    corpus: Mapping[str, Any], path: Path, background: int = 0
+) -> tuple[Any, frozenset[int]]:
     """A fresh collection at `path` holding the corpus (`fill_collection`) and `background`
-    notes no request of the run can find (`background_notes`)."""
+    notes no request of the run can find (`background_notes`), and the background notes' ids.
+
+    The ids themselves, not their range: a note added in a millisecond whose id a note already
+    has gets `max(id) + 1` from Anki, which with background notes in the collection is past
+    them, and from 2033 every new note's id is in their range anyway."""
     from anki_shared.testing import real_anki
 
+    notes = background_notes(corpus, background)
     col = real_anki.open_collection(path)
-    fill_collection(col, corpus)
-    if background:
-        fill_collection(col, {"notetypes": [], "decks": [], "notes": background_notes(corpus, background)})
-    return col
+    try:
+        fill_collection(col, corpus)
+        if notes:
+            fill_collection(col, {"notetypes": [], "decks": [], "notes": notes})
+    except BaseException:
+        # Left open, the file stays locked for as long as the exception is kept
+        col.close()
+        raise
+    return col, frozenset(note["id"] for note in notes)
 
 
 # Background notes' ids, clear of the corpus's and of the ids its fields name
@@ -1006,13 +1021,17 @@ def replay(
     stub = real_anki.install()
     saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
     saved_profile = stub.pm._profile_folder
-    col = build_collection(fixture.corpus, root / "collection.anki2", background)
+    col: Any = None
     try:
+        # Inside the try: a corpus that fails to build still has its directory removed
+        col, background_ids = build_collection(
+            fixture.corpus, root / "collection.anki2", background
+        )
         stub.col = col
         stub.pm.set_profile_folder(root / "profile")
 
         def set_config(config: dict) -> None:
-            stub.addonManager.configs[_package()] = config
+            stub.addonManager.configs[PACKAGE] = config
 
         def run_op(spec: Any, nids: list) -> None:
             run, _ = spec.notes_run(nids)
@@ -1026,13 +1045,14 @@ def replay(
 
         return _replay(
             fixture, col, stub.pm.media_folder(), root, set_config, run_op, cassette,
-            read_store, estimates,
+            read_store, estimates, background_ids,
         )
     finally:
         stub.col = saved_col
         stub.addonManager.configs = saved_configs
         stub.pm._profile_folder = saved_profile
-        col.close()
+        if col is not None:
+            col.close()
         if owned:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -1126,12 +1146,21 @@ def _replay(
     cassette: Optional[Cassette],
     read_store: Optional[Callable[[Path], Any]],
     estimates: Optional[dict] = None,
+    background_ids: frozenset[int] = frozenset(),
 ) -> ReplayResult:
     from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.configuration import MEANINGS_DICT_FILE
     from japanese_note_ai_ops.sync_local_ops import mdx_dictionary
 
+    # Installing the replay's own store would close this one, and nothing can open it again as
+    # its installer did (its keep_days, versions and profile): refused, not lost for the process
+    installed = capture.current_store()
+    if installed is not None:
+        raise RuntimeError(
+            f"a capture store is installed ({installed.path}); a replay records into one of its"
+            " own, which would close it: shut it down first"
+        )
     corpus = fixture.corpus
     saved_helper = mdx_dictionary.mdx_helper
     # Its own capture, notes and all, is how the replay learns which notes it added and what
@@ -1147,14 +1176,15 @@ def _replay(
         cassette = Cassette(fixture.cassette["entries"])
     dictionary = Dictionary(corpus["dictionary"])
     errors: list[str] = []
+    # What they replace is put back: a script's Headless prints run errors through its own
+    previous_deliver = run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
+    previous_responder = base_ops.set_responder(cassette)
     try:
         # The modules that use it imported it by name, and hold their own reference
         _point_modules_at(dictionary)
         store = root / "capture.sqlite3"
         if not capture.install(str(store), keep_days=None):
             raise RuntimeError(f"the replay's capture store {store} did not open")
-        run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
-        base_ops.set_responder(cassette)
         nids = [record["id"] for record in corpus["notes"] if record["selected"]]
         with memory_estimates({} if estimates is None else estimates):
             started = time.monotonic()
@@ -1163,7 +1193,9 @@ def _replay(
         capture.shutdown(timeout=30.0)
         events = _run_events(store)
         return ReplayResult(
-            notes=normalized_notes(_collection_notes(col), events.added, failed=events.failed),
+            notes=normalized_notes(
+                _collection_notes(col, background_ids), events.added, failed=events.failed
+            ),
             meanings=dict(sorted(events.meanings.items())),
             misses=cassette.misses,
             unused=cassette.unused(),
@@ -1176,14 +1208,10 @@ def _replay(
             store_data=read_store(store) if read_store is not None else None,
         )
     finally:
-        base_ops.set_responder(None)
-        run_errors.deliver_with(None)
+        base_ops.set_responder(previous_responder)
+        run_errors.deliver_with(previous_deliver)
         capture.shutdown(timeout=5.0)
         _point_modules_at(saved_helper)
-
-
-def _package() -> str:
-    return Path(__file__).resolve().parents[1].name
 
 
 def _point_modules_at(helper: Any) -> None:
@@ -1191,8 +1219,9 @@ def _point_modules_at(helper: Any) -> None:
     mdx_dictionary's own, and those that imported it by name."""
     import sys
 
+    prefix = PACKAGE + "."
     for name, module in list(sys.modules.items()):
-        if name.startswith(_package() + ".") and getattr(module, "mdx_helper", None) is not None:
+        if name.startswith(prefix) and getattr(module, "mdx_helper", None) is not None:
             setattr(module, "mdx_helper", helper)
 
 
@@ -1223,11 +1252,12 @@ def _run_events(store: Path) -> _RunEvents:
     return events
 
 
-def _collection_notes(col: Any) -> list[dict]:
+def _collection_notes(col: Any, background_ids: frozenset[int] = frozenset()) -> list[dict]:
+    """Every note of the collection but the background notes (`build_collection`)."""
     decks = {int(deck.id): deck.name for deck in col.decks.all_names_and_ids()}
     notes = []
     for nid in col.find_notes(""):
-        if BACKGROUND_BASE <= nid < BACKGROUND_LINK_BASE:
+        if nid in background_ids:
             continue
         note = col.get_note(nid)
         did = col.db.scalar("select did from cards where nid = ? order by ord limit 1", nid)

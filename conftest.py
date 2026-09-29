@@ -34,6 +34,7 @@ Four things to arrange, the first two inherited from the per-addon conftest this
    that it covers every suite however pytest was invoked.
 """
 
+import importlib.util
 import os
 import sys
 
@@ -41,18 +42,34 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 SHARED_ROOT = os.path.join(ROOT, "anki_shared")
 sys.path.insert(0, ROOT)
 
-# The packages helper is found through ROOT on sys.path, as anki_shared's implicit namespace
-# package, before anki_shared is registered; its testing/ package imports nothing on import.
-from anki_shared.testing.packages import addon_names, register_addon, register_package  # noqa: E402
 
-register_package("anki_shared", SHARED_ROOT)
+def _load_packages_helper():
+    """anki_shared/testing/packages.py, loaded by its path under a name of its own.
+
+    Imported as `anki_shared.testing.packages` it made `anki_shared` an implicit namespace
+    package holding `testing` before the registration below replaced it, and the registered
+    module never got `testing` as an attribute: `mock.patch("anki_shared.testing....")` and
+    `anki_shared.testing` after `import anki_shared.testing` raised AttributeError. Nothing
+    under anki_shared may be imported before it is registered.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_anki_addons_packages", os.path.join(SHARED_ROOT, "testing", "packages.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_packages = _load_packages_helper()
+_packages.register_package("anki_shared", SHARED_ROOT)
 
 # Loaded by pytest after this module has run, so the registration above is what lets the
 # name resolve. Only the root conftest may declare plugins.
 pytest_plugins = ["anki_shared.testing.pytest_plugin"]
 
-for _entry in addon_names(ROOT):
-    register_addon(ROOT, _entry)
+for _entry in _packages.addon_names(ROOT):
+    _packages.register_addon(ROOT, _entry)
 
 
 def _install_anki() -> bool:

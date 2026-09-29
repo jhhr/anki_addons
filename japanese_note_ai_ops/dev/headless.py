@@ -288,6 +288,7 @@ class Headless:
         call_logging.start_call_log(log_name)
         self.progress.set_cancel(False)
         errors_before = self.errors
+        run_before = last_run_id(self.capture_path) if self.capture_path else None
         run, result = spec.notes_run(nids)
         outcome: dict[str, Any] = {}
 
@@ -311,7 +312,7 @@ class Headless:
             seconds=time.monotonic() - started,
             error=outcome.get("error"),
             error_count=self.errors - errors_before,
-            run_id=last_run_id(self.capture_path) if self.capture_path else None,
+            run_id=last_run_id(self.capture_path, after=run_before) if self.capture_path else None,
         )
 
 
@@ -331,14 +332,20 @@ class RunReport:
         self.run_id = run_id
 
 
-def last_run_id(capture_path: Path) -> Optional[int]:
-    """The newest non-implicit run in the store: the one just run. Flushes first."""
+def last_run_id(capture_path: Path, after: Optional[int] = None) -> Optional[int]:
+    """The newest non-implicit run in the store if it is past `after`: the one just run. None
+    when that run wrote no row (it failed before its start, or the store turned itself off):
+    capture runs share a store, and the newest is then an earlier run, whose summary was
+    reported as the failed one's. Flushes first."""
     store = capture.current_store()
     if store is not None:
         store.flush(30.0)
     with closing(sqlite3.connect(f"file:{capture_path}?mode=ro", uri=True)) as connection:
         row = connection.execute("SELECT MAX(run_id) FROM runs WHERE implicit = 0").fetchone()
-    return row[0] if row else None
+    newest = row[0] if row else None
+    if newest is None or (after is not None and newest <= after):
+        return None
+    return newest
 
 
 def notes_to_match(

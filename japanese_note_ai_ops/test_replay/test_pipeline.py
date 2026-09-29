@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ import pytest
 
 import replay
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import base_ops, capture
+from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
 from japanese_note_ai_ops.async_api_ops.match_words_to_notes import (
     MATCH_FIELD_KEYS,
     match_words_spec,
@@ -291,6 +292,99 @@ def test_background_notes_change_nothing_the_run_does(captured):
     result = replay.replay(fixture, background=60)
 
     assert result.differences(fixture.expected) == []
+
+
+def test_a_note_added_past_the_background_notes_is_the_run_s(captured, tmp_path):
+    # A note added in a millisecond whose id a note already has gets max(id) + 1 from Anki,
+    # which with background notes in the collection is past them, and a note added from 2033
+    # on has an id in their range: a replay left either out of its notes, by the range
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    # Not collection.anki2: the capture run's collection is that
+    col, background_ids = replay.build_collection(
+        fixture.corpus, tmp_path / "replayed.anki2", background=3
+    )
+    try:
+        added = [max(background_ids) + 1, replay.BACKGROUND_BASE + 5]
+        for new_id in added:
+            note = real_anki.add_note(col, NOTETYPE, {FIELDS["word_sort_field"]: str(new_id)})
+            col.db.execute("update cards set nid = ? where nid = ?", new_id, note.id)
+            col.db.execute("update notes set id = ? where id = ?", new_id, note.id)
+
+        ids = {note["id"] for note in replay._collection_notes(col, background_ids)}
+    finally:
+        col.close()
+
+    assert len(background_ids) == 3
+    assert set(added) <= ids
+    assert not ids & background_ids
+    assert len(ids) == len(fixture.corpus["notes"]) + len(added)
+
+
+def test_a_replay_puts_back_the_responder_and_error_deliverer_it_replaced(captured):
+    # It set both to None when it was done, whatever a caller (a script's Headless, which
+    # prints run errors) had set before it
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    delivered: list = []
+    previous = run_errors.deliver_with(lambda title, text: delivered.append(text))
+    base_ops.set_responder(scripted)
+    try:
+        assert replay.replay(fixture).differences(fixture.expected) == []
+
+        run_errors.report_error("after the replay")
+        assert delivered == ["after the replay"]
+        assert base_ops.set_responder(None) is scripted
+    finally:
+        base_ops.set_responder(None)
+        run_errors.deliver_with(previous)
+
+
+def test_a_replay_refuses_to_close_an_installed_capture_store(captured, tmp_path):
+    # Installing its own store closed the one installed, and nothing installed it again: a
+    # Headless session's capture stopped recording for the rest of the process
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    outer = tmp_path / "outer.sqlite3"
+    assert capture.install(str(outer), keep_days=None)
+    try:
+        with pytest.raises(RuntimeError, match="capture store is installed"):
+            replay.replay(fixture)
+
+        installed = capture.current_store()
+        assert installed is not None and Path(installed.path) == outer
+        assert capture.installed()
+    finally:
+        capture.shutdown()
+
+
+def unbuildable_fixture() -> replay.Fixture:
+    """A fixture whose corpus names a note type it does not hold, which fill_collection
+    refuses."""
+    note = {"id": replay.SYNTHETIC_BASE, "notetype": "Missing", "deck": "Default",
+            "guid": "g", "fields": {}, "tags": [], "selected": True}
+    corpus = {"config": {}, "meanings": {}, "dictionary": [], "decks": [], "notetypes": [],
+              "notes": [note]}
+    return replay.Fixture(corpus, {"entries": []}, {"notes": [], "meanings": {}, "new_notes": 0})
+
+
+def test_a_corpus_that_fails_to_build_leaves_its_collection_closed(tmp_path):
+    # It was opened before the try that closes it, and stayed locked while the exception lived,
+    # which pytest keeps for a failed test
+    with pytest.raises(AssertionError) as raised:
+        replay.replay(unbuildable_fixture(), workdir=tmp_path)
+
+    assert raised.value is not None
+    real_anki.open_collection(tmp_path / "collection.anki2").close()
+
+
+def test_a_corpus_that_fails_to_build_leaves_no_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    with pytest.raises(AssertionError):
+        replay.replay(unbuildable_fixture())
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
