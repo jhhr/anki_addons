@@ -4,12 +4,14 @@ that raises included."""
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import headless
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import run_errors
+from japanese_note_ai_ops.async_api_ops import capture, run_errors
+from japanese_note_ai_ops.async_api_ops.base_ops import RunResult
 
 
 def collection_file(tmp_path: Path) -> Path:
@@ -32,6 +34,26 @@ def test_a_capture_store_that_does_not_open_leaves_the_collection_closed(tmp_pat
 
     real_anki.open_collection(path).close()
     assert (stub.col, stub.progress) == before
+
+
+def test_a_run_that_wrote_no_run_row_reports_no_run(tmp_path):
+    # The store's newest run was reported whatever it was: a run that failed before its start
+    # got an earlier capture run's id, and capture_run.py printed that run's summary as its own
+    store = tmp_path / "capture.sqlite3"
+    with headless.Headless(
+        collection_file(tmp_path), tmp_path / "profile", {}, capture_path=store
+    ) as session:
+        earlier = capture.begin_run("an earlier capture run")
+        capture.end_run(earlier, "completed")
+
+        def fails_at_once(col) -> None:
+            raise RuntimeError("failed before its run began")
+
+        spec = SimpleNamespace(notes_run=lambda nids: (fails_at_once, RunResult()))
+        report = session.run(spec, [], "no_run")
+
+    assert isinstance(report.error, RuntimeError)
+    assert earlier is not None and report.run_id is None
 
 
 def test_a_session_puts_back_what_it_replaced(tmp_path):
