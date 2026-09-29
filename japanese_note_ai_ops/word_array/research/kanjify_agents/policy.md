@@ -52,11 +52,11 @@ needs a split asks (a policy question); it never splits on its own.
   stays kana (KANA-1).
 - SPLIT-おさえる 押さえる for pressing or holding down, securing (手で押さえる, 要点を押さえる);
   抑える for restraining or suppressing (怒りを抑える, 物価を抑える).
-- SPLIT-よる 因る for a cause or reason (事故に因る故障, 過労に因る); 由る for a means, method or
-  mechanism, what an action is done by or with (石に由る撲殺, 手作業に由る, 醸造に由って作られる,
-  人工呼吸に由り生き返る); 依る for "depending on", "according to", "based on" (人に依る,
-  予報に依ると, 法律に依る), and for the doer of an action, person or thing, in a passive or
-  before an action noun (彼に依って書かれた, 北朝鮮に依る拉致, 骨髄に依って形成される). The doer
+- SPLIT-よる 因る for a cause or reason (事故に因る故障, 病気に因る欠席); 由る for a means, method
+  or mechanism, what an action is done by or with (手作業に由る, 機械に由る翻訳, 発酵に由って
+  作られる); 依る for "depending on", "according to", "based on" (人に依る, 予報に依ると,
+  法律に依る), and for the doer of an action, person or thing, in a passive or before an action
+  noun (彼に依って書かれた, 市民に依る運動, 細胞に依って作られる). The doer
   is who or what acts; 由る is only how it acts. 拠る is not used: its own sense, taking something as
   grounds or a source (法律に拠る, 資料に拠る), goes with 依る, since in real sentences it can't
   be told apart from "depending on" consistently.
