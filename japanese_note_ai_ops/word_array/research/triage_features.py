@@ -126,14 +126,14 @@ def jmdict_features(j: Optional[dict]) -> dict:
         # nfXX is the XXth 500-word band of a newspaper corpus's ranking: its middle, in log
         "jm_log_nf_rank": math.log10(nf * 500 - 250) if nf else math.nan,
         "jm_nf_missing": float(not nf),
-        "jm_common": float(j["jm_common"]),
-        "jm_senses": float(j["jm_senses"]),
-        "jm_entries": float(j["jm_entries"]),
-        "jm_field": float(j["jm_field"]),
+        "jm_common": float(bool(j.get("jm_common"))),
+        "jm_senses": float(j.get("jm_senses", 0)),
+        "jm_entries": float(j.get("jm_entries", 0)),
+        "jm_field": float(bool(j.get("jm_field"))),
         "jm_rare_kanji": float(any(j.get(f"jm_k_{n}") for n in ("rK", "iK", "oK", "sK"))),
     }
     for k in ("news", "ichi", "spec", "gai"):
-        row[f"jm_{k}"] = float(j[f"jm_{k}"])
+        row[f"jm_{k}"] = float(j.get(f"jm_{k}", 0))
     for m in JM_MISC_KEPT:
         row[f"jm_{m}"] = float(bool(j.get(f"jm_first_{m}")))
     return row

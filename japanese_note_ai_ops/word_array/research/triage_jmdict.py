@@ -101,7 +101,9 @@ class Mark:
             row[f"jm_first_{misc}"] = misc in self.misc_first
             row[f"jm_any_{misc}"] = misc in self.misc_any
         row["jm_field"] = bool(self.fields)
-        return row
+        # Only what is set: every note's false flags made the file 40 MB. A reader takes a
+        # missing key for false or 0 (triage_features.jmdict_features)
+        return {k: v for k, v in row.items() if v or k in ("jm_found", "jm_nf")}
 
 
 def parse(path: Path) -> dict[tuple[str, str], Mark]:
