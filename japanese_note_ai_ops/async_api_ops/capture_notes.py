@@ -166,41 +166,56 @@ def record_final(
 
 def record_collection(col: "Collection", note_ids: Iterable[int]) -> None:
     """Record the note types of these notes and the decks their cards are in, as events: what a
-    replay needs to build them again beyond the notes themselves. One query for each."""
+    replay needs to build them again beyond the notes themselves (`collection_records`)."""
     if not capture.notes_on():
         return
     try:
-        db = col.db
-        ids = ",".join(str(nid) for nid in sorted({int(nid) for nid in note_ids if int(nid) > 0}))
-        if db is None or not ids:
+        records = collection_records(col, note_ids)
+        if records is None:
             return
-        for (mid,) in db.all(f"select distinct mid from notes where id in ({ids})"):
-            notetype = col.models.get(mid)
-            if notetype is None:
-                continue
-            capture.event(
-                "notetype",
-                {
-                    "mid": mid,
-                    "name": notetype["name"],
-                    "fields": [field["name"] for field in notetype["flds"]],
-                    "sort_field": notetype.get("sortf", 0),
-                    "templates": [template["name"] for template in notetype["tmpls"]],
-                },
-            )
-        decks: dict[str, list[int]] = {}
-        for nid, did in db.all(f"select distinct nid, did from cards where nid in ({ids})"):
-            decks.setdefault(str(nid), []).append(did)
-        names: dict[str, str] = {}
-        for did in sorted({did for dids in decks.values() for did in dids}):
-            deck = col.decks.get(did, default=False)  # type: ignore[arg-type]
-            if deck is not None:
-                names[str(did)] = deck["name"]
-        capture.event("decks", {"notes": decks, "names": names})
+        notetypes, decks = records
+        for notetype in notetypes:
+            capture.event("notetype", notetype)
+        capture.event("decks", decks)
     except Exception:
         logger.warning(
             "Capture: the collection's note types and decks were not recorded", exc_info=True
         )
+
+
+def collection_records(
+    col: "Collection", note_ids: Iterable[int]
+) -> Optional[tuple[list[dict[str, Any]], dict[str, Any]]]:
+    """The payloads of the `notetype` events and the `decks` event for these notes, one query
+    for each; None when there are no notes. The export reads notes the run never read from the
+    collection it ran against in these same forms (dev/replay.py `source_notes`)."""
+    db = col.db
+    ids = ",".join(str(nid) for nid in sorted({int(nid) for nid in note_ids if int(nid) > 0}))
+    if db is None or not ids:
+        return None
+    notetypes = []
+    for (mid,) in db.all(f"select distinct mid from notes where id in ({ids})"):
+        notetype = col.models.get(mid)
+        if notetype is None:
+            continue
+        notetypes.append(
+            {
+                "mid": mid,
+                "name": notetype["name"],
+                "fields": [field["name"] for field in notetype["flds"]],
+                "sort_field": notetype.get("sortf", 0),
+                "templates": [template["name"] for template in notetype["tmpls"]],
+            }
+        )
+    decks: dict[str, list[int]] = {}
+    for nid, did in db.all(f"select distinct nid, did from cards where nid in ({ids})"):
+        decks.setdefault(str(nid), []).append(did)
+    names: dict[str, str] = {}
+    for did in sorted({did for dids in decks.values() for did in dids}):
+        deck = col.decks.get(did, default=False)  # type: ignore[arg-type]
+        if deck is not None:
+            names[str(did)] = deck["name"]
+    return notetypes, {"notes": decks, "names": names}
 
 
 def undo_step(col: "Collection") -> Optional[dict[str, Any]]:

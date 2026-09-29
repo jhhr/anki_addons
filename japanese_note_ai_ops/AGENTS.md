@@ -251,7 +251,16 @@ cheap no-op and nothing is recorded.
   corpus lacks, there or in an `insert_deck`, gets a name no replay's deck has), and for a fixture
   writes expected_copy_anywhere.json from a replay with its add definitions on
   (`replay.copy_anywhere_on_add`); the capture run had none on, so that file is a regression
-  baseline, not a capture.
+  baseline, not a capture. What those definitions read the capture never recorded, so
+  `replay.export_with_copy_anywhere` takes it from the capture's sources: it replays the run
+  with them on, records every search they make (`find_notes`/`find_cards`), makes each of
+  `--collection` (the collection the capture ran against), and carries what it finds that the
+  collection held when the run started, unselected, under ids and names numbered after the
+  run's own, until a round finds no more; and it carries each file a fonts check names from
+  `--media`, cut to the characters the notes hold (`corpus["media"]`, written to the replay's
+  media folder). A read_file stage names its file in a template, so a definition with one is
+  refused. Without that, a kanji-grades search found nothing and a fonts check failed on every
+  note, logged and swallowed, on every machine.
 - **Logs.** A replay writes its logs to `user_files/replay_logs/` beside each addon's own
   `logs/` (`replay.REPLAY_LOGS`, by pointing `call_logging.logs_dir` and CopyAnywhere's
   `logging_setup.logs_dir` there): a replay's run is not one of the user's, and CopyAnywhere

@@ -4,7 +4,10 @@ A fixture is what a replay of one capture run needs, as three JSON files a perso
 
 - corpus.json: the collection as the run found it, cut down to the notes it read, with their
   note types and decks; the config it ran with; the generated meanings it read; the dictionary
-  lookups it made. Note ids are synthetic, in every field that holds one.
+  lookups it made. Note ids are synthetic, in every field that holds one. With CopyAnywhere's
+  config (`copy_anywhere`), also what its add definitions read that the run did not: the notes
+  their searches find, from the collection the run ran against, and the media files they open
+  (`media`) (`export_with_copy_anywhere`).
 - cassette.json: every AI call's answer, by its request key (capture_store.request_key: the
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
@@ -134,6 +137,9 @@ class Fixture:
     expected: dict
     expected_copy_anywhere: Optional[dict] = None
     work: Optional[dict] = None
+    # A synthetic note id -> the id of that note in the collection the capture ran on. An
+    # export's, for the searches it looks up there (`export_with_copy_anywhere`); never written
+    real_ids: Optional[dict[int, int]] = field(default=None, repr=False, compare=False)
 
     FILES = ("corpus", "cassette", "expected")
     OPTIONAL_FILES = ("expected_copy_anywhere", "work")
@@ -260,11 +266,21 @@ class _IdMap:
 
 
 def export_fixture(
-    store_path: Path, run_id: int, copy_anywhere: Optional[Mapping[str, Any]] = None
+    store_path: Path,
+    run_id: int,
+    copy_anywhere: Optional[Mapping[str, Any]] = None,
+    source: Optional[SourceNotes] = None,
+    media: Optional[Mapping[str, Any]] = None,
 ) -> Fixture:
     """The fixture of run `run_id` in the capture store at `store_path`. Raises CaptureGap when
     the run cannot be replayed from what it recorded. `copy_anywhere`, CopyAnywhere's addon
-    config, goes into the corpus for replays that put its definitions on the add hook."""
+    config, goes into the corpus for replays that put its definitions on the add hook.
+
+    `source` is notes of the collection the run ran against that it never read, and `media`
+    files by name: what CopyAnywhere's definitions read (`export_with_copy_anywhere`). The
+    notes go into the corpus unselected, under ids and names numbered after the run's own, so
+    carrying them renames nothing the run recorded; the files go into the replay's media
+    folder."""
     with closing(sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         run = connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -360,10 +376,33 @@ def export_fixture(
         raise CaptureGap(f"run {run_id} recorded no selected notes")
 
     ids = _IdMap(pre)
+    run_mids = sorted(notetypes)
+    run_dids = sorted(deck_names, key=int)
+    carried: dict[int, dict] = {}
+    if source is not None:
+        carried = {
+            nid: record
+            for nid, record in source.records.items()
+            if nid not in pre and nid not in added
+        }
+        for payload in source.notetypes:
+            notetypes.setdefault(payload["mid"], payload)
+        for key, dids in source.decks["notes"].items():
+            decks_of.setdefault(key, dids)
+        for key, name in source.decks["names"].items():
+            deck_names.setdefault(key, name)
     type_names = _names(
-        (notetypes[mid]["name"] for mid in sorted(notetypes)), "Note type", HARDCODED_NOTETYPES
+        [notetypes[mid]["name"] for mid in run_mids]
+        + [notetypes[mid]["name"] for mid in sorted(notetypes) if mid not in run_mids],
+        "Note type",
+        HARDCODED_NOTETYPES,
     )
-    deck_rename = _names((deck_names[did] for did in sorted(deck_names, key=int)), "Deck")
+    run_types = {notetypes[mid]["name"] for mid in run_mids}
+    deck_rename = _names(
+        [deck_names[did] for did in run_dids]
+        + [deck_names[did] for did in sorted(deck_names, key=int) if did not in run_dids],
+        "Deck",
+    )
     decks = _DeckNames(deck_rename)
 
     def notetype_of(record: dict) -> str:
@@ -377,8 +416,10 @@ def export_fixture(
         return deck_rename.get(deck_names.get(str(dids[0]), ""), "Default") if dids else "Default"
 
     corpus_notes = []
-    for nid in sorted(pre):
-        record = pre[nid]
+    # The carried notes after the run's: their ids are handed out after every one the run's
+    # notes name, so carrying them changes no id the run recorded
+    for nid in sorted(pre) + sorted(carried):
+        record = pre[nid] if nid in pre else carried[nid]
         corpus_notes.append(
             {
                 "id": ids(nid),
@@ -394,10 +435,10 @@ def export_fixture(
     # The run's final state, in the same names; new notes by symbol (normalized_notes)
     new_ids = {nid: placeholder for nid, placeholder in added.items() if nid in final}
     after: list[dict] = []
-    for nid in sorted(set(pre) | set(new_ids)):
+    for nid in sorted(set(pre) | set(carried) | set(new_ids)):
         if nid in removed:
             continue
-        record = final.get(nid) or pre[nid]
+        record = final.get(nid) or pre.get(nid) or carried[nid]
         after.append(
             {
                 "id": nid,
@@ -418,7 +459,9 @@ def export_fixture(
             "outcome": run["outcome"],
             "versions": json.loads(run["versions_json"] or "null"),
         },
-        "config": _renamed_config(config, type_names, decks),
+        "config": _renamed_config(
+            config, {name: type_names[name] for name in run_types}, decks
+        ),
         "notetypes": [
             {
                 "name": type_names[info["name"]],
@@ -434,7 +477,11 @@ def export_fixture(
         "dictionary": lookups,
     }
     if copy_anywhere is not None:
-        corpus["copy_anywhere"] = _renamed_copy_anywhere(copy_anywhere, type_names, decks)
+        corpus["copy_anywhere"] = _renamed_copy_anywhere(
+            copy_anywhere, type_names, decks, run_types
+        )
+    if media:
+        corpus["media"] = dict(sorted(media.items()))
     cassette = {"format": FORMAT, "entries": _cassette_entries(calls)}
     expected = {
         "format": FORMAT,
@@ -442,7 +489,8 @@ def export_fixture(
         "meanings": dict(sorted(meanings_final.items())),
         "new_notes": len(new_ids),
     }
-    return Fixture(corpus, cassette, expected)
+    real_ids = {synthetic: nid for nid, synthetic in ids.ids.items()}
+    return Fixture(corpus, cassette, expected, real_ids=real_ids)
 
 
 def _names(originals: Iterable[str], generic: str, keep: frozenset = frozenset()) -> dict:
@@ -491,13 +539,17 @@ def _renamed_config(config: dict, type_names: dict, decks: _DeckNames) -> dict:
 
 
 def _renamed_copy_anywhere(
-    config: Mapping[str, Any], type_names: Mapping[str, str], decks: _DeckNames
+    config: Mapping[str, Any],
+    type_names: Mapping[str, str],
+    decks: _DeckNames,
+    run_types: Iterable[str],
 ) -> dict:
     """CopyAnywhere's config as a replay runs it (`copy_anywhere_on_add`): the definitions its
-    add hook runs for a note of the corpus's note types, as CopyAnywhere picks them
+    add hook runs for a note of the run's note types (`run_types`), as CopyAnywhere picks them
     (`note_hooks.get_copy_definitions_for_add_note`), with the note types and decks they name
     under the fixture's names. Every definition, unrenamed, carried the user's note types and
-    decks, and a deck whitelist named decks a replay's collection never had.
+    decks, and a deck whitelist named decks a replay's collection never had. A note carried for
+    the definitions' searches is never added, so its type picks none.
 
     A definition that may run others keeps every definition, since which it runs is in its
     stages; their trigger note types and decks are renamed all the same. What a definition's
@@ -506,11 +558,12 @@ def _renamed_copy_anywhere(
     from copy_anywhere.logic.definition_schema import is_format_2, read_effects
 
     definitions = list(config.get(COPY_DEFINITIONS_KEY) or [])
+    added_types = set(run_types)
     runnable = [
         definition
         for definition in definitions
         if definition_runs_on_add(definition)
-        and any(name in type_names for name in definition_note_type_names(definition))
+        and any(name in added_types for name in definition_note_type_names(definition))
     ]
     if any(read_effects(definition)["calls_definitions"] for definition in runnable):
         runnable = definitions
@@ -543,6 +596,208 @@ def _rename_change_deck(value: Any, decks: _DeckNames) -> None:
     elif isinstance(value, list):
         for item in value:
             _rename_change_deck(item, decks)
+
+
+# --- what CopyAnywhere's definitions read ------------------------------------------------------
+#
+# The capture run had no CopyAnywhere on its add hook, so it recorded nothing of what its
+# definitions read: the notes their searches find (a kanji note's grade, a word's other notes)
+# and the media files their fonts checks open. A replay without them runs every search against
+# the few notes the run read and every fonts check against no file, and CopyAnywhere logs the
+# failure and carries on, so nothing fails. The export takes the notes from the collection the
+# run ran against, as it holds them now, and the files from a media folder that has them.
+
+# How many rounds of looking up an export makes: the searches are built from the notes the run
+# adds, so the second round finds no more unless a definition searches with what it found
+COPY_ANYWHERE_ROUNDS = 3
+# A fonts check's setting naming its dictionary, a media file (copy_anywhere/logic/
+# fonts_check_process.py): the one media read of a definition whose name is in its config
+FONTS_DICT_KEY = "fonts_dict_file"
+
+
+@dataclass
+class SourceNotes:
+    """Notes of the collection a capture ran against that the run never read, for its corpus to
+    carry, in the capture's own forms: records as `capture_notes.note_record` makes them, note
+    types and decks as `capture_notes.collection_records` does."""
+
+    records: dict[int, dict] = field(default_factory=dict)
+    notetypes: list[dict] = field(default_factory=list)
+    decks: dict = field(default_factory=lambda: {"notes": {}, "names": {}})
+    # How many of them the collection changed after the run started: carried as they are now,
+    # as nothing recorded them before
+    changed: int = 0
+
+
+def source_notes(col: Any, nids: Iterable[int], started: float) -> SourceNotes:
+    """`nids` of `col`, the collection a run that started at `started` ran against."""
+    from anki.utils import ids2str
+
+    from japanese_note_ai_ops.async_api_ops.capture_notes import collection_records, note_record
+
+    wanted = sorted(set(nids))
+    records = collection_records(col, wanted)
+    if records is None:
+        return SourceNotes()
+    notetypes, decks = records
+    changed = col.db.scalar(
+        f"select count() from notes where id in {ids2str(wanted)} and mod > ?", started
+    )
+    return SourceNotes(
+        {nid: note_record(col.get_note(nid)) for nid in wanted}, notetypes, decks, changed
+    )
+
+
+def source_matches(
+    col: Any, searches: Iterable[tuple[str, str]], real_ids: Mapping[int, int], started: float
+) -> set[int]:
+    """The notes `searches`, a replay's `(method, query)` pairs, find in `col`, the collection
+    the run ran against, of the ones it held when the run started: a note's id is when it was
+    made, so the run's own new notes are left out too. A synthetic id in a query is `col`'s
+    again (`real_ids`)."""
+    from anki.utils import ids2str
+
+    def real(match: re.Match) -> str:
+        return str(real_ids.get(int(match.group(1)), match.group(1)))
+
+    before = int(started * 1000)
+    found: set[int] = set()
+    for method, query in sorted(set(searches)):
+        query = ID_RE.sub(real, query)
+        if method == "find_cards":
+            cids = col.find_cards(query)
+            nids = col.db.list(f"select distinct nid from cards where id in {ids2str(cids)}")
+        else:
+            nids = col.find_notes(query)
+        found.update(int(nid) for nid in nids if int(nid) < before)
+    return found
+
+
+def _run_started(store_path: Path, run_id: int) -> float:
+    with closing(sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)) as connection:
+        row = connection.execute("SELECT started FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    if row is None or row[0] is None:
+        raise CaptureGap(f"no start recorded for run {run_id} in {store_path}")
+    return float(row[0])
+
+
+def _media_files(value: Any) -> set[str]:
+    """The media files the definitions in `value` open by a name their config holds."""
+    names: set[str] = set()
+    if isinstance(value, dict):
+        name = value.get(FONTS_DICT_KEY)
+        if isinstance(name, str) and name:
+            names.add(name)
+        for item in value.values():
+            names |= _media_files(item)
+    elif isinstance(value, list):
+        for item in value:
+            names |= _media_files(item)
+    return names
+
+
+def _file_reading_stages(value: Any) -> int:
+    """How many read_file stages are in `value`: they name the file in a template only their
+    run fills in, so an export cannot know which to carry."""
+    if isinstance(value, dict):
+        own = 1 if value.get("type") == "read_file" else 0
+        return own + sum(_file_reading_stages(item) for item in value.values())
+    if isinstance(value, list):
+        return sum(_file_reading_stages(item) for item in value)
+    return 0
+
+
+def _cut_media(content: Any, chars: set[str]) -> Any:
+    """A fonts dictionary, `{character: [font, ...], "all_fonts": [...]}`, down to the
+    characters in `chars`: a fonts check looks up only the characters of the text it checks,
+    which a note of the replay holds. A key that is no single character is kept whole. The
+    whole dictionary of one collection is 6 MB, most of it characters no corpus has."""
+    if not isinstance(content, dict):
+        return content
+    return {key: value for key, value in content.items() if len(key) != 1 or key in chars}
+
+
+def _characters(*note_lists: Iterable[Mapping[str, Any]]) -> set[str]:
+    return {char for notes in note_lists for note in notes for text in note["fields"].values()
+            for char in text}
+
+
+def export_with_copy_anywhere(
+    store_path: Path,
+    run_id: int,
+    config: Mapping[str, Any],
+    source: Any,
+    media_dir: Optional[Path],
+    lenient: bool = False,
+) -> tuple[Fixture, SourceNotes]:
+    """`export_fixture` with CopyAnywhere's config, and with what its add definitions read that
+    the capture did not record, so a replay with them on does their work as Anki did. Returns
+    the fixture and the notes it carries.
+
+    - The notes their searches find in `source`, the open collection the capture ran against,
+      of the ones it held when the run started: the run is replayed with the definitions on,
+      the searches they make are recorded (`copy_anywhere_on_add`) and made of `source`, and
+      what they find goes into the corpus; again, until a round finds no more.
+    - The media files their fonts checks open, from `media_dir`, cut to the characters the
+      replay's notes hold (`_cut_media`).
+
+    `lenient`, for a corpus a strict replay cannot reproduce, replays as a benchmark does. A
+    fixture's replay with the cut files must write what one with the whole files wrote."""
+    started = _run_started(store_path, run_id)
+    fixture = export_fixture(store_path, run_id, copy_anywhere=config)
+    definitions = fixture.corpus["copy_anywhere"][COPY_DEFINITIONS_KEY]
+    if _file_reading_stages(definitions):
+        raise CaptureGap(
+            "a CopyAnywhere add definition reads a file whose name only its run knows (a"
+            " read_file stage), which an export cannot carry"
+        )
+    whole: dict[str, Any] = {}
+    for name in sorted(_media_files(definitions)):
+        path = media_dir / name if media_dir is not None else None
+        if path is None or not path.is_file():
+            raise CaptureGap(
+                f"CopyAnywhere's add definitions read {name} from the media folder, and"
+                f" {media_dir or 'no media folder given'} does not hold it"
+            )
+        whole[name] = json.loads(path.read_text(encoding="utf-8"))
+
+    carried = SourceNotes()
+    for _ in range(COPY_ANYWHERE_ROUNDS):
+        fixture = export_fixture(
+            store_path, run_id, copy_anywhere=config, source=carried, media=whole
+        )
+        assert fixture.real_ids is not None
+        searches: list[tuple[str, str]] = []
+        result = _replay_with_copy_anywhere(fixture, lenient, searches)
+        in_corpus = {fixture.real_ids[note["id"]] for note in fixture.corpus["notes"]}
+        found = source_matches(source, searches, fixture.real_ids, started) - in_corpus
+        if not found:
+            break
+        carried = source_notes(source, set(carried.records) | found, started)
+    else:
+        raise CaptureGap(
+            f"CopyAnywhere's searches still found notes to carry after {COPY_ANYWHERE_ROUNDS}"
+            " rounds: a definition searches with what it found"
+        )
+    if not whole:
+        return fixture, carried
+
+    chars = _characters(fixture.corpus["notes"], fixture.expected["notes"], result.notes)
+    cut = {name: _cut_media(content, chars) for name, content in whole.items()}
+    final = export_fixture(store_path, run_id, copy_anywhere=config, source=carried, media=cut)
+    if not lenient and _replay_with_copy_anywhere(final, lenient, None).notes != result.notes:
+        raise CaptureGap(
+            f"cut to the replay's characters, {', '.join(sorted(cut))} made CopyAnywhere write"
+            " otherwise than the whole files did"
+        )
+    return final, carried
+
+
+def _replay_with_copy_anywhere(
+    fixture: Fixture, lenient: bool, searches: Optional[list[tuple[str, str]]]
+) -> ReplayResult:
+    cassette = Cassette(fixture.cassette["entries"], lenient=True) if lenient else None
+    return replay(fixture, cassette=cassette, copy_anywhere=True, searches=searches)
 
 
 def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
@@ -1002,13 +1257,15 @@ def replay(
     background: int = 0,
     estimates: Optional[dict] = None,
     copy_anywhere: bool = False,
+    searches: Optional[list[tuple[str, str]]] = None,
 ) -> ReplayResult:
     """Build the fixture's corpus in a fresh collection under `workdir` (a temporary directory
     by default), run the op over its selected notes with nothing reaching a network, and return
     the collection's state after it, normalized as the fixture's expected state is.
 
     `copy_anywhere` puts the corpus's CopyAnywhere definitions on the add hook for the run
-    (`copy_anywhere_on_add`); the result is then compared with `expected_copy_anywhere`.
+    (`copy_anywhere_on_add`); the result is then compared with `expected_copy_anywhere`. The
+    searches they make go into `searches`, when given.
 
     For a benchmark: `cassette` answers in place of a strict one of the fixture's own (a timed
     or lenient one), the run happens inside `around_run()` (a memory profile), `background`
@@ -1044,7 +1301,7 @@ def replay(
                     stack.enter_context(around_run())
                 # Around the run only, after the corpus is built: on the notes the run adds
                 if copy_anywhere:
-                    stack.enter_context(copy_anywhere_on_add(stub, definitions or {}))
+                    stack.enter_context(copy_anywhere_on_add(stub, definitions or {}, searches))
                 run(col)
 
         return _replay(
@@ -1089,10 +1346,14 @@ def replay_in_anki(
 
 
 @contextmanager
-def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
+def copy_anywhere_on_add(
+    mw: Any, config: Mapping[str, Any], searches: Optional[list[tuple[str, str]]] = None
+) -> Iterator[None]:
     """CopyAnywhere's add-note definitions run on every note added inside the block, as they do
     in Anki: its handler on `note_will_be_added`, and only that one (its editor and review hooks
-    have no use here), with `config` as its addon config. Its logs go to `REPLAY_LOGS`.
+    have no use here), with `config` as its addon config. Its logs go to `REPLAY_LOGS`, and the
+    searches it makes of the collection into `searches`, when given
+    (`export_with_copy_anywhere`).
 
     For issue #11's stage 5: the match op's cleanup adds its notes with `col.add_note`, which
     fires the hook for each, so its cost lands in the add phase, and what CopyAnywhere reads it
@@ -1102,14 +1363,17 @@ def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
     from copy_anywhere import logging_setup
     from copy_anywhere.hooks import note_hooks
 
+    def on_add(col: Any, note: Any, deck_id: Any) -> None:
+        if searches is None:
+            note_hooks.run_copy_fields_on_add(note, deck_id)
+            return
+        with _searches_recorded(col, searches):
+            note_hooks.run_copy_fields_on_add(note, deck_id)
+
     configs = mw.addonManager.configs
     saved = configs.get(COPY_ANYWHERE)
     configs[COPY_ANYWHERE] = dict(config)
-    handler = note_hooks.contained(
-        "on add",
-        lambda _col, note, deck_id: note_hooks.run_copy_fields_on_add(note, deck_id),
-        note_hooks._nothing,
-    )
+    handler = note_hooks.contained("on add", on_add, note_hooks._nothing)
     note_will_be_added.append(handler)
     try:
         with replay_logs(logging_setup):
@@ -1120,6 +1384,34 @@ def copy_anywhere_on_add(mw: Any, config: Mapping[str, Any]) -> Iterator[None]:
             configs.pop(COPY_ANYWHERE, None)
         else:
             configs[COPY_ANYWHERE] = saved
+
+
+@contextmanager
+def _searches_recorded(col: Any, searches: list[tuple[str, str]]) -> Iterator[None]:
+    """Each `find_notes` and `find_cards` of `col` on this thread inside the block, as
+    `(method, query)` in `searches`: a definition's searches all go through them
+    (copy_anywhere/logic/execution/context.py), on the thread that adds the note."""
+    thread = threading.get_ident()
+
+    def recording(method: str) -> Callable[..., Any]:
+        search = getattr(col, method)
+
+        def recorded(query: Any, *args: Any, **kwargs: Any) -> Any:
+            if threading.get_ident() == thread:
+                searches.append((method, str(query)))
+            return search(query, *args, **kwargs)
+
+        return recorded
+
+    methods = ("find_notes", "find_cards")
+    for method in methods:
+        setattr(col, method, recording(method))
+    try:
+        yield
+    finally:
+        # The instance's own attributes go, and the class's methods are what it has again
+        for method in methods:
+            delattr(col, method)
 
 
 @contextmanager
@@ -1218,6 +1510,8 @@ def _replay_logged(
     (media / MEANINGS_DICT_FILE).write_text(
         json.dumps(corpus["meanings"], ensure_ascii=False), encoding="utf-8"
     )
+    for name, content in (corpus.get("media") or {}).items():
+        (media / name).write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
     if cassette is None:
         cassette = Cassette(fixture.cassette["entries"])
     dictionary = Dictionary(corpus["dictionary"])

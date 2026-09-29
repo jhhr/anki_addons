@@ -19,7 +19,7 @@ import sqlite3
 import tempfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, cast
 
 import pytest
 
@@ -493,6 +493,116 @@ def test_a_replay_logs_beside_the_addons_own_logs_and_leaves_nothing_attached(
         seen.append(logging_setup.logs_dir())
     assert seen == [str(tmp_path / "ca" / "logs"), str(tmp_path / "ca" / replay.REPLAY_LOGS)]
     assert logging_setup.logs_dir() == str(tmp_path / "ca" / "logs")
+
+
+KANJI_TYPE = "Kanji note"
+
+
+def kanji_grades_and_fonts(fonts_file: str) -> dict:
+    """A CopyAnywhere add definition that reads what the capture never recorded: the grade of
+    the word's kanji from a kanji note, found by a search, and the fonts for its kanji from a
+    media file."""
+    from copy_anywhere.logic.definition_schema import CopyDefinitionV2
+    from copy_anywhere.logic.flow_analysis import compute_effects
+
+    def stage(guid: str, stage_type: str, **fields: Any) -> dict:
+        return {"guid": guid, "type": stage_type, "name": stage_type, "enabled": True, **fields}
+
+    def text(value: str, process_chain: Optional[list] = None) -> dict:
+        return {"mode": "text", "text": value, "code": "", "process_chain": process_chain or []}
+
+    fonts_check = {
+        "guid": "fonts", "name": "Fonts check", "fonts_dict_file": fonts_file,
+        "limit_to_fonts": None, "character_limit_regex": None,
+    }
+    definition = {
+        "guid": "kanji-grades",
+        "format_version": 2,
+        "definition_name": "kanji grades and fonts",
+        "triggers": {
+            "note_types": [NOTETYPE], "deck_names": [], "include_subdecks": False,
+            "on_sync": False, "on_add": True, "on_review": False,
+            "on_unfocus": {"edit_fields": [], "add_fields": []},
+        },
+        "stages": [
+            stage("query", "note_query", result="found",
+                  query=text("Kanji:{{trigger.word_kanjified}}"),
+                  selection={"strategy": "all", "count": None, "sort_field": None,
+                             "sort_order": "descending"},
+                  if_empty="continue"),
+            stage("list", "list_variable", result="grades", item_type="Text"),
+            stage("each", "for_each_note", input={"binding": "found"}, item_binding="note",
+                  body=[stage("store", "store", target={"kind": "list", "binding": "grades"},
+                              value=text("{{note.Category}}"))]),
+            stage("join", "reduce", input={"binding": "grades"}, result="joined",
+                  initial=text(""), item_binding="item", accumulator_binding="accumulator",
+                  value=text(""), operation="join", separator=", "),
+            stage("write", "edit_note", target={"binding": "trigger"},
+                  fields=[
+                      {"field": "sentence_audio", "value": text("{{joined}}"),
+                       "write_if": "always"},
+                      {"field": "meaning_audio",
+                       "value": text("{{trigger.word_kanjified}}", [fonts_check]),
+                       "write_if": "always"},
+                  ],
+                  tags={"add": [], "remove": []}, card_actions=[],
+                  read_semantics="stage_snapshot"),
+        ],
+        "exports": [],
+    }
+    definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
+    return definition
+
+
+def build_box_and_its_kanji(col: Any) -> tuple[int, dict]:
+    """The sentence whose word 箱 the run makes a note for, and a note of another type the run
+    never reads: the kanji's, with its grade."""
+    real_anki.make_note_type(col, KANJI_TYPE, ["Kanji", "Category"])
+    kanji = real_anki.add_note(col, KANJI_TYPE, {"Kanji": "箱", "Category": "N3"})
+    sentence_id, ids = build_box_to_create(col)
+    return sentence_id, {**ids, "kanji": kanji.id}
+
+
+def test_an_export_carries_what_copy_anywhere_reads_that_the_capture_never_recorded(tmp_path):
+    note_config = {
+        **FIELDS,
+        "word_field": FIELDS["word_kanjified_field"],
+        "translated_sentence_field": FIELDS.get("translated_sentence_field", "sentence"),
+        "insert_deck": "Default",
+    }
+    config = {**CONFIG, NOTETYPE: note_config}
+    store, run_id, ids = capture_run(tmp_path, build_box_and_its_kanji, config, generated)
+    media = tmp_path / "media"
+    media.mkdir()
+    fonts = {"箱": ["Mincho.ttf", "Gothic.ttf"], "龍": ["Brush.ttf"], "all_fonts": ["Mincho.ttf"]}
+    (media / "fonts.json").write_text(json.dumps(fonts, ensure_ascii=False), encoding="utf-8")
+    source = real_anki.open_collection(tmp_path / "collection.anki2")
+    try:
+        # Made after the run started: not what the run's collection held
+        later = real_anki.add_note(source, KANJI_TYPE, {"Kanji": "箱", "Category": "N1"})
+        fixture, carried = replay.export_with_copy_anywhere(
+            store, run_id, {"copy_definitions": [kanji_grades_and_fonts("fonts.json")]},
+            source, media,
+        )
+    finally:
+        source.close()
+
+    assert list(carried.records) == [ids["kanji"]] and later.id not in carried.records
+    [kanji] = [n for n in fixture.corpus["notes"] if n["fields"].get("Kanji") == "箱"]
+    assert not kanji["selected"] and kanji["notetype"].startswith("Note type ")
+    # Carried, and nothing the run read renamed or renumbered for it
+    assert kanji["id"] >= replay.SYNTHETIC_UNKNOWN_BASE
+    assert fixture.corpus["config"].keys() == replay.export_fixture(store, run_id).corpus[
+        "config"].keys()
+    # Down to the characters the notes hold
+    assert fixture.corpus["media"] == {"fonts.json": {"箱": fonts["箱"], "all_fonts": ["Mincho.ttf"]}}
+    assert replay.replay(fixture).differences(fixture.expected) == []
+    with_hooks = replay.replay(fixture, copy_anywhere=True)
+    assert with_hooks.misses == [] and with_hooks.new_notes == 1
+    [box] = [n for n in with_hooks.notes if n["note"] == "new-1"]
+    # The grade of the carried kanji note, and not the later one's
+    assert box["fields"]["sentence_audio"] == "N3"
+    assert box["fields"]["meaning_audio"] == '["Gothic.ttf", "Mincho.ttf"]'
 
 
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):

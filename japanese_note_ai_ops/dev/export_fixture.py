@@ -1,7 +1,7 @@
 """Export a capture run as a replay fixture (issue #11, stage 3), and optionally replay it.
 
     python dev/export_fixture.py --capture STORE --run RUN_ID --name NAME [--check]
-        [--corpus] [--copy-anywhere] [--out DIR]
+        [--corpus] [--copy-anywhere --collection COPY.anki2 [--media DIR]] [--out DIR]
 
 Writes corpus.json, cassette.json and expected.json (see replay.py) to `fixtures/NAME/` of this
 addon in the test data checkout (`replay.data_root`: the private repo's clone at
@@ -22,6 +22,13 @@ expected_copy_anywhere.json: its run replayed with them, once the replay without
 reproduced the capture. The capture run did not have them on, so that file is a replay's
 result, kept to catch a later change in what the two addons do together.
 
+What those definitions read the capture did not record, so the export takes it from where the
+run found it (`replay.export_with_copy_anywhere`): the notes their searches find, from
+`--collection`, the collection the capture ran against, and the files their fonts checks open,
+from `--media`, a media folder that has them (the capture's profile's may not). The collection
+is opened, so Anki must not have it open. Its notes are carried as it holds them now; the count
+of those changed since the run started is printed.
+
 A run that cannot be replayed from what it recorded (no notes recorded, records dropped, a note
 written with no state before) is refused with the gap named: fix the capture and record again.
 """
@@ -35,6 +42,7 @@ from pathlib import Path
 import headless  # noqa: I001 - first: it prepares the imports of everything below
 
 import replay  # noqa: E402
+from anki_shared.testing import real_anki  # noqa: E402
 
 
 def main(argv: list[str]) -> int:
@@ -46,8 +54,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--corpus", action="store_true", help="to corpora/NAME, gzipped")
     parser.add_argument("--copy-anywhere", action="store_true",
                         help="with the user's CopyAnywhere definitions")
+    parser.add_argument("--collection", type=Path,
+                        help="with --copy-anywhere: the collection the capture ran against")
+    parser.add_argument("--media", type=Path,
+                        help="with --copy-anywhere: a media folder with the files it reads")
     parser.add_argument("--check", action="store_true", help="replay it after writing it")
     args = parser.parse_args(argv)
+    if args.copy_anywhere and args.collection is None:
+        parser.error("--copy-anywhere needs --collection, where its definitions' searches look")
 
     out = args.out
     if out is None:
@@ -62,8 +76,19 @@ def main(argv: list[str]) -> int:
             return 2
         out = directory / args.name
     copy_anywhere = headless.copy_anywhere_config() if args.copy_anywhere else None
+    carried = replay.SourceNotes()
     try:
-        fixture = replay.export_fixture(args.capture, args.run, copy_anywhere=copy_anywhere)
+        if copy_anywhere is None:
+            fixture = replay.export_fixture(args.capture, args.run)
+        else:
+            source = real_anki.open_collection(args.collection)
+            try:
+                fixture, carried = replay.export_with_copy_anywhere(
+                    args.capture, args.run, copy_anywhere, source, args.media,
+                    lenient=args.corpus,
+                )
+            finally:
+                source.close()
     except replay.CaptureGap as e:
         print(f"Not exported: {e}", file=sys.stderr)
         return 2
@@ -91,7 +116,13 @@ def main(argv: list[str]) -> int:
         f"{out}: {len(corpus['notes'])} notes ({sum(n['selected'] for n in corpus['notes'])}"
         f" selected), {sum(len(e['answers']) for e in fixture.cassette['entries'])} answers,"
         f" {len(corpus['dictionary'])} lookups, {fixture.expected['new_notes']} new notes"
-        + (", CopyAnywhere definitions" if copy_anywhere is not None else ""),
+        + (
+            f", CopyAnywhere definitions, {len(carried.records)} notes carried for their"
+            f" searches ({carried.changed} changed since the run started),"
+            f" media: {', '.join(corpus.get('media') or {}) or 'none'}"
+            if copy_anywhere is not None
+            else ""
+        ),
         file=sys.stderr,
     )
     if not args.check:
