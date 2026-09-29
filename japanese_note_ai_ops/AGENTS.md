@@ -202,9 +202,9 @@ cheap no-op and nothing is recorded.
   its writes), `proposed` (what the cleanup is about to write, new notes by placeholder),
   `final` (every note saved, added or tidied, re-read after the cleanup). A note the run only
   learned the id of (a search, a word index lookup: `capture_notes.found`) is fetched as `read` at
-  the cleanup's start, before its first write, or right after the marker tidying's lookup
-  (`word_index.sort_base_note_ids`), which finds notes the run did not write, still as they were;
-  never a note the run added (`note.added`). Event kinds: `environment` (dictionary files, the
+  the cleanup's start, before its first write, or once the marker tidying has looked its words
+  up and before its renames are saved (`base_ops.tidy_markers`), which finds notes the run did
+  not write, still as they were; never a note the run added (`note.added`). Event kinds: `environment` (dictionary files, the
   collection's size, and `records`, `capture_notes.RECORDS`: the kinds of record this capture
   makes, so an exporter tells a run that looked nothing up from one captured before lookups were
   recorded; add to it with a new kind), `search`, `note.missing`, `note.added` (placeholder ->

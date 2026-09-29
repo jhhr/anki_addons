@@ -246,6 +246,29 @@ class ReferenceTests(CaptureNotesTestCase):
         self.assertEqual(self.events("note.removed"), [])
 
 
+class TidyReadTests(CaptureNotesTestCase):
+    """The marker tidying reads whole words after the cleanup's writes; a note of them the run
+    never read is fetched for the capture before the tidying's renames are saved."""
+
+    def test_a_note_only_the_tidying_found_is_read_as_stored_before_its_rename(self):
+        base_ops = load_ops_module("base_ops")
+        col = Collection(Note(9, {"Word": "本 (m2)"}))
+
+        def tidy(notes, config, progress_updater):
+            # As word_index.sort_base_note_ids notes the words' notes it found
+            capture_notes.found([9])
+            return {9: Note(9, {"Word": "本 (m1)"})}
+
+        updater = types.SimpleNamespace(begin_cleanup_stage=lambda: None)
+        base_ops.tidy_markers(col, [], {}, pos_of_run, updater, tidy)
+
+        self.assertEqual(
+            [(nid, stage, record["fields"]) for nid, stage, record in self.snapshots()],
+            [(9, "read", {"Word": "本 (m2)"})],
+        )
+        self.assertEqual(col.updated, [9])
+
+
 class MeaningsTests(CaptureNotesTestCase):
     def test_the_first_read_of_each_key_and_the_last_write_are_recorded(self):
         meanings = capture_notes.record_meanings({"本_ほん": [{"jp_meaning": "書物"}]})

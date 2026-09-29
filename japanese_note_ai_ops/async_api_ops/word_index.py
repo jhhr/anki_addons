@@ -380,11 +380,9 @@ def sort_base_note_ids(sort_field: str, bases: "Iterable[str]") -> "dict[str, li
     )
     by_sort_base = WordIndex.from_rows(fields, ords_by_mid, rows).by_sort_base
     by_base = {key: list(by_sort_base[key]) for key in wanted if key in by_sort_base}
-    # Read after the cleanup's writes. Of these notes, one the run neither read nor wrote is
-    # still as it was before the run, so it is fetched for the capture now, before the tidying
-    # renames it
+    # Found from rows of the notes table, which records no note: noted for a run that records
+    # its notes, whose marker tidying fetches them (base_ops.tidy_markers)
     capture_notes.found(note_id for note_ids in by_base.values() for note_id in note_ids)
-    capture_notes.fetch_unread(mw.col)
     return by_base
 
 

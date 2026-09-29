@@ -3231,6 +3231,11 @@ def tidy_markers(
         print_error_traceback(e, logger)
         report_exception(e, "Tidying the sort field markers")
         return None, []
+    # The tidying read whole words from the collection after the cleanup's writes. A note of
+    # them the run neither read nor wrote is still as it was before the run until the renames
+    # below are saved, so it is fetched for the capture here. Not in the lookup itself
+    # (word_index.sort_base_note_ids), a query helper that cannot know when it is called
+    capture_notes.fetch_unread(col)
     renamed_notes = [
         note for note in renamed.values() if note.id > 0 and note.id not in removed
     ]
