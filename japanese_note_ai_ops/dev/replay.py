@@ -38,10 +38,10 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from contextlib import closing, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterable, Mapping, Optional
+from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Optional
 
 FORMAT = 1
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
@@ -395,6 +395,34 @@ def normalized_notes(
     return sorted(normalized, key=lambda note: note["note"])
 
 
+def fields_differing(replayed: list[dict], expected: list[dict]) -> dict[str, list[str]]:
+    """Note key -> the fields it holds otherwise than the capture run left it; a note one side
+    lacks is listed with ["<missing>"]."""
+    want = {note["note"]: note for note in expected}
+    have = {note["note"]: note for note in replayed}
+    differing: dict[str, list[str]] = {}
+    for key in sorted(set(want) | set(have)):
+        if key not in want or key not in have:
+            differing[key] = ["<missing>"]
+            continue
+        fields = sorted(
+            name
+            for name in set(want[key]["fields"]) | set(have[key]["fields"])
+            if want[key]["fields"].get(name) != have[key]["fields"].get(name)
+        )
+        if want[key]["tags"] != have[key]["tags"]:
+            fields.append("<tags>")
+        if fields:
+            differing[key] = fields
+    return differing
+
+
+def new_note_fields(notes: list[dict]) -> dict[str, dict[str, str]]:
+    """The fields of the notes a run added, by symbol: what every addon's add hook wrote into
+    them, to compare between two replays of one fixture (headless and in a running Anki)."""
+    return {note["note"]: note["fields"] for note in notes if note["note"].startswith("new-")}
+
+
 # --- replay --------------------------------------------------------------------------------
 
 
@@ -568,12 +596,77 @@ class ReplayResult:
         return problems
 
 
-def build_collection(corpus: Mapping[str, Any], path: Path):
-    """A fresh collection at `path` holding the corpus: its note types (one card template
-    each), decks and notes, each note under its synthetic id."""
+def build_collection(corpus: Mapping[str, Any], path: Path, background: int = 0):
+    """A fresh collection at `path` holding the corpus (`fill_collection`) and `background`
+    notes no request of the run can find (`background_notes`)."""
     from anki_shared.testing import real_anki
 
     col = real_anki.open_collection(path)
+    fill_collection(col, corpus)
+    if background:
+        fill_collection(col, {"notetypes": [], "decks": [], "notes": background_notes(corpus, background)})
+    return col
+
+
+# Background notes' ids, clear of the corpus's and of the ids its fields name
+BACKGROUND_BASE = 2_000_000_000_000
+BACKGROUND_LINK_BASE = 3_000_000_000_000
+# Where a background note's Japanese goes: the Hangul syllables, a block no word, reading or
+# sentence a run asks about has a character in
+_HANGUL_FIRST, _HANGUL_COUNT = 0xAC00, 11172
+
+
+def _is_japanese(char: str) -> bool:
+    code = ord(char)
+    return 0x3040 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xFF66 <= code <= 0xFF9F
+
+
+def _background_text(text: str, links: Iterator[int]) -> str:
+    """`text` with every Japanese character moved into Hangul, one to one, and every note id
+    replaced by one no note has: the same length and shape (the same HTML, the same JSON of a
+    word array), so a scan pays for it as for a real note, and nothing the run looks for in it."""
+    text = ID_RE.sub(lambda _: str(next(links)), text)
+    return "".join(
+        chr(_HANGUL_FIRST + ord(char) % _HANGUL_COUNT) if _is_japanese(char) else char
+        for char in text
+    )
+
+
+def background_notes(corpus: Mapping[str, Any], count: int) -> list[dict]:
+    """`count` notes shaped like the corpus's, to bring a small corpus's collection up to a real
+    one's size: the corpus notes in turn, each with its text moved out of Japanese
+    (`_background_text`), under ids of their own. The index build, a whole-collection search and
+    a table scan pay for them as for real notes; no lookup, search or index answer the run gets
+    can hold one, so the run's work is the same with them and without (test_pipeline)."""
+    templates = corpus["notes"]
+    if not templates or count <= 0:
+        return []
+    links = iter(range(BACKGROUND_LINK_BASE, BACKGROUND_LINK_BASE + 10**12, 10))
+    notes = []
+    for index in range(count):
+        template = templates[index % len(templates)]
+        notes.append(
+            {
+                "id": BACKGROUND_BASE + 10 * index,
+                "notetype": template["notetype"],
+                "deck": template["deck"],
+                "guid": f"bg{index:09d}",
+                "fields": {
+                    name: _background_text(value, links)
+                    for name, value in template["fields"].items()
+                },
+                "tags": list(template["tags"]),
+                "selected": False,
+            }
+        )
+    return notes
+
+
+def fill_collection(col: Any, corpus: Mapping[str, Any]) -> None:
+    """Put the corpus into an empty collection: its note types (one card template each), decks
+    and notes, each note under its synthetic id."""
+    from anki_shared.testing import real_anki
+
     assert col.db is not None
     for notetype in corpus["notetypes"]:
         real_anki.make_note_type(
@@ -603,7 +696,11 @@ def build_collection(corpus: Mapping[str, Any], path: Path):
         # Anki hands out the ids; the fields name the corpus's
         col.db.execute("update cards set nid = ? where nid = ?", record["id"], note.id)
         col.db.execute("update notes set id = ? where id = ?", record["id"], note.id)
-    return col
+
+
+# How a replay starts the op over its selected notes: headless, the run on this thread; in a
+# running Anki, selected_notes_op and a wait for its CollectionOp
+RunOp = Callable[[Any, list], None]
 
 
 def replay(
@@ -612,41 +709,130 @@ def replay(
     cassette: Optional[Cassette] = None,
     around_run: Optional[Callable[[], ContextManager[Any]]] = None,
     read_store: Optional[Callable[[Path], Any]] = None,
+    background: int = 0,
+    estimates: Optional[dict] = None,
 ) -> ReplayResult:
     """Build the fixture's corpus in a fresh collection under `workdir` (a temporary directory
     by default), run the op over its selected notes with nothing reaching a network, and return
     the collection's state after it, normalized as the fixture's expected state is.
 
     For a benchmark: `cassette` answers in place of a strict one of the fixture's own (a timed
-    or lenient one), the run happens inside `around_run()` (a memory profile), and
-    `read_store(path)` reads the replay's own capture store before it is deleted."""
+    or lenient one), the run happens inside `around_run()` (a memory profile), `background`
+    notes bring the collection to a real one's size (`background_notes`), and
+    `read_store(path)` reads the replay's own capture store before it is deleted. The
+    background notes are left out of the notes returned: nothing may have changed them."""
     from anki_shared.testing import real_anki
+
+    owned = workdir is None
+    root = Path(tempfile.mkdtemp(prefix="jnaio_replay_")) if workdir is None else workdir
+    stub = real_anki.install()
+    saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
+    saved_profile = stub.pm._profile_folder
+    col = build_collection(fixture.corpus, root / "collection.anki2", background)
+    try:
+        stub.col = col
+        stub.pm.set_profile_folder(root / "profile")
+
+        def set_config(config: dict) -> None:
+            stub.addonManager.configs[_package()] = config
+
+        def run_op(spec: Any, nids: list) -> None:
+            run, _ = spec.notes_run(nids)
+            with around_run() if around_run is not None else nullcontext():
+                run(col)
+
+        return _replay(
+            fixture, col, stub.pm.media_folder(), root, set_config, run_op, cassette,
+            read_store, estimates,
+        )
+    finally:
+        stub.col = saved_col
+        stub.addonManager.configs = saved_configs
+        stub.pm._profile_folder = saved_profile
+        col.close()
+        if owned:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def replay_in_anki(
+    mw: Any,
+    fixture: Fixture,
+    workdir: Path,
+    set_config: Callable[[dict], None],
+    run_op: RunOp,
+    cassette: Optional[Cassette] = None,
+    read_store: Optional[Callable[[Path], Any]] = None,
+    before_run: Optional[Callable[[], None]] = None,
+    estimates: Optional[dict] = None,
+) -> ReplayResult:
+    """`replay` in a running Anki: the corpus goes into `mw.col`, which must be a fresh
+    profile's, the config is written by `set_config` (the real AddonManager reads it off disk),
+    and `run_op` starts the op the way the menu does, a real CollectionOp, and waits for it.
+
+    `before_run()` attaches the other addons' hooks, once the corpus is in: attached before,
+    an add hook would run on every corpus note as it was built, which is not the collection
+    the capture run found. From then on they run in the run's add phase, as in Anki."""
+    fill_collection(mw.col, fixture.corpus)
+    if before_run is not None:
+        before_run()
+    media = Path(mw.pm.profileFolder(), "collection.media")
+    return _replay(
+        fixture, mw.col, media, workdir, set_config, run_op, cassette, read_store, estimates
+    )
+
+
+@contextmanager
+def memory_estimates(estimates: dict) -> Iterator[None]:
+    """The gate's learned per-task costs read from and written to `estimates` instead of the
+    user's user_files/memory_estimates.json: a replay's run is not one the real runs should
+    learn from. An empty dict is a cold start; one kept across replays, a warm one."""
+    from japanese_note_ai_ops.async_api_ops import concurrency
+
+    saved = (concurrency.load_per_task_estimates, concurrency.save_per_task_estimate)
+
+    def save(op_key: str, value: float, baseline: Optional[float] = None) -> None:
+        estimates[op_key] = value
+
+    concurrency.load_per_task_estimates = lambda: dict(estimates)  # type: ignore[assignment]
+    concurrency.save_per_task_estimate = save  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        concurrency.load_per_task_estimates, concurrency.save_per_task_estimate = saved
+
+
+def _replay(
+    fixture: Fixture,
+    col: Any,
+    media: Path,
+    root: Path,
+    set_config: Callable[[dict], None],
+    run_op: RunOp,
+    cassette: Optional[Cassette],
+    read_store: Optional[Callable[[Path], Any]],
+    estimates: Optional[dict] = None,
+) -> ReplayResult:
     from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.configuration import MEANINGS_DICT_FILE
     from japanese_note_ai_ops.sync_local_ops import mdx_dictionary
 
     corpus = fixture.corpus
-    owned = workdir is None
-    root = Path(tempfile.mkdtemp(prefix="jnaio_replay_")) if workdir is None else workdir
-    stub = real_anki.install()
-    saved_col, saved_configs = stub.col, dict(stub.addonManager.configs)
-    saved_profile, saved_helper = stub.pm._profile_folder, mdx_dictionary.mdx_helper
+    saved_helper = mdx_dictionary.mdx_helper
     # Its own capture, notes and all, is how the replay learns which notes it added and what
     # it decided, the way the export read them from the capture run
-    config = dict(corpus["config"], capture_calls=True, capture_notes=True, log_to_console=False)
+    set_config(
+        dict(corpus["config"], capture_calls=True, capture_notes=True, log_to_console=False)
+    )
+    media.mkdir(parents=True, exist_ok=True)
+    (media / MEANINGS_DICT_FILE).write_text(
+        json.dumps(corpus["meanings"], ensure_ascii=False), encoding="utf-8"
+    )
     if cassette is None:
         cassette = Cassette(fixture.cassette["entries"])
     dictionary = Dictionary(corpus["dictionary"])
     errors: list[str] = []
-    col = build_collection(corpus, root / "collection.anki2")
     try:
-        stub.col = col
-        stub.addonManager.configs[_package()] = config
-        stub.pm.set_profile_folder(root / "profile")
-        (stub.pm.media_folder() / MEANINGS_DICT_FILE).write_text(
-            json.dumps(corpus["meanings"], ensure_ascii=False), encoding="utf-8"
-        )
         # The modules that use it imported it by name, and hold their own reference
         _point_modules_at(dictionary)
         store = root / "capture.sqlite3"
@@ -655,10 +841,9 @@ def replay(
         run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
         base_ops.set_responder(cassette)
         nids = [record["id"] for record in corpus["notes"] if record["selected"]]
-        run, _ = match_words_spec().notes_run(nids)
-        with around_run() if around_run is not None else nullcontext():
+        with memory_estimates({} if estimates is None else estimates):
             started = time.monotonic()
-            run(col)
+            run_op(match_words_spec(), nids)
             seconds = time.monotonic() - started
         capture.shutdown(timeout=30.0)
         events = _run_events(store)
@@ -680,12 +865,6 @@ def replay(
         run_errors.deliver_with(None)
         capture.shutdown(timeout=5.0)
         _point_modules_at(saved_helper)
-        stub.col = saved_col
-        stub.addonManager.configs = saved_configs
-        stub.pm._profile_folder = saved_profile
-        col.close()
-        if owned:
-            shutil.rmtree(root, ignore_errors=True)
 
 
 def _package() -> str:
@@ -731,6 +910,8 @@ def _collection_notes(col: Any) -> list[dict]:
     decks = {int(deck.id): deck.name for deck in col.decks.all_names_and_ids()}
     notes = []
     for nid in col.find_notes(""):
+        if BACKGROUND_BASE <= nid < BACKGROUND_LINK_BASE:
+            continue
         note = col.get_note(nid)
         did = col.db.scalar("select did from cards where nid = ? order by ord limit 1", nid)
         notes.append(

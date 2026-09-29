@@ -8,6 +8,11 @@ captured from, and whether it may be published is the collection owner's decisio
 writes somewhere else, `test_replay/fixtures/NAME` to commit it. `--check` replays it at once
 and prints the differences, as test_replay does.
 
+`--corpus` writes to `user_files/corpora/NAME/` instead: a big run for benchmark.py, which
+test_replay does not replay strictly. Notes that contend for a word ask in the order their tasks
+reach its lock, which is timing, and a run of hundreds of notes has a few requests a strict
+replay asks otherwise than the capture run did (7 of 2903 in one 500-note run).
+
 A run that cannot be replayed from what it recorded (no notes recorded, records dropped, a note
 written with no state before) is refused with the gap named: fix the capture and record again.
 """
@@ -29,6 +34,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--run", type=int, required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--out", type=Path, help="default: user_files/fixtures/NAME")
+    parser.add_argument("--corpus", action="store_true", help="to user_files/corpora/NAME")
     parser.add_argument("--check", action="store_true", help="replay it after writing it")
     args = parser.parse_args(argv)
 
@@ -37,7 +43,8 @@ def main(argv: list[str]) -> int:
     except replay.CaptureGap as e:
         print(f"Not exported: {e}", file=sys.stderr)
         return 2
-    out = args.out or headless.ADDON_DIR / "user_files" / "fixtures" / args.name
+    default = "corpora" if args.corpus else "fixtures"
+    out = args.out or headless.ADDON_DIR / "user_files" / default / args.name
     fixture.write(out)
     corpus = fixture.corpus
     print(

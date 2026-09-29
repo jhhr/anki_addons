@@ -33,13 +33,14 @@ import statistics
 import subprocess
 import sys
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-import headless  # noqa: I001 - first: it prepares the imports of everything below
+import replay
 
-import replay  # noqa: E402
+ADDON_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = ADDON_DIR.parent
 
 
 def latency_profile(spec: str, scale: float) -> Optional[Callable[[dict], float]]:
@@ -96,12 +97,12 @@ def store_metrics(store: Path) -> dict[str, Any]:
 def where_it_ran() -> dict[str, Any]:
     try:
         commit = subprocess.run(
-            ["git", "-C", str(headless.REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, check=True,
         ).stdout.strip()
         dirty = bool(
             subprocess.run(
-                ["git", "-C", str(headless.REPO_ROOT), "status", "--porcelain", "--untracked-files=no"],
+                ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--untracked-files=no"],
                 capture_output=True, text=True, check=True,
             ).stdout.strip()
         )
@@ -126,15 +127,46 @@ def where_it_ran() -> dict[str, Any]:
     }
 
 
-def run_once(fixture: replay.Fixture, args: argparse.Namespace) -> dict[str, Any]:
+def run_once(
+    fixture: replay.Fixture,
+    args: argparse.Namespace,
+    estimates: Optional[dict] = None,
+) -> dict[str, Any]:
+    """One timed replay. `estimates` is the gate's learned per-task cost, kept in
+    memory: empty is a cold run, the dict an earlier run left is a warm one."""
+    estimates = {} if estimates is None else estimates
+    cold = not estimates
     cassette = replay.Cassette(
         fixture.cassette["entries"], lenient=True, latency=latency_profile(args.latency, args.scale)
     )
+    memory = memory_profile(args.memory)
+    with_copy_anywhere = getattr(args, "copy_anywhere", False)
+
+    @contextmanager
+    def around_run() -> Iterator[None]:
+        with memory() if memory is not None else nullcontext():
+            if not with_copy_anywhere:
+                yield
+                return
+            # After the corpus is built, around the run only: its add definitions run on the
+            # notes the run adds, not on the corpus being put in
+            import headless
+            from anki_shared.testing import real_anki
+
+            remove = headless.copy_anywhere_on_add(real_anki.install())
+            try:
+                yield
+            finally:
+                remove()
+
+    background = getattr(args, "background", 0)
     result = replay.replay(
         fixture,
         cassette=cassette,
-        around_run=memory_profile(args.memory),
+        around_run=around_run,
         read_store=store_metrics,
+        background=background,
+        estimates=estimates,
     )
     data = result.store_data or {}
     seconds = result.seconds
@@ -147,6 +179,12 @@ def run_once(fixture: replay.Fixture, args: argparse.Namespace) -> dict[str, Any
         "answered": result.answered,
         "new_notes": result.new_notes,
         "errors": len(result.errors),
+        "copy_anywhere": with_copy_anywhere,
+        "background_notes": background,
+        # The gate's learned per-task cost: none yet on a cold run
+        "cache": "cold" if cold else "warm",
+        "fields_differing": replay.fields_differing(result.notes, fixture.expected["notes"]),
+        "new_note_fields": replay.new_note_fields(result.notes),
         **data,
     }
 
@@ -182,7 +220,21 @@ def fixed_free_memory(free_bytes: int) -> Iterator[None]:
         concurrency.system_memory = real  # type: ignore[assignment]
 
 
+def corpus_version(directory: Path, fixture: replay.Fixture) -> dict[str, Any]:
+    """Which corpus a summary is of: the capture run it came from, and a hash of its
+    files, so two summaries of a re-exported corpus are not taken for one corpus's."""
+    import hashlib
+
+    digest = hashlib.sha1()
+    for name in replay.Fixture.FILES:
+        digest.update((directory / f"{name}.json").read_bytes())
+    return {"source": fixture.corpus.get("source"), "sha1": digest.hexdigest()[:12]}
+
+
 def main(argv: list[str]) -> int:
+    # As a script only: it installs the stub mw, which a test running inside Anki must not get
+    import headless  # noqa: F401
+
     # The summary is the only thing on stdout: what the addon prints goes to stderr
     out, sys.stdout = sys.stdout, sys.stderr
     try:
@@ -202,25 +254,45 @@ def benchmark(argv: list[str]) -> dict[str, Any]:
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--label")
     parser.add_argument("--history", type=Path)
+    parser.add_argument(
+        "--copy-anywhere",
+        action="store_true",
+        help="the user's CopyAnywhere add definitions on the notes the run adds",
+    )
+    parser.add_argument(
+        "--background",
+        type=int,
+        default=0,
+        help="notes no request finds, to bring the collection to a real one's size",
+    )
     args = parser.parse_args(argv)
 
     fixture = replay.Fixture.read(args.fixture)
     runs = []
+    # One store of learned costs for the invocation: the first run is cold, the rest warm
+    estimates: dict = {}
     for index in range(args.repeat):
         print(f"run {index + 1}/{args.repeat}", file=sys.stderr, flush=True)
-        runs.append(run_once(fixture, args))
+        runs.append(run_once(fixture, args, estimates))
     summary = {
         "fixture": args.fixture.name,
         "label": args.label,
         "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "where": where_it_ran(),
-        "profile": {"latency": args.latency, "scale": args.scale, "memory": args.memory},
+        "profile": {
+            "latency": args.latency,
+            "scale": args.scale,
+            "memory": args.memory,
+            "copy_anywhere": args.copy_anywhere,
+            "background": args.background,
+        },
+        "corpus": corpus_version(args.fixture, fixture),
         "source_notes": sum(n["selected"] for n in fixture.corpus["notes"]),
         "corpus_notes": len(fixture.corpus["notes"]),
         "median_seconds": statistics.median(run["seconds"] for run in runs),
         "runs": runs,
     }
-    history = args.history or headless.ADDON_DIR / "user_files" / "benchmarks" / (
+    history = args.history or ADDON_DIR / "user_files" / "benchmarks" / (
         f"{args.fixture.name}.jsonl"
     )
     history.parent.mkdir(parents=True, exist_ok=True)

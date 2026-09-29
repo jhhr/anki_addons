@@ -204,6 +204,30 @@ def test_a_timed_benchmark_run_does_the_same_work_every_time_and_records_its_fig
         assert sum(gate["dwell_seconds"].values()) > 0
 
 
+def test_a_background_note_holds_no_japanese_and_no_note_id_of_the_corpus(captured):
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+
+    notes = replay.background_notes(fixture.corpus, 5)
+
+    assert len(notes) == 5
+    text = json.dumps([note["fields"] for note in notes], ensure_ascii=False)
+    assert not any(replay._is_japanese(char) for char in text)
+    assert not any(str(note["id"]) in text for note in fixture.corpus["notes"])
+    # The shape stays: a word array is still one
+    [array] = {note["fields"]["word_list"] for note in notes if note["fields"]["word_list"]}
+    assert isinstance(json.loads(array), list)
+
+
+def test_background_notes_change_nothing_the_run_does(captured):
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+
+    result = replay.replay(fixture, background=60)
+
+    assert result.differences(fixture.expected) == []
+
+
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):
     store = tmp_path / "capture.sqlite3"
     assert capture.install(str(store), keep_days=None)
