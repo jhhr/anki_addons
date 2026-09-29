@@ -506,6 +506,19 @@ has none, and warns while it is newer than evals/' copy, which stays the eval se
 export is moved over it. Commit the tooling; do not commit one-off reports or plans it produces
 (`generated_examples.md` and `gold_examples.md` are the committed exceptions).
 
+The kanjify policy is written once, in `research/kanjify_agents/policy.md`, and every kanjify
+agent's prompt inlines it: the label-fix agents' (`kanjify_agents/make_prompts.py`) and the
+**kanjify golden set**'s, a reference labelling of every note sentence by headless agents for
+scoring kanjify_sentence (`kanjify_eval.py --rows`). Its scripts (`kanjify_golden*.py`,
+overview in `kanjify_golden.py`'s docstring) run from files only: `kanjify_golden_dump.py`
+is the one that asks AnkiConnect, and nothing writes to the collection. Step 1 decides one
+survey word per agent (`kanjify_agents/word_template.md`), step 2 labels batches of sentences
+with those decisions (`batch_template.md`); `agent_queue.py` runs a rendered queue through
+`claude -p` (resumable, shardable across machines by `--shard I/N`, stopped cleanly by the
+usage limit or a STOP file), and agents look things up only through the read-only
+`kanjify_lookup.py`. Everything they read and write is in `evals/kanjify_golden/` of the test
+data checkout.
+
 ## Tests and types
 
 - `test/` (about 60 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from

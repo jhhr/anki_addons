@@ -1,0 +1,73 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rows", "questions"],
+  "properties": {
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sid", "kanjified", "spans", "pending", "furigana"],
+        "properties": {
+          "furigana": {
+            "type": "array",
+            "description": "problems in the input's own furigana; empty when it is right",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["group", "problem", "fix", "confidence"],
+              "properties": {
+                "group": {"type": "string", "description": "the input's text as written, e.g. the kanji[reading] group"},
+                "problem": {"type": "string"},
+                "fix": {"type": "string", "description": "the same text with the furigana corrected"},
+                "confidence": {"type": "number"}
+              }
+            }
+          },
+          "sid": {"type": "string"},
+          "kanjified": {"type": "string", "description": "the whole sentence, kanjified, in the field format"},
+          "spans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["text", "basis", "confidence"],
+              "properties": {
+                "text": {"type": "string", "description": "the <k> span as written, without the tags"},
+                "basis": {"type": "string", "description": "the rule id or decision:<word id>/<use number>"},
+                "confidence": {"type": "number"}
+              }
+            }
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["word", "reading", "why"],
+              "properties": {
+                "word": {"type": "string", "description": "the word as the input writes it"},
+                "reading": {"type": "string", "description": "its dictionary form in kana"},
+                "why": {"type": "string", "description": "what is open, or the pending question id"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "examples", "recommendation"],
+        "properties": {
+          "question": {"type": "string"},
+          "examples": {"type": "array", "items": {"type": "string"}},
+          "recommendation": {"type": "string"}
+        }
+      }
+    }
+  }
+}
