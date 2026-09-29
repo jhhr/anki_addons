@@ -17,7 +17,8 @@ hold. A batch never says which of its sentences are hand-fixed or labelled twice
 
 `pilot`: the pilot's sentences three ways, to compare cost and agreement before scaling step 2:
 `pilot_single` (one agent per sentence, deciding words itself, with web search), `pilot_batch`
-(one batch agent with the decision table) and `pilot_op` (kanjify_sentence's own prompt, no
+(batch agents with the decision table, in batches of 10 and of 30; written only once every
+pilot word has its decision) and `pilot_op` (kanjify_sentence's own prompt, no
 tools, as the op sends it).
 
 Every item records the policy and decision table version it was rendered with. Prompts hold
@@ -181,7 +182,7 @@ def main() -> int:
     p = sub.add_parser("pilot")
     p.add_argument("--single-effort", default="xhigh")
     p.add_argument("--batch-effort", default="high")
-    p.add_argument("--batch-size", type=int, default=10)
+    p.add_argument("--batch-sizes", type=int, nargs="+", default=[10, 30])
     args = parser.parse_args()
 
     policy = golden.policy_text()
@@ -227,11 +228,11 @@ def main() -> int:
              "lookup+web", "batch_schema.json", kind="pilot_single", sids=[s["sid"]])  # fmt: skip
         for s in rows
     ]
-    size = args.batch_size
     batched = [
         item(f"batch{size}_{n:02d}", batch_prompt(rows[i : i + size], decisions, policy),
              args.batch_effort, "lookup", "batch_schema.json", kind="pilot_batch",
              sids=[s["sid"] for s in rows[i : i + size]])  # fmt: skip
+        for size in args.batch_sizes
         for n, i in enumerate(range(0, len(rows), size))
     ]
     op, _ = __import__("kanjify_eval").load_op()
@@ -240,7 +241,16 @@ def main() -> int:
         it = item(f"op_{s['sid']}", op.get_kanjify_sentence_prompt(s["sentence"]), "", "none",
                   "", kind="pilot_op", sids=[s["sid"]])  # fmt: skip
         op_items.append(it)
-    for name, items in (("pilot_single", single), ("pilot_batch", batched), ("pilot_op", op_items)):
+    queues = [("pilot_single", single), ("pilot_op", op_items)]
+    # The batch way is the one with the decision table: rendered before its words are decided
+    # it would measure a batch agent without one, and a running driver takes a queue file as
+    # soon as it is written
+    missing = sorted({w for s in rows for w in s["words"]} - set(decisions))
+    if missing:
+        print(f"pilot_batch not written: {len(missing)} of its words have no decision yet")
+    else:
+        queues.append(("pilot_batch", batched))
+    for name, items in queues:
         golden.write_jsonl(golden.QUEUES / f"{name}.jsonl", items)
         print(f"{len(items)} -> {name}.jsonl")
     return 0
