@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.4
+Policy version: 0.5
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -87,9 +87,7 @@ needs a split asks (a policy question); it never splits on its own.
   A kanjified one is a slip (れる written as 様). Pending Q5: べし, ごとし, classical なり, the
   そう of appearance and hearsay (降りそう, 来るそうだ).
 - KANA-10 Particles (は, が, を, に, で, と, も, の, へ, や, か, ね, よ, しか, さえ, こそ...).
-- KANA-11 Loanwords (gairaigo) in katakana, even with an ateji spelling: コーヒー not 珈琲,
-  ズボン, ラーメン, カレー, ガラス. Pending Q4: whether an old loanword whose dictionary headword is
-  kanji (タバコ 煙草, ページ 頁) is an exception.
+- KANA-11 Loanwords (gairaigo) stay katakana unless KANJI-16 kanjifies them.
 - KANA-12 Names of people, places, works and brands, however they are written.
 
 ## KANJI: kanjify
@@ -134,6 +132,14 @@ needs a split asks (a policy question); it never splits on its own.
   不味[マズ]い.
 - KANJI-15 Pending Q7: honorific verbs after a verb stem (寝なさい, お待ちください, お帰りになる,
   お持ちする, ご覧いただく). お〜になる and お〜する already follow KANJI-4 and KANJI-3.
+- KANJI-16 A loanword (gairaigo) is kanjified, the katakana kept in the reading, when JMdict
+  gives it a kanji spelling not marked rarely used or search-only, or a Japanese dictionary
+  has one as its headword: 珈琲[コーヒー], 煙草[タバコ], 麦酒[ビール], 頁[ページ],
+  倶楽部[クラブ]. A spelling JMdict marks rare stays out (米 for メートル, 瓦斯, 硝子, 洋袴 for
+  ズボン, 釦 for ボタン): pending Q4, draft. Names of countries, places and people stay as written
+  (KANA-12), whatever kanji they once had (亜米利加, 仏蘭西). The same loanword is kanjified in
+  every sentence or in none: extract_words records a kanjified one under its kanji and a
+  katakana one under its katakana, so a mix splits one word over two notes.
 
 ## FMT: how the result is written
 
@@ -166,7 +172,8 @@ with the question's id.
 
 - Q2 よる: is the doer of an action (彼によって書かれた, 市民による運動) 依る or 由る? (Means
   and method are 由る: settled.)
-- Q4 Loanwords: katakana always, even タバコ / ページ whose dictionary headword is kanji?
+- Q4 Loanwords: only a kanji spelling JMdict doesn't mark rare (KANJI-16's draft), or every
+  spelling SOURCE-1 accepts, the rare ones too?
 - Q5 Auxiliaries with a kanji spelling: べし 可し, ごとし 如し, よう 様, みたい 見たい kanjified;
   れる...らしい, だ / です, classical なり and the そう of appearance or hearsay in kana?
 - Q6 Formal nouns: every one with a dictionary kanji in every use (訳, 筈, 積もり, 内, 儘, 癖,
