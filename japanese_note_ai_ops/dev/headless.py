@@ -37,7 +37,6 @@ import sqlite3
 import sys
 import threading
 import time
-import types
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, TextIO
@@ -70,17 +69,6 @@ TERMINAL_PREFIX = "terminal-"
 COPY_ANYWHERE = "copy_anywhere"
 
 
-def _register(name: str, path: Path) -> types.ModuleType:
-    existing = sys.modules.get(name)
-    if existing is not None:
-        return existing
-    module = types.ModuleType(name)
-    module.__path__ = [str(path)]
-    module.__package__ = name
-    sys.modules[name] = module
-    return module
-
-
 def prepare_process() -> None:
     """The environment and the imports, once, before anything of the addon or anki is imported.
     Leaves what a root conftest already registered as it is."""
@@ -88,12 +76,13 @@ def prepare_process() -> None:
         os.environ.pop(name, None)
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    _register("anki_shared", REPO_ROOT / "anki_shared")
+    # As the root conftest registers every addon, but keeping what one already registered: a
+    # test that imports this module has its packages set up by then
+    from anki_shared.testing.packages import register_addon, register_package
+
+    register_package("anki_shared", REPO_ROOT / "anki_shared", keep_existing=True)
     for name in (PACKAGE, COPY_ANYWHERE):
-        directory = REPO_ROOT / name if name != PACKAGE else ADDON_DIR
-        addon = _register(name, directory)
-        if not (directory / "shared").is_dir() and not hasattr(addon, "shared"):
-            setattr(addon, "shared", _register(f"{name}.shared", REPO_ROOT / "anki_shared"))
+        register_addon(REPO_ROOT, name, keep_existing=True)
     from anki_shared.testing import real_anki
     from anki_shared.utils.vendor_path import add_vendor_paths
 

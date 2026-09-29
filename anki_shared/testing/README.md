@@ -16,7 +16,9 @@ Pick the cheapest mode that can answer the question.
 
 The root `conftest.py` chooses between the first two automatically: it prefers `real_anki`
 and falls back to `anki_stubs` when `anki`/`aqt`/PyQt6 are not installed. Tests do not opt
-in. The third mode lives in its own directory per addon (`<addon>/test_anki/`), described
+in. Before either, it registers every addon as a package whose `__init__.py` never runs
+(`packages`), as `japanese_note_ai_ops/dev/headless.py` does for the scripts that run ops
+outside Anki. The third mode lives in its own directory per addon (`<addon>/test_anki/`), described
 further down. All three run in one process, in one command.
 
 ## Installing what the tests need

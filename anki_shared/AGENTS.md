@@ -58,7 +58,7 @@ them the grep and a careful read are the only check there is.
 | --- | --- |
 | `test/` | everything that runs without a running Anki. Import absolutely: `from anki_shared.interpolate.interpolate_fields import ...` |
 | `test_anki/` | the running-Anki harness's own tests |
-| `testing/` | the harness itself: `anki_stubs`, `real_anki`, `running_anki`, `pytest_plugin`. Read its [README](testing/README.md) before touching it; most lines guard a race or crash that already happened |
+| `testing/` | the harness itself: `anki_stubs`, `real_anki`, `running_anki`, `pytest_plugin`, `packages` (the addons as packages whose `__init__.py` never runs). Read its [README](testing/README.md) before touching it; most lines guard a race or crash that already happened |
 
 Code moved here from an addon brings its tests along, rewritten to the absolute import.
 

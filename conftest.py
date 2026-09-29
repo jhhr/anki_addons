@@ -26,6 +26,9 @@ Four things to arrange, the first two inherited from the per-addon conftest this
    view is wider than the linked one -- every shared package resolves, not only those
    build.json declares -- and `python build.py check` is what catches an undeclared import.
 
+   Both registrations are `anki_shared/testing/packages.py`'s, which
+   `japanese_note_ai_ops/dev/headless.py` shares for the scripts that run ops outside Anki.
+
 4. Once a real Anki has run in the process, it crashes on the way out. The shutdown guard
    in `anki_shared/testing/pytest_plugin.py` prevents that, and is registered from here so
    that it covers every suite however pytest was invoked.
@@ -33,39 +36,23 @@ Four things to arrange, the first two inherited from the per-addon conftest this
 
 import os
 import sys
-import types
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SHARED_ROOT = os.path.join(ROOT, "anki_shared")
 sys.path.insert(0, ROOT)
 
+# The packages helper is found through ROOT on sys.path, as anki_shared's implicit namespace
+# package, before anki_shared is registered; its testing/ package imports nothing on import.
+from anki_shared.testing.packages import addon_names, register_addon, register_package  # noqa: E402
 
-def _register(name: str, path: str) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    mod.__path__ = [path]
-    mod.__package__ = name
-    sys.modules[name] = mod
-    return mod
-
-
-_register("anki_shared", SHARED_ROOT)
+register_package("anki_shared", SHARED_ROOT)
 
 # Loaded by pytest after this module has run, so the registration above is what lets the
 # name resolve. Only the root conftest may declare plugins.
 pytest_plugins = ["anki_shared.testing.pytest_plugin"]
 
-# Every directory holding a build.json is an addon.
-ADDON_PACKAGES = [
-    entry
-    for entry in sorted(os.listdir(ROOT))
-    if os.path.isfile(os.path.join(ROOT, entry, "build.json"))
-]
-for _entry in ADDON_PACKAGES:
-    _addon = _register(_entry, os.path.join(ROOT, _entry))
-    if not os.path.isdir(os.path.join(ROOT, _entry, "shared")):
-        # setattr, not `_addon.shared = ...`: the parent is a ModuleType built here,
-        # so the submodule is an attribute only the import system would normally add.
-        setattr(_addon, "shared", _register(f"{_entry}.shared", SHARED_ROOT))
+for _entry in addon_names(ROOT):
+    register_addon(ROOT, _entry)
 
 
 def _install_anki() -> bool:
