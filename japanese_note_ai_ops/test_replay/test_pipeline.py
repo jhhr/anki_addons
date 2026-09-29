@@ -25,7 +25,7 @@ import pytest
 
 import replay
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import base_ops, capture
+from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
 from japanese_note_ai_ops.async_api_ops.match_words_to_notes import (
     MATCH_FIELD_KEYS,
     match_words_spec,
@@ -319,6 +319,43 @@ def test_a_note_added_past_the_background_notes_is_the_run_s(captured, tmp_path)
     assert set(added) <= ids
     assert not ids & background_ids
     assert len(ids) == len(fixture.corpus["notes"]) + len(added)
+
+
+def test_a_replay_puts_back_the_responder_and_error_deliverer_it_replaced(captured):
+    # It set both to None when it was done, whatever a caller (a script's Headless, which
+    # prints run errors) had set before it
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    delivered: list = []
+    previous = run_errors.deliver_with(lambda title, text: delivered.append(text))
+    base_ops.set_responder(scripted)
+    try:
+        assert replay.replay(fixture).differences(fixture.expected) == []
+
+        run_errors.report_error("after the replay")
+        assert delivered == ["after the replay"]
+        assert base_ops.set_responder(None) is scripted
+    finally:
+        base_ops.set_responder(None)
+        run_errors.deliver_with(previous)
+
+
+def test_a_replay_refuses_to_close_an_installed_capture_store(captured, tmp_path):
+    # Installing its own store closed the one installed, and nothing installed it again: a
+    # Headless session's capture stopped recording for the rest of the process
+    store, run_id, _ = captured
+    fixture = replay.export_fixture(store, run_id)
+    outer = tmp_path / "outer.sqlite3"
+    assert capture.install(str(outer), keep_days=None)
+    try:
+        with pytest.raises(RuntimeError, match="capture store is installed"):
+            replay.replay(fixture)
+
+        installed = capture.current_store()
+        assert installed is not None and Path(installed.path) == outer
+        assert capture.installed()
+    finally:
+        capture.shutdown()
 
 
 def unbuildable_fixture() -> replay.Fixture:

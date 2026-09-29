@@ -1150,6 +1150,14 @@ def _replay(
     from japanese_note_ai_ops.configuration import MEANINGS_DICT_FILE
     from japanese_note_ai_ops.sync_local_ops import mdx_dictionary
 
+    # Installing the replay's own store would close this one, and nothing can open it again as
+    # its installer did (its keep_days, versions and profile): refused, not lost for the process
+    installed = capture.current_store()
+    if installed is not None:
+        raise RuntimeError(
+            f"a capture store is installed ({installed.path}); a replay records into one of its"
+            " own, which would close it: shut it down first"
+        )
     corpus = fixture.corpus
     saved_helper = mdx_dictionary.mdx_helper
     # Its own capture, notes and all, is how the replay learns which notes it added and what
@@ -1165,14 +1173,15 @@ def _replay(
         cassette = Cassette(fixture.cassette["entries"])
     dictionary = Dictionary(corpus["dictionary"])
     errors: list[str] = []
+    # What they replace is put back: a script's Headless prints run errors through its own
+    previous_deliver = run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
+    previous_responder = base_ops.set_responder(cassette)
     try:
         # The modules that use it imported it by name, and hold their own reference
         _point_modules_at(dictionary)
         store = root / "capture.sqlite3"
         if not capture.install(str(store), keep_days=None):
             raise RuntimeError(f"the replay's capture store {store} did not open")
-        run_errors.deliver_with(lambda title, text: errors.append(f"{title}: {text}"))
-        base_ops.set_responder(cassette)
         nids = [record["id"] for record in corpus["notes"] if record["selected"]]
         with memory_estimates({} if estimates is None else estimates):
             started = time.monotonic()
@@ -1196,8 +1205,8 @@ def _replay(
             store_data=read_store(store) if read_store is not None else None,
         )
     finally:
-        base_ops.set_responder(None)
-        run_errors.deliver_with(None)
+        base_ops.set_responder(previous_responder)
+        run_errors.deliver_with(previous_deliver)
         capture.shutdown(timeout=5.0)
         _point_modules_at(saved_helper)
 

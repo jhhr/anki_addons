@@ -241,7 +241,9 @@ cheap no-op and nothing is recorded.
   `base_ops.set_responder` (the one seam: a responder
   replaces the provider inside the capture block, on the calling thread; None from it is a
   failed call), runs the op through its `NotesRunSpec`, and reports each difference, a request
-  the cassette cannot answer, an answer never asked for and a lookup it lacks. expected.json
+  the cassette cannot answer, an answer never asked for and a lookup it lacks. It records into
+  a capture store of its own, so it refuses to start while one is installed (installing its own
+  would close that one), and puts back the responder and run errors' deliverer it replaced. expected.json
   holds only the notes the run changed, added or removed (format 2; `Fixture.read` fills in
   the rest from the corpus), and a corpus's files are gzipped. `export_fixture.py
   --copy-anywhere` also puts the user's CopyAnywhere config into the corpus (only the definitions

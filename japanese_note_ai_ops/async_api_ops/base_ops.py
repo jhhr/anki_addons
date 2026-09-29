@@ -247,13 +247,17 @@ class ResponseRequest(NamedTuple):
 _responder: Optional[Callable[[ResponseRequest], Any]] = None
 
 
-def set_responder(responder: Optional[Callable[[ResponseRequest], Any]]) -> None:
+def set_responder(
+    responder: Optional[Callable[[ResponseRequest], Any]],
+) -> Optional[Callable[[ResponseRequest], Any]]:
     """Answer every `get_response` with `responder(request)` instead of a provider, or, given
     None, go back to the providers. For replays and benchmarks: the call is recorded, cancel and
     the op's handling of the answer are as they are for a provider's, and nothing goes out.
-    `responder` runs on the calling thread, a pool worker; None from it is a failed call."""
+    `responder` runs on the calling thread, a pool worker; None from it is a failed call.
+    Returns the one it replaces, for a caller that sets its own for a while."""
     global _responder
-    _responder = responder
+    previous, _responder = _responder, responder
+    return previous
 
 
 def get_response(
