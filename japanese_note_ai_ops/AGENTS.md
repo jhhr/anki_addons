@@ -232,9 +232,11 @@ cheap no-op and nothing is recorded.
   hardcoded ones, note ids synthetic in every field, the run's config, meanings read, dictionary
   lookups), `cassette.json` (the answers by `request_key`, in the order received) and
   `expected.json` (the notes as the run left them, new notes' ids and placeholders as symbols).
-  It raises `CaptureGap` rather than guess. `replay(fixture)` builds the corpus in a fresh
-  collection, points every module's `mdx_helper` at the corpus's lookups, answers every
-  `get_response` from the cassette through `base_ops.set_responder` (the one seam: a responder
+  It raises `CaptureGap` rather than guess, and for a run a replay cannot reproduce: one that
+  lost records or has no recorded end (`dropped` NULL), one not `completed`, one of another op.
+  `replay(fixture)` builds the corpus in a fresh collection, points every module's `mdx_helper`
+  at the corpus's lookups, answers every `get_response` from the cassette through
+  `base_ops.set_responder` (the one seam: a responder
   replaces the provider inside the capture block, on the calling thread; None from it is a
   failed call), runs the op through its `NotesRunSpec`, and reports each difference, a request
   the cassette cannot answer, an answer never asked for and a lookup it lacks. expected.json

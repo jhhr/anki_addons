@@ -267,3 +267,28 @@ def test_a_run_that_recorded_no_notes_is_refused(tmp_path):
 
     with pytest.raises(replay.CaptureGap, match="recorded no notes"):
         replay.export_fixture(store, run_id)
+
+
+@pytest.mark.parametrize(
+    "end, ops, refusal",
+    [
+        # Its end never written: what it lost since is unknown, its finals included
+        (None, [replay.MATCH_OP], "no recorded end"),
+        ("cancelled", [replay.MATCH_OP], "ended 'cancelled'"),
+        ("failed", [replay.MATCH_OP], "ended 'failed'"),
+        # The replay runs the match op whatever the run ran
+        ("completed", ["bulk_deduplicate_existing_meaning_notes"], "a replay runs"),
+    ],
+)
+def test_a_run_a_replay_cannot_reproduce_is_refused(tmp_path, end, ops, refusal):
+    store = tmp_path / "capture.sqlite3"
+    assert capture.install(str(store), keep_days=None)
+    try:
+        run_id = capture.begin_run("notes", ops=ops, notes=True)
+        if end is not None:
+            capture.end_run(run_id, end)
+    finally:
+        capture.shutdown()
+
+    with pytest.raises(replay.CaptureGap, match=refusal):
+        replay.export_fixture(store, run_id)

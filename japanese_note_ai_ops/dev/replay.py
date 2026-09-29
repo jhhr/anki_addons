@@ -32,8 +32,9 @@ collection, runs the op over its selected notes with the cassette answering ever
 `get_response` (`base_ops.set_responder`) and the corpus answering every dictionary lookup, and
 reports what differed. Strict: a request the cassette has no answer left for, an answer nothing
 asked for, and a lookup the corpus lacks are each reported, and answered as a failure would be,
-never by a guess. The export is strict the same way: a run that dropped records or has no note
-snapshots is refused (`CaptureGap`), and so is a note the run needs that it never recorded.
+never by a guess. The export is strict the same way: a run it cannot reproduce is refused
+(`CaptureGap`): one with no note snapshots, one that lost records or whose end is unknown, one
+that did not complete, one of another op; and so is a note the run needs that it never recorded.
 
 Names from the user's collection are replaced: note types, but the ones the addon hardcodes,
 and decks by generic names, and note ids by synthetic ones. The note text stays the user's own:
@@ -78,6 +79,8 @@ ID_RE = re.compile(r"(?<![\d.])(\d{13})(?![\d.])")
 HARDCODED_NOTETYPES = frozenset({"Japanese vocab note", "Kanji draw"})
 # The config key naming the deck new notes go into, in a note type's config
 DECK_CONFIG_KEY = "insert_deck"
+# The op a replay runs (match_words_spec), as a run's ops_json names it
+MATCH_OP = "bulk_match_words_to_notes"
 
 
 class CaptureGap(Exception):
@@ -244,8 +247,21 @@ def export_fixture(
             raise CaptureGap(f"no run {run_id} in {store_path}")
         if not run["notes"]:
             raise CaptureGap(f"run {run_id} recorded no notes (config capture_notes was off)")
+        # Set at the run's end only: a run still going, or whose store went off before its end
+        # was written, may have lost anything since, and the last it could lose is its finals
+        if run["dropped"] is None:
+            raise CaptureGap(
+                f"run {run_id} has no recorded end, so whether it lost records is unknown"
+            )
         if run["dropped"]:
-            raise CaptureGap(f"run {run_id} dropped {run['dropped']} records at a full queue")
+            raise CaptureGap(f"run {run_id} lost {run['dropped']} of its records")
+        # A replay runs to the end: a cancelled run's expected state holds only what it finished
+        # before the cancel, and a failed one's what it wrote before the raise
+        if run["outcome"] != "completed":
+            raise CaptureGap(f"run {run_id} ended {run['outcome']!r}; only a completed run replays")
+        ops = json.loads(run["ops_json"] or "null") or []
+        if ops != [MATCH_OP]:
+            raise CaptureGap(f"run {run_id} ran {ops}; a replay runs {MATCH_OP} alone")
         snapshots = connection.execute(
             "SELECT note_id, stage, text FROM note_snapshots JOIN blobs ON hash = note_hash"
             " WHERE run_id = ? ORDER BY snapshot_id",
