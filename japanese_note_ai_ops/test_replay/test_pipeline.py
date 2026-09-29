@@ -7,7 +7,8 @@ fixture's cassette answering: the replay must leave every note as the capture ru
 exactly the answers the run was given, and do it again the same.
 
 The new-note path needs the meaning-making prompts' answers, which a script cannot make up
-convincingly; the fixtures of real capture runs (test_replay.py) cover it.
+convincingly; the fixtures of real capture runs (test_replay.py) cover it. One scripted new note
+is here, for what its failed add leaves behind: a placeholder the fixture must name by a symbol.
 """
 
 from __future__ import annotations
@@ -59,13 +60,47 @@ def scripted(request: Any) -> Any:
     raise AssertionError(f"a call this scenario does not make: {request.kind}")
 
 
-@pytest.fixture
-def captured(tmp_path: Path):
-    """The capture run: its store and run id, and the ids of its notes."""
+def capture_run(
+    tmp_path: Path, build: Any, config: dict, responder: Any
+) -> tuple[Path, int, dict]:
+    """A capture run of the match op over the sentence note `build(col)` makes, answered by
+    `responder`: its store, its run id, and the ids `build` names."""
     stub = real_anki.install()
     saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
     col = real_anki.open_collection(tmp_path / "collection.anki2")
     real_anki.make_note_type(col, NOTETYPE, list(FIELDS.values()))
+    store = tmp_path / "capture.sqlite3"
+    try:
+        sentence_id, ids = build(col)
+        stub.col = col
+        stub.addonManager.configs[PACKAGE] = dict(config)
+        stub.pm.set_profile_folder(tmp_path / "profile")
+        (stub.pm.media_folder() / MEANINGS_DICT_FILE).write_text(
+            json.dumps(MEANINGS, ensure_ascii=False), encoding="utf-8"
+        )
+        assert capture.install(str(store), keep_days=None)
+        base_ops.set_responder(responder)
+        run, result = match_words_spec().notes_run([sentence_id])
+        run(col)
+        assert not result.cancelled
+    finally:
+        base_ops.set_responder(None)
+        capture.shutdown(timeout=10.0)
+        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
+        col.close()
+    # A store's ids go on from the last store's in the process, so the run is not always 1
+    with closing(sqlite3.connect(str(store))) as connection:
+        [(run_id,)] = connection.execute("SELECT run_id FROM runs WHERE implicit = 0").fetchall()
+    return store, run_id, ids
+
+
+@pytest.fixture
+def captured(tmp_path: Path):
+    """The capture run: its store and run id, and the ids of its notes."""
+    yield capture_run(tmp_path, build_book_and_buy, CONFIG, scripted)
+
+
+def build_book_and_buy(col: Any) -> tuple[int, dict]:
     fields = FIELDS
     book = real_anki.add_note(
         col,
@@ -98,28 +133,30 @@ def captured(tmp_path: Path):
          fields["word_list_field"]: json.dumps(array, ensure_ascii=False)},
         tags=[MEANING_MAPPED_TAG],
     )
-    store = tmp_path / "capture.sqlite3"
-    try:
-        stub.col = col
-        stub.addonManager.configs[PACKAGE] = dict(CONFIG)
-        stub.pm.set_profile_folder(tmp_path / "profile")
-        (stub.pm.media_folder() / MEANINGS_DICT_FILE).write_text(
-            json.dumps(MEANINGS, ensure_ascii=False), encoding="utf-8"
-        )
-        assert capture.install(str(store), keep_days=None)
-        base_ops.set_responder(scripted)
-        run, result = match_words_spec().notes_run([sentence.id])
-        run(col)
-        assert not result.cancelled
-    finally:
-        base_ops.set_responder(None)
-        capture.shutdown(timeout=10.0)
-        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
-        col.close()
-    # A store's ids go on from the last store's in the process, so the run is not always 1
-    with closing(sqlite3.connect(str(store))) as connection:
-        [(run_id,)] = connection.execute("SELECT run_id FROM runs WHERE implicit = 0").fetchall()
-    yield store, run_id, {"book": book.id, "buy": buy.id, "sentence": sentence.id}
+    return sentence.id, {"book": book.id, "buy": buy.id, "sentence": sentence.id}
+
+
+def build_box_to_create(col: Any) -> tuple[int, dict]:
+    """A sentence whose word 箱 has no vocab note: the run makes one."""
+    fields = FIELDS
+    array = [word("箱", "名詞", "箱", "はこ", ["match"]), ["。"]]
+    sentence = real_anki.add_note(
+        col,
+        NOTETYPE,
+        {fields["word_kanjified_field"]: "店", fields["word_reading_field"]: "みせ",
+         fields["word_sort_field"]: "店", fields["sentence_field"]: "箱。",
+         fields["furigana_sentence_field"]: "箱[はこ]。",
+         fields["word_list_field"]: json.dumps(array, ensure_ascii=False)},
+        tags=[MEANING_MAPPED_TAG],
+    )
+    return sentence.id, {"sentence": sentence.id}
+
+
+def generated(request: Any) -> Any:
+    """The one answer a new word with no dictionary to look it up in needs."""
+    if request.kind == "clean_meaning.generate":
+        return {"new_meaning": "物を入れる器。", "english_meaning": "box"}
+    raise AssertionError(f"a call this scenario does not make: {request.kind}")
 
 
 def test_the_capture_holds_what_the_run_did(captured):
@@ -254,6 +291,31 @@ def test_background_notes_change_nothing_the_run_does(captured):
     result = replay.replay(fixture, background=60)
 
     assert result.differences(fixture.expected) == []
+
+
+def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
+    # The new note's deck is missing, so its add fails and the sentence keeps its placeholder,
+    # a random number every run: a fixture holding it could never replay
+    # word_field and translated_sentence_field are the meaning cleaning's, which a new note needs
+    note_config = {
+        **FIELDS,
+        "word_field": FIELDS["word_kanjified_field"],
+        "translated_sentence_field": FIELDS.get("translated_sentence_field", "sentence"),
+        "insert_deck": "No such deck",
+    }
+    config = {**CONFIG, NOTETYPE: note_config}
+    store, run_id, _ = capture_run(tmp_path, build_box_to_create, config, generated)
+
+    fixture = replay.export_fixture(store, run_id)
+
+    [sentence] = [n for n in fixture.expected["notes"] if n["fields"]["word_sort"] == "店"]
+    # In place of the number, as a new note's placeholder:new-N is
+    assert "[placeholder:failed-1]" in sentence["fields"]["word_list"]
+    assert not replay.PLACEHOLDER_RE.search(sentence["fields"]["word_list"])
+    assert fixture.expected["new_notes"] == 0
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
 
 
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):

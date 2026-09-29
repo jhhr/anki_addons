@@ -231,9 +231,10 @@ cheap no-op and nothing is recorded.
   `corpus.json` (the notes the run read, their note types and decks under generic names but the
   hardcoded ones, note ids synthetic in every field, the run's config, meanings read, dictionary
   lookups), `cassette.json` (the answers by `request_key`, in the order received) and
-  `expected.json` (the notes as the run left them, new notes' ids and placeholders as symbols).
-  It raises `CaptureGap` rather than guess, and for a run a replay cannot reproduce: one that
-  lost records or has no recorded end (`dropped` NULL), one not `completed`, one of another op.
+  `expected.json` (the notes as the run left them, new notes' ids and placeholders and a failed
+  add's placeholder as symbols). It raises `CaptureGap` rather than guess, and for a run a
+  replay cannot reproduce: one that lost records or has no recorded end (`dropped` NULL), one
+  not `completed`, one of another op.
   `replay(fixture)` builds the corpus in a fresh collection, points every module's `mdx_helper`
   at the corpus's lookups, answers every `get_response` from the cassette through
   `base_ops.set_responder` (the one seam: a responder

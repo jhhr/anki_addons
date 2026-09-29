@@ -9,7 +9,8 @@ A fixture is what a replay of one capture run needs, as three JSON files a perso
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
 - expected.json: the notes as the run left them, normalized (`normalized_notes`): the ids a
-  replay cannot know, the new notes' and their placeholders', replaced by symbols. The file
+  replay cannot know, the new notes' and their placeholders' and the placeholders a failed add
+  leaves in the word arrays, replaced by symbols. The file
   holds only the notes the run added or changed, and the keys of those it removed; a note it
   holds no entry for is as the corpus has it (`Fixture.read` puts the whole list together).
 
@@ -59,7 +60,16 @@ from collections import defaultdict
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Iterable, Iterator, Mapping, Optional
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+)
 
 # Where the test data checkout is; the other dev scripts and the tests reach it through here
 from data_paths import DATA_ROOT_ENV, DEFAULT_ROOT, data_dir, data_root  # noqa: F401
@@ -280,6 +290,7 @@ def export_fixture(
             " latency_ms FROM calls WHERE run_id = ? ORDER BY started, call_id",
             (run_id,),
         ).fetchall()
+        failed = _failed_adds(connection, run_id)
     config = json.loads(run["config_json"] or "{}")
 
     pre: dict[int, dict] = {}
@@ -380,7 +391,7 @@ def export_fixture(
                 "tags": record["tags"],
             }
         )
-    expected_notes = normalized_notes(after, new_ids, ids=ids)
+    expected_notes = normalized_notes(after, new_ids, ids=ids, failed=failed)
 
     corpus = {
         "format": FORMAT,
@@ -471,17 +482,57 @@ def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
 # --- normalizing ---------------------------------------------------------------------------
 
 
+# A new note's placeholder in a field: make_new_note_id's negative number, standing alone
+PLACEHOLDER_RE = re.compile(r"(?<![\d-])-\d{7}(?!\d)")
+
+
+def _failed_adds(connection: sqlite3.Connection, run_id: Optional[int] = None) -> list[int]:
+    """The placeholders of a run's notes whose add failed (`note.add` with an `add_error`), in
+    the order of the notes' content as the cleanup proposed them, ids and placeholders masked:
+    the same order in every run of the same work, whatever order the adds came in. Every run's
+    in the store without `run_id` (a replay's own store holds its one run)."""
+    where, params = ("", ()) if run_id is None else (" AND run_id = ?", (run_id,))
+    placeholders = []
+    for (payload_json,) in connection.execute(
+        f"SELECT payload_json FROM events WHERE kind = 'note.add'{where} ORDER BY event_id",
+        params,
+    ):
+        payload = json.loads(payload_json or "null") or {}
+        if payload.get("add_error") and payload.get("placeholder") is not None:
+            placeholders.append(int(payload["placeholder"]))
+    proposed = {
+        note_id: json.loads(text)
+        for note_id, text in connection.execute(
+            "SELECT note_id, text FROM note_snapshots JOIN blobs ON hash = note_hash"
+            f" WHERE stage = 'proposed'{where}",
+            params,
+        )
+    }
+
+    def content(placeholder: int) -> str:
+        fields = (proposed.get(placeholder) or {}).get("fields", {})
+        masked = {
+            name: PLACEHOLDER_RE.sub("#", ID_RE.sub("#", value)) for name, value in fields.items()
+        }
+        return json.dumps(masked, ensure_ascii=False, sort_keys=True)
+
+    return sorted(set(placeholders), key=content)
+
+
 def normalized_notes(
     notes: Iterable[Mapping[str, Any]],
     new_notes: Mapping[int, Optional[int]],
     ids: Optional[Callable[..., Any]] = None,
+    failed: Sequence[int] = (),
 ) -> list[dict]:
     """Notes as a replay can compare them: each `{"id", "notetype", "deck", "fields", "tags"}`,
     `new_notes` the run's added notes (id -> the placeholder it replaced, or None).
 
     A new note's id is whatever the collection handed out, and its placeholder was random, so
     both become symbols: `new-N`, numbered in the order of the notes' content (ids masked),
-    and `placeholder:new-N`, wherever they appear. `ids`, given, maps every other id in a field
+    and `placeholder:new-N`, wherever they appear. `failed` are the placeholders of the notes
+    whose add failed, in a fixed order (`_failed_adds`): the word arrays keep them on purpose,
+    and they become `placeholder:failed-N`. `ids`, given, maps every other id in a field
     (`_IdMap.text`); a replay's are synthetic already. Tags sorted; the list in note order.
     """
     notes = list(notes)
@@ -497,6 +548,9 @@ def normalized_notes(
         for nid, placeholder in new_notes.items()
         if placeholder is not None and nid in symbols
     }
+    placeholders.update(
+        {str(placeholder): f"placeholder:failed-{n + 1}" for n, placeholder in enumerate(failed)}
+    )
 
     def text(value: str) -> str:
         if ids is not None:
@@ -1025,7 +1079,7 @@ def _replay(
         capture.shutdown(timeout=30.0)
         events = _run_events(store)
         return ReplayResult(
-            notes=normalized_notes(_collection_notes(col), events.added),
+            notes=normalized_notes(_collection_notes(col), events.added, failed=events.failed),
             meanings=dict(sorted(events.meanings.items())),
             misses=cassette.misses,
             unused=cassette.unused(),
@@ -1063,6 +1117,7 @@ class _RunEvents:
     added: dict[int, Optional[int]] = field(default_factory=dict)
     decisions: list[dict] = field(default_factory=list)
     meanings: dict[str, Any] = field(default_factory=dict)
+    failed: list[int] = field(default_factory=list)
 
 
 def _run_events(store: Path) -> _RunEvents:
@@ -1071,7 +1126,8 @@ def _run_events(store: Path) -> _RunEvents:
         rows = connection.execute(
             "SELECT kind, note_id, task_id, payload_json FROM events ORDER BY event_id"
         ).fetchall()
-    events = _RunEvents()
+        failed = _failed_adds(connection)
+    events = _RunEvents(failed=failed)
     for kind, note_id, task_id, payload_json in rows:
         payload = json.loads(payload_json or "null")
         if kind == "note.added":
