@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.9
+Policy version: 0.10
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -146,12 +146,15 @@ needs a split asks (a policy question); it never splits on its own.
   KANJI-3 (御帰りに成る, 御持ち為る). くださる is kanjified after て as well, in every form (教えて
   下さい, 為て下さい: `<k> 為[し]て 下[くだ]さい</k>`, 下さいませ): the user's exception to
   KANA-3, for this verb alone; ていただく, てくれる, てもらう stay kana.
-- KANJI-16 A loanword (gairaigo) is kanjified, the katakana kept in the reading, when JMdict
-  gives it a kanji spelling not marked rarely used or search-only, or a Japanese dictionary
-  has one as its headword: 珈琲[コーヒー], 煙草[タバコ], 麦酒[ビール], 頁[ページ],
-  倶楽部[クラブ]. A spelling JMdict marks rare stays out (米 for メートル, 瓦斯, 硝子, 洋袴 for
-  ズボン, 釦 for ボタン): pending Q4, draft. Names of countries, places and people stay as written
-  (KANA-12), whatever kanji they once had (亜米利加, 仏蘭西). The same loanword is kanjified in
+- KANJI-16 A loanword (gairaigo) is kanjified, the katakana kept in the reading, only when both
+  hold: JMdict gives it a kanji spelling not marked rarely used or search-only, and Sudachi
+  reads that spelling as the loanword (`kanjify_lookup.py sudachi`). So 珈琲[コーヒー],
+  煙草[タバコ], 麦酒[ビール], 頁[ページ], 倶楽部[クラブ], 刷子[ブラシ], 歌留多[カルタ],
+  煙管[キセル]; but not 洋灯 (Sudachi reads ようとう), and none JMdict marks rare (米 for
+  メートル, 瓦斯, 硝子, 洋袴, 釦, 弗, 混凝土). Mind homophones (SPELL-1): the kanji must spell this
+  loanword, not a native word read the same: ボタン "button" is not 牡丹 (peony), キス "kiss"
+  not 鱚 (a fish), パイ "pie" not 牌. Names of countries, places and people stay as written
+  (KANA-12), whatever kanji they once had (亜米利加, 印度). The same loanword is kanjified in
   every sentence or in none: extract_words records a kanjified one under its kanji and a
   katakana one under its katakana, so a mix splits one word over two notes.
 - KANJI-17 An auxiliary with a dictionary spelling and a meaning of its own: べし 可し (in every
@@ -187,6 +190,4 @@ needs a split asks (a policy question); it never splits on its own.
 Put to the user; until answered, a use that turns on one is left as the input has it and named
 with the question's id.
 
-- Q4 Loanwords: only a kanji spelling JMdict doesn't mark rare (KANJI-16's draft), or every
-  spelling SOURCE-1 accepts, the rare ones too?
 - Q8 こう and ああ as demonstrative adverbs: kana like そう (KANA-13's draft), or 斯う / 彼あ?
