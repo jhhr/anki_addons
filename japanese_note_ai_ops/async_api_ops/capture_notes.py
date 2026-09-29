@@ -139,15 +139,24 @@ def record_final(
 ) -> None:
     """The end of the cleanup: every note the run saved or added as the collection now holds
     it (`final`), the notes it removed (`note.removed`), and the note types and decks of every
-    note it recorded (`record_collection`)."""
+    note it recorded (`record_collection`).
+
+    `removed` is what the cleanup asked to remove; a note the collection still holds is final,
+    not removed. The removal is reported and the cleanup carries on when it fails (an addon's
+    delete hook raising, before anything is deleted), and taken on trust, such a note was
+    recorded gone while the collection kept it."""
     if not capture.notes_on():
         return
-    gone = sorted({int(nid) for nid in removed})
-    for note_id in sorted({int(nid) for nid in note_ids if int(nid) > 0} - set(gone)):
+    asked = {int(nid) for nid in removed}
+    gone: list[int] = []
+    for note_id in sorted({int(nid) for nid in note_ids if int(nid) > 0} | asked):
         try:
             note = col.get_note(note_id)  # type: ignore[arg-type]
         except Exception:
-            capture.event("note.missing", {"note_id": note_id, "stage": "final"})
+            if note_id in asked:
+                gone.append(note_id)
+            else:
+                capture.event("note.missing", {"note_id": note_id, "stage": "final"})
             continue
         capture.snapshot_note("final", note_id, partial(note_record, note))
     if gone:

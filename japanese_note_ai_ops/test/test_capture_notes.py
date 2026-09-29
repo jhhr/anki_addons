@@ -225,6 +225,7 @@ class ReferenceTests(CaptureNotesTestCase):
 
     def test_the_final_state_is_read_from_the_collection_and_the_removed_noted(self):
         col = Collection(Note(4, {"Word": "箱"}), Note(5, {"Word": "本"}))
+        col.remove_notes([5])
 
         capture_notes.record_final(col, [5, 4, 5, 0], removed=[5])
 
@@ -232,6 +233,17 @@ class ReferenceTests(CaptureNotesTestCase):
             [(nid, stage) for nid, stage, _ in self.snapshots()], [(4, "final")]
         )
         self.assertEqual(self.events("note.removed"), [("note.removed", None, {"note_ids": [5]})])
+
+    def test_a_note_whose_removal_failed_is_final_not_removed(self):
+        # The cleanup reports a failed removal and carries on: the note is still there
+        col = Collection(Note(4, {"Word": "箱"}), Note(5, {"Word": "本"}))
+
+        capture_notes.record_final(col, [4], removed=[5])
+
+        self.assertEqual(
+            [(nid, stage) for nid, stage, _ in self.snapshots()], [(4, "final"), (5, "final")]
+        )
+        self.assertEqual(self.events("note.removed"), [])
 
 
 class MeaningsTests(CaptureNotesTestCase):
