@@ -150,9 +150,9 @@ def make_meaning_dict_key(word: str, reading: str) -> str:
 
 
 def generated_meanings_json(meanings: Sequence[GeneratedMeaningType]) -> str:
-    """Generated meanings as the merge and revise prompts show them. Their calls' inputs record
-    this text rather than the list: the capture store's JSON sorts every dict's keys, and a
-    prompt rebuilt from the sorted list would show each meaning's keys in another order."""
+    """Generated meanings as the merge prompt shows them. Its calls' inputs record this text
+    rather than the list: the capture store's JSON sorts every dict's keys, and a prompt rebuilt
+    from the sorted list would show each meaning's keys in another order."""
     return json.dumps(meanings, ensure_ascii=False, indent=2)
 
 
@@ -329,95 +329,70 @@ def merge_existing_meanings_for_word(
     return MakeMeaningsResult.SUCCESS
 
 
-def revise_meanings_prompt(
+def add_meanings_prompt(
     word: str,
     reading: str,
-    meanings_json: str,
-    usages: Sequence[WordAndSentences],
+    possible_meanings: Sequence[GeneratedMeaningType],
+    usage: WordAndSentences,
     dictionary_entry: str,
 ) -> str:
-    """The prompt that revises the generated meanings (`generated_meanings_json`'s text) to
-    cover `usages`, the meanings and sentences of notes none of them fitted, as it numbers
-    them."""
-    meanings_and_sentences = ""
-    for i, word_and_sentences in enumerate(usages):
-        sentences_formatted = ""
-        for sen in word_and_sentences["sentences"]:
-            sentences_formatted += f"  - JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        meanings_and_sentences += f"""
-UNMATCHED USAGE {i + 1}:
-- Description of usage in Japanese: {word_and_sentences["jp_meaning"] or "(empty)"}
-- English description: {word_and_sentences["en_meaning"] or "(empty)"}
-- Sentences:
-{sentences_formatted}
-"""
-    return f"""Below are dictionary entries from multiple different dictionaries for a word or phrase. From this, a single list of all distinct meanings was previously created. The list was meant to be comprehensive enough to match all possible usages of the word but some usages of the word were encountered that did not match any of the meanings. Your task is to revise the previous list of meanings to better cover all the usages expressed in the usages and the dictionary entry. The objective is to create a partitioning of all possible usages that is useful for an English-speaking Japanese learner. Follow these rules:
+    """The prompt that writes the generated meaning to add for `usage`, a note's meaning and
+    sentences none of the `possible_meanings` fitted."""
+    possible = "".join(
+        f"- {meaning[JP_MEANING_FIELD]} / {meaning[EN_MEANING_FIELD]}\n"
+        for meaning in possible_meanings
+    )
+    sentences = "".join(
+        f"  - JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n" for sen in usage["sentences"]
+    )
+    return f"""Below are dictionary entries for a word or phrase and the list of its possible meanings, which notes of the word already use. A use of the word was found that none of the possible meanings covers well. Your task is to write the possible meaning to add so that this use is covered.
 
-Definition rules:
-- Create a Japanese meaning and English meaning.
-- MINIMIZE DIFFERENT MEANINGS: Make as a few separate meanings as possible by combining meanings that are related. Extremely common words like 見る, 行く, 来る, 有る, etc. have a large number of meanings which should be especially aggressively combined into as few meanings as possible.
-- BE CONCISE: Each meaning should be concise, ideally a single sentence but more if absolutely necessary to combine multiple related meanings.
-- The English meaning should almost always be a short list of equivalent words or phrases separated by semicolons. Only explain in sentences when equivalents do not exist; e.g. the word is "untranslatable".
-- If an unmatched usage is something that no dictionary entry covers, add a new meaning to cover that usage. Create the meaning based on the description and sentences provided following the same rules as above.
+Rules:
+- The existing possible meanings stay exactly as they are, because notes use them. Do not repeat, reword or merge them.
+- Add one meaning, or two only if the use really combines two senses the list lacks. Return an empty list if an existing meaning does cover the use after all.
+- Follow the dictionary entries where they cover the use; where none does, write the meaning from the use's description and sentences.
+- Japanese meaning: concise, ideally one sentence. English meaning: a short list of equivalent words or phrases separated by semicolons, explained in a sentence only when there are no equivalents.
+- Exclude example sentences and usage notes, and do not refer to the sentences.
+- If a literal and a figurative meaning belong together, make them one meaning that describes both shortly.
 
-Combination rules:
-- Most of all, if the dictionary entries includes multiple meanings that are similar, combine them into one.
-- However also combine dissimilar meanings that that are of the type one literal and one metaphorical - those should become one meaning where each is described shortly.
-- Especially, if an unmatched usage is a combination of two meanings then follow its example, and make just one meaning that covers both.
-
-Information extraction rules:
-- Make sure to analyze the different dictionary entries carefully and identify the same meanings expressed in different ways. The aim is to compress all the information into a minimal set of distinct meanings.
-- Note that the dictionary entries may include information about additinal phrases that use the word. These would usually come after the list of main meanings per dictionary. Ignore these additional phrases and only focus on the main meanings of the word or phrase itself.
-- Exclude any example sentences, usage notes, or extraneous information.
-- When creating new meanings based on unmatched usages, focus on the core meaning being expressed and avoid referencing anything about the example sentences directly.
-
-Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys for each distinct meaning.
+Return a JSON object with one `meanings` field containing an array of objects, each with `{JP_MEANING_FIELD}` and `{EN_MEANING_FIELD}` keys.
 
 WORD OR PHRASE (READING):
 {word} ({reading})
 
 ---
-PREVIOUSLY GENERATED MEANINGS:
-{{{meanings_json}}}
----
-WORD USAGES NOT COVERED BY PREVIOUS MEANINGS:
-{meanings_and_sentences}
----
+EXISTING POSSIBLE MEANINGS:
+{possible}---
+THE USE NOT COVERED:
+- Description of the use in Japanese: {usage["jp_meaning"] or "(empty)"}
+- English description: {usage["en_meaning"] or "(empty)"}
+- Sentences:
+{sentences}---
 DICTIONARY ENTRIES:
 {dictionary_entry}
 ---
 """
 
 
-def revise_meanings_for_word(
+def add_meanings_for_usage(
     config: dict[str, str],
     word: str,
     reading: str,
-    bad_note_meanings_dict: dict[NoteId, WordAndSentences],
+    usage: WordAndSentences,
     all_meanings_dict: GeneratedMeaningsDictType,
-) -> MakeMeaningsResult:
-    """
-    Receive a previously generated meanings, a list of words and sentences that could not matched
-    to any of those meanings for a word and its reading, and get an LLM to revise those meanings
-    so that the meanings better cover the word usages.
+) -> list[GeneratedMeaningType]:
+    """Add to a word's generated meanings the meaning a use of it needs, `usage` being the
+    meaning and sentences of a note none of them fitted, and return what was added: nothing
+    when the call failed, the word is in no dictionary, or the answer holds only meanings the
+    list has.
 
-    :param config: Addon configuration dictionary.
-    :param word: The word or phrase being defined.
-    :param reading: The reading of the word or phrase.
-    :param bad_note_meanings_dict: Dict of note IDs to WordAndSentences for notes that could not
-            be matched to any of the previously generated meanings.
-    :param all_generated_meanings_dict: Dict of all generated meanings
-            for reuse across multiple calls. Provided to avoid doing file operations during
-            async operations and to avoid doing file reading in every op.
-    :return: The revised list of meanings when successful, None otherwise. Will also mutate
-            all_meanings_dict to include the revised meanings.
+    Only ever appended. Notes are mapped to a generated meaning by its exact English, so a list
+    rewritten for one note left its other notes holding meanings it no longer had: in replays of
+    new meanings, three quarters of the other notes' meanings went that way, studied ones too.
     """
-    mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
-
-    usages = list(bad_note_meanings_dict.values())
     word_key = make_meaning_dict_key(word, reading)
     existing_meanings = all_meanings_dict.get(word_key, [])
-
+    mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
     try:
         dict_meaning_for_word = mdx_helper.get_definition_text(
             word=word,
@@ -428,20 +403,20 @@ def revise_meanings_for_word(
     except MDXLookupError as e:
         # See make_all_meanings_for_word: an outage must not be reported as an absence.
         logger.error(f"Dictionary lookup failed for word '{word}' ({reading}): {e}")
-        return MakeMeaningsResult.ERROR
+        return []
     if not dict_meaning_for_word:
         logger.debug(f"No dictionary entry found for word '{word}' ({reading})")
-        return MakeMeaningsResult.NO_DICTIONARY_ENTRY
+        return []
 
     inputs: dict[str, Any] = {
         "word": word,
         "reading": reading,
-        "meanings_json": generated_meanings_json(existing_meanings),
-        "usages": usages,
+        "possible_meanings": list(existing_meanings),
+        "usage": usage,
         "dictionary_entry": dict_meaning_for_word,
     }
-    prompt = revise_meanings_prompt(**inputs)
-    logger.debug(f"Prompt for revising possible meanings: {prompt}")
+    prompt = add_meanings_prompt(**inputs)
+    logger.debug(f"Prompt for adding a possible meaning: {prompt}")
 
     response_schema = {
         "type": "object",
@@ -449,23 +424,31 @@ def revise_meanings_for_word(
         "required": ["meanings"],
         "additionalProperties": False,
     }
-
-    model = config.get("make_meanings_model", "")
     result = get_response(
-        model,
+        config.get("make_meanings_model", ""),
         prompt,
         response_schema=response_schema,
-        kind="make_all_meanings.revise",
+        kind="make_all_meanings.add",
         inputs=inputs,
     )
-    revised_meanings = validate_meanings_result_object(result, "revising meanings")
-    if revised_meanings is None:
-        return MakeMeaningsResult.ERROR
-
-    logger.debug(f"Revised meanings: {json.dumps(revised_meanings, ensure_ascii=False, indent=2)}")
-    all_meanings_dict[f"{word}_{reading}"] = revised_meanings
-
-    return MakeMeaningsResult.SUCCESS
+    answered = validate_meanings_result_object(result, "adding a meaning")
+    if answered is None:
+        return []
+    known = {meaning[EN_MEANING_FIELD] for meaning in existing_meanings}
+    added: list[GeneratedMeaningType] = []
+    for meaning in answered:
+        if (
+            meaning[JP_MEANING_FIELD].strip()
+            and meaning[EN_MEANING_FIELD].strip()
+            and meaning[EN_MEANING_FIELD] not in known
+        ):
+            known.add(meaning[EN_MEANING_FIELD])
+            added.append(meaning)
+    if added:
+        logger.debug(f"Added meanings: {json.dumps(added, ensure_ascii=False, indent=2)}")
+        # A new list rather than an append: the old one may be what a caller is iterating
+        all_meanings_dict[word_key] = [*existing_meanings, *added]
+    return added
 
 
 def make_meanings_in_note(

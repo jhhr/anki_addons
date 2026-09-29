@@ -3,9 +3,10 @@ story ops record of their AI calls: each call's `kind`, and as `inputs` the valu
 built from, so that the prompt's builder given the recorded inputs gives back the prompt that
 was sent. The prompts themselves are pinned byte for byte (written before their builders were
 taken out of the ops). The match op's two calls also record a `context`, the word and notes their
-answers are read against, which must name what the op then does with the answer. The meaning ops'
-calls are test_capture_meaning_kinds'. Last, a scan of async_api_ops that every call site names a
-kind and inputs.
+answers are read against, which must name what the op then does with the answer; and which of a
+word's notes the op sends to clean_meaning before it matches the word. The meaning ops' calls are
+test_capture_meaning_kinds'. Last, a scan of async_api_ops that every call site names a kind and
+inputs.
 
 `get_response` is the test's in most tests, as in test_word_array_match_targets and test_judge.
 One runs a note's word array match through the real `get_response` with a store installed in a
@@ -250,8 +251,11 @@ class MatchHarness(unittest.TestCase):
     async def find_notes(self, word: str, **_) -> list:
         return book_notes() if word == "本" else []
 
-    def match_book(self, get_response) -> tuple[bool, dict]:
-        """match_single_word_in_word_tuple for 本 in PROMPT_SENTENCE."""
+    def match_book(
+        self, get_response, notes_to_add: Optional[dict] = None
+    ) -> tuple[bool, dict]:
+        """match_single_word_in_word_tuple for 本 in PROMPT_SENTENCE. `notes_to_add`: the run's
+        notes to add so far, by word."""
         results: dict = {}
 
         async def run() -> bool:
@@ -274,7 +278,7 @@ class MatchHarness(unittest.TestCase):
                     match_qualities={},
                     processed_word_tuples=results,
                     all_generated_meanings_dict=generated_meanings(),
-                    notes_to_add_dict={},
+                    notes_to_add_dict=notes_to_add if notes_to_add is not None else {},
                     notes_to_update_dict={},
                     word_note_index=None,
                     note_cache=None,
@@ -497,6 +501,43 @@ class MatchContextTests(MatchHarness):
         self.assertEqual(context["copy_note_id"], -1234567)
         # The placeholder is what the word is linked to until cleanup adds the note
         self.assertEqual(at_path(saved, context["word_path"])[4], [-1234567, 5])
+
+
+class MatchMappingTests(MatchHarness):
+    """The notes the match op cleans before it matches a word: each one it found that is not
+    mapped yet, to be mapped and nothing else, once; never a note this run made."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.found = book_notes()
+        # 本(m2), not mapped yet
+        self.found[0].tags = []
+
+    async def find_notes(self, word: str, **_) -> list:
+        return self.found if word == "本" else []
+
+    def test_a_note_not_mapped_is_mapped_and_a_note_this_run_made_is_left_alone(self):
+        # A new note made for the word earlier in the run was cleaned again at the word's next
+        # target, and that cleaning rewrote the word's other notes with it. A note the loops
+        # could not map was reworked instead, and again by the second loop
+        cleaned: list[dict] = []
+
+        def clean_meaning_in_note(**kwargs):
+            cleaned.append(kwargs)
+            return load_ops_module("clean_meaning").CleanResult(False)
+
+        pending = word_note(0, "本(m3)", "当の。この。", "this; the present", "<b>本</b>日")
+        pending.tags = []
+        pending["new_note_id_field"] = "-1234567"
+        with mock.patch.object(self.mwtn, "clean_meaning_in_note", clean_meaning_in_note):
+            matched, _ = self.match_book(answer, {"本": [pending]})
+
+        self.assertTrue(matched)
+        [kwargs] = cleaned
+        self.assertIs(kwargs["note"], self.found[0])
+        self.assertTrue(kwargs["map_only"])
+        # Its other notes are fetched as context; the loop gives none
+        self.assertNotIn("other_meaning_notes", kwargs)
 
 
 class MatchTaskTests(MatchHarness):

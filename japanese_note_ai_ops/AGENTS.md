@@ -294,8 +294,8 @@ cheap no-op and nothing is recorded.
   The match op adds `capture.task_scope(f"{word}|{reading}")` around each word target.
 - `note_id` is the note the driver or hook works on, not always the one a call changes: the
   clean_meaning and make_all_meanings calls a match target makes for a word note carry the
-  sentence note's id and the target's task; the notes a call changes are in its context
-  (below). A note not added yet (id 0) is recorded as none.
+  sentence note's id and the target's task; the note a clean_meaning call changes is in its
+  context (below). A note not added yet (id 0) is recorded as none.
 - Context (`context_json`, schema version 2): what reading or applying the answer needs that
   the prompt does not show, e.g. which note each numbered meaning came from. Not in either key,
   and nothing the prompt is built from (that is `inputs`). Note ids are ints; a note not added
@@ -310,19 +310,21 @@ cheap no-op and nothing is recorded.
     `copy_note_id`, the note copied for a new one (a CREATE NEW, or a MATCH of a generated
     meaning).
   - `match.rating`: `word_path`, and `note_id`, the linked note whose meaning is rated.
-  - `clean_meaning.rework` and `map`: `note_ids`, the notes in the order the answer's meaning
-    indexes count (note id order, so placeholders first); `map` also `depth` (1: its second
-    try, after a `make_all_meanings.revise`). Map's possible meaning indexes count in
-    `inputs.possible_meanings`.
+  - `clean_meaning.map_note` and `rework_note`: `target_note_id`, the one note the answer is
+    for and the only one the call can change; `other_note_ids`, the word's other notes, shown
+    and never changed, in the order the answer's `same_sense_as` counts them (added notes in
+    id order, then placeholders). `map_note` also `depth` (1: its second try, after a
+    `make_all_meanings.add`); its possible meaning index counts in `inputs.possible_meanings`.
   - `clean_meaning.extract` and `generate`: `note_id`, the note the meaning is for (null when
-    its caller does not say). The other kinds have none: `make_all_meanings.*` answers replace
-    the generated meanings of the inputs' word and reading.
+    its caller does not say). The other kinds have none: `make_all_meanings.make` and `merge`
+    answers replace the generated meanings of the inputs' word and reading, and `add`'s are
+    appended to them.
 
 **A new AI call site** (`translate_field.py` is the smallest example):
 
 - Pass `kind="<op>.<what one request is about>"`: `translate.sentence`, `judge.word`,
-  `clean_meaning.map`. The prefix is the module whose prompt it is, not the op the user ran (a
-  low map score in clean_meaning makes a `make_all_meanings.revise` call).
+  `clean_meaning.map_note`. The prefix is the module whose prompt it is, not the op the user
+  ran (a low map score in clean_meaning makes a `make_all_meanings.add` call).
 - Pass `inputs`, the values the prompt is built from, as plain JSON: no note ids (the row has its
   own), no API keys, a looked-up value as the text the prompt shows (a dictionary entry, not its
   key). Add nothing the prompt does not show but what makes the case, with a comment saying why

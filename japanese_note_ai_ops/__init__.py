@@ -196,7 +196,7 @@ def run_op_on_add_note(note: Note):
     if note_type_name == "Japanese vocab note":
         notes_to_update_dict: dict[NoteId, Note] = {}
         # The generated meanings are what clean_meaning_in_note maps a note's meaning
-        # against, and it revises them in place when none of them fit, so the one added
+        # against, and it adds one in place when none of them fit, so the one added
         # note reads the file and writes it back - the bulk ops do the same around a run.
         all_generated_meanings_dict = load_meanings_dict_from_file()
         try:

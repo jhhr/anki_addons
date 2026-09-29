@@ -19,6 +19,7 @@ from addon_modules import FakeClock, load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 mwtn = load_ops_module("match_words_to_notes")
+cm = load_ops_module("clean_meaning")
 controls_module = load_ops_module("progress_controls")
 
 POS = 101
@@ -1202,7 +1203,7 @@ class NewNoteHarness(unittest.TestCase):
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         for name, value in (
-            ("clean_meaning_in_note", lambda **_: True),
+            ("clean_meaning_in_note", lambda **_: cm.CleanResult(True)),
             ("copy_into_new_note", lambda note: FakeNote(dict(note.fields))),
             ("Note", lambda col, model: vocab_note("")),
             ("make_furigana_from_reading", lambda word, reading: f"{word}[{reading}]"),
@@ -1315,7 +1316,7 @@ class SiblingMarkersTests(NewNoteHarness):
 
         def clean_meaning_in_note(**kwargs):
             seen.update(kwargs)
-            return True
+            return cm.CleanResult(True)
 
         sentence_cache, note_cache = object(), object()
         first = vocab_note(f"{self.WORD}", 1)
@@ -1330,6 +1331,32 @@ class SiblingMarkersTests(NewNoteHarness):
         self.assertIs(seen["note"], self.to_add[self.WORD][-1])
         self.assertIs(seen["sentence_cache"], sentence_cache)
         self.assertIs(seen["note_cache"], note_cache)
+
+    def test_a_new_meaning_a_matched_note_holds_links_the_word_to_that_note(self):
+        # The match op's CREATE NEWs made most of the collection's notes that repeat another
+        # note's meaning. When the cleaning finds the note whose sense the new one repeats, the
+        # word is linked to it and nothing is added or renamed; the quality rated the meaning
+        # that is not added, so the word is left to be rated
+        first = vocab_note(self.WORD, 1)
+        pending = vocab_note(f"{self.WORD} (m2)", 0, new_note_id_field="-5550001")
+        for holder, linked_id in ((first, 1), (pending, -5550001)):
+            with self.subTest(linked_id=linked_id):
+                tuples: dict = {}
+                qualities = {0: 5}
+                args = {**self.args(), "processed_word_tuples": tuples, "match_qualities": qualities}
+                result = cm.CleanResult(False, holder)
+                with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: result):
+                    created = mwtn.create_new_note_from_matched_note(
+                        CONFIG, pending, [first, pending], 3, "意味", "sense", "", args
+                    )
+
+                self.assertTrue(created)
+                self.assertEqual(
+                    tuples, {0: (self.WORD, "ことば", holder["word_sort_field"], linked_id)}
+                )
+                self.assertEqual(qualities, {})
+                self.assertEqual((self.to_add, self.to_update), ({}, {}))
+                self.assertEqual(first["word_sort_field"], self.WORD)
 
     def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
@@ -1823,7 +1850,7 @@ class TidyAfterAddingTests(NewNoteHarness):
         """A new reading whose meaning could not be made: its markers stay on the word's
         other notes, and nothing is added."""
         self.processed_furigana = processed_furigana
-        with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: False):
+        with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: cm.CleanResult(False)):
             created = mwtn.create_new_note_without_matching(
                 CONFIG, "", self.args("げんご", FakeMarkerIndex(*marker_nids))
             )

@@ -1208,12 +1208,11 @@ def create_new_note_without_matching(
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         all_generated_meanings_dict=all_generated_meanings_dict,
-        allow_update_all_meanings=True,
         allow_reupdate_existing=True,
         word_note_index=word_note_index,
         sentence_cache=sentence_cache,
         note_cache=note_cache,
-    )
+    ).changed
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
     # update the word tuples
@@ -1272,6 +1271,27 @@ def upsert_meaning_marker(sort_field_value: str, meaning_number: int, fallback_w
     )
 
     return f"{base_word} {''.join(rebuilt_tokens)}".strip() if rebuilt_tokens else base_word
+
+
+def link_word_to_note(match_op_args: MatchOpArgs, note: Note) -> ProcessedWordTuple:
+    """Link the target word to `note`, as a MATCH does: its word tuple names the note's sort
+    field and id, or the placeholder id it carries until it is added (as an int, which
+    update_fake_note_ids rewrites as it does a MATCH's string)."""
+    word = match_op_args["word"]
+    reading = match_op_args["reading"]
+    multi_meaning_index = match_op_args.get("multi_meaning_index")
+    notes_to_update_dict = match_op_args["notes_to_update_dict"]
+    word_sort_field = match_op_args["word_sort_field"]
+    if note.id > 0 and note.id in notes_to_update_dict:
+        note = notes_to_update_dict[note.id]
+    note_id = note.id if note.id > 0 else int(note[match_op_args["new_note_id_field"]])
+    word_tuple: ProcessedWordTuple = (
+        (word, reading, multi_meaning_index, note[word_sort_field], note_id)
+        if multi_meaning_index is not None
+        else (word, reading, note[word_sort_field], note_id)
+    )
+    match_op_args["processed_word_tuples"][match_op_args["word_index"]] = word_tuple
+    return word_tuple
 
 
 def create_new_note_from_matched_note(
@@ -1343,23 +1363,36 @@ def create_new_note_from_matched_note(
     # Provide other_meaning_notes to override fetching from DB again as the meanings
     # gathered here can include yet un-added notes which the clean meaning op
     # couldn't get otherwise. They are also every meaning the word has, the first one without
-    # an (mN) marker included, which the fetch's meaning group leaves out: a new meaning with no
-    # generated ones to map to is reworked seeing each one it must not repeat. They are only
-    # shown, never written, and a mapping maps the new note alone (clean_meaning_in_note says
-    # why). The run's caches, as the op's other cleanings get them: the sentences are gathered
-    # for each of those notes now, not only the new one
-    clean_meaning_in_note(
+    # an (mN) marker included, which the fetch's meaning group leaves out: the new meaning is
+    # cleaned seeing each one it must not repeat, and told apart from them. The run's caches, as
+    # the op's other cleanings get them: the sentences are gathered for each of those notes now,
+    # not only the new one
+    cleaned = clean_meaning_in_note(
         config=config,
         note=new_note,
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         all_generated_meanings_dict=all_generated_meanings_dict,
-        allow_update_all_meanings=True,
         allow_reupdate_existing=True,
         other_meaning_notes=matching_notes,
         sentence_cache=match_op_args.get("sentence_cache"),
         note_cache=match_op_args.get("note_cache"),
     )
+    if cleaned.same_sense_as is not None:
+        # The new meaning is one a note of the word holds: the word is linked to that note and
+        # nothing is added. The match op's CREATE NEWs made most of the collection's notes that
+        # repeat another note's meaning, the older one studied in half of them, and nothing
+        # compared the two. The quality rated the new meaning, not that note's, so the word is
+        # left to be rated
+        word_tuple = link_word_to_note(match_op_args, cleaned.same_sense_as)
+        match_qualities = match_op_args.get("match_qualities")
+        if match_qualities is not None:
+            match_qualities.pop(word_index, None)
+        logger.debug(
+            f"{log_prefix} New meaning repeats a note's sense, linked the word instead:"
+            f" {word_tuple}"
+        )
+        return True
     # If we're copying a note, we need to ensure the meaning number is at least 2
     # as the first meaning should be (m1)
     largest_meaning_index = max(largest_meaning_index, 2)
@@ -1633,8 +1666,7 @@ async def match_single_word_in_word_tuple(
         for i in range(len(matching_notes)):
             # Check if the note needs to have its meaning mapped to generated meanings first as
             # we want the matching op to only have existing notes that match generated meanings
-            # Because clean_meaning_note can modify multiple notes in one call, re-acquire the
-            # note from notes_to_update_dict if it's there
+            # Re-acquire the note from notes_to_update_dict if it's there
             note_id = matching_notes[i].id
             note = (
                 matching_notes[i]
@@ -1642,9 +1674,13 @@ async def match_single_word_in_word_tuple(
                 else notes_to_update_dict[note_id]
             )
             if needs_meaning_mapping(note):
-                # The op will add the note to notes_to_update_dict if it edits it
+                # The op will add the note to notes_to_update_dict if it edits it. Only mapped:
+                # the rework a note with nothing to map to used to get here was repeated on
+                # every target of its word. The pending notes of the word, added to the list
+                # below, are not cleaned again: each was cleaned as it was made, and a second
+                # cleaning at the word's next target rewrote its whole meaning group
                 logger.debug(
-                    f"{log_prefix}Cleaning meaning in note {note[word_sort_field]} before matching"
+                    f"{log_prefix}Mapping meaning in note {note[word_sort_field]} before matching"
                 )
                 await asyncio.to_thread(
                     clean_meaning_in_note,
@@ -1653,14 +1689,12 @@ async def match_single_word_in_word_tuple(
                     notes_to_add_dict=notes_to_add_dict,
                     notes_to_update_dict=notes_to_update_dict,
                     all_generated_meanings_dict=all_generated_meanings_dict,
-                    allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
+                    map_only=True,
                     word_note_index=match_op_args["word_note_index"],
                     sentence_cache=match_op_args["sentence_cache"],
                     note_cache=match_op_args["note_cache"],
                 )
-            # Replace note in list each time, this will include the cases where an earlier op
-            # modified notes coming later in the list
             matching_notes[i] = note
 
         logger.debug(
@@ -1757,39 +1791,6 @@ async def match_single_word_in_word_tuple(
                     logger.debug(f"{log_prefix}Note {note.id} has empty meaning field")
             else:
                 logger.debug(f"{log_prefix}Note {note.id} is missing meaning field")
-
-        # Check if any notes aren't yet mapped to generated meanings and map them if not
-        for i in range(len(matching_notes)):
-            # Re-acquire the note from notes_to_update_dict if it's there, thus as the
-            # clean_meaning_in_note op adds the MEANING_MAPPED_TAG we can avoid doing extra calls
-            note_id = matching_notes[i].id
-            note = (
-                matching_notes[i]
-                if note_id not in notes_to_update_dict
-                else notes_to_update_dict[note_id]
-            )
-            if needs_meaning_mapping(note):
-                logger.debug(
-                    f"{log_prefix}Mapping meanings for note {note[word_sort_field]} before matching"
-                )
-                await asyncio.to_thread(
-                    clean_meaning_in_note,
-                    config=config,
-                    note=note,
-                    notes_to_add_dict=notes_to_add_dict,
-                    notes_to_update_dict=notes_to_update_dict,
-                    all_generated_meanings_dict=all_generated_meanings_dict,
-                    allow_update_all_meanings=True,
-                    allow_reupdate_existing=True,
-                    word_note_index=match_op_args["word_note_index"],
-                    sentence_cache=match_op_args["sentence_cache"],
-                    note_cache=match_op_args["note_cache"],
-                )
-            # Replace note in list each time, this will include the cases where an earlier op
-            # modified notes coming later in the list and we didn't call clean_meaning_in_note again
-            matching_notes[i] = (
-                note if note_id not in notes_to_update_dict else notes_to_update_dict[note_id]
-            )
 
         # Add meanings from all_generated_meanings_dict as well, if any remain that aren't in the
         # existing notes
