@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.8
+Policy version: 0.9
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -52,11 +52,12 @@ needs a split asks (a policy question); it never splits on its own.
   stays kana (KANA-1).
 - SPLIT-おさえる 押さえる for pressing or holding down, securing (手で押さえる, 要点を押さえる);
   抑える for restraining or suppressing (怒りを抑える, 物価を抑える).
-- SPLIT-よる 因る for a cause or reason (事故に因る故障, 過労に因る); 由る for a means or method,
-  the tool or procedure something is done with (石に由る撲殺, 手作業に由る, 投票に由って決める);
-  依る for "depending on", "according to", "based on" (人に依る, 予報に依ると, 法律に依る). Pending
-  Q2: the doer of an action, the passive agent or による before an action noun (彼に依って
-  書かれた, 市民に依る運動), draft 依る. 拠る is not used: its own sense, taking something as
+- SPLIT-よる 因る for a cause or reason (事故に因る故障, 過労に因る); 由る for a means, method or
+  mechanism, what an action is done by or with (石に由る撲殺, 手作業に由る, 醸造に由って作られる,
+  人工呼吸に由り生き返る); 依る for "depending on", "according to", "based on" (人に依る,
+  予報に依ると, 法律に依る), and for the doer of an action, person or thing, in a passive or
+  before an action noun (彼に依って書かれた, 北朝鮮に依る拉致, 骨髄に依って形成される). The doer
+  is who or what acts; 由る is only how it acts. 拠る is not used: its own sense, taking something as
   grounds or a source (法律に拠る, 資料に拠る), goes with 依る, since in real sentences it can't
   be told apart from "depending on" consistently.
 - SPLIT-もの 物 for a thing, 者 for a person, also as もん (物[もん], 馬鹿者[バカもん]).
@@ -186,8 +187,6 @@ needs a split asks (a policy question); it never splits on its own.
 Put to the user; until answered, a use that turns on one is left as the input has it and named
 with the question's id.
 
-- Q2 よる: is the doer of an action (彼によって書かれた, 市民による運動) 依る or 由る? (Means
-  and method are 由る: settled.)
 - Q4 Loanwords: only a kanji spelling JMdict doesn't mark rare (KANJI-16's draft), or every
   spelling SOURCE-1 accepts, the rare ones too?
 - Q8 こう and ああ as demonstrative adverbs: kana like そう (KANA-13's draft), or 斯う / 彼あ?
