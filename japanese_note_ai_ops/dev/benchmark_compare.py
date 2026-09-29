@@ -28,7 +28,7 @@ import json
 import statistics
 import sys
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 ASYNC_PHASES = ("nested op: plan notes", "nested op: run plans")
 ADD_LOOP = "cleanup: add_note loop"
@@ -43,10 +43,21 @@ def matches(summary: dict, selector: str) -> bool:
     return summary.get("label") == selector or (bool(commit) and commit.startswith(selector))
 
 
+# What a summary written before a profile field existed ran with
+PROFILE_DEFAULTS = {"background": 0, "copy_anywhere": False, "memory": None}
+
+
+def profile(summary: dict) -> dict:
+    return {**PROFILE_DEFAULTS, **(summary.get("profile") or {})}
+
+
 def comparable(summary: dict, head: dict) -> bool:
-    return summary.get("profile") == head.get("profile") and (
-        (summary.get("corpus") or {}).get("sha1") == (head.get("corpus") or {}).get("sha1")
-    )
+    """The same profile, and the same corpus: by its hash where both summaries have one, else
+    by the fixture's name (a summary from before the hash was recorded)."""
+    if profile(summary) != profile(head) or summary.get("fixture") != head.get("fixture"):
+        return False
+    hashes = [(s.get("corpus") or {}).get("sha1") for s in (summary, head)]
+    return None in hashes or hashes[0] == hashes[1]
 
 
 def phase_seconds(run: dict) -> dict[str, float]:
@@ -152,7 +163,7 @@ def main(argv: list[str]) -> int:
 
     print(f"base: {described(bases)}, {len(base_runs)} runs")
     print(f"head: {described(heads)}, {len(head_runs)} runs")
-    print(f"profile: {json.dumps(head.get('profile'))}")
+    print(f"profile: {json.dumps(profile(head))}")
     print("\n".join(table(medians(base_runs, figures), medians(head_runs, figures))))
     if args.phases:
         print()
