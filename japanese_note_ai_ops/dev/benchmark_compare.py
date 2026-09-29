@@ -4,7 +4,7 @@
 
 HISTORY is a benchmark.py history file (`user_files/benchmarks/<fixture>.jsonl`, one summary per
 line). A selector picks summaries by label or by commit prefix; `--head` defaults to the last
-summary, `--base` to the one before it. Only summaries with the head's profile (latency, scale,
+summary, `--base` to the last one before the head's first. Only summaries with the head's profile (latency, scale,
 memory, background, CopyAnywhere) and corpus are compared: a change of profile is not a change
 of the code.
 
@@ -132,10 +132,36 @@ def table(base: dict[str, float], head: dict[str, float]) -> list[str]:
     return lines
 
 
-def pick(summaries: list[dict], selector: Optional[str], default: Optional[dict]) -> list[dict]:
-    if selector is None:
-        return [default] if default is not None else []
-    return [summary for summary in summaries if matches(summary, selector)]
+def select(
+    summaries: list[dict], head_selector: Optional[str], base_selector: Optional[str]
+) -> tuple[list[dict], list[dict]]:
+    """The head summaries and the base ones, of the last head summary's profile and corpus.
+
+    By position in the history: a head selector picks every summary it matches, and the base
+    by default is the last summary before the first of them. Taking "everything but the last
+    head summary" made the base another summary of the head (the head compared with itself), or
+    one recorded after it (every change's sign turned over); a base selector matching a head
+    summary took it for a base too.
+    """
+    if head_selector is None:
+        head_at = [len(summaries) - 1] if summaries else []
+    else:
+        head_at = [i for i, summary in enumerate(summaries) if matches(summary, head_selector)]
+    if not head_at:
+        return [], []
+    head = summaries[head_at[-1]]
+    head_at = [i for i in head_at if comparable(summaries[i], head)]
+    heads = [summaries[i] for i in head_at]
+    others = [
+        (i, summary)
+        for i, summary in enumerate(summaries)
+        if i not in set(head_at) and comparable(summary, head)
+    ]
+    if base_selector is None:
+        bases = [summary for i, summary in others if i < head_at[0]][-1:]
+    else:
+        bases = [summary for _, summary in others if matches(summary, base_selector)]
+    return heads, bases
 
 
 def main(argv: list[str]) -> int:
@@ -150,19 +176,16 @@ def main(argv: list[str]) -> int:
     if not summaries:
         print("no summaries", file=sys.stderr)
         return 2
-    heads = pick(summaries, args.head, summaries[-1])
+    heads, bases = select(summaries, args.head, args.base)
     if not heads:
         print(f"no summary matches {args.head!r}", file=sys.stderr)
         return 2
-    head = heads[-1]
-    earlier = [s for s in summaries if s is not head and comparable(s, head)]
-    bases = [s for s in pick(earlier, args.base, earlier[-1] if earlier else None) if comparable(s, head)]
     if not bases:
-        print("nothing to compare with: no earlier summary of the same profile and corpus",
+        print("nothing to compare with: no other summary of the same profile and corpus",
               file=sys.stderr)
         return 2
     base_runs = [run for summary in bases for run in summary["runs"]]
-    head_runs = [run for summary in heads if comparable(summary, head) for run in summary["runs"]]
+    head_runs = [run for summary in heads for run in summary["runs"]]
 
     def described(group: list[dict]) -> str:
         commits = sorted({(s.get("where") or {}).get("commit") or "?" for s in group})
@@ -171,7 +194,7 @@ def main(argv: list[str]) -> int:
 
     print(f"base: {described(bases)}, {len(base_runs)} runs")
     print(f"head: {described(heads)}, {len(head_runs)} runs")
-    print(f"profile: {json.dumps(profile(head))}")
+    print(f"profile: {json.dumps(profile(heads[-1]))}")
     print("\n".join(table(medians(base_runs, figures), medians(head_runs, figures))))
     if args.phases:
         print()
