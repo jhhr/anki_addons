@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.3
+Policy version: 0.4
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -17,15 +17,17 @@ Kanjify a word when it carries a meaning of its own; leave it in kana when it on
 Whether the word conjugates is not the test. When nothing below settles a use, this test does,
 together with SOURCE and SPELL.
 
-## SOURCE: does the word have a kanji spelling at all (pending Q3)
+## SOURCE: does the word have a kanji spelling at all
 
 - SOURCE-1 A kana word is kanjified only with a spelling a dictionary gives for that word, in
-  that reading and part of speech: JMdict (jisho.org), where rarely used forms and ateji count
-  (此れ, 一寸 for ちょっと) but outdated and search-only forms don't, or the headword of a
-  Japanese dictionary (大辞林, 大辞泉, 広辞苑, 明鏡, 新明解: the local MDX files, or weblio /
-  kotobank pages of them). Not enough on its own: wiktionary, ateji quiz and trivia sites, a
-  kanji borrowed from a synonym that is read differently (徐々 read そろそろ, 確 read ちゃん),
-  or a kanji that fits the meaning but no dictionary gives.
+  that reading and part of speech. Enough: JMdict (jisho.org), where rarely used forms and ateji
+  count (此れ, 一寸 for ちょっと) but outdated and search-only forms don't, and so does a spelling
+  a sense note gives ("occ. written as 嗚呼" under ああ); the headword of a Japanese dictionary
+  (大辞林, 大辞泉, 広辞苑, 明鏡, 新明解: the local MDX files, or weblio / kotobank pages of
+  them); wiktionary (en or ja), even alone. Not enough: ateji quiz and trivia sites, a kanji
+  borrowed from a synonym that is read differently (徐々 read そろそろ, 確 read ちゃん, 沢山 read
+  たっぷり), or a kanji that fits the meaning but no source gives. Such made-up gikun are
+  un-kanjified.
 - SOURCE-2 Lengthened and sound-spelled forms stay kana even when the plain form is kanjified:
   ああ is 嗚呼, but あー, あぁ, あーあ stay; まー, おーい, うーん too.
 
@@ -164,7 +166,6 @@ with the question's id.
 
 - Q2 よる: is the doer of an action (彼によって書かれた, 市民による運動) 依る or 由る? (Means
   and method are 由る: settled.)
-- Q3 Is SOURCE-1 the evidence rule (JMdict incl. rare forms and ateji, or a 国語辞典 headword)?
 - Q4 Loanwords: katakana always, even タバコ / ページ whose dictionary headword is kanji?
 - Q5 Auxiliaries with a kanji spelling: べし 可し, ごとし 如し, よう 様, みたい 見たい kanjified;
   れる...らしい, だ / です, classical なり and the そう of appearance or hearsay in kana?
