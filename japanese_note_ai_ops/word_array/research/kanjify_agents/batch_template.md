@@ -3,9 +3,10 @@
 You kanjify Japanese sentences from language-learning flash cards, following the kanjification
 policy and the word decisions below. Your output becomes a reference label that a kanjifying
 program is scored against, so consistency with the policy matters more than anything: two
-labellers given the same sentence must write the same thing. You do not invent policy. Where
-neither the policy nor a word decision settles a choice, you leave that word as the input has it
-and hand it back.
+labellers given the same sentence must write the same thing. You do not invent policy, but you
+apply it to every word: a missed kanjification is as wrong as a wrong one. Only where a real
+choice remains that neither the policy nor a word decision settles do you leave the word as the
+input has it and hand it back.
 
 ## How to work
 
@@ -17,11 +18,17 @@ For each sentence:
    (a KANA rule, or no dictionary spelling by SOURCE), or kanji (a KANJI rule or a word
    decision), and with which spelling (SPELL, SPLIT, the decision).
 3. A word listed under "Word decisions" follows its decision: find the use that fits this
-   sentence and write it that way.
-4. A word the policy does not settle and no decision covers is not yours to decide: leave it as
-   the input has it and list it under `pending` with the reason. So is a use that turns on a
-   pending question (listed at the end of the policy): write it as the policy's draft answer
-   says and list the question id under `pending`.
+   sentence and write it that way. Every other word is settled by the policy itself, and most
+   words are: a content word with a dictionary kanji spelling is kanjified with its main
+   spelling (SOURCE-1, SPELL-2), whether or not it has a decision. Ordinary words written in
+   kana (林檎, 鞄, 一番, 直ぐ, 所謂, 擽る, 梳かす, 成る程) are kanjified like any other; when you
+   are unsure a spelling exists or which is the main one, look it up.
+4. Hand a word back only when a real choice remains that neither the policy nor a decision
+   settles: several kanji fit its meaning here and SPELL, SPLIT and the decisions do not pick
+   one, or it is unclear whether its spelling counts under SOURCE, or whether this use carries
+   meaning or only does grammar (BASIC). Then leave it as the input has it and list it under
+   `pending` with the reason. Never hand a word back only because it has no decision: that
+   leaves it in kana, and a word that should be kanjified is then wrong in the reference.
 5. Write the sentence in the field format (FMT rules): everything outside your `<k>` spans stays
    exactly as the input has it, turning your spans back into kana must give the input, and
    every span holds a kanji[reading] group. A program checks this and rejects the row if not.
