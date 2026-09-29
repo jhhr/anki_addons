@@ -48,6 +48,7 @@ first (in a script) or the root conftest must have run (in a test).
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import re
@@ -91,6 +92,13 @@ HARDCODED_NOTETYPES = frozenset({"Japanese vocab note", "Kanji draw"})
 DECK_CONFIG_KEY = "insert_deck"
 # The op a replay runs (match_words_spec), as a run's ops_json names it
 MATCH_OP = "bulk_match_words_to_notes"
+# Top-level config values a replay never reads that name things of one person's: the claude
+# CLI's path (a replay answers every call itself) and the menu exports' Anki searches (`*_query`),
+# which name their decks, tags and note types
+PRIVATE_CONFIG_KEYS = frozenset({"claude_cli_path"})
+PRIVATE_CONFIG_SUFFIX = "_query"
+# CopyAnywhere's key for its definitions, in its addon config
+COPY_DEFINITIONS_KEY = "copy_definitions"
 
 
 class CaptureGap(Exception):
@@ -349,6 +357,7 @@ def export_fixture(
         (notetypes[mid]["name"] for mid in sorted(notetypes)), "Note type", HARDCODED_NOTETYPES
     )
     deck_rename = _names((deck_names[did] for did in sorted(deck_names, key=int)), "Deck")
+    decks = _DeckNames(deck_rename)
 
     def notetype_of(record: dict) -> str:
         info = notetypes.get(record["mid"])
@@ -402,7 +411,7 @@ def export_fixture(
             "outcome": run["outcome"],
             "versions": json.loads(run["versions_json"] or "null"),
         },
-        "config": _renamed_config(config, type_names, deck_rename),
+        "config": _renamed_config(config, type_names, decks),
         "notetypes": [
             {
                 "name": type_names[info["name"]],
@@ -418,7 +427,7 @@ def export_fixture(
         "dictionary": lookups,
     }
     if copy_anywhere is not None:
-        corpus["copy_anywhere"] = dict(copy_anywhere)
+        corpus["copy_anywhere"] = _renamed_copy_anywhere(copy_anywhere, type_names, decks)
     cassette = {"format": FORMAT, "entries": _cassette_entries(calls)}
     expected = {
         "format": FORMAT,
@@ -437,21 +446,96 @@ def _names(originals: Iterable[str], generic: str, keep: frozenset = frozenset()
     return renamed
 
 
-def _renamed_config(config: dict, type_names: dict, deck_names: dict) -> dict:
+class _DeckNames:
+    """A deck name of the user's -> the fixture's: a corpus deck's generic name, and for any
+    other deck (one no recorded note is in) a name of its own that no deck of a replay's
+    collection has, the same wherever the export meets it. Unrenamed, those were the user's."""
+
+    def __init__(self, corpus: Mapping[str, str]) -> None:
+        self.corpus = dict(corpus)
+        self._unseen: dict[str, str] = {}
+
+    def __call__(self, name: str) -> str:
+        if name in self.corpus:
+            return self.corpus[name]
+        if name not in self._unseen:
+            self._unseen[name] = f"Unseen deck {len(self._unseen) + 1}"
+        return self._unseen[name]
+
+
+def _renamed_config(config: dict, type_names: dict, decks: _DeckNames) -> dict:
     """The run's config with its note type keys and their decks under the fixture's names. A
-    note type config of a type the run never saw is dropped: its name is the user's."""
+    note type config of a type the run never saw is dropped: its name is the user's. So are
+    the values a replay never reads that name the user's things (`PRIVATE_CONFIG_KEYS`)."""
     renamed: dict[str, Any] = {}
     for key, value in config.items():
         if isinstance(value, dict):
             if key not in type_names:
                 continue
             value = dict(value)
-            if value.get(DECK_CONFIG_KEY) in deck_names:
-                value[DECK_CONFIG_KEY] = deck_names[value[DECK_CONFIG_KEY]]
+            if value.get(DECK_CONFIG_KEY):
+                value[DECK_CONFIG_KEY] = decks(value[DECK_CONFIG_KEY])
             renamed[type_names[key]] = value
-        elif not key.startswith("//"):
+        elif not (
+            key.startswith("//") or key in PRIVATE_CONFIG_KEYS or key.endswith(PRIVATE_CONFIG_SUFFIX)
+        ):
             renamed[key] = value
     return renamed
+
+
+def _renamed_copy_anywhere(
+    config: Mapping[str, Any], type_names: Mapping[str, str], decks: _DeckNames
+) -> dict:
+    """CopyAnywhere's config as a replay runs it (`copy_anywhere_on_add`): the definitions its
+    add hook runs for a note of the corpus's note types, as CopyAnywhere picks them
+    (`note_hooks.get_copy_definitions_for_add_note`), with the note types and decks they name
+    under the fixture's names. Every definition, unrenamed, carried the user's note types and
+    decks, and a deck whitelist named decks a replay's collection never had.
+
+    A definition that may run others keeps every definition, since which it runs is in its
+    stages; their trigger note types and decks are renamed all the same. What a definition's
+    stages say is kept as it is: its code and searches are what it runs."""
+    from copy_anywhere.configuration import definition_note_type_names, definition_runs_on_add
+    from copy_anywhere.logic.definition_schema import is_format_2, read_effects
+
+    definitions = list(config.get(COPY_DEFINITIONS_KEY) or [])
+    runnable = [
+        definition
+        for definition in definitions
+        if definition_runs_on_add(definition)
+        and any(name in type_names for name in definition_note_type_names(definition))
+    ]
+    if any(read_effects(definition)["calls_definitions"] for definition in runnable):
+        runnable = definitions
+    renamed = []
+    for definition in runnable:
+        if not is_format_2(definition):
+            raise CaptureGap(
+                "a CopyAnywhere definition is still in format 1; open CopyAnywhere once, which"
+                " migrates it, before exporting its definitions"
+            )
+        definition = copy.deepcopy(definition)
+        triggers = definition.setdefault("triggers", {})
+        triggers["note_types"] = [
+            type_names[name] for name in triggers.get("note_types") or [] if name in type_names
+        ]
+        triggers["deck_names"] = [decks(name) for name in triggers.get("deck_names") or []]
+        _rename_change_deck(definition.get("stages"), decks)
+        renamed.append(definition)
+    return {**config, COPY_DEFINITIONS_KEY: renamed}
+
+
+def _rename_change_deck(value: Any, decks: _DeckNames) -> None:
+    """Every card action's `change_deck` in a definition's stages, under the fixture's name."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "change_deck" and isinstance(item, str) and item:
+                value[key] = decks(item)
+            else:
+                _rename_change_deck(item, decks)
+    elif isinstance(value, list):
+        for item in value:
+            _rename_change_deck(item, decks)
 
 
 def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:

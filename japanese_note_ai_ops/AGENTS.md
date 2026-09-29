@@ -229,8 +229,9 @@ cheap no-op and nothing is recorded.
   here and recorded again.
 - **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:
   `corpus.json` (the notes the run read, their note types and decks under generic names but the
-  hardcoded ones, note ids synthetic in every field, the run's config, meanings read, dictionary
-  lookups), `cassette.json` (the answers by `request_key`, in the order received) and
+  hardcoded ones, note ids synthetic in every field, the run's config but for what a replay never
+  reads that names the user's things (`replay.PRIVATE_CONFIG_KEYS`, the `*_query` searches),
+  meanings read, dictionary lookups), `cassette.json` (the answers by `request_key`, in the order received) and
   `expected.json` (the notes as the run left them, new notes' ids and placeholders and a failed
   add's placeholder as symbols). It raises `CaptureGap` rather than guess, and for a run a
   replay cannot reproduce: one that lost records or has no recorded end (`dropped` NULL), one
@@ -243,7 +244,9 @@ cheap no-op and nothing is recorded.
   the cassette cannot answer, an answer never asked for and a lookup it lacks. expected.json
   holds only the notes the run changed, added or removed (format 2; `Fixture.read` fills in
   the rest from the corpus), and a corpus's files are gzipped. `export_fixture.py
-  --copy-anywhere` also puts the user's CopyAnywhere config into the corpus, and for a fixture
+  --copy-anywhere` also puts the user's CopyAnywhere config into the corpus (only the definitions
+  its add hook runs for the corpus's note types, their note types and decks renamed; a deck the
+  corpus lacks, there or in an `insert_deck`, gets a name no replay's deck has), and for a fixture
   writes expected_copy_anywhere.json from a replay with its add definitions on
   (`replay.copy_anywhere_on_add`); the capture run had none on, so that file is a regression
   baseline, not a capture.

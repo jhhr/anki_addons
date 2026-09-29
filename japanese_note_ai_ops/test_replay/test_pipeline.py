@@ -318,6 +318,53 @@ def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
         assert result.differences(fixture.expected) == []
 
 
+def copy_definition(on_add: bool, note_types: list, deck_names: list, change_deck: str) -> dict:
+    """A format 2 CopyAnywhere definition, down to what an export reads of it."""
+    from copy_anywhere.logic.definition_schema import EMPTY_EFFECTS, FORMAT_VERSION
+
+    return {
+        "format_version": FORMAT_VERSION,
+        "definition_name": "definition",
+        "effects": dict(EMPTY_EFFECTS),
+        "triggers": {"on_add": on_add, "note_types": note_types, "deck_names": deck_names},
+        "stages": [{"type": "cards", "card_actions": [{"change_deck": change_deck}]}],
+    }
+
+
+def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
+    # The run's config and CopyAnywhere's were copied as they were: the claude CLI's path, the
+    # menu exports' searches, a deck no recorded note is in, and every definition with the
+    # user's note types and decks
+    private = ["C:/Users/someone/claude.exe", "Private deck", "Private type", "Private deck 2"]
+    config = {
+        **CONFIG,
+        "claude_cli_path": private[0],
+        "kanji_sentence_fine_tuning_data_query": 'deck:"Private deck" note:"Private type"',
+        NOTETYPE: {**FIELDS, "insert_deck": "Private deck"},
+    }
+    store, run_id, _ = capture_run(tmp_path, build_book_and_buy, config, scripted)
+    definitions = [
+        copy_definition(True, [NOTETYPE, "Private type"], ["Private deck"], "Private deck 2"),
+        copy_definition(True, ["Private type"], [], ""),
+        copy_definition(False, [NOTETYPE], [], ""),
+    ]
+
+    fixture = replay.export_fixture(
+        store, run_id, copy_anywhere={"copy_definitions": definitions}
+    )
+
+    text = json.dumps(fixture.corpus, ensure_ascii=False)
+    assert [name for name in private if name in text] == []
+    assert fixture.corpus["config"][NOTETYPE]["insert_deck"] == "Unseen deck 1"
+    # Only what the add hook runs for the corpus's notes, naming what the replay has
+    [kept] = fixture.corpus["copy_anywhere"]["copy_definitions"]
+    assert kept["triggers"]["note_types"] == [NOTETYPE]
+    assert kept["triggers"]["deck_names"] == ["Unseen deck 1"]
+    assert kept["stages"][0]["card_actions"][0]["change_deck"] == "Unseen deck 2"
+    assert "Unseen deck 1" not in fixture.corpus["decks"]
+    assert replay.replay(fixture).differences(fixture.expected) == []
+
+
 def test_a_run_that_recorded_no_notes_is_refused(tmp_path):
     store = tmp_path / "capture.sqlite3"
     assert capture.install(str(store), keep_days=None)
