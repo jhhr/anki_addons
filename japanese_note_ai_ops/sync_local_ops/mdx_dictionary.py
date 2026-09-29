@@ -16,7 +16,7 @@ except ImportError:
 
 from ..html_stripping import strip_html_advanced
 from ..configuration import ADDON_USER_FILES_DIR
-from ..async_api_ops import capture
+from ..async_api_ops import capture, run_errors
 from ..async_api_ops.concurrency import cpu_bound_section
 from .mdx_memo import DefinitionMemo
 
@@ -761,6 +761,11 @@ class AnkiMDXHelper:
         """
         self.multi_dict: Union[MultiDictionaryQuery, None] = None
         self._init_failed = False
+        # Why dictionaries the config names could not be loaded; None when it names none. Kept
+        # for the life of the process, as _init_failed is: every lookup then fails as one
+        # dictionary that could not answer does (MDXLookupError), rather than answering "in
+        # none of them", which the callers write to the collection as a terminal tag
+        self._load_error: Optional[str] = None
         # One scan per distinct lookup for the life of the process; see mdx_memo.
         self.memo = DefinitionMemo()
 
@@ -798,7 +803,9 @@ class AnkiMDXHelper:
             # Check if any dictionaries were actually loaded
             if not self.multi_dict.dictionaries:
                 print("No MDX dictionaries were successfully loaded")
-                self._init_failed = True
+                self._failed_to_load(
+                    f"none of the {len(mdx_paths)} configured MDX dictionaries loaded"
+                )
                 self.multi_dict = None
                 return None
 
@@ -808,9 +815,21 @@ class AnkiMDXHelper:
             return self
         except Exception as e:
             print(f"Failed to initialize MDX helper: {e}")
-            self._init_failed = True
+            self._failed_to_load(f"loading the MDX dictionaries failed: {e}")
             self.multi_dict = None
             return None
+
+    def _failed_to_load(self, reason: str) -> None:
+        """The configured dictionaries could not be loaded: every lookup fails from now on, and
+        the run's error pane says why once, since each note is then left for a later run."""
+        self._init_failed = True
+        self._load_error = reason
+        logger.error("%s; every lookup fails until Anki restarts", reason)
+        run_errors.report_error(
+            f"{reason}. Notes that need a dictionary lookup are left for a later run; check"
+            " mdx_filenames and the files in user_files, then restart Anki.",
+            "MDX dictionaries",
+        )
 
     def get_definition_text(
         self,
@@ -839,6 +858,15 @@ class AnkiMDXHelper:
                 later run. See MDXLookupError.
         """
         if self.multi_dict is None:
+            if self._load_error is not None:
+                # Configured and not loaded: an outage, not an absence (MDXLookupError). This
+                # returned None, and every note looked up was tagged as in no dictionary
+                error = MDXLookupError(self._load_error)
+                self._record(word, reading, pick_dictionary, max_length, error=repr(error))
+                raise error
+            # None configured: nothing to look in, which is what a miss says. Recorded like one,
+            # or a notes run's export has no answer for the replay to give
+            self._record(word, reading, pick_dictionary, max_length, text=None)
             return None
 
         # A lookup is up to 28 full scans of the dictionaries' key tables and was measured to
