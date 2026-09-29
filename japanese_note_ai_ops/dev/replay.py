@@ -77,6 +77,9 @@ from data_paths import DATA_ROOT_ENV, DEFAULT_ROOT, data_dir, data_root  # noqa:
 
 # 2: expected.json holds only the notes the run changed, added or removed; 1 held every note
 FORMAT = 2
+# The addon's package, as the root conftest and headless register it: its directory's name.
+# Worked out once: a Path.resolve() per module of sys.modules cost half a second a scan
+PACKAGE = Path(__file__).resolve().parents[1].name
 COPY_ANYWHERE = "copy_anywhere"
 # Synthetic note ids: 13 digits, as Anki's millisecond ids are, so a field's layout is kept
 SYNTHETIC_BASE = 1_000_000_000_000
@@ -1028,7 +1031,7 @@ def replay(
         stub.pm.set_profile_folder(root / "profile")
 
         def set_config(config: dict) -> None:
-            stub.addonManager.configs[_package()] = config
+            stub.addonManager.configs[PACKAGE] = config
 
         def run_op(spec: Any, nids: list) -> None:
             run, _ = spec.notes_run(nids)
@@ -1211,17 +1214,14 @@ def _replay(
         _point_modules_at(saved_helper)
 
 
-def _package() -> str:
-    return Path(__file__).resolve().parents[1].name
-
-
 def _point_modules_at(helper: Any) -> None:
     """Make `helper` the dictionary of every module of the addon that holds `mdx_helper`:
     mdx_dictionary's own, and those that imported it by name."""
     import sys
 
+    prefix = PACKAGE + "."
     for name, module in list(sys.modules.items()):
-        if name.startswith(_package() + ".") and getattr(module, "mdx_helper", None) is not None:
+        if name.startswith(prefix) and getattr(module, "mdx_helper", None) is not None:
             setattr(module, "mdx_helper", helper)
 
 
