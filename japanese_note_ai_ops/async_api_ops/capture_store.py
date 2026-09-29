@@ -20,7 +20,8 @@ the file does not hold yet, so the new store is given the old one's next ids (`f
 The store is diagnostics and never fails an op. A file it cannot open, a schema newer than
 this code, a batch that cannot be written: each is logged with the path and turns the store
 off for the rest of the session, and every later record is dropped. A full queue drops the
-record. None of it reaches the caller. A file of an older schema is brought up to this one
+record, but for a run's own two rows (its start and its end), which wait beside the queue until
+the writer takes them. None of it reaches the caller. A file of an older schema is brought up to this one
 when it opens (`_MIGRATIONS`); its old rows keep NULL in the columns added since.
 
 Free of aqt and anki, and imports nothing of the addon's, so tests and research scripts load
@@ -29,6 +30,7 @@ it on its own.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import itertools
 import json
@@ -267,11 +269,11 @@ def _schema_statements() -> list[str]:
 
 # --- pruning -----------------------------------------------------------------------------
 
-# The calls of the runs about to go, not the calls whose run is missing: a run row dropped at a
-# full queue or refused would take its calls with it at the next open, however recent. Written
-# as `run_id IN (...)` so that sqlite looks each pruned run up in the narrow calls(run_id)
-# index (EXPLAIN QUERY PLAN: SEARCH calls USING COVERING INDEX calls_run_id); a condition
-# tested on every call row scans the table, whose rows carry whole prompts and answers
+# The calls of the runs about to go, not the calls whose run is missing: a run row never written
+# (the store went off first) or refused would take its calls with it at the next open, however
+# recent. Written as `run_id IN (...)` so that sqlite looks each pruned run up in the narrow
+# calls(run_id) index (EXPLAIN QUERY PLAN: SEARCH calls USING COVERING INDEX calls_run_id); a
+# condition tested on every call row scans the table, whose rows carry whole prompts and answers
 _PRUNE_CALLS = "DELETE FROM calls WHERE run_id IN (SELECT run_id FROM runs WHERE started < ?)"
 # A run's snapshots and events go with it, as its calls do
 _PRUNE_SNAPSHOTS = (
@@ -300,8 +302,8 @@ def prune(
     before it writes anything, so nothing this session records can be taken, whatever its
     `started`. `keep_days` None, 0 or less deletes nothing: keeping everything is the safe
     reading of a 0 in the config. A call goes with its run and only with it, its `started`
-    counting from the run's: a call with no `run_id`, or whose run row was never written (dropped
-    at a full queue, refused), has no age to go by and stays. A run's note snapshots and events go
+    counting from the run's: a call with no `run_id`, or whose run row was never written (the
+    store went off first, or the row was refused), has no age to go by and stays. A run's note snapshots and events go
     with it too, uncounted.
     """
     if keep_days is None or keep_days <= 0:
@@ -370,6 +372,16 @@ class _Flush:
 # Put by close() behind everything queued; the writer writes up to it, then exits
 _STOP = object()
 
+# Put in the queue, when it has room, for a run row left waiting beside it: it wakes an idle
+# writer, which writes the waiting run rows first in every batch it writes
+_RUN_ROWS = object()
+
+
+def _batched(item: Any) -> bool:
+    """Whether the writer batches `item` with what follows: a record does, and so does a run
+    row's wake, so that a run's row is committed, or refused, with the records beside it."""
+    return isinstance(item, tuple) or item is _RUN_ROWS
+
 
 def _sql_value(value: Any) -> Any:
     if value is None or isinstance(value, (int, float, bytes)):
@@ -434,6 +446,8 @@ class CaptureStore:
         # A maxsize of 0 is unbounded, the one thing the bound is there to prevent
         self._max_queue = max(1, max_queue)
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=self._max_queue)
+        # The runs table's rows, which a full queue does not drop (_offer); two per run
+        self._run_rows: collections.deque[tuple[str, str, Any]] = collections.deque()
         self._id_lock = threading.Lock()
         self._blob_lock = threading.Lock()
         self._warn_lock = threading.Lock()
@@ -574,6 +588,19 @@ class CaptureStore:
         self._offer(("insert", table, record))
 
     def _offer(self, item: tuple[str, str, Any]) -> None:
+        if item[1] == "runs":
+            # A run's row is what everything else of it is read by: dropped with the rest at a
+            # full queue, its end update took the run's outcome and its count of what was
+            # dropped with it, and a run then looked complete to an export; its start row, and
+            # its calls and snapshots were left under an id the next session handed out again.
+            # Two rows a run, so they wait beside the queue, unbounded, never blocking
+            self._run_rows.append(item)
+            try:
+                self._queue.put_nowait(_RUN_ROWS)
+            except queue.Full:
+                # A full queue is being drained, and its next batch takes the row
+                pass
+            return
         try:
             self._queue.put_nowait(item)
         except queue.Full:
@@ -811,7 +838,7 @@ class CaptureStore:
                 if self._closed:
                     return [_STOP]
         batch = [first]
-        if not isinstance(first, tuple):
+        if not _batched(first):
             return batch
         deadline = time.monotonic() + self._batch_seconds
         while len(batch) < self._batch_size:
@@ -823,12 +850,20 @@ class CaptureStore:
             except queue.Empty:
                 break
             batch.append(item)
-            if not isinstance(item, tuple):
+            if not _batched(item):
                 break
         return batch
 
     def _write_batch(self, connection: sqlite3.Connection, batch: list[Any]) -> bool:
-        records = [item for item in batch if isinstance(item, tuple)]
+        # The run rows waiting beside the queue first: each was offered before whatever of the
+        # batch a flush waits on, and the order of a run's own two rows is kept
+        run_rows = []
+        while True:
+            try:
+                run_rows.append(self._run_rows.popleft())
+            except IndexError:
+                break
+        records = run_rows + [item for item in batch if isinstance(item, tuple)]
         ok = True
         if records:
             try:

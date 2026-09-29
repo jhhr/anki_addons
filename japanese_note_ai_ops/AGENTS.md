@@ -175,8 +175,8 @@ run records which (`runs.profile`, `mw.pm.name`: a note id means nothing without
 `__init__.py` installs it at `profile_did_open` when config `capture_calls` is on (the default)
 and shuts it down at `profile_will_close`. When its writer starts, it deletes the runs older
 than `capture_keep_days` (default 90; 0 or less, or null, keeps everything), their calls, and the
-blobs no call uses. A call goes with its run only: one whose run row is missing (dropped at a full
-queue) has no age and stays. The store reads `capture_keep_days` as a number or a numeric string
+blobs no call uses. A call goes with its run only: one whose run row is missing (the store went off
+before writing it) has no age and stays. The store reads `capture_keep_days` as a number or a numeric string
 (`"30"`); anything else (`true`, text) is 90, with a warning. Tests and research scripts install
 no store unless they mean to (tests: in a temp dir); without one every capture function is a
 cheap no-op and nothing is recorded.
@@ -424,7 +424,9 @@ cheap no-op and nothing is recorded.
   (a record with none goes to logging's last resort, stderr). Keep both.
 - **Capture never fails or changes an op.** The store is diagnostics: a file it cannot open or
   write turns it off for the session (a warning, then nothing recorded), a full queue drops the
-  record, and its recording methods only enqueue, never block or raise, from any thread; past
+  record (but a run's own two rows, which wait beside the queue until the writer takes them:
+  every other record of a run is read by its row), and its recording methods only enqueue,
+  never block or raise, from any thread; past
   the open at install, no sqlite call happens off its writer thread. The capture code around
   `get_response` catches its own failures and lets the op's result and exception through.
 - A progress **message is also a key**: `ConcurrencyGate` stores the learned memory cost

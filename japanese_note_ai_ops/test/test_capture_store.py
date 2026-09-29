@@ -746,6 +746,31 @@ class FailureTests(StoreTestCase):
         self.assertTrue(store.flush())
         self.assertEqual(self.ids("blobs"), [capture_store.text_hash("dropped")])
 
+    def test_a_full_queue_keeps_a_run_s_rows(self):
+        # Dropped with the rest, the end update took the run's outcome and its count of what was
+        # dropped, and a run with neither looked complete to an export
+        store = self.open_held_store(max_queue=1)
+        store.insert_call({"call_id": 1})
+        with self.assertLogs(capture_store.logger, "WARNING"):
+            run_id = store.insert_run({"label": "held"})
+            store.insert_call({"call_id": 2})
+            store.update_run(run_id, outcome="completed", dropped=1)
+        self.assertEqual(store.dropped, 1)
+
+        capture_store.CaptureStore._start_writer(store)
+        self.assertTrue(store.flush())
+        self.assertEqual(
+            self.rows("SELECT run_id, label, outcome, dropped FROM runs"),
+            [(run_id, "held", "completed", 1)],
+        )
+        self.assertEqual(self.ids("calls"), [1])
+
+    def test_a_run_row_alone_wakes_an_idle_writer(self):
+        store = self.open_store(batch_seconds=0.1)
+        store.insert_run({"label": "alone"})
+
+        self.assertTrue(self.wait_for_rows("SELECT label FROM runs", [("alone",)]))
+
 
 class LifecycleTests(StoreTestCase):
     def test_close_writes_what_is_queued_and_can_be_called_again(self):
