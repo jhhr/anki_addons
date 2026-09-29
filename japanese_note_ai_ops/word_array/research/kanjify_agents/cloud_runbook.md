@@ -81,3 +81,28 @@ subagent that failed twice.
 Collate writes files other sessions write too (`decisions.jsonl`, `collated/`): run it to render
 and to read the report, but never commit what it writes. The user or the local session commits
 those once all sessions have stopped.
+
+## Unattended, under /loop
+
+When the user starts a self-paced `/loop` that names your shard ("follow the unattended
+section as shard I/N"), nobody will answer questions: each time it wakes you, do the first of
+these that applies, then end your turn. The pilot and the choice of step 2's settings are not
+yours in this mode; the user's own session does them and publishes the result.
+
+1. Update: `git pull --no-edit origin claude/kanjify-golden-set-framework-e393e1` (this runbook
+   may have changed; read it again if it did) and `git -C test_data fetch origin`.
+2. If you are already in the middle of a queue's loop, go on with it.
+3. If `words` has items left in your shard (`status words --shard I/N`), run the loop on
+   `words` until none are left.
+4. Else, if the test data's `origin/main` has the step 2 queue
+   (`git -C test_data cat-file -e origin/main:japanese_note_ai_ops/evals/kanjify_golden/queues/batches.jsonl`
+   succeeds), take that file as it is: `git -C test_data checkout origin/main --
+   japanese_note_ai_ops/evals/kanjify_golden/queues/batches.jsonl`, and run the loop on
+   `batches` with your shard until none are left. Never render `batches` yourself in this mode.
+   If a later wake finds `origin/main`'s file changed, check it out again: items already saved
+   keep their results.
+5. Else nothing is ready for you: schedule the next wake in about 15 minutes and end.
+
+When your shard of `batches` is done too: push, say what you saved, and stop the loop. When the
+usage limit stops you, push what is saved and schedule the next wake for after the reset time
+the limit names.
