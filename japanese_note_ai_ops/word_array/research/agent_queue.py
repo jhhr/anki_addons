@@ -16,7 +16,9 @@ writes anything; the driver writes its answer.
         [--shard I/N] [--limit N] [--dry-run] [--wait-for-reset] [--max-load 85]
 
 - Several queues share the workers, taken in the order given: the first queue's items first,
-  or with `--interleave` one item of each in turn.
+  or with `--interleave` one item of each in turn. A queue file rewritten while it runs (the
+  prompts rendered again after a policy change) is read again before the next item starts,
+  so every item not yet started gets the new prompt; one running finishes with its old one.
 - One result file per item, `<out>/<queue name>/<id>.json` (default out: `results/` beside the
   queues' directory): the answer (`structured`, the schema's object, else `text`), cost, usage,
   seconds, and the item's `meta`. An item with a result file is skipped, so a rerun resumes.
@@ -48,7 +50,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from _bootstrap import ADDON_ROOT, load_root
 
@@ -111,8 +113,12 @@ def command(item: dict, claude: str, python: str) -> list[str]:
 class Queue:
     """What the workers share: the items left, the stop flag and the totals."""
 
-    def __init__(self, items: list[dict], out: Path, args):
-        self.items = items
+    def __init__(self, load: Callable[[], list[dict]], paths: list[Path], out: Path, args):
+        self.load = load
+        self.paths = paths
+        self.stamps = self._stamps()
+        self.items = load()
+        self.running: set[str] = set()
         self.out = out
         self.args = args
         self.lock = threading.Lock()
@@ -137,13 +143,26 @@ class Queue:
             self.stop("STOP file")
         return self.stop_reason is not None
 
+    def _stamps(self) -> list[float]:
+        return [p.stat().st_mtime for p in self.paths]
+
     def next_item(self) -> Optional[dict]:
         with self.lock:
+            stamps = self._stamps()
+            if stamps != self.stamps:
+                self.stamps = stamps
+                self.items = [it for it in self.load() if it["id"] not in self.running]
+                print(f"queue files changed: {len(self.items)} items left", flush=True)
             while self.items:
                 item = self.items.pop(0)
                 if not (item["_out"] / f"{item['id']}.json").exists():
+                    self.running.add(item["id"])
                     return item
         return None
+
+    def finished(self, item: dict) -> None:
+        with self.lock:
+            self.running.discard(item["id"])
 
     def record(self, item: dict, row: dict) -> None:
         with self.lock:
@@ -260,7 +279,10 @@ def worker(queue: Queue, claude: str, python: str) -> None:
         item = queue.next_item()
         if item is None:
             return
-        run_item(queue, item, claude, python)
+        try:
+            run_item(queue, item, claude, python)
+        finally:
+            queue.finished(item)
 
 
 def run(queue: Queue, claude: str, python: str) -> None:
@@ -294,31 +316,36 @@ def main() -> int:
     args = parser.parse_args()
 
     out = args.out or args.queues[0].parent.parent / "results"
-    per_queue = []
     for path in args.queues:
         (out / path.stem).mkdir(parents=True, exist_ok=True)
-        with path.open(encoding="utf-8") as f:
-            queued = [dict(json.loads(line), _out=out / path.stem) for line in f if line.strip()]
-        print(f"{len(queued)} items in {path.name}")
-        per_queue.append(queued)
-    if args.interleave:
-        longest = max(len(q) for q in per_queue)
-        all_items = [q[i] for i in range(longest) for q in per_queue if i < len(q)]
-    else:
-        all_items = [it for q in per_queue for it in q]
+    allowed: Optional[set[str]] = None
 
-    def left() -> list[dict]:
+    def load() -> list[dict]:
+        """The items left to run, in order, read from the queue files as they are now."""
+        per_queue = []
+        for path in args.queues:
+            with path.open(encoding="utf-8") as f:
+                per_queue.append(
+                    [dict(json.loads(line), _out=out / path.stem) for line in f if line.strip()]
+                )
+        if args.interleave:
+            longest = max(len(q) for q in per_queue)
+            ordered = [q[i] for i in range(longest) for q in per_queue if i < len(q)]
+        else:
+            ordered = [it for q in per_queue for it in q]
         return [
             it
-            for it in all_items
+            for it in ordered
             if in_shard(it["id"], args.shard)
             and (not args.only or it["id"] in args.only)
+            and (allowed is None or it["id"] in allowed)
             and not (it["_out"] / f"{it['id']}.json").exists()
         ]
 
-    items = left()
+    items = load()
     if args.limit:
         items = items[: args.limit]
+        allowed = {it["id"] for it in items}
     claude = terminal_client.find_cli({}) or "claude"
     print(f"{len(items)} to run in shard {args.shard[0]}/{args.shard[1]} -> {out}")
     if args.dry_run:
@@ -331,7 +358,7 @@ def main() -> int:
             print("command:", " ".join(shown))
         return 0
 
-    queue = Queue(items, out, args)
+    queue = Queue(load, list(args.queues), out, args)
 
     def on_interrupt(signum, frame):
         if queue.stop_reason is None:
@@ -354,7 +381,7 @@ def main() -> int:
         time.sleep(wait)
         queue.stop_reason = None
         queue.resume_at = None
-        queue.items = [it for it in left() if it in items]
+        queue.items = load()
     return 0 if queue.stop_reason is None or queue.stop_reason == "STOP file" else 2
 
 
