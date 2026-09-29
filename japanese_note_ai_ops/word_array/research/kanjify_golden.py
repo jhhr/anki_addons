@@ -150,6 +150,7 @@ def row_problem(sentence: str, kanjified: str) -> Optional[str]:
 
 BASE_RE = re.compile(r"(?:^|(?<=[\s>\]]))([^\s<>\[\]]+)\[([^\]]*)\]")
 NOT_KANJI_RE = re.compile(r"^[^一-龯㐀-䶿々〆0-9０-９]+")
+KANA_ONLY_RE = re.compile(r"[ぁ-ゖァ-ヺーゝゞヽヾ]+")
 BR_RE = re.compile(r"<br\s*/?>")
 
 
@@ -168,6 +169,9 @@ def furigana_suspects(sentence: str) -> list[str]:
             out.append(f"no space before the group: {m[0]}")
         elif not reading:
             out.append(f"no reading: {m[0]}")
+        elif not KANA_ONLY_RE.fullmatch(reading):
+            # 額[がく, ひたい]: a dictionary's readings pasted whole, not the one read here
+            out.append(f"a reading that isn't one kana word: {m[0]}")
     rest = TAG_RE.sub("", BASE_RE.sub("", text))
     bare = re.findall(r"[一-龯㐀-䶿]+", rest)
     if bare:
