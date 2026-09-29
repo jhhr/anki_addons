@@ -294,6 +294,20 @@ class NoteAddRecordTests(unittest.TestCase):
         self.assertIsNone(failed["merge_seconds"])
         self.assertIn("refused", failed["add_error"])
 
+    def test_a_note_with_no_deck_to_go_to_is_recorded_as_a_failed_add(self):
+        # Counted failed and left out of the capture, its placeholder was one an export could
+        # not tell from a word's, and it stayed in the expected word arrays, random every run
+        no_deck = new_note("-3333333")
+        no_deck.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
+        config = {**CONFIG, "Other": {**CONFIG["Word"], "insert_deck": "Missing"}}
+
+        base_ops.add_new_notes(UndoCountingCollection(), [no_deck], config, POS, self.updater)
+
+        [(note_id, failed)] = self.events()
+        self.assertEqual((note_id, failed["placeholder"]), (None, -3333333))
+        self.assertEqual(failed["add_error"], "no deck to add it to")
+        self.assertIsNone(failed["merge_seconds"])
+
     def test_a_refused_merge_is_recorded_as_one_and_raises_as_it_always_did(self):
         col = UndoCountingCollection(refuse_merge_after=1)
 

@@ -3050,6 +3050,13 @@ def add_new_notes(
                     insert_deck_id = _insert_deck_id(col, config, note)
                     if insert_deck_id is None:
                         failed_cnt += 1
+                        # A failed add like one add_note refuses: its placeholder stays in the
+                        # word arrays, and this is how a notes run tells it from an added note
+                        if capture.notes_on():
+                            capture_notes.record_note_add(
+                                col, note, config, 0.0, None, capture_notes.undo_step(col),
+                                add_error="no deck to add it to",
+                            )
                     else:
                         # Timed apart: the add is where every addon's note_will_be_added hook
                         # runs, and the merge into the run's undo entry is where an entry such
