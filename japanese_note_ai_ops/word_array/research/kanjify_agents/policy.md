@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.2
+Policy version: 0.3
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -17,7 +17,7 @@ Kanjify a word when it carries a meaning of its own; leave it in kana when it on
 Whether the word conjugates is not the test. When nothing below settles a use, this test does,
 together with SOURCE and SPELL.
 
-## SOURCE: does the word have a kanji spelling at all (pending Q1, Q3)
+## SOURCE: does the word have a kanji spelling at all (pending Q3)
 
 - SOURCE-1 A kana word is kanjified only with a spelling a dictionary gives for that word, in
   that reading and part of speech: JMdict (jisho.org), where rarely used forms and ateji count
@@ -29,7 +29,7 @@ together with SOURCE and SPELL.
 - SOURCE-2 Lengthened and sound-spelled forms stay kana even when the plain form is kanjified:
   ああ is 嗚呼, but あー, あぁ, あーあ stay; まー, おーい, うーん too.
 
-## SPELL: which spelling (pending Q1)
+## SPELL: which spelling
 
 - SPELL-1 Homophones (different dictionary words with the same kana: 付く / 就く / 着く / 点く /
   突く / 吐く, 取る / 撮る / 採る, 寄る / 依る, 内 / 家 for うち, 置く / 於く for おく): the word
@@ -54,7 +54,9 @@ needs a split asks (a policy question); it never splits on its own.
   the tool or procedure something is done with (石に由る撲殺, 手作業に由る, 投票に由って決める);
   依る for "depending on", "according to", "based on" (人に依る, 予報に依ると, 法律に依る). Pending
   Q2: the doer of an action, the passive agent or による before an action noun (彼に依って
-  書かれた, 市民に依る運動), draft 依る. 拠る is not used.
+  書かれた, 市民に依る運動), draft 依る. 拠る is not used: its own sense, taking something as
+  grounds or a source (法律に拠る, 資料に拠る), goes with 依る, since in real sentences it can't
+  be told apart from "depending on" consistently.
 - SPLIT-もの 物 for a thing, 者 for a person, also as もん (物[もん], 馬鹿者[バカもん]).
 - SPLIT-はじめ 初め for the first time or the beginning of a period (初めて, 年の初め); 始め for
   starting something (仕事を始める, 始めに述べた).
@@ -160,7 +162,6 @@ needs a split asks (a policy question); it never splits on its own.
 Put to the user; until answered, a use that turns on one is left as the input has it and named
 with the question's id.
 
-- Q1 Is SPELL-2 (main spelling for every sense, split only by the SPLIT list) the rule?
 - Q2 よる: is the doer of an action (彼によって書かれた, 市民による運動) 依る or 由る? (Means
   and method are 由る: settled.)
 - Q3 Is SOURCE-1 the evidence rule (JMdict incl. rare forms and ateji, or a 国語辞典 headword)?
