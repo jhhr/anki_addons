@@ -163,7 +163,10 @@ let fixing = false;          // the Wrong data panel is open
 let fixDraft = "";
 let shownCard = "";          // what the card shows now, so a snapshot does not redraw it
 const NAMES = { suspend: "Suspend", schedule: "Schedule", learn: "Learn", invalid: "Wrong data" };
-const QUICK = ["reading is wrong", "meaning is wrong", "sentence furigana is wrong",
+// The first two are the user's own wordings: the word matching judge should have marked the word
+// "dontmatch", or it is a proper noun (triage_features.PROPER_NOUN_NOTE)
+const QUICK = ["should not have been matched", "should not have matched a proper noun",
+  "reading is wrong", "meaning is wrong", "sentence furigana is wrong",
   "not a word (bad split)", "headword spelling is wrong"];
 
 function pending() {
