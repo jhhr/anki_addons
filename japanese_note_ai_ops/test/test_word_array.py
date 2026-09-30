@@ -567,6 +567,26 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("明日[あした]は 晴[は]れです。")
         self.assertEqual(find_word(arr, "晴れ")[1], "noun")
 
+    def test_kanji_the_tokenizer_cuts_off_their_okurigana_go_in_as_their_reading(self):
+        # Sudachi reads 刳 as a noun and い as a particle, 珍 as a noun and し as 為る
+        for sentence, raw, pos, form in [
+            ("刳[えぐ]い 話[はなし]だ。", "刳[えぐ]い", "adjective", "刳い"),
+            ("へ、 山田[やまだ]？ 着信[ちゃくしん] 珍[めずら]し…もしもし？", " 珍[めずら]し", "adjective", "珍しい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                word = find_word(arr, form)
+                self.assertEqual((word[0], word[1], word[5]), (raw, pos, []), arr)
+        # Only for a verb or adjective JMdict spells with those kanji: 子[こ]が is no こぐ, and
+        # ３[み]つ no みつ, though JMdict spells the numeral 三つ ３つ
+        for sentence, form in [
+            ("<k> 其[そ]</k>の 子[こ]が 言[い]っている", "子"),
+            ("５[いつ]つ 星[ぼし] 乃至[ないし]は ３[み]つ 星[ぼし]", "三"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertTrue(find_word(arr, form), arr)
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")

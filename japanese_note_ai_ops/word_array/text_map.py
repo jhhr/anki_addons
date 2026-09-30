@@ -52,10 +52,12 @@ class Seg:
     idx: int = 0  # position in TextMap.segs
     nat_start: int = 0  # natural index this segment's text starts at
     reads_kanji: bool = False  # a <k> group given to the tokenizer as its kanji (read_as_kanji)
+    # a group outside <k> given to the tokenizer as its reading (read_as_reading)
+    reads_reading: bool = False
 
     @property
     def natural_is_reading(self) -> bool:
-        return self.in_k and not self.reads_kanji
+        return (self.in_k and not self.reads_kanji) or self.reads_reading
 
     @property
     def lead(self) -> str:
@@ -341,6 +343,15 @@ def read_as_kanji(tm: TextMap, seg_indices: Iterable[int]) -> TextMap:
     segs = [replace(seg) for seg in tm.segs]
     for i in seg_indices:
         segs[i].natural, segs[i].reads_kanji = segs[i].base, True
+    return _assemble(tm.raw, segs)
+
+
+def read_as_reading(tm: TextMap, seg_indices: Iterable[int]) -> TextMap:
+    """A new text map with these groups outside <k> given to the tokenizer as their reading,
+    in hiragana so that it runs on into the kana after them."""
+    segs = [replace(seg) for seg in tm.segs]
+    for i in seg_indices:
+        segs[i].natural, segs[i].reads_reading = to_hiragana(segs[i].reading), True
     return _assemble(tm.raw, segs)
 
 

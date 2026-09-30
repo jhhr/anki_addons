@@ -45,7 +45,11 @@ collection was migrated on 2026-09-16.
    Where the kana tokenizes worse, the group goes back in as its kanji, if the kanji then read
    as the furigana says: kana cut off as a word of its own before its okurigana (あ + れる for
    荒れる), or cut inside with its tail read into what follows (あん + この for 餡子の,
-   よ + その for 余所の; 10 sentences in the export).
+   よ + その for 余所の; 10 sentences in the export). The other way round, kanji Sudachi doesn't
+   know, cut off before the kana after them, go in as their reading when that reads them into
+   the kana as a verb or adjective JMdict spells with those kanji: 刳[えぐ]い is 刳 + the particle
+   い as kanji, えぐい (刳い) as its reading; 珍[めずら]し, 譲[ゆず]って, 担[かつ]がされる (5
+   sentences). `generator.reread_cut_groups` does both.
 2. **Sudachi** (`SplitMode.C`), keeping each long unit's `SplitMode.A` split for sub-words.
    `normalized_form` turns kana lemmas back into kanjified ones (する -> 為る, これ -> 此れ,
    くださる -> 下さる).
