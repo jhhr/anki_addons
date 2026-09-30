@@ -42,6 +42,14 @@ collection was migrated on 2026-09-16.
    `<k>` are reverted to their furigana reading first: `<k>` marks words that were kana before
    kanjify_sentence ran, and reading `遣[や]っ` as kanji gives 遣う (つかう), `為[さ]れ` gives
    なる, `為[す]る` before 際 gives ため. Tokenizing the original kana fixes most wrong lemmas.
+   Where the kana tokenizes worse, the group goes back in as its kanji, if the kanji then read
+   as the furigana says: kana cut off as a word of its own before its okurigana (あ + れる for
+   荒れる), or cut inside with its tail read into what follows (あん + この for 餡子の,
+   よ + その for 余所の; 10 sentences in the export). The other way round, kanji Sudachi doesn't
+   know, cut off before the kana after them, go in as their reading when that reads them into
+   the kana as a verb or adjective JMdict spells with those kanji: 刳[えぐ]い is 刳 + the particle
+   い as kanji, えぐい (刳い) as its reading; 珍[めずら]し, 譲[ゆず]って, 担[かつ]がされる (5
+   sentences). `generator.reread_cut_groups` does both.
 2. **Sudachi** (`SplitMode.C`), keeping each long unit's `SplitMode.A` split for sub-words.
    `normalized_form` turns kana lemmas back into kanjified ones (する -> 為る, これ -> 此れ,
    くださる -> 下さる).
@@ -150,9 +158,12 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
   見たい; 68 in the export) or an adverb other than a particle (悉く, 幾ら, 何しろ), though JMdict
   has らか, か and く as words. A noun's lone kana other than も is okurigana too (窪み, 夕べ,
   逆さ, 幾ら; 何時+も stays), and so is a longer tail of a noun that is a verb's ます-stem (味わい,
-  温もり, 見かけ), while 赤+ちゃん, 口+コミ, 目+つき still split. A conjunction or interjection
-  never splits off its kana (但し, 並びに; 済みません, 初めまして, 今日は), and a pronoun only に, も,
-  か or a longer tail (其こ one word; 私+たち). `research/okurigana_decomp.py`.
+  温もり, 見かけ), while 赤+ちゃん, 口+コミ, 目+つき still split. A conjunction, interjection or
+  adnominal never splits off its kana (但し, 並びに; 済みません, 初めまして, 今日は; 我が, 其の,
+  如何なる), and a pronoun only に, も, か or a longer tail (其こ one word; 私+たち). The
+  adnominals are an old pronoun and particle grown into one word; JMdict still has the pronouns
+  我[わ] and 其[そ], which alone are no words today. Export: 1033 adnominals split before, 988 of
+  them 其の, 24 我が. `research/okurigana_decomp.py`.
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.

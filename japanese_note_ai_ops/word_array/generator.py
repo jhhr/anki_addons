@@ -429,47 +429,115 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
-def read_cut_okurigana_as_kanji(tm: TextMap) -> tuple[TextMap, list[Morph]]:
-    """<k> groups go to the tokenizer as their reading, which it can take as a word of its own
-    with the okurigana cut off (よくあれる -> あ + れる, １本ほどけば -> 本 + ほど + けば). Such a
-    group goes in as its kanji when a word that inflects then runs from the kanji into the
-    okurigana, read as JMdict reads it (荒れる, 解けば; not 座る for 御座[おじゃ]る). The
+def reread_cut_groups(tm: TextMap) -> tuple[TextMap, list[Morph]]:
+    """A furigana group goes to the tokenizer as its kanji, or inside <k> as its reading, and
+    the tokenizer can cut either wrong; a group it cuts goes in the other way when that reads
+    the group as the furigana says (`_k_group_as_kanji`, `_kanji_group_as_reading`). The
     tokenized text map comes back with its morphs."""
-
-    def read_as_furigana(kanji_tm: TextMap, m: Morph) -> bool:
-        surface = kanji_tm.natural[m.start : m.end]
-        furi = to_hiragana(kanji_tm.surface_reading(m.start, m.end))
-        c = _common_prefix(surface, m.lemma)
-        reading = furi[: len(furi) - (len(surface) - c)] + m.lemma[c:]
-        known = {to_hiragana(r) for r in jmdict.readings(m.lemma)}
-        return reading in known or reading in {voiced(r) for r in known}
-
     morphs = tokenize(tm.natural)
-    for i in range(len(tm.segs) - 1):
-        seg, nxt = tm.segs[i], tm.segs[i + 1]
-        end = seg.nat_start + len(seg.natural)
-        if not (
-            seg.kind == "furi"
-            and seg.natural_is_reading
-            and nxt.kind == "char"
-            and text_map.HIRAGANA_RE.match(nxt.natural)
-            and any(m.end == end and m.pos[0] not in INFLECTING for m in morphs)
-        ):
+    # By index: a group given the other way shifts the natural offsets of every one after it
+    for i in range(len(tm.segs)):
+        seg = tm.segs[i]
+        if seg.kind != "furi":
             continue
-        kanji_tm = text_map.read_as_kanji(tm, [i])
-        kanji_morphs = tokenize(kanji_tm.natural)
-        kanji_end = seg.nat_start + len(seg.base)
-        if any(
-            m.start < kanji_end < m.end and m.pos[0] in INFLECTING and read_as_furigana(kanji_tm, m)
-            for m in kanji_morphs
-        ):
-            tm, morphs = kanji_tm, kanji_morphs
+        reread = (
+            _k_group_as_kanji(tm, morphs, i)
+            if seg.natural_is_reading
+            else _kanji_group_as_reading(tm, morphs, i)
+        )
+        if reread is not None:
+            tm, morphs = reread
     return tm, morphs
+
+
+def _kana_follows(tm: TextMap, i: int) -> bool:
+    nxt = tm.segs[i + 1] if i + 1 < len(tm.segs) else None
+    return nxt is not None and nxt.kind == "char" and bool(text_map.HIRAGANA_RE.match(nxt.natural))
+
+
+def _reads_as_furigana(tm: TextMap, m: Morph) -> bool:
+    """Whether the note's furigana reads a morph as JMdict reads its lemma."""
+    surface = tm.natural[m.start : m.end]
+    furi = to_hiragana(tm.surface_reading(m.start, m.end))
+    c = _common_prefix(surface, m.lemma)
+    reading = furi[: len(furi) - (len(surface) - c)] + m.lemma[c:]
+    known = {to_hiragana(r) for r in jmdict.readings(m.lemma)}
+    return reading in known or reading in {voiced(r) for r in known}
+
+
+def _k_group_as_kanji(
+    tm: TextMap, morphs: list[Morph], i: int
+) -> Optional[tuple[TextMap, list[Morph]]]:
+    """A <k> group's kana taken as a word of its own with the okurigana cut off (よくあれる ->
+    あ + れる, １本ほどけば -> 本 + ほど + けば), or cut inside, its tail read into what follows
+    (あんこの -> あん + この, あみだなに -> あみだ + なに), goes in as its kanji when that reads
+    it as the furigana says, the way JMdict reads it: a word that inflects running from the
+    kanji into the okurigana (荒れる, 解けば; not 座る for 御座[おじゃ]る), or, for a cut group,
+    one word from its start over all of it (餡子, 網棚, 一回り; not 故 of 故[だか]ら)."""
+    seg = tm.segs[i]
+    start, end = seg.nat_start, seg.nat_start + len(seg.natural)
+    cut_okurigana = _kana_follows(tm, i) and any(
+        m.end == end and m.pos[0] not in INFLECTING for m in morphs
+    )
+    cut_across = any(start < m.start < end < m.end for m in morphs)
+    if not (cut_okurigana or cut_across):
+        return None
+    kanji_tm = text_map.read_as_kanji(tm, [i])
+    kanji_morphs = tokenize(kanji_tm.natural)
+    kanji_end = start + len(seg.base)
+    if any(
+        (
+            (cut_okurigana and m.start < kanji_end < m.end and m.pos[0] in INFLECTING)
+            or (cut_across and m.start == start and m.end >= kanji_end)
+        )
+        and _reads_as_furigana(kanji_tm, m)
+        for m in kanji_morphs
+    ):
+        return kanji_tm, kanji_morphs
+    return None
+
+
+def _kanji_group_as_reading(
+    tm: TextMap, morphs: list[Morph], i: int
+) -> Optional[tuple[TextMap, list[Morph]]]:
+    """Kanji the tokenizer doesn't know with the kana after them, cut off as a word that doesn't
+    inflect (刳[えぐ]い -> 刳 + the particle い, 珍[めずら]し… -> 珍 + し), go in as their reading
+    when it runs into that kana as a word that inflects (えぐい, めずらしい), which JMdict spells
+    with these kanji and that kana (刳い, 珍しい; not 子[こ]が as the verb こぐ). The entry must
+    be that verb or adjective: JMdict spells the numeral 三つ ３つ and reads it みつ, which is
+    no reason to take ３[み]つ for the verb みつ."""
+    seg = tm.segs[i]
+    start, end = seg.nat_start, seg.nat_start + len(seg.natural)
+    if not (
+        text_map.KANJI_TAIL_RE.fullmatch(seg.base)
+        and _kana_follows(tm, i)
+        and any(m.start >= start and m.end == end and m.pos[0] not in INFLECTING for m in morphs)
+        and not any(m.start < end < m.end for m in morphs)
+    ):
+        return None
+    reading = to_hiragana(seg.reading)
+    reading_tm = text_map.read_as_reading(tm, [i])
+    reading_morphs = tokenize(reading_tm.natural)
+    if any(
+        m.start == start
+        and m.end > start + len(reading)
+        and m.pos[0] in INFLECTING
+        and m.lemma.startswith(reading)
+        and any(
+            m.lemma in rs
+            and seg.base + m.lemma[len(reading) :] in ks
+            and any(p.startswith(("v", "adj-i")) and p not in ("vs", "vt", "vi") for p in ps)
+            for ks, rs, ps in jmdict.lookup(m.lemma)
+        )
+        for m in reading_morphs
+    ):
+        return reading_tm, reading_morphs
+    return None
 
 
 def name_corpus_row(sentence: str) -> tuple:
     """(natural text, morphs, reader) of a sentence, as `names.build_lexicon` takes them."""
-    tm, morphs = read_cut_okurigana_as_kanji(text_map.build(sentence, reads_better_in_hiragana))
+    tm, morphs = reread_cut_groups(text_map.build(sentence, reads_better_in_hiragana))
     return tm.natural, morphs, tm.surface_reading
 
 
@@ -1013,12 +1081,14 @@ def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
     幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て). A noun's lone kana
     other than も is okurigana (窪み, 夕べ, 逆さ; 何時|も), and so is a longer tail of a noun
     that is a verb's ます-stem (味わい, 計らい, 見かけ); 赤|ちゃん, 口|コミ, 目|つき are words.
-    A conjunction's or interjection's tail is always okurigana (但し, 更に, 並びに; 済みません,
-    初めまして), a pronoun's lone kana but に, も and か too (其こ, 其んで; 何|に, 私|たち)."""
+    A conjunction's, interjection's or adnominal's tail is always okurigana (但し, 更に, 並びに;
+    済みません, 初めまして; 我が, 其の, 如何なる), a pronoun's lone kana but に, も and か too
+    (其こ, 其んで; 何|に, 私|たち). The adnominals are an old pronoun and particle grown into one
+    word, and JMdict still has the pronoun (我[わ], 其[そ]), which alone is no word today."""
     tail = tm.written_form(split, w.end)
     if KANJI_RE.search(tail):
         return False
-    if w.head.pos[0] in ("形状詞", "接続詞", "感動詞"):
+    if w.head.pos[0] in ("形状詞", "接続詞", "感動詞", "連体詞"):
         return True
     if w.head.pos[0] == "代名詞":
         return len(tail) == 1 and tail not in "にもか"
@@ -1822,7 +1892,7 @@ def _emit(
 
 def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
-    tm, morphs = read_cut_okurigana_as_kanji(text_map.build(sentence, reads_better_in_hiragana))
+    tm, morphs = reread_cut_groups(text_map.build(sentence, reads_better_in_hiragana))
     morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)

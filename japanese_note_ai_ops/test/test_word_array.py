@@ -363,6 +363,21 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
         self.assertEqual([s[2] for s in find_word(arr, "私達")[5]], ["私", "達"])
 
+    def test_adnominal_okurigana_is_no_sub_word(self):
+        # JMdict has the old pronouns 我[わ] and 其[そ], and が, の and る as particles and a
+        # suffix, but 我が, 其の and 如何なる are one adnominal each
+        for sentence, form in [
+            ("我[わ]が 道[みち]を 行[い]く", "我が"),
+            ("<k> 其[そ]の</k> 人[ひと]に 会[あ]った", "其の"),
+            ("如何[いか]なる 神[かみ]の 前[まえ]", "如何なる"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual((word[1], word[5]), ("adjectival", []))
+        # inside a JMdict match the adnominal is a sub-word, still whole
+        word = find_word(self.generator.generate("我[わ]が 子[こ]を 愛[あい]する"), "我が")
+        self.assertEqual(word[5], [])
+
     def test_a_conjunction_opening_a_clause_is_one_word(self):
         # function words only (つー + か, で + も), which elsewhere are no word of their own
         for sentence, raw in [
@@ -497,6 +512,24 @@ class WordArrayTests(unittest.TestCase):
                 self.assertNotIn("auxiliary", [s[1] for s in word[5] if len(s) > 1], arr)
                 self.assertNotIn("particle", [s[1] for s in word[5] if len(s) > 1], arr)
 
+    def test_k_reading_the_tokenizer_cuts_inside_goes_in_as_kanji(self):
+        # あんこの is あん + この, あいつも あい + つも, よその よ + その: the group's tail read
+        # into the particle after it
+        for sentence, raw, pos, form in [
+            ("<k> 餡子[あんこ]</k>の 入[はい]った 菓子[かし]", " 餡子[あんこ]", "noun", "餡子"),
+            ("<k> 彼奴[あいつ]</k>も<k> 到頭[とうとう]</k>くたばった", " 彼奴[あいつ]", "pronoun", "彼奴"),
+            ("見[み]ない 顔[かお]だな<k> 余所[よそ]</k>の 禿[かむろ]か", " 余所[よそ]", "noun", "余所"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                words = [w for w in arr if len(w) > 1]
+                i = next(i for i, w in enumerate(words) if w[2] == form)
+                self.assertEqual(words[i][:3], [raw, pos, form], arr)
+                self.assertEqual(words[i + 1][1], "particle", arr)
+        # Kanji that would not read as the furigana says stay kana: 故 of 故[だか]ら is no だか
+        arr = self.generator.generate("<k> 故[だか]ら</k> 時間[じかん]が 無[な]い")
+        self.assertEqual(find_word(arr, "故"), [], arr)
+
     def test_tsutsu_aru_is_a_word_after_the_verb(self):
         for sentence, verb, raw, form in [
             ("日本は変わりつつある。", "変わる", "つつある", "つつある"),
@@ -533,6 +566,26 @@ class WordArrayTests(unittest.TestCase):
         # A noun before the copula stays a noun
         arr = self.generator.generate("明日[あした]は 晴[は]れです。")
         self.assertEqual(find_word(arr, "晴れ")[1], "noun")
+
+    def test_kanji_the_tokenizer_cuts_off_their_okurigana_go_in_as_their_reading(self):
+        # Sudachi reads 刳 as a noun and い as a particle, 珍 as a noun and し as 為る
+        for sentence, raw, pos, form in [
+            ("刳[えぐ]い 話[はなし]だ。", "刳[えぐ]い", "adjective", "刳い"),
+            ("へ、 山田[やまだ]？ 着信[ちゃくしん] 珍[めずら]し…もしもし？", " 珍[めずら]し", "adjective", "珍しい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                word = find_word(arr, form)
+                self.assertEqual((word[0], word[1], word[5]), (raw, pos, []), arr)
+        # Only for a verb or adjective JMdict spells with those kanji: 子[こ]が is no こぐ, and
+        # ３[み]つ no みつ, though JMdict spells the numeral 三つ ３つ
+        for sentence, form in [
+            ("<k> 其[そ]</k>の 子[こ]が 言[い]っている", "子"),
+            ("５[いつ]つ 星[ぼし] 乃至[ないし]は ３[み]つ 星[ぼし]", "三"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertTrue(find_word(arr, form), arr)
 
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
