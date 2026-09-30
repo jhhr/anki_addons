@@ -152,9 +152,12 @@ def select(all_rows: dict[str, list[dict]]) -> tuple[dict, list, list, list]:
         for row in rows:
             if queue == "batches" and row["sid"] in latest:
                 continue
-            if row["problem"]:
+            # a sentence whose note is to be fixed is held back whatever its label, which
+            # labels the broken sentence
+            broken = golden.kana_in_group(row.get("sentence", ""))
+            if row["problem"] and not broken:
                 rejected.append(row)
-            elif row["furigana"] or golden.kana_in_group(row.get("sentence", "")):
+            elif row["furigana"] or broken:
                 furigana.append(row)
             elif row["pending"]:
                 pending.append(row)

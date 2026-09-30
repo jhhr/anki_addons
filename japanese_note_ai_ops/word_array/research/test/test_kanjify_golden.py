@@ -253,9 +253,12 @@ class RelabelTest(unittest.TestCase):
         self.assertEqual(pending, [])
 
     def test_kana_inside_a_group_holds_the_sentence_back(self):
-        rows = {"batches": [step2_row("s1", "batches/b0001", sentence=" ネコ科[ねこか]の")]}
-        accepted, _, _, furigana = collate.select(rows)
-        self.assertEqual((accepted, [r["sid"] for r in furigana]), ({}, ["s1"]))
+        rows = {"batches": [step2_row("s1", "batches/b0001", sentence=" ネコ科[ねこか]の"),
+                            step2_row("s2", "batches/b0001", sentence=" ネコ科[ねこか]は",
+                                      problem="split the group")]}  # fmt: skip
+        accepted, _, rejected, furigana = collate.select(rows)
+        self.assertEqual((accepted, rejected), ({}, []))
+        self.assertEqual([r["sid"] for r in furigana], ["s1", "s2"])
 
     def test_a_relabel_that_fails_leaves_the_sentence_out(self):
         rows = {"batches": [step2_row("s1", "batches/b0001", "old")],
