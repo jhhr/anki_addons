@@ -201,7 +201,9 @@ def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
         by_sid[row["sid"]] += [{**f, "labeller": row["labeller"]} for f in row["furigana"]]
     out = []
     for sid, s in sentences.items():
-        program = s.get("furigana_suspects") or golden.furigana_suspects(s["sentence"])
+        # checked again rather than read from the inventory, which keeps what the check said
+        # when the inventory was built: kana inside a group was listed as a missing space there
+        program = golden.furigana_suspects(s["sentence"])
         if not program and sid not in by_sid:
             continue
         fixed = golden.fix_groups(s["sentence"])
