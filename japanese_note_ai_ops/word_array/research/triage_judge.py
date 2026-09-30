@@ -44,6 +44,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 import triage_data as td
@@ -125,7 +126,11 @@ def pick(args) -> int:
     return 0
 
 
-def item(w: dict, kind: str) -> dict:
+def frequencies() -> dict[int, dict]:
+    return {r["nid"]: r for r in td.read_jsonl(td.data_file("frequency.jsonl"))}
+
+
+def item(w: dict, kind: str, freq: Optional[dict] = None) -> dict:
     senses = [s for s in w["siblings"] if s["relation"] == td.MEANING]
     readings = [s for s in w["siblings"] if s["relation"] != td.MEANING]
     return {
@@ -144,6 +149,9 @@ def item(w: dict, kind: str) -> dict:
         "readings": [{"key": s["key"], "reading": s["reading"], "studied": s["reviewed"]}
                      for s in readings][:6],
         "kind": kind,
+        # The ranks the model reads too, shown because the user asked to see them
+        "freq": {name: (freq or {}).get(f"freq_{name}_rank")
+                 for name in ("jiten", "tubelex", "bccwj")},
     }
 
 
@@ -151,6 +159,7 @@ class Session:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
+        self.freq = frequencies()
         self.queue, self.labels = read_state()
         self.skipped: set[int] = set()
         self.history: list[int] = []
@@ -168,7 +177,8 @@ class Session:
             if not fresh:
                 return {"item": None, "stats": stats}
             row = fresh[0]
-            return {"item": item(self.words[row["nid"]], row["kind"]), "stats": stats}
+            one = item(self.words[row["nid"]], row["kind"], self.freq.get(row["nid"]))
+            return {"item": one, "stats": stats}
 
     def judge(self, nid: int, action: str, note: str = "") -> None:
         with self.lock:
@@ -263,7 +273,7 @@ function show(data) {
   const readings = current.readings.map(x => `<li>${esc(x.key)} [${esc(x.reading)}]${x.studied ? " <b>(studied)</b>" : ""}</li>`).join("");
   card.innerHTML = `<div class="word">${esc(current.word)}</div>
     <div class="reading">${esc(current.reading)}${current.spelling ? " / " + esc(current.spelling) : ""}</div>
-    <div class="pos">${esc(current.pos)}</div>
+    <div class="pos">${esc(current.pos)}${rank(current.freq)}</div>
     <div id="back" class="hidden">
       <div class="meaning">${esc(current.meaning)}</div>
       <div class="jp">${esc(current.meaning_jp)}</div>
@@ -273,6 +283,12 @@ function show(data) {
       ${readings ? `<div class="senses">Same spelling or kanji:<ul>${readings}</ul></div>` : ""}
     </div>`;
   document.getElementById("reveal").disabled = false;
+}
+function rank(f) {
+  if (!f) return "";
+  for (const [k, name] of [["jiten", "Jiten"], ["tubelex", "TUBELEX"], ["bccwj", "BCCWJ"]])
+    if (f[k]) return ` · ${name} #${f[k]}`;
+  return " · no frequency rank";
 }
 function reveal() {
   const back = document.getElementById("back");
@@ -391,13 +407,14 @@ def status(_args) -> int:
 def export_queue(args) -> int:
     """The queue's notes as the artifact's `queue` documents, one file each."""
     words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
+    freq = frequencies()
     queue, _ = read_state()
     args.dir.mkdir(parents=True, exist_ok=True)
     rounds: dict[int, list[dict]] = {}
     for order, row in enumerate(queue):
         if row["nid"] not in words:
             continue
-        one = item(words[row["nid"]], row["kind"])
+        one = item(words[row["nid"]], row["kind"], freq.get(row["nid"]))
         del one["kind"]
         one["order"] = order
         rounds.setdefault(row["round"], []).append(one)

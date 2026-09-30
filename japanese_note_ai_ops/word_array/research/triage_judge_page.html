@@ -54,6 +54,7 @@ main {
 .word { font-family: var(--display); font-weight: 700; font-size: clamp(38px, 11vw, 56px); line-height: 1.2; word-break: keep-all; overflow-wrap: anywhere; }
 .reading { font-size: 20px; color: var(--muted); }
 .meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.chip.rank { color: var(--ink); border-color: var(--muted); }
 .chip { font-family: var(--mono); font-size: 12px; padding: 1px 8px; border: 1px solid var(--rule); border-radius: 999px; color: var(--muted); }
 .back { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--rule); padding-top: 14px; }
 .meaning { font-size: 18px; font-weight: 500; }
@@ -186,6 +187,15 @@ function highlight(sentence, it) {
   return text;
 }
 
+// Jiten's rank where it has the word; the other lists' only where it does not
+function rankChip(f) {
+  if (!f) return "";
+  for (const [k, name] of [["jiten", "Jiten"], ["tubelex", "TUBELEX"], ["bccwj", "BCCWJ"]]) {
+    if (f[k]) return `<span class="chip rank" title="frequency rank in ${name}">${name} #${Number(f[k]).toLocaleString("en-US")}</span>`;
+  }
+  return `<span class="chip rank">no frequency rank</span>`;
+}
+
 function markerChip(m) {
   const kind = { m: "sense", r: "reading", x: "entry" }[m[0]];
   return `<span class="chip" title="${kind ? kind + " " + esc(m.slice(1)) : ""}">(${esc(m)})</span>`;
@@ -257,7 +267,7 @@ function render() {
   card.innerHTML = `<div class="front">
       <div class="word" lang="ja">${esc(it.word)}</div>
       <div class="reading" lang="ja">${esc(it.reading)}${spelling}</div>
-      <div class="meta">${chips}${it.key ? `<span class="chip">${esc(it.key)}</span>` : ""}</div>
+      <div class="meta">${chips}${rankChip(it.freq)}${it.key ? `<span class="chip">${esc(it.key)}</span>` : ""}</div>
     </div>${back}${fix}`;
   const btn = $("b-reveal");
   if (btn) btn.addEventListener("click", reveal);
