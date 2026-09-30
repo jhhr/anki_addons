@@ -275,6 +275,11 @@ def cross_validate(make, frame, lo, hi, repeats: int = 2, seed: int = 0, prepare
     from sklearn.model_selection import StratifiedKFold
 
     strata = lo * 4 + hi
+    # A range seen fewer times than there are folds (the first hand Schedules, short or long)
+    # cannot be split five ways: it is stratified with its lowest level instead
+    counts = {k: int((strata == k).sum()) for k in set(strata.tolist())}
+    rare = np.array([counts[k] < 5 for k in strata.tolist()])
+    strata = np.where(rare, lo * 4 + lo, strata)
     runs, first = [], None
     for r in range(repeats):
         oof = np.zeros((len(lo), levels))
