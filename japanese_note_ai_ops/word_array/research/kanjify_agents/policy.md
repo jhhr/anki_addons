@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.17
+Policy version: 0.18
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -304,9 +304,8 @@ needs a split asks (a policy question); it never splits on its own.
   reading JMdict marks as having no kanji, which only records how the katakana is written
   (台詞[セリフ], 雑魚[ザコ], 判子[ハンコ], 鴨[カモ]る). The katakana okurigana of a verb stays after the group
   (嵌[ハ]マる, 持[モ]テる). A main spelling that mixes kana and kanji is completed by KANJI-12:
-  玉葱[タマネギ], 薩摩芋[サツマイモ]. A katakana word the input wrote inside a kanji word's furigana group,
-  before the kanji, is split out of the group when it is kanjified: `ネコ科[ねこか]` -> `<k> 猫[ネコ]</k>
-  科[か]`, the kanji keeping the rest of the group's reading (FMT-7's one exception).
+  玉葱[タマネギ], 薩摩芋[サツマイモ]. A katakana word the input wrote inside a kanji word's
+  furigana group is broken furigana, not a word to kanjify (FMT-7).
 - KANJI-15 Honorific verbs are kanjified wherever they are not a て-helper (KANA-3), after a
   verb stem too: 為さる (なさる) in every use (勉強為さる, 如何為さいました, 寝為さい: 寝[ね]<k>
   為[な]さい</k>, 御免為さい), except right after する's stem し, where なさい stays kana (為なさい,
@@ -374,8 +373,10 @@ needs a split asks (a policy question); it never splits on its own.
   like the rest.
 - FMT-7 Everything outside the new spans is unchanged: the words, their furigana, spaces (but
   FMT-1's), punctuation and tags. Turning every span back into the kana it reads must give the
-  input. The one exception is a katakana word split out of a kanji word's group (KANJI-14):
-  `ネコ科[ねこか]` -> `<k> 猫[ネコ]</k> 科[か]`.
+  input, with no exception. Kana the input wrote inside a kanji word's group, the reading
+  covering it (`ネコ科[ねこか]`, `カ国[かこく]`), is broken furigana: the note is fixed by
+  splitting the group (`ネコ 科[か]`) and kanjified from there. A program lists it with that
+  fix and holds the sentence back; a labeller leaves the group as it is.
 - FMT-8 Numbers: furigana may be added to a number without `<k>` tags, and nothing else about it
   changes (`１つ` -> `１[ひと]つ`, `10分[ぷん]` -> `10分[じゅっぷん]`).
 

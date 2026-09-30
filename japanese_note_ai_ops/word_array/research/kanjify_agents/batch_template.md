@@ -36,7 +36,8 @@ For each sentence:
 6. Check the input's own furigana too: a reading that is wrong for its kanji or for this
    context (今日 read こんにち where it means today), okurigana doubled or missing (終[おわ]わる),
    a reading split wrongly across a word's kanji. A program already lists a missing space
-   before a group and a kanji with no reading at all; don't report those. Never fix it in
+   before a group, kana written inside a kanji word's group (ネコ科[ねこか]) and a kanji with no
+   reading at all; don't report those. Never fix it in
    `kanjified` (that must keep the input's text); report each under `furigana` with the
    corrected text. A sentence with broken furigana is kept out of the reference set until the
    note is fixed, so report only real errors, not a reading that is merely less common.

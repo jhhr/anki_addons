@@ -148,7 +148,6 @@ def row_problem(sentence: str, kanjified: str) -> Optional[str]:
     import kanjify_audit
     import kanjify_note
 
-    sentence = split_katakana_groups(sentence, kanjified)
     problem = kanjify_note.edit_problem(sentence, kanjified)
     if problem and problem != "nothing changed":
         return problem
@@ -164,32 +163,8 @@ def row_problem(sentence: str, kanjified: str) -> Optional[str]:
     return None
 
 
-# A furigana group whose base starts with katakana before its kanji (ネコ科[ねこか])
-KATAKANA_GROUP_RE = re.compile(
-    r"(?:^|(?<=[\s>\]]))([ァ-ヺー]+)([々〆一-龯㐀-䶿][^\s<>\[\]]*)\[([^\]]*)\]"
-)
-
-
 def hiragana(text: str) -> str:
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
-
-
-def split_katakana_groups(sentence: str, kanjified: str) -> str:
-    """The input as the label is checked against: each group the label split its katakana out
-    of (`ネコ科[ねこか]` -> `<k> 猫[ネコ]</k> 科[か]`, the policy's KANJI-14) split the same way
-    (`ネコ 科[か]`). It is the one change outside a span FMT-7 allows, and only where the rest
-    of the group follows a span: splitting the group while leaving the katakana is still refused."""
-
-    def split(m: re.Match) -> str:
-        kana, rest, reading = m[1], m[2], m[3]
-        if not hiragana(reading).startswith(hiragana(kana)) or len(reading) <= len(kana):
-            return m[0]
-        group = f"{rest}[{reading[len(kana):]}]"
-        if not re.search(r"</k>\s*" + re.escape(group), kanjified):
-            return m[0]
-        return f"{kana} {group}"
-
-    return KATAKANA_GROUP_RE.sub(split, sentence)
 
 
 BASE_RE = re.compile(r"(?:^|(?<=[\s>\]]))([^\s<>\[\]]+)\[([^\]]*)\]")
@@ -198,18 +173,39 @@ KANA_ONLY_RE = re.compile(r"[ぁ-ゖァ-ヺーゝゞヽヾ]+")
 BR_RE = re.compile(r"<br\s*/?>")
 
 
+def kana_lead(base: str, reading: str) -> tuple[str, bool]:
+    """The kana a group's base starts with before its kanji ("" for none; a counter's ヶ / ヵ
+    is not kana here), and whether the reading covers it: `ネコ科[ねこか]` is kana written inside
+    a kanji word's group, `つ買[か]` a group with no space after the kana before it."""
+    lead = NOT_KANJI_RE.match(base)
+    kana = lead[0] if lead and lead[0].strip("ヶヵ") else ""
+    covered = hiragana(reading).startswith(hiragana(kana)) and len(reading) > len(kana)
+    return kana, bool(kana) and covered
+
+
+def kana_in_group(sentence: str) -> bool:
+    """Whether the input writes kana inside a kanji word's furigana group, the reading covering
+    it (`ウシ科[うしか]`, `カ国[かこく]`). The user counts that as broken furigana, fixed in the
+    note by splitting the group (`ウシ 科[か]`): the sentence is kanjified only from the fixed
+    note, since a label of the broken one would leave the kana word inside the group."""
+    return any(kana_lead(m[1], m[2])[1] for m in BASE_RE.finditer(BR_RE.sub(" ", sentence)))
+
+
 def furigana_suspects(sentence: str) -> list[str]:
     """What a program can see is wrong with a furigana sentence, without reading it: a group
     written with no space after kana (`つ買[か]`: Anki's furigana filter puts か over つ買, so the
-    reading covers kana it doesn't read), a group with no kanji or no reading, and a kanji with
-    no reading at all. The step 2 agents check what takes reading (a reading wrong for its
-    kanji or its context); these they are told to leave to this."""
+    reading covers kana it doesn't read), kana written inside a kanji word's group
+    (`ウシ科[うしか]`), a group with no kanji or no reading, and a kanji with no reading at all.
+    The step 2 agents check what takes reading (a reading wrong for its kanji or its context);
+    these they are told to leave to this."""
     text = BR_RE.sub(" ", sentence)
     out = []
     for m in BASE_RE.finditer(text):
         base, reading = m[1], m[2]
-        lead = NOT_KANJI_RE.match(base)
-        if lead and lead[0].strip("ヶヵ"):
+        kana, covered = kana_lead(base, reading)
+        if covered:
+            out.append(f"kana inside the group: {m[0]}")
+        elif kana:
             out.append(f"no space before the group: {m[0]}")
         elif not reading:
             out.append(f"no reading: {m[0]}")
@@ -223,15 +219,17 @@ def furigana_suspects(sentence: str) -> list[str]:
     return out
 
 
-def fix_spaces(sentence: str) -> str:
-    """The sentence with a space put before every furigana group written right after kana, the
-    one repair furigana_suspects' first kind has: `つ買[か]` -> `つ 買[か]`."""
+def fix_groups(sentence: str) -> str:
+    """The sentence with the two repairs a program can make to a group's kana lead: a space
+    before a group written right after kana (`つ買[か]` -> `つ 買[か]`), and kana inside a kanji
+    word's group split out with its part of the reading (`ウシ科[うしか]` -> `ウシ 科[か]`)."""
 
     def fix(m: re.Match) -> str:
-        lead = NOT_KANJI_RE.match(m[1])
-        if not lead or not lead[0].strip("ヶヵ"):
+        kana, covered = kana_lead(m[1], m[2])
+        if not kana:
             return m[0]
-        return f"{lead[0]} {m[1][len(lead[0]):]}[{m[2]}]"
+        reading = m[2][len(kana):] if covered else m[2]
+        return f"{kana} {m[1][len(kana):]}[{reading}]"
 
     return BASE_RE.sub(fix, sentence)
 

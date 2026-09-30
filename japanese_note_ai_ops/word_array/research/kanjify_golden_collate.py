@@ -14,14 +14,17 @@ Reads `results/<queue>/*.json` and writes:
                             once step 1 has decided them
   collated/rejected.jsonl   rows that fail `kanjify_golden.row_problem`, with the reason
   collated/furigana.jsonl   rows whose input the labeller found broken furigana in, with its
-                            fixes: kept out of the set until the note is fixed, since a label of
-                            a misread sentence is no reference; a fixed note is a new sentence id
+                            fixes, and rows whose input writes kana inside a kanji word's group
+                            (`kanjify_golden.kana_in_group`): kept out of the set until the note
+                            is fixed, since a label of a misread sentence is no reference; a
+                            fixed note is a new sentence id
   collated/furigana_fixes.jsonl  the user's furigana fix list, one row per sentence with any
                             problem: the program's (`kanjify_golden.furigana_suspects`: a missing
-                            space, repaired in `fixed`, a reading that isn't one kana word, a
-                            kanji with none) and the labellers'. A missing space alone keeps the
-                            row in the set: it changes no reading, and kanjify_eval compares
-                            with whitespace dropped, so the label holds for the fixed sentence
+                            space or kana inside a group, both repaired in `fixed`, a reading
+                            that isn't one kana word, a kanji with none) and the labellers'. A
+                            missing space alone keeps the row in the set: it changes no reading,
+                            and kanjify_eval compares with whitespace dropped, so the label holds
+                            for the fixed sentence
   collated/queue.jsonl      the words this round of step 2 handed back that the inventory has
                             no word for, with their sentences; they are added to
                             `handed_back.jsonl`, which keeps every round's, and
@@ -151,7 +154,7 @@ def select(all_rows: dict[str, list[dict]]) -> tuple[dict, list, list, list]:
                 continue
             if row["problem"]:
                 rejected.append(row)
-            elif row["furigana"]:
+            elif row["furigana"] or golden.kana_in_group(row.get("sentence", "")):
                 furigana.append(row)
             elif row["pending"]:
                 pending.append(row)
@@ -198,7 +201,7 @@ def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
         program = s.get("furigana_suspects") or golden.furigana_suspects(s["sentence"])
         if not program and sid not in by_sid:
             continue
-        fixed = golden.fix_spaces(s["sentence"])
+        fixed = golden.fix_groups(s["sentence"])
         out.append(
             {
                 "sid": sid,

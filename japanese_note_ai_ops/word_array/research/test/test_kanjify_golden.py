@@ -46,15 +46,10 @@ class RowProblemTest(unittest.TestCase):
     def test_a_span_without_kanji_is_refused(self):
         self.assertIn("no kanji", golden.row_problem(SENTENCE, "<k>これ</k>は 本[ほん]です。"))
 
-    def test_katakana_split_out_of_a_group_passes(self):
-        # the policy's KANJI-14: the one group FMT-7 lets a label change outside its spans
+    def test_a_group_split_by_the_label_is_refused(self):
+        # kana inside a kanji word's group is the note's furigana to fix, not the label's
         sentence = "ネコ科[ねこか]の 動物[どうぶつ]"
-        label = "<k> 猫[ネコ]</k> 科[か]の 動物[どうぶつ]"
-        self.assertIsNone(golden.row_problem(sentence, label))
-
-    def test_a_group_split_without_kanjifying_is_refused(self):
-        sentence = "ネコ科[ねこか]の 動物[どうぶつ]"
-        self.assertIsNotNone(golden.row_problem(sentence, "ネコ 科[か]の 動物[どうぶつ]"))
+        self.assertIsNotNone(golden.row_problem(sentence, "<k> 猫[ネコ]</k> 科[か]の 動物[どうぶつ]"))
 
 
 class FuriganaSuspectsTest(unittest.TestCase):
@@ -73,12 +68,22 @@ class FuriganaSuspectsTest(unittest.TestCase):
         self.assertEqual(golden.furigana_suspects(" 一ヶ月[いっかげつ]"), [])
 
     def test_a_missing_space_is_put_back(self):
-        self.assertEqual(golden.fix_spaces(" 三[みっ]つ買[か]った。"), " 三[みっ]つ 買[か]った。")
-        self.assertEqual(golden.furigana_suspects(golden.fix_spaces("はまだ終[お]わる")), [])
+        self.assertEqual(golden.fix_groups(" 三[みっ]つ買[か]った。"), " 三[みっ]つ 買[か]った。")
+        self.assertEqual(golden.furigana_suspects(golden.fix_groups("はまだ終[お]わる")), [])
+        self.assertFalse(golden.kana_in_group(" 三[みっ]つ買[か]った。"))
+
+    def test_kana_inside_a_group_is_split_out_with_its_reading(self):
+        for broken, fixed in ((" ネコ科[ねこか]の", " ネコ 科[か]の"), ("26 カ国[かこく]", "26 カ 国[こく]"),
+                              (" クラブ活動[くらぶかつどう]", " クラブ 活動[かつどう]")):  # fmt: skip
+            self.assertTrue(golden.kana_in_group(broken), broken)
+            self.assertIn("kana inside the group", golden.furigana_suspects(broken)[0])
+            self.assertEqual(golden.fix_groups(broken), fixed)
+            self.assertEqual(golden.furigana_suspects(fixed), [])
 
     def test_a_right_sentence_is_left_alone(self):
         for s in ("<b>つ</b>買[か]った", " 一ヶ月[いっかげつ]", " 本[ほん]です"):
-            self.assertEqual(golden.fix_spaces(s), s)
+            self.assertEqual(golden.fix_groups(s), s)
+            self.assertFalse(golden.kana_in_group(s))
 
     def test_several_readings(self):
         found = golden.furigana_suspects(" 額[がく, ひたい]は")
@@ -246,6 +251,11 @@ class RelabelTest(unittest.TestCase):
                          {"s1": "latest", "s2": "kept", "s3": "decided"})  # fmt: skip
         # the batch row that waited on a word no longer counts as pending
         self.assertEqual(pending, [])
+
+    def test_kana_inside_a_group_holds_the_sentence_back(self):
+        rows = {"batches": [step2_row("s1", "batches/b0001", sentence=" ネコ科[ねこか]の")]}
+        accepted, _, _, furigana = collate.select(rows)
+        self.assertEqual((accepted, [r["sid"] for r in furigana]), ({}, ["s1"]))
 
     def test_a_relabel_that_fails_leaves_the_sentence_out(self):
         rows = {"batches": [step2_row("s1", "batches/b0001", "old")],
