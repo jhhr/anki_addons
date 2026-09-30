@@ -26,8 +26,9 @@ together with SOURCE and SPELL.
   a sense note gives ("occ. written as 嗚呼" under ああ); the headword of a Japanese dictionary
   (大辞林, 大辞泉, 広辞苑, 明鏡, 新明解, 日本国語大辞典: the local MDX files, or weblio / kotobank
   pages of them), also where JMdict marks the same form search-only (いける as 行ける);
-  wiktionary (en or ja), even alone. A contracted reading JMdict lists under a spelling counts
-  as that spelling's (どっか as 何処[どっ]か, like 物[もん]). Not enough: ateji quiz and trivia
+  wiktionary (en or ja), even alone. A contracted or emphatic reading JMdict lists under a
+  spelling counts as that spelling's, its furigana all the kana the kanji replaces (どっか as
+  何処[どっ]か, とっても as 迚[とって]も, like 物[もん]). Not enough: ateji quiz and trivia
   sites, a kanji borrowed
   from a synonym that is read differently (徐々 read そろそろ, 確 read ちゃん, 沢山 read たっぷり),
   or a kanji that fits the meaning but no source gives. Such made-up gikun are un-kanjified. A
