@@ -71,6 +71,9 @@ class FuriganaSuspectsTest(unittest.TestCase):
         self.assertEqual(golden.fix_groups(" 三[みっ]つ買[か]った。"), " 三[みっ]つ 買[か]った。")
         self.assertEqual(golden.furigana_suspects(golden.fix_groups("はまだ終[お]わる")), [])
         self.assertFalse(golden.kana_in_group(" 三[みっ]つ買[か]った。"))
+        # a particle that is only the first kana of the kanji's reading is still a missing space
+        self.assertFalse(golden.kana_in_group(" 刀[かたな]は鋼[はがね]"))
+        self.assertEqual(golden.fix_groups(" 刀[かたな]は鋼[はがね]"), " 刀[かたな]は 鋼[はがね]")
 
     def test_kana_inside_a_group_is_split_out_with_its_reading(self):
         for broken, fixed in ((" ネコ科[ねこか]の", " ネコ 科[か]の"), ("26 カ国[かこく]", "26 カ 国[こく]"),

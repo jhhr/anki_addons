@@ -170,17 +170,20 @@ def hiragana(text: str) -> str:
 BASE_RE = re.compile(r"(?:^|(?<=[\s>\]]))([^\s<>\[\]]+)\[([^\]]*)\]")
 NOT_KANJI_RE = re.compile(r"^[^一-龯㐀-䶿々〆0-9０-９]+")
 KANA_ONLY_RE = re.compile(r"[ぁ-ゖァ-ヺーゝゞヽヾ]+")
+KATAKANA_RE = re.compile(r"[ァ-ヺー]+")
 BR_RE = re.compile(r"<br\s*/?>")
 
 
 def kana_lead(base: str, reading: str) -> tuple[str, bool]:
     """The kana a group's base starts with before its kanji ("" for none; a counter's ヶ / ヵ
-    is not kana here), and whether the reading covers it: `ネコ科[ねこか]` is kana written inside
-    a kanji word's group, `つ買[か]` a group with no space after the kana before it."""
+    is not kana here), and whether the reading covers it: `ネコ科[ねこか]` is katakana written
+    inside a kanji word's group, `つ買[か]` a group with no space after the kana before it.
+    Hiragana never counts as covered: in `は鋼[はがね]` or `い命[いのち]` the particle or
+    okurigana before the kanji only happens to be the first kana of the kanji's reading."""
     lead = NOT_KANJI_RE.match(base)
     kana = lead[0] if lead and lead[0].strip("ヶヵ") else ""
     covered = hiragana(reading).startswith(hiragana(kana)) and len(reading) > len(kana)
-    return kana, bool(kana) and covered
+    return kana, bool(KATAKANA_RE.fullmatch(kana)) and covered
 
 
 def kana_in_group(sentence: str) -> bool:
