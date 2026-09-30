@@ -3,6 +3,8 @@
     py -3.10 word_array/research/triage_judge.py pick [--uncertain 300]   # the next round
     py -3.10 word_array/research/triage_judge.py serve [--host 0.0.0.0]   # judge it
     py -3.10 word_array/research/triage_judge.py status
+    py -3.10 word_array/research/triage_judge.py export-queue --dir DIR   # for the artifact page
+    py -3.10 word_array/research/triage_judge.py import-labels --dir DIR  # its labels, saved
 
 `pick` queues the next round in `judge_queue.jsonl`. The first round starts with a fixed random
 100 of the unjudged notes: they are never trained on, so the model's accuracy on them is an
@@ -13,9 +15,21 @@ honest figure for the notes it will act on. Every round adds the `--uncertain` n
 
 `serve` shows one queued note at a time: the word and its reading, with its meaning, sentence
 and other senses hidden until revealed. Suspend / Schedule / Learn go into
-`hand_labels.jsonl`; Skip leaves the note queued; Undo takes back the last. With `--host
+`hand_labels.jsonl`; Skip leaves the note queued; Undo takes back the last. Wrong data (label
+`invalid`, with the user's note on what is wrong) is for a note whose own data is wrong, a
+reading or sense the note should not have, a bad split: it leaves the triage (no model trains
+on it, no decision is made for it) and triage_decide.py lists it for fixing. With `--host
 0.0.0.0` the page is reachable from a phone on the same network, at the address printed; it
 calls nothing else, so it works without Anki running.
+
+The same judging works away from the PC through `triage_judge_page.html`, published as a private
+claude.ai artifact whose database holds the queue and the labels. `export-queue` writes the queue's
+notes as the documents of its `queue` collection (`queue-rR-PP.json`, CHUNK notes each, in queue
+order, the kind left out so a note does not say whether it is a random one); a Claude session
+writes them with its ArtifactData tool. The page writes one `labels/<nid>` document per judgement
+and deletes it on Undo. `import-labels` reads those documents back, as the session's ArtifactData
+`list` saved them (`--dir`, one JSON file each), and writes `hand_labels.jsonl` with each note's
+kind and round from the queue: the same file `serve` writes.
 """
 
 from __future__ import annotations
@@ -29,6 +43,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
 import triage_data as td
@@ -38,6 +53,9 @@ HAND_LABELS = "hand_labels.jsonl"
 RANDOM_N = 100
 RANDOM_SEED = 100
 ACTIONS = ("suspend", "schedule", "learn")
+INVALID = "invalid"
+VERDICTS = ACTIONS + (INVALID,)
+CHUNK = 50
 
 
 def read_state():
@@ -112,6 +130,8 @@ def item(w: dict, kind: str) -> dict:
     readings = [s for s in w["siblings"] if s["relation"] != td.MEANING]
     return {
         "nid": w["nid"],
+        "key": w["key"],
+        "markers": w["markers"],
         "word": w["word"] or w["kanjified"],
         "spelling": w["kanjified"] if w["kanjified"] != (w["word"] or w["kanjified"]) else "",
         "reading": w["reading"],
@@ -150,7 +170,7 @@ class Session:
             row = fresh[0]
             return {"item": item(self.words[row["nid"]], row["kind"]), "stats": stats}
 
-    def judge(self, nid: int, action: str) -> None:
+    def judge(self, nid: int, action: str, note: str = "") -> None:
         with self.lock:
             kind = next((r["kind"] for r in self.queue if r["nid"] == nid), "")
             rnd = next((r["round"] for r in self.queue if r["nid"] == nid), None)
@@ -158,8 +178,11 @@ class Session:
                 self.skipped.add(nid)
                 return
             self.labels = [r for r in self.labels if r["nid"] != nid]
-            self.labels.append({"nid": nid, "label": action, "kind": kind, "round": rnd,
-                                "t": int(time.time())})
+            row = {"nid": nid, "label": action, "kind": kind, "round": rnd,
+                   "t": int(time.time())}
+            if action == INVALID:
+                row["note"] = note
+            self.labels.append(row)
             self.history.append(nid)
             self._save()
 
@@ -217,6 +240,9 @@ button.lrn { background:var(--lrn); color:#fff; border-color:var(--lrn); }
   <button class="lrn" onclick="send('learn')">Learn <small>(3)</small></button>
 </div>
 <div class="buttons small">
+  <button onclick="wrong()">Wrong data <small>(4)</small></button>
+</div>
+<div class="buttons small">
   <button onclick="send('skip')">Skip <small>(S)</small></button>
   <button onclick="undo()">Undo <small>(U)</small></button>
 </div>
@@ -258,6 +284,11 @@ async function post(url, body) {
   show(await r.json());
 }
 function send(action) { if (current) post("/api/judge", {nid: current.nid, action}); }
+function wrong() {
+  if (!current) return;
+  const note = prompt("What is wrong with this note? (optional)", "");
+  if (note !== null) post("/api/judge", {nid: current.nid, action: "invalid", note});
+}
 function undo() { post("/api/undo"); }
 document.addEventListener("keydown", e => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -266,6 +297,7 @@ document.addEventListener("keydown", e => {
   else if (k === "1") send("suspend");
   else if (k === "2") send("schedule");
   else if (k === "3") send("learn");
+  else if (k === "4") wrong();
   else if (k === "s") send("skip");
   else if (k === "u") undo();
 });
@@ -298,8 +330,8 @@ def make_handler(session: Session):
             path = urlparse(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
-            if path == "/api/judge" and body.get("action") in ACTIONS + ("skip",):
-                session.judge(int(body.get("nid", 0)), body["action"])
+            if path == "/api/judge" and body.get("action") in VERDICTS + ("skip",):
+                session.judge(int(body.get("nid", 0)), body["action"], str(body.get("note") or ""))
             elif path == "/api/undo":
                 session.undo()
             elif path != "/api/next":
@@ -356,6 +388,56 @@ def status(_args) -> int:
     return 0
 
 
+def export_queue(args) -> int:
+    """The queue's notes as the artifact's `queue` documents, one file each."""
+    words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
+    queue, _ = read_state()
+    args.dir.mkdir(parents=True, exist_ok=True)
+    rounds: dict[int, list[dict]] = {}
+    for order, row in enumerate(queue):
+        if row["nid"] not in words:
+            continue
+        one = item(words[row["nid"]], row["kind"])
+        del one["kind"]
+        one["order"] = order
+        rounds.setdefault(row["round"], []).append(one)
+    written = 0
+    for rnd, items in sorted(rounds.items()):
+        for part in range(0, len(items), CHUNK):
+            doc = {"round": rnd, "part": part // CHUNK, "items": items[part : part + CHUNK]}
+            name = f"queue-r{rnd}-{part // CHUNK:02d}"
+            (args.dir / f"{name}.json").write_text(json.dumps(doc, ensure_ascii=False),
+                                                   encoding="utf-8")
+            written += 1
+    print(f"wrote {written} queue documents for {sum(map(len, rounds.values()))} notes to"
+          f" {args.dir}")
+    return 0
+
+
+def import_labels(args) -> int:
+    """The page's `labels` documents, as saved under `--dir`, into `hand_labels.jsonl`."""
+    queue, _ = read_state()
+    placed = {r["nid"]: r for r in queue}
+    labels, odd = [], 0
+    for path in sorted(args.dir.rglob("*.json")):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = doc.get("data", doc) if isinstance(doc.get("data"), dict) else doc
+        nid = int(doc.get("nid", 0))
+        if nid not in placed or doc.get("label") not in VERDICTS:
+            odd += 1
+            continue
+        row = {"nid": nid, "label": doc["label"], "kind": placed[nid]["kind"],
+               "round": placed[nid]["round"], "t": int(doc.get("t", 0)) // 1000}
+        if doc["label"] == INVALID:
+            row["note"] = str(doc.get("note") or "")
+        labels.append(row)
+    labels.sort(key=lambda r: r["t"])
+    td.write_jsonl(td.data_file(HAND_LABELS), labels)
+    print(f"{len(labels)} labels written to {HAND_LABELS}"
+          + (f"; {odd} documents skipped (not queued, or no label)" if odd else ""))
+    return status(args)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -368,8 +450,13 @@ def main() -> int:
     s.add_argument("--port", type=int, default=8791, help="not 8765, AnkiConnect's")
     s.add_argument("--no-browser", action="store_true")
     sub.add_parser("status")
+    e = sub.add_parser("export-queue")
+    e.add_argument("--dir", type=Path, required=True)
+    i = sub.add_parser("import-labels")
+    i.add_argument("--dir", type=Path, required=True)
     args = parser.parse_args()
-    return {"pick": pick, "serve": serve, "status": status}[args.command](args)
+    return {"pick": pick, "serve": serve, "status": status, "export-queue": export_queue,
+            "import-labels": import_labels}[args.command](args)
 
 
 if __name__ == "__main__":

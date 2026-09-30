@@ -1,0 +1,425 @@
+<title>Vocab Triage Judge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* One card on an indigo-dyed paper desk; the three verdicts sit under the thumb. */
+:root {
+  --desk: #e9ecf1;
+  --card: #fbfcfd;
+  --ink: #1b2130;
+  --muted: #5b6477;
+  --rule: #d3d8e1;
+  --mark: #f3e3a6;
+  --suspend: #5d6878;
+  --schedule: #2c4c8c;
+  --learn: #b8402a;
+  --on-action: #ffffff;
+  --focus: #2c4c8c;
+  --display: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --desk: #11141b; --card: #1a1f29; --ink: #e5e8ef; --muted: #9aa3b6; --rule: #2d3442;
+    --mark: #5a4b17; --suspend: #7f8a9b; --schedule: #6f8fd8; --learn: #e2735c;
+    --on-action: #0f1218; --focus: #8fa9e6; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --desk: #11141b; --card: #1a1f29; --ink: #e5e8ef; --muted: #9aa3b6; --rule: #2d3442;
+  --mark: #5a4b17; --suspend: #7f8a9b; --schedule: #6f8fd8; --learn: #e2735c;
+  --on-action: #0f1218; --focus: #8fa9e6; color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--desk); color: var(--ink); font-family: var(--body);
+  font-size: 16px; line-height: 1.6; padding-inline: 16px;
+}
+main {
+  max-width: 640px; margin: 0 auto; padding-block: 16px 190px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.brand { font-weight: 700; letter-spacing: .06em; font-size: 13px; text-transform: uppercase; color: var(--muted); }
+.progress { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+.bar { height: 4px; background: var(--rule); border-radius: 2px; overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--schedule); transition: width .3s ease; }
+.card {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 14px;
+  padding: 22px 20px; min-height: 220px; display: flex; flex-direction: column; gap: 14px;
+}
+.front { display: flex; flex-direction: column; gap: 4px; }
+.word { font-family: var(--display); font-weight: 700; font-size: clamp(38px, 11vw, 56px); line-height: 1.2; word-break: keep-all; overflow-wrap: anywhere; }
+.reading { font-size: 20px; color: var(--muted); }
+.meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 1px 8px; border: 1px solid var(--rule); border-radius: 999px; color: var(--muted); }
+.back { display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--rule); padding-top: 14px; }
+.meaning { font-size: 18px; font-weight: 500; }
+.jp { color: var(--ink); }
+.sentence { font-family: var(--display); font-size: 17px; }
+.sentence mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 2px; }
+.tr { color: var(--muted); font-size: 15px; }
+.label { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.list { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; font-size: 15px; }
+.studied { font-size: 12px; font-weight: 700; color: var(--schedule); margin-left: 6px; }
+.reveal {
+  font: inherit; font-weight: 500; padding: 14px; border-radius: 12px; cursor: pointer;
+  border: 1px dashed var(--muted); background: transparent; color: var(--ink);
+}
+.note { color: var(--muted); font-size: 14px; }
+.state { color: var(--muted); font-size: 13px; min-height: 1.4em; }
+.state.bad { color: var(--learn); }
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; background: var(--desk);
+  border-top: 1px solid var(--rule);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.dock-in { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.verdicts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.minor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.act {
+  font: inherit; font-weight: 700; font-size: 17px; border-radius: 12px; border: 0; cursor: pointer;
+  padding: 16px 6px; color: var(--on-action); display: flex; flex-direction: column; align-items: center; gap: 0;
+}
+.act small { font-weight: 400; font-size: 11px; opacity: .85; }
+.act.suspend { background: var(--suspend); }
+.act.schedule { background: var(--schedule); }
+.act.learn { background: var(--learn); }
+.plain {
+  font: inherit; font-size: 14px; padding: 10px; border-radius: 10px; cursor: pointer;
+  background: var(--card); color: var(--ink); border: 1px solid var(--rule);
+}
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.minor { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.plain.wrong { border-color: var(--learn); color: var(--learn); }
+.tally { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+.fix { display: flex; flex-direction: column; gap: 10px; border-top: 2px solid var(--learn); padding-top: 14px; }
+.fix textarea {
+  font: inherit; font-size: 16px; min-height: 84px; resize: vertical; padding: 10px 12px;
+  border-radius: 10px; border: 1px solid var(--rule); background: var(--desk); color: var(--ink);
+}
+.quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.quick button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--rule); background: transparent; color: var(--muted); }
+.fix-actions { display: grid; grid-template-columns: 2fr 1fr; gap: 8px; }
+.fix-actions .save { background: var(--learn); color: var(--on-action); border: 0; font-weight: 700; }
+.keys { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: center; }
+@media (hover: none) { .keys { display: none; } }
+@media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+</style>
+
+<main>
+  <div class="top">
+    <span class="brand">Vocab triage</span>
+    <span class="progress" id="progress">Loading…</span>
+  </div>
+  <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+  <div class="tally" id="tally"></div>
+  <section class="card" id="card" aria-live="polite">
+    <div class="front">
+      <div class="word">…</div>
+      <div class="note">Loading the queue.</div>
+    </div>
+  </section>
+  <div class="state" id="state"></div>
+  <p class="note">Suspend: nothing to learn. Schedule: I think I know it, test me years out.
+    Learn: I don't know it. Judge the sense and reading shown, as you'd know it today.
+    Wrong data: the note itself is wrong (a reading, meaning or sentence); it leaves the triage
+    and is kept, with your note, for fixing.</p>
+</main>
+
+<div class="dock">
+  <div class="dock-in">
+    <div class="verdicts">
+      <button class="act suspend" id="b-suspend" disabled>Suspend<small>1</small></button>
+      <button class="act schedule" id="b-schedule" disabled>Schedule<small>2</small></button>
+      <button class="act learn" id="b-learn" disabled>Learn<small>3</small></button>
+    </div>
+    <div class="minor">
+      <button class="plain" id="b-skip" disabled>Skip</button>
+      <button class="plain wrong" id="b-wrong" disabled>Wrong data</button>
+      <button class="plain" id="b-undo" disabled>Undo last</button>
+    </div>
+    <div class="keys">space shows the meaning · 1 2 3 judge · 4 wrong data · S skip · U undo</div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+let db = null;
+let items = [];              // every queued note, in queue order
+let labels = new Map();      // nid (string) -> {label, t}
+let skipped = new Set();
+let front = null;            // a note put back first by Undo
+let current = null;
+let revealed = false;
+let fixing = false;          // the Wrong data panel is open
+let fixDraft = "";
+let shownCard = "";          // what the card shows now, so a snapshot does not redraw it
+const NAMES = { suspend: "Suspend", schedule: "Schedule", learn: "Learn", invalid: "Wrong data" };
+const QUICK = ["reading is wrong", "meaning is wrong", "sentence furigana is wrong",
+  "not a word (bad split)", "headword spelling is wrong"];
+
+function pending() {
+  return items.filter((it) => !labels.has(String(it.nid)));
+}
+
+function pick() {
+  const left = pending();
+  if (front && left.some((it) => String(it.nid) === front)) {
+    return left.find((it) => String(it.nid) === front);
+  }
+  return left.find((it) => !skipped.has(String(it.nid))) || left[0] || null;
+}
+
+function highlight(sentence, it) {
+  const text = esc(sentence);
+  for (const form of [it.word, it.spelling, it.reading]) {
+    const f = esc(form || "");
+    if (f && text.includes(f)) return text.split(f).join(`<mark>${f}</mark>`);
+  }
+  return text;
+}
+
+function markerChip(m) {
+  const kind = { m: "sense", r: "reading", x: "entry" }[m[0]];
+  return `<span class="chip" title="${kind ? kind + " " + esc(m.slice(1)) : ""}">(${esc(m)})</span>`;
+}
+
+function render() {
+  const total = items.length;
+  const done = items.filter((it) => labels.has(String(it.nid))).length;
+  $("progress").textContent = total ? `${done} of ${total} judged · ${total - done} left` : "";
+  $("bar").style.width = total ? `${(100 * done) / total}%` : "0";
+  const tally = new Map();
+  for (const it of items) {
+    const v = labels.get(String(it.nid));
+    if (v) tally.set(v.label, (tally.get(v.label) || 0) + 1);
+  }
+  $("tally").innerHTML = Object.keys(NAMES).filter((k) => tally.get(k))
+    .map((k) => `<span>${NAMES[k]} ${tally.get(k)}</span>`).join("");
+  const next = pick();
+  if (!current || !next || String(next.nid) !== String(current.nid)) {
+    revealed = false;
+    fixing = false;
+    fixDraft = "";
+  }
+  current = next;
+  const card = $("card");
+  const judgeable = Boolean(current);
+  for (const id of ["b-suspend", "b-schedule", "b-learn", "b-skip", "b-wrong"]) $(id).disabled = !judgeable || fixing;
+  $("b-undo").disabled = !latestLabel() || fixing;
+  const cardKey = `${items.length ? 1 : 0}|${current ? current.nid : ""}|${revealed}|${fixing}`;
+  if (cardKey === shownCard) return;
+  shownCard = cardKey;
+  if (!items.length) {
+    card.innerHTML = `<div class="front"><div class="word">待機中</div>
+      <div class="note">No words queued yet. Each round is added here by Claude; this page
+      picks it up by itself.</div></div>`;
+    return;
+  }
+  if (!current) {
+    card.innerHTML = `<div class="front"><div class="word">済</div>
+      <div class="note">Every queued word is judged. Tell Claude, and the next round will
+      appear here.</div></div>`;
+    return;
+  }
+  const it = current;
+  const spelling = it.spelling ? ` · ${esc(it.spelling)}` : "";
+  const chips = [it.pos ? `<span class="chip">${esc(it.pos)}</span>` : ""]
+    .concat((it.markers || []).map(markerChip)).join("");
+  const senses = (it.senses || []).map((s) =>
+    `<li>${esc(s.meaning)}${s.studied ? '<span class="studied">studied</span>' : ""}</li>`).join("");
+  const readings = (it.readings || []).map((s) =>
+    `<li>${esc(s.key)} 【${esc(s.reading)}】${s.studied ? '<span class="studied">studied</span>' : ""}</li>`).join("");
+  const back = revealed ? `<div class="back">
+      <div class="meaning">${esc(it.meaning)}</div>
+      ${it.meaning_jp ? `<div class="jp">${esc(it.meaning_jp)}</div>` : ""}
+      ${it.sentence ? `<div class="sentence">${highlight(it.sentence, it)}</div>` : ""}
+      ${it.translation ? `<div class="tr">${esc(it.translation)}</div>` : ""}
+      ${senses ? `<div><div class="label">Other senses</div><ul class="list">${senses}</ul></div>` : ""}
+      ${readings ? `<div><div class="label">Same spelling or kanji</div><ul class="list">${readings}</ul></div>` : ""}
+    </div>` : `<button class="reveal" id="b-reveal">Show meaning and sentence</button>`;
+  const fix = fixing ? `<div class="fix">
+      <label class="label" for="fix-note">What is wrong? (optional, for whoever fixes it)</label>
+      <div class="quick">${QUICK.map((q, i) => `<button type="button" data-q="${i}">${esc(q)}</button>`).join("")}</div>
+      <textarea id="fix-note" lang="ja" placeholder="e.g. reading should be ご; the sentence has 語[かたり]">${esc(fixDraft)}</textarea>
+      <div class="fix-actions">
+        <button class="plain save" id="b-fix-save">Save as wrong data</button>
+        <button class="plain" id="b-fix-cancel">Cancel</button>
+      </div>
+    </div>` : "";
+  card.innerHTML = `<div class="front">
+      <div class="word" lang="ja">${esc(it.word)}</div>
+      <div class="reading" lang="ja">${esc(it.reading)}${spelling}</div>
+      <div class="meta">${chips}${it.key ? `<span class="chip">${esc(it.key)}</span>` : ""}</div>
+    </div>${back}${fix}`;
+  const btn = $("b-reveal");
+  if (btn) btn.addEventListener("click", reveal);
+  if (fixing) {
+    const note = $("fix-note");
+    note.addEventListener("input", () => { fixDraft = note.value; });
+    for (const b of card.querySelectorAll(".quick button")) {
+      b.addEventListener("click", () => {
+        const q = QUICK[Number(b.dataset.q)];
+        fixDraft = (note.value.trim() ? note.value.trim() + "; " : "") + q;
+        note.value = fixDraft;
+        note.focus();
+      });
+    }
+    $("b-fix-save").addEventListener("click", saveFix);
+    $("b-fix-cancel").addEventListener("click", cancelFix);
+    note.focus();
+  }
+}
+
+function openFix() {
+  if (!current || fixing) return;
+  fixing = true;
+  revealed = true;   // the whole note, to say what is wrong with it
+  render();
+}
+
+function cancelFix() {
+  fixing = false;
+  fixDraft = "";
+  render();
+}
+
+function saveFix() {
+  if (!current) return;
+  const note = ($("fix-note") ? $("fix-note").value : fixDraft).trim();
+  fixing = false;
+  fixDraft = "";
+  judge("invalid", { note });
+}
+
+function reveal() {
+  if (!current || revealed) return;
+  revealed = true;
+  render();
+}
+
+function latestLabel() {
+  let best = null;
+  for (const [nid, v] of labels) if (!best || (v.t || 0) > (best.t || 0)) best = { nid, ...v };
+  return best;
+}
+
+function say(text, bad = false) {
+  $("state").textContent = text;
+  $("state").classList.toggle("bad", bad);
+}
+
+// One write at a time per document: a quick Undo waits for the save it takes back
+const chains = new Map();
+function write(nid, fn) {
+  const p = (chains.get(nid) || Promise.resolve()).catch(() => {}).then(fn);
+  chains.set(nid, p);
+  return p;
+}
+
+function judge(action, extra = {}) {
+  if (!db || !current || (fixing && action !== "invalid")) return;
+  const nid = String(current.nid);
+  const body = { nid: current.nid, label: action, t: Date.now(), ...extra };
+  labels.set(nid, body);   // shown at once; the snapshot confirms it
+  if (front === nid) front = null;
+  skipped.delete(nid);
+  render();
+  write(nid, () => db.collection("labels").doc(nid).set(body)).then(
+    () => say(`Saved: ${NAMES[action] || action}.`),
+    (e) => {
+      if (labels.get(nid) === body) labels.delete(nid);
+      say(`Not saved (${e && e.code ? e.code : "error"}). The word is back in the queue.`, true);
+      render();
+    });
+}
+
+function skip() {
+  if (!current || fixing) return;
+  const nid = String(current.nid);
+  skipped.add(nid);
+  if (front === nid) front = null;
+  // Move it behind every other word still waiting
+  items = items.filter((it) => String(it.nid) !== nid).concat(items.filter((it) => String(it.nid) === nid));
+  render();
+}
+
+function undo() {
+  const last = latestLabel();
+  if (!db || !last || fixing) return;
+  const kept = labels.get(last.nid);
+  labels.delete(last.nid);
+  front = last.nid;
+  render();
+  write(last.nid, () => db.collection("labels").doc(last.nid).delete()).then(
+    () => say("Took back the last judgement."),
+    (e) => {
+      labels.set(last.nid, kept);
+      if (front === last.nid) front = null;
+      say(`Undo failed (${e && e.code ? e.code : "error"}). Try again.`, true);
+      render();
+    });
+}
+
+$("b-suspend").addEventListener("click", () => judge("suspend"));
+$("b-schedule").addEventListener("click", () => judge("schedule"));
+$("b-learn").addEventListener("click", () => judge("learn"));
+$("b-skip").addEventListener("click", skip);
+$("b-undo").addEventListener("click", undo);
+$("b-wrong").addEventListener("click", openFix);
+document.addEventListener("keydown", (e) => {
+  const typing = e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT");
+  if (typing) {
+    if (e.key === "Escape") cancelFix();
+    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveFix(); }
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === "4") { e.preventDefault(); openFix(); return; }
+  if (k === " ") { e.preventDefault(); reveal(); }
+  else if (k === "1") judge("suspend");
+  else if (k === "2") judge("schedule");
+  else if (k === "3") judge("learn");
+  else if (k === "s") skip();
+  else if (k === "u") undo();
+});
+
+async function start() {
+  db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+  if (!db) {
+    $("progress").textContent = "";
+    $("card").innerHTML = `<div class="front"><div class="word">…</div>
+      <div class="note">This page keeps the queue and your judgements in its saved data, which
+      this view can't reach. Open it on claude.ai while signed in.</div></div>`;
+    return;
+  }
+  db.collection("queue").onSnapshot((snap) => {
+    const fresh = [];
+    for (const d of snap.docs) for (const it of (d.data().items || [])) fresh.push(it);
+    fresh.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    // Keep a skipped word where Skip put it
+    const skippedTail = fresh.filter((it) => skipped.has(String(it.nid)));
+    items = fresh.filter((it) => !skipped.has(String(it.nid))).concat(skippedTail);
+    render();
+  }, (e) => say(`The queue stopped updating (${e.code}). Reload the page.`, true));
+  db.collection("labels").onSnapshot((snap) => {
+    const next = new Map();
+    for (const d of snap.docs) {
+      const v = d.data();
+      if (v && v.label) next.set(d.id, { label: v.label, t: v.t || 0 });
+    }
+    labels = next;
+    render();
+  }, (e) => say(`Your judgements stopped updating (${e.code}). Reload the page.`, true));
+}
+render();
+start();
+</script>
