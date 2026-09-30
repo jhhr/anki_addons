@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.16
+Policy version: 0.17
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -162,7 +162,8 @@ needs a split asks (a policy question); it never splits on its own.
   ないでいい / ないでもいい / ないでもよろしい, てはいけない, てはならない, てならない / でならない ("can't help, unbearably"), てもかまわない,
   てはだめ; and a noun or na-adjective + でもいい (明日でもいい), the same pattern as てもいい. でいい without も
   stays 良 (これで良い), and so do ばいい (advice: すりゃ<k> 良[い]い</k>) and てよかった "glad that" (来て良かった),
-  which are not the permission pattern. てはいけない and てはならない are the prohibition after a verb's or
+  which are not the permission pattern; the permission's own past stays kana (てくれてよかったのに,
+  "you could have just"). てはいけない and てはならない are the prohibition after a verb's or
   adjective's て-form; the obligation なくては / なくちゃ + いけない is 行けない, like なくては成らない (KANJI-4): `<k>
   為[し]なくて</k>は<k> 行[い]けない</k>`. Alone the words are kanjified (欲しい, 良い, 行けない, 成らない, 構わない, 駄目).
 - KANA-5 する that only does grammar, holding no "do" or "make": として "as, in the role of" (教師として)
@@ -176,7 +177,8 @@ needs a split asks (a policy question); it never splits on its own.
   を-object of its own, "take or regard A as B", in every form (AをBと為て, AをBと為ると, AをBに為て, AをBと為る,
   AをBと為た), and the finite "regard as" with or without one (と為れる, と為ている): KANJI-3.
   A を-object that belongs to the verb after として is not its own: in AをBとして認める, として
-  only names A's role and stays kana.
+  only names A's role and stays kana. With no later verb that takes A, A is とする's own
+  object (AをBと為て…).
 - KANA-6 あげる meaning "to give": kept in kana to set it apart from 上げる / 揚げる / 挙げる. An
   exception to BASIC.
 - KANA-7 そんな, こんな, あんな, どんな (and そんなに etc.).
@@ -210,7 +212,8 @@ needs a split asks (a policy question); it never splits on its own.
   kanji (絶え間無く) and where the phrase's own dictionary entry writes ない in kana (差し支え無い,
   余儀無く, 幾度と無く), or only as a search-only form (呆気無い, 極まり無い): the test is that
   ない means "there is none". Where it is a negative instead it stays kana: the copula's ない
-  after a noun, では / じゃ / でも / でしか + ない (KANA-2), also in a phrase with an entry of
+  after a noun, では / じゃ / でも / でしか + ない (KANA-2), and である + なし ("whether or not
+  one is"), also in a phrase with an entry of
   its own (過言ではない, 物の数ではない, 他でもない) and clipped (半端ない); an adjective's or
   べし's く-form + も + ない (欲しくもない, 可くもない); ったらない and と言ったらない
   ("indescribably"); とんでもない. The set phrases 満更でも無い, 何でも無い and 碌でも無い stay 無.
@@ -268,22 +271,22 @@ needs a split asks (a policy question); it never splits on its own.
   sound word in kana, つく is 付く (ピリ付く, ごちゃ付く, オラ付く), like にこにこ為る (KANJI-3); a
   stem already in kanji keeps its word's own spelling (愚図つく).
 - KANJI-12 The kana part of a word partly written in kanji is kanjified when that part has a
-  kanji spelling, also when JMdict lists the mixed form first: 引っかける -> 引っ掛ける, 近づく ->
-  近付く, やり方 -> 遣り方, ため息 -> 溜め息, 子ども -> 子供, そのまま -> 其の儘; a kana word
-  whose main spelling is mixed is completed the same way (やりとり -> 遣り取り). A rarely used
-  (rK) or irregular (iK) form counts; a search-only (sK) one doesn't, and when that is the only
-  fuller form the word keeps the main spelling. A fuller form must be one a dictionary lists
-  for the whole word (痩せこける stays), and where the input already writes part of the word in
-  kanji, its added kanji must read the kana part on its own: an ateji or jukujikun that only
-  reads as a whole leaves the word as the input has it (田[た]んぼ, not 田圃). Among several
-  fuller forms, take one that keeps the kanji the source has (SPELL-3), then one whose added
-  kanji read the kana part (ほほ 笑[え]む -> 頬笑む, not 微笑む), then the one that keeps the kana part's
-  own okurigana and main spelling as a word of its own (溜め息, not 溜息; 飛び掛かる, not
-  飛び掛る; 小綺麗, not 小奇麗), then JMdict's order. A main spelling whose kana part is a word
-  of its own (豚カツ, じゃが芋) is used only as a listed form, not with that part in the input's
-  script: とんかつ and ジャガイモ stay kana (豚かつ and ジャガ芋 are search-only). Okurigana,
-  unlike such a part, keeps the input's script (増[マ]シ, 嵌[ハ]マる). A lexicalized verb + ない
-  adjective keeps the verb's okurigana (詰まらない, 詰まらぬ).
+  kanji spelling, also when JMdict lists the mixed form first: 引っかける -> 引っ掛ける, 近づく -> 近付く, やり方
+  -> 遣り方, ため息 -> 溜め息, 子ども -> 子供, そのまま -> 其の儘; a kana word whose main spelling is mixed is
+  completed the same way (やりとり -> 遣り取り). A rarely used (rK) or irregular (iK) form counts; a
+  search-only (sK) one doesn't, and when that is the only fuller form the word keeps the main
+  spelling. A fuller form must be one a dictionary lists for the whole word (痩せこける stays), and
+  where the input already writes part of the word in kanji, its added kanji must read the kana
+  part on its own: an ateji or jukujikun that only reads as a whole leaves the word as the input
+  has it (田[た]んぼ, not 田圃). Among several fuller forms, take one that keeps the kanji the source
+  has (SPELL-3), then one whose added kanji read the kana part (ほほ 笑[え]む -> 頬笑む, not 微笑む) and
+  spell the kana part's own word (擂り下ろす, since すり is 擦る; not 摺り下ろす, since 摺 spells 刷る), then the
+  one that keeps the kana part's own okurigana and main spelling as a word of its own (溜め息, not
+  溜息; 飛び掛かる, not 飛び掛る; 小綺麗, not 小奇麗), then JMdict's order. A main spelling whose kana part is a
+  word of its own (豚カツ, じゃが芋) is used only as a listed form, not with that part in the input's
+  script: とんかつ and ジャガイモ stay kana (豚かつ and ジャガ芋 are search-only). Okurigana, unlike such a
+  part, keeps the input's script (増[マ]シ, 嵌[ハ]マる). A lexicalized verb + ない adjective keeps the
+  verb's okurigana (詰まらない, 詰まらぬ).
 - KANJI-13 Also: なに / なん 何 (なんか / なんて as 何か when it means "something": なんか食べたい),
   いや 否, ああ 嗚呼 (the exclamation), また 又, 遣る (やる as a verb of its own), 君, 時, 方, 序で,
   御蔭 (おかげ, also 御蔭様で), 済む, 彼奴 / 此奴 / 其奴, 出来る, 振り, 貴方 (あなた), 尻餅を突く,
@@ -342,7 +345,8 @@ needs a split asks (a policy question); it never splits on its own.
   たら, たり: `<k> 為[す]れば</k>`), a KANA-4 pattern after it (`<k> 為[し]てもいい</k>`), and
   ようだ's な / に / だ / です after 様 (`<k> 様[よう]な</k>`, `<k> 様[よう]です</k>`). A particle
   stays outside: the conditional と (`<k> 為[す]る</k>と`), a sentence-final よ or ぞ, a
-  na-adjective's な or に (`<k> 些細[ささい]</k>な`), and the ん of のだ (`<k> 付[つ]いて</k>んだ`).
+  na-adjective's な or に (`<k> 些細[ささい]</k>な`), and the ん of のだ (`<k> 付[つ]いて</k>んだ`);
+  the ん of a contracted てる before a sentence-final な is inflection (`<k> 成[な]ってん</k>な`).
   A particle that is part of a word's dictionary spelling stays in it (`<k> 割[わり]に</k>`,
   `<k> 事[こと]に</k>`). A helper after a kanjified particle-like word is outside its span
   (`<k> 為[し]て 許[ばか]り</k>いた`).
