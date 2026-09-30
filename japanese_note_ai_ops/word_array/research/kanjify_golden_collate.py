@@ -24,7 +24,7 @@ Reads `results/<queue>/*.json` and writes:
                             that isn't one kana word, a kanji with none) and the labellers'. A
                             missing space alone keeps the row in the set: it changes no reading,
                             and kanjify_eval compares with whitespace dropped, so the label holds
-                            for the fixed sentence
+                            for the fixed sentence. `furigana_fix.py` writes it into the notes
   collated/queue.jsonl      the words this round of step 2 handed back that the inventory has
                             no word for, with their sentences; they are added to
                             `handed_back.jsonl`, which keeps every round's, and

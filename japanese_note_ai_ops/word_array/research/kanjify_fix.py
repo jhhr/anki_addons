@@ -61,7 +61,8 @@ def change_list(rows: list[dict]) -> list[str]:
     return lines
 
 
-def _current(infos: list[dict], config: dict) -> dict[int, tuple[Optional[str], str]]:
+def _current(infos: list[dict], config: dict,
+             field_key: str = FIELD_KEY) -> dict[int, tuple[Optional[str], str]]:  # fmt: skip
     """Per note id: (its field name, the field's value), or (None, why it can't be read)."""
     out: dict[int, tuple[Optional[str], str]] = {}
     for info in infos:
@@ -69,10 +70,18 @@ def _current(infos: list[dict], config: dict) -> dict[int, tuple[Optional[str], 
             continue
         nid = info["noteId"]
         try:
-            field = anki_connect.sentence_field(config, info.get("modelName", ""), FIELD_KEY)
-            out[nid] = (field, anki_connect.note_sentence(config, info, FIELD_KEY))
+            field = anki_connect.sentence_field(config, info.get("modelName", ""), field_key)
+            out[nid] = (field, anki_connect.note_sentence(config, info, field_key))
         except anki_connect.AnkiConnectError as e:
             out[nid] = (None, str(e))
+    return out
+
+
+def notes_info(client, nids: list[int], chunk: int = 500) -> list[dict]:
+    """notesInfo in chunks: a fix list can name thousands of notes, too many for one request."""
+    out: list[dict] = []
+    for i in range(0, len(nids), chunk):
+        out += client.notes_info(nids[i : i + chunk])
     return out
 
 
@@ -82,10 +91,11 @@ def _padding(value: str) -> tuple[str, str]:
     return value[: len(value) - len(value.lstrip())], value[len(value.rstrip()) :]
 
 
-def plan_writes(rows: list[dict], infos: list[dict], config: dict) -> tuple[list[Write], list[str]]:
+def plan_writes(rows: list[dict], infos: list[dict], config: dict,
+                field_key: str = FIELD_KEY) -> tuple[list[Write], list[str]]:  # fmt: skip
     """The writes that apply the rows to notes whose field is still `before`, padding aside; why
     the others are refused. A written field keeps the padding it had."""
-    current = _current(infos, config)
+    current = _current(infos, config, field_key)
     writes, refused = [], []
     for row in rows:
         for nid in row.get("nids") or []:
@@ -102,11 +112,12 @@ def plan_writes(rows: list[dict], infos: list[dict], config: dict) -> tuple[list
     return writes, refused
 
 
-def apply(client, rows: list[dict], config: dict, undo: Path) -> tuple[int, list[str]]:
+def apply(client, rows: list[dict], config: dict, undo: Path,
+          field_key: str = FIELD_KEY) -> tuple[int, list[str]]:  # fmt: skip
     """Writes the fixes, recording each old value in `undo` before its write; how many were
     written and the refusals."""
     nids = sorted({nid for row in rows for nid in row.get("nids") or []})
-    writes, refused = plan_writes(rows, client.notes_info(nids) if nids else [], config)
+    writes, refused = plan_writes(rows, notes_info(client, nids), config, field_key)
     written = 0
     for w in writes:
         with open(undo, "a", encoding="utf-8") as f:
@@ -116,12 +127,14 @@ def apply(client, rows: list[dict], config: dict, undo: Path) -> tuple[int, list
     return written, refused
 
 
-def revert(client, config: dict, undo: Path) -> tuple[int, list[str]]:
+def revert(client, config: dict, undo: Path,
+           field_key: str = FIELD_KEY) -> tuple[int, list[str]]:  # fmt: skip
     """Writes back the old values of `undo`, newest first, where the field is still what was
     written; reverted entries leave the file."""
     entries = [Write(**d) for d in read_jsonl(undo)]
-    infos = client.notes_info(sorted({e.nid for e in entries})) if entries else []
-    current = {nid: value for nid, (field, value) in _current(infos, config).items() if field}
+    infos = notes_info(client, sorted({e.nid for e in entries}))
+    current = {nid: value for nid, (field, value) in _current(infos, config, field_key).items()
+               if field}  # fmt: skip
     kept, refused, reverted = [], [], 0
     for e in reversed(entries):
         if current.get(e.nid) != e.after:
