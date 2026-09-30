@@ -431,10 +431,12 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
 
 def read_cut_okurigana_as_kanji(tm: TextMap) -> tuple[TextMap, list[Morph]]:
     """<k> groups go to the tokenizer as their reading, which it can take as a word of its own
-    with the okurigana cut off (よくあれる -> あ + れる, １本ほどけば -> 本 + ほど + けば). Such a
-    group goes in as its kanji when a word that inflects then runs from the kanji into the
-    okurigana, read as JMdict reads it (荒れる, 解けば; not 座る for 御座[おじゃ]る). The
-    tokenized text map comes back with its morphs."""
+    with the okurigana cut off (よくあれる -> あ + れる, １本ほどけば -> 本 + ほど + けば), or cut
+    inside, its tail read into what follows (あんこの -> あん + この, あみだなに -> あみだ + なに).
+    Such a group goes in as its kanji when that reads it as the furigana says, the way JMdict
+    reads it: a word that inflects running from the kanji into the okurigana (荒れる, 解けば; not
+    座る for 御座[おじゃ]る), or, for a cut group, one word from its start over all of it (餡子,
+    網棚, 一回り; not 故 of 故[だか]ら). The tokenized text map comes back with its morphs."""
 
     def read_as_furigana(kanji_tm: TextMap, m: Morph) -> bool:
         surface = kanji_tm.natural[m.start : m.end]
@@ -445,22 +447,31 @@ def read_cut_okurigana_as_kanji(tm: TextMap) -> tuple[TextMap, list[Morph]]:
         return reading in known or reading in {voiced(r) for r in known}
 
     morphs = tokenize(tm.natural)
-    for i in range(len(tm.segs) - 1):
-        seg, nxt = tm.segs[i], tm.segs[i + 1]
-        end = seg.nat_start + len(seg.natural)
-        if not (
-            seg.kind == "furi"
-            and seg.natural_is_reading
+    # By index: a group read as kanji shifts the natural offsets of every one after it
+    for i in range(len(tm.segs)):
+        seg = tm.segs[i]
+        if not (seg.kind == "furi" and seg.natural_is_reading):
+            continue
+        start, end = seg.nat_start, seg.nat_start + len(seg.natural)
+        nxt = tm.segs[i + 1] if i + 1 < len(tm.segs) else None
+        cut_okurigana = (
+            nxt is not None
             and nxt.kind == "char"
-            and text_map.HIRAGANA_RE.match(nxt.natural)
+            and bool(text_map.HIRAGANA_RE.match(nxt.natural))
             and any(m.end == end and m.pos[0] not in INFLECTING for m in morphs)
-        ):
+        )
+        cut_across = any(start < m.start < end < m.end for m in morphs)
+        if not (cut_okurigana or cut_across):
             continue
         kanji_tm = text_map.read_as_kanji(tm, [i])
         kanji_morphs = tokenize(kanji_tm.natural)
-        kanji_end = seg.nat_start + len(seg.base)
+        kanji_end = start + len(seg.base)
         if any(
-            m.start < kanji_end < m.end and m.pos[0] in INFLECTING and read_as_furigana(kanji_tm, m)
+            (
+                (cut_okurigana and m.start < kanji_end < m.end and m.pos[0] in INFLECTING)
+                or (cut_across and m.start == start and m.end >= kanji_end)
+            )
+            and read_as_furigana(kanji_tm, m)
             for m in kanji_morphs
         ):
             tm, morphs = kanji_tm, kanji_morphs

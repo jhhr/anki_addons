@@ -512,6 +512,24 @@ class WordArrayTests(unittest.TestCase):
                 self.assertNotIn("auxiliary", [s[1] for s in word[5] if len(s) > 1], arr)
                 self.assertNotIn("particle", [s[1] for s in word[5] if len(s) > 1], arr)
 
+    def test_k_reading_the_tokenizer_cuts_inside_goes_in_as_kanji(self):
+        # あんこの is あん + この, あいつも あい + つも, よその よ + その: the group's tail read
+        # into the particle after it
+        for sentence, raw, pos, form in [
+            ("<k> 餡子[あんこ]</k>の 入[はい]った 菓子[かし]", " 餡子[あんこ]", "noun", "餡子"),
+            ("<k> 彼奴[あいつ]</k>も<k> 到頭[とうとう]</k>くたばった", " 彼奴[あいつ]", "pronoun", "彼奴"),
+            ("見[み]ない 顔[かお]だな<k> 余所[よそ]</k>の 禿[かむろ]か", " 余所[よそ]", "noun", "余所"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                words = [w for w in arr if len(w) > 1]
+                i = next(i for i, w in enumerate(words) if w[2] == form)
+                self.assertEqual(words[i][:3], [raw, pos, form], arr)
+                self.assertEqual(words[i + 1][1], "particle", arr)
+        # Kanji that would not read as the furigana says stay kana: 故 of 故[だか]ら is no だか
+        arr = self.generator.generate("<k> 故[だか]ら</k> 時間[じかん]が 無[な]い")
+        self.assertEqual(find_word(arr, "故"), [], arr)
+
     def test_tsutsu_aru_is_a_word_after_the_verb(self):
         for sentence, verb, raw, form in [
             ("日本は変わりつつある。", "変わる", "つつある", "つつある"),

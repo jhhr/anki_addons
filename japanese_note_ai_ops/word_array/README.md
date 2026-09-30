@@ -42,6 +42,10 @@ collection was migrated on 2026-09-16.
    `<k>` are reverted to their furigana reading first: `<k>` marks words that were kana before
    kanjify_sentence ran, and reading `遣[や]っ` as kanji gives 遣う (つかう), `為[さ]れ` gives
    なる, `為[す]る` before 際 gives ため. Tokenizing the original kana fixes most wrong lemmas.
+   Where the kana tokenizes worse, the group goes back in as its kanji, if the kanji then read
+   as the furigana says: kana cut off as a word of its own before its okurigana (あ + れる for
+   荒れる), or cut inside with its tail read into what follows (あん + この for 餡子の,
+   よ + その for 余所の; 10 sentences in the export).
 2. **Sudachi** (`SplitMode.C`), keeping each long unit's `SplitMode.A` split for sub-words.
    `normalized_form` turns kana lemmas back into kanjified ones (する -> 為る, これ -> 此れ,
    くださる -> 下さる).
