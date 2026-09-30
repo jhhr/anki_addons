@@ -234,6 +234,18 @@ def opus_answers(words: list[dict]) -> dict[int, dict]:
     return out
 
 
+# The user's call: a note of a proper noun should not have been matched, and is wrong data
+PROPER_NOUN_NOTE = "should not have matched a proper noun"
+
+
+def proper_noun_nids(words: list[dict], opus: Optional[dict[int, dict]] = None) -> set[int]:
+    """The notes Opus reads as a proper noun, real or fictional. Not the part of speech: a
+    note tagged Proper Noun is often a common word (花園, ユーロ), and one tagged Noun a name
+    (田中, ハワイ)."""
+    opus = opus_answers(words) if opus is None else opus
+    return {nid for nid, a in opus.items() if str(a.get("kind", "")).startswith("proper-noun")}
+
+
 def by_nid(name: str) -> dict[int, dict]:
     return {r["nid"]: r for r in td.read_jsonl(td.data_file(name))}
 

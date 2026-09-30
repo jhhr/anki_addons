@@ -42,6 +42,7 @@ from collections import Counter
 from pathlib import Path
 
 import triage_data as td
+import triage_features as tf
 
 PROMPT_VERSION = 1
 BATCH = 40
@@ -210,8 +211,8 @@ def export(args) -> int:
     holdout = {r["nid"] for r in td.read_jsonl(td.data_file("judge_queue.jsonl"))
                if r["kind"] == "random"}
     cache = read_cache()
-    wrong = frozenset(r["nid"] for r in td.read_jsonl(td.data_file("hand_labels.jsonl"))
-                      if r.get("label") == "invalid")
+    wrong = frozenset({r["nid"] for r in td.read_jsonl(td.data_file("hand_labels.jsonl"))
+                       if r.get("label") == "invalid"} | tf.proper_noun_nids(list(words.values())))
     chosen = select(words, preds, holdout, args.lo, args.hi, args.labelled, wrong)
     todo = []
     for nid in chosen:

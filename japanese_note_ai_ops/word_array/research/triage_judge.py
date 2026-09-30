@@ -48,6 +48,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import triage_data as td
+import triage_features as tf
 
 QUEUE = "judge_queue.jsonl"
 HAND_LABELS = "hand_labels.jsonl"
@@ -92,7 +93,8 @@ def pick(args) -> int:
                 for n in random_holdout(words, judged)]
     preds = td.read_jsonl(td.data_file("predictions.jsonl"))
     if preds and args.uncertain:
-        taken = {r["nid"] for r in new} | done
+        # A proper noun is wrong data by the user's rule, never worth a judgement
+        taken = {r["nid"] for r in new} | done | tf.proper_noun_nids(words)
         pool = [p for p in preds if not p["labelled"] and p["nid"] not in taken]
         n_suspend = args.uncertain // 4
         seen_bases: set[str] = set()
@@ -447,6 +449,8 @@ def import_labels(args) -> int:
                "round": placed[nid]["round"], "t": int(doc.get("t", 0)) // 1000}
         if doc["label"] == INVALID:
             row["note"] = str(doc.get("note") or "")
+        if doc.get("by"):
+            row["by"] = str(doc["by"])  # "rule": set by a session on the user's rule, not judged
         labels.append(row)
     labels.sort(key=lambda r: r["t"])
     td.write_jsonl(td.data_file(HAND_LABELS), labels)

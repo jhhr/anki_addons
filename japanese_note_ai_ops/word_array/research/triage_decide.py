@@ -8,7 +8,8 @@ card new and in the processing deck, and not judged in Anki (`labels.jsonl`).
 
 - A note judged by hand gets that action: the user's call, not the model's. One the user marked
   Wrong data on the judging page (label `invalid`) gets no decision: its note is wrong and waits
-  for a fix.
+  for a fix. So does every proper noun (Opus's `kind`, triage_features.proper_noun_nids): the
+  user's rule is that the match op should not have matched one.
 - A note an Opus subagent reported as wrong (`note_issues.jsonl`: a reading that does not fit
   the sense, a sense that belongs to another word) is decided, but held: triage_apply.py leaves
   it alone unless asked to, since a wrong note scheduled years out stays wrong that long.
@@ -43,6 +44,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 import triage_data as td
+import triage_features as tf
 
 SUSPEND_MIN = 0.8
 LEARN_LINE = 0.5
@@ -344,6 +346,10 @@ def main() -> int:
         # An odd but readable spelling is listed for fixing and holds nothing back
         (minor if r.get("severity") == "minor" else issues)[r["nid"]].append(r["issue"])
     anki_labels = {r["nid"]: r for r in td.read_jsonl(td.data_file("labels.jsonl"))}
+    for nid in tf.proper_noun_nids(words):
+        if nid not in anki_labels:
+            wrong.setdefault(nid, {"nid": nid, "label": "invalid", "note": tf.PROPER_NOUN_NOTE,
+                                   "by": "rule"})
     freq = {r["nid"]: r for r in td.read_jsonl(td.data_file("frequency.jsonl"))}
 
     rows, out = decide(words, preds, hand, anki_labels, freq, settings, args, wrong, issues)
