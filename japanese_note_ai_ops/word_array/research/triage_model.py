@@ -362,6 +362,8 @@ def main() -> int:
     labels = Labels(args.long_days)
     # The agents' answers are a second stage, not a feature of the first: most notes have none
     frame = frame[[c for c in frame.columns if not c.startswith("agent_")]]
+    # Counted before the constant columns go: once every note has an answer, op_missing is one
+    with_opus = int((frame["op_missing"] == 0).sum()) if "op_missing" in frame else len(frame)
     # A column that is one value throughout says nothing and only slows the fit
     frame = frame.loc[:, frame.nunique(dropna=False) > 1]
     labelled = labels.training(frame.index)
@@ -375,7 +377,7 @@ def main() -> int:
              + f", schedule of either length {int(((lo == 1) & (hi == 2)).sum())}",
              f"random holdout: {len(labels.holdout)} queued, {len(held)} judged (never trained"
              " on)",
-             f"Opus features present for {int((frame.get('op_missing', 0) == 0).sum())} notes",
+             f"Opus features present for {with_opus} notes",
              ""]
 
     lines.append("--- ordinal logistic regression, cross-validated by L2 strength ---")
