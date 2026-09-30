@@ -314,11 +314,15 @@ def report(rows, out, preds, hand, anki_labels, args) -> list[str]:
 
 
 def wrong_data_lines(words: dict, wrong: dict, issues: dict) -> list[str]:
-    lines = [f"{len(wrong)} notes marked Wrong data by hand, {len(issues)} reported wrong by an"
-             " agent. Fix the note (its reading, meaning, sentence furigana or word array), then"
-             " judge it again.", ""]
-    for title, found in (("--- marked by hand ---", {n: [r.get("note") or ""] for n, r in wrong.items()}),
-                         ("--- reported by an agent ---", issues)):
+    by_rule = {n: r for n, r in wrong.items() if r.get("by") == "rule"}
+    by_hand = {n: r for n, r in wrong.items() if n not in by_rule}
+    lines = [f"{len(by_hand)} notes marked Wrong data by hand, {len(by_rule)} by the user's rules,"
+             f" {len(issues)} reported wrong by an agent. Fix the note (its reading, meaning,"
+             " sentence furigana or word array), then judge it again.", ""]
+    for title, found in (
+            ("--- marked by hand ---", {n: [r.get("note") or ""] for n, r in by_hand.items()}),
+            ("--- by rule ---", {n: [r.get("note") or ""] for n, r in by_rule.items()}),
+            ("--- reported by an agent ---", issues)):
         lines.append(title)
         for nid in sorted(found, key=lambda n: words.get(n, {}).get("key", "")):
             w = words.get(nid, {})
