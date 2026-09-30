@@ -18,7 +18,8 @@ For each sentence:
    (a KANA rule, or no dictionary spelling by SOURCE), or kanji (a KANJI rule or a word
    decision), and with which spelling (SPELL, SPLIT, the decision).
 3. A word listed under "Word decisions" follows its decision: find the use that fits this
-   sentence and write it that way. Every other word is settled by the policy itself, and most
+   sentence and write it that way. Where a decision and the policy disagree, the policy wins:
+   a decision can predate the policy's latest answers. Every other word is settled by the policy itself, and most
    words are: a content word with a dictionary kanji spelling is kanjified with its main
    spelling (SOURCE-1, SPELL-2), whether or not it has a decision. Ordinary words written in
    kana (林檎, 鞄, 一番, 直ぐ, 所謂, 擽る, 梳かす, 成る程) are kanjified like any other; when you
