@@ -23,6 +23,8 @@ those and list them; they are not uses of this word.
 Each line: sentence id, how the collection writes it now (`kana`, or `kanjified` and the kanji
 used), and the sentence as the kana input reads it, the word marked 【like this】. How the
 collection writes it now is evidence of past labelling, not of the policy: it is often wrong.
+Under a use, `translation:` is the note's own translation of the sentence, where the note has
+one: it can tell which sense or which word a use is, but it is often free.
 {USES_NOTE}
 
 {USES}

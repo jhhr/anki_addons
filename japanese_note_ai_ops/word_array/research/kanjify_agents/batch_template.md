@@ -62,6 +62,9 @@ decided it; cite `decision:<word id>/<use number>` for a span it decides.
 ## Sentences
 
 Each line: sentence id, then the input sentence in the field format (furigana as ` 漢字[かな]`).
+Under a sentence, `translation:` is the note's own translation of it, where the note has one.
+It can tell which word or sense the sentence means (カキ: an oyster or a persimmon), but it is
+often free, and it is never part of the sentence or a reason to kanjify a word or not.
 
 {SENTENCES}
 

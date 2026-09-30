@@ -226,6 +226,39 @@ class HandedBackTest(unittest.TestCase):
         self.assertIn("handed it back undecided: ?", render.word_prompt(word, "", 120))
 
 
+class TranslationsTest(unittest.TestCase):
+    def test_a_sentence_gets_the_first_translation_its_notes_have(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "dump.jsonl"
+            golden.write_jsonl(dump, [
+                {"nid": 1, "sentence": SENTENCE, "translation": ""},
+                {"nid": 2, "sentence": SENTENCE, "translation": "This is a book."},
+                {"nid": 3, "sentence": "x", "translation": "An old dump has none"},
+                {"nid": 4, "sentence": "y"},
+            ])  # fmt: skip
+            found = golden.translations(dump)
+        self.assertEqual(found[golden.sentence_id(SENTENCE)], "This is a book.")
+        self.assertNotIn(golden.sentence_id("y"), found)
+
+    def test_both_prompts_show_it_under_the_sentence(self):
+        sid = golden.sentence_id(SENTENCE)
+        found = {sid: "This is a book."}
+        line = f'- {sid}: {SENTENCE}\n  translation: "This is a book."'
+        rows = [{"sid": sid, "sentence": SENTENCE, "words": []}]
+        self.assertIn(line, render.batch_prompt(rows, {}, "", translations=found))
+        self.assertNotIn("\n  translation:", render.batch_prompt(rows, {}, ""))
+        word = {"wid": "w1", "word": "a", "kana": "a", "pos": "", "why": ["?"],
+                "uses": [{"sid": sid, "kind": "kana", "kanji": "", "text": "t"}]}  # fmt: skip
+        self.assertIn(f'- {sid} kana: t\n  translation: "This is a book."',
+                      render.word_prompt(word, "", 120, found))  # fmt: skip
+
+    def test_a_field_becomes_one_line_of_text(self):
+        import kanjify_golden_dump as dump
+
+        self.assertEqual(dump.plain("It&#39;s <b>here</b>.<br>Really.<div>x</div>"),
+                         "It's here. Really. x")  # fmt: skip
+
+
 class TemplatesTest(unittest.TestCase):
     def test_the_escape_example_is_an_escape(self):
         # Written through a tool that decodes JSON, the example once became the kana it stands

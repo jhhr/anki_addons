@@ -90,6 +90,17 @@ def read_sentences(dump: Path = DUMP) -> list[Sentence]:
     return [Sentence(sentence_id(s), s, sorted(nids)) for s, nids in by_sentence.items()]
 
 
+def translations(dump: Path = DUMP) -> dict[str, str]:
+    """sid -> the note's own translation of the sentence, the first of its notes' that has one.
+    The prompts show it: the sentence alone sometimes doesn't say which word it means (カキ,
+    oyster or persimmon)."""
+    out: dict[str, str] = {}
+    for note in read_jsonl(dump):
+        if note["sentence"] and note.get("translation"):
+            out.setdefault(sentence_id(note["sentence"]), note["translation"])
+    return out
+
+
 def hand_labels(sentences: list[Sentence]) -> dict[str, dict]:
     """sid -> the hand-fixed row of that sentence, matched by note id. A row whose sentence
     (without `<b>`, which the export kept) is no longer the note's input is left out: it labels

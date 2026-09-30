@@ -7,7 +7,8 @@
 `words` (step 1): one prompt per inventory word, `kanjify_agents/word_template.md` filled with
 the word, its JMdict entries and its uses (at most `--max-uses`, taken evenly from each way the
 collection writes it; `kanjify_lookup.py uses` shows an agent the rest), plus the words step 2
-handed back (`handed_back.jsonl`, with the labellers' reasons). The pilot's words come first,
+handed back (`handed_back.jsonl`, with the labellers' reasons). Under a use or a sentence, in
+both steps, the note's translation (`kanjify_golden.translations`). The pilot's words come first,
 so the pilot's batch agent has their decisions early; then the inventory's order, then the
 handed-back words. -> `queues/words.jsonl`.
 
@@ -34,6 +35,7 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Optional
 
 import kanjify_golden as golden
 import kanjify_lookup as lookup
@@ -64,9 +66,14 @@ def sample_uses(uses: list[dict], cap: int) -> list[dict]:
     return out
 
 
-def use_line(u: dict) -> str:
+def translation_line(sid: str, translations: dict[str, str]) -> str:
+    """The note's translation, on its own line under the sentence's: never read as part of it."""
+    return f'\n  translation: "{translations[sid]}"' if translations.get(sid) else ""
+
+
+def use_line(u: dict, translations: dict[str, str]) -> str:
     how = f"kanjified {u['kanji']}" if u["kind"] == "kanjified" else u["kind"]
-    return f"- {u['sid']} {how}: {u['text']}"
+    return f"- {u['sid']} {how}: {u['text']}" + translation_line(u["sid"], translations)
 
 
 def jmdict_block(word: dict) -> str:
@@ -92,7 +99,8 @@ def handed_word(entry: dict, sentences: dict[str, dict]) -> dict:
             "pos": "as a step 2 labeller wrote it", "uses": uses, "why": entry["why"]}  # fmt: skip
 
 
-def word_prompt(word: dict, policy: str, max_uses: int) -> str:
+def word_prompt(word: dict, policy: str, max_uses: int,
+                translations: Optional[dict[str, str]] = None) -> str:  # fmt: skip
     uses = sample_uses(word["uses"], max_uses)
     if "why" in word:
         counts = "Step 2's sentence labellers handed it back undecided: " + " / ".join(
@@ -120,7 +128,7 @@ def word_prompt(word: dict, policy: str, max_uses: int) -> str:
         .replace("{COUNTS}", counts)
         .replace("{JMDICT}", jmdict_block(word))
         .replace("{USES_NOTE}", note)
-        .replace("{USES}", "\n".join(use_line(u) for u in uses))
+        .replace("{USES}", "\n".join(use_line(u, translations or {}) for u in uses))
         .replace("{POLICY}", policy)
     )
 
@@ -153,7 +161,8 @@ SINGLE_STEPS = """3. No word decisions are given: decide each word yourself from
 
 
 def batch_prompt(sentences: list[dict], decisions: dict[str, dict], policy: str,
-                 single: bool = False) -> str:  # fmt: skip
+                 single: bool = False, translations: Optional[dict[str, str]] = None,
+                 ) -> str:  # fmt: skip
     words = sorted({w for s in sentences for w in s["words"]})
     blocks = [decision_block(decisions[w]) for w in words if w in decisions]
     text = template("batch_template.md")
@@ -170,7 +179,10 @@ def batch_prompt(sentences: list[dict], decisions: dict[str, dict], policy: str,
     return (
         text.replace("{COUNT}", str(len(sentences)))
         .replace("{DECISIONS}", "\n\n".join(blocks) or "(none of these sentences' words)")
-        .replace("{SENTENCES}", "\n".join(f"- {s['sid']}: {s['sentence']}" for s in sentences))
+        .replace("{SENTENCES}", "\n".join(
+            f"- {s['sid']}: {s['sentence']}" + translation_line(s["sid"], translations or {})
+            for s in sentences
+        ))  # fmt: skip
         .replace("{POLICY}", policy)
     )
 
@@ -208,6 +220,7 @@ def main() -> int:
     args = parser.parse_args()
 
     policy = golden.policy_text()
+    translations = golden.translations()
     golden.QUEUES.mkdir(parents=True, exist_ok=True)
     if args.command == "words":
         words = read("words.jsonl")
@@ -220,8 +233,9 @@ def main() -> int:
         if args.wids:
             words = [w for w in words if w["wid"] in args.wids]
         items = [
-            item(w["wid"], word_prompt(w, policy, args.max_uses), args.effort, "lookup+web",
-                 "word_schema.json", kind="word", word=w["word"], kana=w["kana"])  # fmt: skip
+            item(w["wid"], word_prompt(w, policy, args.max_uses, translations), args.effort,
+                 "lookup+web", "word_schema.json", kind="word", word=w["word"],
+                 kana=w["kana"])  # fmt: skip
             for w in words
         ]
         n = golden.write_jsonl(golden.QUEUES / "words.jsonl", items)
@@ -242,8 +256,9 @@ def main() -> int:
         for b in batches:
             rows = [sentences[sid] for sid in b["sids"]]
             items.append(
-                item(b["bid"], batch_prompt(rows, decisions, policy), args.effort, "lookup",
-                     "batch_schema.json", kind="batch", sids=b["sids"])  # fmt: skip
+                item(b["bid"], batch_prompt(rows, decisions, policy, translations=translations),
+                     args.effort, "lookup", "batch_schema.json", kind="batch",
+                     sids=b["sids"])  # fmt: skip
             )
         n = golden.write_jsonl(golden.QUEUES / "batches.jsonl", items)
         print(f"{n} batch prompts ({len(decisions)} decisions) -> {golden.QUEUES}")
