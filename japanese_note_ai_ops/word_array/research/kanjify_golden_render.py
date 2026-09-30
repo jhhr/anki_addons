@@ -7,12 +7,14 @@
 `words` (step 1): one prompt per inventory word, `kanjify_agents/word_template.md` filled with
 the word, its JMdict entries and its uses (at most `--max-uses`, taken evenly from each way the
 collection writes it; `kanjify_lookup.py uses` shows an agent the rest), plus the words step 2
-handed back (`collated/queue.jsonl`). The pilot's words come first, so the pilot's batch agent
-has their decisions early; then the inventory's order. -> `queues/words.jsonl`.
+handed back (`handed_back.jsonl`, with the labellers' reasons). The pilot's words come first,
+so the pilot's batch agent has their decisions early; then the inventory's order, then the
+handed-back words. -> `queues/words.jsonl`.
 
 `batches` (step 2): one prompt per inventory batch, `batch_template.md` filled with its input
 sentences and the decisions (`decisions.jsonl`, written by the collate step) of the words they
-hold. A batch never says which of its sentences are hand-fixed or labelled twice.
+hold, handed-back words included. A batch never says which of its sentences are hand-fixed or
+labelled twice.
 -> `queues/batches.jsonl`.
 
 `pilot`: the pilot's sentences three ways, to compare cost and agreement before scaling step 2:
@@ -75,14 +77,34 @@ def jmdict_block(word: dict) -> str:
     return "```\n" + text + "\n```"
 
 
+def handed_word(entry: dict, sentences: dict[str, dict]) -> dict:
+    """A word step 2 handed back (`golden.HANDED`), shaped as an inventory word for
+    `word_prompt`. It has no survey counts, so the prompt gives the labellers' reasons."""
+    word = lookup.plain(entry["word"])
+    uses = []
+    for sid in entry["sids"]:
+        text = lookup.plain(sentences[sid]["sentence"]) if sid in sentences else ""
+        at = text.find(word) if word else -1
+        if at >= 0:
+            text = f"{text[:at]}【{word}】{text[at + len(word):]}"
+        uses.append({"sid": sid, "kind": "kana", "kanji": "", "text": text})
+    return {"wid": entry["wid"], "word": word, "kana": entry["kana"] or word,
+            "pos": "as a step 2 labeller wrote it", "uses": uses, "why": entry["why"]}  # fmt: skip
+
+
 def word_prompt(word: dict, policy: str, max_uses: int) -> str:
     uses = sample_uses(word["uses"], max_uses)
-    kanjified = ", ".join(f"{k} ×{n}" for k, n in word["kanjified"].items()) or "never"
-    counts = (
-        f"In the collection's current labels it is kanjified {kanjified}; kana"
-        f" ×{word['kana_uses']}; already in kanji in the input ×{word['kanji_uses']}"
-        f" (those are not shown and not yours to change)."
-    )
+    if "why" in word:
+        counts = "Step 2's sentence labellers handed it back undecided: " + " / ".join(
+            dict.fromkeys(word["why"][:4])
+        )
+    else:
+        kanjified = ", ".join(f"{k} ×{n}" for k, n in word["kanjified"].items()) or "never"
+        counts = (
+            f"In the collection's current labels it is kanjified {kanjified}; kana"
+            f" ×{word['kana_uses']}; already in kanji in the input ×{word['kanji_uses']}"
+            f" (those are not shown and not yours to change)."
+        )
     note = (
         f"All {len(uses)} uses are listed."
         if len(uses) == len(word["uses"])
@@ -193,6 +215,8 @@ def main() -> int:
         pilot_words = {w for s in read("sentences.jsonl") if s["sid"] in pilot_sids
                        for w in s["words"]}  # fmt: skip
         words.sort(key=lambda w: w["wid"] not in pilot_words)
+        sentences = {s["sid"]: s for s in read("sentences.jsonl")}
+        words += [handed_word(h, sentences) for h in golden.read_jsonl(golden.HANDED)]
         if args.wids:
             words = [w for w in words if w["wid"] in args.wids]
         items = [
@@ -205,6 +229,10 @@ def main() -> int:
         return 0
 
     sentences = {s["sid"]: s for s in read("sentences.jsonl")}
+    for h in golden.read_jsonl(golden.HANDED):
+        for sid in h["sids"]:
+            if sid in sentences:
+                sentences[sid] = {**sentences[sid], "words": sentences[sid]["words"] + [h["wid"]]}
     decisions = read_decisions()
     if args.command == "batches":
         batches = read("batches.jsonl")

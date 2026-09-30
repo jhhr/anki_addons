@@ -37,6 +37,10 @@ AGENTS_DIR = Path(__file__).resolve().parent / "kanjify_agents"
 POLICY = AGENTS_DIR / "policy.md"
 # Written by the collate step: the step 1 decisions as step 2 prompts read them
 DECISIONS = GOLDEN / "decisions.jsonl"
+# Every word step 2 handed back that the inventory has no word for, with its sentences, over
+# every round: collate adds each round's, step 1 decides them, and step 2 finds a decision for
+# a sentence through this file, since the inventory never lists these words
+HANDED = GOLDEN / "handed_back.jsonl"
 # The hand-fixed labels, which step 2 labels again unknowingly for the calibration report
 HAND = eval_file("kanjify_sentence_data.jsonl")
 

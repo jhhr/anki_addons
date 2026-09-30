@@ -22,8 +22,10 @@ Reads `results/<queue>/*.json` and writes:
                             kanji with none) and the labellers'. A missing space alone keeps the
                             row in the set: it changes no reading, and kanjify_eval compares
                             with whitespace dropped, so the label holds for the fixed sentence
-  collated/queue.jsonl      the words step 2 handed back that the inventory has no word for,
-                            with their sentences: `kanjify_golden_render.py words` adds them
+  collated/queue.jsonl      the words this round of step 2 handed back that the inventory has
+                            no word for, with their sentences; they are added to
+                            `handed_back.jsonl`, which keeps every round's, and
+                            `kanjify_golden_render.py words` renders from that
   collated/questions.md     the policy questions agents raised, by word, for the user
   collated/report.md        counts and cost per queue, and the calibration: agreement with the
                             hand-fixed labels (a row the user fixed by hand, labelled again
@@ -64,7 +66,7 @@ def read_results(queue: str) -> list[dict]:
 
 def decisions(results: list[dict]) -> list[dict]:
     words = {w["wid"]: w for w in golden.read_jsonl(golden.INVENTORY / "words.jsonl")}
-    queued = {q["wid"]: q for q in golden.read_jsonl(golden.COLLATED / "queue.jsonl")}
+    queued = {q["wid"]: q for q in golden.read_jsonl(golden.HANDED)}
     out = []
     for r in results:
         s = r.get("structured")
@@ -180,6 +182,18 @@ def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
     return out
 
 
+def merge_handed(old: list[dict], new: list[dict]) -> list[dict]:
+    """The handed-back words of every round so far. A round relabelled on a newer policy hands
+    back fewer words, and the ones an earlier round handed back keep their decisions only while
+    this file still names their sentences."""
+    out = {w["wid"]: {**w, "sids": list(w["sids"]), "why": list(w["why"])} for w in old}
+    for w in new:
+        entry = out.setdefault(w["wid"], {**w, "sids": [], "why": []})
+        entry["sids"] = sorted(set(entry["sids"]) | set(w["sids"]))
+        entry["why"] = list(dict.fromkeys(entry["why"] + w["why"]))
+    return sorted(out.values(), key=lambda w: w["wid"])
+
+
 def agreement(pairs: list[tuple[str, str, str, str]]) -> tuple[dict, list[str]]:
     """(sid, sentence, a, b) -> exact share, span counts with a as the label, and the
     disagreements listed."""
@@ -277,6 +291,7 @@ def main() -> int:
         wid = "q" + golden.sentence_id(f"{word}|{kana}")[1:9]
         new_words.append({"wid": wid, **entry, "sids": sorted(set(entry["sids"]))})
     golden.write_jsonl(golden.COLLATED / "queue.jsonl", new_words)
+    golden.write_jsonl(golden.HANDED, merge_handed(golden.read_jsonl(golden.HANDED), new_words))
 
     # the questions
     q_lines = ["# Policy questions the agents raised", ""]

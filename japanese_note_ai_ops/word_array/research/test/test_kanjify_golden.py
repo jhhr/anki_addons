@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import agent_items  # noqa: E402
 import agent_queue  # noqa: E402
 import kanjify_golden as golden  # noqa: E402
+import kanjify_golden_collate as collate  # noqa: E402
 import kanjify_golden_render as render  # noqa: E402
 
 BACKSLASH = chr(92)
@@ -193,6 +194,26 @@ class SampleUsesTest(unittest.TestCase):
         self.assertEqual(len(sample), 10)
         self.assertIn("由", {u["kanji"] for u in sample})
         self.assertIn("kana", {u["kind"] for u in sample})
+
+
+class HandedBackTest(unittest.TestCase):
+    def test_a_later_round_adds_to_the_earlier_ones(self):
+        old = [{"wid": "q1", "word": "a", "kana": "a", "sids": ["s1"], "why": ["x"]}]
+        new = [{"wid": "q1", "word": "a", "kana": "a", "sids": ["s2"], "why": ["x", "y"]},
+               {"wid": "q2", "word": "b", "kana": "b", "sids": ["s3"], "why": ["z"]}]  # fmt: skip
+        merged = {w["wid"]: w for w in collate.merge_handed(old, new)}
+        self.assertEqual(merged["q1"]["sids"], ["s1", "s2"])
+        self.assertEqual(merged["q1"]["why"], ["x", "y"])
+        self.assertEqual(merged["q2"]["sids"], ["s3"])
+        # a round that hands a word back no more leaves its sentences with the decision
+        self.assertEqual(collate.merge_handed(old, []), old)
+
+    def test_a_handed_back_word_is_marked_in_its_sentence(self):
+        entry = {"wid": "q1", "word": "b[x]c", "kana": "xc", "sids": ["s1", "s9"], "why": ["?"]}
+        word = render.handed_word(entry, {"s1": {"sentence": "<b>a</b> b[x]cd"}})
+        self.assertEqual(word["word"], "bc")
+        self.assertEqual([u["text"] for u in word["uses"]], ["a【bc】d", ""])
+        self.assertIn("handed it back undecided: ?", render.word_prompt(word, "", 120))
 
 
 class TemplatesTest(unittest.TestCase):
