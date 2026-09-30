@@ -58,7 +58,7 @@ OUTPUT = ADDON_ROOT / "output"
 FIXES = golden.COLLATED / "furigana_fixes.jsonl"
 UNDO = OUTPUT / "furigana_fix_undo.jsonl"
 LIST = OUTPUT / "furigana_fix_list.txt"
-FIELD_KEY = "furigana_sentence_field"
+FIELD_KEY = kanjify_fix.FIELD_KEYS["furigana"]
 
 
 def without_context(fix: str, before: str, after: str) -> str:

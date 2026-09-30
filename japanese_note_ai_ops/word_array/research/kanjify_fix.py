@@ -10,9 +10,12 @@ the old value to `output/kanjify_fix_undo.jsonl`, since Anki can't undo `updateN
 `--revert` writes those old values back, newest first, where the field is still what was written;
 reverted entries leave the undo file, refused ones stay.
 
-    py -3.10 word_array/research/kanjify_fix.py [--fixes FILE] [-n COUNT] [--apply | --revert]
+    py -3.10 word_array/research/kanjify_fix.py [--fixes FILE] [-n COUNT] [--field furigana]
+        [--apply | --revert]
 
-Rows without note ids (the old fine-tuning files) are listed but never written.
+Rows without note ids (the old fine-tuning files) are listed but never written. `--field
+furigana` writes the rows into the `furigana_sentence_field` instead, the field the kanjified
+one is generated from: for a list of whole sentences to put back that no fix list makes.
 """
 
 import argparse
@@ -29,6 +32,8 @@ FIXES = OUTPUT / "kanjify_audit_fixes.jsonl"
 UNDO = OUTPUT / "kanjify_fix_undo.jsonl"
 LIST = OUTPUT / "kanjify_fix_list.txt"
 FIELD_KEY = "kanjified_sentence_field"
+# --field: the config key naming each field a row can be written to
+FIELD_KEYS = {"kanjified": FIELD_KEY, "furigana": "furigana_sentence_field"}
 
 
 class Write(NamedTuple):
@@ -154,6 +159,8 @@ def main() -> int:
     parser.add_argument("--fixes", type=Path, default=FIXES)
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows")
     parser.add_argument("--undo", type=Path, default=UNDO)
+    parser.add_argument("--field", choices=FIELD_KEYS, default="kanjified",
+                        help="the field the rows' sentences are in")  # fmt: skip
     parser.add_argument("--anki-connect", default=anki_connect.URL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
@@ -162,9 +169,10 @@ def main() -> int:
 
     client = anki_connect.AnkiConnect(args.anki_connect)
     config = anki_connect.load_config()
+    field_key = FIELD_KEYS[args.field]
     try:
         if args.revert:
-            reverted, refused = revert(client, config, args.undo)
+            reverted, refused = revert(client, config, args.undo, field_key)
             print("\n".join(refused + [f"reverted {reverted} notes"]))
             return 0
         rows = read_jsonl(args.fixes)[: args.n or None]
@@ -174,7 +182,7 @@ def main() -> int:
             print(f"{len(rows)} fix rows ({with_nids} with note ids), list in {LIST}")
             print("check it, then rerun with --apply")
             return 0
-        written, refused = apply(client, rows, config, args.undo)
+        written, refused = apply(client, rows, config, args.undo, field_key)
         skipped = sum(1 for r in rows if not r.get("nids"))
         print("\n".join(refused))
         print(f"wrote {written} notes, refused {len(refused)}, rows without nids {skipped}")
