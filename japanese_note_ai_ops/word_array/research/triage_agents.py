@@ -8,8 +8,13 @@ The model sees a word through its features; an agent can read it, and read it ag
 user: each batch comes with a profile of words the user has judged, by what they said (knows it
 well, thinks they know it, does not know it) and the word's Jiten rank, and the agent gives, for
 each word in the batch, the chance the user would judge it known (Schedule or Suspend rather than
-Learn). A profile never holds a word its batch judges, in any sense or reading: the profiles are
-drawn afresh for each batch from the labels, leaving out every note of the same base form.
+Learn). A profile never holds a word its agent judges: a subagent answers several batches in
+one context, so a labelled note judged in one batch must not have appeared in the profile of
+another. The labelled notes are split in two halves by their note id: profiles are drawn only
+from one, the labelled notes to stack on only from the other, and no profile holds a note that
+shares a base form, reading or spelling with a labelled one being judged (敵 and 仇 are both
+かたき). Each batch's profile, drawn afresh, also leaves out every note sharing a base form,
+reading or spelling with any of its own items.
 
 Which notes: the unjudged ones whose P(known) (`predictions.jsonl`) lies between `--lo` and `--hi`
 (the middle, where the decision is made), every note of the judging page's random holdout (so
@@ -132,24 +137,36 @@ def verdict_group(level: tuple[int, int]) -> str:
     return "thinks_known"
 
 
+def profile_half(nid: int) -> bool:
+    """Whether a labelled note is one profiles may show; the rest may be judged to stack on."""
+    return int(hashlib.sha1(str(nid).encode()).hexdigest(), 16) % 2 == 0
+
+
 def profile_pool(words: dict, preds: dict) -> dict[str, list[int]]:
-    """The labelled notes (training labels only, never the holdout), by verdict group."""
+    """The profile half of the labelled notes (training labels only, never the holdout), by
+    verdict group."""
     pool: dict[str, list[int]] = {g: [] for g in PROFILE}
     for nid, p in preds.items():
-        if p.get("label_source") in ("anki", "hand") and p.get("label_level") and nid in words:
+        if (p.get("label_source") in ("anki", "hand") and p.get("label_level") and nid in words
+                and profile_half(nid)):
             pool[verdict_group(tuple(p["label_level"]))].append(nid)
     for g in pool:
         pool[g].sort()
     return pool
 
 
-def profile_text(pool, words, freq, exclude_bases: set[str], rng: random.Random) -> str:
+def forms(w: dict) -> set[str]:
+    """What makes two notes the same word to a reader: base form, reading, spelling."""
+    return {f for f in (w["base"], w["reading"], w["kanjified"], w["word"]) if f}
+
+
+def profile_text(pool, words, freq, exclude: set[str], rng: random.Random) -> str:
     parts = []
     names = {"known_well": "Knows well (suspended, or scheduled two and a half years or more out)",
              "thinks_known": "Thinks they know (scheduled sooner)",
              "unknown": "Does not know (chose Learn)"}
     for group, n in PROFILE.items():
-        allowed = [nid for nid in pool[group] if words[nid]["base"] not in exclude_bases]
+        allowed = [nid for nid in pool[group] if not forms(words[nid]) & exclude]
         chosen = rng.sample(allowed, min(n, len(allowed)))
         chosen.sort(key=lambda nid: (freq.get(nid, {}).get("freq_jiten_rank") or 10**9, nid))
         rows = [f"- {words[nid]['word'] or words[nid]['kanjified']} ({words[nid]['reading']})"
@@ -170,7 +187,7 @@ def select(words: dict, preds: dict, holdout: set[int], lo: float, hi: float,
     middle = [nid for nid, p in preds.items() if nid in words and not p["labelled"]
               and lo <= p["p_known"] <= hi]
     held = [nid for nid in holdout if nid in words]
-    train = sorted(nid for nid, p in preds.items() if nid in words
+    train = sorted(nid for nid, p in preds.items() if nid in words and not profile_half(nid)
                    and p.get("label_source") in ("anki", "hand") and lo <= p["p_known"] <= hi)
     rng = random.Random(SEED)
     train = rng.sample(train, min(labelled, len(train)))
@@ -207,11 +224,17 @@ def export(args) -> int:
     folder = args.dir or td.data_file(FOLDER)
     folder.mkdir(parents=True, exist_ok=True)
     pool = profile_pool(words, preds)
+    judged = set(chosen)
+    labelled_forms = set().union(*(forms(words[n]) for n in chosen
+                                   if preds[n].get("label_source") in ("anki", "hand")))
+    for group in pool:
+        pool[group] = [n for n in pool[group]
+                       if n not in judged and not forms(words[n]) & labelled_forms]
     batches = [todo[i : i + args.batch] for i in range(0, len(todo), args.batch)]
     for i, batch in enumerate(batches, 1):
         name = f"batch_{i:04d}"
-        bases = {words[nid]["base"] for nid, _, _ in batch}
-        profile = profile_text(pool, words, freq, bases, random.Random(SEED + i))
+        exclude = set().union(*(forms(words[nid]) for nid, _, _ in batch))
+        profile = profile_text(pool, words, freq, exclude, random.Random(SEED + i))
         answer = (folder / f"{name}.answer.json").resolve()
         items = "\n\n".join(f"[{j}] {text}" for j, (_, text, _) in enumerate(batch, 1))
         text = "\n\n".join([
