@@ -204,7 +204,7 @@ def main() -> int:
             lab_x.append(math.log10(rank))
             lab_y.append(0.0 if label == "learn" else 1.0)
     a, b = logistic_fit(lab_x, lab_y)
-    bins = defaultdict(lambda: [0, 0, 0.0])  # entries, studied, recall sum
+    bins: dict[int, list[float]] = defaultdict(lambda: [0, 0, 0.0])  # entries, studied, recall sum
     for key, rank in jiten.items():
         for lo, hi in zip(BINS, BINS[1:]):
             if lo <= rank < hi:

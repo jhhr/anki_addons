@@ -102,7 +102,7 @@ name or term from one work of fiction).
 
 Answer for every item, by its number, with the JSON the schema asks for and nothing else."""
 
-SCHEMA = {
+SCHEMA: dict = {
     "type": "object",
     "properties": {
         "words": {
@@ -202,7 +202,7 @@ def valid(answer: dict) -> bool:
 def run_batches(batches: list, model: str, effort: str, workers: int, echo: bool = False) -> None:
     path = td.data_file(FEATURES)
     lock = threading.Lock()
-    done = Counter()
+    done: Counter[str] = Counter()
     started = time.time()
 
     def one(batch: list) -> None:

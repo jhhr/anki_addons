@@ -186,9 +186,9 @@ def main() -> int:
     preds: list[Prediction] = []
     dues: dict[int, list[tuple]] = {}
     for cid, es in entries.items():
-        p, d = predictions(cid, es, decay[cid])
-        preds.extend(p)
-        dues[cid] = d
+        card_preds, card_dues = predictions(cid, es, decay[cid])
+        preds.extend(card_preds)
+        dues[cid] = card_dues
     recent = [p for p in preds if p.t >= since]
 
     lines = [f"{len(cards)} reviewed vocab cards without {ignore_tag}; {len(preds)} predicted"

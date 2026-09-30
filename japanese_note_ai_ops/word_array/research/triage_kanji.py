@@ -61,7 +61,7 @@ def main() -> int:
         if len(char) != 1:
             continue
         freq = td.plain(fields.get("Frequency", ""))
-        card = (cards.get(nid) or [None])[0]
+        card = next(iter(cards.get(nid, [])), None)
         row = {"kanji": char, "nid": nid, "freq_rank": int(freq) if freq.isdigit() else None,
                "studied": bool(card and card.reps > 0), "suspended": bool(card and card.suspended),
                "r": None, "r_cal": None, "lapses": card.lapses if card else 0,
@@ -105,7 +105,7 @@ def main() -> int:
     lines.append("")
 
     lines.append("--- the triage words' kanji ---")
-    cover = Counter()
+    cover: Counter = Counter()
     unseen: Counter = Counter()
     for w in words:
         chars = KANJI_RE.findall(w["kanjified"] if not w["ignore_kanjified"] else w["word"])

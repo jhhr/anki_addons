@@ -109,7 +109,7 @@ class Mark:
 def parse(path: Path) -> dict[tuple[str, str], Mark]:
     """(spelling, hiragana reading) -> Mark, kana spellings under (reading, reading)."""
     marks: dict[tuple[str, str], Mark] = defaultdict(Mark)
-    parser = ET.XMLPullParser(events=("end",))
+    parser: ET.XMLPullParser[ET.Element] = ET.XMLPullParser(events=("end",))
     in_body = False
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         for line in fh:
@@ -119,8 +119,11 @@ def parse(path: Path) -> dict[tuple[str, str], Mark]:
                     continue
                 line, in_body = line[start:], True
             parser.feed(ENTITY_RE.sub(r"\1", line))
-            for _, el in parser.read_events():
-                if el.tag != "entry":
+            # Only "end" events are asked for, each ("end", element), but the stub's event type
+            # covers every kind's shape
+            for event in parser.read_events():
+                el = event[-1]
+                if not isinstance(el, ET.Element) or el.tag != "entry":
                     continue
                 add_entry(el, marks)
                 el.clear()
@@ -193,7 +196,8 @@ def main() -> int:
         notes = td.load_vocab_notes(col, settings["note_type"])
     finally:
         col.close()
-    rows, how_counts = [], Counter()
+    rows: list[dict] = []
+    how_counts: Counter[str] = Counter()
     for nid, note in sorted(notes.items()):
         mark, how = match(note, marks)
         how_counts[how] += 1

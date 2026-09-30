@@ -59,7 +59,7 @@ def label_note(note: td.VocabNote, reviews: list[td.Review], ignore_tag: str, mo
         return row
     if note.has_tag(ignore_tag):
         before_review = [m for m in manual if not real or m.id < real[0].id]
-        entry = (before_review or manual or [None])[-1]
+        entry = next(reversed(before_review or manual), None)
         if entry is None:
             row.update(label=None, why=f"{ignore_tag} but no set-due-date entry")
             return row

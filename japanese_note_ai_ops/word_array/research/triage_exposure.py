@@ -77,7 +77,7 @@ def main() -> int:
     linked = links(notes, problems)
     labels = {r["nid"]: r["label"] for r in td.read_jsonl(td.data_file("labels.jsonl"))}
 
-    rows = []
+    rows: list[dict] = []
     for nid, note in sorted(notes.items()):
         if not note.has_tag(td.NEW_WORD_TAG):
             continue

@@ -117,8 +117,8 @@ def main() -> int:
         "--- by deck ---",
     ]
     by_deck: dict[str, list] = defaultdict(list)
-    for r in active:
-        by_deck[r["deck"]].append(r)
+    for row in active:
+        by_deck[row["deck"]].append(row)
     for deck in sorted(by_deck):
         got = by_deck[deck]
         lines.append(f"  {deck:30} {len(got):>6} notes, FSRS {sum(r['r'] for r in got):>7.0f}"

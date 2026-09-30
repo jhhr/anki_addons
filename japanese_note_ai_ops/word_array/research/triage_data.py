@@ -257,7 +257,8 @@ def load_cards(col: Any, nids: Optional[Iterable[int]] = None) -> dict[int, list
     """Cards by note id, of `nids` or of every note."""
     by_note: dict[int, list[Card]] = defaultdict(list)
     sql = "select id, nid, did, type, queue, due, ivl, reps, lapses, odid, data from cards"
-    rows: Iterable
+    # The row's shape is spelled out so the checker sees `row[:10]` stop short of `data`
+    rows: Iterable[tuple[int, int, int, int, int, int, int, int, int, int, str]]
     if nids is None:
         rows = col.db.all(sql)
     else:
