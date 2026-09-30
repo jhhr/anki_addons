@@ -34,7 +34,7 @@ The model that cross-validates better (or their average, when that is better sti
 every note: out-of-fold for the labelled ones, fitted on all labels for the rest. When
 triage_agents.py has answered some notes, a second stage stacks its P(known) on the first
 stage's out-of-fold output, fitted on the labelled notes that have both, and is used for the
-notes it answered if it cross-validates better there. Writes `predictions.jsonl` (per note: the
+notes it answered if it cross-validates better there, in log loss and in AUC both. Writes `predictions.jsonl` (per note: the
 four levels' probabilities, P(known), the expected level, the label if any, and the features
 pushing it most either way) and `reports/model.txt`.
 """
@@ -509,7 +509,10 @@ def main() -> int:
                 [1 - a_lab, a_lab / 3, a_lab / 3, a_lab / 3])).get("auc_known")
             if a_auc is not None:
                 lines.append(f"  the agents alone: auc_known {a_auc:.3f}")
-            if s_stack["log_loss"] < s_first["log_loss"]:
+            # Both: a lower loss alone can be the stage pulling this band's probabilities toward
+            # 0.5, which ranks the words no better, and the decisions are made by ranking
+            if (s_stack["log_loss"] < s_first["log_loss"]
+                    and s_stack.get("auc_known", 0) > s_first.get("auc_known", 1)):
                 inputs = stack_inputs(oof[b], a_lab)
                 import pandas as pd
 
@@ -532,7 +535,8 @@ def main() -> int:
                     stacked.add(nid)
                 lines.append(f"  used for the {len(stacked)} notes the agents answered")
             else:
-                lines.append("  not used: it does not cross-validate better")
+                lines.append("  not used: it does not cross-validate better in both log loss and"
+                             " auc_known")
         else:
             lines.append("  too few labelled notes with an answer to fit it (50 needed)")
         lines.append("")

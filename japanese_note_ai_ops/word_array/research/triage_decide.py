@@ -256,6 +256,15 @@ def report(rows, out, preds, hand, anki_labels, args) -> list[str]:
 
     lines.append("--- how the model's decisions change with the lines ---")
     model = [preds[r["nid"]] for r in rows if r["source"] == "model"]
+    unknown = sum(1 - p["p_known"] for p in model)
+    lines.append(f"  the model expects {unknown:.0f} of its {len(model)} notes to be words the user"
+                 " does not know; by its own probabilities, each learn line:")
+    for ll in (0.5, 0.6, 0.7, 0.8, 0.9):
+        sent = [p for p in model if p["p_known"] < ll]
+        caught = sum(1 - p["p_known"] for p in sent)
+        lines.append(f"    learn below {ll}: {len(sent):>5} to learn, about {caught:.0f} of them"
+                     f" unknown ({caught / max(len(sent), 1):.0%}), {caught / max(unknown, 1):.0%}"
+                     " of all the unknown ones caught")
     for sm in (0.6, 0.7, 0.8, 0.9):
         for ll in (0.4, 0.5, 0.6, 0.7):
             c = Counter(model_action(p, sm, ll) for p in model)
