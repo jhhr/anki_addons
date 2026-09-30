@@ -506,6 +506,20 @@ has none, and warns while it is newer than evals/' copy, which stays the eval se
 export is moved over it. Commit the tooling; do not commit one-off reports or plans it produces
 (`generated_examples.md` and `gold_examples.md` are the committed exceptions).
 
+The vocab triage (`triage_*.py`; `triage_data.py` first) sorts the notes the match op created
+(tag `new_matched_jp_word`) into suspend, schedule far out, or learn. `triage_extract` reads a
+copy of the collection with the `anki` library, never AnkiConnect, which is too slow over the
+whole revlog. The feature scripts, `triage_opus` and `triage_agents` (batches a cloud
+session's subagents answer, `export` then `ingest`) feed `triage_model`, an ordinal model of
+the user's certainty (learn < schedule short < schedule long < suspend). `triage_judge` queues
+rounds of notes to judge by hand (`serve`, or `triage_judge_page.html` published as a claude.ai
+artifact whose database holds the queue and the labels; round 0's random 100 are a holdout
+never trained on). `triage_decide` writes the decisions, and `triage_apply` writes them over
+AnkiConnect like a repair script, but keeps its undo log beside them. All of it, the deck and
+note type names in `settings.json` included, lives in `evals/vocab_triage/` of the test data
+checkout. `array_slot_repair.py` put back the match data one failed match run wrote as nothing
+into 1,203 word arrays; it has been applied, and its undo log is in `output/`.
+
 ## Tests and types
 
 - `test/` (about 60 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
