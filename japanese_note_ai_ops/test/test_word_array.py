@@ -363,6 +363,21 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
         self.assertEqual([s[2] for s in find_word(arr, "私達")[5]], ["私", "達"])
 
+    def test_adnominal_okurigana_is_no_sub_word(self):
+        # JMdict has the old pronouns 我[わ] and 其[そ], and が, の and る as particles and a
+        # suffix, but 我が, 其の and 如何なる are one adnominal each
+        for sentence, form in [
+            ("我[わ]が 道[みち]を 行[い]く", "我が"),
+            ("<k> 其[そ]の</k> 人[ひと]に 会[あ]った", "其の"),
+            ("如何[いか]なる 神[かみ]の 前[まえ]", "如何なる"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual((word[1], word[5]), ("adjectival", []))
+        # inside a JMdict match the adnominal is a sub-word, still whole
+        word = find_word(self.generator.generate("我[わ]が 子[こ]を 愛[あい]する"), "我が")
+        self.assertEqual(word[5], [])
+
     def test_a_conjunction_opening_a_clause_is_one_word(self):
         # function words only (つー + か, で + も), which elsewhere are no word of their own
         for sentence, raw in [

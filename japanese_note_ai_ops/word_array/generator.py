@@ -1013,12 +1013,14 @@ def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
     幾ら, 何しろ. An adverb's particle is a word of its own (正|に, 初め|て). A noun's lone kana
     other than も is okurigana (窪み, 夕べ, 逆さ; 何時|も), and so is a longer tail of a noun
     that is a verb's ます-stem (味わい, 計らい, 見かけ); 赤|ちゃん, 口|コミ, 目|つき are words.
-    A conjunction's or interjection's tail is always okurigana (但し, 更に, 並びに; 済みません,
-    初めまして), a pronoun's lone kana but に, も and か too (其こ, 其んで; 何|に, 私|たち)."""
+    A conjunction's, interjection's or adnominal's tail is always okurigana (但し, 更に, 並びに;
+    済みません, 初めまして; 我が, 其の, 如何なる), a pronoun's lone kana but に, も and か too
+    (其こ, 其んで; 何|に, 私|たち). The adnominals are an old pronoun and particle grown into one
+    word, and JMdict still has the pronoun (我[わ], 其[そ]), which alone is no word today."""
     tail = tm.written_form(split, w.end)
     if KANJI_RE.search(tail):
         return False
-    if w.head.pos[0] in ("形状詞", "接続詞", "感動詞"):
+    if w.head.pos[0] in ("形状詞", "接続詞", "感動詞", "連体詞"):
         return True
     if w.head.pos[0] == "代名詞":
         return len(tail) == 1 and tail not in "にもか"
