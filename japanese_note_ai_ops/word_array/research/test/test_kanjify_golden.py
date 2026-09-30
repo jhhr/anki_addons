@@ -280,6 +280,36 @@ class RelabelTest(unittest.TestCase):
         self.assertTrue(all(it["id"].startswith("r") for it in items))
 
 
+class CarryTest(unittest.TestCase):
+    OLD = " 三[みっ]つ買[か]った。"
+    NEW = " 三[みっ]つ 買[か]った。"
+
+    def plan(self, new_by_nid: dict[int, str], accepted: dict):
+        import kanjify_golden_carry as carry
+
+        old_dump = [{"nid": 1, "sentence": self.OLD}, {"nid": 2, "sentence": "月[つき]"},
+                    {"nid": 3, "sentence": SENTENCE}]  # fmt: skip
+        by_sentence: dict[str, list[int]] = {}
+        for nid, s in new_by_nid.items():
+            by_sentence.setdefault(s, []).append(nid)
+        new = [golden.Sentence(golden.sentence_id(s), s, n) for s, n in by_sentence.items()]
+        return carry.plan(old_dump, new, accepted)
+
+    def test_a_label_follows_a_repair_that_only_moved_a_space(self):
+        old_sid = golden.sentence_id(self.OLD)
+        accepted = {old_sid: {"sid": old_sid, "kanjified": self.OLD, "policy_version": "0.13"}}
+        carried, relabel, moved = self.plan({1: self.NEW, 3: SENTENCE}, accepted)
+        self.assertEqual([r["kanjified"] for r in carried["0.13"]], [self.NEW])
+        self.assertEqual(relabel, [])
+        self.assertEqual(moved[old_sid], {golden.sentence_id(self.NEW)})
+
+    def test_a_reading_fix_a_new_note_or_no_label_is_relabelled(self):
+        new = {1: self.NEW, 2: " 月[がつ]", 4: "新[あたら]しい"}
+        carried, relabel, _ = self.plan(new, {})
+        self.assertEqual(carried, {})
+        self.assertEqual(sorted(relabel), sorted(golden.sentence_id(s) for s in new.values()))
+
+
 class TranslationsTest(unittest.TestCase):
     def test_a_sentence_gets_the_first_translation_its_notes_have(self):
         with tempfile.TemporaryDirectory() as tmp:

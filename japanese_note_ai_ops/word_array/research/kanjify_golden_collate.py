@@ -107,6 +107,8 @@ def step2_rows(queue: str, sentences: dict[str, dict]) -> list[dict]:
         got = s.get("rows", []) if isinstance(s, dict) else []
         by_sid = {row.get("sid"): row for row in got}
         for sid in expected:
+            if sid not in sentences:
+                continue  # its notes have changed or gone since: a label of a sentence no note has
             row = by_sid.get(sid)
             source = sentences[sid]
             base = {
