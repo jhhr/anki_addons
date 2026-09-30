@@ -137,6 +137,7 @@ def row_problem(sentence: str, kanjified: str) -> Optional[str]:
     import kanjify_audit
     import kanjify_note
 
+    sentence = split_katakana_groups(sentence, kanjified)
     problem = kanjify_note.edit_problem(sentence, kanjified)
     if problem and problem != "nothing changed":
         return problem
@@ -150,6 +151,34 @@ def row_problem(sentence: str, kanjified: str) -> Optional[str]:
         if not GROUP_RE.search(m[1]):
             return f"the span <k>{m[1]}</k> holds no kanji[reading] group"
     return None
+
+
+# A furigana group whose base starts with katakana before its kanji (ネコ科[ねこか])
+KATAKANA_GROUP_RE = re.compile(
+    r"(?:^|(?<=[\s>\]]))([ァ-ヺー]+)([々〆一-龯㐀-䶿][^\s<>\[\]]*)\[([^\]]*)\]"
+)
+
+
+def hiragana(text: str) -> str:
+    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
+
+
+def split_katakana_groups(sentence: str, kanjified: str) -> str:
+    """The input as the label is checked against: each group the label split its katakana out
+    of (`ネコ科[ねこか]` -> `<k> 猫[ネコ]</k> 科[か]`, the policy's KANJI-14) split the same way
+    (`ネコ 科[か]`). It is the one change outside a span FMT-7 allows, and only where the rest
+    of the group follows a span: splitting the group while leaving the katakana is still refused."""
+
+    def split(m: re.Match) -> str:
+        kana, rest, reading = m[1], m[2], m[3]
+        if not hiragana(reading).startswith(hiragana(kana)) or len(reading) <= len(kana):
+            return m[0]
+        group = f"{rest}[{reading[len(kana):]}]"
+        if not re.search(r"</k>\s*" + re.escape(group), kanjified):
+            return m[0]
+        return f"{kana} {group}"
+
+    return KATAKANA_GROUP_RE.sub(split, sentence)
 
 
 BASE_RE = re.compile(r"(?:^|(?<=[\s>\]]))([^\s<>\[\]]+)\[([^\]]*)\]")

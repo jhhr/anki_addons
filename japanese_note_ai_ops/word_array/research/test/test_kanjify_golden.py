@@ -46,6 +46,16 @@ class RowProblemTest(unittest.TestCase):
     def test_a_span_without_kanji_is_refused(self):
         self.assertIn("no kanji", golden.row_problem(SENTENCE, "<k>これ</k>は 本[ほん]です。"))
 
+    def test_katakana_split_out_of_a_group_passes(self):
+        # the policy's KANJI-14: the one group FMT-7 lets a label change outside its spans
+        sentence = "ネコ科[ねこか]の 動物[どうぶつ]"
+        label = "<k> 猫[ネコ]</k> 科[か]の 動物[どうぶつ]"
+        self.assertIsNone(golden.row_problem(sentence, label))
+
+    def test_a_group_split_without_kanjifying_is_refused(self):
+        sentence = "ネコ科[ねこか]の 動物[どうぶつ]"
+        self.assertIsNotNone(golden.row_problem(sentence, "ネコ 科[か]の 動物[どうぶつ]"))
+
 
 class FuriganaSuspectsTest(unittest.TestCase):
     def test_clean_sentence(self):
