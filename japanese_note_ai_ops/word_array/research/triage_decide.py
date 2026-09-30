@@ -47,7 +47,9 @@ import triage_data as td
 import triage_features as tf
 
 SUSPEND_MIN = 0.8
-LEARN_LINE = 0.5
+# Checked on the judging page's random holdout after round 0: at 0.8 half of what goes to learn
+# is unknown to the user and two thirds of their unknown words are caught; at 0.5, one in ten
+LEARN_LINE = 0.8
 MIN_DAYS = 30
 MAX_DAYS = 1600
 WAVES = (0.9, 0.75)
