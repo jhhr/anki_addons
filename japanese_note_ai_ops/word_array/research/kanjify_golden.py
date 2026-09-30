@@ -172,6 +172,7 @@ NOT_KANJI_RE = re.compile(r"^[^一-龯㐀-䶿々〆0-9０-９]+")
 KANA_ONLY_RE = re.compile(r"[ぁ-ゖァ-ヺーゝゞヽヾ]+")
 KATAKANA_RE = re.compile(r"[ァ-ヺー]+")
 BR_RE = re.compile(r"<br\s*/?>")
+LOOSE_READING_RE = re.compile(r"(?:^|\S*\s)\[[^\]]*\]")
 
 
 def kana_lead(base: str, reading: str) -> tuple[str, bool]:
@@ -179,8 +180,12 @@ def kana_lead(base: str, reading: str) -> tuple[str, bool]:
     is not kana here), and whether the reading covers it: `ネコ科[ねこか]` is katakana written
     inside a kanji word's group, `つ買[か]` a group with no space after the kana before it.
     Hiragana never counts as covered: in `は鋼[はがね]` or `い命[いのち]` the particle or
-    okurigana before the kanji only happens to be the first kana of the kanji's reading."""
+    okurigana before the kanji only happens to be the first kana of the kanji's reading.
+    A base with no kanji at all has no lead: the reading is the whole word's (`ＲＡＭ[らむ]`,
+    `ダブ[だぶ]`), and splitting it off left a reading over nothing in 26 notes."""
     lead = NOT_KANJI_RE.match(base)
+    if lead and lead[0] == base:
+        return "", False
     kana = lead[0] if lead and lead[0].strip("ヶヵ") else ""
     covered = hiragana(reading).startswith(hiragana(kana)) and len(reading) > len(kana)
     return kana, bool(KATAKANA_RE.fullmatch(kana)) and covered
@@ -198,7 +203,8 @@ def furigana_suspects(sentence: str) -> list[str]:
     """What a program can see is wrong with a furigana sentence, without reading it: a group
     written with no space after kana (`つ買[か]`: Anki's furigana filter puts か over つ買, so the
     reading covers kana it doesn't read), kana written inside a kanji word's group
-    (`ウシ科[うしか]`), a group with no kanji or no reading, and a kanji with no reading at all.
+    (`ウシ科[うしか]`), a group with no reading, a kanji with no reading at all, and a reading
+    with a space before it, which reads nothing (`ＯＬ [おーえる]`).
     The step 2 agents check what takes reading (a reading wrong for its kanji or its context);
     these they are told to leave to this."""
     text = BR_RE.sub(" ", sentence)
@@ -219,6 +225,8 @@ def furigana_suspects(sentence: str) -> list[str]:
     bare = re.findall(r"[一-龯㐀-䶿]+", rest)
     if bare:
         out.append("kanji with no reading: " + ", ".join(bare))
+    # a bracket after a space reads nothing: Anki's filter shows it as text
+    out += [f"a reading over nothing: {m[0].strip()}" for m in LOOSE_READING_RE.finditer(text)]
     return out
 
 

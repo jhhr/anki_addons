@@ -88,6 +88,16 @@ class FuriganaSuspectsTest(unittest.TestCase):
             self.assertEqual(golden.fix_groups(s), s)
             self.assertFalse(golden.kana_in_group(s))
 
+    def test_a_word_with_no_kanji_keeps_its_reading(self):
+        for s in ("あのひとは ＯＬ[おーえる]です", "ページが ダブ[だぶ]っている", "２０ ｃｍ[せんち]"):
+            self.assertEqual(golden.fix_groups(s), s)
+            self.assertEqual(golden.furigana_suspects(s), [])
+
+    def test_a_reading_after_a_space_reads_nothing(self):
+        self.assertEqual(golden.furigana_suspects("かのじょは ＯＬ [おーえる]です"),
+                         ["a reading over nothing: ＯＬ [おーえる]"])  # fmt: skip
+        self.assertEqual(golden.furigana_suspects("[あ]は"), ["a reading over nothing: [あ]"])
+
     def test_several_readings(self):
         found = golden.furigana_suspects(" 額[がく, ひたい]は")
         self.assertEqual(len(found), 1)

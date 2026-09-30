@@ -137,6 +137,14 @@ class RedoTest(unittest.TestCase):
         undo = [self.undo(self.SENTENCE, 1), self.undo("その 人[ひと]に 会[あ]う。", 2)]
         self.assertEqual(furigana_fix.redo(self.rows, undo, 0.8)[0], [])
 
+    def test_a_program_repair_this_version_no_longer_makes_is_redone(self):
+        # an older fix_groups cut the reading off a word with no kanji
+        rows = [fix_row("この ＯＬ[おーえる]は 三[みっ]つ買[か]う")]
+        undo = [{"nid": 1, "field": "f", "before": rows[0]["sentence"],
+                 "after": "この ＯＬ [おーえる]は 三[みっ]つ 買[か]う"}]  # fmt: skip
+        fixes, _ = furigana_fix.redo(rows, undo, 0.8)
+        self.assertEqual([f["after"] for f in fixes], ["この ＯＬ[おーえる]は 三[みっ]つ 買[か]う"])
+
     def test_writes_from_another_fix_list_are_left_alone(self):
         undo = [{"nid": 1, "field": "f", "before": "other", "after": "その 人[ひと]にに"}]
         self.assertEqual(furigana_fix.redo(self.rows, undo, 0.8)[0], [])
