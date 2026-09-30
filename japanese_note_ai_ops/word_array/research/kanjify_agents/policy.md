@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.14
+Policy version: 0.15
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -47,12 +47,13 @@ together with SOURCE and SPELL.
 
 ## SPELL: which spelling
 
-- SPELL-1 Homophones (different dictionary words with the same kana: 付く / 就く / 着く / 点く /
-  突く / 吐く, 取る / 撮る / 採る, 寄る / 依る, 内 / 家 for うち, 置く / 於く for おく): the word
+- SPELL-1 Homophones (different dictionary words with the same kana: 付く / 就く / 着く / 突く /
+  吐く, 取る / 撮る / 採る, 寄る / 依る, 内 / 家 for うち, 置く / 於く for おく): the word
   this sentence means, each with its own spelling. Where JMdict gives a sense both inside a broad
   word and as a narrower word of its own (差す and 射す for light, 取れる and 穫れる for a
   harvest), the broad word's main spelling is used (日が差す, 米が取れる) unless SPLIT lists it:
-  so しつけ for manners is 仕付け (not 躾), ゆうべ for last night is 夕べ (not 昨夜).
+  so しつけ for manners is 仕付け (not 躾), ゆうべ for last night is 夕べ (not 昨夜), and a light
+  that comes on is 付く (not 点く).
 - SPELL-2 One dictionary word with several spellings: its main spelling (JMdict's first kanji
   form that is not outdated or search-only) for every sense, unless SPLIT lists the
   word. So よい / いい / よく are 良 in every sense (not 善, 能, 好), ちょっと is 一寸 (not 鳥渡).
@@ -162,18 +163,16 @@ needs a split asks (a policy question); it never splits on its own.
   which are not the permission pattern. てはいけない and てはならない are the prohibition after a verb's or
   adjective's て-form; the obligation なくては / なくちゃ + いけない is 行けない, like なくては成らない (KANJI-4): `<k>
   為[し]なくて</k>は<k> 行[い]けない</k>`. Alone the words are kanjified (欲しい, 良い, 行けない, 成らない, 構わない, 駄目).
-- KANA-5 する that only does grammar, holding no "do" or "make": として "as, in the role of"
-  (教師として) and "not even one" before a negative (一日として無い); にしては "for a, considering";
-  にして after an age, a time or a moment, and in AにしてB; からして; にしたところで. Also the set
-  adverbs and conjunctions and the suppositions built with する: もしかしたら, もしかして,
-  ひょっとして, なんとかして, どうにかして, 要するに, ともすると, ややもすれば, ちょっとした,
-  すると (the conjunction), そしたら, それにしても, いずれにしても, としたら, とすれば, とすると,
-  としても, だとしても, and a clause + として "supposing" or "leaving aside" (仮に本当だとして,
-  それは措くとして). An adverb or noun + と + する describing a state is 為る (平然と為て,
-  KANJI-3), and どうして is 如何為て (KANJI-6): the user's choice. So is とする with a を-object
-  of its own, "take or regard A as B", in every form (AをBと為て, AをBと為ると, AをBに為て,
-  AをBと為る, AをBと為た), and the finite "regard as" with or without one (と為れる, と為ている):
-  KANJI-3.
+- KANA-5 する that only does grammar, holding no "do" or "make": として "as, in the role of" (教師として)
+  and "not even one" before a negative (一日として無い); にしては "for a, considering"; にして after an age, a
+  time or a moment, and in AにしてB; からして; にしたところで. Also the set adverbs and conjunctions and the
+  suppositions built with する: もしかしたら, もしかして, ひょっとして, なんとかして, どうにかして, 要するに, ともすると, ややもすれば,
+  ちょっとした, すると (the conjunction), そうして "and then", そしたら, それにしても, いずれにしても, としたら, とすれば, とすると, としても,
+  だとしても, and a clause + として "supposing" or "leaving aside" (仮に本当だとして, それは措くとして). An adverb or
+  noun + と + する describing a state is 為る (平然と為て, 依然と為て, 断固と為て, even where JMdict lists the whole
+  as an adverb: KANJI-3), and どうして is 如何為て (KANJI-6): the user's choice. So is とする with a
+  を-object of its own, "take or regard A as B", in every form (AをBと為て, AをBと為ると, AをBに為て, AをBと為る,
+  AをBと為た), and the finite "regard as" with or without one (と為れる, と為ている): KANJI-3.
 - KANA-6 あげる meaning "to give": kept in kana to set it apart from 上げる / 揚げる / 挙げる. An
   exception to BASIC.
 - KANA-7 そんな, こんな, あんな, どんな (and そんなに etc.).
@@ -249,6 +248,7 @@ needs a split asks (a policy question); it never splits on its own.
   the plural and stays kana: 其処ら, 此処いら. A word with a JMdict entry of its own is written
   as that entry, by KANJI-12, not particle by particle: 出来る丈 and 成る可く (listed fuller
   forms), but 何時までも (何時迄も is search-only), and ピンからキリまで, which has no kanji at all.
+  A verb in such a phrase keeps its own spelling (見掛けに依らず, 依らない).
 - KANJI-8 The honorific prefix お / ご as 御 (御茶, 御願い, 御前), also where JMdict gives the word
   no 御 form or only a search-only one (御喋り, 御化け, 御握り, 御姉ちゃん): Sudachi splits the
   prefix off as a word of its own, and the rest follows its own rules. The input's own kana お
