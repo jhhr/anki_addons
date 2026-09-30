@@ -12,7 +12,10 @@ batch as `DIR/batch_NNNN.md` (the instructions, the numbered words, the JSON sch
 to write the answer to) with `batch_NNNN.keys.json` beside it, for subagents of the session to
 answer, one batch each; `ingest` caches every `batch_NNNN.answer.json` found under the same keys
 as `run` would, so a word is answered once whichever way it went. It can be run again as more
-answers land.
+answers land. A subagent that finds an item's own data wrong (a reading that does not fit the
+sense, a sense that belongs to another word) writes `batch_NNNN.issues.json` beside its answer
+(`[{"id", "issue", "severity"}]`, severity `minor` for an odd but readable spelling), and
+`ingest` adds each to `note_issues.jsonl`, which triage_decide.py lists for fixing.
 
 Every note in `words.jsonl` (triage_extract.py), judged or not, goes to Opus in batches of
 `--batch` words in a fixed random order, so that no batch is all easy or all rare words and a
@@ -293,6 +296,37 @@ def ingest(folder, model: str) -> tuple[int, int]:
     return added, lost
 
 
+def ingest_issues(folder) -> int:
+    """Every issues file's reports not recorded yet, into `note_issues.jsonl`."""
+    path = td.data_file("note_issues.jsonl")
+    seen = {(r["nid"], r["issue"]) for r in td.read_jsonl(path)}
+    added = 0
+    with path.open("a", encoding="utf-8") as out:
+        for issues_path in sorted(folder.glob("batch_*.issues.json")):
+            keys_path = issues_path.with_name(issues_path.name.replace(".issues.json",
+                                                                       ".keys.json"))
+            if not keys_path.exists():
+                continue
+            nids = {k["id"]: k["nid"] for k in
+                    json.loads(keys_path.read_text(encoding="utf-8"))["keys"]}
+            try:
+                reports = json.loads(issues_path.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            for r in reports if isinstance(reports, list) else []:
+                nid = nids.get(r.get("id")) if isinstance(r, dict) else None
+                issue = str(r.get("issue") or "").strip() if isinstance(r, dict) else ""
+                if nid is None or not issue or (nid, issue) in seen:
+                    continue
+                seen.add((nid, issue))
+                out.write(json.dumps({"nid": nid, "issue": issue,
+                                      "severity": r.get("severity") or "error",
+                                      "source": "opus", "batch": issues_path.name.split(".")[0]},
+                                     ensure_ascii=False) + "\n")
+                added += 1
+    return added
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=["pilot", "run", "status", "export", "ingest"])
@@ -310,6 +344,7 @@ def main() -> int:
     if args.command == "ingest":
         added, lost = ingest(folder, args.model)
         print(f"cached {added} answers, {lost} missing or invalid", file=sys.stderr)
+        print(f"recorded {ingest_issues(folder)} new note issues", file=sys.stderr)
         return 0
     rows = td.read_jsonl(td.data_file("words.jsonl"))
     if not rows:

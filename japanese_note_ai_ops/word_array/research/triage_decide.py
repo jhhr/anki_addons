@@ -339,16 +339,20 @@ def main() -> int:
     hand = {r["nid"]: r for r in hand_rows if r.get("label") in ("suspend", "schedule", "learn")}
     wrong = {r["nid"]: r for r in hand_rows if r.get("label") == "invalid"}
     issues: dict[int, list[str]] = defaultdict(list)
+    minor: dict[int, list[str]] = defaultdict(list)
     for r in td.read_jsonl(td.data_file("note_issues.jsonl")):
-        issues[r["nid"]].append(r["issue"])
+        # An odd but readable spelling is listed for fixing and holds nothing back
+        (minor if r.get("severity") == "minor" else issues)[r["nid"]].append(r["issue"])
     anki_labels = {r["nid"]: r for r in td.read_jsonl(td.data_file("labels.jsonl"))}
     freq = {r["nid"]: r for r in td.read_jsonl(td.data_file("frequency.jsonl"))}
 
     rows, out = decide(words, preds, hand, anki_labels, freq, settings, args, wrong, issues)
     td.write_jsonl(td.data_file("decisions.jsonl"), rows)
     by_nid = {w["nid"]: w for w in words}
+    listed = {n: issues.get(n, []) + [f"(minor) {t}" for t in minor.get(n, [])]
+              for n in set(issues) | set(minor)}
     td.report_file("wrong_data.txt").write_text(
-        "\n".join(wrong_data_lines(by_nid, wrong, issues)) + "\n", encoding="utf-8")
+        "\n".join(wrong_data_lines(by_nid, wrong, listed)) + "\n", encoding="utf-8")
     lines = report(rows, out, preds, hand, anki_labels, args)
     td.report_file("decisions.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
