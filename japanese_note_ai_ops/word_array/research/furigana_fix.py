@@ -17,7 +17,8 @@ What a sentence gets:
   and which kana its reading covers (`kanjify_golden.fix_groups`);
 - with `--labeller`, the labellers' fixes too, each replacing its group where the sentence holds
   it exactly once, at `--min-confidence` or more, none where two labellers fixed one group
-  differently. These change readings and okurigana, so the list is for checking them first.
+  differently. These change readings and okurigana, and some fix a typo (listed as
+  `labeller, text`), so the list is for checking them first.
 A sentence with nothing either can fix (a kanji with no reading, several readings in one group)
 is listed as left for the user, never written.
 
@@ -27,13 +28,18 @@ writes each note whose field is still the sentence as dumped (`kanjify_fix.plan_
 appending the old value to `output/furigana_fix_undo.jsonl` before each write, since Anki can't
 undo `updateNoteFields`; `--revert` puts them back.
 
+`--redo OLD_FIXES` plans from the undo log instead: for each note a run from the fix list
+OLD_FIXES wrote, and this version would have fixed otherwise, it writes this version's fix over
+what that run wrote (the same modes list, check and write it).
+
     py -3.10 word_array/research/furigana_fix.py [--labeller [--min-confidence 0.8]]
-        [-n COUNT] [--check | --apply | --revert]
+        [--redo OLD_FIXES] [-n COUNT] [--check | --apply | --revert]
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -50,6 +56,27 @@ LIST = OUTPUT / "furigana_fix_list.txt"
 FIELD_KEY = "furigana_sentence_field"
 # The kinds of kanjify_golden.furigana_suspects that fix_groups repairs
 REPAIRED = ("no space before the group", "kana inside the group")
+READING_RE = re.compile(r"\[[^\]]*\]")
+
+
+def plain_text(sentence: str) -> str:
+    """The sentence with no readings and no whitespace: what a furigana fix leaves alone."""
+    return golden.WS_RE.sub("", READING_RE.sub("", sentence))
+
+
+def without_context(fix: str, before: str, after: str) -> str:
+    """The fix less the sentence text it repeats from either side of its group.
+
+    A labeller sometimes wrote a group's fix with the words around it, up to the whole
+    sentence. Put in place of the group, those words were doubled (人[ひと]にに), and the
+    first run with --labeller wrote 19 such sentences into notes.
+    """
+    lead = next((k for k in range(min(len(before), len(fix)), 0, -1)
+                 if before.endswith(fix[:k])), 0)  # fmt: skip
+    fix = fix[lead:]
+    tail = next((k for k in range(min(len(after), len(fix)), 0, -1)
+                 if after.startswith(fix[len(fix) - k :])), 0)  # fmt: skip
+    return fix[: len(fix) - tail]
 
 
 def labeller_fixes(row: dict, min_confidence: float) -> tuple[list[tuple[str, str]], list[str]]:
@@ -81,8 +108,18 @@ def fix_row(row: dict, labeller: bool, min_confidence: float) -> tuple[str, list
             if text.count(group) != 1:
                 left.append(f"not in the sentence once: {group}")
                 continue
-            text = text.replace(group, fix)
-            made.append(f"labeller: {group} -> {fix}")
+            at = text.index(group)
+            before, after = text[:at], text[at + len(group) :]
+            if plain_text(fix) != plain_text(group):
+                # only a fix that changes the text can hold its context: in one that changes
+                # readings alone, a match with the text beside it is the group's own kana
+                fix = without_context(fix, before, after)
+            if not fix.strip():
+                left.append(f"nothing left of the fix: {group}")
+                continue
+            text = before + fix + after
+            kind = "labeller" if plain_text(fix) == plain_text(group) else "labeller, text"
+            made.append(f"{kind}: {group} -> {fix}")
     fixed = golden.fix_groups(text)
     found = [p for p in row.get("program", []) if p.startswith(REPAIRED)]
     if fixed != text:
@@ -108,6 +145,37 @@ def plan(rows: list[dict], labeller: bool, min_confidence: float) -> tuple[list[
     return out, lines
 
 
+def redo(rows: list[dict], undo: list[dict], min_confidence: float) -> tuple[list[dict], list[str]]:
+    """`kanjify_fix` rows that rewrite what an older version of this script wrote from `rows`
+    (the fix list that run read) where this version fixes the sentence otherwise, and their
+    listing.
+
+    A write is redone when it is neither this version's fix of its sentence with the labellers'
+    fixes nor without them, so the flags that run had need not be known. It is redone from what
+    was written, which `kanjify_fix.plan_writes` checks the note still holds.
+    """
+    by_nid = {nid: row for row in rows for nid in row["nids"]}
+    by_sid: dict[str, dict] = {}
+    for e in undo:
+        row = by_nid.get(e["nid"])
+        if row is None or e["before"].strip() != row["sentence"].strip():
+            continue
+        plans = {fix_row(row, labeller, min_confidence)[0].strip() for labeller in (False, True)}
+        if e["after"].strip() in plans:
+            continue
+        written = e["after"].strip()
+        key = row["sid"] + written
+        if key not in by_sid:
+            by_sid[key] = {"row": row["sid"], "nids": [], "before": written,
+                           "after": fix_row(row, True, min_confidence)[0]}  # fmt: skip
+        by_sid[key]["nids"].append(e["nid"])
+    lines = []
+    for r in by_sid.values():
+        lines += [f"[{r['row']}] nid:{','.join(map(str, r['nids']))}",
+                  f"    written {r['before']}", f"    now     {r['after']}"]  # fmt: skip
+    return list(by_sid.values()), lines
+
+
 def counts(rows: list[dict], labeller: bool, min_confidence: float) -> Counter:
     c: Counter[str] = Counter()
     for row in rows:
@@ -125,6 +193,8 @@ def main() -> int:
     parser.add_argument("--min-confidence", type=float, default=0.8)
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows")
     parser.add_argument("--undo", type=Path, default=UNDO)
+    parser.add_argument("--redo", type=Path, metavar="OLD_FIXES",
+                        help="rewrite what a run from this older fix list wrote otherwise")  # fmt: skip
     parser.add_argument("--anki-connect", default=anki_connect.URL)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true",
@@ -140,8 +210,13 @@ def main() -> int:
             reverted, refused = kanjify_fix.revert(client, config, args.undo, FIELD_KEY)
             print("\n".join(refused + [f"reverted {reverted} notes"]))
             return 0
-        rows = kanjify_fix.read_jsonl(args.fixes)[: args.n or None]
-        fixes, lines = plan(rows, args.labeller, args.min_confidence)
+        if args.redo:
+            rows = []
+            fixes, lines = redo(kanjify_fix.read_jsonl(args.redo),
+                                kanjify_fix.read_jsonl(args.undo), args.min_confidence)  # fmt: skip
+        else:
+            rows = kanjify_fix.read_jsonl(args.fixes)[: args.n or None]
+            fixes, lines = plan(rows, args.labeller, args.min_confidence)
         if args.check:
             nids = sorted({nid for f in fixes for nid in f["nids"]})
             infos = kanjify_fix.notes_info(client, nids)

@@ -58,11 +58,51 @@ class FixRowTest(unittest.TestCase):
         self.assertEqual(after, "まだ 五分[ごぶ]の")
         self.assertEqual(made[-1], "program: a space before a group a fix made")
 
+    def test_the_words_a_fix_repeats_around_its_group_are_not_doubled(self):
+        row = fix_row("彼[かれ]は 金[きん]を 払[はら]った。", [labelled(" 金[きん]", "は 金[かね]を")])
+        after, made, _ = furigana_fix.fix_row(row, True, 0.8)
+        self.assertEqual(after, "彼[かれ]は 金[かね]を 払[はら]った。")
+        self.assertEqual(made, ["labeller:  金[きん] ->  金[かね]"])
+
+    def test_a_whole_sentence_as_a_fix_fixes_only_its_group(self):
+        row = fix_row("その 人[じん]に 会[あ]う。", [labelled(" 人[じん]", "その 人[ひと]に 会[あ]う。")])
+        self.assertEqual(furigana_fix.fix_row(row, True, 0.8)[0], "その 人[ひと]に 会[あ]う。")
+
+    def test_a_typo_fix_is_made_and_named_as_one(self):
+        row = fix_row("その とろこに 行[い]く", [labelled("とろこ", "ところ")])
+        after, made, _ = furigana_fix.fix_row(row, True, 0.8)
+        self.assertEqual(after, "その ところに 行[い]く")
+        self.assertEqual(made, ["labeller, text: とろこ -> ところ"])
+
     def test_what_no_one_can_fix_is_listed_not_written(self):
         rows = [fix_row("本がある"), fix_row(" 三[みっ]つ買[か]う")]
         fixes, lines = furigana_fix.plan(rows, labeller=True, min_confidence=0.8)
         self.assertEqual([f["after"] for f in fixes], [" 三[みっ]つ 買[か]う"])
         self.assertIn("    left   kanji with no reading: 本", lines)
+
+
+class RedoTest(unittest.TestCase):
+    SENTENCE = "その 人[じん]に 会[あ]う。"
+
+    def setUp(self):
+        self.rows = [fix_row(self.SENTENCE, [labelled(" 人[じん]", " 人[ひと]に")])]
+
+    def undo(self, written: str, nid: int = 1) -> dict:
+        return {"nid": nid, "field": "f", "before": " " + self.SENTENCE, "after": written}
+
+    def test_a_write_this_version_makes_otherwise_is_redone_from_what_was_written(self):
+        fixes, _ = furigana_fix.redo(self.rows, [self.undo("その 人[ひと]にに 会[あ]う。")], 0.8)
+        self.assertEqual(fixes, [{"row": "s1", "nids": [1], "before": "その 人[ひと]にに 会[あ]う。",
+                                  "after": "その 人[ひと]に 会[あ]う。"}])  # fmt: skip
+
+    def test_writes_either_plan_makes_are_left_alone(self):
+        # a run without --labeller wrote the sentence as it was; one with it, as it is now
+        undo = [self.undo(self.SENTENCE, 1), self.undo("その 人[ひと]に 会[あ]う。", 2)]
+        self.assertEqual(furigana_fix.redo(self.rows, undo, 0.8)[0], [])
+
+    def test_writes_from_another_fix_list_are_left_alone(self):
+        undo = [{"nid": 1, "field": "f", "before": "other", "after": "その 人[ひと]にに"}]
+        self.assertEqual(furigana_fix.redo(self.rows, undo, 0.8)[0], [])
 
 
 class FieldKeyTest(unittest.TestCase):
