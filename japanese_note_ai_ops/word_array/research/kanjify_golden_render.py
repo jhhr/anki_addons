@@ -2,6 +2,7 @@
 
     py -3.10 word_array/research/kanjify_golden_render.py words [--effort xhigh] [--wids ...]
     py -3.10 word_array/research/kanjify_golden_render.py batches [--effort high] [--bids ...]
+    py -3.10 word_array/research/kanjify_golden_render.py relabel SIDS_FILE [--size 30]
     py -3.10 word_array/research/kanjify_golden_render.py pilot
 
 `words` (step 1): one prompt per inventory word, `kanjify_agents/word_template.md` filled with
@@ -18,6 +19,10 @@ hold, handed-back words included. A batch never says which of its sentences are 
 labelled twice.
 -> `queues/batches.jsonl`.
 
+`relabel SIDS_FILE`: the same prompts for only the sentences a newer policy or decision table
+changed, in new batches of `--size`. Their rows replace the batch rows of those sentences in the
+collate step. -> `queues/relabel.jsonl`.
+
 `pilot`: the pilot's sentences three ways, to compare cost and agreement before scaling step 2:
 `pilot_single` (one agent per sentence, deciding words itself, with web search), `pilot_batch`
 (batch agents with the decision table, in batches of 10 and of 30; written only once every
@@ -33,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -203,6 +209,21 @@ def item(id_: str, prompt: str, effort: str, tools: str, schema: str, **meta) ->
     }
 
 
+def relabel_items(rows: list[dict], decisions: dict[str, dict], policy: str,
+                  translations: dict[str, str], args) -> list[dict]:  # fmt: skip
+    """Batches of just the sentences a policy or decision change touched. Named by when they
+    were rendered, so ids never repeat across rounds (a saved id is never run again) and the
+    collate step can take the latest round's row of a sentence by name."""
+    stamp = time.strftime("%y%m%d%H%M")
+    return [
+        item(f"r{stamp}-{n:03d}", batch_prompt(rows[i : i + args.size], decisions, policy,
+                                               translations=translations),
+             args.effort, "lookup", "batch_schema.json", kind="relabel",
+             sids=[s["sid"] for s in rows[i : i + args.size]])  # fmt: skip
+        for n, i in enumerate(range(0, len(rows), args.size), 1)
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -213,6 +234,10 @@ def main() -> int:
     p = sub.add_parser("batches")
     p.add_argument("--effort", default="high")
     p.add_argument("--bids", nargs="*", default=[])
+    p = sub.add_parser("relabel")
+    p.add_argument("sids", type=Path, help="a file of sentence ids, one per line")
+    p.add_argument("--effort", default="high")
+    p.add_argument("--size", type=int, default=30)
     p = sub.add_parser("pilot")
     p.add_argument("--single-effort", default="xhigh")
     p.add_argument("--batch-effort", default="high")
@@ -262,6 +287,13 @@ def main() -> int:
             )
         n = golden.write_jsonl(golden.QUEUES / "batches.jsonl", items)
         print(f"{n} batch prompts ({len(decisions)} decisions) -> {golden.QUEUES}")
+        return 0
+    if args.command == "relabel":
+        wanted = dict.fromkeys(line.strip() for line in args.sids.read_text().splitlines())
+        rows = [sentences[sid] for sid in wanted if sid in sentences]
+        n = golden.write_jsonl(golden.QUEUES / "relabel.jsonl",
+                               relabel_items(rows, decisions, policy, translations, args))  # fmt: skip
+        print(f"{n} relabel prompts for {len(rows)} sentences -> {golden.QUEUES}")
         return 0
 
     pilot = json.loads((golden.INVENTORY / "pilot.json").read_text())["sids"]

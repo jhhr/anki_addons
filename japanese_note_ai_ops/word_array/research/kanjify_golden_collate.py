@@ -33,7 +33,8 @@ Reads `results/<queue>/*.json` and writes:
                             and between the pilot's three ways
 
 A sentence labelled more than once keeps its first accepted row in accepted.jsonl (batches
-before duplicates, by queue name); the others only count in the agreement figures.
+before duplicates, by queue name); the others only count in the agreement figures. A sentence a
+relabel round labelled again is its latest relabel row alone (`select`).
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ import kanjify_eval
 import kanjify_golden as golden
 
 WS_RE = re.compile(r"\s")
-STEP2_QUEUES = ("batches", "pilot_batch", "pilot_single")
+STEP2_QUEUES = ("relabel", "batches", "pilot_batch", "pilot_single")
 
 
 def read_results(queue: str) -> list[dict]:
@@ -128,6 +129,35 @@ def step2_rows(queue: str, sentences: dict[str, dict]) -> list[dict]:
                 }
             )
     return rows
+
+
+def select(all_rows: dict[str, list[dict]]) -> tuple[dict, list, list, list]:
+    """Each checked row to where it goes: (accepted by sid, pending, rejected, broken furigana).
+    A sentence a relabel round labelled again (`kanjify_golden_render.py relabel`) is its latest
+    relabel row alone, its batch rows and older relabels dropped: that round ran on a newer
+    policy or decision table, for exactly the sentences those changed."""
+    latest: dict[str, dict] = {}
+    for row in sorted(all_rows.get("relabel", []), key=lambda r: r["labeller"], reverse=True):
+        latest.setdefault(row["sid"], row)
+    accepted: dict[str, dict] = {}
+    pending, rejected, furigana = [], [], []
+    for queue in STEP2_QUEUES:
+        if queue == "relabel":
+            rows = list(latest.values())
+        else:
+            rows = sorted(all_rows.get(queue, []), key=lambda r: r["labeller"])
+        for row in rows:
+            if queue == "batches" and row["sid"] in latest:
+                continue
+            if row["problem"]:
+                rejected.append(row)
+            elif row["furigana"]:
+                furigana.append(row)
+            elif row["pending"]:
+                pending.append(row)
+            elif row["sid"] not in accepted and queue in ("relabel", "batches"):
+                accepted[row["sid"]] = {**row, "status": "silver"}
+    return accepted, pending, rejected, furigana
 
 
 def op_rows(sentences: dict[str, dict]) -> list[dict]:
@@ -257,17 +287,7 @@ def main() -> int:
 
     # step 2
     all_rows: dict[str, list[dict]] = {q: step2_rows(q, sentences) for q in STEP2_QUEUES}
-    accepted, pending, rejected, furigana = {}, [], [], []
-    for queue in STEP2_QUEUES:
-        for row in sorted(all_rows[queue], key=lambda r: r["labeller"]):
-            if row["problem"]:
-                rejected.append(row)
-            elif row["furigana"]:
-                furigana.append(row)
-            elif row["pending"]:
-                pending.append(row)
-            elif row["sid"] not in accepted and queue == "batches":
-                accepted[row["sid"]] = {**row, "status": "silver"}
+    accepted, pending, rejected, furigana = select(all_rows)
     golden.write_jsonl(golden.COLLATED / "accepted.jsonl",
                        ({k: v for k, v in r.items() if k != "problem"} for r in accepted.values()))  # fmt: skip
     golden.write_jsonl(golden.COLLATED / "pending.jsonl", pending)

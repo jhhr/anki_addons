@@ -226,6 +226,44 @@ class HandedBackTest(unittest.TestCase):
         self.assertIn("handed it back undecided: ?", render.word_prompt(word, "", 120))
 
 
+def step2_row(sid: str, labeller: str, kanjified: str = "k", **extra) -> dict:
+    return {"sid": sid, "labeller": labeller, "kanjified": kanjified, "problem": None,
+            "furigana": [], "pending": [], **extra}  # fmt: skip
+
+
+class RelabelTest(unittest.TestCase):
+    def test_the_latest_relabel_replaces_every_older_row(self):
+        rows = {
+            "batches": [step2_row("s1", "batches/b0001", "old"),
+                        step2_row("s2", "batches/b0001", "kept"),
+                        step2_row("s3", "batches/b0002", pending=[{"word": "x"}])],
+            "relabel": [step2_row("s1", "relabel/r2609301200-001", "earlier"),
+                        step2_row("s1", "relabel/r2610011200-001", "latest"),
+                        step2_row("s3", "relabel/r2610011200-001", "decided")],
+        }  # fmt: skip
+        accepted, pending, rejected, furigana = collate.select(rows)
+        self.assertEqual({sid: r["kanjified"] for sid, r in accepted.items()},
+                         {"s1": "latest", "s2": "kept", "s3": "decided"})  # fmt: skip
+        # the batch row that waited on a word no longer counts as pending
+        self.assertEqual(pending, [])
+
+    def test_a_relabel_that_fails_leaves_the_sentence_out(self):
+        rows = {"batches": [step2_row("s1", "batches/b0001", "old")],
+                "relabel": [step2_row("s1", "relabel/r2610011200-001", problem="changed")]}
+        accepted, _, rejected, _ = collate.select(rows)
+        self.assertNotIn("s1", accepted)
+        self.assertEqual([r["labeller"] for r in rejected], ["relabel/r2610011200-001"])
+
+    def test_relabel_batches_hold_only_the_sentences_given(self):
+        rows = [{"sid": f"s{i}", "sentence": SENTENCE, "words": []} for i in range(5)]
+        args = unittest.mock.Mock(size=2, effort="high")
+        items = render.relabel_items(rows, {}, "", {}, args)
+        self.assertEqual([it["meta"]["sids"] for it in items],
+                         [["s0", "s1"], ["s2", "s3"], ["s4"]])  # fmt: skip
+        self.assertEqual(len({it["id"] for it in items}), 3)
+        self.assertTrue(all(it["id"].startswith("r") for it in items))
+
+
 class TranslationsTest(unittest.TestCase):
     def test_a_sentence_gets_the_first_translation_its_notes_have(self):
         with tempfile.TemporaryDirectory() as tmp:
