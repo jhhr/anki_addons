@@ -46,15 +46,15 @@ together with SOURCE and SPELL.
   A main spelling that keeps part of the word in kana is completed by KANJI-12.
 - SPELL-3 A word already spelled in kanji in the source is never respelled, even with a kanji
   this policy would not choose. Its kana part is still kanjified (KANJI-12).
-- SPELL-4 A spelling that Sudachi reads as a different word is skipped: take the next listed
-  spelling it reads as this word, and when there is none the word stays kana. Check a rare form,
-  an ateji and any spelling you are unsure of with `kanjify_lookup.py sudachi`. So そして stays
+- SPELL-4 A spelling JMdict does not mark common (a rarely used form, an ateji, a gikun) whose
+  usual reading is another word is skipped: take the next listed spelling that reads as this
+  word, and when there is none the word stays kana. `kanjify_lookup.py sudachi` is the check:
+  a spelling Sudachi reads as another word, a reader takes for that word too. So そして stays
   kana (而して and 然して are read しこうして), and so does まとも (正面 is read しょうめん, 真面 as a
   name); あやなす is 綾なす (彩なす is read 彩り + 成す); おばあさん is 御婆さん (祖母 is read
-  そぼ); 若し and 略 stay (read もし, ほぼ). Why: extract_words reads the kanjified sentence with
-  Sudachi, so a misread spelling files the sentence under the wrong words (KANJI-16 checks
-  loanwords for the same reason). A spelling a KANJI or SPLIT rule names is kept whatever
-  Sudachi reads (見たい, 為る).
+  そぼ); 若し and 略 stay (read もし, ほぼ). A common spelling that is also another word's (未だ,
+  止める, 側, 家) is kept: the furigana says which, and Sudachi, given one word alone, only
+  guesses. So is a spelling a KANJI or SPLIT rule names (見たい, 為る, 此方, 彼奴, 序で).
 
 ## SPLIT: the words whose kanji follow the sense
 
