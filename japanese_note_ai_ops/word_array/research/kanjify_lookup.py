@@ -3,7 +3,9 @@ Sudachi's reading of a text, a step 1 word's uses, and a search of the dumped se
 
 The agents run headless with no write tool and no other command, so everything they need to
 look up offline is here. Japanese on a Windows command line is mangled, so a word may be given
-as `\\u` escapes (`\\u3088\\u308b` for よる); plain text works where the shell passes it.
+as code points (`U+3088U+308B` for よる). `\\u` escapes work too, but only where nothing
+decodes them first: a tool call's JSON turns `\\u3088` back into よる before the command runs,
+and Git Bash then fails on it. Plain text works where the shell passes it.
 
     py -3.10 word_array/research/kanjify_lookup.py jmdict WORD [--all]
     py -3.10 word_array/research/kanjify_lookup.py sudachi TEXT
@@ -42,13 +44,15 @@ SENSES_PICKLE = jmdict_index.DATA_DIR / "jmdict_senses.pkl"
 SENSES_FORMAT = 1
 ENTITY_RE = re.compile(r"&([\w.-]+);")
 ESCAPE_RE = re.compile(r"\\u[0-9a-fA-F]{4}")
+CODE_POINT_RE = re.compile(r"U\+([0-9a-fA-F]{4,5})")
 FURI_RE = re.compile(r" ?([^\s\[\]<>]+)\[[^\]]*\]")
 TAG_RE = re.compile(r"<[^>]+>")
 MAX_GLOSSES = 6
 
 
 def decode_arg(text: str) -> str:
-    """An argument as the agent meant it: `\\u` escapes decoded."""
+    """An argument as the agent meant it: code points and `\\u` escapes decoded."""
+    text = CODE_POINT_RE.sub(lambda m: chr(int(m[1], 16)), text)
     if ESCAPE_RE.search(text):
         return codecs.decode(text, "unicode_escape")
     return text

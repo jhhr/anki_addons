@@ -47,7 +47,7 @@ Work from the addon directory (the current directory); nothing you run can chang
 Use them only when a sentence needs it: most do not.
 
 - `{PYTHON} word_array/research/kanjify_lookup.py jmdict WORD` JMdict's entries of WORD with
-  their senses. Write Japanese as `\u` escapes (よる is `\u3088\u308b`): Japanese on the
+  their senses. Write Japanese as code points (よる is `U+3088U+308B`): Japanese on the
   command line is mangled. Run it with the Bash tool exactly as shown.
 - `{PYTHON} word_array/research/kanjify_lookup.py sudachi TEXT` how Sudachi reads TEXT: for a
   loanword's kanji spelling, KANJI-16 needs it read as the loanword.

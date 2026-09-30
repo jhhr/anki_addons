@@ -260,12 +260,19 @@ class TranslationsTest(unittest.TestCase):
 
 
 class TemplatesTest(unittest.TestCase):
-    def test_the_escape_example_is_an_escape(self):
-        # Written through a tool that decodes JSON, the example once became the kana it stands
-        # for, and the agents were told "write Japanese as escapes (yoru is <yoru in kana>)"
+    def test_the_lookup_example_is_code_points(self):
+        # An agent's `\u` escapes were decoded back into kana by its tool call's JSON before the
+        # command ran, and Git Bash fails on kana: every lookup of the local labellers failed
         for name in ("word_template.md", "batch_template.md"):
             text = (golden.AGENTS_DIR / name).read_text(encoding="utf-8")
-            self.assertIn("`" + ESCAPED_YORU + "`", text, name)
+            self.assertIn("`U+3088U+308B`", text, name)
+
+    def test_the_lookup_decodes_code_points_and_escapes(self):
+        import kanjify_lookup
+
+        yoru = chr(0x3088) + chr(0x308B)
+        self.assertEqual(kanjify_lookup.decode_arg("U+3088U+308B"), yoru)
+        self.assertEqual(kanjify_lookup.decode_arg(ESCAPED_YORU), yoru)
 
     def test_no_template_names_a_machines_folders(self):
         for path in Path(golden.AGENTS_DIR).parent.glob("*_agents/*.md"):
