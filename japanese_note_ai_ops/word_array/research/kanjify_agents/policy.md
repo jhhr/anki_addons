@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.18
+Policy version: 0.19
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -40,7 +40,9 @@ together with SOURCE and SPELL.
   adjective whose own ending is contracted (分かんない, つまんない, 行かなきゃなんねえ,
   泣きなさんな, 何すんだ, すりゃ, 嬉しかねえ as うれしかねえ, よかない, and する's imperative
   せぇ). Where only the auxiliary after it is contracted, the word is kanjified and the
-  auxiliary stays kana inside its span (`<k> 行[い]けねえ</k>`, `<k> 糞[くそ]</k>もねえ`). A ～,
+  auxiliary stays kana inside its span (`<k> 行[い]けねえ</k>`, `<k> 糞[くそ]</k>もねえ`), and so
+  is a verb + ない adjective whose ない alone is contracted (`<k> 下[くだ]らねえ</k>`, where
+  つまんない, whose verb is contracted, stays). A ～,
   a ー or a small vowel kana after a complete dictionary form is intonation, not a lengthened
   form: the word is kanjified and the mark stays outside its span (`<k> 本当[ホント]</k>～`,
   `<k> 痛[いた]い</k>～`, `<k> 等[ら]</k>ァ`). The noun もん stays 物[もん] (FMT-5).
@@ -122,7 +124,9 @@ needs a split asks (a policy question); it never splits on its own.
   由って鋭く成る); 因る for a cause that is an event, a condition or a natural force nobody does
   (事故に因る故障, 病気に因る欠席, 地震に因る被害, 重力に因って落ちる, 摩擦に因る磨耗), and for
   an event or act people did whose outcome was not what it was done for (戦争に因り記録が失われた,
-  人為的な活動に因って), and for a thing that brought it about without being used for it, even
+  人為的な活動に因って), an event the outcome came about through too, even one the outcome is
+  part of (戦争に因って国が分かれた), and for a thing that brought it about without being used for
+  it, even
   in a passive (蚊の媒介に因る感染, 教えに因って変わった): a means is 由る only when it is used for
   the outcome, and a doer (依る) does the verb's action itself; the clause-final
   によって "because" is 因る too; 依る for "depending on", "according to", "based on" (人に依る,
@@ -171,7 +175,9 @@ needs a split asks (a policy question); it never splits on its own.
   time or a moment, and in AにしてB; からして; にしたところで. Also the set adverbs and conjunctions and the
   suppositions built with する: もしかしたら, もしかして, ひょっとして, なんとかして, どうにかして, 要するに, ともすると, ややもすれば,
   ちょっとした, すると (the conjunction), そうして "and then", そしたら, それにしても, いずれにしても, としたら, とすれば, とすると, としても,
-  だとしても, and a clause + として "supposing" or "leaving aside" (仮に本当だとして, それは措くとして). An adverb or
+  だとしても, and a clause + として "supposing" or "leaving aside" (仮に本当だとして, それは措くとして). Only
+  their する stays kana: a word in them that is kanjified on its own still is (其れにしても, 何れにしても,
+  何とかして, 一寸した). An adverb or
   noun + と + する describing a state is 為る (平然と為て, 依然と為て, 断固と為て, even where JMdict lists the whole
   as an adverb: KANJI-3), and どうして is 如何為て (KANJI-6): the user's choice. So is とする with a
   を-object of its own, "take or regard A as B", in every form (AをBと為て, AをBと為ると, AをBに為て, AをBと為る,
@@ -193,7 +199,9 @@ needs a split asks (a policy question); it never splits on its own.
 - KANA-11 Loanwords (gairaigo) stay katakana unless KANJI-16 kanjifies them.
 - KANA-12 Names of people, places, works and brands, however they are written, and a title a
   work gives a character, with any さま it includes. Events are not among them: an event's kana
-  is kanjified like a common noun (夏祭り), a place name in it stays.
+  is kanjified like a common noun (夏祭り), a place name in it stays. Nor is an honorific after
+  a name, real or fictional: さま is 様 (SOURCE-1), くん 君 (KANJI-13); さん and ちゃん have no
+  kanji. Names of plants, animals and other taxa are common nouns, not names (KANJI-14).
 - KANA-13 そう and ああ as adverbs are always kana, the demonstrative too (そう言う, そうする,
   そうですね, ああ言う): 然う only spells the demonstrative, and telling it from the そう of
   appearance or hearsay is a call not worth making in every sentence; ああ has no spelling that
@@ -201,7 +209,9 @@ needs a split asks (a policy question); it never splits on its own.
   こう is kanjified (KANJI-6): the user's choice, since 斯う fits it in every use.
 - KANA-14 Kana that is mentioned, not used: a reading gloss (漢字（かんじ）), a word discussed as
   a kana form (「ついたち」とは), and its mirror, a kana word glossed right after by its own
-  kanji in parentheses (ツバキ（椿）). Kanjifying it would erase what the sentence says. A word
+  kanji in parentheses (ツバキ（椿）). Kanjifying it would erase what the sentence says. Only
+  the mentioned word stays kana: the rest of a parenthetical is used and kanjified
+  (（何方も、はし）), and so is the same word where the sentence uses it with no gloss. A word
   quoted for its meaning, or a quoted chant, is used, not mentioned: 「済みません」の意味,
   桑原桑原と唱えた.
 
@@ -210,8 +220,9 @@ needs a split asks (a policy question); it never splits on its own.
 - KANJI-1 無い as a word of its own, in every form (なかった, なくて, なく): after a noun and は, が,
   も or しか (事は無かった, 一膳しか無い, 必要無い, 見た事無い), and in set phrases, also after
   kanji (絶え間無く) and where the phrase's own dictionary entry writes ない in kana (差し支え無い,
-  余儀無く, 幾度と無く), or only as a search-only form (呆気無い, 極まり無い): the test is that
-  ない means "there is none". Where it is a negative instead it stays kana: the copula's ない
+  余儀無く, 幾度と無く), or only as a search-only form (呆気無い, 極まり無い), and after 事 in a
+  double negative (言えない事も無い, 行かない事は無い): the test is that ない means "there is
+  none". Where it is a negative instead it stays kana: the copula's ない
   after a noun, では / じゃ / でも / でしか + ない (KANA-2), and である + なし ("whether or not
   one is"), also in a phrase with an entry of
   its own (過言ではない, 物の数ではない, 他でもない) and clipped (半端ない); an adjective's or
@@ -228,7 +239,8 @@ needs a split asks (a policy question); it never splits on its own.
   noun (御願い為る), after kana words and onomatopoeia (にこにこ為る), after a volitional form
   ("try to": 立ち上がろうと為た) and after an adverb or noun + と (平然と為て). する's stem in a
   compound verb too, before JMdict's order of fuller forms (KANJI-12): 為直す, 為合う, 為過ぎる,
-  為出す "begin to do". The する of KANA-5 stays kana. どうして
+  為出す "begin to do". The する of KANA-5 stays kana, and so does the じる / ずる of a
+  one-kanji verb (論じる, 減ずる): it is the verb's own ending, and 為 reads neither. どうして
   is 如何為て; どうしよう is 如何 + 為よう. But どうしようもない is 如何 + 仕様 + も + 無い: 仕様 is
   the noun "way, means" (仕様が無い).
 - KANJI-4 なる is 成る in every use: ようになる, ことになる, そうになる, くなる, となる,
@@ -278,7 +290,10 @@ needs a split asks (a policy question); it never splits on its own.
   spelling. A fuller form must be one a dictionary lists for the whole word (痩せこける stays), and
   where the input already writes part of the word in kanji, its added kanji must read the kana
   part on its own: an ateji or jukujikun that only reads as a whole leaves the word as the input
-  has it (田[た]んぼ, not 田圃). Among several fuller forms, take one that keeps the kanji the source
+  has it (田[た]んぼ, not 田圃). A kanji reads the part on its own when a kanji dictionary lists
+  that reading for it, or the reading it is a voiced form of (付 for づ), name readings not
+  counted: さざ 波 stays, since neither 小 nor 細 is listed as さざ. Among several fuller
+  forms, take one that keeps the kanji the source
   has (SPELL-3), then one whose added kanji read the kana part (ほほ 笑[え]む -> 頬笑む, not 微笑む) and
   spell the kana part's own word (擂り下ろす, since すり is 擦る; not 摺り下ろす, since 摺 spells 刷る), then the
   one that keeps the kana part's own okurigana and main spelling as a word of its own (溜め息, not
@@ -304,8 +319,12 @@ needs a split asks (a policy question); it never splits on its own.
   reading JMdict marks as having no kanji, which only records how the katakana is written
   (台詞[セリフ], 雑魚[ザコ], 判子[ハンコ], 鴨[カモ]る). The katakana okurigana of a verb stays after the group
   (嵌[ハ]マる, 持[モ]テる). A main spelling that mixes kana and kanji is completed by KANJI-12:
-  玉葱[タマネギ], 薩摩芋[サツマイモ]. A katakana word the input wrote inside a kanji word's
-  furigana group is broken furigana, not a word to kanjify (FMT-7).
+  玉葱[タマネギ], 薩摩芋[サツマイモ]; and a katakana part of a word the input partly writes in
+  kanji is kanjified by the same rules, its okurigana in katakana (思うツボ -> 思う<k> 壺[ツボ]</k>,
+  ハレ 着 -> <k> 晴[ハ]レ</k> 着). Names of plants, animals and other taxa, which biology writes
+  in katakana, are included (キク 科 -> <k> 菊[キク]</k> 科): they are common nouns (KANA-12),
+  kanjified where SOURCE and SPELL-4 give them a spelling. A katakana word the input wrote
+  inside a kanji word's furigana group is broken furigana, not a word to kanjify (FMT-7).
 - KANJI-15 Honorific verbs are kanjified wherever they are not a て-helper (KANA-3), after a
   verb stem too: 為さる (なさる) in every use (勉強為さる, 如何為さいました, 寝為さい: 寝[ね]<k>
   為[な]さい</k>, 御免為さい), except right after する's stem し, where なさい stays kana (為なさい,
