@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.15
+Policy version: 0.16
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -122,7 +122,9 @@ needs a split asks (a policy question); it never splits on its own.
   由って鋭く成る); 因る for a cause that is an event, a condition or a natural force nobody does
   (事故に因る故障, 病気に因る欠席, 地震に因る被害, 重力に因って落ちる, 摩擦に因る磨耗), and for
   an event or act people did whose outcome was not what it was done for (戦争に因り記録が失われた,
-  人為的な活動に因って): a means is 由る only when it is used for the outcome; the clause-final
+  人為的な活動に因って), and for a thing that brought it about without being used for it, even
+  in a passive (蚊の媒介に因る感染, 教えに因って変わった): a means is 由る only when it is used for
+  the outcome, and a doer (依る) does the verb's action itself; the clause-final
   によって "because" is 因る too; 依る for "depending on", "according to", "based on" (人に依る,
   予報に依ると, 法律に依る, a person's favour or will as the ground: 御厚意に依る), and for the
   doer of an action, person or thing, in a passive or before an action noun (彼に依って書かれた,
@@ -173,6 +175,8 @@ needs a split asks (a policy question); it never splits on its own.
   as an adverb: KANJI-3), and どうして is 如何為て (KANJI-6): the user's choice. So is とする with a
   を-object of its own, "take or regard A as B", in every form (AをBと為て, AをBと為ると, AをBに為て, AをBと為る,
   AをBと為た), and the finite "regard as" with or without one (と為れる, と為ている): KANJI-3.
+  A を-object that belongs to the verb after として is not its own: in AをBとして認める, として
+  only names A's role and stays kana.
 - KANA-6 あげる meaning "to give": kept in kana to set it apart from 上げる / 揚げる / 挙げる. An
   exception to BASIC.
 - KANA-7 そんな, こんな, あんな, どんな (and そんなに etc.).
