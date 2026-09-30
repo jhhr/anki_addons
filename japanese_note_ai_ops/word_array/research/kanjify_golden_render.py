@@ -3,6 +3,7 @@
     py -3.10 word_array/research/kanjify_golden_render.py words [--effort xhigh] [--wids ...]
     py -3.10 word_array/research/kanjify_golden_render.py batches [--effort high] [--bids ...]
     py -3.10 word_array/research/kanjify_golden_render.py relabel SIDS_FILE [--size 30]
+    py -3.10 word_array/research/kanjify_golden_render.py readings [--size 20]
     py -3.10 word_array/research/kanjify_golden_render.py pilot
 
 `words` (step 1): one prompt per inventory word, `kanjify_agents/word_template.md` filled with
@@ -22,6 +23,13 @@ labelled twice.
 `relabel SIDS_FILE`: the same prompts for only the sentences a newer policy or decision table
 changed, in new batches of `--size`. Their rows replace the batch rows of those sentences in the
 collate step. -> `queues/relabel.jsonl`.
+
+`readings`: the reading pass, for the notes rather than the labels: the sentences of the
+collate step's furigana fix list with anything a program can't repair (a kanji with no reading,
+a labeller's fix), and those a labeller held back for a typo, in batches of `--size`,
+`kanjify_agents/reading_template.md` filled with each one's findings. An agent writes each
+sentence with its furigana fixed; the collate step puts that on the fix list, and
+`furigana_fix.py --readings` writes it into the note. -> `queues/readings.jsonl`.
 
 `pilot`: the pilot's sentences three ways, to compare cost and agreement before scaling step 2:
 `pilot_single` (one agent per sentence, deciding words itself, with web search), `pilot_batch`
@@ -224,6 +232,46 @@ def relabel_items(rows: list[dict], decisions: dict[str, dict], policy: str,
     ]
 
 
+def reading_rows(fixes: list[dict], pending: list[dict]) -> list[dict]:
+    """The sentences for the reading pass: those on the furigana fix list with anything
+    `kanjify_golden.fix_groups` does not repair, and those a labeller held back for a typo in
+    the text, which the note has to be fixed for too."""
+    rows = [{**r, "pending": []} for r in fixes if r["labeller"]
+            or any(not p.startswith(golden.REPAIRED) for p in r["program"])]  # fmt: skip
+    listed = {r["sid"] for r in rows}
+    for r in pending:
+        typos = [p for p in r["pending"] if "typo" in p.get("why", "")]
+        if typos and r["sid"] not in listed:
+            listed.add(r["sid"])
+            rows.append({"sid": r["sid"], "sentence": r["sentence"], "program": [],
+                         "labeller": [], "pending": typos})  # fmt: skip
+    return rows
+
+
+def reading_block(row: dict, translations: dict[str, str]) -> str:
+    lines = [f"- {row['sid']}: {row['sentence']}" + translation_line(row["sid"], translations)]
+    lines += [f"  found by a program: {p}" for p in row["program"]]
+    lines += [f"  a labeller ({f['confidence']}): `{f['group']}` -> `{f['fix']}`: {f['problem']}"
+              for f in row["labeller"]]  # fmt: skip
+    lines += [f"  held back by a labeller: {p['word']}: {p['why']}" for p in row["pending"]]
+    return "\n".join(lines)
+
+
+def reading_items(rows: list[dict], translations: dict[str, str], size: int,
+                  effort: str) -> list[dict]:  # fmt: skip
+    """The reading pass's prompts, named like relabel rounds by when they were rendered."""
+    stamp = time.strftime("%y%m%d%H%M")
+    out = []
+    for n, i in enumerate(range(0, len(rows), size), 1):
+        chunk = rows[i : i + size]
+        prompt = (template("reading_template.md").replace("{COUNT}", str(len(chunk)))
+                  .replace("{SENTENCES}", "\n".join(reading_block(r, translations)
+                                                    for r in chunk)))  # fmt: skip
+        out.append(item(f"f{stamp}-{n:03d}", prompt, effort, "lookup", "reading_schema.json",
+                        kind="readings", sids=[r["sid"] for r in chunk]))  # fmt: skip
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -238,6 +286,9 @@ def main() -> int:
     p.add_argument("sids", type=Path, help="a file of sentence ids, one per line")
     p.add_argument("--effort", default="high")
     p.add_argument("--size", type=int, default=30)
+    p = sub.add_parser("readings")
+    p.add_argument("--effort", default="high")
+    p.add_argument("--size", type=int, default=20)
     p = sub.add_parser("pilot")
     p.add_argument("--single-effort", default="xhigh")
     p.add_argument("--batch-effort", default="high")
@@ -247,6 +298,13 @@ def main() -> int:
     policy = golden.policy_text()
     translations = golden.translations()
     golden.QUEUES.mkdir(parents=True, exist_ok=True)
+    if args.command == "readings":
+        rows = reading_rows(golden.read_jsonl(golden.COLLATED / "furigana_fixes.jsonl"),
+                            golden.read_jsonl(golden.COLLATED / "pending.jsonl"))  # fmt: skip
+        n = golden.write_jsonl(golden.QUEUES / "readings.jsonl",
+                               reading_items(rows, translations, args.size, args.effort))  # fmt: skip
+        print(f"{n} reading prompts for {len(rows)} sentences -> {golden.QUEUES}")
+        return 0
     if args.command == "words":
         words = read("words.jsonl")
         pilot_sids = set(json.loads((golden.INVENTORY / "pilot.json").read_text())["sids"])

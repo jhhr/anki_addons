@@ -81,6 +81,43 @@ class FixRowTest(unittest.TestCase):
         self.assertIn("    left   kanji with no reading: 本", lines)
 
 
+class ReadingsTest(unittest.TestCase):
+    SENTENCE = "一 日[にち]です"
+
+    def row(self, fixed: str, confidence: float = 0.9, text_changed: bool = False) -> dict:
+        reading = {"fixed": fixed, "changes": [{"was": "一", "now": " 一[いち]", "why": "w"}],
+                   "text_changed": text_changed, "confidence": confidence, "unsure": ""}  # fmt: skip
+        return fix_row(self.SENTENCE, [labelled(" 日[にち]", " 日[ひ]")], reading=reading)
+
+    def test_the_reading_pass_sentence_replaces_the_other_fixes(self):
+        after, made, left = furigana_fix.fix_row(self.row(" 一[いち] 日[にち]です"), True, 0.8,
+                                                 readings=True)  # fmt: skip
+        self.assertEqual(after, " 一[いち] 日[にち]です")
+        self.assertEqual(made, ["reading: 一 ->  一[いち] (w)"])
+        self.assertEqual(left, [])
+
+    def test_only_with_the_flag(self):
+        after, _, left = furigana_fix.fix_row(self.row(" 一[いち] 日[にち]です"), False, 0.8)
+        self.assertEqual(after, self.SENTENCE)
+        self.assertEqual(left, ["kanji with no reading: 一"])
+
+    def test_a_sentence_that_fails_a_check_falls_back_to_the_other_fixes(self):
+        for fixed, confidence, why in [(" 一[いち] 日[にち]だ", 0.9, "the text changed"),
+                                       ("一 日[ひ]です", 0.9, "still kanji with no reading"),
+                                       (" 一[いち] 日[にち]です", 0.5, "confidence 0.5")]:  # fmt: skip
+            with self.subTest(why):
+                after, made, left = furigana_fix.fix_row(self.row(fixed, confidence), True, 0.8,
+                                                         readings=True)  # fmt: skip
+                self.assertEqual(after, "一 日[ひ]です")
+                self.assertTrue(left[0].startswith("reading pass not used: " + why), left[0])
+
+    def test_a_typo_fix_the_agent_names_is_made_and_listed_as_one(self):
+        after, made, _ = furigana_fix.fix_row(self.row(" 一[いち] 日[にち]だ", text_changed=True),
+                                              True, 0.8, readings=True)  # fmt: skip
+        self.assertEqual(after, " 一[いち] 日[にち]だ")
+        self.assertTrue(made[0].startswith("reading, text: "))
+
+
 class RedoTest(unittest.TestCase):
     SENTENCE = "その 人[じん]に 会[あ]う。"
 

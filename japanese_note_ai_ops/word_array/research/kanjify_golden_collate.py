@@ -21,7 +21,8 @@ Reads `results/<queue>/*.json` and writes:
   collated/furigana_fixes.jsonl  the user's furigana fix list, one row per sentence with any
                             problem: the program's (`kanjify_golden.furigana_suspects`: a missing
                             space or kana inside a group, both repaired in `fixed`, a reading
-                            that isn't one kana word, a kanji with none) and the labellers'. A
+                            that isn't one kana word, a kanji with none) and the labellers', and
+                            the reading pass's sentence (`reading`, from the `readings` queue). A
                             missing space alone keeps the row in the set: it changes no reading,
                             and kanjify_eval compares with whitespace dropped, so the label holds
                             for the fixed sentence. `furigana_fix.py` writes it into the notes
@@ -196,17 +197,31 @@ def op_rows(sentences: dict[str, dict]) -> list[dict]:
     return rows
 
 
-def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
-    """One row per sentence whose furigana a program or a labeller found wrong."""
+def reading_rows() -> dict[str, dict]:
+    """The reading pass's sentence for each sentence id, the latest round's where there are
+    several (ids sort by when they were rendered)."""
+    out = {}
+    for r in read_results("readings"):
+        s = r.get("structured")
+        for row in s.get("rows", []) if isinstance(s, dict) else []:
+            out[row["sid"]] = {**{k: v for k, v in row.items() if k != "sid"}, "by": r["id"]}
+    return out
+
+
+def fix_list(sentences: dict[str, dict], flagged: list[dict],
+             readings: Optional[dict[str, dict]] = None) -> list[dict]:  # fmt: skip
+    """One row per sentence whose furigana a program or a labeller found wrong, or the reading
+    pass fixed (a typo a labeller held the sentence back for)."""
     by_sid: dict[str, list[dict]] = defaultdict(list)
     for row in flagged:
         by_sid[row["sid"]] += [{**f, "labeller": row["labeller"]} for f in row["furigana"]]
+    readings = readings or {}
     out = []
     for sid, s in sentences.items():
         # checked again rather than read from the inventory, which keeps what the check said
         # when the inventory was built: kana inside a group was listed as a missing space there
         program = golden.furigana_suspects(s["sentence"])
-        if not program and sid not in by_sid:
+        if not program and sid not in by_sid and sid not in readings:
             continue
         fixed = golden.fix_groups(s["sentence"])
         out.append(
@@ -217,6 +232,7 @@ def fix_list(sentences: dict[str, dict], flagged: list[dict]) -> list[dict]:
                 "program": program,
                 "fixed": fixed if fixed != s["sentence"] else None,
                 "labeller": by_sid.get(sid, []),
+                "reading": readings.get(sid),
             }
         )
     return out
@@ -303,7 +319,7 @@ def main() -> int:
     golden.write_jsonl(golden.COLLATED / "pending.jsonl", pending)
     golden.write_jsonl(golden.COLLATED / "rejected.jsonl", rejected)
     golden.write_jsonl(golden.COLLATED / "furigana.jsonl", furigana)
-    fixes = fix_list(sentences, furigana)
+    fixes = fix_list(sentences, furigana, reading_rows())
     golden.write_jsonl(golden.COLLATED / "furigana_fixes.jsonl", fixes)
 
     # the words handed back
@@ -366,7 +382,8 @@ def main() -> int:
         f" {len(pending)}, broken furigana {len(furigana)}, rejected {len(rejected)}; words"
         f" handed back {len(new_words)}",
         f"furigana fix list: {len(fixes)} sentences"
-        f" ({sum(1 for f in fixes if f['labeller'])} with a labeller's fix)",
+        f" ({sum(1 for f in fixes if f['labeller'])} with a labeller's fix,"
+        f" {sum(1 for f in fixes if f['reading'])} with the reading pass's)",
         f"rejections: {dict(Counter(r['problem'].split(':')[0][:60] for r in rejected))}",
     ]
 

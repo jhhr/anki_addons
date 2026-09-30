@@ -19,8 +19,14 @@ What a sentence gets:
   it exactly once, at `--min-confidence` or more, none where two labellers fixed one group
   differently. These change readings and okurigana, and some fix a typo (listed as
   `labeller, text`), so the list is for checking them first.
-A sentence with nothing either can fix (a kanji with no reading, several readings in one group)
-is listed as left for the user, never written.
+- with `--readings`, the reading pass's sentence where the row has one (`reading`, from
+  `kanjify_golden_render.py readings`): an agent shown the row's findings wrote the whole
+  sentence with its furigana fixed, so it replaces the other fixes. It is used at
+  `--min-confidence` or more, when its text is the input's (or the agent says it fixed a typo,
+  listed as `reading, text`) and the program finds nothing wrong with it; otherwise the row
+  falls back to the others and lists why.
+A sentence with nothing any of them can fix (a kanji with no reading, several readings in one
+group) is listed as left for the user, never written.
 
 By default the script only lists: `output/furigana_fix_list.txt` and a count per kind; `--check`
 also reads the notes and counts what `--apply` would write and refuse. `--apply`
@@ -32,14 +38,13 @@ undo `updateNoteFields`; `--revert` puts them back.
 OLD_FIXES wrote, and this version would have fixed otherwise, it writes this version's fix over
 what that run wrote (the same modes list, check and write it).
 
-    py -3.10 word_array/research/furigana_fix.py [--labeller [--min-confidence 0.8]]
-        [--redo OLD_FIXES] [-n COUNT] [--check | --apply | --revert]
+    py -3.10 word_array/research/furigana_fix.py [--labeller] [--readings]
+        [--min-confidence 0.8] [--redo OLD_FIXES] [-n COUNT] [--check | --apply | --revert]
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 from collections import Counter
 from pathlib import Path
 
@@ -54,14 +59,6 @@ FIXES = golden.COLLATED / "furigana_fixes.jsonl"
 UNDO = OUTPUT / "furigana_fix_undo.jsonl"
 LIST = OUTPUT / "furigana_fix_list.txt"
 FIELD_KEY = "furigana_sentence_field"
-# The kinds of kanjify_golden.furigana_suspects that fix_groups repairs
-REPAIRED = ("no space before the group", "kana inside the group")
-READING_RE = re.compile(r"\[[^\]]*\]")
-
-
-def plain_text(sentence: str) -> str:
-    """The sentence with no readings and no whitespace: what a furigana fix leaves alone."""
-    return golden.WS_RE.sub("", READING_RE.sub("", sentence))
 
 
 def without_context(fix: str, before: str, after: str) -> str:
@@ -97,20 +94,50 @@ def labeller_fixes(row: dict, min_confidence: float) -> tuple[list[tuple[str, st
     return use, left
 
 
-def fix_row(row: dict, labeller: bool, min_confidence: float) -> tuple[str, list[str], list[str]]:
+def reading_problem(row: dict) -> str | None:
+    """Why the reading pass's sentence for the row can't be written, or None."""
+    reading = row["reading"]
+    fixed = golden.fix_groups(reading["fixed"])
+    if not fixed.strip():
+        return "no sentence"
+    text_changed = golden.plain_text(fixed) != golden.plain_text(row["sentence"])
+    if text_changed and not reading["text_changed"]:
+        return "the text changed, and the agent doesn't say it fixed a typo"
+    still = golden.furigana_suspects(fixed)
+    return "still " + "; ".join(still) if still else None
+
+
+def fix_row(row: dict, labeller: bool, min_confidence: float,
+            readings: bool = False) -> tuple[str, list[str], list[str]]:  # fmt: skip
     """The sentence with the fixes applied, the fixes made and what was left unfixed."""
     text = row["sentence"]
     made: list[str] = []
     left: list[str] = []
+    if readings and row.get("reading"):
+        reading = row["reading"]
+        problem = reading_problem(row)
+        if problem is None and reading["confidence"] < min_confidence:
+            problem = f"confidence {reading['confidence']}"
+        if problem is None:
+            # the agent was shown the program's and the labellers' findings and decided each,
+            # so its sentence replaces their fixes rather than adding to them
+            fixed = golden.fix_groups(reading["fixed"])
+            text_changed = golden.plain_text(fixed) != golden.plain_text(text)
+            kind = "reading, text" if text_changed else "reading"
+            made = [f"{kind}: {c['was']} -> {c['now']} ({c['why']})" for c in reading["changes"]]
+            unsure = [f"reading pass unsure: {reading['unsure']}"] if reading["unsure"] else []
+            return fixed, made, unsure
+        left.append(f"reading pass not used: {problem}: {reading['fixed']}")
     if labeller:
-        use, left = labeller_fixes(row, min_confidence)
+        use, dropped = labeller_fixes(row, min_confidence)
+        left += dropped
         for group, fix in use:
             if text.count(group) != 1:
                 left.append(f"not in the sentence once: {group}")
                 continue
             at = text.index(group)
             before, after = text[:at], text[at + len(group) :]
-            if plain_text(fix) != plain_text(group):
+            if golden.plain_text(fix) != golden.plain_text(group):
                 # only a fix that changes the text can hold its context: in one that changes
                 # readings alone, a match with the text beside it is the group's own kana
                 fix = without_context(fix, before, after)
@@ -118,23 +145,24 @@ def fix_row(row: dict, labeller: bool, min_confidence: float) -> tuple[str, list
                 left.append(f"nothing left of the fix: {group}")
                 continue
             text = before + fix + after
-            kind = "labeller" if plain_text(fix) == plain_text(group) else "labeller, text"
-            made.append(f"{kind}: {group} -> {fix}")
+            same = golden.plain_text(fix) == golden.plain_text(group)
+            made.append(f"{'labeller' if same else 'labeller, text'}: {group} -> {fix}")
     fixed = golden.fix_groups(text)
-    found = [p for p in row.get("program", []) if p.startswith(REPAIRED)]
+    found = [p for p in row.get("program", []) if p.startswith(golden.REPAIRED)]
     if fixed != text:
         # a labeller's fix can join kana into a group (まだ五 分[ふん] -> まだ五分[ごぶ]) and so
         # leave it with no space before it, which no check of the dumped sentence saw
         made.append("program: " + ("; ".join(found) or "a space before a group a fix made"))
-    left += [p for p in row.get("program", []) if not p.startswith(REPAIRED)]
+    left += [p for p in row.get("program", []) if not p.startswith(golden.REPAIRED)]
     return fixed, made, left
 
 
-def plan(rows: list[dict], labeller: bool, min_confidence: float) -> tuple[list[dict], list[str]]:
+def plan(rows: list[dict], labeller: bool, min_confidence: float,
+         readings: bool = False) -> tuple[list[dict], list[str]]:  # fmt: skip
     """`kanjify_fix` rows for every sentence something fixes, and the listing of every row."""
     out, lines = [], []
     for row in rows:
-        after, made, left = fix_row(row, labeller, min_confidence)
+        after, made, left = fix_row(row, labeller, min_confidence, readings)
         nids = ",".join(map(str, row["nids"]))
         lines.append(f"[{row['sid']}] nid:{nids}")
         lines += [f"    fix    {m}" for m in made] + [f"    left   {x}" for x in left]
@@ -176,10 +204,11 @@ def redo(rows: list[dict], undo: list[dict], min_confidence: float) -> tuple[lis
     return list(by_sid.values()), lines
 
 
-def counts(rows: list[dict], labeller: bool, min_confidence: float) -> Counter:
+def counts(rows: list[dict], labeller: bool, min_confidence: float,
+           readings: bool = False) -> Counter:  # fmt: skip
     c: Counter[str] = Counter()
     for row in rows:
-        after, made, left = fix_row(row, labeller, min_confidence)
+        after, made, left = fix_row(row, labeller, min_confidence, readings)
         c["sentences fixed" if after != row["sentence"] else "sentences left as they are"] += 1
         c.update(m.split(":")[0] + " fixes" for m in made)
         c.update("left: " + x.split(":")[0] for x in left)
@@ -190,6 +219,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixes", type=Path, default=FIXES)
     parser.add_argument("--labeller", action="store_true", help="the labellers' fixes too")
+    parser.add_argument("--readings", action="store_true", help="the reading pass's sentences")
     parser.add_argument("--min-confidence", type=float, default=0.8)
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows")
     parser.add_argument("--undo", type=Path, default=UNDO)
@@ -216,7 +246,7 @@ def main() -> int:
                                 kanjify_fix.read_jsonl(args.undo), args.min_confidence)  # fmt: skip
         else:
             rows = kanjify_fix.read_jsonl(args.fixes)[: args.n or None]
-            fixes, lines = plan(rows, args.labeller, args.min_confidence)
+            fixes, lines = plan(rows, args.labeller, args.min_confidence, args.readings)
         if args.check:
             nids = sorted({nid for f in fixes for nid in f["nids"]})
             infos = kanjify_fix.notes_info(client, nids)
@@ -229,7 +259,8 @@ def main() -> int:
         if not args.apply:
             OUTPUT.mkdir(exist_ok=True)
             LIST.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            for kind, n in sorted(counts(rows, args.labeller, args.min_confidence).items()):
+            found = counts(rows, args.labeller, args.min_confidence, args.readings)
+            for kind, n in sorted(found.items()):
                 print(f"{n:6} {kind}")
             print(f"{len(fixes)} sentences to write, list in {LIST}")
             print("check it, then rerun with --apply")

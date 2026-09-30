@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rows"],
+  "properties": {
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sid", "fixed", "changes", "text_changed", "confidence", "unsure"],
+        "properties": {
+          "sid": {"type": "string"},
+          "fixed": {"type": "string", "description": "the whole sentence with its furigana fixed, in the field format"},
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["was", "now", "why"],
+              "properties": {
+                "was": {"type": "string", "description": "the input's text as written"},
+                "now": {"type": "string", "description": "the same stretch as fixed"},
+                "why": {"type": "string"}
+              }
+            }
+          },
+          "text_changed": {"type": "boolean", "description": "true only when a typo in the text itself was fixed"},
+          "confidence": {"type": "number"},
+          "unsure": {"type": "string", "description": "what was left open; empty when nothing"}
+        }
+      }
+    }
+  }
+}

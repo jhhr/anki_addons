@@ -237,6 +237,16 @@ def fix_groups(sentence: str) -> str:
     return BASE_RE.sub(fix, sentence)
 
 
+# The kinds of furigana_suspects that fix_groups repairs
+REPAIRED = ("no space before the group", "kana inside the group")
+READING_RE = re.compile(r"\[[^\]]*\]")
+
+
+def plain_text(sentence: str) -> str:
+    """The sentence with no readings and no whitespace: what a furigana fix leaves alone."""
+    return WS_RE.sub("", READING_RE.sub("", sentence))
+
+
 def relative(path: Path) -> str:
     """A path as files and logs record it: from the golden set's directory or the addon root
     when under one, so nothing written names this machine's folders."""

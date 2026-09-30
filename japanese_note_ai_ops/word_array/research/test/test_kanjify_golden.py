@@ -280,6 +280,40 @@ class RelabelTest(unittest.TestCase):
         self.assertTrue(all(it["id"].startswith("r") for it in items))
 
 
+class ReadingPassTest(unittest.TestCase):
+    def fix(self, sid: str, sentence: str, labeller=()) -> dict:
+        return {"sid": sid, "nids": [1], "sentence": sentence, "labeller": list(labeller),
+                "program": golden.furigana_suspects(sentence)}  # fmt: skip
+
+    def test_it_takes_what_no_program_repairs_and_the_typos_a_labeller_held_back(self):
+        fixes = [self.fix("s1", "一 日[にち]"),  # a kanji with no reading
+                 self.fix("s2", " 三[みっ]つ買[か]う"),  # a missing space: the program's
+                 self.fix("s3", " 日[ひ]", [{"group": " 日[ひ]", "fix": " 日[にち]",
+                                             "confidence": 0.5, "problem": "p"}])]  # fmt: skip
+        pending = [{"sid": "s4", "sentence": "ぜいで", "pending": [{"word": "ぜい", "why": "a typo"}]},
+                   {"sid": "s5", "sentence": "x", "pending": [{"word": "x", "why": "Q3"}]}]
+        rows = render.reading_rows(fixes, pending)
+        self.assertEqual([r["sid"] for r in rows], ["s1", "s3", "s4"])
+        items = render.reading_items(rows, {"s1": "one day"}, size=2, effort="high")
+        self.assertEqual([it["meta"]["sids"] for it in items], [["s1", "s3"], ["s4"]])
+        self.assertEqual(items[0]["schema"], "reading_schema.json")
+        prompt = items[0]["prompt"]
+        self.assertIn("found by a program: kanji with no reading: 一", prompt)
+        self.assertIn('translation: "one day"', prompt)
+        self.assertIn("a labeller (0.5): ` 日[ひ]` -> ` 日[にち]`: p", prompt)
+        self.assertIn("held back by a labeller: ぜい: a typo", items[1]["prompt"])
+        self.assertNotIn("{", prompt.replace("{PYTHON}", ""))
+
+    def test_the_fix_list_carries_the_latest_reading_and_lists_a_typo_it_fixed(self):
+        sentences = {"s1": {"sentence": "一 日[にち]", "nids": [1]},
+                     "s2": {"sentence": "ぜいで", "nids": [2]},
+                     "s3": {"sentence": "本[ほん]", "nids": [3]}}  # fmt: skip
+        readings = {"s1": {"fixed": " 一[いち] 日[にち]"}, "s2": {"fixed": "せいで"}}
+        rows = collate.fix_list(sentences, [], readings)
+        self.assertEqual([(r["sid"], r["reading"]) for r in rows],
+                         [("s1", readings["s1"]), ("s2", readings["s2"])])  # fmt: skip
+
+
 class CarryTest(unittest.TestCase):
     OLD = " 三[みっ]つ買[か]った。"
     NEW = " 三[みっ]つ 買[か]った。"
