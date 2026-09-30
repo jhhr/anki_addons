@@ -279,10 +279,15 @@ sessions the install. It must use the hook's venv path, and should only read the
 check out the submodule or link: a cached checkout could reach a later session on another
 branch with the submodule at the wrong commit.
 
+The `|| true` on `apt-get update` is required. The image lists two PPAs on
+`ppa.launchpadcontent.net`, a host the default Trusted network level does not allow. The
+refused fetches make the update exit 100, even though the Ubuntu archive, which has
+`libegl1`, updated fine. A setup script that exits non-zero keeps the session from starting.
+
 ```bash
 #!/bin/bash
 set -euo pipefail
-apt-get update -qq
+apt-get update -qq || true
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libegl1
 "$(command -v python3.10 || command -v python3)" -m venv /opt/anki-venv
 REPO=...  # where the environment clones this repository
