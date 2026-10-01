@@ -176,6 +176,11 @@ def main() -> int:
             print("\n".join(refused + [f"reverted {reverted} notes"]))
             return 0
         rows = read_jsonl(args.fixes)[: args.n or None]
+        if any("before" not in r or "after" not in r for r in rows):
+            # the golden set's accepted.jsonl has its labels but not the fields they replace
+            print(f"{args.fixes} has rows without `before` and `after`: not a fix list. For the"
+                  " kanjify golden set, use collated/kanjify_writes.jsonl")  # fmt: skip
+            return 1
         if not args.apply:
             LIST.write_text("\n".join(change_list(rows)) + "\n", encoding="utf-8")
             with_nids = sum(1 for r in rows if r.get("nids"))

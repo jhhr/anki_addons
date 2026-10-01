@@ -324,6 +324,22 @@ class ReadingPassTest(unittest.TestCase):
                          [("s1", readings["s1"]), ("s2", readings["s2"])])  # fmt: skip
 
 
+class KanjifyWritesTest(unittest.TestCase):
+    def test_each_note_gets_the_label_over_its_own_field(self):
+        label = "<k> 此[こ]れ</k>は 本[ほん]です。"
+        sid = golden.sentence_id(SENTENCE)
+        accepted = {sid: {"sid": sid, "kanjified": label}}
+        dump = [{"nid": 1, "sentence": SENTENCE, "kanjified": SENTENCE},
+                {"nid": 2, "sentence": SENTENCE, "kanjified": SENTENCE},
+                {"nid": 3, "sentence": SENTENCE, "kanjified": "これは<b> 本[ほん]</b>です。"},
+                {"nid": 4, "sentence": SENTENCE, "kanjified": " " + label},  # already labelled
+                {"nid": 5, "sentence": "ほかの 文[ぶん]", "kanjified": "x"}]  # fmt: skip
+        rows = collate.kanjify_writes(accepted, dump)
+        self.assertEqual(sorted((r["nids"], r["before"]) for r in rows),
+                         [([1, 2], SENTENCE), ([3], "これは<b> 本[ほん]</b>です。")])  # fmt: skip
+        self.assertTrue(all(r["after"] == label and r["row"] == sid for r in rows))
+
+
 class CarryTest(unittest.TestCase):
     OLD = " 三[みっ]つ買[か]った。"
     NEW = " 三[みっ]つ 買[か]った。"

@@ -10,6 +10,10 @@ Reads `results/<queue>/*.json` and writes:
                             plus `sid`, `spans` (each `<k>` span, the rule or decision behind it
                             and a confidence), `labeller`, `policy_version`, `decisions_version`
                             and `status` "silver" (gold only once the user has reviewed it)
+  collated/kanjify_writes.jsonl  the accepted labels as `kanjify_fix.py --fixes` rows, one per
+                            sentence and kanjified field value as dumped (`kanjify_writes`): what
+                            writes the golden set into the notes' kanjified field, once the user
+                            has reviewed it
   collated/pending.jsonl    rows that pass the check but leave words for a decision: relabelled
                             once step 1 has decided them
   collated/rejected.jsonl   rows that fail `kanjify_golden.row_problem`, with the reason
@@ -238,6 +242,22 @@ def fix_list(sentences: dict[str, dict], flagged: list[dict],
     return out
 
 
+def kanjify_writes(accepted: dict[str, dict], dump: list[dict]) -> list[dict]:
+    """`kanjify_fix.py` rows that write the accepted labels into the notes' kanjified field: one
+    per sentence and kanjified value as dumped, which `kanjify_fix.plan_writes` checks the note
+    still holds. Notes sharing a sentence can hold different kanjified values (made at different
+    times, or bolding their own word, which the user lets the label drop), so the rows group
+    them by both. A note already holding its label is left out."""
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for note in dump:
+        row = accepted.get(golden.sentence_id(note["sentence"])) if note["sentence"] else None
+        if row is not None and WS_RE.sub("", note["kanjified"]) != WS_RE.sub("", row["kanjified"]):
+            groups[(row["sid"], note["kanjified"])].append(note["nid"])
+    return [{"row": sid, "nids": sorted(nids), "before": before,
+             "after": accepted[sid]["kanjified"]}  # fmt: skip
+            for (sid, before), nids in groups.items()]
+
+
 def merge_handed(old: list[dict], new: list[dict]) -> list[dict]:
     """The handed-back words of every round so far. A round relabelled on a newer policy hands
     back fewer words, and the ones an earlier round handed back keep their decisions only while
@@ -321,6 +341,8 @@ def main() -> int:
     golden.write_jsonl(golden.COLLATED / "furigana.jsonl", furigana)
     fixes = fix_list(sentences, furigana, reading_rows())
     golden.write_jsonl(golden.COLLATED / "furigana_fixes.jsonl", fixes)
+    writes = kanjify_writes(accepted, golden.read_jsonl(golden.DUMP))
+    golden.write_jsonl(golden.COLLATED / "kanjify_writes.jsonl", writes)
 
     # the words handed back
     handed: dict[tuple[str, str], dict] = {}
@@ -381,6 +403,8 @@ def main() -> int:
         f"step 2 rows: accepted {len(accepted)} of {len(sentences)} sentences, pending"
         f" {len(pending)}, broken furigana {len(furigana)}, rejected {len(rejected)}; words"
         f" handed back {len(new_words)}",
+        f"kanjified field writes: {sum(len(w['nids']) for w in writes)} notes of {len(writes)}"
+        f" rows (collated/kanjify_writes.jsonl, for kanjify_fix.py)",
         f"furigana fix list: {len(fixes)} sentences"
         f" ({sum(1 for f in fixes if f['labeller'])} with a labeller's fix,"
         f" {sum(1 for f in fixes if f['reading'])} with the reading pass's)",
