@@ -67,9 +67,11 @@ together with SOURCE and SPELL.
 - SPELL-4 A spelling JMdict does not mark common (a rarely used form, an ateji, a gikun) whose
   usual reading is another word is skipped: take the next listed spelling that reads as this
   word, and when there is none the word stays kana. `kanjify_lookup.py sudachi` is the check:
-  a spelling Sudachi reads as another word, a reader takes for that word too. One Sudachi
-  gives no reading at all is judged by its kanji's usual reading (駁 is read ばく, so ぶち
-  stays kana), and one it reads as this same word's older reading is this word (仮令 read
+  a spelling Sudachi reads as another word, a reader takes for that word too. Ask it about the
+  spelling alone, not inside the sentence, where it may read the kanji as part of another
+  word (斑 alone is ぶち, so ぶち is 斑; after 白黒 it reads 斑 as the suffix はん). One Sudachi
+  gives no reading at all is judged by its kanji's usual reading (駁 is read ばく, so it is
+  not ぶち's), and one it reads as this same word's older reading is this word (仮令 read
   たとい: たとえ is 仮令). So そして stays
   kana (而して and 然して are read しこうして), and so does まとも (正面 is read しょうめん, 真面 as a
   name); あやなす is 綾なす (彩なす is read 彩り + 成す); おばあさん is 御婆さん (祖母 is read
