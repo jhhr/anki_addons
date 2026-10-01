@@ -80,3 +80,13 @@ def test_wrong_data_gets_no_decision_and_a_reported_error_holds_one():
     by = {r["nid"]: r for r in rows}
     assert 1 not in by and out["marked wrong data"] == 1
     assert by[2]["hold"] and not by[3]["hold"]
+
+
+def test_a_marked_note_gone_from_the_collection_is_listed_apart():
+    words = {1: word(1)}
+    wrong = {1: {"nid": 1, "label": "invalid", "note": "reading is wrong"},
+             2: {"nid": 2, "label": "invalid", "note": "not a word (bad split)"}}
+    lines = tdc.wrong_data_lines(words, wrong, {})
+    assert lines[0].startswith("1 notes marked Wrong data by hand")
+    gone = lines.index("--- marked, but the note is gone from the collection (1) ---")
+    assert lines[gone + 1] == "  nid 2 ? (?): not a word (bad split)"
