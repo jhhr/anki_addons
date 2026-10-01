@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.19
+Policy version: 0.20
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
@@ -31,7 +31,8 @@ together with SOURCE and SPELL.
   何処[どっ]か, とっても as 迚[とって]も, like 物[もん]). Not enough: ateji quiz and trivia
   sites, a kanji borrowed
   from a synonym that is read differently (徐々 read そろそろ, 確 read ちゃん, 沢山 read たっぷり),
-  or a kanji that fits the meaning but no source gives. Such made-up gikun are un-kanjified. A
+  or a kanji that fits the meaning but no source gives, nor a repeated verb stem no dictionary
+  lists as a word (ふりふり, though 振る is). Such made-up gikun are un-kanjified. A
   typo in the input's kana (ぜい for せい) has no spelling in that reading either and stays kana:
   the note is fixed instead, and the word is kanjified once it reads right.
 - SOURCE-2 Lengthened and sound-spelled forms stay kana even when the plain form is kanjified:
@@ -66,7 +67,10 @@ together with SOURCE and SPELL.
 - SPELL-4 A spelling JMdict does not mark common (a rarely used form, an ateji, a gikun) whose
   usual reading is another word is skipped: take the next listed spelling that reads as this
   word, and when there is none the word stays kana. `kanjify_lookup.py sudachi` is the check:
-  a spelling Sudachi reads as another word, a reader takes for that word too. So そして stays
+  a spelling Sudachi reads as another word, a reader takes for that word too. One Sudachi
+  gives no reading at all is judged by its kanji's usual reading (駁 is read ばく, so ぶち
+  stays kana), and one it reads as this same word's older reading is this word (仮令 read
+  たとい: たとえ is 仮令). So そして stays
   kana (而して and 然して are read しこうして), and so does まとも (正面 is read しょうめん, 真面 as a
   name); あやなす is 綾なす (彩なす is read 彩り + 成す); おばあさん is 御婆さん (祖母 is read
   そぼ); もし, もしも, ほぼ and つくづく stay (若し is taken for わかし, 略 for りゃく, 熟 for
@@ -87,9 +91,12 @@ needs a split asks (a policy question); it never splits on its own.
   lies in something (原因は其処に在る, 問題は量に在る), and a concrete thing that exists with no
   place named (昔、寺が在った). 有る for possession: a whole and its own parts or features (この
   部屋には窓が二つ有る, 足が四本有る), a person and a right, duty or quality (彼には責任が有る),
-  and for events and abstract existence (自信が有る, 祭りが有る, 事が有る). The test for
+  and for events and abstract existence (自信が有る, 祭りが有る, 事が有る), a kind of person or
+  thing said to exist with no place named too, the classical あり included (そんな人も有る,
+  賢き人有り). The test for
   "Xに(は) Yが ある" is what X is: the whole Y belongs to, as its part, feature, contents or
-  stock, takes 有る (町には運河が有る, 店には品物が有る, a body's organs with the body unsaid);
+  stock, takes 有る (町には運河が有る, 店には品物が有る, a body's organs with the body unsaid,
+  a そこ that stands for that whole: そこに良さが有る);
   a place that is not that whole takes 在る (家の周りに在る, 北に在る), and so does a time a
   period is placed at (千年前に在った). A count of things on hand is 有る (林檎が三つ有る). Set phrases where
   ある no longer means "exist" or "have" stay kana: だけあって, だけのことはある, とあっては,
@@ -126,7 +133,9 @@ needs a split asks (a policy question); it never splits on its own.
   (事故に因る故障, 病気に因る欠席, 地震に因る被害, 重力に因って落ちる, 摩擦に因る磨耗), and for
   an event or act people did whose outcome was not what it was done for (戦争に因り記録が失われた,
   人為的な活動に因って), an event the outcome came about through too, even one the outcome is
-  part of (戦争に因って国が分かれた), and for a thing that brought it about without being used for
+  part of (戦争に因って国が分かれた) or one that could be said to aim at it, such as a conquest
+  (征服に因って領土が広がった): 由る only for a measure plainly taken for the result it names
+  (奨励策に由って産業が興った); and for a thing that brought it about without being used for
   it, even
   in a passive (蚊の媒介に因る感染, 教えに因って変わった): a means is 由る only when it is used for
   the outcome, and a doer (依る) does the verb's action itself; the clause-final
@@ -268,7 +277,9 @@ needs a split asks (a policy question); it never splits on its own.
   the plural and stays kana: 其処ら, 此処いら. A word with a JMdict entry of its own is written
   as that entry, by KANJI-12, not particle by particle: 出来る丈 and 成る可く (listed fuller
   forms), but 何時までも (何時迄も is search-only), and ピンからキリまで, which has no kanji at all.
-  A verb in such a phrase keeps its own spelling (見掛けに依らず, 依らない).
+  A verb in such a phrase keeps its own spelling (見掛けに依らず, 依らない), and so does one in a
+  word with an entry of its own that lists that spelling: つけっぱなし for a switch left on
+  is 点けっ放し, since "switch on" is 点ける, a JMdict word apart from 付ける.
 - KANJI-8 The honorific prefix お / ご as 御 (御茶, 御願い, 御前), also where JMdict gives the word
   no 御 form or only a search-only one (御喋り, 御化け, 御握り, 御姉ちゃん): Sudachi splits the
   prefix off as a word of its own, and the rest follows its own rules. The input's own kana お
