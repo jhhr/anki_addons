@@ -130,6 +130,7 @@ def main() -> int:
             .replace("{CASES}", "\n\n".join(blocks))
             .replace("{PLANS}", str(plans))
             .replace("{WORK}", str(work))
+            .replace("{ADDON_DIR}", str(ADDON_ROOT))
             .replace("{SLUG}", slug)
         )
         (args.out / ("%s.md" % slug)).write_text(prompt, encoding="utf-8")

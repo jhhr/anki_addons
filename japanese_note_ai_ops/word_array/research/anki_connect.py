@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Sequence
 
+import _bootstrap
 from _bootstrap import ADDON_ROOT
 
 URL = "http://127.0.0.1:8765"
@@ -81,9 +82,22 @@ def nids_query(nids: Sequence[int]) -> str:
     return " or ".join(f"nid:{nid}" for nid in nids)
 
 
+def _meta_json(root: Path) -> Path:
+    """The addon's meta.json: its own, else, in a linked git worktree (a Claude Code session's),
+    the main checkout's. meta.json is gitignored, so a worktree has none, and without the user's
+    per-note-type field names every script here refused every note."""
+    meta = root / "meta.json"
+    if meta.exists():
+        return meta
+    main = _bootstrap.data_paths().main_checkout(root.parent)
+    if main is not None and (main / root.name / "meta.json").exists():
+        return main / root.name / "meta.json"
+    return meta
+
+
 def load_config(root: Path = ADDON_ROOT) -> dict:
     config = json.loads((root / "config.json").read_text(encoding="utf-8"))
-    meta = root / "meta.json"
+    meta = _meta_json(root)
     if meta.exists():
         config.update(json.loads(meta.read_text(encoding="utf-8")).get("config", {}))
     return config

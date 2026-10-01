@@ -1,0 +1,428 @@
+"""The kanjify golden set's checks: what a labelled row must pass, what a program flags in a
+sentence's furigana, how a queue is split between machines and what an agent may run."""
+
+import json
+import sys
+import tempfile
+import unittest
+import unittest.mock
+from pathlib import Path
+
+# See the note in test_vocab_morphology.py: the suite already has a `conftest` of its own, so
+# the path is set here rather than in one more file by that name.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import agent_items  # noqa: E402
+import agent_queue  # noqa: E402
+import kanjify_golden as golden  # noqa: E402
+import kanjify_golden_collate as collate  # noqa: E402
+import kanjify_golden_render as render  # noqa: E402
+
+BACKSLASH = chr(92)
+# The escapes spelled out: a tool that decodes JSON would turn a literal one into kana again
+ESCAPED_YORU = BACKSLASH + "u3088" + BACKSLASH + "u308b"
+SENTENCE = "これは 本[ほん]です。"
+
+
+class RowProblemTest(unittest.TestCase):
+    def test_a_kanjified_row_passes(self):
+        self.assertIsNone(golden.row_problem(SENTENCE, "<k> 此[こ]れ</k>は 本[ほん]です。"))
+
+    def test_an_unchanged_sentence_is_a_label(self):
+        # unlike a note edit, a sentence with nothing to kanjify is a valid label
+        self.assertIsNone(golden.row_problem(SENTENCE, SENTENCE))
+
+    def test_changed_text_is_refused(self):
+        self.assertIsNotNone(golden.row_problem(SENTENCE, "<k> 此[こ]れ</k>が 本[ほん]です。"))
+
+    def test_unpaired_tags_are_refused(self):
+        self.assertIn("pair", golden.row_problem(SENTENCE, "<k> 此[こ]れは 本[ほん]です。"))
+
+    def test_a_kanji_changed_outside_the_spans_is_refused(self):
+        # reads the same, so edit_problem alone lets it through; the op's reverse check doesn't
+        problem = golden.row_problem(SENTENCE, "<k> 此[こ]れ</k>は 書[ほん]です。")
+        self.assertIsNotNone(problem)
+
+    def test_a_span_without_kanji_is_refused(self):
+        self.assertIn("no kanji", golden.row_problem(SENTENCE, "<k>これ</k>は 本[ほん]です。"))
+
+    def test_a_group_split_by_the_label_is_refused(self):
+        # kana inside a kanji word's group is the note's furigana to fix, not the label's
+        sentence = "ネコ科[ねこか]の 動物[どうぶつ]"
+        self.assertIsNotNone(golden.row_problem(sentence, "<k> 猫[ネコ]</k> 科[か]の 動物[どうぶつ]"))
+
+
+class FuriganaSuspectsTest(unittest.TestCase):
+    def test_clean_sentence(self):
+        self.assertEqual(golden.furigana_suspects("<b> 三[みっ]つ</b> 買[か]った。"), [])
+
+    def test_no_space_after_kana(self):
+        found = golden.furigana_suspects(" 三[みっ]つ買[か]った。")
+        self.assertEqual(len(found), 1)
+        self.assertIn("つ買[か]", found[0])
+
+    def test_a_group_after_a_tag_is_fine(self):
+        self.assertEqual(golden.furigana_suspects("<b>つ</b>買[か]った。"), [])
+
+    def test_ke_in_a_counter_is_fine(self):
+        self.assertEqual(golden.furigana_suspects(" 一ヶ月[いっかげつ]"), [])
+
+    def test_a_missing_space_is_put_back(self):
+        self.assertEqual(golden.fix_groups(" 三[みっ]つ買[か]った。"), " 三[みっ]つ 買[か]った。")
+        self.assertEqual(golden.furigana_suspects(golden.fix_groups("はまだ終[お]わる")), [])
+        self.assertFalse(golden.kana_in_group(" 三[みっ]つ買[か]った。"))
+        # a particle that is only the first kana of the kanji's reading is still a missing space
+        self.assertFalse(golden.kana_in_group(" 刀[かたな]は鋼[はがね]"))
+        self.assertEqual(golden.fix_groups(" 刀[かたな]は鋼[はがね]"), " 刀[かたな]は 鋼[はがね]")
+
+    def test_kana_inside_a_group_is_split_out_with_its_reading(self):
+        for broken, fixed in ((" ネコ科[ねこか]の", " ネコ 科[か]の"), ("26 カ国[かこく]", "26 カ 国[こく]"),
+                              (" クラブ活動[くらぶかつどう]", " クラブ 活動[かつどう]")):  # fmt: skip
+            self.assertTrue(golden.kana_in_group(broken), broken)
+            self.assertIn("kana inside the group", golden.furigana_suspects(broken)[0])
+            self.assertEqual(golden.fix_groups(broken), fixed)
+            self.assertEqual(golden.furigana_suspects(fixed), [])
+
+    def test_a_right_sentence_is_left_alone(self):
+        for s in ("<b>つ</b>買[か]った", " 一ヶ月[いっかげつ]", " 本[ほん]です"):
+            self.assertEqual(golden.fix_groups(s), s)
+            self.assertFalse(golden.kana_in_group(s))
+
+    def test_a_word_with_no_kanji_keeps_its_reading(self):
+        for s in ("あのひとは ＯＬ[おーえる]です", "ページが ダブ[だぶ]っている", "２０ ｃｍ[せんち]"):
+            self.assertEqual(golden.fix_groups(s), s)
+            self.assertEqual(golden.furigana_suspects(s), [])
+
+    def test_a_reading_after_a_space_reads_nothing(self):
+        self.assertEqual(golden.furigana_suspects("かのじょは ＯＬ [おーえる]です"),
+                         ["a reading over nothing: ＯＬ [おーえる]"])  # fmt: skip
+        self.assertEqual(golden.furigana_suspects("[あ]は"), ["a reading over nothing: [あ]"])
+
+    def test_several_readings(self):
+        found = golden.furigana_suspects(" 額[がく, ひたい]は")
+        self.assertEqual(len(found), 1)
+
+    def test_kanji_with_no_reading(self):
+        found = golden.furigana_suspects("祁門 紅茶[こうちゃ]")
+        self.assertEqual(found, ["kanji with no reading: 祁門"])
+
+
+class ShardTest(unittest.TestCase):
+    def test_every_item_is_in_exactly_one_shard(self):
+        ids = [f"b{n:04d}" for n in range(200)]
+        for item in ids:
+            hits = [i for i in range(3) if agent_queue.in_shard(item, (i, 3))]
+            self.assertEqual(len(hits), 1)
+
+    def test_bad_shard(self):
+        with self.assertRaises(Exception):
+            agent_queue.parse_shard("3/3")
+
+
+class CommandTest(unittest.TestCase):
+    def test_a_lookup_agent_may_run_the_lookup_script_only(self):
+        cmd = agent_queue.command({"tools": "lookup", "effort": "high"}, "claude", "py -3.10")
+        rules = cmd[cmd.index("--allowed-tools") + 1 : cmd.index("--permission-mode")]
+        self.assertEqual(rules, ["Bash(py -3.10 word_array/research/kanjify_lookup.py:*)"])
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "Bash")
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
+
+    def test_no_tools(self):
+        cmd = agent_queue.command({"tools": "none"}, "claude", "python3")
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "")
+        self.assertNotIn("--allowed-tools", cmd)
+        self.assertNotIn("--effort", cmd)
+
+    def test_the_schema_goes_on_the_command_line_as_ascii(self):
+        cmd = agent_queue.command({"schema": "batch_schema.json"}, "claude", "python3")
+        self.assertTrue(cmd[cmd.index("--json-schema") + 1].isascii())
+
+    def test_the_machine_fills_the_python_command(self):
+        self.assertEqual(agent_queue.fill("run {PYTHON} x.py", "py -3.10"), "run py -3.10 x.py")
+
+
+class AgentItemsTest(unittest.TestCase):
+    """A cloud session's take and save write what agent_queue writes."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        saved = (golden.QUEUES, golden.RESULTS, agent_items.OUTPUT)
+        golden.QUEUES, golden.RESULTS = root / "queues", root / "results"
+        agent_items.OUTPUT = root / "output"
+
+        def restore():
+            golden.QUEUES, golden.RESULTS, agent_items.OUTPUT = saved
+
+        self.addCleanup(restore)
+        item = {"id": "w1", "prompt": "run {PYTHON} word_array/research/kanjify_lookup.py jmdict x",
+                "schema": "word_schema.json", "effort": "xhigh", "tools": "lookup+web",
+                "meta": {"policy_version": "9"}}  # fmt: skip
+        golden.write_jsonl(golden.QUEUES / "words.jsonl", [item])
+        self.root = root
+
+    def run_command(self, *argv: str) -> str:
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), unittest.mock.patch.object(sys, "argv", ["x", *argv]):
+            agent_items.main()
+        return out.getvalue()
+
+    def test_take_then_save(self):
+        line = self.run_command("take", "words").strip()
+        item_id, kind, prompt_file, answer_file = line.split("\t")
+        self.assertEqual((item_id, kind), ("w1", "kanjify-word"))
+        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        self.assertIn("python japanese_note_ai_ops/word_array/research/kanjify_lookup.py", prompt)
+        self.assertIn('"required"', prompt)  # the schema is appended
+        self.assertIn(Path(answer_file).as_posix(), prompt)
+        self.assertIn("nothing left", self.run_command("take", "words"))  # claimed
+        answer = {"word": "a", "kana": "a", "uses": [], "not_this_word": [], "questions": [],
+                  "summary": "s"}  # fmt: skip
+        Path(answer_file).write_text(json.dumps(answer), encoding="utf-8")
+        self.assertIn("saved", self.run_command("save", "words", "w1"))
+        result = json.loads((golden.RESULTS / "words" / "w1.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["structured"], answer)
+        self.assertEqual(result["meta"], {"policy_version": "9"})
+
+    def test_a_reply_saved_by_the_lead_counts_too(self):
+        self.run_command("take", "words")
+        answer = {"word": "a", "kana": "a", "uses": [], "not_this_word": [], "questions": [],
+                  "summary": "s"}  # fmt: skip
+        file = self.root / "reply.txt"
+        file.write_text("Done." + chr(10) + json.dumps(answer), encoding="utf-8")
+        self.assertIn("saved", self.run_command("save", "words", "w1", str(file)))
+
+    def test_the_template_hands_in_through_the_file(self):
+        golden.write_jsonl(golden.QUEUES / "words.jsonl", [{
+            "id": "w2", "schema": "word_schema.json",
+            "prompt": "x. " + agent_items.FINAL_MESSAGE + ".",
+        }])  # fmt: skip
+        prompt_file = self.run_command("take", "words").split(chr(9))[2]
+        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        self.assertNotIn(agent_items.FINAL_MESSAGE, prompt)
+        self.assertIn("written w2", prompt)
+
+    def test_an_answer_missing_a_key_is_not_saved(self):
+        self.run_command("take", "words")
+        file = self.root / "answer.txt"
+        file.write_text(json.dumps({"word": "a"}), encoding="utf-8")
+        self.assertIn("ask the subagent again", self.run_command("save", "words", "w1", str(file)))
+        self.assertFalse((golden.RESULTS / "words" / "w1.json").exists())
+
+
+class SampleUsesTest(unittest.TestCase):
+    def test_a_rare_spelling_is_not_crowded_out(self):
+        uses = [{"kind": "kanjified", "kanji": "依"}] * 50 + [{"kind": "kanjified", "kanji": "由"}]
+        uses += [{"kind": "kana", "kanji": ""}] * 30
+        sample = render.sample_uses(uses, 10)
+        self.assertEqual(len(sample), 10)
+        self.assertIn("由", {u["kanji"] for u in sample})
+        self.assertIn("kana", {u["kind"] for u in sample})
+
+
+class HandedBackTest(unittest.TestCase):
+    def test_a_later_round_adds_to_the_earlier_ones(self):
+        old = [{"wid": "q1", "word": "a", "kana": "a", "sids": ["s1"], "why": ["x"]}]
+        new = [{"wid": "q1", "word": "a", "kana": "a", "sids": ["s2"], "why": ["x", "y"]},
+               {"wid": "q2", "word": "b", "kana": "b", "sids": ["s3"], "why": ["z"]}]  # fmt: skip
+        merged = {w["wid"]: w for w in collate.merge_handed(old, new)}
+        self.assertEqual(merged["q1"]["sids"], ["s1", "s2"])
+        self.assertEqual(merged["q1"]["why"], ["x", "y"])
+        self.assertEqual(merged["q2"]["sids"], ["s3"])
+        # a round that hands a word back no more leaves its sentences with the decision
+        self.assertEqual(collate.merge_handed(old, []), old)
+
+    def test_a_handed_back_word_is_marked_in_its_sentence(self):
+        entry = {"wid": "q1", "word": "b[x]c", "kana": "xc", "sids": ["s1", "s9"], "why": ["?"]}
+        word = render.handed_word(entry, {"s1": {"sentence": "<b>a</b> b[x]cd"}})
+        self.assertEqual(word["word"], "bc")
+        self.assertEqual([u["text"] for u in word["uses"]], ["a【bc】d", ""])
+        self.assertIn("handed it back undecided: ?", render.word_prompt(word, "", 120))
+
+
+def step2_row(sid: str, labeller: str, kanjified: str = "k", **extra) -> dict:
+    return {"sid": sid, "labeller": labeller, "kanjified": kanjified, "problem": None,
+            "furigana": [], "pending": [], **extra}  # fmt: skip
+
+
+class RelabelTest(unittest.TestCase):
+    def test_the_latest_relabel_replaces_every_older_row(self):
+        rows = {
+            "batches": [step2_row("s1", "batches/b0001", "old"),
+                        step2_row("s2", "batches/b0001", "kept"),
+                        step2_row("s3", "batches/b0002", pending=[{"word": "x"}])],
+            "relabel": [step2_row("s1", "relabel/r2609301200-001", "earlier"),
+                        step2_row("s1", "relabel/r2610011200-001", "latest"),
+                        step2_row("s3", "relabel/r2610011200-001", "decided")],
+        }  # fmt: skip
+        accepted, pending, rejected, furigana = collate.select(rows)
+        self.assertEqual({sid: r["kanjified"] for sid, r in accepted.items()},
+                         {"s1": "latest", "s2": "kept", "s3": "decided"})  # fmt: skip
+        # the batch row that waited on a word no longer counts as pending
+        self.assertEqual(pending, [])
+
+    def test_kana_inside_a_group_holds_the_sentence_back(self):
+        rows = {"batches": [step2_row("s1", "batches/b0001", sentence=" ネコ科[ねこか]の"),
+                            step2_row("s2", "batches/b0001", sentence=" ネコ科[ねこか]は",
+                                      problem="split the group")]}  # fmt: skip
+        accepted, _, rejected, furigana = collate.select(rows)
+        self.assertEqual((accepted, rejected), ({}, []))
+        self.assertEqual([r["sid"] for r in furigana], ["s1", "s2"])
+
+    def test_a_relabel_that_fails_leaves_the_sentence_out(self):
+        rows = {"batches": [step2_row("s1", "batches/b0001", "old")],
+                "relabel": [step2_row("s1", "relabel/r2610011200-001", problem="changed")]}
+        accepted, _, rejected, _ = collate.select(rows)
+        self.assertNotIn("s1", accepted)
+        self.assertEqual([r["labeller"] for r in rejected], ["relabel/r2610011200-001"])
+
+    def test_relabel_batches_hold_only_the_sentences_given(self):
+        rows = [{"sid": f"s{i}", "sentence": SENTENCE, "words": []} for i in range(5)]
+        args = unittest.mock.Mock(size=2, effort="high")
+        items = render.relabel_items(rows, {}, "", {}, args)
+        self.assertEqual([it["meta"]["sids"] for it in items],
+                         [["s0", "s1"], ["s2", "s3"], ["s4"]])  # fmt: skip
+        self.assertEqual(len({it["id"] for it in items}), 3)
+        self.assertTrue(all(it["id"].startswith("r") for it in items))
+
+
+class ReadingPassTest(unittest.TestCase):
+    def fix(self, sid: str, sentence: str, labeller=()) -> dict:
+        return {"sid": sid, "nids": [1], "sentence": sentence, "labeller": list(labeller),
+                "program": golden.furigana_suspects(sentence)}  # fmt: skip
+
+    def test_it_takes_what_no_program_repairs_and_the_typos_a_labeller_held_back(self):
+        fixes = [self.fix("s1", "一 日[にち]"),  # a kanji with no reading
+                 self.fix("s2", " 三[みっ]つ買[か]う"),  # a missing space: the program's
+                 self.fix("s3", " 日[ひ]", [{"group": " 日[ひ]", "fix": " 日[にち]",
+                                             "confidence": 0.5, "problem": "p"}])]  # fmt: skip
+        pending = [{"sid": "s4", "sentence": "ぜいで", "pending": [{"word": "ぜい", "why": "a typo"}]},
+                   {"sid": "s5", "sentence": "x", "pending": [{"word": "x", "why": "Q3"}]}]
+        rows = render.reading_rows(fixes, pending)
+        self.assertEqual([r["sid"] for r in rows], ["s1", "s3", "s4"])
+        items = render.reading_items(rows, {"s1": "one day"}, size=2, effort="high")
+        self.assertEqual([it["meta"]["sids"] for it in items], [["s1", "s3"], ["s4"]])
+        self.assertEqual(items[0]["schema"], "reading_schema.json")
+        prompt = items[0]["prompt"]
+        self.assertIn("found by a program: kanji with no reading: 一", prompt)
+        self.assertIn('translation: "one day"', prompt)
+        self.assertIn("a labeller (0.5): ` 日[ひ]` -> ` 日[にち]`: p", prompt)
+        self.assertIn("held back by a labeller: ぜい: a typo", items[1]["prompt"])
+        self.assertNotIn("{", prompt.replace("{PYTHON}", ""))
+
+    def test_the_fix_list_carries_the_latest_reading_and_lists_a_typo_it_fixed(self):
+        sentences = {"s1": {"sentence": "一 日[にち]", "nids": [1]},
+                     "s2": {"sentence": "ぜいで", "nids": [2]},
+                     "s3": {"sentence": "本[ほん]", "nids": [3]}}  # fmt: skip
+        readings = {"s1": {"fixed": " 一[いち] 日[にち]"}, "s2": {"fixed": "せいで"}}
+        rows = collate.fix_list(sentences, [], readings)
+        self.assertEqual([(r["sid"], r["reading"]) for r in rows],
+                         [("s1", readings["s1"]), ("s2", readings["s2"])])  # fmt: skip
+
+
+class KanjifyWritesTest(unittest.TestCase):
+    def test_each_note_gets_the_label_over_its_own_field(self):
+        label = "<k> 此[こ]れ</k>は 本[ほん]です。"
+        sid = golden.sentence_id(SENTENCE)
+        accepted = {sid: {"sid": sid, "kanjified": label}}
+        dump = [{"nid": 1, "sentence": SENTENCE, "kanjified": SENTENCE},
+                {"nid": 2, "sentence": SENTENCE, "kanjified": SENTENCE},
+                {"nid": 3, "sentence": SENTENCE, "kanjified": "これは<b> 本[ほん]</b>です。"},
+                {"nid": 4, "sentence": SENTENCE, "kanjified": " " + label},  # already labelled
+                {"nid": 5, "sentence": "ほかの 文[ぶん]", "kanjified": "x"}]  # fmt: skip
+        rows = collate.kanjify_writes(accepted, dump)
+        self.assertEqual(sorted((r["nids"], r["before"]) for r in rows),
+                         [([1, 2], SENTENCE), ([3], "これは<b> 本[ほん]</b>です。")])  # fmt: skip
+        self.assertTrue(all(r["after"] == label and r["row"] == sid for r in rows))
+
+
+class CarryTest(unittest.TestCase):
+    OLD = " 三[みっ]つ買[か]った。"
+    NEW = " 三[みっ]つ 買[か]った。"
+
+    def plan(self, new_by_nid: dict[int, str], accepted: dict):
+        import kanjify_golden_carry as carry
+
+        old_dump = [{"nid": 1, "sentence": self.OLD}, {"nid": 2, "sentence": "月[つき]"},
+                    {"nid": 3, "sentence": SENTENCE}]  # fmt: skip
+        by_sentence: dict[str, list[int]] = {}
+        for nid, s in new_by_nid.items():
+            by_sentence.setdefault(s, []).append(nid)
+        new = [golden.Sentence(golden.sentence_id(s), s, n) for s, n in by_sentence.items()]
+        return carry.plan(old_dump, new, accepted)
+
+    def test_a_label_follows_a_repair_that_only_moved_a_space(self):
+        old_sid = golden.sentence_id(self.OLD)
+        accepted = {old_sid: {"sid": old_sid, "kanjified": self.OLD, "policy_version": "0.13"}}
+        carried, relabel, moved = self.plan({1: self.NEW, 3: SENTENCE}, accepted)
+        self.assertEqual([r["kanjified"] for r in carried["0.13"]], [self.NEW])
+        self.assertEqual(relabel, [])
+        self.assertEqual(moved[old_sid], {golden.sentence_id(self.NEW)})
+
+    def test_a_reading_fix_a_new_note_or_no_label_is_relabelled(self):
+        new = {1: self.NEW, 2: " 月[がつ]", 4: "新[あたら]しい"}
+        carried, relabel, _ = self.plan(new, {})
+        self.assertEqual(carried, {})
+        self.assertEqual(sorted(relabel), sorted(golden.sentence_id(s) for s in new.values()))
+
+
+class TranslationsTest(unittest.TestCase):
+    def test_a_sentence_gets_the_first_translation_its_notes_have(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = Path(tmp) / "dump.jsonl"
+            golden.write_jsonl(dump, [
+                {"nid": 1, "sentence": SENTENCE, "translation": ""},
+                {"nid": 2, "sentence": SENTENCE, "translation": "This is a book."},
+                {"nid": 3, "sentence": "x", "translation": "An old dump has none"},
+                {"nid": 4, "sentence": "y"},
+            ])  # fmt: skip
+            found = golden.translations(dump)
+        self.assertEqual(found[golden.sentence_id(SENTENCE)], "This is a book.")
+        self.assertNotIn(golden.sentence_id("y"), found)
+
+    def test_both_prompts_show_it_under_the_sentence(self):
+        sid = golden.sentence_id(SENTENCE)
+        found = {sid: "This is a book."}
+        line = f'- {sid}: {SENTENCE}\n  translation: "This is a book."'
+        rows = [{"sid": sid, "sentence": SENTENCE, "words": []}]
+        self.assertIn(line, render.batch_prompt(rows, {}, "", translations=found))
+        self.assertNotIn("\n  translation:", render.batch_prompt(rows, {}, ""))
+        word = {"wid": "w1", "word": "a", "kana": "a", "pos": "", "why": ["?"],
+                "uses": [{"sid": sid, "kind": "kana", "kanji": "", "text": "t"}]}  # fmt: skip
+        self.assertIn(f'- {sid} kana: t\n  translation: "This is a book."',
+                      render.word_prompt(word, "", 120, found))  # fmt: skip
+
+    def test_a_field_becomes_one_line_of_text(self):
+        import kanjify_golden_dump as dump
+
+        self.assertEqual(dump.plain("It&#39;s <b>here</b>.<br>Really.<div>x</div>"),
+                         "It's here. Really. x")  # fmt: skip
+
+
+class TemplatesTest(unittest.TestCase):
+    def test_the_lookup_example_is_code_points(self):
+        # An agent's `\u` escapes were decoded back into kana by its tool call's JSON before the
+        # command ran, and Git Bash fails on kana: every lookup of the local labellers failed
+        for name in ("word_template.md", "batch_template.md"):
+            text = (golden.AGENTS_DIR / name).read_text(encoding="utf-8")
+            self.assertIn("`U+3088U+308B`", text, name)
+
+    def test_the_lookup_decodes_code_points_and_escapes(self):
+        import kanjify_lookup
+
+        yoru = chr(0x3088) + chr(0x308B)
+        self.assertEqual(kanjify_lookup.decode_arg("U+3088U+308B"), yoru)
+        self.assertEqual(kanjify_lookup.decode_arg(ESCAPED_YORU), yoru)
+
+    def test_no_template_names_a_machines_folders(self):
+        for path in Path(golden.AGENTS_DIR).parent.glob("*_agents/*.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"[A-Z]:\\\\|/home/|/Users/", path.name)
+
+
+if __name__ == "__main__":
+    unittest.main()

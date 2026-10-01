@@ -41,7 +41,7 @@ Judge by the reading the word really has, not by which source looks more officia
 
 ## Tools
 
-Work from `C:\Users\jrk\AppData\Roaming\Anki2\addons21\anki_addons\japanese_note_ai_ops`.
+Work from `{ADDON_DIR}`.
 Everything here is **read-only** — none of it can change the collection.
 
 **Never put Japanese text on a command line; it gets mangled.** Japanese only ever goes into a
