@@ -26,5 +26,8 @@
   "kanji_sentence_fine_tuning_data_query": "",
   "multi_op_dialog_shortcut": "",
   "log_level": "ERROR",
-  "log_to_console": true
+  "log_to_console": true,
+  "capture_calls": true,
+  "capture_keep_days": 90,
+  "capture_notes": false
 }

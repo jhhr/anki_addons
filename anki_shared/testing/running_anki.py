@@ -36,10 +36,12 @@ is the worked example, and README.md has the template). Six things need handling
    `cleanup_sound`, so no test gets a player.
 
 5. **Letting the main window go quiet before it is destroyed.** A `CollectionOp` a test
-   started is still on a background thread when the test body ends, and Anki keeps repeating
-   timers on `mw`; both outlive the test and land on a half-torn-down or already-restored
-   `mw`, where they surface as errors in an unrelated test. `main_window()` waits for the
-   background ops and stops the timers.
+   started is still on a background thread when the test body ends, Anki keeps repeating
+   timers on `mw`, and a dialog left open stays on the gui hooks it appended to (an Add Cards
+   dialog's note type chooser on `state_did_reset`); all of them outlive the test and land
+   on a half-torn-down or already-restored `mw`, where they surface as errors in an
+   unrelated test. `main_window()` waits for the background ops, stops the timers, and puts
+   `state_did_reset` and `operation_did_execute` back as they were before the profile opened.
 
 6. **Giving each main window its own media server readiness.** Anki expects one
    `MediaServer` per process, and aqt keeps the `Event` its `getPort()` waits on on the
@@ -197,6 +199,13 @@ def main_window(
     setattr(main_window_class, "setup_sound", lambda self: None)
     setattr(main_window_class, "cleanup_sound", lambda self: None)
 
+    # aqt's own windows append to these and take themselves off only when they are closed: an
+    # Add Cards dialog's note type chooser is on state_did_reset. A test that leaves one open
+    # leaves it on the hook after its Anki is gone, and the next test's first CollectionOp,
+    # which fires state_did_reset when it finishes, runs it against the dead window's
+    # collection: "'NoneType' object has no attribute 'models'", out of the Qt event loop and
+    # into that unrelated test. What was on them before this window's profile opened stays.
+    dialog_hooks = [(hook, list(hook._hooks)) for hook in _dialog_hooks()]
     real_anki.rebind_mw(mw, list(packages))
     try:
         with anki_session.profile_loaded():
@@ -219,6 +228,14 @@ def main_window(
         # `theme()`, so the next test inherits an AttributeError out of the Qt event loop.
         for timer in mw.findChildren(QTimer):
             timer.stop()
+        for hook, callbacks in dialog_hooks:
+            hook._hooks[:] = callbacks
+
+
+def _dialog_hooks() -> list[Any]:
+    from aqt import gui_hooks
+
+    return [gui_hooks.state_did_reset, gui_hooks.operation_did_execute]
 
 
 @contextmanager

@@ -1,6 +1,9 @@
+import json
 import os
+import platform
+import sys
 from enum import Enum
-from typing import TypedDict, Union
+from typing import Callable, Optional, TypedDict, Union
 from anki.notes import NoteId
 
 ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -59,3 +62,46 @@ class MakeMeaningsResult(Enum):
     SUCCESS = 1
     NO_DICTIONARY_ENTRY = 2
     ERROR = 3
+
+
+def capture_versions(addon_dir: str = ADDON_DIR) -> dict[str, Optional[str]]:
+    """The versions the capture store records on every run: this addon's, Anki's, Python's and
+    the platform. Built once, when the store is installed at profile open.
+
+    Each is None when it cannot be read, and nothing here raises: a missing or garbled file must
+    not keep the store from recording. The addon's is `human_version` from the manifest.json
+    Anki keeps from a released package, else from build.json in a working tree (the package
+    ships without build.json, the tree has no manifest).
+    """
+    return {
+        "addon": _addon_version(addon_dir),
+        "anki": _read_or_none(_anki_version),
+        "python": _read_or_none(platform.python_version),
+        "platform": _read_or_none(lambda: sys.platform),
+    }
+
+
+def _addon_version(addon_dir: str) -> Optional[str]:
+    for name in ("manifest.json", "build.json"):
+        try:
+            with open(os.path.join(addon_dir, name), encoding="utf-8") as file:
+                version = json.load(file).get("human_version")
+        except Exception:
+            continue
+        if isinstance(version, str) and version:
+            return version
+    return None
+
+
+def _anki_version() -> str:
+    from anki.buildinfo import version
+
+    return version
+
+
+def _read_or_none(read: Callable[[], object]) -> Optional[str]:
+    try:
+        value = read()
+    except Exception:
+        return None
+    return value if isinstance(value, str) else None

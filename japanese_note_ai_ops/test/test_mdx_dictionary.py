@@ -14,9 +14,11 @@ of the three ways they can differ occurs in the kana readings this add-on looks 
 workload cannot tell anyone if a rewrite gets it wrong; only these can.
 """
 
+import json
 import sqlite3
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import addon_modules
@@ -383,6 +385,87 @@ class LowerKeyIndexTests(MDXDictionaryTestCase):
     def test_a_missing_database_is_not_an_error(self):
         self.dictionary.builder._mdx_db = str(Path(self.dir.name) / "gone.mdx.db")
         self.dictionary._add_lower_key_index()  # must not raise
+
+
+class UnloadedDictionariesTests(unittest.TestCase):
+    """A helper whose dictionaries were never loaded answers every lookup without scanning: "in
+    none of them" when the config names none, a failed lookup when it names some that did not
+    load. The second returned None too, and every note looked up was tagged as in no dictionary,
+    a tag no later run looks past. A notes run records both, as it records every lookup."""
+
+    def setUp(self):
+        self.reports: list = []
+        mdx.run_errors.deliver_with(lambda title, text: self.reports.append((title, text)))
+        self.addCleanup(mdx.run_errors.deliver_with, None)
+        self.helper = mdx.AnkiMDXHelper()
+
+    def load(self, filenames, dictionaries=()):
+        loaded = type("Loaded", (), {"dictionaries": list(dictionaries)})
+        with unittest.mock.patch.object(mdx, "MultiDictionaryQuery", lambda *a, **k: loaded()):
+            return self.helper.load_mdx_dictionaries_if_needed({"mdx_filenames": filenames})
+
+    def recorded_lookups(self, look_up):
+        capture = mdx.capture
+        capture._quiet_until.clear()
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "capture.sqlite3")
+            self.assertTrue(capture.install(path))
+            try:
+                run_id = capture.begin_run("run", notes=True)
+                with capture.run_scope(run_id):
+                    look_up()
+                    capture.end_run(run_id, "completed")
+                self.assertTrue(capture.current_store().flush())
+                with sqlite3.connect(path) as connection:
+                    rows = connection.execute(
+                        "SELECT payload_json FROM events WHERE kind = 'dictionary.lookup'"
+                    ).fetchall()
+                connection.close()
+            finally:
+                capture.shutdown()
+        return [json.loads(payload) for (payload,) in rows]
+
+    def test_with_none_configured_a_lookup_finds_nothing_and_is_recorded(self):
+        self.assertIsNone(self.load([]))
+
+        lookups = self.recorded_lookups(
+            lambda: self.assertIsNone(self.helper.get_definition_text("本", "ほん"))
+        )
+
+        self.assertEqual(
+            lookups,
+            [{"word": "本", "reading": "ほん", "pick": "all", "max_length": None, "text": None}],
+        )
+        self.assertEqual(self.reports, [])
+
+    def test_configured_dictionaries_that_did_not_load_fail_every_lookup(self):
+        self.assertIsNone(self.load(["missing.mdx"]))
+
+        def look_up():
+            for _ in range(2):
+                with self.assertRaises(mdx.MDXLookupError):
+                    self.helper.get_definition_text("本", "ほん")
+
+        lookups = self.recorded_lookups(look_up)
+
+        self.assertEqual(len(lookups), 2)
+        self.assertIn("none of the 1 configured MDX dictionaries loaded", lookups[0]["error"])
+        # Said once, where the run's errors are shown, not once per note
+        self.assertEqual(len(self.reports), 1)
+        self.assertIn("mdx_filenames", self.reports[0][1])
+
+    def test_a_load_that_raises_fails_every_lookup_too(self):
+        def broken(*args, **kwargs):
+            raise OSError("unable to open database file")
+
+        with unittest.mock.patch.object(mdx, "MultiDictionaryQuery", broken):
+            self.assertIsNone(
+                self.helper.load_mdx_dictionaries_if_needed({"mdx_filenames": ["a.mdx"]})
+            )
+
+        with self.assertRaises(mdx.MDXLookupError):
+            self.helper.get_definition_text("本", "ほん")
+        self.assertEqual(len(self.reports), 1)
 
 
 if __name__ == "__main__":

@@ -52,10 +52,13 @@ def add_proper_nouns(config: dict, arr: list, log_prefix: str) -> list[str]:
     """Ask the model for the sentence's proper nouns and fix `arr` in place, returning the
     names that are one proper noun word now and were not before. Empty when the call failed
     or named nothing the array did not already have."""
+    sentence = proper_noun_llm.sentence_of(arr)
     response = get_response(
         proper_nouns_model(config),
-        proper_noun_llm.prompt(arr),
+        proper_noun_llm.sentence_prompt(sentence),
         response_schema=proper_noun_llm.RESPONSE_SCHEMA,
+        kind="proper_nouns.sentence",
+        inputs={"sentence": sentence},
     )
     if response is None:
         logger.error(f"{log_prefix}No response from the model")

@@ -53,7 +53,7 @@ def new_note_all_ops_in_note(
         notes_to_update_dict,
         all_generated_meanings_dict,
         allow_reupdate_existing=True,
-    )
+    ).changed
 
     changed |= kanjify_sentence_in_note(
         config,

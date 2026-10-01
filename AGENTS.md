@@ -19,9 +19,13 @@ material is in [`docs/`](docs/):
 
     build.py                 link / install / vendor / dist / check (stdlib only)
     build.local.json         this device's build.py preferences; gitignored, may be absent
+    test_data/               clone of the private test data repo (replay fixtures made from a
+                             real collection); gitignored, may be absent; a git worktree
+                             uses its main checkout's
     conftest.py              makes every addon importable under pytest without Anki
     pytest.ini  mypy.ini  requirements-dev*.txt
-    .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only
+    .claude/                 Claude Code settings: a SessionStart hook for cloud sessions only,
+                             and the kanjify golden set's subagent types (agents/)
     anki_shared/             shared packages; no __init__.py, not an addon
       jp_text_processing/    git submodule, its own repo (see below)
     <addon>/
@@ -159,8 +163,10 @@ say so in your report instead of implying coverage that does not exist.
 - One logical change per commit. A move into `anki_shared/` and the call-site updates are
   one change.
 - Commit research tooling; do not commit one-off plans, reports or generated output.
-- Work happens on `main` or a short-lived feature branch merged into it. Do not push or open
-  a PR unless asked. Use the `gh` CLI for anything on GitHub.
+- Work happens on `main` or a short-lived feature branch merged into it. In a local session,
+  do not push or open a PR unless asked. A Claude Code cloud session always works on a branch
+  of its own: push that branch as its commits land, and open a PR only when asked. Use the
+  `gh` CLI for anything on GitHub.
 
 ## Keeping these docs true
 

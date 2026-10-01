@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["word", "kana", "uses", "not_this_word", "questions", "summary"],
+  "properties": {
+    "word": {"type": "string"},
+    "kana": {"type": "string"},
+    "uses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["use", "write", "spelling", "example", "rule", "reason", "evidence", "sids", "confidence"],
+        "properties": {
+          "use": {"type": "string", "description": "the sense or grammatical function, in a few English words"},
+          "write": {"enum": ["kanji", "kana", "undecided"]},
+          "spelling": {"type": "string", "description": "the dictionary form as written in kanji; empty for kana"},
+          "example": {"type": "string", "description": "a short phrase of this use as it should be written, in the field format"},
+          "rule": {"type": "string", "description": "the policy rule ids (and pending question ids) that decide it"},
+          "reason": {"type": "string"},
+          "evidence": {"type": "string", "description": "what was checked: dictionaries, pages"},
+          "sids": {"type": "array", "items": {"type": "string"}},
+          "confidence": {"type": "number"}
+        }
+      }
+    },
+    "not_this_word": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sid", "note"],
+        "properties": {"sid": {"type": "string"}, "note": {"type": "string"}}
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "options", "examples", "recommendation", "blocks"],
+        "properties": {
+          "question": {"type": "string"},
+          "options": {"type": "array", "items": {"type": "string"}},
+          "examples": {"type": "array", "items": {"type": "string"}},
+          "recommendation": {"type": "string"},
+          "blocks": {"type": "string", "description": "which uses wait on the answer"}
+        }
+      }
+    },
+    "summary": {"type": "string", "description": "the decision in one or two sentences"}
+  }
+}

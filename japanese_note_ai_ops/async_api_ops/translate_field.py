@@ -18,17 +18,24 @@ from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
 
+TRANSLATED_SENTENCE_RETURN_FIELD = "english_sentence"
 
-def get_translated_field_from_model(config: dict[str, str], sentence: str) -> Union[str, None]:
-    return_field = "english_sentence"
+
+def translate_sentence_prompt(sentence: str) -> str:
     # HTML-keeping prompt
-    no_html_prompt = (
+    return (
         f"sentence_to_translate_into_english: {sentence}\n\nIgnore any HTML in the"
         " sentence.\nReturn an HTML-free English translation of the sentence in a JSON string as"
-        f' the value of the key "{return_field}".'
+        f' the value of the key "{TRANSLATED_SENTENCE_RETURN_FIELD}".'
     )
+
+
+def get_translated_field_from_model(config: dict[str, str], sentence: str) -> Union[str, None]:
+    return_field = TRANSLATED_SENTENCE_RETURN_FIELD
+    inputs = {"sentence": sentence}
+    no_html_prompt = translate_sentence_prompt(**inputs)
     model = config.get("translate_sentence_model", "")
-    result = get_response(model, no_html_prompt)
+    result = get_response(model, no_html_prompt, kind="translate.sentence", inputs=inputs)
     if result is None:
         # If translation failed, return nothing
         return None

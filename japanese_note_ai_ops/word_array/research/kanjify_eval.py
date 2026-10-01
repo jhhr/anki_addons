@@ -1,9 +1,9 @@
 """Scoring kanjify_sentence's prompt against the hand-fixed kanjified sentences.
 
-Rows are the kanjify audit's (`output/kanjify_sentence_data.jsonl`, else the old fine-tuning
+Rows are the kanjify audit's (`evals/kanjify_sentence_data.jsonl`, else the old fine-tuning
 files): the op's input sentence and the checked label. Each row's prompt goes to every model
 through the op's own request code, answers cached by model and prompt in
-`output/kanjify_eval_results.jsonl` so a rerun only pays for prompts that changed. The answer is
+`evals/kanjify_eval_results.jsonl` so a rerun only pays for prompts that changed. The answer is
 cleaned as the op cleans it (`clean_kanjified`), so what is scored is what the note would get.
 Rows whose sentence is one of the prompt's examples are skipped.
 
@@ -41,7 +41,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
-from _bootstrap import ADDON_ROOT, load
+from _bootstrap import ADDON_ROOT, eval_file, load
 
 if TYPE_CHECKING:
     # `load()` gives a module object, so what comes out of it is untyped; the real class is
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 text_map = load("text_map")
 
 OUTPUT = ADDON_ROOT / "output"
-RESULTS = OUTPUT / "kanjify_eval_results.jsonl"
+RESULTS = eval_file("kanjify_eval_results.jsonl")
 KANJI_RE = re.compile(r"[々〆ヶ一-龯㐀-䶿]")
 WS_RE = re.compile(r"\s")
 EXAMPLE_RE = re.compile(r"^Example sentence \d+: (.*)$", re.M)

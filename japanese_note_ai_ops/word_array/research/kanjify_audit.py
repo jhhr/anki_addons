@@ -22,7 +22,7 @@ word's furigana groups into kana (`note_edits.span_kana`); a format fix takes th
 
     py -3.10 word_array/research/kanjify_audit.py [--rows FILE] [-n COUNT]
 
-Reads `output/kanjify_sentence_data.jsonl`, else the old fine-tuning files (no nids: fixes are
+Reads `evals/kanjify_sentence_data.jsonl`, else the old fine-tuning files (no nids: fixes are
 listed but can't be written to notes).
 """
 
@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, Optional
 
-from _bootstrap import ADDON_ROOT, load
+from _bootstrap import ADDON_ROOT, eval_file, load
 
 import note_edits
 
@@ -49,7 +49,7 @@ generator = load("generator")
 text_map = load("text_map")
 
 OUTPUT = ADDON_ROOT / "output"
-EXPORT = OUTPUT / "kanjify_sentence_data.jsonl"
+EXPORT = eval_file("kanjify_sentence_data.jsonl")
 OLD_FILES = [
     OUTPUT / "kanjify_sentence_fine_tuning.jsonl",
     OUTPUT / "kanjify_sentence_fine_tuning_validation.jsonl",
@@ -62,9 +62,10 @@ KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
 KANJI_GROUP_RE = re.compile(r"[\d々ヶヵ〆一-龯㐀-䶿]+\[([^\]]*)\]")  # space before it or not
 KANA_RE = re.compile(r"[ぁ-ゖァ-ヺー]")
 
+# 下さる is not one: the policy kanjifies てください (kanjify_agents/policy.md, KANJI-15)
 HELPER_NORMS = {
     "居る", "有る", "見る", "来る", "行く", "呉れる", "仕舞う", "おく", "置く", "貰う", "頂く",
-    "下さる", "上げる", "遣る", "参る", "いらっしゃる",
+    "上げる", "遣る", "参る", "いらっしゃる",
 }  # fmt: skip
 PATTERNS = {  # norm -> particles allowed between て and it ("" = none)
     "欲しい": {""},

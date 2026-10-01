@@ -287,7 +287,13 @@ def get_kanjified_sentence_from_model(
 ) -> Union[list[str], None]:
     prompt = get_kanjify_sentence_prompt(sentence)
     model = config.get("kanjify_sentence_model", "")
-    result = get_response(model, prompt, temperature=kanjify_temperature(config))
+    result = get_response(
+        model,
+        prompt,
+        temperature=kanjify_temperature(config),
+        kind="kanjify.sentence",
+        inputs={"sentence": sentence},
+    )
     if result is None:
         logger.error("Failed to get a response from the API.")
         # If the prompt failed, return nothing

@@ -266,6 +266,8 @@ class UsageLimitResumeTimeTests(unittest.TestCase):
         cases = [
             ("You've hit your session limit · resets 5pm", local(17, 0)),
             ("You've hit your session limit · resets 5:30pm", local(17, 30)),
+            # The message a real run paused on; 12:50am is hour 0, not 12
+            ("You've hit your session limit · resets 12:50am", local(0, 50, day=24)),
             ("Usage limit reached, resets at 5 pm", local(17, 0)),
             ("Your limit will reset at 17:00", local(17, 0)),
             ("You've hit your limit · resets 5pm (Europe/Helsinki)", local(17, 0)),
@@ -300,11 +302,17 @@ class UsageLimitResumeTimeTests(unittest.TestCase):
 
 class PauseForUsageLimitTests(unittest.TestCase):
     def setUp(self):
+        # pause_run reads the wall clock to tell whether the pause in place has run out; on the
+        # real one these fixed dates are long past, and every pause had always run out
+        self.clock = FakeClock(local(16, 0))
+        self.saved = api.time
+        api.time = self.clock
         api.begin_run()
 
     def tearDown(self):
         api.end_run()
         api.take_stop_reason()
+        api.time = self.saved
 
     def test_pauses_until_the_stated_reset(self):
         now = local(16, 0)
@@ -319,6 +327,7 @@ class PauseForUsageLimitTests(unittest.TestCase):
         now = local(16, 0)
         self.assertTrue(tc.pause_for_usage_limit("resets 5pm", {}, now))
         # Another worker's request hit the limit too, and reads a later time off its message
+        self.clock.advance(30)
         self.assertTrue(tc.pause_for_usage_limit("resets 6pm", {}, now + 30))
         self.assertEqual(api.pause_state().resume_at, local(17, 0))
         self.assertIn("resets 5pm", api.pause_state().reason)

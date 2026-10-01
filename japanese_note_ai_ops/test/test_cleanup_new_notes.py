@@ -19,6 +19,7 @@ from addon_modules import FakeClock, load_ops_module, mw
 
 base_ops = load_ops_module("base_ops")
 mwtn = load_ops_module("match_words_to_notes")
+cm = load_ops_module("clean_meaning")
 controls_module = load_ops_module("progress_controls")
 
 POS = 101
@@ -214,6 +215,113 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
 
         self.assertEqual((result.added, result.updated_nids), (1, []))
         self.assertEqual(col.updated, [])
+
+
+class UndoCountingCollection(FakeCollection):
+    """Keeps an undo step counter the adds move and the merges fold back, and can refuse a
+    merge, as an undo entry some hook made in between can make Anki do."""
+
+    def __init__(self, failing: tuple = (), refuse_merge_after: int = 0):
+        super().__init__(failing)
+        self.step = 3
+        self.refuse_merge_after = refuse_merge_after
+
+    def add_note(self, note, deck_id):
+        super().add_note(note, deck_id)
+        self.step += 1
+
+    def merge_undo_entries(self, pos):
+        if self.refuse_merge_after and len(self.merged) >= self.refuse_merge_after:
+            raise RuntimeError("target undo op not found")
+        self.step = POS
+        return super().merge_undo_entries(pos)
+
+    def undo_status(self):
+        return types.SimpleNamespace(undo="Matching words", redo="", last_step=self.step)
+
+
+class NoteAddRecordTests(unittest.TestCase):
+    """A run that records its notes records each note's add apart from its undo merge, with the
+    undo queue's head around them, so a failed add and a failed merge are told apart."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self.capture = load_ops_module("capture")
+        self.capture._quiet_until.clear()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = os.path.join(directory.name, "capture.sqlite3")
+        self.assertTrue(self.capture.install(self.path))
+        self.addCleanup(self.capture.shutdown)
+        run_id = self.capture.begin_run("run", notes=True)
+        scope = self.capture.run_scope(run_id)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+
+    def events(self):
+        import sqlite3
+        from contextlib import closing
+
+        self.assertTrue(self.capture.current_store().flush())
+        with closing(sqlite3.connect(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT note_id, payload_json FROM events WHERE kind = 'note.add'"
+                " ORDER BY event_id"
+            ).fetchall()
+        return [(note_id, json.loads(payload)) for note_id, payload in rows]
+
+    def test_each_add_is_timed_apart_from_its_merge_and_a_failed_add_is_named(self):
+        failing = new_note("-2222222")
+        col = UndoCountingCollection(failing=(failing,))
+
+        base_ops.add_new_notes(
+            col, [new_note("-1111111"), failing], CONFIG, POS, self.updater
+        )
+
+        [(added_id, added), (failed_id, failed)] = self.events()
+        self.assertEqual((added_id, added["placeholder"]), (501, -1111111))
+        self.assertGreaterEqual(added["seconds"], 0)
+        self.assertGreaterEqual(added["merge_seconds"], 0)
+        self.assertEqual(added["undo_before"]["last_step"], 3)
+        self.assertEqual(added["undo_after"]["last_step"], POS)
+        self.assertIsNone(added["add_error"])
+        self.assertEqual((failed_id, failed["placeholder"]), (None, -2222222))
+        self.assertIsNone(failed["merge_seconds"])
+        self.assertIn("refused", failed["add_error"])
+
+    def test_a_note_with_no_deck_to_go_to_is_recorded_as_a_failed_add(self):
+        # Counted failed and left out of the capture, its placeholder was one an export could
+        # not tell from a word's, and it stayed in the expected word arrays, random every run
+        no_deck = new_note("-3333333")
+        no_deck.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
+        config = {**CONFIG, "Other": {**CONFIG["Word"], "insert_deck": "Missing"}}
+
+        base_ops.add_new_notes(UndoCountingCollection(), [no_deck], config, POS, self.updater)
+
+        [(note_id, failed)] = self.events()
+        self.assertEqual((note_id, failed["placeholder"]), (None, -3333333))
+        self.assertEqual(failed["add_error"], "no deck to add it to")
+        self.assertIsNone(failed["merge_seconds"])
+
+    def test_a_refused_merge_is_recorded_as_one_and_raises_as_it_always_did(self):
+        col = UndoCountingCollection(refuse_merge_after=1)
+
+        with self.assertRaises(RuntimeError):
+            base_ops.add_new_notes(
+                col, [new_note("-1111111"), new_note("-2222222")], CONFIG, POS, self.updater
+            )
+
+        [_, (_, refused)] = self.events()
+        self.assertIsNone(refused["add_error"])
+        self.assertIn("target undo op not found", refused["merge_error"])
+        # The add went through: it is the merge that failed
+        self.assertEqual(refused["undo_after"]["last_step"], POS + 1)
 
 
 class ReArmedCancelTests(unittest.TestCase):
@@ -1095,7 +1203,7 @@ class NewNoteHarness(unittest.TestCase):
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         for name, value in (
-            ("clean_meaning_in_note", lambda **_: True),
+            ("clean_meaning_in_note", lambda **_: cm.CleanResult(True)),
             ("copy_into_new_note", lambda note: FakeNote(dict(note.fields))),
             ("Note", lambda col, model: vocab_note("")),
             ("make_furigana_from_reading", lambda word, reading: f"{word}[{reading}]"),
@@ -1199,6 +1307,56 @@ class SiblingMarkersTests(NewNoteHarness):
     before the adding starts, so a cancel that leaves the new note out has to write them back:
     the cleanup's marker tidying does, as it tidies every word a saved note has markers for.
     """
+
+    def test_a_new_meaning_is_cleaned_with_every_note_matched_and_the_run_s_caches(self):
+        # All the word's meanings, the first one without an (mN) marker included, so that the
+        # new one is cleaned knowing what it must not repeat; the caches because the sentences
+        # are gathered for each of those notes
+        seen: dict = {}
+
+        def clean_meaning_in_note(**kwargs):
+            seen.update(kwargs)
+            return cm.CleanResult(True)
+
+        sentence_cache, note_cache = object(), object()
+        first = vocab_note(f"{self.WORD}", 1)
+        second = vocab_note(f"{self.WORD} (m2)", 2)
+        args = {**self.args(), "sentence_cache": sentence_cache, "note_cache": note_cache}
+        with mock.patch.object(mwtn, "clean_meaning_in_note", clean_meaning_in_note):
+            mwtn.create_new_note_from_matched_note(
+                CONFIG, second, [first, second], 3, "意味", "sense", "", args
+            )
+
+        self.assertEqual(seen["other_meaning_notes"], [first, second])
+        self.assertIs(seen["note"], self.to_add[self.WORD][-1])
+        self.assertIs(seen["sentence_cache"], sentence_cache)
+        self.assertIs(seen["note_cache"], note_cache)
+
+    def test_a_new_meaning_a_matched_note_holds_links_the_word_to_that_note(self):
+        # The match op's CREATE NEWs made most of the collection's notes that repeat another
+        # note's meaning. When the cleaning finds the note whose sense the new one repeats, the
+        # word is linked to it and nothing is added or renamed; the quality rated the meaning
+        # that is not added, so the word is left to be rated
+        first = vocab_note(self.WORD, 1)
+        pending = vocab_note(f"{self.WORD} (m2)", 0, new_note_id_field="-5550001")
+        for holder, linked_id in ((first, 1), (pending, -5550001)):
+            with self.subTest(linked_id=linked_id):
+                tuples: dict = {}
+                qualities = {0: 5}
+                args = {**self.args(), "processed_word_tuples": tuples, "match_qualities": qualities}
+                result = cm.CleanResult(False, holder)
+                with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: result):
+                    created = mwtn.create_new_note_from_matched_note(
+                        CONFIG, pending, [first, pending], 3, "意味", "sense", "", args
+                    )
+
+                self.assertTrue(created)
+                self.assertEqual(
+                    tuples, {0: (self.WORD, "ことば", holder["word_sort_field"], linked_id)}
+                )
+                self.assertEqual(qualities, {})
+                self.assertEqual((self.to_add, self.to_update), ({}, {}))
+                self.assertEqual(first["word_sort_field"], self.WORD)
 
     def test_a_second_meaning_not_added_leaves_the_first_note_as_it_was(self):
         search = FakeSearch(vocab_note(self.WORD, 2))
@@ -1692,7 +1850,7 @@ class TidyAfterAddingTests(NewNoteHarness):
         """A new reading whose meaning could not be made: its markers stay on the word's
         other notes, and nothing is added."""
         self.processed_furigana = processed_furigana
-        with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: False):
+        with mock.patch.object(mwtn, "clean_meaning_in_note", lambda **_: cm.CleanResult(False)):
             created = mwtn.create_new_note_without_matching(
                 CONFIG, "", self.args("げんご", FakeMarkerIndex(*marker_nids))
             )

@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import re
-from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -25,7 +24,6 @@ from rapidfuzz.distance import Levenshtein  # type: ignore
 
 from ..configuration import (
     MEANING_MAPPED_TAG,
-    MEANINGS_DICT_FILE,
     NO_DICTIONARY_ENTRY_TAG,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
@@ -54,12 +52,14 @@ from ..word_array.match_flags import (
     read_word_array,
     word_array_query_regex,
 )
+from . import capture
 from .chain_types import ChainStep, fail_step
 from .base_ops import (
     AsyncTaskProgressUpdater,
     BulkOpResult,
     CancelState,
     NotePlan,
+    NotesRunSpec,
     run_once,
     bulk_nested_notes_op,
     get_response,
@@ -78,6 +78,7 @@ from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, w
 from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
 from .clean_meaning import clean_meaning_in_note
 from .make_all_meanings import (
+    load_meanings_dict_from_file,
     make_all_meanings_for_word,
     make_meaning_dict_key,
     write_meanings_dict_to_file,
@@ -172,6 +173,18 @@ def make_new_note_id(note: Note) -> int:
         return 0
     # Use a simple random negative number for fake IDs
     return -random.randint(1000000, 9999999)
+
+
+def linked_note_id(note: Note, new_note_id_field: str) -> Optional[int]:
+    """The id a word array links `note` by, as the main prompt's MATCH writes it: its own once
+    it has been added, until then the placeholder in `new_note_id_field`. None for a note not
+    added that holds no placeholder. For the capture context; never raises."""
+    try:
+        if note.id > 0:
+            return int(note.id)
+        return int(note[new_note_id_field])
+    except Exception:
+        return None
 
 
 # How a rematching run treats words that are already linked to a note.
@@ -853,6 +866,9 @@ class _WordArrayMatchOpArgs(TypedDict, total=False):
     # prompt instead of `sentence`, and where its match_quality goes, keyed by word_index
     prompt_sentence: str
     match_qualities: dict[int, int]
+    # The target's element in the array (match_targets.word_path), which the meanings call's
+    # capture context records: word_index counts only the run's targets
+    word_path: Optional[list[int]]
 
 
 class MatchOpArgs(_WordArrayMatchOpArgs, MatchFields):
@@ -1192,12 +1208,11 @@ def create_new_note_without_matching(
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         all_generated_meanings_dict=all_generated_meanings_dict,
-        allow_update_all_meanings=True,
         allow_reupdate_existing=True,
         word_note_index=word_note_index,
         sentence_cache=sentence_cache,
         note_cache=note_cache,
-    )
+    ).changed
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
     # update the word tuples
@@ -1256,6 +1271,27 @@ def upsert_meaning_marker(sort_field_value: str, meaning_number: int, fallback_w
     )
 
     return f"{base_word} {''.join(rebuilt_tokens)}".strip() if rebuilt_tokens else base_word
+
+
+def link_word_to_note(match_op_args: MatchOpArgs, note: Note) -> ProcessedWordTuple:
+    """Link the target word to `note`, as a MATCH does: its word tuple names the note's sort
+    field and id, or the placeholder id it carries until it is added (as an int, which
+    update_fake_note_ids rewrites as it does a MATCH's string)."""
+    word = match_op_args["word"]
+    reading = match_op_args["reading"]
+    multi_meaning_index = match_op_args.get("multi_meaning_index")
+    notes_to_update_dict = match_op_args["notes_to_update_dict"]
+    word_sort_field = match_op_args["word_sort_field"]
+    if note.id > 0 and note.id in notes_to_update_dict:
+        note = notes_to_update_dict[note.id]
+    note_id = note.id if note.id > 0 else int(note[match_op_args["new_note_id_field"]])
+    word_tuple: ProcessedWordTuple = (
+        (word, reading, multi_meaning_index, note[word_sort_field], note_id)
+        if multi_meaning_index is not None
+        else (word, reading, note[word_sort_field], note_id)
+    )
+    match_op_args["processed_word_tuples"][match_op_args["word_index"]] = word_tuple
+    return word_tuple
 
 
 def create_new_note_from_matched_note(
@@ -1326,17 +1362,37 @@ def create_new_note_from_matched_note(
     # meaning
     # Provide other_meaning_notes to override fetching from DB again as the meanings
     # gathered here can include yet un-added notes which the clean meaning op
-    # couldn't get otherwise
-    clean_meaning_in_note(
+    # couldn't get otherwise. They are also every meaning the word has, the first one without
+    # an (mN) marker included, which the fetch's meaning group leaves out: the new meaning is
+    # cleaned seeing each one it must not repeat, and told apart from them. The run's caches, as
+    # the op's other cleanings get them: the sentences are gathered for each of those notes now,
+    # not only the new one
+    cleaned = clean_meaning_in_note(
         config=config,
         note=new_note,
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         all_generated_meanings_dict=all_generated_meanings_dict,
-        allow_update_all_meanings=True,
         allow_reupdate_existing=True,
         other_meaning_notes=matching_notes,
+        sentence_cache=match_op_args.get("sentence_cache"),
+        note_cache=match_op_args.get("note_cache"),
     )
+    if cleaned.same_sense_as is not None:
+        # The new meaning is one a note of the word holds: the word is linked to that note and
+        # nothing is added. The match op's CREATE NEWs made most of the collection's notes that
+        # repeat another note's meaning, the older one studied in half of them, and nothing
+        # compared the two. The quality rated the new meaning, not that note's, so the word is
+        # left to be rated
+        word_tuple = link_word_to_note(match_op_args, cleaned.same_sense_as)
+        match_qualities = match_op_args.get("match_qualities")
+        if match_qualities is not None:
+            match_qualities.pop(word_index, None)
+        logger.debug(
+            f"{log_prefix} New meaning repeats a note's sense, linked the word instead:"
+            f" {word_tuple}"
+        )
+        return True
     # If we're copying a note, we need to ensure the meaning number is at least 2
     # as the first meaning should be (m1)
     largest_meaning_index = max(largest_meaning_index, 2)
@@ -1610,8 +1666,7 @@ async def match_single_word_in_word_tuple(
         for i in range(len(matching_notes)):
             # Check if the note needs to have its meaning mapped to generated meanings first as
             # we want the matching op to only have existing notes that match generated meanings
-            # Because clean_meaning_note can modify multiple notes in one call, re-acquire the
-            # note from notes_to_update_dict if it's there
+            # Re-acquire the note from notes_to_update_dict if it's there
             note_id = matching_notes[i].id
             note = (
                 matching_notes[i]
@@ -1619,9 +1674,13 @@ async def match_single_word_in_word_tuple(
                 else notes_to_update_dict[note_id]
             )
             if needs_meaning_mapping(note):
-                # The op will add the note to notes_to_update_dict if it edits it
+                # The op will add the note to notes_to_update_dict if it edits it. Only mapped:
+                # the rework a note with nothing to map to used to get here was repeated on
+                # every target of its word. The pending notes of the word, added to the list
+                # below, are not cleaned again: each was cleaned as it was made, and a second
+                # cleaning at the word's next target rewrote its whole meaning group
                 logger.debug(
-                    f"{log_prefix}Cleaning meaning in note {note[word_sort_field]} before matching"
+                    f"{log_prefix}Mapping meaning in note {note[word_sort_field]} before matching"
                 )
                 await asyncio.to_thread(
                     clean_meaning_in_note,
@@ -1630,14 +1689,12 @@ async def match_single_word_in_word_tuple(
                     notes_to_add_dict=notes_to_add_dict,
                     notes_to_update_dict=notes_to_update_dict,
                     all_generated_meanings_dict=all_generated_meanings_dict,
-                    allow_update_all_meanings=True,
                     allow_reupdate_existing=True,
+                    map_only=True,
                     word_note_index=match_op_args["word_note_index"],
                     sentence_cache=match_op_args["sentence_cache"],
                     note_cache=match_op_args["note_cache"],
                 )
-            # Replace note in list each time, this will include the cases where an earlier op
-            # modified notes coming later in the list
             matching_notes[i] = note
 
         logger.debug(
@@ -1674,6 +1731,9 @@ async def match_single_word_in_word_tuple(
         # Get all the meanings from the notes to check against the sentence
         meanings: list[tuple[str, int, Optional[NoteId], str, str, str]] = []
         # meaning is a tuple of (jp_meaning, meaning_number, note_id, example_sentence, en_meaning)
+        # What the call's capture context says each meaning is, keyed by the identity of its
+        # tuple: the sort below moves the tuples, and two of them can be equal
+        meaning_sources: dict[int, dict[str, Optional[int]]] = {}
         largest_meaning_index = 0
         note_to_copy = None
         has_existing_note_meanings = False
@@ -1713,51 +1773,24 @@ async def match_single_word_in_word_tuple(
                     en_meaning_in_meanings.add(english_meaning)
                     jp_meaning_in_meanings.add(meaning)
                     has_existing_note_meanings = True
-                    meanings.append((
+                    meaning_entry = (
                         meaning,
                         matched_meaning_number,
                         note.id,
                         other_sentence,
                         english_meaning,
                         match_word,
-                    ))
+                    )
+                    meanings.append(meaning_entry)
+                    meaning_sources[id(meaning_entry)] = {
+                        "note_id": linked_note_id(note, new_note_id_field),
+                        "m_number": matched_meaning_number,
+                        "gen_index": None,
+                    }
                 else:
                     logger.debug(f"{log_prefix}Note {note.id} has empty meaning field")
             else:
                 logger.debug(f"{log_prefix}Note {note.id} is missing meaning field")
-
-        # Check if any notes aren't yet mapped to generated meanings and map them if not
-        for i in range(len(matching_notes)):
-            # Re-acquire the note from notes_to_update_dict if it's there, thus as the
-            # clean_meaning_in_note op adds the MEANING_MAPPED_TAG we can avoid doing extra calls
-            note_id = matching_notes[i].id
-            note = (
-                matching_notes[i]
-                if note_id not in notes_to_update_dict
-                else notes_to_update_dict[note_id]
-            )
-            if needs_meaning_mapping(note):
-                logger.debug(
-                    f"{log_prefix}Mapping meanings for note {note[word_sort_field]} before matching"
-                )
-                await asyncio.to_thread(
-                    clean_meaning_in_note,
-                    config=config,
-                    note=note,
-                    notes_to_add_dict=notes_to_add_dict,
-                    notes_to_update_dict=notes_to_update_dict,
-                    all_generated_meanings_dict=all_generated_meanings_dict,
-                    allow_update_all_meanings=True,
-                    allow_reupdate_existing=True,
-                    word_note_index=match_op_args["word_note_index"],
-                    sentence_cache=match_op_args["sentence_cache"],
-                    note_cache=match_op_args["note_cache"],
-                )
-            # Replace note in list each time, this will include the cases where an earlier op
-            # modified notes coming later in the list and we didn't call clean_meaning_in_note again
-            matching_notes[i] = (
-                note if note_id not in notes_to_update_dict else notes_to_update_dict[note_id]
-            )
 
         # Add meanings from all_generated_meanings_dict as well, if any remain that aren't in the
         # existing notes
@@ -1765,12 +1798,12 @@ async def match_single_word_in_word_tuple(
         gen_meaning_by_index: dict[int, GeneratedMeaningType] = {}
         if word_key in all_generated_meanings_dict:
             possible_meanings: list[GeneratedMeaningType] = all_generated_meanings_dict[word_key]
-            for gen_meaning in possible_meanings:
+            for gen_index, gen_meaning in enumerate(possible_meanings):
                 if (
                     gen_meaning["jp_meaning"] not in jp_meaning_in_meanings
                     and gen_meaning["en_meaning"] not in en_meaning_in_meanings
                 ):
-                    meanings.append((
+                    generated_entry = (
                         gen_meaning["jp_meaning"],
                         # Since these are not existing notes, we use the largest_meaning_index
                         # so that selecting one of these will increment the meaning number correctly
@@ -1779,8 +1812,14 @@ async def match_single_word_in_word_tuple(
                         "",
                         gen_meaning["en_meaning"],
                         word,
-                    ))
+                    )
+                    meanings.append(generated_entry)
                     gen_meaning_by_index[len(meanings) - 1] = gen_meaning
+                    meaning_sources[id(generated_entry)] = {
+                        "note_id": None,
+                        "m_number": largest_meaning_index,
+                        "gen_index": gen_index,
+                    }
 
         if note_to_copy:
             # use the updated note if available
@@ -1793,21 +1832,27 @@ async def match_single_word_in_word_tuple(
             return False
         # Sort meanings by the meaning number
         meanings.sort(key=lambda x: x[1])
-        meanings_str = ""
-        for i, (
-            jp_meaning,
-            _,
-            _,
-            example_sentence,
-            en_meaning,
-            match_word,
-        ) in enumerate(meanings):
-            meanings_str += f"""Meaning number {i + 1}:
-- *match_word*: {match_word}
-- *jp_meaning*: {jp_meaning}
-- *en_meaning*: {en_meaning}
-- *example_sentence*: {example_sentence or ("(no example sentence)")}
-"""
+        # As the prompt lists them, in its order: what it is built from and what the call records
+        listed_meanings = [
+            {
+                "match_word": match_word,
+                "jp_meaning": jp_meaning,
+                "en_meaning": en_meaning,
+                "example_sentence": example_sentence,
+            }
+            for jp_meaning, _, _, example_sentence, en_meaning, match_word in meanings
+        ]
+        # The call's capture context: what each listed meaning is, in the same order, so that the
+        # answer's meaning_number names a note or a generated meaning, and the note a new note
+        # is copied from. Read off the sorted tuples themselves, not the indexes they had before
+        meanings_context: dict[str, Any] = {
+            "word_path": match_op_args.get("word_path"),
+            "meanings": [meaning_sources.get(id(entry)) for entry in meanings],
+            "copy_note_id": (
+                linked_note_id(note_to_copy, new_note_id_field) if note_to_copy else None
+            ),
+        }
+        meanings_str = match_targets.meanings_listing(listed_meanings)
 
         instructions = (
             """You are an expert Japanese lexicographer. Your task is to analyze how a Japanese word is used in a _current sentence_ and compare it to a list of existing dictionary meanings. You are designed to output JSON.
@@ -1871,11 +1916,7 @@ None of the meanings fit, so you create a new one.
 ```"""
         )
 
-        prompt = f"""MEANINGS AND EXAMPLE SENTENCES
-{meanings_str}
-
-_Targeted word_: {word}
-_Current sentence_: {prompt_sentence}"""
+        prompt = match_targets.meanings_prompt(word, prompt_sentence, listed_meanings)
 
         # response_schema = {
         #     "type": "object",
@@ -1934,6 +1975,16 @@ _Current sentence_: {prompt_sentence}"""
             # response_schema=response_schema,
             max_output_tokens=max_output_tokens,
             json_result_corrector=json_result_corrector,
+            kind="match.meanings",
+            # meanings_prompt's arguments, and the reading: the prompt shows only the word, but
+            # the word and its reading are what the case is (another reading is another case)
+            inputs={
+                "word": word,
+                "reading": reading,
+                "sentence": prompt_sentence,
+                "meanings": listed_meanings,
+            },
+            context=meanings_context,
         )
         logger.debug(f"{log_prefix}Raw result: {raw_result}")
         if raw_result is None:
@@ -2172,10 +2223,12 @@ async def rate_linked_word(
     note_cache: NoteCache,
     cancel_state: CancelState,
     log_prefix: str,
+    word_path: Optional[list[int]] = None,
 ) -> Optional[int]:
     """Ask the secondary prompt how well the meaning of the note a word is already linked to fits
     its occurrence, returning the match_quality, or None when there was no meaning to rate or no
-    valid rating came back."""
+    valid rating came back. `word_path` (match_targets.word_path) is only recorded, in the call's
+    capture context."""
     log_prefix = f"{log_prefix}rate--word:'{target.word}'--reading:'{target.reading}'--"
     note_id = match_flags.matched_note_id(target.elem)
     if note_id is None or note_id <= 0:
@@ -2194,9 +2247,15 @@ async def rate_linked_word(
     if not jp_meaning and not en_meaning:
         logger.debug(f"{log_prefix}Linked note {note_id} has no meaning yet, left unrated")
         return None
-    prompt = match_targets.rating_prompt(
-        target.word, target.reading, jp_meaning, en_meaning, prompt_sentence
-    )
+    # rating_prompt's arguments, which the call records as its inputs
+    inputs = {
+        "word": target.word,
+        "reading": target.reading,
+        "jp_meaning": jp_meaning,
+        "en_meaning": en_meaning,
+        "sentence": prompt_sentence,
+    }
+    prompt = match_targets.rating_prompt(**inputs)
     raw_result = await asyncio.to_thread(
         get_response,
         config.get("match_words_model", ""),
@@ -2205,6 +2264,10 @@ async def rate_linked_word(
         instructions=match_targets.RATING_INSTRUCTIONS,
         # Thinking counts towards the limit; the answer itself is a few tokens
         max_output_tokens=4000,
+        kind="match.rating",
+        inputs=inputs,
+        # Which word the rating is saved on, and the note whose meaning the prompt shows
+        context={"word_path": word_path, "note_id": note_id},
     )
     quality = match_targets.rating_from_response(raw_result)
     if quality is None:
@@ -2316,33 +2379,53 @@ def plan_word_array_matching(
     ) -> bool:
         target = targets[target_index]
         word_note_index = await word_note_index_cache.get(word_index_fields(fields))
-        return await match_single_word_in_word_tuple(
-            config=config,
-            word_lock=word_lock,
-            word_locks_dict=word_locks_dict,
-            log_prefix=log_prefix,
-            match_op_args=MatchOpArgs(
-                **fields,
-                current_note=note,
-                note_type=note_type,
-                word_index=target_index,
-                part_of_speech=target.part_of_speech,
-                multi_meaning_index=None,
-                word=target.word,
-                reading=target.reading,
-                sentence=sentence,
-                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
-                match_qualities=qualities,
-                processed_word_tuples=results,
-                all_generated_meanings_dict=all_generated_meanings_dict,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                word_note_index=word_note_index,
-                note_cache=note_cache,
-                sentence_cache=sentence_cache,
-                cancel_state=cancel_state,
-            ),
-        )
+        # One capture task per word target: the calls it makes, meanings generated or notes
+        # cleaned on the way included, are told apart from the note's other words'. Set in this
+        # task's own context, which its to_thread workers copy
+        with capture.task_scope(f"{target.word}|{target.reading}"):
+            matched = await match_single_word_in_word_tuple(
+                config=config,
+                word_lock=word_lock,
+                word_locks_dict=word_locks_dict,
+                log_prefix=log_prefix,
+                match_op_args=MatchOpArgs(
+                    **fields,
+                    current_note=note,
+                    note_type=note_type,
+                    word_index=target_index,
+                    part_of_speech=target.part_of_speech,
+                    multi_meaning_index=None,
+                    word=target.word,
+                    reading=target.reading,
+                    sentence=sentence,
+                    prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                    word_path=match_targets.word_path(arr, target.elem),
+                    match_qualities=qualities,
+                    processed_word_tuples=results,
+                    all_generated_meanings_dict=all_generated_meanings_dict,
+                    notes_to_add_dict=notes_to_add_dict,
+                    notes_to_update_dict=notes_to_update_dict,
+                    word_note_index=word_note_index,
+                    note_cache=note_cache,
+                    sentence_cache=sentence_cache,
+                    cancel_state=cancel_state,
+                ),
+            )
+            # What the word got, whichever of the many ways out of the match it took: the
+            # tuple save_finished writes into the element, the placeholder of a new note, or
+            # nothing. The calls that decided it are in the same task
+            if capture.notes_on():
+                capture.event(
+                    "match.decision",
+                    {
+                        "word_path": match_targets.word_path(arr, target.elem),
+                        "ok": matched,
+                        "result": results.get(target_index),
+                        "quality": qualities.get(target_index),
+                    },
+                    note_id=note.id,
+                )
+            return matched
 
     async def rate_op(
         _,
@@ -2351,16 +2434,25 @@ def plan_word_array_matching(
         target_index: int,
     ) -> bool:
         target = rate_targets[target_index]
-        quality = await rate_linked_word(
-            config=config,
-            target=target,
-            prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
-            fields=fields,
-            notes_to_update_dict=notes_to_update_dict,
-            note_cache=note_cache,
-            cancel_state=cancel_state,
-            log_prefix=log_prefix,
-        )
+        # A word target's capture task, as in match_op
+        with capture.task_scope(f"{target.word}|{target.reading}"):
+            quality = await rate_linked_word(
+                config=config,
+                target=target,
+                prompt_sentence=match_targets.highlighted_sentence(arr, target.elem) or "",
+                fields=fields,
+                notes_to_update_dict=notes_to_update_dict,
+                note_cache=note_cache,
+                cancel_state=cancel_state,
+                log_prefix=log_prefix,
+                word_path=match_targets.word_path(arr, target.elem),
+            )
+            if capture.notes_on():
+                capture.event(
+                    "match.rated",
+                    {"word_path": match_targets.word_path(arr, target.elem), "quality": quality},
+                    note_id=note.id,
+                )
         if quality is None:
             return False
         ratings[target_index] = quality
@@ -2590,13 +2682,7 @@ async def bulk_match_words_to_notes(
         return None
     model = config.get("match_words_model", "")
     message = "Matching words"
-    media_path = Path(mw.pm.profileFolder(), "collection.media")
-    all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
-
-    all_generated_meanings_dict: GeneratedMeaningsDictType = {}
-    if all_meanings_dict_path.exists():
-        with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
-            all_generated_meanings_dict = json.load(f)
+    all_generated_meanings_dict = load_meanings_dict_from_file()
 
     # Dictionary to track locks per word to prevent race conditions
     word_locks_dict: dict[str, asyncio.Lock] = {}
@@ -2648,6 +2734,26 @@ async def bulk_match_words_to_notes(
         nonlocal all_generated_meanings_dict
         # Write updated meanings dictionary to file after successful operation
         write_meanings_dict_to_file(all_generated_meanings_dict)
+        # The run's caches as data, for a benchmark: they only log now and then, and go with
+        # this closure
+        if capture.notes_on():
+            capture.event(
+                "metrics.caches",
+                {
+                    "note_cache": {
+                        "asked": note_cache.asked,
+                        "from_cache": note_cache.hits,
+                        "fetched": note_cache.fetched,
+                        "held": len(note_cache),
+                    },
+                    "sentence_cache": {
+                        "asked": sentence_cache.asked,
+                        "scanned": sentence_cache.scanned,
+                        "held": len(sentence_cache),
+                    },
+                    "word_indexes_built": len(word_note_index_cache._indexes),
+                },
+            )
 
     return await bulk_nested_notes_op(
         message=message,
@@ -2680,22 +2786,32 @@ def match_words_to_notes_from_selected(
     Returns:
         What selected_notes_op returns for the run.
     """
-    progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Matching words to notes")
-    done_text = "Matched words to notes"
-    bulk_op = bulk_match_words_to_notes
-    new_notes_op = update_fake_note_ids
-    filter_new_notes_op = deduplicate_notes_list
+    spec = match_words_spec()
     return selected_notes_op(
-        done_text,
-        bulk_op,
+        spec.done_text,
+        spec.bulk_op,
         nids,
         parent,
-        progress_updater,
-        new_notes_op,
-        filter_new_notes_op,
+        AsyncTaskProgressUpdater(title=spec.title),
+        spec.new_notes_op,
+        spec.filter_new_notes_op,
+        unadded_notes_op=spec.unadded_notes_op,
+        tidy_markers_op=spec.tidy_markers_op,
+        chain=chain,
+    )
+
+
+def match_words_spec() -> NotesRunSpec:
+    """The match op's run, as the menu starts it and as a script does (`NotesRunSpec`). Built
+    when called, so that it takes the module's functions as they are then."""
+    return NotesRunSpec(
+        done_text="Matched words to notes",
+        title="Async AI op: Matching words to notes",
+        bulk_op=bulk_match_words_to_notes,
+        new_notes_op=update_fake_note_ids,
+        filter_new_notes_op=deduplicate_notes_list,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
-        chain=chain,
     )
 
 

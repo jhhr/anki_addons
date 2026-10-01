@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import Optional, Callable, Coroutine, Any, NamedTuple, Union
 from functools import partial
 
@@ -16,8 +17,9 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
 from aqt.utils import showWarning, tooltip
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Container, Iterable, Iterator, Sequence
 
+from . import capture, capture_notes
 from .api_client import (
     ANTHROPIC,
     DEFAULT_MAX_RETRIES,
@@ -51,7 +53,7 @@ from .chain_types import (
     StepOutcome,
 )
 from .collection_access import RunCancelled, begin_cleanup_phase, end_cleanup_phase
-from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size
+from .concurrency import TASK_QUEUE_DEPTH, ConcurrencyGate, executor_size, process_memory
 from .diagnostics import (
     clear_cancel_time,
     diagnostic_level,
@@ -177,7 +179,28 @@ def log_phase(label: str, started: float, **extra) -> float:
         if since_cancel is not None:
             details += f" since_cancel={since_cancel:.1f}s"
         logger.log(level, "[phase] %s took %.3fs%s", label, now - started, details)
+    # The same, in a run that records its notes, for the phase table of a replay's benchmark,
+    # with the process's memory at the phase's end: nothing else samples it at phase boundaries
+    if capture.notes_on():
+        capture.event(
+            "phase",
+            {"label": label, "seconds": now - started, "rss": process_memory(), **extra},
+        )
     return now
+
+
+def record_gate(gate: Any) -> None:
+    """A run that records its notes records what its gate did (`ConcurrencyGate.stats`) as a
+    `metrics.gate` event. A gate without stats (a test's stand-in) records nothing."""
+    if not capture.notes_on():
+        return
+    stats = getattr(gate, "stats", None)
+    if stats is None:
+        return
+    try:
+        capture.event("metrics.gate", stats())
+    except Exception:
+        logger.warning("Capture: the gate's figures were not recorded", exc_info=True)
 
 
 class CancelState:
@@ -206,6 +229,37 @@ class DialogCancelState:
         return bool(mw.progress.want_cancel())
 
 
+class ResponseRequest(NamedTuple):
+    """One `get_response` as a responder is handed it (`set_responder`)."""
+
+    kind: str
+    inputs: Any
+    model: str
+    prompt: str
+    # As sent: DEFAULT_SYSTEM_INSTRUCTION when the caller gave none, as the capture records it
+    instructions: str
+    schema: Optional[dict]
+    params: dict
+
+
+# Answers every get_response in place of the providers while set: a replay's cassette, the
+# benchmark's timed one. None in Anki, always
+_responder: Optional[Callable[[ResponseRequest], Any]] = None
+
+
+def set_responder(
+    responder: Optional[Callable[[ResponseRequest], Any]],
+) -> Optional[Callable[[ResponseRequest], Any]]:
+    """Answer every `get_response` with `responder(request)` instead of a provider, or, given
+    None, go back to the providers. For replays and benchmarks: the call is recorded, cancel and
+    the op's handling of the answer are as they are for a provider's, and nothing goes out.
+    `responder` runs on the calling thread, a pool worker; None from it is a failed call.
+    Returns the one it replaces, for a caller that sets its own for a while."""
+    global _responder
+    previous, _responder = _responder, responder
+    return previous
+
+
 def get_response(
     model: str,
     prompt: str,
@@ -216,19 +270,107 @@ def get_response(
     temperature: Optional[float] = None,
     json_result_corrector: Optional[Callable[[str], str]] = None,
     effort: Optional[str] = None,
+    kind: str = "",
+    inputs: Optional[dict] = None,
+    context: Optional[dict] = None,
 ) -> Union[dict, None]:
     """Get a response from the appropriate model based on the configuration.
 
     Args:
         model: The model to use for the request.
+        kind: What the call is for, `<op>.<purpose>` (`match.meanings`), and `inputs` the
+            values its prompt was built from (JSON-serialisable; no note ids, no API keys).
+            Both are only recorded with the call in the capture store, when one is
+            installed; the request is the same without them.
+        context: Recorded the same way, and only that: what reading or applying the answer
+            needs that the prompt does not show, as plain JSON with note ids as ints - the
+            note behind each numbered meaning the prompt lists, the note the answer is written
+            to. Not part of the request key. The shapes are in AGENTS.md, "Capture store".
 
     Returns:
         A dict containing the parsed JSON response, or None if there was an error.
     """
+    # What every provider sends when it is given none, so the record is what was sent
+    sent_instructions = instructions or DEFAULT_SYSTEM_INSTRUCTION
+    params = {"max_output_tokens": max_output_tokens, "temperature": temperature, "effort": effort}
+    with capture.call(
+        kind,
+        inputs,
+        model=model,
+        prompt=prompt,
+        instructions=sent_instructions,
+        schema=response_schema,
+        params=params,
+        context=context,
+    ) as trace:
+        try:
+            responder = _responder
+            if responder is not None:
+                result = responder(
+                    ResponseRequest(
+                        kind, inputs, model, prompt, sent_instructions, response_schema, params
+                    )
+                )
+            else:
+                result = _dispatch_response(
+                    model,
+                    prompt,
+                    cancel_state=cancel_state,
+                    instructions=instructions,
+                    response_schema=response_schema,
+                    max_output_tokens=max_output_tokens,
+                    temperature=temperature,
+                    json_result_corrector=json_result_corrector,
+                    effort=effort,
+                )
+        except Exception:
+            if trace is not None:
+                # The row records the exception as the outcome; the trace never sees it
+                _log_call_end(trace, kind, "error")
+            raise
+        if trace is not None:
+            _finish_call(trace, kind, result, cancel_state)
+    return result
+
+
+def _finish_call(
+    trace: capture.CallTrace, kind: str, result: Any, cancel_state: Optional[CancelState]
+) -> None:
+    """Give a captured call its result and log its reference line. Never raises: the result
+    is the op's whether or not it could be recorded."""
+    try:
+        trace.finish(result, cancelled=is_cancelled(cancel_state))
+    except Exception:
+        logger.warning("Capture: call %s could not be finished", trace.call_id, exc_info=True)
+    _log_call_end(trace, kind, trace.outcome)
+
+
+def _log_call_end(trace: capture.CallTrace, kind: str, outcome: Optional[str]) -> None:
+    """The text log's line for a captured call, the one that names its row in the store.
+
+    Logged inside the call, so that its record carries the call's ids like every other line
+    of it, the implicit run's included.
+    """
+    logger.info("call %s %s %s %.1fs", trace.call_id, kind or "-", outcome, trace.elapsed())
+
+
+def _dispatch_response(
+    model: str,
+    prompt: str,
+    cancel_state: Optional[CancelState] = None,
+    instructions: Optional[str] = None,
+    response_schema: Optional[dict] = None,
+    max_output_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    json_result_corrector: Optional[Callable[[str], str]] = None,
+    effort: Optional[str] = None,
+) -> Union[dict, None]:
+    """`get_response`'s request, sent to the provider the model's name selects."""
     if is_terminal_model(model):
         config = mw.addonManager.getConfig(__name__)
         if config is None:
             logger.error("No configuration found for the addon.")
+            capture.note_outcome("error", "no configuration found for the addon")
             return None
         return get_response_from_terminal(
             model,
@@ -288,6 +430,7 @@ def get_response(
         )
     else:
         logger.error(f"Unsupported model: {model}")
+        capture.note_outcome("error", f"unsupported model: {model}")
         return None
 
 
@@ -321,6 +464,7 @@ def post_to_api(
         report_error(
             f"{model}: no answer; every attempt timed out or lost its connection (see the log)"
         )
+        capture.note_outcome("no_response", "every attempt timed out or lost its connection")
     return response
 
 
@@ -328,6 +472,7 @@ def report_refused(model: str, response: Any) -> None:
     """Log and report a provider's final non-200 answer."""
     logger.error(f"Error: {response.status_code}, {response.text}")
     report_error(f"{model}: HTTP {response.status_code}: {excerpt(response.text)}")
+    capture.note_outcome("refused", f"HTTP {response.status_code}: {response.text}")
 
 
 def report_unreadable(model: str, error: Exception, response: Any) -> None:
@@ -338,6 +483,7 @@ def report_unreadable(model: str, error: Exception, response: Any) -> None:
         f"{model}: could not read the answer ({type(error).__name__}: {error}):"
         f" {excerpt(response.text)}"
     )
+    capture.note_outcome("unreadable", f"{type(error).__name__}: {error}: {response.text}")
 
 
 def decode_answer(
@@ -346,16 +492,21 @@ def decode_answer(
     """The JSON in an answer, run through the corrector if it does not parse at first; None,
     reported, if it does not parse either way."""
     result = decode_json_result(json_result)
+    corrected = False
     if not result and json_result_corrector:
         json_result = json_result_corrector(json_result)
         result = decode_json_result(json_result)
+        corrected = True
     if result is None:
         report_error(f"{model}: the answer was not valid JSON: {excerpt(json_result)}")
+        capture.note_outcome("unparseable", "the answer was not valid JSON")
+    elif corrected:
+        capture.note_response(corrected=True)
     return result
 
 
 def decode_json_result(json_str: str):
-    logging.debug("json_result", json_str)
+    logger.debug("json_result %s", json_str)
     try:
         result = json.loads(json_str)
         logger.debug(
@@ -456,17 +607,7 @@ def get_response_from_gemini(
         ],
         "system_instruction": {
             "parts": [
-                {
-                    "text": (
-                        instructions
-                        if instructions
-                        else (
-                            "You are a helpful assistant for processing Japanese text. You are a"
-                            " superlative expert in the Japanese language and its writing system."
-                            " You are designed to output JSON."
-                        )
-                    )
-                },
+                {"text": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION},
             ]
         },
         "generationConfig": {
@@ -490,22 +631,23 @@ def get_response_from_gemini(
             "Using response schema %s", json.dumps(response_schema, ensure_ascii=False, indent=2)
         )
 
-    headers = {
-        "Content-Type": "application/json",
-        # "x-goog-api-key": google_api_key,
-    }
-
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         print("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     google_api_key = config.get("google_api_key", "")
 
+    # The key goes in a header, never the URL: a failed request's exception text carries its
+    # URL, and post_with_retry logs that text, so a key in the query string was written into
+    # every log of a dropped connection or timeout
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": google_api_key,
+    }
+
     # Make the API call
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={google_api_key}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     response = post_to_api(
         provider=GEMINI,
         model=model,
@@ -529,6 +671,7 @@ def get_response_from_gemini(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usageMetadata"))
 
     # Extract the JSON from the response
     json_result = extract_json_string(content_text)
@@ -556,21 +699,14 @@ def get_response_from_openai(
     messages = [
         {
             "role": "system",
-            "content": (
-                instructions
-                if instructions
-                else (
-                    "You are a helpful assistant for processing Japanese text. You are a"
-                    " superlative expert in the Japanese language and its writing system. You are"
-                    " designed to output JSON."
-                )
-            ),
+            "content": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         },
         {"role": "user", "content": prompt},
     ]
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     openai_api_key = config.get("openai_api_key", "")
     headers = {
@@ -636,6 +772,7 @@ def get_response_from_openai(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
@@ -661,21 +798,14 @@ def get_response_from_together(
     messages = [
         {
             "role": "system",
-            "content": (
-                instructions
-                if instructions
-                else (
-                    "You are a helpful assistant for processing Japanese text. You are a"
-                    " superlative expert in the Japanese language and its writing system. You are"
-                    " designed to output JSON."
-                )
-            ),
+            "content": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         },
         {"role": "user", "content": prompt},
     ]
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     together_api_key = config.get("together_api_key", "")
     headers = {
@@ -716,6 +846,7 @@ def get_response_from_together(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     json_result = extract_json_string(content_text)
 
@@ -752,15 +883,7 @@ def get_response_from_anthropic(
     # Create the request body
     data: dict[str, Any] = {
         "model": model,
-        "system": (
-            instructions
-            if instructions
-            else (
-                "You are a helpful assistant for processing Japanese text. You are a"
-                " superlative expert in the Japanese language and its writing system. You are"
-                " designed to output JSON."
-            )
-        ),
+        "system": instructions if instructions else DEFAULT_SYSTEM_INSTRUCTION,
         "max_tokens": max_output_tokens or MAX_TOKENS_VALUE,
         "messages": messages,
     }
@@ -800,6 +923,7 @@ def get_response_from_anthropic(
     config = mw.addonManager.getConfig(__name__)
     if config is None:
         logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
         return None
     anthropic_api_key = config.get("anthropic_api_key", "")
 
@@ -865,6 +989,7 @@ def get_response_from_anthropic(
     except (json.JSONDecodeError, KeyError) as e:
         report_unreadable(model, e, response)
         return None
+    capture.note_response(raw=content_text, usage=decoded_json.get("usage"))
 
     # Extract the cleaned meaning from the response
     json_result = extract_json_string(content_text)
@@ -1781,7 +1906,7 @@ def make_inner_bulk_op(
                 except Exception as e:
                     logger.error("Inner process op error, passing to handle_op_error: %s", e)
                     handle_op_error(e)
-                    # The task's note is in its context (see error_subject in the drivers)
+                    # The task's note is in its context (see note_context in the drivers)
                     report_exception(e)
                     return False
                 finally:
@@ -1841,11 +1966,26 @@ class NotePlan(NamedTuple):
     flush: Optional[Callable[[], bool]] = None
 
 
+@contextmanager
+def note_context(note: Note) -> Iterator[None]:
+    """`note` as what the work inside is for: its errors are titled with it (`error_subject`)
+    and its AI calls recorded against it (`capture.note_scope`). Both are ContextVars, so a
+    task created or a `to_thread` worker started inside carries them; entering them together
+    keeps the two from naming different notes.
+
+    A note not added yet has id 0, and its calls are recorded with no note rather than all
+    against a note 0.
+    """
+    with error_subject(NoteSubject(note)), capture.note_scope(getattr(note, "id", None) or None):
+        yield
+
+
 def _spawning_for(note: Note, spawn: Callable[[list], None]) -> Callable[[list], None]:
-    """`spawn` creating its tasks with `note` in their context, so their errors name it."""
+    """`spawn` creating its tasks with `note` in their context, so their errors and AI calls
+    name it."""
 
     def spawn_for_note(tasks: list) -> None:
-        with error_subject(NoteSubject(note)):
+        with note_context(note):
             spawn(tasks)
 
     return spawn_for_note
@@ -2170,6 +2310,7 @@ async def bulk_nested_notes_op(
     finally:
         marker = time.monotonic()
         gate.finish()
+        record_gate(gate)
         marker = log_phase("nested op: gate.finish", marker)
         progress_updater.gate = None
 
@@ -2252,7 +2393,7 @@ def sync_bulk_notes_op(
                 break
             paused_s += time.time() - paused_at
         # Named in the context too, for whatever the op reports itself
-        with error_subject(NoteSubject(note)):
+        with note_context(note):
             try:
                 op(
                     config=config,
@@ -2417,8 +2558,9 @@ async def bulk_notes_op(
                     cancel_state=cancel_state,
                     one_task_per_op=True,
                 )
-                # The task copies the context as it is created, so its errors name the note
-                with error_subject(NoteSubject(note)):
+                # The task copies the context as it is created, so its errors and calls name
+                # the note
+                with note_context(note):
                     tasks.append(
                         asyncio.create_task(
                             process_note(
@@ -2443,6 +2585,7 @@ async def bulk_notes_op(
     finally:
         marker = time.monotonic()
         gate.finish()
+        record_gate(gate)
         marker = log_phase("bulk op: gate.finish", marker)
         progress_updater.gate = None
 
@@ -2854,6 +2997,9 @@ def add_new_notes(
     filtered_nids: list[NoteId] = []
     saved_notes: list[Note] = []
     started = time.monotonic()
+    # The add loop's time, split: the adds with their hooks, and the undo merges
+    add_seconds = 0.0
+    merge_seconds = 0.0
 
     try:
         if notes:
@@ -2908,19 +3054,56 @@ def add_new_notes(
                     insert_deck_id = _insert_deck_id(col, config, note)
                     if insert_deck_id is None:
                         failed_cnt += 1
+                        # A failed add like one add_note refuses: its placeholder stays in the
+                        # word arrays, and this is how a notes run tells it from an added note
+                        if capture.notes_on():
+                            capture_notes.record_note_add(
+                                col, note, config, 0.0, None, capture_notes.undo_step(col),
+                                add_error="no deck to add it to",
+                            )
                     else:
+                        # Timed apart: the add is where every addon's note_will_be_added hook
+                        # runs, and the merge into the run's undo entry is where an entry such
+                        # a hook made of its own can get in the way. A notes run records each
+                        # with the undo queue around it (capture_notes.record_note_add)
+                        recording = capture.notes_on()
+                        undo_before = capture_notes.undo_step(col) if recording else None
+                        add_started = time.perf_counter()
                         try:
                             logger.debug(f"Adding note {index} to deck {insert_deck_id}")
                             col.add_note(note, insert_deck_id)
                         except Exception as e:
                             logger.error(f"Error adding note {index}: {e}")
                             print_error_traceback(e, logger)
-                            with error_subject(NoteSubject(note)):
+                            with note_context(note):
                                 report_exception(e, "Adding the note")
                             failed_cnt += 1
+                            if recording:
+                                capture_notes.record_note_add(
+                                    col, note, config, time.perf_counter() - add_started, None,
+                                    undo_before, add_error=repr(e),
+                                )
                         else:
+                            one_add = time.perf_counter() - add_started
+                            add_seconds += one_add
                             added_notes.append(note)
-                            op_changes = col.merge_undo_entries(pos)
+                            merge_started = time.perf_counter()
+                            try:
+                                op_changes = col.merge_undo_entries(pos)
+                            except Exception as e:
+                                # Recorded, and raised as it always was
+                                if recording:
+                                    capture_notes.record_note_add(
+                                        col, note, config, one_add, None, undo_before,
+                                        merge_error=repr(e),
+                                    )
+                                raise
+                            one_merge = time.perf_counter() - merge_started
+                            merge_seconds += one_merge
+                            if recording:
+                                capture_notes.record_note_add(
+                                    col, note, config, one_add, one_merge, undo_before
+                                )
 
                     progress_updater.update_note_adding_progress(
                         notes_added=len(added_notes),
@@ -2933,6 +3116,9 @@ def add_new_notes(
                 added=len(added_notes),
                 failed=failed_cnt,
                 not_added=len(not_added),
+                # Of the loop's time, the adds with their hooks, and the merges
+                add_seconds=round(add_seconds, 3),
+                merge_seconds=round(merge_seconds, 3),
             )
     finally:
         # However the adding ends, a raise included (a note type the config lacks, a failed
@@ -2941,6 +3127,8 @@ def add_new_notes(
         # re-arm still queued when it raised does nothing once it lands.
         progress_updater.end_cleanup_cancel()
     counts = NewNotesCounts(len(added_notes), failed_cnt, len(not_added))
+    # Which placeholder each added note replaces, before new_notes_op resolves them
+    capture_notes.record_added(added_notes, config)
     if not_added:
         logger.info(
             f"The adding was cancelled: {len(not_added)} of {counts.prepared} new notes not added"
@@ -3047,6 +3235,11 @@ def tidy_markers(
         print_error_traceback(e, logger)
         report_exception(e, "Tidying the sort field markers")
         return None, []
+    # The tidying read whole words from the collection after the cleanup's writes. A note of
+    # them the run neither read nor wrote is still as it was before the run until the renames
+    # below are saved, so it is fetched for the capture here. Not in the lookup itself
+    # (word_index.sort_base_note_ids), a query helper that cannot know when it is called
+    capture_notes.fetch_unread(col)
     renamed_notes = [
         note for note in renamed.values() if note.id > 0 and note.id not in removed
     ]
@@ -3063,55 +3256,75 @@ def tidy_markers(
     return op_changes, [note.id for note in renamed_notes]
 
 
-def selected_notes_op(
+def _op_names(phases: Sequence[OpPhase]) -> Optional[list[str]]:
+    """The phases' bulk op function names, for the capture run's row. A `functools.partial` has
+    no `__name__`, so it goes by the function it wraps, and a callable object by its class.
+    Never raises: it runs on the op thread before the try whose finally ends the run."""
+    try:
+        names = []
+        for phase in phases:
+            op: Any = phase.bulk_op
+            while isinstance(op, partial):
+                op = op.func
+            name = getattr(op, "__name__", None)
+            names.append(name if isinstance(name, str) else type(op).__name__)
+        return names
+    except Exception:
+        return None
+
+
+BulkOp = Union[Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]], Sequence[OpPhase]]
+
+
+class RunResult:
+    """What a run over notes leaves for its success handler: filled in on the op thread while
+    it runs, read on the main thread once the op has returned."""
+
+    def __init__(self) -> None:
+        # The selected notes the run saved, and the other notes it saved, for the end message
+        self.edited_nids: list[NoteId] = []
+        self.edited_other_nids: list[NoteId] = []
+        self.new_notes = NewNotesCounts()
+        # Whether the run was cancelled, for a chain step's outcome
+        self.cancelled = False
+
+
+def notes_run(
     done_text: str,
-    bulk_op: Union[
-        Callable[..., Coroutine[Any, Any, Optional[BulkOpResult]]], Sequence[OpPhase]
-    ],
+    bulk_op: BulkOp,
     nids: Sequence[NoteId],
-    parent: Browser,
     progress_updater: AsyncTaskProgressUpdater,
     new_notes_op: Optional[NewNotesOp] = None,
     filter_new_notes_op: Optional[FilterNewNotesOp] = None,
-    on_success: Optional[Callable] = None,
     unadded_notes_op: Optional[NewNotesOp] = None,
     tidy_markers_op: Optional[NewNotesOp] = None,
-    chain: Optional[ChainStep] = None,
-):
-    """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation.
+    chain_title: Optional[str] = None,
+) -> tuple[Callable[[Collection], OpChanges], RunResult]:
+    """A run of a bulk op, or a list of `OpPhase`s, over notes, without its UI: the function a
+    `CollectionOp` runs, and the `RunResult` it fills in.
+
+    Everything a run does but open its dialog and show its end: the event loop and thread
+    pool, the phases, the cleanup's writes into one undo entry, the capture run. Called with
+    the collection on the thread that is to run it, and returns once all of that is over.
+    `selected_notes_op` hands it to a `CollectionOp`; a script runs it on its own thread
+    against a collection it opened, with a stand-in `mw` (the headless capture runs, the
+    replay tests), and so runs the same code a run from the menu does. `chain_title` is the
+    chain step it is, for the capture run's row.
 
     A list of phases runs them in order over the same notes and finishes with the same
     cleanup as a single op - see `run_op_phases` for what they share and what they do not.
     The new notes are added by `add_new_notes`, which says what the three note ops are for.
     `tidy_markers_op` gets every note the cleanup saved and added, last (see `tidy_markers`).
-
-    With `chain`, the run is one step of a chain: its dialog title starts with the step's
-    label, it shows no end message, and `chain.on_done` hears how it went, exactly once, on
-    the main thread, after the progress is finished - on success, cancel, stop and exception
-    alike. Without one, nothing here differs from a run from the menu.
     """
     phases = list(bulk_op) if isinstance(bulk_op, Sequence) else [OpPhase("", bulk_op)]
-    edited_nids: list[NoteId] = []
-    edited_other_nids: list[NoteId] = []
+    run_result = RunResult()
     notes_to_add_dict: dict[str, list[Note]] = {}
     notes_to_update_dict: dict[NoteId, Note] = {}
     notes_to_remove: set[NoteId] = set()
-    new_notes = NewNotesCounts()
     config = mw.addonManager.getConfig(__name__) or {}
     nids_set = set(nids)
-    # The errors that do not fail the run are kept for its end message: a run from the menu
-    # keeps its own, a chain's step adds to the chain's (run_op_chain starts those)
-    if chain is None:
-        start_run()
-    else:
-        set_step(chain.title)
-    # Whether the run was cancelled, for a chain step's outcome. Set on the op thread, read by
-    # the success handler on the main thread once the op has returned.
-    cancelled = False
 
-    # Create a wrapper function that handles the async operation
     def run_bulk_op(col: Collection) -> OpChanges:
-        nonlocal cancelled
         # Every operation enters here, which makes this the only place that can promise a run
         # starts uncancelled. bulk_notes_op and bulk_nested_notes_op used to do the clearing,
         # but an op is free to read the collection before it gets that far - the single-word
@@ -3124,17 +3337,33 @@ def selected_notes_op(
         # that starts after a cancelled one must not report its tasks as having returned
         # minutes after a cancel that belongs to the previous run.
         clear_cancel_time()
+        # The capture store's row for this run (None with capture off, which makes every
+        # capture call below a no-op). Never raises, and must not: the try whose finally ends
+        # the run above has not started yet.
+        capture_run = capture.begin_run(
+            done_text,
+            ops=_op_names(phases),
+            chain_step=chain_title,
+            note_count=len(nids),
+            config=config,
+            # Off by default: a run's notes are a copy of much of the collection
+            notes=bool(config.get("capture_notes", False)),
+        )
+        # Set by the except clauses below for the finally, which cannot tell a caught
+        # RunCancelled or an exception on its way out from a run that returned
+        capture_outcome: Optional[str] = None
 
         async def async_wrapper():
-            nonlocal edited_nids, edited_other_nids, new_notes, cancelled
             # Loaded once and handed to every phase, so a later phase sees the earlier
             # ones' writes and each note is written back to the collection only in cleanup
             notes = [mw.col.get_note(nid) for nid in nids]
+            capture_notes.record_environment(col, config)
+            capture_notes.snapshot_notes("selected", notes)
             result = await run_op_phases(
                 phases,
                 col,
                 notes=notes,
-                edited_nids=edited_nids,
+                edited_nids=run_result.edited_nids,
                 progress_updater=progress_updater,
                 notes_to_add_dict=notes_to_add_dict,
                 notes_to_update_dict=notes_to_update_dict,
@@ -3156,7 +3385,7 @@ def selected_notes_op(
             # on that flag alone without ever cancelling the run, so run_is_cancelled is not
             # enough.
             if mw.progress.want_cancel():
-                cancelled = True
+                run_result.cancelled = True
             pos, res_notes_to_add_dict, res_notes_to_update_dict, res_notes_to_remove = result
 
             sanitized_notes_to_remove: list[NoteId] = []
@@ -3199,12 +3428,12 @@ def selected_notes_op(
             logger.debug(f"notes_to_update_dict keys: {notes_to_update_dict.keys()}")
             for nid in res_notes_to_update_dict.keys():
                 if nid not in nids_set:
-                    edited_other_nids.append(nid)
+                    run_result.edited_other_nids.append(nid)
             for nid in sanitized_notes_to_remove:
                 if nid not in nids_set:
-                    edited_other_nids.append(nid)
-            edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
-            edited_nids.extend(
+                    run_result.edited_other_nids.append(nid)
+            run_result.edited_nids = [nid for nid in notes_to_update_dict if nid in nids_set]
+            run_result.edited_nids.extend(
                 nid
                 for nid in dict.fromkeys(sanitized_notes_to_remove)
                 if nid in nids_set and nid not in notes_to_update_dict
@@ -3233,6 +3462,16 @@ def selected_notes_op(
             cleanup_started = log_phase(
                 "cleanup: collect notes", cleanup_started, notes=len(all_updated_notes)
             )
+            # A run that records its notes: the notes it only learned the ids of, while the
+            # collection still holds what the run read, then what it is about to write
+            capture_notes.fetch_unread(mw.col)
+            capture_notes.snapshot_notes("proposed", all_updated_notes)
+            capture_notes.snapshot_new_notes(
+                "proposed",
+                [note for word_notes in res_notes_to_add_dict.values() for note in word_notes],
+                config,
+            )
+            capture_notes.record_undo_status(mw.col, "cleanup start")
             # This write has been the visible symptom of every cancellation hang so far, taking
             # minutes even with nothing to write. Record what the rest of the process is doing
             # on either side of it: an empty write cannot be slow by itself, so whatever is
@@ -3281,14 +3520,17 @@ def selected_notes_op(
                     unadded_notes_op=unadded_notes_op,
                     notes_to_remove=notes_to_remove,
                 )
-                new_notes = added.counts
+                run_result.new_notes = added.counts
                 if added.op_changes is not None:
                     op_changes = added.op_changes
-                count_new_notes_edits(added, nids_set, edited_nids, edited_other_nids)
+                count_new_notes_edits(
+                    added, nids_set, run_result.edited_nids, run_result.edited_other_nids
+                )
                 saved_notes.extend(added.added_notes)
                 saved_notes.extend(added.saved_notes)
                 added_nids = {note.id for note in added.added_notes}
                 cleanup_started = time.monotonic()
+            tidied_nids: list[NoteId] = []
             if tidy_markers_op is not None and saved_notes:
                 tidy_changes, tidied_nids = tidy_markers(
                     mw.col,
@@ -3305,10 +3547,17 @@ def selected_notes_op(
                 count_edits(
                     [nid for nid in tidied_nids if nid not in added_nids],
                     nids_set,
-                    edited_nids,
-                    edited_other_nids,
+                    run_result.edited_nids,
+                    run_result.edited_other_nids,
                 )
                 cleanup_started = time.monotonic()
+            # What the collection holds now of every note the run wrote, added or removed
+            capture_notes.record_final(
+                mw.col,
+                [*(note.id for note in saved_notes), *tidied_nids],
+                removed=notes_to_remove,
+            )
+            capture_notes.record_undo_status(mw.col, "cleanup end")
             log_phase("cleanup: finished", cleanup_started, threads=threading.active_count())
             return op_changes
 
@@ -3334,15 +3583,23 @@ def selected_notes_op(
         loop.set_default_executor(executor)
         set_run_executor(executor)
         try:
-            with bulk_op_logging():
+            # The capture run is current in the task run_until_complete makes, which copies
+            # this context, and so in every task and to_thread worker beneath it, the cleanup
+            # included. Reset before the teardown: this thread goes back to Anki's pool.
+            with capture.run_scope(capture_run), bulk_op_logging():
                 return loop.run_until_complete(async_wrapper())
         except RunCancelled as e:
+            capture_outcome = "abandoned"
             # A cancel that landed on a collection read this thread makes outside the cleanup
             # phase, so the op unwound before it could save anything. There is nothing left to
             # write, but being cancelled is a normal outcome rather than an error: end the
             # operation quietly instead of showing the user a traceback.
             logger.info("Bulk op abandoned after cancellation: %s", e)
             return OpChanges()
+        except BaseException:
+            # Only noted, for the capture run; the same exception goes on out
+            capture_outcome = "failed"
+            raise
         finally:
             teardown_started = time.monotonic()
             logger.debug("[phase] teardown starting, %d threads alive", threading.active_count())
@@ -3384,7 +3641,13 @@ def selected_notes_op(
             # greyed Cancel, nothing else sets it. Before end_run,
             # which forgets the run on this thread (run_cancelled would then say no).
             if run_is_cancelled(run) or mw.progress.want_cancel():
-                cancelled = True
+                run_result.cancelled = True
+            # After that flag's last word, so a cancelled note adding and a run that ended
+            # paused are recorded as cancelled. Never raises, so end_run below always runs.
+            capture.end_run(
+                capture_run,
+                capture_outcome or ("cancelled" if run_result.cancelled else "completed"),
+            )
             # Last, so everything above still logs as part of the run it belongs to. This
             # thread is Anki's and goes back to a pool that runs other work, including our own
             # single-note ops, so its membership of this run must not outlive it: leaving it
@@ -3394,21 +3657,94 @@ def selected_notes_op(
             # ones that must keep seeing the cancellation.
             end_run()
 
+    return run_bulk_op, run_result
+
+
+class NotesRunSpec(NamedTuple):
+    """How an op's entry function starts its run: everything `selected_notes_op` and
+    `notes_run` take but the notes, so a script starts the same run the menu does. The entry
+    function still calls its module's `selected_notes_op` with these (test_op_registry pins
+    that every entry function does)."""
+
+    done_text: str
+    # The progress dialog's title, which is also the updater's
+    title: str
+    bulk_op: BulkOp
+    new_notes_op: Optional[NewNotesOp] = None
+    filter_new_notes_op: Optional[FilterNewNotesOp] = None
+    unadded_notes_op: Optional[NewNotesOp] = None
+    tidy_markers_op: Optional[NewNotesOp] = None
+
+    def notes_run(
+        self, nids: Sequence[NoteId], chain_title: Optional[str] = None
+    ) -> tuple[Callable[[Collection], OpChanges], RunResult]:
+        return notes_run(
+            self.done_text,
+            self.bulk_op,
+            nids,
+            AsyncTaskProgressUpdater(title=self.title),
+            self.new_notes_op,
+            self.filter_new_notes_op,
+            self.unadded_notes_op,
+            self.tidy_markers_op,
+            chain_title=chain_title,
+        )
+
+
+def selected_notes_op(
+    done_text: str,
+    bulk_op: BulkOp,
+    nids: Sequence[NoteId],
+    parent: Browser,
+    progress_updater: AsyncTaskProgressUpdater,
+    new_notes_op: Optional[NewNotesOp] = None,
+    filter_new_notes_op: Optional[FilterNewNotesOp] = None,
+    on_success: Optional[Callable] = None,
+    unadded_notes_op: Optional[NewNotesOp] = None,
+    tidy_markers_op: Optional[NewNotesOp] = None,
+    chain: Optional[ChainStep] = None,
+):
+    """Run a bulk op, or a list of `OpPhase`s, over the selected notes as one operation: the
+    `notes_run` in a `CollectionOp`, with its progress dialog and its end.
+
+    With `chain`, the run is one step of a chain: its dialog title starts with the step's
+    label, it shows no end message, and `chain.on_done` hears how it went, exactly once, on
+    the main thread, after the progress is finished - on success, cancel, stop and exception
+    alike. Without one, nothing here differs from a run from the menu.
+    """
+    # The errors that do not fail the run are kept for its end message: a run from the menu
+    # keeps its own, a chain's step adds to the chain's (run_op_chain starts those)
+    if chain is None:
+        start_run()
+    else:
+        set_step(chain.title)
+    run_bulk_op, run_result = notes_run(
+        done_text,
+        bulk_op,
+        nids,
+        progress_updater,
+        new_notes_op,
+        filter_new_notes_op,
+        unadded_notes_op,
+        tidy_markers_op,
+        chain_title=chain.title if chain is not None else None,
+    )
     collection_op = CollectionOp(
         parent=parent,
         op=run_bulk_op,
     ).success(
+        # Read when the op has returned: run_result is filled in on the op thread
         lambda out: on_bulk_success(
             out,
             done_text,
-            edited_nids,
-            edited_other_nids,
+            run_result.edited_nids,
+            run_result.edited_other_nids,
             nids,
             parent,
             on_success,
-            new_notes=new_notes,
+            new_notes=run_result.new_notes,
             chain=chain,
-            cancelled=cancelled,
+            cancelled=run_result.cancelled,
         )
     )
     if chain is not None:

@@ -2,10 +2,11 @@
 their entries name.
 
 No note holds an old word list any more (the collection was migrated to word arrays on
-2026-09-16, and the migration is gone), but the corpora in `output/` are made of them, and a
-hand-checked one is the ground truth several evaluations score against: `judge_eval.py` labels
-the words of a generated array by which of them an old entry names, and `proper_nouns.py`,
-`proper_noun_eval.py` and `name_lexicon.py` compare against the old lists' proper nouns.
+2026-09-16, and the migration is gone), but the research corpora (`corpora.py`) are made of
+them, and a hand-checked one is the ground truth several evaluations score against:
+`judge_eval.py` labels the words of a generated array by which of them an old entry names, and
+`proper_nouns.py`, `proper_noun_eval.py` and `name_lexicon.py` compare against the old lists'
+proper nouns.
 
 An entry finds its element by dictionary form and reading, in steps, the first that fits
 anything deciding:

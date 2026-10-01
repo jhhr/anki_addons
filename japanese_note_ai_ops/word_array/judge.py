@@ -167,6 +167,7 @@ class WordAsk(NamedTuple):
     elem: list
     group: str
     prompt: str
+    inputs: dict[str, Any]  # what the prompt is built from, word_prompt's arguments
 
 
 class JudgePlan(NamedTuple):
@@ -214,18 +215,42 @@ def _subs(elem: list) -> list[list]:
     return [s for s in elem[5] if len(s) > 1]
 
 
-def _describe(elem: list) -> str:
-    return f"{elem[2]} [{elem[3]}], {elem[1]}"
+def _entry(elem: list) -> dict[str, str]:
+    return {"word": elem[2], "reading": elem[3], "pos": elem[1]}
 
 
-def word_prompt(elem: list, sentence: str, parents: list[list], group: str) -> str:
-    """The prompt for one word under `group`'s rules: `sentence` has it in `<b>`, `parents` are
-    the words it is a component of, outermost first."""
-    lines = [f"Sentence: {sentence}", f"Word: {_describe(elem)}"]
-    lines += [f"Part of: {_describe(parent)}" for parent in reversed(parents)]
-    subs = [s for s in elem[5] if len(s) > 1]
+def _describe(word: str, reading: str, pos: str) -> str:
+    return f"{word} [{reading}], {pos}"
+
+
+def word_inputs(elem: list, sentence: str, parents: list[list], group: str) -> dict[str, Any]:
+    """`word_prompt`'s arguments for one word, plain data that the call records as its inputs:
+    `sentence` has the word in `<b>`, `parents` are the words it is a component of, outermost
+    first, `group` picks the rules. Not the elements themselves: their match_data holds note ids,
+    and they carry more than the prompt shows."""
+    return {
+        "sentence": sentence,
+        **_entry(elem),
+        "parents": [_entry(parent) for parent in parents],
+        "subs": [{"word": s[2], "reading": s[3]} for s in _subs(elem)],
+        "group": group,
+    }
+
+
+def word_prompt(
+    sentence: str,
+    word: str,
+    reading: str,
+    pos: str,
+    parents: list[dict[str, str]],
+    subs: list[dict[str, str]],
+    group: str,
+) -> str:
+    """The prompt for one word under `group`'s rules, from `word_inputs`."""
+    lines = [f"Sentence: {sentence}", f"Word: {_describe(word, reading, pos)}"]
+    lines += [f"Part of: {_describe(**parent)}" for parent in reversed(parents)]
     if subs:
-        lines.append("Made of: " + " + ".join(f"{s[2]} [{s[3]}]" for s in subs))
+        lines.append("Made of: " + " + ".join(f"{s['word']} [{s['reading']}]" for s in subs))
     entry = "\n".join(lines)
     return f"{INTRO}\n\n{POS_RULES[group]}\n\n{entry}\n\n{OUTRO}"
 
@@ -247,7 +272,8 @@ def plan_judgements(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> Judg
             auto.append(elem)
         else:
             group = rule_group(elem, parents)
-            asks.append(WordAsk(elem, group, word_prompt(elem, sentence, parents, group)))
+            inputs = word_inputs(elem, sentence, parents, group)
+            asks.append(WordAsk(elem, group, word_prompt(**inputs), inputs))
     return JudgePlan(auto, asks)
 
 

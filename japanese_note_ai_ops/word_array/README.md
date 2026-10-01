@@ -335,7 +335,8 @@ dontmatch than gemini. `build` and `hand_judge.py` generate with the export's na
 as the migration op does with the collection's. The labels are unsure for components of compounds, so more
 hand-judged words are to come: `research/hand_judge.py` serves a page that offers words of the
 migration export one at a time, from the rule groups ticked, with Match / Don't match buttons, and
-writes `output/word_matching_judge_hand_labels.jsonl`. `judge_eval.py build` lays those over the
+writes `word_matching_judge_hand_labels.jsonl` (`_bootstrap.eval_file`: the test data checkout's
+`evals/`, else `output/`). `judge_eval.py build` lays those over the
 checked labels (a hand-judged sentence outside the checked export is asked about only its judged
 words), and `run` scores them on a line of their own too. Export rows carry `nids`, every note with
 the sentence (`hand_labels.read_export_nids`), and `research/anki_connect.py` reads and edits those
@@ -357,7 +358,8 @@ kanji noun, particle-like words 迄/丈/位/見たい…): sonnet-5 93.0/88.8%, 
 在る/有る, 良い/好い, 只): sonnet-5 94.4/91.6%, luna 90.9/90.9%, gemini 89.9/86.3%. Draft 3 (為る in every form and after と, 成る in なければならない/くなる, 儘, final
 する/なる check): sonnet-5 94.3/91.9%, luna 91.0/92.6%, gemini 88.9/84.1% (reverse check fails 73→116);
 tuning stopped (sonnet gained <1 point). Draft 3 on the terminal models: `terminal-claude-opus-5` 89.1/90.3%,
-`terminal-claude-haiku-4-5` 69.1/61.5% (reverse check fails 129), both ~29 calls/min at 8 workers. Reports per draft `output/kanjify_eval_report_<model>_draftN.txt`.
+`terminal-claude-haiku-4-5` 69.1/61.5% (reverse check fails 129), both ~29 calls/min at 8 workers. Reports per draft are in the test data checkout,
+`japanese_note_ai_ops/evals/reports/kanjify_eval_report_<model>_draftN.txt`.
 
 match_words_to_notes will take `elements_to_match()` (state 3) to its main prompt and
 `elements_to_rate()` (state 4) to the secondary one that only sets `match_quality`.

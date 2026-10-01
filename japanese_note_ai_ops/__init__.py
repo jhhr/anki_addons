@@ -41,7 +41,9 @@ from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 # reach Anki's error report exactly as it always did.
 try:
     from .utils import get_field_config  # noqa: E402
-    from .call_logging import in_bulk_op, start_call_log  # noqa: E402
+    from .configuration import ADDON_USER_FILES_DIR, capture_versions  # noqa: E402
+    from .call_logging import current_log_path, in_bulk_op, start_call_log  # noqa: E402
+    from .async_api_ops import capture  # noqa: E402
 
     from .async_api_ops.clean_meaning import clean_meaning_in_note  # noqa: E402
     from .async_api_ops.translate_field import translate_sentence_in_note  # noqa: E402
@@ -80,6 +82,16 @@ def setup_addon_logging():
     # Prevent propagation to Anki's loggers
     addon_logger.propagate = False
 
+    # A handler from the start, which does nothing. Until an op or a hook opens a log file the
+    # addon logger has none, and a record that finds no handler goes to logging's last resort,
+    # stderr, which Anki turns into an error dialog: an error logged before the first log file
+    # was opened (at profile open, say) would reach the user as a crash report. Never flagged
+    # as the addon's, so opening and closing log files leaves it in place. Here rather than in
+    # call_logging, which imports vendored packages: a broken install must not write to stderr
+    # either.
+    if not any(isinstance(h, logging.NullHandler) for h in addon_logger.handlers):
+        addon_logger.addHandler(logging.NullHandler())
+
 
 setup_addon_logging()
 
@@ -87,7 +99,9 @@ setup_addon_logging()
 # Function to be executed when the browser menus are initialized
 def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     logger = logging.getLogger(__name__)
-    start_call_log("add_note")
+    # Only for what building the menu logs, and it closes the last op's file. An op chosen from
+    # the menu opens a file named after itself when it starts (ai_helper_menu)
+    start_call_log("browser_menu")
 
     # Captured once, when the menu opens: every action runs over the selection it was opened on
     selected_nids = browser.selectedNotes()
@@ -118,8 +132,8 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     logger = logging.getLogger(__name__)
     # A hook the user drives one field at a time, so the call really is the unit of work and a
     # log file per call is the right granularity - unlike note_will_be_added, which a bulk run
-    # fires a thousand times in a row.
-    start_call_log("add_note")
+    # fires a thousand times in a row. The file is opened once the op is known, named by the
+    # op's key as the menu's are, and not at all for the many unfocuses that run nothing.
 
     note_type = note.note_type()
     if not note_type:
@@ -127,21 +141,28 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
     note_type_name = note_type["name"]
     config = mw.addonManager.getConfig(__name__)
     if not config:
+        start_call_log("field_unfocus")
         logger.error("Error: Missing addon configuration")
         return
 
     field_name = note_type["flds"][field_idx]["name"]
     cur_field_value = note[field_name]
 
+    # The note in the editor may not be added yet (id 0): its calls then have no note, rather
+    # than all sharing a note 0
     if note_type_name == "Kanji draw":
         story_field = get_field_config(config, "story_field", note_type)
         if field_name == story_field and cur_field_value == "":
-            return make_story_for_note(config, note, {}, {})
+            start_call_log("kanji_story")
+            with capture.note_scope(note.id or None):
+                return make_story_for_note(config, note, {}, {})
 
     if note_type_name == "Japanese vocab note":
         translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
         if field_name == translated_sentence_field and cur_field_value == "":
-            return translate_sentence_in_note(config, note, {}, {})
+            start_call_log("translate_sentence")
+            with capture.note_scope(note.id or None):
+                return translate_sentence_in_note(config, note, {}, {})
 
 
 def run_op_on_add_note(note: Note):
@@ -175,17 +196,19 @@ def run_op_on_add_note(note: Note):
     if note_type_name == "Japanese vocab note":
         notes_to_update_dict: dict[NoteId, Note] = {}
         # The generated meanings are what clean_meaning_in_note maps a note's meaning
-        # against, and it revises them in place when none of them fit, so the one added
+        # against, and it adds one in place when none of them fit, so the one added
         # note reads the file and writes it back - the bulk ops do the same around a run.
         all_generated_meanings_dict = load_meanings_dict_from_file()
         try:
-            clean_meaning_in_note(
-                config, note, {}, notes_to_update_dict, all_generated_meanings_dict
-            )
-            write_meanings_dict_to_file(all_generated_meanings_dict)
-            # The lexicon is read here rather than cached: the user rebuilds it from the
-            # collection now and then, and one added note is one small json read.
-            extract_words_op()(config, note, {}, notes_to_update_dict)
+            # Not added yet, so id 0: its calls are recorded with no note, not against note 0
+            with capture.note_scope(note.id or None):
+                clean_meaning_in_note(
+                    config, note, {}, notes_to_update_dict, all_generated_meanings_dict
+                )
+                write_meanings_dict_to_file(all_generated_meanings_dict)
+                # The lexicon is read here rather than cached: the user rebuilds it from the
+                # collection now and then, and one added note is one small json read.
+                extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True
@@ -202,6 +225,29 @@ def add_tools_menu_actions():
     action = QAction("AI ops: generate test data", mw)
     qconnect(action.triggered, lambda: make_all_test_data(parent=mw))
     mw.form.menuTools.addAction(action)
+
+
+def install_capture_store():
+    # Per profile, and the config is read only here: a change takes effect at the next profile
+    # open. The store is diagnostics, so nothing here may keep a profile from opening.
+    try:
+        config = mw.addonManager.getConfig(__name__) or {}
+        if not config.get("capture_calls", True):
+            return
+        capture.install(
+            os.path.join(ADDON_USER_FILES_DIR, "capture.sqlite3"),
+            keep_days=config.get("capture_keep_days", 90),
+            versions=capture_versions(),
+            log_path=current_log_path,
+            profile=getattr(mw.pm, "name", None),
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("The capture store was not installed", exc_info=True)
+
+
+def shutdown_capture_store():
+    # Waits a moment for the writer to commit what is queued; never raises
+    capture.shutdown()
 
 
 # Every hook below calls something the guarded imports bind, so with a package missing each
@@ -224,6 +270,10 @@ if MISSING_PACKAGE is None:
     gui_hooks.editor_did_unfocus_field.append(run_op_on_field_unfocus)
 
     gui_hooks.main_window_did_init.append(add_tools_menu_actions)
+
+    # The AI calls' record, user_files/capture.sqlite3, open while a profile is
+    gui_hooks.profile_did_open.append(install_capture_store)
+    gui_hooks.profile_will_close.append(shutdown_capture_store)
 else:
     logging.getLogger(__name__).warning(
         "loaded without its operations: %s could not be imported", MISSING_PACKAGE

@@ -3,10 +3,25 @@
 ## General
 
 - `log_level`: Default is "ERROR". Possible values from less logging to more: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
-- `log_to_console` Default is `true`. If false, logs to files in the logs/ dir in the addon folder
+- `log_to_console` Default is `true`. If false, logs to files in `user_files/logs/` in the
+  addon folder, one per op run, named after the op: `match_words_<time>.log`, and
+  `match_words_add_note_phase_<time>.log` for its note adding.
 - `multi_op_dialog_shortcut`: Default is `""` (none). A key sequence such as `"Ctrl+Shift+J"`
   for the browser's Edit > "Japanese AI ops..." dialog, which runs several ops in a row on the
   selected notes or on every note of the current search. Read when a browser window opens.
+- `capture_calls`: Default is `true`. Records every AI call (prompt, answer, outcome, timing,
+  the note and run it was for) in `user_files/capture.sqlite3`, for debugging and for
+  building tests and evals from real runs. No API keys.
+- `capture_keep_days`: Default is `90`. Runs older than this many days are deleted from that
+  file, with their calls, when a profile opens; `0` or less, or `null`, keeps every run. A
+  number in quotes (`"30"`) counts as that number; anything else (`true`, text) as `90`, with a
+  warning in the log. Both are read when the profile opens: a change takes effect on the next
+  profile load or restart.
+- `capture_notes`: Default is `false`. With `capture_calls` on, each run also records every note
+  it read, what it was about to write, and every note it saved or added as the collection held
+  it after, with the words' match decisions, into the same file. That is a copy of much of the
+  collection per run, for building replay tests; meant for a copied profile, not everyday runs.
+  Read when a run starts.
 
 ## models
 

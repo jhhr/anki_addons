@@ -577,6 +577,17 @@ class TestFontsCheck:
         result = run_chain([d.fonts_check_process(fonts_file)], "ab")
         assert fonts_of(result) == {"FontB.ttf", "FontC.ttf"}
 
+    def test_the_fonts_come_back_sorted_whatever_order_the_dictionary_lists_them_in(
+        self, media_dir
+    ):
+        # Joined from a set, they came in the string hash's order, seeded anew in each process
+        (media_dir / FONTS_FILE).write_text(
+            json.dumps({"a": ["FontZ.ttf", "FontA.ttf", "FontM.ttf"]}), encoding="utf-8"
+        )
+        result = run_chain([d.fonts_check_process(FONTS_FILE)], "a")
+        assert result is not None
+        assert json.loads(result) == ["FontA.ttf", "FontM.ttf", "FontZ.ttf"]
+
     def test_limit_to_fonts_intersects_with_the_valid_fonts(self, fonts_file):
         chain = [d.fonts_check_process(fonts_file, limit_to_fonts=["FontC.ttf", "FontZ.ttf"])]
         assert fonts_of(run_chain(chain, "ab")) == {"FontC.ttf"}

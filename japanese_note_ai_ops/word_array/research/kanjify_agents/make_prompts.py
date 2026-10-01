@@ -23,6 +23,8 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 HERE = Path(__file__).parent
 ADDON_ROOT = HERE.parents[2]
 TASKS = ADDON_ROOT / "output" / "kanjify_audit_tasks.jsonl"
+# The policy lives in one file that every kanjify agent reads, the golden set's too
+POLICY = HERE / "policy.md"
 
 
 def item_line(it: dict) -> str:
@@ -77,6 +79,8 @@ def main() -> int:
             .replace("{WORD}", t["word"])
             .replace("{POS}", t["pos"])
             .replace("{ITEMS}", text)
+            .replace("{POLICY}", POLICY.read_text(encoding="utf-8"))
+            .replace("{ADDON_DIR}", str(ADDON_ROOT))
             .replace("{SCRATCH}", str(edits))
             .replace("{SLUG}", slug)
         )

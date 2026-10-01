@@ -1,8 +1,6 @@
 import logging
-import json
 import re
-from pathlib import Path
-from typing import Mapping, Optional, Union, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -26,19 +24,18 @@ from .base_ops import (
 )
 from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..configuration import (
-    MEANINGS_DICT_FILE,
     NO_DICTIONARY_ENTRY_TAG,
     MEANING_MAPPED_TAG,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
     EnAndJPSentence,
     WordAndSentences,
-    MakeMeaningsResult,
 )
 from .make_all_meanings import (
+    add_meanings_for_usage,
+    load_meanings_dict_from_file,
     write_meanings_dict_to_file,
     make_meaning_dict_key,
-    revise_meanings_for_word,
 )
 
 from ..utils import get_field_config
@@ -269,443 +266,297 @@ def get_other_meaning_notes(
     return other_meaning_notes
 
 
-UpdateAllMeaningsResultType = dict[NoteId, tuple[str, str]]
+class CleanResult(NamedTuple):
+    """What cleaning one note did: whether its meaning changed, and the other note of its word
+    whose sense the note's sentences use, when the cleaning found one - a duplicate of that
+    note. Found by the prompt, or by the note taking the generated meaning that note holds."""
+
+    changed: bool
+    same_sense_as: Optional[Note] = None
 
 
-def update_all_meanings_for_word(
-    config: dict[str, str],
+NOT_CHANGED = CleanResult(False)
+
+# Tags the note with the id of the note whose sense it repeats, so that the two can be found and
+# merged. A note not added yet has no id to name.
+SAME_SENSE_TAG = "meaning_same_sense_as"
+
+# How many of each other note's sentences the prompts show, its own first. They are there to tell
+# the notes' senses apart, which a few do; all of them made one mapping of あの 30,000 characters,
+# a sibling of the note being linked from 135 sentences.
+OTHER_NOTE_SENTENCES = 3
+
+# The fields of the rework and map prompts' answers: the prompts name them and the op reads them
+REWORK_JP_FIELD = "jp_meaning"
+REWORK_EN_FIELD = "en_meaning"
+SAME_SENSE_FIELD = "same_sense_as"
+MAP_POSSIBLE_INDEX_FIELD = "possible_meaning_index"
+MAP_SCORE_FIELD = "mapping_score"
+
+
+def _sentence_lines(sentences: Sequence[EnAndJPSentence]) -> str:
+    return "".join(f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n" for sen in sentences)
+
+
+def _other_notes_listing(
+    others: Sequence[WordAndSentences],
+    possible_meanings: Optional[Sequence[GeneratedMeaningType]] = None,
+) -> str:
+    """The word's other notes, numbered as `same_sense_as` counts them. Given the possible
+    meanings, each says which one it uses: the one whose English is its own, as mapping writes
+    it."""
+    listing = ""
+    for i, other in enumerate(others):
+        uses = ""
+        if possible_meanings is not None:
+            used = next(
+                (
+                    index
+                    for index, possible in enumerate(possible_meanings)
+                    if possible["en_meaning"] == other["en_meaning"]
+                ),
+                None,
+            )
+            uses = f" (uses possible meaning {used + 1})" if used is not None else " (not mapped)"
+        listing += f"""---
+Other note {i + 1}{uses}:
+Japanese meaning: {other['jp_meaning'] or '(empty)'}
+English meaning: {other['en_meaning'] or '(empty)'}
+Sentences:
+{_sentence_lines(other['sentences'])}"""
+    return listing or "(none)\n"
+
+
+def rework_note_prompt(
     word: str,
     reading: str,
-    existing_note_meanings_dict: dict[NoteId, WordAndSentences],
-    jp_mdx_dict_entry: Union[str, None],
-) -> UpdateAllMeaningsResultType:
-    """
-    Receive a list of current meanings and sentences for a word, and have an AI model rework the
-    meanings to better fit the sentences, using the dictionary definitions as reference.
+    target: WordAndSentences,
+    others: Sequence[WordAndSentences],
+    dictionary_entry: Optional[str],
+) -> str:
+    """The prompt that writes one note's meaning beside the word's other notes, `others` in the
+    order `same_sense_as` counts them. Without a dictionary entry it has no entry and no rules
+    for one.
 
-    :param config: Addon configuration dictionary.
-    :param word: The word or phrase being defined.
-    :param reading: The reading of the word or phrase.
-    :param existing_note_meanings_dict: A dictionary mapping note IDs to their meanings and example sentences.
-    :param jp_mdx_dict_entry: The dictionary entry for the word or phrase. None, if not available.
-    :param generated_meanings: An entry for the word from the generated meanings json file. None,
-            if not available.
-    return: A dictionary mapping note IDs to tuples of (new_japanese_meaning, new_english_meaning).
-    """
-    if not existing_note_meanings_dict:
-        return {}
-    # Format current meanings and sentences for the prompt
-    meanings_and_sentences = ""
-    # Sort by note id, smallest to largest, to have a consistent order
-    meanings_dict_items = list(existing_note_meanings_dict.items())
-    meanings_dict_items.sort(key=lambda x: x[0])
-    meaning_index_to_note_id = {}
-    for i, (note_id, ws) in enumerate(meanings_dict_items):
-        meaning_index_to_note_id[i] = note_id
-        sentences_formatted = ""
-        if len(ws["sentences"]) > 0:
-            for sen in ws["sentences"]:
-                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        else:
-            sentences_formatted = ""
-        meanings_and_sentences += f"""---
-Meaning index {i + 1}:
-Japanese meaning: {ws['jp_meaning'] or '(empty)'}
-English meaning: {ws['en_meaning'] or '(empty)'}
-
-Sentences:
-{sentences_formatted}
+    The others are shown as fixed and the answer is one object for the target. Asked to rework
+    every meaning, the model reworded a sibling in nearly every answer, all of it thrown away,
+    and left the note it was asked for out of most of them."""
+    entry_rules = (
+        """- Use the dictionary entry as reference where it covers the word's use in the target's sentences, extracting and rephrasing the parts that fit. Where it does not - it is for another word with the same reading, or the use is a name - write the meaning from the sentences.
+- Omit any example sentences included in the dictionary entry (often within 「」 brackets).
 """
+        if dictionary_entry
+        else ""
+    )
+    entry_section = (
+        f"""
+Dictionary entry:
+{dictionary_entry}
+---"""
+        if dictionary_entry
+        else ""
+    )
+    return f"""Below {'is the dictionary entry for a word or phrase, followed by' if dictionary_entry else 'are'} the meanings the notes of {'that' if dictionary_entry else 'a'} word or phrase use, each with the sentences it is used in. One note, the TARGET, needs its meaning written. The other notes' meanings are fixed: they will not change, and are shown so that the target's meaning is told apart from them.
 
-    meaning_index_field = "meaning_index"
-    jp_meaning_return_field = "jp_meaning"
-    en_meaning_return_field = "en_meaning"
-    dict_reference_return_field = "dictionary_reference"
+Write the target's meaning so that it fits the target's sentences. Follow these rules:
+{entry_rules}- DO NOT OVERFIT the definition to the sentences, especially when there is only one. Aim for a general definition that broadly fits the theme of the target's sentences.
+- If the word has two usage patterns in the target's sentences - for example, one literal and one figurative - describe both shortly in the one meaning.
+- Do not repeat or absorb a sense that one of the other notes covers.
+- Shorten and simplify the meaning as much as possible, ideally into 1 sentence and at most 2.
+- The English meaning should ideally be a short list of equivalent words or phrases, explained in a sentence only when necessary.
+- If the target's sentences use the word in the sense one of the other notes' meanings describes, set "{SAME_SENSE_FIELD}" to that note's number. Otherwise set it to 0. Judge by what the other notes' meanings say, since a note's sentences may not fit its meaning.
 
-    prompt = f"""{f'''Below is the dictionary entry for a word or phrase, along with currently used meanings for groups of sentences containing that word or phrase. Your task is to rework the meanings to better fit the usage in the sentences, using the dictionary entry as reference.
-For each meaning, either extract the relevant parts from the dictionary entry and rephrase those to better fit the sentences. Follow these rules:
-- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a single sentence. Pick as many meanings as possible than can broadly fit the theme of the sentences.
-- If the dictionary entry describes two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
-- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
-- Aggressively shorten and simplify the picked meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
-- Omit any example sentences included in the dictionary entry (often included within 「」 brackets).
-''' if jp_mdx_dict_entry else f'''Below are currently used meanings for groups of sentences containing a certain word or phrase. Your task is to rework the meanings to better fit the usage in the sentences.
-Follow these rules:
-- DO NOT OVERFIT the definitions to the sentences. Especially when the number of examples is a mere 1-3 sentences. Aim for general definitions that broadly fit the theme of the sentences.
-- If there are two usage patterns for this word or phrase - for example, one literal and one figurative - those should become one meaning where each is described shortly.
-- If there are more than two usage patterns for this word or phrase, describe the one used in the sentences.
-- Shorten and simplify the meanings as much as possible, ideally into 1 sentence and at most 2 (if describing both a literal and figurative usage), with more complex meanings being allowed more explanation.
-'''}
-
-Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
-- "{meaning_index_field}": The 1-based index of an used meaning. IMPORTANT: This should match the index of the meaning in below list exactly.
-- "{jp_meaning_return_field}": The reworked Japanese meaning.
-- "{en_meaning_return_field}": The reworked English meaning.
-{f'- "{dict_reference_return_field}": Repeat the parts of the dictionary entry that were used as reference for reworking the meaning.' if jp_mdx_dict_entry else ''}
-
-You do not need to rework all meanings, only those that seem not to fit well with the sentences; the array can be of any length, including empty if all meanings are fine.
+Return a JSON object with the fields "{REWORK_JP_FIELD}", "{REWORK_EN_FIELD}" and "{SAME_SENSE_FIELD}".
 
 Word or phrase (and its reading):
 {word} ({reading})
----{f'''
-Dictionary entry:
-{jp_mdx_dict_entry}
----
-''' if jp_mdx_dict_entry else ''}
-Current meanings and sentences:
-{meanings_and_sentences}"""
-    logger.debug(f"Prompt for updating meanings: {prompt}")
-
-    array_properties = {
-        meaning_index_field: {"type": "integer"},
-        jp_meaning_return_field: {"type": "string"},
-        en_meaning_return_field: {"type": "string"},
-    }
-    array_required = [
-        meaning_index_field,
-        jp_meaning_return_field,
-        en_meaning_return_field,
-    ]
-    if jp_mdx_dict_entry:
-        array_properties[dict_reference_return_field] = {"type": "string"}
-        array_required.append(dict_reference_return_field)
-
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "meanings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": array_properties,
-                    "required": array_required,
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["meanings"],
-        "additionalProperties": False,
-    }
-
-    model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, response_schema=response_schema)
-    if result is None:
-        # Return nothing if the call failed
-        return {}
-    updated_meanings: dict[NoteId, tuple[str, str]] = {}
-    if isinstance(result, dict) and "meanings" in result and isinstance(result["meanings"], list):
-        for meaning_obj in result["meanings"]:
-            try:
-                assert (
-                    isinstance(meaning_obj, dict)
-                    and meaning_index_field in meaning_obj
-                    and isinstance(meaning_obj[meaning_index_field], int)
-                    and jp_meaning_return_field in meaning_obj
-                    and isinstance(meaning_obj[jp_meaning_return_field], str)
-                    and meaning_obj[jp_meaning_return_field].strip() != ""
-                    and en_meaning_return_field in meaning_obj
-                    and isinstance(meaning_obj[en_meaning_return_field], str)
-                    and meaning_obj[en_meaning_return_field].strip() != ""
-                )
-            except AssertionError:
-                logger.warning(f"Invalid meaning object in result: {meaning_obj}")
-                continue
-            meaning_index = meaning_obj[meaning_index_field] - 1
-            meaning_note_id: NoteId | None = meaning_index_to_note_id.get(meaning_index)
-            if meaning_note_id is not None:
-                updated_meanings[meaning_note_id] = (
-                    meaning_obj[jp_meaning_return_field],
-                    meaning_obj[en_meaning_return_field],
-                )
-            else:
-                logger.warning(f"Meaning index {meaning_index + 1} has no corresponding note ID")
-    elif not isinstance(result, dict):
-        logger.warning("Updated meanings result was not a dictionary")
-    elif "meanings" not in result:
-        logger.warning("Updated meanings result missing 'meanings' field")
-    elif not isinstance(result["meanings"], list):
-        logger.warning("Updated meanings 'meanings' field was not a list")
-
-    logger.debug(f"Updated meanings: {updated_meanings}")
-    return updated_meanings
+---{entry_section}
+TARGET:
+Current Japanese meaning: {target['jp_meaning'] or '(empty)'}
+Current English meaning: {target['en_meaning'] or '(empty)'}
+Sentences:
+{_sentence_lines(target['sentences'])}
+OTHER NOTES (fixed):
+{_other_notes_listing(others)}"""
 
 
-MatchMeaningsResultType = dict[NoteId, tuple[str, str, int]]
-
-
-def match_meanings_to_generated_meanings(
+def rework_note_meaning(
     config: dict[str, str],
     word: str,
     reading: str,
-    existing_note_meanings_dict: dict[NoteId, WordAndSentences],
-    all_generated_meanings_dict: GeneratedMeaningsDictType,
-    depth: int = 0,
-) -> MatchMeaningsResultType:
-    """
-    Receive a list of current meanings and sentences for a word, and have an AI model rework the
-    meanings to better fit the sentences, using the dictionary definitions as reference.
+    target: WordAndSentences,
+    others: Sequence[WordAndSentences],
+    dictionary_entry: Optional[str],
+    context: dict[str, Any],
+) -> Optional[tuple[str, str, int]]:
+    """The target's new Japanese and English meaning, and the 1-based number of the other note
+    whose sense it uses (0 for none); None when the call failed or its answer is unusable."""
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "target": target,
+        "others": list(others),
+        "dictionary_entry": dictionary_entry,
+    }
+    prompt = rework_note_prompt(**inputs)
+    logger.debug(f"Prompt for reworking a note's meaning: {prompt}")
+    response_schema = {
+        "type": "object",
+        "properties": {
+            REWORK_JP_FIELD: {"type": "string"},
+            REWORK_EN_FIELD: {"type": "string"},
+            SAME_SENSE_FIELD: {"type": "integer"},
+        },
+        "required": [REWORK_JP_FIELD, REWORK_EN_FIELD, SAME_SENSE_FIELD],
+        "additionalProperties": False,
+    }
+    result = get_response(
+        config.get("word_meaning_model", ""),
+        prompt,
+        response_schema=response_schema,
+        kind="clean_meaning.rework_note",
+        inputs=inputs,
+        context=context,
+    )
+    if not isinstance(result, dict):
+        logger.warning(f"Reworked meaning result was not a dictionary: {result}")
+        return None
+    jp_meaning, en_meaning = result.get(REWORK_JP_FIELD), result.get(REWORK_EN_FIELD)
+    if not (
+        isinstance(jp_meaning, str)
+        and jp_meaning.strip()
+        and isinstance(en_meaning, str)
+        and en_meaning.strip()
+    ):
+        logger.warning(f"Reworked meaning result lacks a meaning: {result}")
+        return None
+    same_sense = result.get(SAME_SENSE_FIELD)
+    if not isinstance(same_sense, int) or not 0 <= same_sense <= len(others):
+        same_sense = 0
+    return jp_meaning, en_meaning, same_sense
 
-    :param config: Addon configuration dictionary.
-    :param word: The word or phrase being defined.
-    :param reading: The reading of the word or phrase.
-    :param existing_note_meanings_dict: A dictionary mapping note IDs to their meanings and example sentences.
-    :param jp_mdx_dict_entry: The dictionary entry for the word or phrase. None, if not available.
-    :param generated_meanings: An entry for the word from the generated meanings json file.
-    :param depth: The recursion depth, used to stop endlessly looping the meanings revision.
-    return: A dictionary mapping note IDs to tuples of (new_japanese_meaning, new_english_meaning,
-        mapping_score).
-    """
-    if not existing_note_meanings_dict:
-        return {}
-    word_key = make_meaning_dict_key(word, reading)
-    generated_meanings = all_generated_meanings_dict.get(word_key, None)
-    if not generated_meanings:
-        logger.error("match_meanings_to_generated_meanings called with missing generated meanings")
-        return {}
-    # Turn generated meanings to dict by note id for easy access
-    generated_meanings_by_en_meaning: dict[str, GeneratedMeaningType] = {}
-    for gm in generated_meanings:
-        if "en_meaning" in gm and gm["en_meaning"] is not None:
-            generated_meanings_by_en_meaning[gm["en_meaning"]] = gm
 
-    # Format current meanings and sentences for the prompt
-    meanings_and_sentences = ""
-    # Sort by note id, smallest to largest, to have a consistent order
-    meanings_dict_items = list(existing_note_meanings_dict.items())
-    meanings_dict_items.sort(key=lambda x: x[0])
-    meaning_index_to_note_id = {}
-    ws_meanings_by_en_meaning: dict[str, WordAndSentences] = {}
-    some_meanings_already_mapped = False
-    for i, (note_id, ws) in enumerate(meanings_dict_items):
-        ws_meanings_by_en_meaning[ws["en_meaning"]] = ws
-        # Is this note ID already mapped to a generated meaning?
-        to_generated_meaning = generated_meanings_by_en_meaning.get(ws["en_meaning"])
-        to_generated_meaning_index = None
-        if to_generated_meaning:
-            to_generated_meaning_index = generated_meanings.index(to_generated_meaning)
-            some_meanings_already_mapped = True
-        meaning_index_to_note_id[i] = note_id
-        sentences_formatted = ""
-        if len(ws["sentences"]) > 0:
-            for sen in ws["sentences"]:
-                sentences_formatted += f"- JP: {sen['jp_sentence']} -- EN: {sen['en_sentence']}\n"
-        else:
-            sentences_formatted = ""
-        meanings_and_sentences += f"""---
-Meaning index {i + 1}{f" (ALREADY MAPPED to possible meaning index {to_generated_meaning_index + 1})" if to_generated_meaning_index is not None else ""}:
-Japanese meaning: {ws['jp_meaning'] or '(empty)'}
-English meaning: {ws['en_meaning'] or '(empty)'}
+def map_note_prompt(
+    word: str,
+    reading: str,
+    possible_meanings: Sequence[GeneratedMeaningType],
+    target: WordAndSentences,
+    others: Sequence[WordAndSentences],
+) -> str:
+    """The prompt that maps one note to the word's generated (possible) meanings, both lists in
+    the order it numbers them. The other notes are shown with the possible meaning each uses,
+    as reference only.
 
-Sentences:
-{sentences_formatted}
-"""
+    Mapped together, the notes of a word competed for the possible meanings: each one another
+    note used was barred, so a note whose sense a sibling held was pushed onto a wrong meaning,
+    and the low score it got revised the list the siblings were mapped to."""
+    possible = "".join(
+        f"---\nPossible meaning {i + 1}:\nJapanese meaning: {meaning['jp_meaning']}\n"
+        f"English meaning: {meaning['en_meaning']}\n"
+        for i, meaning in enumerate(possible_meanings)
+    )
+    return f"""Below is a list of all possible meanings of a word or phrase (made from Japanese dictionary entries), and one of its notes, the TARGET, with its current meaning and the sentences it is used in. Choose the possible meaning that best fits the word's use in the target's sentences.
 
-    used_meaning_index_field = "used_meaning_index"
-    possible_meaning_index_field = "possible_meaning_index"
-    mapping_score_field = "mapping_score"
+The word's other notes are shown with the possible meaning each one uses, for reference only: several notes may use the same possible meaning when their sentences use the word in the same sense, and a possible meaning another note uses is not excluded.
+- Choose by the target's sentences, not by the wording of its current meaning.
+- Give a score of 1 to 5 for how well the chosen possible meaning fits the target's sentences, where 5=perfect fit, 3=acceptable fit, 1=unacceptable fit. A low score says none of the possible meanings covers this use.
+- If the target's sentences use the word in the same sense as one of the other notes, set "{SAME_SENSE_FIELD}" to that note's number. Otherwise set it to 0.
 
-    # Make dict for getting the possible meanings by index indicated by the AI call result
-    possible_meanings_index_to_obj: dict[int, GeneratedMeaningType] = {}
-    generated_meanings_formatted = ""
-    for i, gm in enumerate(generated_meanings):
-        jp_meaning = gm.get("jp_meaning", "").strip()
-        en_meaning = gm.get("en_meaning", "").strip()
-        possible_meanings_index_to_obj[i] = gm
-        already_mapped = en_meaning in ws_meanings_by_en_meaning
-        generated_meanings_formatted += f"""---
-Possible meaning index {i + 1}{f" (ALREADY MAPPED)" if already_mapped else ""}:
-Japanese meaning: {jp_meaning}
-English meaning: {en_meaning}
-"""
-
-    prompt = f"""Below is a list all possible meanings for a certain word or phrase (which was generated from a selection of Japanese dictionary entries), along with currently used meanings for groups of sentences containing that word or phrase. Your task is to match the current meanings to the possible meanings, selecting the best fitting possible meaning for each current meaning.
-Your task is to create a mapping from current meanings to possible meanings. Each current meaning must map to exactly one possible meaning.{f'''
-- Some of the current meanings are already mapped to possible meanings. The possible meaning indexes they are mapped to are indicated and the already in use possible meanings are also marked. You CANNOT use those possible meanings for other current meanings; you must use one of the remaining possible meanings that is not yet mapped
-- You MUST return a mapping for each not-already mappedcurrent meaning, even if you think its current meaning is already perfect.''' if some_meanings_already_mapped else '''
-- You MUST return a mapping for current meaning, even if you think its current meaning is already perfect.'''}
-- Return a score of 1 to 5 for how well each possible meaning fits the sentences for the current meaning, where 5=perfect fit,3=acceptable fit,1=unacceptable fit. This information is used to detect insufficient possible meanings.
-
-Return a JSON object with one `meanings` field containing an array of objects. Each object corresponds to a meaning and has the following fields:
-- "{used_meaning_index_field}": The 1-based index of an item in the CURRENT MEANINGS AND SENTENCES list below.
-- "{possible_meaning_index_field}": The 1-based index of the possible meaning from the ALL POSSIBLE MEANINGS list below that should replace the current meaning.
-- "{mapping_score_field}": An integer score from 1 to 5 indicating how well the possible meaning fits the sentences for the current meaning.
-
+Return a JSON object with the fields "{MAP_POSSIBLE_INDEX_FIELD}" (the 1-based index of the chosen possible meaning), "{MAP_SCORE_FIELD}" and "{SAME_SENSE_FIELD}".
 
 WORD OR PHRASE (READING):
 {word} ({reading})
 
 ALL POSSIBLE MEANINGS:
-{generated_meanings_formatted}
----
-CURRENT MEANINGS AND SENTENCES:
-{meanings_and_sentences}"""
-    logger.debug(f"Prompt for updating meanings: {prompt}")
-
-    array_properties = {
-        used_meaning_index_field: {"type": "integer"},
-        possible_meaning_index_field: {"type": "integer"},
-        mapping_score_field: {"type": "integer"},
-    }
-    array_required = [
-        used_meaning_index_field,
-        possible_meaning_index_field,
-        mapping_score_field,
-    ]
-
-    response_schema = {
-        "type": "object",
-        "properties": {
-            "meanings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": array_properties,
-                    "required": array_required,
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["meanings"],
-        "additionalProperties": False,
-    }
-
-    model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt, response_schema=response_schema)
-    if result is None:
-        # Return nothing if the call failed
-        return {}
-    updated_meanings: MatchMeaningsResultType = {}
-    if not isinstance(result, dict):
-        logger.warning("Updated meanings result was not a dictionary")
-        return updated_meanings
-    if "meanings" not in result:
-        logger.warning("Updated meanings result missing 'meanings' field")
-        return updated_meanings
-    if not isinstance(result["meanings"], list):
-        logger.warning("Updated meanings 'meanings' field was not a list")
-        return updated_meanings
-    if isinstance(result, dict) and "meanings" in result and isinstance(result["meanings"], list):
-        for meaning_obj in result["meanings"]:
-            if not isinstance(meaning_obj, dict):
-                logger.warning(f"Invalid meaning object in result: {meaning_obj}")
-                continue
-            if used_meaning_index_field not in meaning_obj or not isinstance(
-                meaning_obj[used_meaning_index_field], int
-            ):
-                logger.warning(
-                    f"Invalid or missing '{used_meaning_index_field}' in meaning object:"
-                    f" {meaning_obj}"
-                )
-                continue
-            meaning_index = meaning_obj[used_meaning_index_field] - 1
-            if meaning_index not in meaning_index_to_note_id:
-                logger.error(
-                    f"Invalid '{used_meaning_index_field}' value in meaning object, does not"
-                    f" correspond to any current meaning: {meaning_obj}"
-                )
-                continue
-            if possible_meaning_index_field not in meaning_obj or not isinstance(
-                meaning_obj[possible_meaning_index_field], int
-            ):
-                logger.warning(
-                    f"Invalid or missing '{possible_meaning_index_field}' in meaning object:"
-                    f" {meaning_obj}"
-                )
-                continue
-            possible_meaning_index = meaning_obj[possible_meaning_index_field] - 1
-            if possible_meaning_index not in possible_meanings_index_to_obj:
-                logger.error(
-                    f"Invalid '{possible_meaning_index_field}' value in meaning object, does not"
-                    f" correspond to any possible meaning: {meaning_obj}"
-                )
-                continue
-            if mapping_score_field not in meaning_obj or not isinstance(
-                meaning_obj[mapping_score_field], int
-            ):
-                logger.warning(
-                    f"Invalid or missing '{mapping_score_field}' in meaning object: {meaning_obj}"
-                )
-                continue
-            mapping_score = meaning_obj[mapping_score_field]
-            if mapping_score < 1 or mapping_score > 5:
-                logger.warning(
-                    f"Invalid '{mapping_score_field}' value in meaning object, must be 1-5:"
-                    f" {meaning_obj}"
-                )
-                continue
-            meaning_note_id = meaning_index_to_note_id[meaning_index]
-            possible_meaning_obj = possible_meanings_index_to_obj[possible_meaning_index]
-            updated_meanings[meaning_note_id] = (
-                possible_meaning_obj["jp_meaning"],
-                possible_meaning_obj["en_meaning"],
-                mapping_score,
-            )
-
-    # If some meanings got a bad score, revise the meanings and try again
-    existing_note_meanings_bad_score_ws: dict[NoteId, WordAndSentences] = {}
-    for nid in updated_meanings.keys():
-        # A threshold of 3 sometimes leads to a loop of revisions with the score given being 3 again
-        # so we'll reduce the revision attempts to just 1 in such cases
-        if updated_meanings[nid][2] <= 3:
-            existing_note_meanings_bad_score_ws[nid] = existing_note_meanings_dict[nid]
-    # Prepare the good meanings to return if no revision is done
-    # We'll return meanings with scores >2 instead of >3 as the most common case of stopping
-    # revision is that the score couldn't be improved beyond 3, 3 is still an acceptable mapping
-    updated_good_meanings: MatchMeaningsResultType = {}
-    for nid in updated_meanings.keys():
-        # Only include meanings with good mapping score
-        if updated_meanings[nid][2] > 2:
-            updated_good_meanings[nid] = updated_meanings[nid]
-    if len(existing_note_meanings_bad_score_ws) > 0 and depth == 0:
-        logger.debug(
-            f"Some meanings for word='{word}', reading='{reading}' got a bad mapping score,"
-            f" revising meanings again, depth={depth}"
-        )
-        revise_result = revise_meanings_for_word(
-            config,
-            word,
-            reading,
-            existing_note_meanings_bad_score_ws,
-            all_generated_meanings_dict,
-        )
-        if revise_result == MakeMeaningsResult.SUCCESS:
-            # Re-run the matching with the revised meanings, the all_generated_meanings_dict
-            # has been updated
-            return match_meanings_to_generated_meanings(
-                config,
-                word,
-                reading,
-                existing_note_meanings_dict,
-                all_generated_meanings_dict,
-                depth=depth + 1,
-            )
-        # If some error happened during revise, return just the good mappings
-        logger.debug(
-            f"Error during meanings revision, returning only good mappings: {updated_good_meanings}"
-        )
-        return updated_good_meanings
-    if depth >= 1:
-        logger.debug(
-            f"Max recursion depth reached for matching meanings for word='{word}',"
-            f" reading='{reading}', returning good mappings: {updated_good_meanings}"
-        )
-        return updated_good_meanings
-
-    logger.debug(f"Updated meanings: {updated_good_meanings}")
-    return updated_good_meanings
+{possible}---
+TARGET:
+Current Japanese meaning: {target['jp_meaning'] or '(empty)'}
+Current English meaning: {target['en_meaning'] or '(empty)'}
+Sentences:
+{_sentence_lines(target['sentences'])}
+OTHER NOTES:
+{_other_notes_listing(others, possible_meanings)}"""
 
 
-def get_single_meaning_from_mdx_dict_entry(
+class NoteMapping(NamedTuple):
+    """A map answer: the possible meaning chosen, its score (1 to 5) and the 1-based number of
+    the other note whose sense the target uses (0 for none)."""
+
+    meaning: GeneratedMeaningType
+    score: int
+    same_sense: int
+
+
+def map_note_to_generated_meaning(
     config: dict[str, str],
     word: str,
     reading: str,
-    sentences: list[EnAndJPSentence],
-    jp_mdx_dict_entry: str,
-    prev_en_meaning: str = "",
-):
-    jp_meaning_return_field = "cleaned_meaning"
-    en_meaning_return_field = "english_meaning"
-    logger.debug(f"Getting single meaning with {len(sentences)} sentences")
+    possible_meanings: Sequence[GeneratedMeaningType],
+    target: WordAndSentences,
+    others: Sequence[WordAndSentences],
+    context: dict[str, Any],
+) -> Optional[NoteMapping]:
+    """The possible meaning that fits the target, None when the call failed or its answer is
+    unusable."""
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "possible_meanings": list(possible_meanings),
+        "target": target,
+        "others": list(others),
+    }
+    prompt = map_note_prompt(**inputs)
+    logger.debug(f"Prompt for mapping a note's meaning: {prompt}")
+    response_schema = {
+        "type": "object",
+        "properties": {
+            MAP_POSSIBLE_INDEX_FIELD: {"type": "integer"},
+            MAP_SCORE_FIELD: {"type": "integer"},
+            SAME_SENSE_FIELD: {"type": "integer"},
+        },
+        "required": [MAP_POSSIBLE_INDEX_FIELD, MAP_SCORE_FIELD, SAME_SENSE_FIELD],
+        "additionalProperties": False,
+    }
+    result = get_response(
+        config.get("word_meaning_model", ""),
+        prompt,
+        response_schema=response_schema,
+        kind="clean_meaning.map_note",
+        inputs=inputs,
+        context=context,
+    )
+    if not isinstance(result, dict):
+        logger.warning(f"Mapped meaning result was not a dictionary: {result}")
+        return None
+    index, score = result.get(MAP_POSSIBLE_INDEX_FIELD), result.get(MAP_SCORE_FIELD)
+    if not (
+        isinstance(index, int)
+        and 1 <= index <= len(possible_meanings)
+        and isinstance(score, int)
+        and 1 <= score <= 5
+    ):
+        logger.warning(f"Invalid possible meaning index or score in mapping result: {result}")
+        return None
+    same_sense = result.get(SAME_SENSE_FIELD)
+    if not isinstance(same_sense, int) or not 0 <= same_sense <= len(others):
+        same_sense = 0
+    return NoteMapping(possible_meanings[index - 1], score, same_sense)
+
+
+# The fields of the extract prompt's answer
+EXTRACT_JP_FIELD = "cleaned_meaning"
+EXTRACT_EN_FIELD = "english_meaning"
+
+
+def extract_meaning_prompt(
+    word: str,
+    reading: str,
+    sentences: Sequence[EnAndJPSentence],
+    dictionary_entry: str,
+    prev_en_meaning: str,
+) -> str:
+    """The prompt that makes one meaning out of the dictionary entry for the word's use in
+    `sentences`. One sentence or several, and an English meaning or none, are its variants."""
     sentences_formatted = ""
     if len(sentences) > 1:
         for sen in sentences:
@@ -714,7 +565,7 @@ def get_single_meaning_from_mdx_dict_entry(
         sentences_formatted = (
             f"JP: {sentences[0]['jp_sentence']} -- EN: {sentences[0]['en_sentence']}"
         )
-    prompt = f"""Below, the dictionary entry for the word or phrase may contain multiple meanings. Your task is to either 1) extract the one meaning 2) or combine and rephrase meanings matching the usage of the word in the sentence{'s' if len(sentences) > 1 else ''}.
+    return f"""Below, the dictionary entry for the word or phrase may contain multiple meanings. Your task is to either 1) extract the one meaning 2) or combine and rephrase meanings matching the usage of the word in the sentence{'s' if len(sentences) > 1 else ''}.
 
 Selection criteria:
 - DO NOT overfit the definition to the sentence{'s' if len(sentences) > 1 else ''}, but rather pick as many meanings as possible that can broadly fit the theme of the sentence{'s' if len(sentences) > 1 else ''}.
@@ -736,8 +587,8 @@ Formatting rules:
 Additionally, but only if it seems necessary, reword the English dictionary definition to fit the Japanese one. The English definition should ideally simply list equivalent words, if there are some, and only explain in sentences when it's necessary.
 
 Return a JSON object with two fields:
-Return the extracted and possibly modified Japanese meaning as the value of the key "{jp_meaning_return_field}".
-Return the possibly modified English meaning as the value of the key "{en_meaning_return_field}".
+Return the extracted and possibly modified Japanese meaning as the value of the key "{EXTRACT_JP_FIELD}".
+Return the possibly modified English meaning as the value of the key "{EXTRACT_EN_FIELD}".
 
 Word or phrase (and its reading):
 {word} ({reading})
@@ -749,37 +600,70 @@ Current English meaning:
 {prev_en_meaning}''' if prev_en_meaning.strip() != "" else ""}
 ---
 Japanese dictionary entry:
-{jp_mdx_dict_entry}
+{dictionary_entry}
 """
-    logger.debug(f"Prompt for cleaning meaning: {prompt}")
-    model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt)
-    if result is None:
-        # Return original dict_entry unchanged if the cleaning failed
-        return jp_mdx_dict_entry, prev_en_meaning
-    try:
-        return result[jp_meaning_return_field], result[en_meaning_return_field]
-    except KeyError:
-        return jp_mdx_dict_entry, prev_en_meaning
 
 
-def get_new_meaning_from_model(
+def get_single_meaning_from_mdx_dict_entry(
     config: dict[str, str],
     word: str,
     reading: str,
     sentences: list[EnAndJPSentence],
+    jp_mdx_dict_entry: str,
     prev_en_meaning: str = "",
-) -> tuple[str, str]:
-    logger.debug(f"Getting new meaning with {len(sentences)} sentences")
-    jp_meaning_return_field = "new_meaning"
-    en_meaning_return_field = "english_meaning"
+    note_id: Optional[int] = None,
+):
+    """`note_id`, the note the meaning is for (its placeholder id until it is added), is only
+    recorded, in the call's capture context: calls.note_id is the driver's note, which for a word
+    note the match op makes a meaning for is the sentence note."""
+    jp_meaning_return_field = EXTRACT_JP_FIELD
+    en_meaning_return_field = EXTRACT_EN_FIELD
+    logger.debug(f"Getting single meaning with {len(sentences)} sentences")
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        "sentences": sentences,
+        "dictionary_entry": jp_mdx_dict_entry,
+        "prev_en_meaning": prev_en_meaning,
+    }
+    prompt = extract_meaning_prompt(**inputs)
+    logger.debug(f"Prompt for cleaning meaning: {prompt}")
+    model = config.get("word_meaning_model", "")
+    result = get_response(
+        model,
+        prompt,
+        kind="clean_meaning.extract",
+        inputs=inputs,
+        context={"note_id": note_id},
+    )
+    # Nothing if the cleaning failed, as get_new_meaning_from_model: this gave back the raw
+    # dictionary entry, which the note was then saved with
+    if result is None:
+        return "", ""
+    try:
+        return result[jp_meaning_return_field], result[en_meaning_return_field]
+    except KeyError:
+        return "", ""
+
+
+# The fields of the generate prompt's answer
+GENERATE_JP_FIELD = "new_meaning"
+GENERATE_EN_FIELD = "english_meaning"
+
+
+def generate_meaning_prompt(
+    word: str, reading: str, sentences: Sequence[str], prev_en_meaning: str
+) -> str:
+    """The prompt that makes a meaning from the word's use in `sentences` alone, which are
+    the Japanese sentences only. One sentence or several, and an English meaning or none,
+    are its variants."""
     sentences_formatted = ""
     if len(sentences) > 1:
         for sen in sentences:
-            sentences_formatted += f"- {sen['jp_sentence']}\n"
+            sentences_formatted += f"- {sen}\n"
     else:
-        sentences_formatted = sentences[0]["jp_sentence"]
-    prompt = f"""Below {'is a sentence' if len(sentences) == 1 else 'are sentences each'} containing a certain word or phrase. Your task is to generate a short monolingual dictionary style definition of the general meaning used in the sentence by the word or phrase.
+        sentences_formatted = sentences[0]
+    return f"""Below {'is a sentence' if len(sentences) == 1 else 'are sentences each'} containing a certain word or phrase. Your task is to generate a short monolingual dictionary style definition of the general meaning used in the sentence by the word or phrase.
 
 - Generally aim to for the definition to be a single sentence. If it is necessary to explain more, the maximum length should be 3 sentences.
 - Do not overfit the definition to the sentence{'s' if len(sentences) > 1 else ''}, but rather aim for a general definition that fits the usage in {'each sentence' if len(sentences) > 1 else 'the sentence'}.
@@ -791,8 +675,8 @@ The definition should be in the same language as the sentence. {'Use the current
 
 
 Return a JSON object with two fields:
-Return the meaning as the value of the key "{jp_meaning_return_field}".
-Return the English translation as the value of the key "{en_meaning_return_field}".
+Return the meaning as the value of the key "{GENERATE_JP_FIELD}".
+Return the English translation as the value of the key "{GENERATE_EN_FIELD}".
 
 Word or phrase (and its reading):
 {word} ({reading})
@@ -803,9 +687,37 @@ Current English meaning:
 Sentence{'s' if len(sentences) > 1 else ''}:
 {sentences_formatted}
 """
+
+
+def get_new_meaning_from_model(
+    config: dict[str, str],
+    word: str,
+    reading: str,
+    sentences: list[EnAndJPSentence],
+    prev_en_meaning: str = "",
+    note_id: Optional[int] = None,
+) -> tuple[str, str]:
+    """`note_id` as get_single_meaning_from_mdx_dict_entry's: only recorded."""
+    logger.debug(f"Getting new meaning with {len(sentences)} sentences")
+    jp_meaning_return_field = GENERATE_JP_FIELD
+    en_meaning_return_field = GENERATE_EN_FIELD
+    inputs: dict[str, Any] = {
+        "word": word,
+        "reading": reading,
+        # The prompt shows no translation
+        "sentences": [sentence["jp_sentence"] for sentence in sentences],
+        "prev_en_meaning": prev_en_meaning,
+    }
+    prompt = generate_meaning_prompt(**inputs)
     logger.debug(f"Prompt for new meaning: {prompt}")
     model = config.get("word_meaning_model", "")
-    result = get_response(model, prompt)
+    result = get_response(
+        model,
+        prompt,
+        kind="clean_meaning.generate",
+        inputs=inputs,
+        context={"note_id": note_id},
+    )
     if result is None:
         # Return nothing if the generating failed
         return "", ""
@@ -830,39 +742,55 @@ def clean_meaning_in_note(
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
     all_generated_meanings_dict: GeneratedMeaningsDictType,
-    allow_update_all_meanings: bool = True,
     allow_reupdate_existing: bool = False,
     other_meaning_notes: Optional[Sequence[Note]] = None,
+    map_only: bool = False,
     word_note_index: Optional[WordIndex] = None,
     sentence_cache: Optional[SentenceCache] = None,
     note_cache: Optional[NoteCache] = None,
-) -> bool:
-    """
-    Clean or update the meaning field in a given note using an AI model.
+) -> CleanResult:
+    """Clean the meaning of `note`, and of no other note.
+
+    With generated meanings for its word, the note is mapped to the one that fits its sentences;
+    when none fits well, a meaning for its use is added to the list and it is mapped again.
+    Without, it is reworked beside the word's other notes or, alone, made from the dictionary
+    entry or its sentences.
+
+    The word's other notes are context: shown to the prompts, never written. This used to write
+    the whole meaning group it fetched, so every caller that gave no notes - the match op's
+    loops, the add-note hook, the clean op - reworded studied notes of a word whenever one note
+    of it was cleaned.
 
     :param config: Addon configuration dictionary.
-    :param note: Note object to process.
-    :param notes_to_add_dict: Dict for managing notes to add, not used atm.
-    :param notes_to_update_dict: Dict for managing notes to update.
-    :param all_generated_meanings_dict: Dict of all generated meanings
-            for reuse across multiple calls. Provided to avoid doing file operations during
-            async operations and to avoid doing file reading in every op.
-    :param allow_update_all_meanings: Allows running the update_all_meanings_for_word function.
-    :param allow_reupdate_existing: Allows re-updating notes that are already marked as updated.
-    :param other_meaning_notes: Optional replacement list of notes with meanings for the
-        update_all_meanings_for_word function.
+    :param note: The note to clean.
+    :param notes_to_add_dict: The run's notes to add, whose pending notes of the word are among
+        the others fetched.
+    :param notes_to_update_dict: The run's edited notes; the note goes in when it is edited.
+    :param all_generated_meanings_dict: Dict of all generated meanings for reuse across multiple
+        calls, which a mapping may add a meaning to. Provided to avoid doing file operations
+        during async operations and to avoid doing file reading in every op.
+    :param allow_reupdate_existing: Clean a note this run has edited already; without it such a
+        note is skipped.
+    :param other_meaning_notes: The word's other notes, in place of the meaning group the
+        cleaning would fetch. The match op's CREATE NEW gives every meaning the word has, pending
+        notes and the first one without an (mN) marker included.
+    :param map_only: Only map the note, and leave it as it is when its word has no generated
+        meanings: the match op's loops, which clean every unmapped note of a word before
+        matching it. A rework there left nothing to say it was done, so the note stayed unmapped
+        and its word's notes were reworked again on every target of the word, in every run.
     :param word_note_index: The run's word index, if the caller has one. Passed straight to
         get_other_meaning_notes, which uses it instead of a whole-collection search.
     :param sentence_cache: The run's sentence cache, if the caller has one. Passed straight to
         get_sentences_for_note, which scans the collection once per note id instead of once
         per ask.
     :param note_cache: The run's fetched notes, if the caller has one. Passed the same way.
-    :return: True if the note was modified, False otherwise.
+    :return: Whether the note's meaning changed, and the other note of its word whose sense it
+        repeats, if the cleaning found one.
     """
     note_type = note.note_type()
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
-        return False
+        return NOT_CHANGED
 
     try:
         meaning_field = get_field_config(config, "meaning_field", note_type)
@@ -873,214 +801,260 @@ def clean_meaning_in_note(
         new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
     except KeyError as e:
         logger.error(str(e))
-        return False
-
-    logger.debug(f"cleaning meaning in note {note.id}")
-
-    # Check if the note has the required fields
-    if (
-        meaning_field in note
-        and english_meaning_field in note
-        and word_field in note
-        and word_reading_field in note
-        and sentence_field in note
-        and new_note_id_field in note
+        return NOT_CHANGED
+    if not all(
+        field in note
+        for field in (
+            meaning_field,
+            english_meaning_field,
+            word_field,
+            word_reading_field,
+            sentence_field,
+            new_note_id_field,
+        )
     ):
-        logger.debug(
-            f"allow_update_all_meanings: {allow_update_all_meanings}, allow_reupdate_existing:"
-            f" {allow_reupdate_existing}, note id: {note.id}, provided other_meaning_notes:"
-            f" {other_meaning_notes is not None}"
+        logger.error(f"note {note.id} is missing fields")
+        return NOT_CHANGED
+
+    logger.debug(
+        f"cleaning meaning in note {note.id}, allow_reupdate_existing: {allow_reupdate_existing},"
+        f" map_only: {map_only}, provided other_meaning_notes: {other_meaning_notes is not None}"
+    )
+    # Read before anything below registers the note: its own no-entry tagging did, and the clean
+    # op then skipped every note of a word with no dictionary entry as already updated
+    if note.id > 0 and note.id in notes_to_update_dict:
+        if not allow_reupdate_existing:
+            logger.debug(f"Skipping note {note.id} as it's already marked as updated by a previous op")
+            return NOT_CHANGED
+        note = notes_to_update_dict[note.id]
+
+    word = note[word_field]
+    reading = note[word_reading_field]
+    mdx_helper.load_mdx_dictionaries_if_needed(config, show_progress=True, finish_progress=False)
+    try:
+        jp_mdx_dict_entry = mdx_helper.get_definition_text(
+            word=word,
+            reading=reading,
+            pick_dictionary=config.get("mdx_pick_dictionary", "all"),
         )
-        mdx_helper.load_mdx_dictionaries_if_needed(
-            config, show_progress=True, finish_progress=False
+    except MDXLookupError as e:
+        # A dictionary that could not answer, which is not the same as a word that is in none of
+        # them. Nothing is tagged and nothing is written: NO_DICTIONARY_ENTRY_TAG is terminal -
+        # see MDXLookupError - so tagging here would take the note out of every later run over a
+        # transient failure. The note is simply left for one.
+        logger.error(
+            f"Dictionary lookup failed for note {note.id}, word '{word}' ({reading}): {e};"
+            " leaving the note for a later run"
         )
-        pick_dictionary = config.get("mdx_pick_dictionary", "all")
-        # Get dictionary entry from mdx helper
+        return NOT_CHANGED
+
+    def register() -> None:
+        # A note not added yet (id 0) is saved by being added, not through this dict
+        if note.id > 0 and note.id not in notes_to_update_dict:
+            notes_to_update_dict[note.id] = note
+
+    def tag(tags: Sequence[str]) -> bool:
+        """Adds the tags the note lacks; whether it lacked any."""
+        missing = [t for t in tags if not note.has_tag(t)]
+        for t in missing:
+            note.add_tag(t)
+        return bool(missing)
+
+    if not jp_mdx_dict_entry and tag([NO_DICTIONARY_ENTRY_TAG]):
+        # Set tag to find notes without dictionary entry later
+        register()
+
+    word_key = make_meaning_dict_key(word, reading)
+    generated_meanings = all_generated_meanings_dict.get(word_key)
+    if map_only and not generated_meanings:
+        logger.debug(f"No generated meanings for word {word_key} to map note {note.id} to")
+        return NOT_CHANGED
+
+    def meaning_note_key(n: Note) -> NoteId:
+        """The note's id, or the placeholder id it carries until it has been added.
+
+        A note not added that carries no placeholder is keyed by its id, 0: a vocab note
+        added by hand, which the add-note hook cleans with its field empty, raised here and
+        lost its word extraction with it. Only the match op's pending notes carry a
+        placeholder, so there is at most one such note, and 0 is neither a placeholder
+        (negative) nor an added note's id.
+        """
+        if n.id != 0:
+            return n.id
         try:
-            jp_mdx_dict_entry = mdx_helper.get_definition_text(
-                word=note[word_field],
-                reading=note[word_reading_field],
-                pick_dictionary=pick_dictionary,
-            )
-        except MDXLookupError as e:
-            # A dictionary that could not answer, which is not the same as a word that is in
-            # none of them. Nothing is tagged and nothing is written: NO_DICTIONARY_ENTRY_TAG
-            # is terminal - see MDXLookupError - so tagging here would take the note out of
-            # every later run over a transient failure. The note is simply left for one.
-            logger.error(
-                f"Dictionary lookup failed for note {note.id}, word '{note[word_field]}'"
-                f" ({note[word_reading_field]}): {e}; leaving the note for a later run"
-            )
-            return False
-        if note.id > 0 and note.id in notes_to_update_dict:
-            note = notes_to_update_dict[note.id]
-        if not jp_mdx_dict_entry:
-            # Set tag to find notes without dictionary entry later
-            note.add_tag(NO_DICTIONARY_ENTRY_TAG)
-            if note.id > 0 and note.id not in notes_to_update_dict:
-                notes_to_update_dict[note.id] = note
+            return NoteId(int(n[new_note_id_field]))
+        except (KeyError, ValueError, TypeError):
+            return n.id
 
-        word_key = make_meaning_dict_key(note[word_field], note[word_reading_field])
-        word_generated_meanings = all_generated_meanings_dict.get(word_key, None)
-
-        all_meaning_notes: list[Note] = [note]
-        if other_meaning_notes is None and allow_update_all_meanings:
-            other_meaning_notes = get_other_meaning_notes(
-                config=config,
-                note=note,
-                notes_to_add_dict=notes_to_add_dict,
-                notes_to_update_dict=notes_to_update_dict,
-                allow_reupdate_existing=allow_reupdate_existing,
-                include_pending_notes=True,
-                word_note_index=word_note_index,
-            )
-            all_meaning_notes = other_meaning_notes + [note]
-
-        def meaning_note_key(n: Note) -> NoteId:
-            """The note's id, or the placeholder id it carries until it has been added."""
-            return n.id if n.id != 0 else NoteId(int(n[new_note_id_field]))
-
-        meaning_sentences_dict = {
-            meaning_note_key(n): WordAndSentences(
-                jp_meaning=n[meaning_field],
-                en_meaning=n[english_meaning_field],
-                sentences=get_sentences_for_note(
-                    config, n, sentence_cache=sentence_cache, note_cache=note_cache
-                ),
-            )
-            for n in all_meaning_notes
-        }
-
-        def update_all_meanings_from_result_dict(
-            update_dict: Mapping[NoteId, Union[tuple[str, str], tuple[str, str, int]]],
-        ) -> bool:
-            any_changed_inner = False
-            for n in all_meaning_notes:
-                note_key = meaning_note_key(n)
-                if note_key in update_dict:
-                    # A MatchMeaningsResultType entry carries the mapping score as a third
-                    # value; an UpdateAllMeaningsResultType one is just the two meanings.
-                    new_jp_meaning, new_en_meaning, *scored = update_dict[note_key]
-                    mapping_score = scored[0] if scored else None
-                    prev_en_meaning = n[english_meaning_field]
-                    prev_jp_meaning = n[meaning_field]
-                    n[meaning_field] = new_jp_meaning
-                    n[english_meaning_field] = new_en_meaning
-                    n.add_tag("updated_jp_meaning")
-                    if mapping_score is not None:
-                        n.add_tag(f"meaning_mapping_score::{mapping_score}")
-                        n.add_tag(MEANING_MAPPED_TAG)
-                    # Meanings should be changing if mapping was done, so we don't check
-                    # mapping_score here again
-                    if new_jp_meaning != prev_jp_meaning or new_en_meaning != prev_en_meaning:
-                        any_changed_inner = True
-                        if n.id > 0 and n.id not in notes_to_update_dict:
-                            notes_to_update_dict[n.id] = n
-            return any_changed_inner
-
-        if len(all_meaning_notes) > 1 and not word_generated_meanings:
-            if not allow_reupdate_existing and note.id in notes_to_update_dict:
-                logger.debug(
-                    f"Skipping note {note.id} as it's already marked as updated by a previous op"
-                )
-                return False
-
-            updated_meanings_dict = update_all_meanings_for_word(
-                config,
-                note[word_field],
-                note[word_reading_field],
-                meaning_sentences_dict,
-                jp_mdx_dict_entry,
-            )
-            any_changed = update_all_meanings_from_result_dict(updated_meanings_dict)
-            return any_changed
-        elif word_generated_meanings:
-            logger.debug(
-                f"Using generated meanings for word {word_key} in note {note.id} to update meanings"
-                f" generated meanings: {word_generated_meanings}"
-            )
-            # Check if all notes with this word have already been mapped to a generated meaning
-            # Convert the list to a dict for easier checking
-            generated_meanings_by_en_meaning: dict[str, GeneratedMeaningType] = {}
-            for gm in word_generated_meanings:
-                en_meaning = gm.get("en_meaning", None)
-                if en_meaning is not None:
-                    generated_meanings_by_en_meaning[en_meaning] = gm
-
-            # Check if all notes are already mapped, mapping is determined by note's english meaning
-            # matching exactly a generated meaning's english meaning
-            all_mapped = True
-            for n in all_meaning_notes:
-                # Take this opportunity and update the note tags
-                if n[english_meaning_field] in generated_meanings_by_en_meaning and not n.has_tag(
-                    MEANING_MAPPED_TAG
-                ):
-                    n.add_tag(MEANING_MAPPED_TAG)
-                    if n.id > 0 and n.id not in notes_to_update_dict:
-                        notes_to_update_dict[n.id] = n
-
-                if n[english_meaning_field] not in generated_meanings_by_en_meaning:
-                    all_mapped = False
-                    break
-            if all_mapped:
-                logger.debug(
-                    f"All notes for word {word_key} already mapped to generated meanings, skipping"
-                )
-                return False
-            if not allow_reupdate_existing and note.id in notes_to_update_dict:
-                logger.debug(
-                    f"Skipping note {note.id} as it's already marked as updated by a previous op"
-                )
-                return False
-
-            matched_meanings_dict = match_meanings_to_generated_meanings(
-                config,
-                note[word_field],
-                note[word_reading_field],
-                meaning_sentences_dict,
-                all_generated_meanings_dict,
-            )
-            any_changed = update_all_meanings_from_result_dict(matched_meanings_dict)
-            return any_changed
-
-        prev_en_meaning = note[english_meaning_field]
-        word = note[word_field]
-        reading = note[word_reading_field]
-        sentences = get_sentences_for_note(
-            config, note, sentence_cache=sentence_cache, note_cache=note_cache
+    if other_meaning_notes is None:
+        other_meaning_notes = get_other_meaning_notes(
+            config=config,
+            note=note,
+            notes_to_add_dict=notes_to_add_dict,
+            notes_to_update_dict=notes_to_update_dict,
+            allow_reupdate_existing=allow_reupdate_existing,
+            include_pending_notes=True,
+            word_note_index=word_note_index,
         )
-        # Check if the value is non-empty
-        if jp_mdx_dict_entry:
-            # Call API to get single meaning from the raw dictionary entry
-            new_jp_meaning, new_en_meaning = get_single_meaning_from_mdx_dict_entry(
-                config, word, reading, sentences, jp_mdx_dict_entry, prev_en_meaning
+    # Added notes first, oldest first, then the run's new ones: the order the prompts number
+    # them in, and the one a duplicate's sibling is picked by
+    others = sorted(
+        (
+            n
+            for n in other_meaning_notes
+            if n is not note and not (note.id > 0 and n.id == note.id)
+        ),
+        key=lambda n: (n.id <= 0, meaning_note_key(n)),
+    )
+
+    def usage(n: Note, max_sentences: Optional[int] = None) -> WordAndSentences:
+        sentences = get_sentences_for_note(
+            config, n, sentence_cache=sentence_cache, note_cache=note_cache
+        )
+        return WordAndSentences(
+            jp_meaning=n[meaning_field],
+            en_meaning=n[english_meaning_field],
+            sentences=sentences[:max_sentences],
+        )
+
+    def holder_of(en_meaning: str) -> Optional[Note]:
+        """The other note that holds this generated meaning already: the note would be its
+        duplicate, which is a fact of the strings and needs no prompt."""
+        return next((o for o in others if o[english_meaning_field] == en_meaning), None)
+
+    def numbered(number: int) -> Optional[Note]:
+        return others[number - 1] if 1 <= number <= len(others) else None
+
+    def same_sense_tags(same_sense_as: Optional[Note]) -> list[str]:
+        if same_sense_as is None or same_sense_as.id <= 0:
+            return []
+        return [f"{SAME_SENSE_TAG}::{same_sense_as.id}"]
+
+    def write(
+        jp_meaning: str, en_meaning: str, tags: Sequence[str], same_sense_as: Optional[Note]
+    ) -> CleanResult:
+        changed = (note[meaning_field], note[english_meaning_field]) != (jp_meaning, en_meaning)
+        note[meaning_field] = jp_meaning
+        note[english_meaning_field] = en_meaning
+        if tag([*tags, *same_sense_tags(same_sense_as)]) or changed:
+            register()
+        if same_sense_as is not None:
+            logger.debug(
+                f"Note {meaning_note_key(note)} repeats the sense of note"
+                f" {meaning_note_key(same_sense_as)} of word {word_key}"
+            )
+        return CleanResult(changed, same_sense_as)
+
+    if generated_meanings:
+        generated_en_meanings = {meaning["en_meaning"] for meaning in generated_meanings}
+        if note[english_meaning_field] in generated_en_meanings:
+            # Mapped already, as a note copied from a generated meaning is when made
+            holder = holder_of(note[english_meaning_field])
+            if tag([MEANING_MAPPED_TAG, *same_sense_tags(holder)]):
+                register()
+            return CleanResult(False, holder)
+
+        target = usage(note)
+        other_usages = [usage(o, OTHER_NOTE_SENTENCES) for o in others]
+
+        def mapped(
+            possible_meanings: Sequence[GeneratedMeaningType], depth: int
+        ) -> Optional[NoteMapping]:
+            return map_note_to_generated_meaning(
+                config,
+                word,
+                reading,
+                possible_meanings,
+                target,
+                other_usages,
+                # `same_sense_as` counts in other_note_ids, and the possible meaning index in
+                # inputs.possible_meanings. The depth tells the second try, after a meaning was
+                # added, from the first
+                context={
+                    "target_note_id": meaning_note_key(note),
+                    "other_note_ids": [meaning_note_key(o) for o in others],
+                    "depth": depth,
+                },
             )
 
-            # Update the note with the new value
-            note[meaning_field] = new_jp_meaning
-            note[english_meaning_field] = new_en_meaning
-            # Return success, if the we changed something
-            if new_jp_meaning != jp_mdx_dict_entry or new_en_meaning != prev_en_meaning:
-                if note.id > 0 and note.id not in notes_to_update_dict:
-                    notes_to_update_dict[note.id] = note
-                return True
-            return False
-        else:
-            # If there's no dict_entry, we'll let a model generate one from scratch
-            new_meaning, en_meaning = get_new_meaning_from_model(
-                config, word, reading, sentences, prev_en_meaning
+        mapping = mapped(generated_meanings, 0)
+        if mapping is None:
+            return NOT_CHANGED
+        # A threshold of 3 sometimes gives a score of 3 again after the list has grown, so there
+        # is only the one try: a meaning is added and the note mapped once more
+        if mapping.score <= 3:
+            logger.debug(
+                f"Note {meaning_note_key(note)} of word {word_key} fits no generated meaning"
+                f" well (score {mapping.score}), adding one for its use"
             )
-            note[meaning_field] = new_meaning
-            note[english_meaning_field] = en_meaning
-            if new_meaning != "" or en_meaning != "":
-                if note.id > 0 and note.id not in notes_to_update_dict:
-                    notes_to_update_dict[note.id] = note
-                return True
-            return False
+            if add_meanings_for_usage(config, word, reading, target, all_generated_meanings_dict):
+                remapped = mapped(all_generated_meanings_dict[word_key], 1)
+                if remapped is not None:
+                    mapping = remapped
+        # 3 is still an acceptable mapping: the most common reason a second try ends where it is
+        # is that the score could not be raised above it
+        if mapping.score <= 2:
+            logger.debug(
+                f"Note {meaning_note_key(note)} of word {word_key} left unmapped, score"
+                f" {mapping.score}"
+            )
+            return NOT_CHANGED
+        holder = holder_of(mapping.meaning["en_meaning"])
+        return write(
+            mapping.meaning["jp_meaning"],
+            mapping.meaning["en_meaning"],
+            ["updated_jp_meaning", f"meaning_mapping_score::{mapping.score}", MEANING_MAPPED_TAG],
+            holder if holder is not None else numbered(mapping.same_sense),
+        )
 
+    if others:
+        reworked = rework_note_meaning(
+            config,
+            word,
+            reading,
+            usage(note),
+            [usage(o, OTHER_NOTE_SENTENCES) for o in others],
+            jp_mdx_dict_entry,
+            # `same_sense_as` counts in other_note_ids
+            context={
+                "target_note_id": meaning_note_key(note),
+                "other_note_ids": [meaning_note_key(o) for o in others],
+            },
+        )
+        if reworked is None:
+            return NOT_CHANGED
+        jp_meaning, en_meaning, same_sense = reworked
+        return write(jp_meaning, en_meaning, ["updated_jp_meaning"], numbered(same_sense))
+
+    sentences = get_sentences_for_note(
+        config, note, sentence_cache=sentence_cache, note_cache=note_cache
+    )
+    if jp_mdx_dict_entry:
+        # Call API to get single meaning from the raw dictionary entry
+        new_jp_meaning, new_en_meaning = get_single_meaning_from_mdx_dict_entry(
+            config,
+            word,
+            reading,
+            sentences,
+            jp_mdx_dict_entry,
+            note[english_meaning_field],
+            note_id=meaning_note_key(note),
+        )
     else:
-        logger.error("note is missing fields")
-    return False
+        # If there's no dict_entry, we'll let a model generate one from scratch
+        new_jp_meaning, new_en_meaning = get_new_meaning_from_model(
+            config,
+            word,
+            reading,
+            sentences,
+            note[english_meaning_field],
+            note_id=meaning_note_key(note),
+        )
+    # A failed call leaves the note as it was: it used to write the raw dictionary entry, or
+    # empty the fields, and a note added by hand was saved that way
+    if not (new_jp_meaning and new_en_meaning):
+        return NOT_CHANGED
+    return write(new_jp_meaning, new_en_meaning, [], None)
 
 
 def bulk_clean_notes_op(
@@ -1097,12 +1071,7 @@ def bulk_clean_notes_op(
         return
     message = "Cleaning meaning"
 
-    media_path = Path(mw.pm.profileFolder(), "collection.media")
-    all_meanings_dict_path = Path(media_path, MEANINGS_DICT_FILE)
-    all_generated_meanings_dict: GeneratedMeaningsDictType = {}
-    if all_meanings_dict_path.exists():
-        with open(all_meanings_dict_path, "r", encoding="utf-8") as f:
-            all_generated_meanings_dict = json.load(f)
+    all_generated_meanings_dict = load_meanings_dict_from_file()
     # This op scans for the same note's sentences once per note it cleans, exactly as the
     # matching op does, so it gets the same run-scoped caches. Both die with the closure.
     sentence_cache = SentenceCache()
@@ -1123,7 +1092,7 @@ def bulk_clean_notes_op(
             all_generated_meanings_dict,
             sentence_cache=sentence_cache,
             note_cache=note_cache,
-        )
+        ).changed
 
     def on_end():
         nonlocal all_generated_meanings_dict

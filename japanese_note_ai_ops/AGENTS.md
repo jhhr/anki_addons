@@ -18,23 +18,26 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | path | role |
 | --- | --- |
 | `__init__.py` | strict order, see below |
-| `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts. Importing it creates `user_files/` and imports `anki` |
-| `call_logging.py` | per-call log files in `user_files/logs/`; `bulk_op_logging()`, `phase_log()`, `in_bulk_op()` |
+| `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
+| `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
 | `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
-| `async_api_ops/base_ops.py` | the operation framework and provider dispatch |
+| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
+| `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
+| `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, a notes run's `snapshot_note`, `event`, `reference_notes`, `note_added`, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
+| `async_api_ops/capture_notes.py` | a notes run's records built from Anki notes and the collection (`note_record`, `fetch_unread`, `record_final`, `record_collection`, `MeaningsRecorder`); nothing outside a notes run. anki only under TYPE_CHECKING |
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
 | `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
 | `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login or unusable model stops it); cancel watchdog and stack dumps |
 | `async_api_ops/chain_types.py` | `ChainStep(label, on_done, op_label)` (`.title` is "Step i/n: <op>"), `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
 | `async_api_ops/step_failure.py` | `failed_step_outcome(parent, error, title, context=None)`: the one way a step is failed on an exception; shows it (pane, else `show_exception`; aqt's `Interrupted` neither), takes the stop reason, never raises |
-| `async_api_ops/run_errors.py` | the errors a run meets without failing, as data: `report_error(text, where)` from any thread, titled by the chain step (`set_step`) and the task's note (`error_subject(NoteSubject(note))`, a ContextVar that follows `create_task` and `to_thread`); `ErrorList` groups repeats of one text with a count (MAX_KINDS listed, the rest counted); `start_run`/`take_run` keep what the pane showed for the run's end message. aqt- and anki-free, so `terminal_client` reports through it |
+| `async_api_ops/run_errors.py` | the errors a run meets without failing, as data: `report_error(text, where)` from any thread, titled by the chain step (`set_step`) and the task's note (`error_subject(NoteSubject(note))`, a ContextVar that follows `create_task` and `to_thread`; the drivers enter it through `base_ops.note_context`, with the capture note); `ErrorList` groups repeats of one text with a count (MAX_KINDS listed, the rest counted); `start_run`/`take_run` keep what the pane showed for the run's end message. aqt- and anki-free, so `terminal_client` reports through it |
 | `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
@@ -42,6 +45,9 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
+| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
+| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl` |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds); `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -87,7 +93,12 @@ that runs no `selected_notes_op` and writes no notes is a `MenuOnlyAction` in
 `selected_notes_op` wraps the run in one `CollectionOp`: a fresh asyncio loop, one
 `ThreadPoolExecutor` whose workers call `join_run(run)`, and all collection writes
 (`update_notes`, `remove_notes`, `add_note`, `merge_undo_entries`) in a cleanup phase after
-every op has finished.
+every op has finished. The run itself is `notes_run(...)`, which returns the function the
+`CollectionOp` runs and the `RunResult` it fills in (edited ids, new-note counts, cancelled)
+for the success handler; `selected_notes_op` adds only the UI: the `run_errors` start, the
+dialog's controls and title, the end message. A script runs the same run by calling that
+function on its own thread with a collection it opened and a stand-in `mw`
+(`anki_shared/testing/real_anki.py`): no `CollectionOp`, no dialog, no `tooltip`.
 
 ### Chains: the multi-op dialog
 
@@ -154,6 +165,194 @@ containing `/` to Together. Keys and per-operation `*_model` names are in the ad
 There is no configured rate; throttling reacts to `retry-after`. Concurrency is
 memory-driven, with learned per-operation costs in `user_files/memory_estimates.json`.
 Never log, print or commit an API key, and never read the user's `meta.json` to find one.
+Every `get_response` call is recorded in the capture store, below.
+
+### Capture store
+
+A record of every AI call, for debugging and for building tests and evals from real runs:
+`user_files/capture.sqlite3`, one file per addon install, so every profile writes to it and each
+run records which (`runs.profile`, `mw.pm.name`: a note id means nothing without its collection).
+`__init__.py` installs it at `profile_did_open` when config `capture_calls` is on (the default)
+and shuts it down at `profile_will_close`. When its writer starts, it deletes the runs older
+than `capture_keep_days` (default 90; 0 or less, or null, keeps everything), their calls, and the
+blobs no call uses. A call goes with its run only: one whose run row is missing (the store went off
+before writing it) has no age and stays. The store reads `capture_keep_days` as a number or a numeric string
+(`"30"`); anything else (`true`, text) is 90, with a warning. Tests and research scripts install
+no store unless they mean to (tests: in a temp dir); without one every capture function is a
+cheap no-op and nothing is recorded.
+
+| table | one row is |
+| --- | --- |
+| `runs` | one `notes_run` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name), `notes` (1 when it recorded its notes), `dropped` (a notes run's records lost: dropped at a full queue, or a note whose record could not be built; a replay needs 0). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
+| `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
+| `blobs` | instructions, response schemas and snapshotted notes, stored once by sha1 |
+| `note_snapshots` | a notes run's note at one stage, once per run, note and stage: `run_id`, `note_id` (a new note's negative placeholder before it is added), `stage`, `t` (seconds into the run), `mid`, `note_hash` (the blob of `capture_notes.note_record`: id, guid, mid, fields by name, tags) |
+| `events` | a notes run's other facts, in the order recorded: `run_id`, `note_id`, `task_id`, `kind`, `t`, `payload_json` |
+
+- Schema version 4: 2 added `calls.context_json`, 3 `runs.profile`, 4 `runs.notes`/`dropped`
+  and the two notes tables, each column last in its table. An older file is brought up to date
+  when it opens (`capture_store._MIGRATIONS`, one transaction, step by step), its old rows NULL
+  in the new columns (`notes` 0). A run's snapshots and events are pruned with it, and a note blob
+  stays while any snapshot names it.
+- A **notes run** (config `capture_notes`, off by default, read at each run's start: a run's
+  notes are a copy of much of the collection) records what a replay of it needs besides its calls
+  (`capture.begin_run(notes=True)`; `capture_notes` builds the records and does nothing in any
+  other run). Stages: `selected` (the run's notes as loaded), `read` (every note it first fetched
+  through `collection_access`, on the calling thread, never the cleanup's reads, which come after
+  its writes), `proposed` (what the cleanup is about to write, new notes by placeholder),
+  `final` (every note saved, added or tidied, re-read after the cleanup). A note the run only
+  learned the id of (a search, a word index lookup: `capture_notes.found`) is fetched as `read` at
+  the cleanup's start, before its first write, or once the marker tidying has looked its words
+  up and before its renames are saved (`base_ops.tidy_markers`), which finds notes the run did
+  not write, still as they were; never a note the run added (`note.added`). Event kinds: `environment` (dictionary files, the
+  collection's size, and `records`, `capture_notes.RECORDS`: the kinds of record this capture
+  makes, so an exporter tells a run that looked nothing up from one captured before lookups were
+  recorded; add to it with a new kind), `search`, `note.missing`, `note.added` (placeholder ->
+  id), `note.removed`, `match.decision` and `match.rated` (per word target, its `word_path`,
+  result, quality), `meanings.read`/`meanings.final` (the first value read and the last written
+  of each key of the generated meanings file: `load_meanings_dict_from_file` hands a notes run a
+  `capture_notes.MeaningsRecorder`, and it is the only loader of that file),
+  `dictionary.lookup` (each `mdx_helper.get_definition_text` answer, the text the prompt is built
+  from, or its error), `phase` (`log_phase`, with the process's `rss` at the phase's end), `undo`
+  (at the cleanup's start and end), `notetype` and `decks` (of every note recorded, at the end),
+  and the run's figures, which otherwise only reach DEBUG lines or die with the run:
+  `metrics.gate` (`ConcurrencyGate.stats`: raises, halvings, holds under pressure, collection
+  latches, each ceiling change, the seconds at each limit, the collection's share and turns,
+  counted where each move is logged; `base_ops.record_gate` after `gate.finish()`) and
+  `metrics.caches` (the match op's note and sentence caches and word indexes, at its `on_end`).
+  `note.add` is each note of the cleanup's adding (`capture_notes.record_note_add`): the add's
+  seconds, which hold every addon's `note_will_be_added` hook, apart from the merge's into the
+  run's undo entry, the undo queue's head before and after, and an `add_error` or a
+  `merge_error`, never both: a failed merge is recorded and raised as it always was. The add
+  loop's phase event carries `add_seconds` and `merge_seconds`. The capture never infers: an
+  exporter that finds a note it needs without a snapshot has found a capture gap, to be fixed
+  here and recorded again.
+- **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:
+  `corpus.json` (the notes the run read, their note types and decks under generic names but the
+  hardcoded ones, note ids synthetic in every field, the run's config but for what a replay never
+  reads that names the user's things (`replay.PRIVATE_CONFIG_KEYS`, the `*_query` searches),
+  meanings read, dictionary lookups), `cassette.json` (the answers by `request_key`, in the order received) and
+  `expected.json` (the notes as the run left them, new notes' ids and placeholders and a failed
+  add's placeholder as symbols). It raises `CaptureGap` rather than guess, and for a run a
+  replay cannot reproduce: one that lost records or has no recorded end (`dropped` NULL), one
+  not `completed`, one of another op.
+  `replay(fixture)` builds the corpus in a fresh collection, points every module's `mdx_helper`
+  at the corpus's lookups, answers every `get_response` from the cassette through
+  `base_ops.set_responder` (the one seam: a responder
+  replaces the provider inside the capture block, on the calling thread; None from it is a
+  failed call), runs the op through its `NotesRunSpec`, and reports each difference, a request
+  the cassette cannot answer, an answer never asked for and a lookup it lacks. It records into
+  a capture store of its own, so it refuses to start while one is installed (installing its own
+  would close that one), and puts back the responder and run errors' deliverer it replaced. expected.json
+  holds only the notes the run changed, added or removed (format 2; `Fixture.read` fills in
+  the rest from the corpus), and a corpus's files are gzipped. `export_fixture.py
+  --copy-anywhere` also puts the user's CopyAnywhere config into the corpus (only the definitions
+  its add hook runs for the corpus's note types, their note types and decks renamed; a deck the
+  corpus lacks, there or in an `insert_deck`, gets a name no replay's deck has), and for a fixture
+  writes expected_copy_anywhere.json from a replay with its add definitions on
+  (`replay.copy_anywhere_on_add`); the capture run had none on, so that file is a regression
+  baseline, not a capture. What those definitions read the capture never recorded, so
+  `replay.export_with_copy_anywhere` takes it from the capture's sources: it replays the run
+  with them on, records every search they make (`find_notes`/`find_cards`), makes each of
+  `--collection` (the collection the capture ran against), and carries what it finds that the
+  collection held when the run started, unselected, under ids and names numbered after the
+  run's own, until a round finds no more; and it carries each file a fonts check names from
+  `--media`, cut to the characters the notes hold (`corpus["media"]`, written to the replay's
+  media folder). A read_file stage names its file in a template, so a definition with one is
+  refused. Without that, a kanji-grades search found nothing and a fonts check failed on every
+  note, logged and swallowed, on every machine.
+- **Logs.** A replay writes its logs to `user_files/replay_logs/` beside each addon's own
+  `logs/` (`replay.REPLAY_LOGS`, by pointing `call_logging.logs_dir` and CopyAnywhere's
+  `logging_setup.logs_dir` there): a replay's run is not one of the user's, and CopyAnywhere
+  keeps only its newest 200, so a benchmark's adds pruned the logs of the user's own. The
+  replay opens its own call log (`start_call_log(corpus["op"])`) and closes it at the end.
+- **Where fixtures live.** A fixture of a real collection holds its note text and excerpts of
+  the MDX dictionaries it looked words up in, so it never goes into this public repo. They
+  live in the private test data repo (`jhhr/anki_addons_test_data`), cloned to the gitignored
+  `<repo>/test_data/` (a linked worktree without one uses its main checkout's), or wherever
+  `ANKI_ADDONS_TEST_DATA` points (`dev/data_paths.py`; taken from the repo root when relative,
+  and an error when set to no directory), under
+  `japanese_note_ai_ops/fixtures/` (replayed strictly by test_replay),
+  `japanese_note_ai_ops/corpora/` (benchmark.py's) and `japanese_note_ai_ops/evals/` (the
+  research scripts' eval data; see the research scripts under "word_array"). The exporter writes there by default; a
+  checkout without the clone skips test_replay's real fixtures and runs only the synthetic
+  pipeline test. `test_replay/fixtures/` is for a fixture its collection's owner has chosen to
+  publish; there is none yet. Commit and push a new fixture in the test data repo: the capture
+  store it came from is one local file, never backed up.
+- Outcomes: `ok`; `refused` (final non-200, body in `error`); `unreadable` (a 200 whose answer
+  text could not be found); `unparseable` (not JSON even after the corrector); `no_response`
+  (every attempt timed out or lost its connection, or the CLI gave up retrying); `cancelled`;
+  `error` (an exception, recorded and re-raised; no config, unsupported model, a CLI failure or
+  dead end). The helper that reports each (`post_to_api`, `report_refused`,
+  `report_unreadable`, `decode_answer`, the terminal client's failure paths) also notes it with
+  `capture.note_outcome`, and the last noted wins; a new failure path in a provider notes its own.
+- Keys: `request_key` is the sha1 of `kind` and `canonical_json(inputs)`: what was asked, the
+  same after the prompt is reworded. `prompt_key` hashes what was requested: the model,
+  instructions, prompt, schema and params as `get_response` was given them, not as sent, since a
+  provider drops a parameter its model does not take (Anthropic's temperature fallback, OpenAI's
+  fixed-temperature models, the claude CLI). `capture_store.research_cache_key(model, prompt)`
+  is the research scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no
+  column holds it.
+- Log ids: every line of the addon's log carries `[r<run> n<note> c<call>]`, only the ids there
+  are (`n` shows with capture off too), or `[-]`. Each captured call ends with
+  `call <id> <kind> <outcome> <seconds>s`, the line that names its row, logged at INFO inside
+  the call; the default `log_level` ERROR hides it, and the store's own warnings too. A profile
+  switch in one process carries the ids on from the previous store's, whose writer may still be
+  finishing rows the file does not hold yet, so the two never hand out the same id.
+- The ids travel in ContextVars, not arguments. `selected_notes_op`'s `run_bulk_op` begins the
+  run and enters `capture.run_scope` around `run_until_complete`; each driver enters
+  `base_ops.note_context(note)` (`error_subject` and `capture.note_scope` together) where it
+  starts a note's work; `asyncio.create_task` and `asyncio.to_thread` copy both into the pool
+  thread that calls `get_response`. `loop.run_in_executor`, `executor.submit` and a plain
+  `threading.Thread` start without them: a call made there gets an implicit run and no note.
+  The match op adds `capture.task_scope(f"{word}|{reading}")` around each word target.
+- `note_id` is the note the driver or hook works on, not always the one a call changes: the
+  clean_meaning and make_all_meanings calls a match target makes for a word note carry the
+  sentence note's id and the target's task; the note a clean_meaning call changes is in its
+  context (below). A note not added yet (id 0) is recorded as none.
+- Context (`context_json`, schema version 2): what reading or applying the answer needs that
+  the prompt does not show, e.g. which note each numbered meaning came from. Not in either key,
+  and nothing the prompt is built from (that is `inputs`). Note ids are ints; a note not added
+  yet is its negative placeholder (`new_note_id_field`), which is what a word array links it by
+  until cleanup, or 0 when it has none (a vocab note added by hand, which clean_meaning keys by
+  0). Per kind:
+  - `match.meanings`: `word_path` (the word's element, `arr[p[0]][5][p[1]]...`;
+    `match_targets.word_path`); `meanings`, one per `inputs.meanings` item in the same order,
+    each `note_id` (null for a generated meaning), `m_number` (its sort field's (mN), 0 without;
+    a generated one has the largest) and `gen_index` (its index in the word's generated
+    meanings, else null), so the answer's `meaning_number` n is `meanings[n - 1]`;
+    `copy_note_id`, the note copied for a new one (a CREATE NEW, or a MATCH of a generated
+    meaning).
+  - `match.rating`: `word_path`, and `note_id`, the linked note whose meaning is rated.
+  - `clean_meaning.map_note` and `rework_note`: `target_note_id`, the one note the answer is
+    for and the only one the call can change; `other_note_ids`, the word's other notes, shown
+    and never changed, in the order the answer's `same_sense_as` counts them (added notes in
+    id order, then placeholders). `map_note` also `depth` (1: its second try, after a
+    `make_all_meanings.add`); its possible meaning index counts in `inputs.possible_meanings`.
+  - `clean_meaning.extract` and `generate`: `note_id`, the note the meaning is for (null when
+    its caller does not say). The other kinds have none: `make_all_meanings.make` and `merge`
+    answers replace the generated meanings of the inputs' word and reading, and `add`'s are
+    appended to them.
+
+**A new AI call site** (`translate_field.py` is the smallest example):
+
+- Pass `kind="<op>.<what one request is about>"`: `translate.sentence`, `judge.word`,
+  `clean_meaning.map_note`. The prefix is the module whose prompt it is, not the op the user
+  ran (a low map score in clean_meaning makes a `make_all_meanings.add` call).
+- Pass `inputs`, the values the prompt is built from, as plain JSON: no note ids (the row has its
+  own), no API keys, a looked-up value as the text the prompt shows (a dictionary entry, not its
+  key). Add nothing the prompt does not show but what makes the case, with a comment saying why
+  (`match.meanings` records `reading`, which its prompt leaves out).
+- Pass `context` when the answer refers to things by position (a numbered list of notes'
+  meanings) or the call changes notes other than `note_id`: short snake_case keys, note ids as
+  ints, read off the list as the prompt shows it (after any sort), and a line for the kind
+  above. Test that it names the note the op then changes.
+- Build the prompt with a pure module-level builder from exactly those inputs (with no such
+  extra, `prompt = builder(**inputs)`), and test that the builder given the recorded inputs,
+  also after `canonical_json`'s round trip (it sorts dict keys), returns the prompt sent.
+  `test_capture_kinds.py` and `test_capture_meaning_kinds.py` have the shape.
+- `test_capture_kinds.py`'s AST scan fails a call of `get_response` in `async_api_ops/`, or a
+  call handed it (`asyncio.to_thread(get_response, ...)`), that passes no `kind` or `inputs`.
 
 ## Invariants
 
@@ -240,11 +439,22 @@ Never log, print or commit an API key, and never read the user's `meta.json` to 
   the default search, where `find_notes("")` is every note. The box stands in only if aqt
   drops `_lastSearchTxt`, and the dialog's count then says in red that an empty search is
   every note in the collection.
-- These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`,
-  `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An `aqt`
-  import in one of them takes the test suite offline (`test/addon_modules.py` says so).
+- These stay free of `aqt` and `anki`: `api_client.py`, `concurrency.py`, `capture_store.py`,
+  `capture.py`, `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An
+  `aqt` import in one of them takes the test suite offline (`test/addon_modules.py` says so).
   `async_api_ops/chain_types.py` is kept free of both too, so the chain's types need nothing
   of Anki.
+- **Nothing the addon logs reaches stderr**, which Anki shows as an error dialog. The addon
+  logger does not propagate, and `__init__.setup_addon_logging` gives it a `NullHandler` at
+  import, unflagged, so that opening and closing log files never leaves it with no handler
+  (a record with none goes to logging's last resort, stderr). Keep both.
+- **Capture never fails or changes an op.** The store is diagnostics: a file it cannot open or
+  write turns it off for the session (a warning, then nothing recorded), a full queue drops the
+  record (but a run's own two rows, which wait beside the queue until the writer takes them:
+  every other record of a run is read by its row), and its recording methods only enqueue,
+  never block or raise, from any thread; past
+  the open at install, no sqlite call happens off its writer thread. The capture code around
+  `get_response` catches its own failures and lets the op's result and exception through.
 - A progress **message is also a key**: `ConcurrencyGate` stores the learned memory cost
   under `op_key=message`, so rewording it resets the estimate.
 - `bulk_*_op` signatures have mutable `{}` defaults, harmless only because
@@ -284,12 +494,37 @@ as `research.old_word_lists`, relative imports, excluded from mypy); `research/c
 the corpus loader the other scripts read their sentences through. Collection repair scripts talk to
 a running Anki over AnkiConnect, list changes by default, write only with `--apply`, undo
 with `--revert`, and log to `output/`. Never run one with `--apply` unless the user asked for
-that run. Commit the tooling; do not commit one-off reports or plans it produces
+that run. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
+pre-migration export and its hand-checked subset (`corpora.py`), `kanjify_sentence_data.jsonl`
+and the answer caches (`*_eval_results.jsonl`, `vocab_reading_judge_results.jsonl`) are hand
+work and paid answers found nowhere else, so they live in `japanese_note_ai_ops/evals/` of the
+private test data checkout (below), and a script reaches each through
+`_bootstrap.eval_file(name)`, which falls back to `output/` on a machine without the checkout.
+Commit and push there after a script changes one. The menu's "Export kanjify test data" still
+writes `output/kanjify_sentence_data.jsonl`; `eval_file` uses it from there only while evals/
+has none, and warns while it is newer than evals/' copy, which stays the eval set until the new
+export is moved over it. Commit the tooling; do not commit one-off reports or plans it produces
 (`generated_examples.md` and `gold_examples.md` are the committed exceptions).
+
+The kanjify policy is written once, in `research/kanjify_agents/policy.md`, and every kanjify
+agent's prompt inlines it: the label-fix agents' (`kanjify_agents/make_prompts.py`) and the
+**kanjify golden set**'s, a reference labelling of every note sentence by headless agents for
+scoring kanjify_sentence (`kanjify_eval.py --rows`). Its scripts (`kanjify_golden*.py`,
+overview in `kanjify_golden.py`'s docstring) run from files only: `kanjify_golden_dump.py`
+is the one that asks AnkiConnect, and nothing writes to the collection. Step 1 decides one
+survey word per agent (`kanjify_agents/word_template.md`), step 2 labels batches of sentences
+with those decisions (`batch_template.md`); `agent_queue.py` runs a rendered queue through
+`claude -p` (resumable, shardable across machines by `--shard I/N`, stopped cleanly by the
+usage limit or a STOP file), and agents look things up only through the read-only
+`kanjify_lookup.py`. Everything they read and write is in `evals/kanjify_golden/` of the test
+data checkout. A cloud session has no `claude` CLI, so it runs the same queues as its own
+subagents instead (`agent_items.py` takes and saves items, the types in the repo's
+`.claude/agents/kanjify-*.md` fix model, effort and tools; `kanjify_agents/cloud_runbook.md` is
+what such a session follows), writing the same result files.
 
 ## Tests and types
 
-- `test/` (about 50 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
+- `test/` (about 60 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
   this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir so pytest
   never imports the addon's aqt-importing `__init__.py`, and sets `--import-mode=importlib`.
   `test/addon_modules.py` provides `load_addon_module`, `load_ops_module(name, subdir)`
@@ -306,6 +541,18 @@ that run. Commit the tooling; do not commit one-off reports or plans it produces
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
   skip. Copy it for another dialog rather than un-stubbing the suite.
+- Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys),
+  `test_capture.py` (the API), `test_capture_calls.py` (`get_response` through each provider
+  over a fake session or Popen), `test_capture_runs.py` (a real `selected_notes_op` run, and
+  `notes_run` called directly as a script does), `test_capture_notes.py` (a notes run's records
+  and the read points),
+  `test_capture_kinds.py` and `test_capture_meaning_kinds.py` (each call site's kind, inputs and
+  context, the prompts pinned byte for byte, the AST scan); `test_call_logging.py` covers the
+  ids in the log format. A test that installs a store puts it in a
+  `tempfile.TemporaryDirectory()` and shuts it down in a cleanup, or it records the next test's
+  calls; it reads rows with its own `sqlite3` connection after `flush()`, never by waiting on the
+  batch timer, and clears `capture._quiet_until` in `setUp` (capture's warnings are rate limited
+  per process).
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.
@@ -323,8 +570,8 @@ japanese_note_ai_ops` from the repo root and is gitignored. `mdict_query` is pla
 ## Stale documentation here
 
 `README.md` still describes a manual `pip -t lib` install (only its `mdict_query` part is
-current). `config.md` says logs go to `logs/` (they go to `user_files/logs`), lists outdated
-models, and `log_to_console` is `true` in `config.json` while the code default is `False`.
+current). `config.md` lists outdated models, and `log_to_console` is `true` in
+`config.json` while the code default is `False`.
 `anthropic_api_key` is read in `base_ops.py` but has no default in `config.json`.
 
 ## Shared code

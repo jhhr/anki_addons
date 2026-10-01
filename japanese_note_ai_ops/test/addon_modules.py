@@ -112,6 +112,10 @@ class FakeClock:
     def monotonic(self) -> float:
         return self.now
 
+    def perf_counter(self) -> float:
+        # The same clock again: the cleanup times each add with it, for its resolution
+        return self.now
+
     def time(self) -> float:
         # The same clock as monotonic: code that measures wall-clock deadlines (an automatic
         # pause's resume_at) moves on with the sleeps too
