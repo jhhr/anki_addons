@@ -97,5 +97,19 @@ class ScoreRowTests(unittest.TestCase):
         )
 
 
+class SampleTests(unittest.TestCase):
+    def test_a_sample_is_the_same_rows_whatever_order_they_come_in(self):
+        from kanjify_audit import Row
+
+        rows = [Row([i], f"文{i}です", "") for i in range(40)]
+        dev = kanjify_eval.sample(rows, 10)
+        self.assertEqual(kanjify_eval.sample(rows[::-1], 10), dev)
+        # not the file's first rows, and the held-back part shares none with it
+        self.assertNotEqual(dev, rows[:10])
+        held = kanjify_eval.sample(rows, 10, 10)
+        self.assertEqual(len(held), 10)
+        self.assertFalse({r.sentence for r in dev} & {r.sentence for r in held})
+
+
 if __name__ == "__main__":
     unittest.main()
