@@ -42,6 +42,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 2800 lines |
+| `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
@@ -506,10 +507,13 @@ has none, and warns while it is newer than evals/' copy, which stays the eval se
 export is moved over it. Commit the tooling; do not commit one-off reports or plans it produces
 (`generated_examples.md` and `gold_examples.md` are the committed exceptions).
 
-The kanjify policy is written once, in `research/kanjify_agents/policy.md`, and every kanjify
-agent's prompt inlines it: the label-fix agents' (`kanjify_agents/make_prompts.py`) and the
-**kanjify golden set**'s, a reference labelling of every note sentence by headless agents for
-scoring kanjify_sentence (`kanjify_eval.py --rows`). Its scripts (`kanjify_golden*.py`,
+The kanjify policy is written once, in `async_api_ops/kanjify_policy.md` (beside the op, since
+the zip leaves `research/` out), and every kanjify prompt inlines it: the kanjify_sentence op's
+(`kanjify_sentence.get_kanjify_sentence_prompt`, which has no rules of its own), the label-fix
+agents' (`kanjify_agents/make_prompts.py`) and the **kanjify golden set**'s, a reference
+labelling of every note sentence by headless agents for scoring kanjify_sentence
+(`kanjify_eval.py --rows`, with `--sample` for a fixed part of it). A rule changes in that
+file, never in a prompt. Its scripts (`kanjify_golden*.py`,
 overview in `kanjify_golden.py`'s docstring) run from files only: `kanjify_golden_dump.py`
 is the one that asks AnkiConnect, and nothing writes to the collection. Step 1 decides one
 survey word per agent (`kanjify_agents/word_template.md`), step 2 labels batches of sentences
