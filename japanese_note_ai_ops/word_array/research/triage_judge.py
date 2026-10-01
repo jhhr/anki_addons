@@ -5,6 +5,7 @@
     py -3.10 word_array/research/triage_judge.py status
     py -3.10 word_array/research/triage_judge.py export-queue --dir DIR   # for the artifact page
     py -3.10 word_array/research/triage_judge.py import-labels --dir DIR  # its labels, saved
+    py -3.10 word_array/research/triage_judge.py remap --old-words OLD.jsonl  # after a refresh
 
 `pick` queues the next round in `judge_queue.jsonl`. The first round starts with a fixed random
 100 of the unjudged notes: they are never trained on, so the model's accuracy on them is an
@@ -30,6 +31,14 @@ writes them with its ArtifactData tool. The page writes one `labels/<nid>` docum
 and deletes it on Undo. `import-labels` reads those documents back, as the session's ArtifactData
 `list` saved them (`--dir`, one JSON file each), and writes `hand_labels.jsonl` with each note's
 kind and round from the queue: the same file `serve` writes.
+
+A refresh of `words.jsonl` after the match op ran again can delete a note and make it anew, with
+a new id, and the queue and the labels name notes by id. `remap` (given the words as they were)
+moves each queued note that is gone onto its new note, in `judge_queue.jsonl` and
+`hand_labels.jsonl`: the one new note of the same word and reading (the op rewords a meaning when
+it makes the note anew), or, where the word has several, the one with the same meaning too; and writes the moves to `remap.json`, for the
+session that keeps the artifact's database to move its label documents the same way. A gone note
+with no such match, or more than one, is listed and left: its label names a note that is no more.
 """
 
 from __future__ import annotations
@@ -459,6 +468,47 @@ def import_labels(args) -> int:
     return status(args)
 
 
+def word_reading(w: dict) -> tuple:
+    return (w["word"] or w["kanjified"], w["reading"])
+
+
+def remap(args) -> int:
+    words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
+    old = {w["nid"]: w for w in td.read_jsonl(args.old_words)}
+    by_word: dict[tuple, list[int]] = {}
+    for w in words.values():
+        by_word.setdefault(word_reading(w), []).append(w["nid"])
+    queue, labels = read_state()
+    queued = {r["nid"] for r in queue}
+    moved: dict[int, int] = {}
+    lost: list[int] = []
+    for r in queue:
+        nid = r["nid"]
+        if nid in words:
+            continue
+        found = [n for n in by_word.get(word_reading(old[nid]), []) if n not in queued] \
+            if nid in old else []
+        if len(found) > 1:
+            found = [n for n in found if words[n]["meaning"] == old[nid]["meaning"]]
+        if len(found) == 1 and found[0] not in moved.values():
+            moved[nid] = found[0]
+        else:
+            lost.append(nid)
+    for row in queue + labels:
+        row["nid"] = moved.get(row["nid"], row["nid"])
+    td.write_jsonl(td.data_file(QUEUE), queue)
+    td.write_jsonl(td.data_file(HAND_LABELS), labels)
+    td.data_file("remap.json").write_text(
+        json.dumps({str(a): b for a, b in moved.items()}, indent=1) + "\n", encoding="utf-8")
+    judged = {r["nid"] for r in labels}
+    print(f"{len(moved)} queued notes moved onto their new note ({sum(n in judged for n in moved.values())}"
+          f" judged), {len(lost)} gone with no single match:")
+    for nid in lost:
+        w = old.get(nid, {})
+        print(f"  nid {nid} {w.get('key', '?')} ({w.get('reading', '?')})")
+    return status(args)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -475,9 +525,12 @@ def main() -> int:
     e.add_argument("--dir", type=Path, required=True)
     i = sub.add_parser("import-labels")
     i.add_argument("--dir", type=Path, required=True)
+    r = sub.add_parser("remap")
+    r.add_argument("--old-words", type=Path, required=True,
+                   help="words.jsonl as it was before the refresh")
     args = parser.parse_args()
     return {"pick": pick, "serve": serve, "status": status, "export-queue": export_queue,
-            "import-labels": import_labels}[args.command](args)
+            "import-labels": import_labels, "remap": remap}[args.command](args)
 
 
 if __name__ == "__main__":
