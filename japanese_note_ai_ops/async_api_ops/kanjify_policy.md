@@ -3,10 +3,11 @@
 Policy version: 0.20
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
-kanji, with which kanji, and how the result is written. Every kanjify agent reads it (the golden
-set's word and sentence agents, the label-fix agents); it is the only place it is written. Each
-rule has an id (`KANJI-3`, `SPLIT-よる`) that an agent cites for the choice it made. Examples
-here are short generic phrases; examples from real sentences belong in the word decisions.
+kanji, with which kanji, and how the result is written. The kanjify_sentence op's prompt holds
+it whole, and every kanjify agent reads it (the golden set's word and sentence agents, the
+label-fix agents); it is the only place it is written. Each rule has an id (`KANJI-3`,
+`SPLIT-よる`) that an agent cites for the choice it made. Examples here are short generic
+phrases; examples from real sentences belong in the word decisions.
 
 Rules marked **pending Qn** wait for the user's answer. A use that turns on one is written as
 the rule's draft says and named with the question (see "Pending questions" at the end).

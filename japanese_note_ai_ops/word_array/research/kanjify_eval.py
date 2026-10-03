@@ -8,7 +8,17 @@ cleaned as the op cleans it (`clean_kanjified`), so what is scored is what the n
 Rows whose sentence is one of the prompt's examples are skipped.
 
     py -3.10 word_array/research/kanjify_eval.py [--model M [--model M2...]] [-n COUNT]
-        [--workers 8] [--score-only] [--rows FILE]
+        [--workers 8] [--score-only] [--rows FILE] [--sample COUNT [--sample-from START]]
+        [--in-turn] [--tag NAME]
+
+`--rows` also takes the kanjify golden set (`evals/kanjify_golden/collated/accepted.jsonl`, the
+same row format). It labels every note sentence, too many to send per model, so `--sample`
+takes a fixed part of it, the same rows on every run (`sample`): `--sample 500` to tune a prompt
+on, `--sample 500 --sample-from 500` held back for the final score. `--workers` is requests at
+once per model, and for `terminal-` models also the cap on live `claude` processes over all of
+them; `--in-turn` runs the models one after another in the order given, so the first has its
+score when a usage limit stops the run. `--tag` goes into the report file names, so two prompts'
+reports of one model stay side by side.
 
 Scores per model:
   sentences  exact (whitespace aside), all spans right, reverse check failed (the text changed),
@@ -240,6 +250,14 @@ def read_results() -> dict[str, dict]:
     return out
 
 
+def sample(rows: list, count: int, start: int = 0) -> list:
+    """`count` rows from `start` on, of the rows in the order of a hash of their sentence: the
+    same rows on every run and for every prompt, and as good as random. A sample of the golden
+    set to tune a prompt on (the first 500) leaves the next ones unseen for the final score."""
+    by_hash = sorted(rows, key=lambda r: hashlib.sha1(r.sentence.encode("utf-8")).hexdigest())
+    return by_hash[start : start + count]
+
+
 def example_sentences(op) -> set[str]:
     return {WS_RE.sub("", s) for s in EXAMPLE_RE.findall(op.get_kanjify_sentence_prompt(""))}
 
@@ -341,7 +359,11 @@ def main() -> int:
     parser.add_argument("--model", action="append", default=[], help="instead of the config's")
     parser.add_argument("--rows", type=Path, help="a kanjify export jsonl")
     parser.add_argument("-n", type=int, default=0, help="only the first COUNT rows")
+    parser.add_argument("--sample", type=int, default=0, help="COUNT rows of a stable sample")
+    parser.add_argument("--sample-from", type=int, default=0, help="the sample starts here")
     parser.add_argument("--workers", type=int, default=8, help="requests at once per model")
+    parser.add_argument("--in-turn", action="store_true", help="one model after another")
+    parser.add_argument("--tag", default="", help="added to the reports' file names")
     parser.add_argument("--limit", type=int, default=25, help="words to list per outcome")
     parser.add_argument(
         "--score-only", action="store_true", help="send nothing, score the cached answers"
@@ -351,8 +373,14 @@ def main() -> int:
     import kanjify_audit
 
     op, config = load_op()
+    # The op's cap on live `claude` processes is its own setting, 16 by default: here --workers
+    # is the cap, over every terminal model of the run together
+    config["terminal_max_concurrent_requests"] = args.workers
     models = args.model or [config.get("kanjify_sentence_model", "")]
     all_rows, source = kanjify_audit.read_rows(args.rows)
+    if args.sample:
+        all_rows = sample(all_rows, args.sample, args.sample_from)
+        source += f" (sample {args.sample_from}..{args.sample_from + len(all_rows)})"
     examples = example_sentences(op)
     rows = [r for r in all_rows if WS_RE.sub("", r.sentence) not in examples]
     skipped = len(all_rows) - len(rows)
@@ -360,6 +388,7 @@ def main() -> int:
     print(f"{len(rows)} rows from {source}, {skipped} prompt examples skipped", file=sys.stderr)
 
     prompts = [op.get_kanjify_sentence_prompt(r.sentence) for r in rows]
+    prompt_size = len(op.get_kanjify_sentence_prompt(""))
     keys = {m: [prompt_key(m, p) for p in prompts] for m in models}
     cached = read_results()
     todo = {
@@ -371,7 +400,8 @@ def main() -> int:
     if not args.score_only and any(todo.values()):
         temperature = op.kanjify_temperature(config)
         lock = threading.Lock()
-        with RESULTS.open("a", encoding="utf-8") as f, ThreadPoolExecutor(len(models)) as pool:
+        at_once = 1 if args.in_turn else len(models)
+        with RESULTS.open("a", encoding="utf-8") as f, ThreadPoolExecutor(at_once) as pool:
             jobs = [
                 pool.submit(fetch, op, m, todo[m], temperature, args.workers, cached, f, lock)
                 for m in models
@@ -399,9 +429,11 @@ def main() -> int:
             p, r = _pr(res["by_class"][cls])
             cells.append(f"{p:5.1f}/{r:5.1f}" + ("  " if res["by_class"][cls] else "--"))
         table.append(f"{m:<28} " + " ".join(f"{c:>13}" for c in cells))
+    tag = "_" + FILENAME_RE.sub("_", args.tag) if args.tag else ""
     for m, res in results.items():
-        path = OUTPUT / f"kanjify_eval_report_{FILENAME_RE.sub('_', m)}.txt"
-        head = [f"{m}: {len(rows)} rows from {source}, {skipped} prompt examples skipped", ""]
+        path = OUTPUT / f"kanjify_eval_report_{FILENAME_RE.sub('_', m)}{tag}.txt"
+        head = [f"{m}: {len(rows)} rows from {source}, {skipped} prompt examples skipped,"
+                f" prompt {prompt_size} characters", ""]  # fmt: skip
         path.write_text("\n".join(head + res["lines"]) + "\n", encoding="utf-8")
     print("\n".join(table))
     return 0

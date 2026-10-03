@@ -41,6 +41,23 @@ class CleanKanjifiedTests(unittest.TestCase):
         self.assertTrue(kanjify_sentence.clean_kanjified("１つ", "１[ひと]つ")[1])
 
 
+class PromptTests(unittest.TestCase):
+    def test_the_prompt_holds_the_policy_whole_and_ends_with_the_sentence(self):
+        prompt = kanjify_sentence.get_kanjify_sentence_prompt("これを 読[よ]む。")
+        policy = kanjify_sentence.kanjify_policy()
+        self.assertIn("Policy version: ", policy)
+        self.assertIn(policy, prompt)
+        self.assertTrue(prompt.endswith("The sentence to process: これを 読[よ]む。\n"))
+        self.assertIn(f'"{kanjify_sentence.KANJIFIED_SENTENCE_RETURN_FIELD}"', prompt)
+
+    def test_the_agents_read_the_policy_file_the_op_ships(self):
+        import kanjify_golden
+
+        self.assertEqual(kanjify_golden.POLICY.resolve(), kanjify_sentence.POLICY_PATH.resolve())
+        # research/ is left out of the release zip: the file has to be outside it
+        self.assertNotIn("research", kanjify_sentence.POLICY_PATH.parts)
+
+
 class ScoreRowTests(unittest.TestCase):
     def outcomes(self, label, output, sentence, policy=None):
         comps, unaligned = kanjify_eval.score_row(label, output, sentence, policy)
@@ -95,6 +112,20 @@ class ScoreRowTests(unittest.TestCase):
         self.assertEqual(
             kanjify_eval.kana_text(" 1000[せん]円[えん]", " 1000[せん]円[えん]").kana, "せんえん"
         )
+
+
+class SampleTests(unittest.TestCase):
+    def test_a_sample_is_the_same_rows_whatever_order_they_come_in(self):
+        from kanjify_audit import Row
+
+        rows = [Row([i], f"文{i}です", "") for i in range(40)]
+        dev = kanjify_eval.sample(rows, 10)
+        self.assertEqual(kanjify_eval.sample(rows[::-1], 10), dev)
+        # not the file's first rows, and the held-back part shares none with it
+        self.assertNotEqual(dev, rows[:10])
+        held = kanjify_eval.sample(rows, 10, 10)
+        self.assertEqual(len(held), 10)
+        self.assertFalse({r.sentence for r in dev} & {r.sentence for r in held})
 
 
 if __name__ == "__main__":
