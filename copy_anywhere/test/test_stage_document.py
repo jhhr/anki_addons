@@ -336,6 +336,16 @@ def test_only_stages_side_by_side_in_one_block_can_be_wrapped():
     assert guids_of(doc.root_block()) == ["a", "b", "c", "c1"]
 
 
+def test_wrapping_walks_the_stages_it_is_given_only_once():
+    # `wrap` worked the group out and then asked `can_wrap`, which worked it out again from
+    # the same guids. Handed a generator, the second pass found it spent, and the wrap did
+    # nothing without saying so.
+    doc = document(default_stage(STAGE_VARIABLE, "a"), default_stage(STAGE_VARIABLE, "b"))
+    wrapper = doc.wrap((guid for guid in "ab"), STAGE_CONDITION)
+    assert wrapper is not None
+    assert guids_of(wrapper["then"]) == ["a", "b"]
+
+
 def test_a_checked_stage_inside_another_checked_one_travels_with_it():
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     loop["body"] = [default_stage(STAGE_VARIABLE, "inner")]

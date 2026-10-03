@@ -125,6 +125,15 @@ class SiblingGroup(NamedTuple):
     guids: list[str]
     positions: list[int]
 
+    @property
+    def is_one_run(self) -> bool:
+        """Whether the stages sit next to each other, with none of the block between them.
+
+        The positions are in the order the stages run, so they do exactly when the span from
+        the first to the last is as long as the group.
+        """
+        return self.positions[-1] - self.positions[0] + 1 == len(self.positions)
+
 
 #: What a group of stages can be wrapped in, in the order the menu offers them.
 WRAP_STAGE_TYPES: tuple[str, ...] = (STAGE_CONDITION, STAGE_FOR_EACH_NOTE, STAGE_FOR_EACH_CARD)
@@ -540,9 +549,7 @@ class StageDocument:
         """Whether the stages sit next to each other in one block: a new stage has to go in
         one place, and stages with others between them have no single place to stand for."""
         group = self.sibling_group(guids)
-        return group is not None and group.positions == list(
-            range(group.positions[0], group.positions[0] + len(group.positions))
-        )
+        return group is not None and group.is_one_run
 
     def wrap(self, guids: Iterable[str], stage_type: str) -> Optional[Stage]:
         """Put the stages inside a new structural stage that stands where they stood.
@@ -553,8 +560,10 @@ class StageDocument:
         method's to rewrite.
         """
         body_keys = STRUCTURAL_STAGE_BODY_KEYS.get(stage_type)
+        # The group is asked rather than `can_wrap`: that would walk `guids` a second time,
+        # and a generator is spent after the first.
         group = self.sibling_group(guids)
-        if not body_keys or group is None or not self.can_wrap(guids):
+        if not body_keys or group is None or not group.is_one_run:
             return None
         block = self.block(group.parent_guid, group.body_key)
         if block is None:
