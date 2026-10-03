@@ -590,6 +590,30 @@ def test_an_ampersand_in_a_menu_entry_is_shown_and_marks_no_shortcut(col, qapp):
         assert QKeySequence.mnemonic(text).isEmpty(), text
 
 
+def test_a_menu_is_let_go_of_once_it_has_been_shown(col, qapp, monkeypatch):
+    # Each click builds a fresh menu with the widget it hangs from as its parent, and
+    # nothing deleted it. The bar is there for as long as the dialog is, so it kept every
+    # menu it had ever opened, along with the stages each was built for.
+    from aqt.qt import QCoreApplication, QEvent, QMenu
+
+    from copy_anywhere.ui import stage_list
+
+    class ShownAndDismissed(QMenu):
+        def exec(self, *args):  # the real one waits for the user
+            return None
+
+    monkeypatch.setattr(stage_list, "QMenu", ShownAndDismissed)
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"))
+    tree.rows["a"].select_box.setChecked(True)
+    for _ in range(3):
+        tree.selection_bar.wrap_button.click()
+    tree.rows["b"].menu_button.click()
+    tree.root_block.add_button.click()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert tree.selection_bar.findChildren(QMenu) == []
+    assert tree.root_block.findChildren(QMenu) == []
+
+
 # -- scope menus ----------------------------------------------------------------------
 
 

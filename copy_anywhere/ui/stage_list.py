@@ -89,7 +89,14 @@ def menu_text(text: str) -> str:
 
 
 def show_menu_below(anchor: QWidget, menu: QMenu) -> None:
+    """Show a menu built for this one click, and let go of it afterwards.
+
+    A menu is a child of the widget that built it and lives as long as that does. The bar
+    above the list is there for as long as the dialog is, so without the delete it kept
+    every menu it had ever opened, each with the stages it was built for.
+    """
     menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+    menu.deleteLater()
 
 
 def wrapper_noun(stage: Stage) -> str:
@@ -377,7 +384,7 @@ class StageBlockWidget(QWidget):
                 STAGE_TYPE_LABELS[stage_type],
                 lambda t=stage_type: self.tree.add_stage(t, self.parent_guid, self.body_key),
             )
-        menu.exec(self.add_button.mapToGlobal(self.add_button.rect().bottomLeft()))
+        show_menu_below(self.add_button, menu)
 
 
 class StageSelectionBar(QWidget):
