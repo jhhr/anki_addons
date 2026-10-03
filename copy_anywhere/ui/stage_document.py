@@ -36,6 +36,7 @@ from ..logic.definition_schema import (
     STAGE_STORE,
     STAGE_VARIABLE,
     STAGE_WRITE_FILE,
+    STRUCTURAL_STAGE_BODY_KEYS,
     SchemaProblem,
     Stage,
     TEXT,
@@ -114,6 +115,28 @@ class StageLocation(NamedTuple):
     parent_guid: Optional[str]
     body_key: Optional[str]
     position: int
+
+
+class SiblingGroup(NamedTuple):
+    """Stages that share one block, in the order they run, with their positions in it."""
+
+    parent_guid: Optional[str]
+    body_key: Optional[str]
+    guids: list[str]
+    positions: list[int]
+
+    @property
+    def is_one_run(self) -> bool:
+        """Whether the stages sit next to each other, with none of the block between them.
+
+        The positions are in the order the stages run, so they do exactly when the span from
+        the first to the last is as long as the group.
+        """
+        return self.positions[-1] - self.positions[0] + 1 == len(self.positions)
+
+
+#: What a group of stages can be wrapped in, in the order the menu offers them.
+WRAP_STAGE_TYPES: tuple[str, ...] = (STAGE_CONDITION, STAGE_FOR_EACH_NOTE, STAGE_FOR_EACH_CARD)
 
 
 def new_guid() -> str:
@@ -384,20 +407,6 @@ class StageDocument:
         self.invalidate()
         return stage
 
-    def insert_stage(
-        self,
-        stage: Stage,
-        parent_guid: Optional[str] = None,
-        body_key: Optional[str] = None,
-        index: Optional[int] = None,
-    ) -> bool:
-        block = self.block(parent_guid, body_key)
-        if block is None:
-            return False
-        block.insert(len(block) if index is None else index, stage)
-        self.invalidate()
-        return True
-
     def remove_stage(self, guid: str) -> Optional[Stage]:
         location = self.location(guid)
         if location is None:
@@ -458,54 +467,209 @@ class StageDocument:
         self.invalidate()
         return True
 
-    def move_targets(self, guid: str) -> list[tuple[Optional[str], Optional[str], str]]:
-        """Every block this stage could be moved into, as (parent_guid, body_key, label).
+    def move_targets(self, *guids: str) -> list[tuple[Optional[str], Optional[str], str]]:
+        """Every block these stages could be moved into, as (parent_guid, body_key, label).
 
-        A stage may move into any structural stage that is not itself, not inside itself,
-        and not the block it already sits in.
+        Stages may move into any structural stage that is not one of them, not inside one of
+        them, and not the block they already sit in. They have to share a block: stages
+        gathered from several blocks have no one place to land next to, so they get no
+        targets at all.
         """
-        location = self.location(guid)
-        if location is None:
+        group = self.sibling_group(guids)
+        if group is None:
             return []
-        own = {stage.get("guid") for stage in walk_stages([self.stage(guid) or {}])}
+        own = {
+            stage.get("guid")
+            for stage in walk_stages([self.stage(guid) or {} for guid in group.guids])
+        }
         targets: list[tuple[Optional[str], Optional[str], str]] = []
-        if location.parent_guid is not None:
+        if group.parent_guid is not None:
             targets.append((None, None, "the definition's top level"))
         for stage in walk_stages(self.root_block()):
             if stage.get("guid") in own:
                 continue
             for key, _block in stage_body_blocks(stage):
-                if stage.get("guid") == location.parent_guid and key == location.body_key:
+                if stage.get("guid") == group.parent_guid and key == group.body_key:
                     continue
-                label = stage_label(stage)
                 block_name = BODY_KEY_LABELS.get(key, key)
-                targets.append((stage.get("guid"), key, f"{label} → {block_name}"))
+                targets.append(
+                    (stage.get("guid"), key, f"{block_owner_label(stage)} → {block_name}")
+                )
         return targets
 
-    def move_to(
-        self, guid: str, parent_guid: Optional[str], body_key: Optional[str], index: Optional[int] = None
-    ) -> bool:
-        if parent_guid is not None:
-            own = {stage.get("guid") for stage in walk_stages([self.stage(guid) or {}])}
-            if parent_guid in own:
-                return False
-        # `remove_stage` strips the exports naming what it removed, which is right for a
-        # delete and wrong here: the stage is still in the definition afterwards, so the
-        # export is not dangling and the name the user chose is theirs to keep. An export
-        # naming a stage that has landed inside a block is reported by the analyser and
-        # stays visible in the Exports panel, where it can be cleared or ridden out until
-        # the stage comes back to the top level.
-        exports = list(self.exports())
-        stage = self.remove_stage(guid)
-        if stage is None:
+    # -- several stages at once ----------------------------------------------------------
+    #
+    # None of these go through `remove_stage`, which strips the exports naming what it
+    # removed. That is right for a delete and wrong for a move: the stage is still in the
+    # definition afterwards, so the export is not dangling and the name the user chose is
+    # theirs to keep. An export naming a stage that has landed inside a block is reported by
+    # the analyser and stays visible in the Exports panel, where it can be cleared or ridden
+    # out until the stage comes back to the top level.
+
+    def selection_roots(self, guids: Iterable[str]) -> list[str]:
+        """The given stages in the order they run, without those inside another given one.
+
+        Checking a loop and a stage in its body asks for the loop: moving or deleting the
+        loop already takes its body along, and handling the body stage separately as well
+        would pull it out of the loop it was meant to travel with.
+        """
+        wanted = set(guids)
+        roots: list[str] = []
+
+        def visit(block: list[Stage]) -> None:
+            for stage in block:
+                guid = stage.get("guid", "")
+                if guid in wanted:
+                    roots.append(guid)
+                    continue
+                for _key, child_block in stage_body_blocks(stage):
+                    visit(child_block)
+
+        visit(self.root_block())
+        return roots
+
+    def sibling_group(self, guids: Iterable[str]) -> Optional["SiblingGroup"]:
+        """The stages as one group in one block, or None when they are spread over several."""
+        roots = self.selection_roots(guids)
+        locations = [self.location(guid) for guid in roots]
+        if not locations or any(location is None for location in locations):
+            return None
+        first = locations[0]
+        assert first is not None
+        if any(
+            (location.parent_guid, location.body_key) != (first.parent_guid, first.body_key)
+            for location in locations
+            if location is not None
+        ):
+            return None
+        positions = [location.position for location in locations if location is not None]
+        return SiblingGroup(first.parent_guid, first.body_key, roots, positions)
+
+    def can_wrap(self, guids: Iterable[str]) -> bool:
+        """Whether the stages sit next to each other in one block: a new stage has to go in
+        one place, and stages with others between them have no single place to stand for."""
+        group = self.sibling_group(guids)
+        return group is not None and group.is_one_run
+
+    def wrap(self, guids: Iterable[str], stage_type: str) -> Optional[Stage]:
+        """Put the stages inside a new structural stage that stands where they stood.
+
+        They become its first block -- a condition's Then, a loop's body -- in the order they
+        had. Results they produce no longer reach the stages after it (§5.8), and the
+        analyser says so where something read them; that is the user's to resolve, not this
+        method's to rewrite.
+        """
+        body_keys = STRUCTURAL_STAGE_BODY_KEYS.get(stage_type)
+        # The group is asked rather than `can_wrap`: that would walk `guids` a second time,
+        # and a generator is spent after the first.
+        group = self.sibling_group(guids)
+        if not body_keys or group is None or not group.is_one_run:
+            return None
+        block = self.block(group.parent_guid, group.body_key)
+        if block is None:
+            return None
+        start = group.positions[0]
+        moved = block[start : start + len(group.positions)]
+        wrapper = default_stage(stage_type, self._make_guid())
+        wrapper[body_keys[0]] = moved  # type: ignore[literal-required]
+        block[start : start + len(moved)] = [wrapper]
+        self.invalidate()
+        return wrapper
+
+    def unwrap(self, guid: str) -> bool:
+        """Remove a structural stage and put its stages where it stood, every block in order.
+
+        A condition's Then is followed by its Otherwise, both now run every time: unwrapping
+        means "no longer gated", and dropping a branch the user wrote would be a delete they
+        did not ask for. A stage that was off keeps its stages off, since they never ran
+        before either and turning them on is a separate decision.
+        """
+        stage = self.stage(guid)
+        location = self.location(guid)
+        if stage is None or location is None or not stage_body_blocks(stage):
             return False
-        if not self.insert_stage(stage, parent_guid, body_key, index):
-            # Put it back where it was rather than dropping the user's work on the floor.
-            self.insert_stage(stage, None, None, None)
-            self.set_exports(exports)
+        block = self.block(location.parent_guid, location.body_key)
+        if block is None:
             return False
-        self.set_exports(exports)
+        children = [
+            child for _key, child_block in stage_body_blocks(stage) for child in child_block
+        ]
+        if not stage.get("enabled", True):
+            for child in children:
+                child["enabled"] = False
+        block[location.position : location.position + 1] = children
+        self.invalidate()
         return True
+
+    def move_out(self, guids: Iterable[str], below: bool) -> bool:
+        """Move stages out of the block they share, to just above or just below its owner."""
+        group = self.sibling_group(guids)
+        if group is None or group.parent_guid is None:
+            return False
+        moved = self._take(group)
+        owner = self.location(group.parent_guid)
+        if owner is None:
+            return False
+        destination = self.block(owner.parent_guid, owner.body_key)
+        if destination is None:
+            return False
+        index = owner.position + (1 if below else 0)
+        destination[index:index] = moved
+        self.invalidate()
+        return True
+
+    def move_into(
+        self, guids: Iterable[str], parent_guid: Optional[str], body_key: Optional[str]
+    ) -> bool:
+        """Move stages into another block, landing as near as it allows to where they were.
+
+        Into a block below them they go to its top, into one above them to its bottom, and
+        into a block that holds them further down -- out to the top level, say -- just below
+        the stage they were inside. Always appending, as the first version of the menu did,
+        sent a stage taken out of a branch to the very end of the definition, to be walked
+        back up one ↑ at a time.
+
+        All three are one rule: the stages keep their place in the order stages run in, so
+        they go in after everything in the block that ran before them. It is the rule, and
+        not a case for each, because the cases left one out. A condition's Otherwise is
+        below its Then but belongs to a stage above both, and a stage moved from Then to
+        Otherwise was sent to the bottom as if into a block above it.
+        """
+        group = self.sibling_group(guids)
+        if group is None:
+            return False
+        if (parent_guid, body_key) == (group.parent_guid, group.body_key):
+            return False
+        destination = self.block(parent_guid, body_key)
+        if destination is None:
+            return False
+        own = {
+            stage.get("guid")
+            for stage in walk_stages([self.stage(guid) or {} for guid in group.guids])
+        }
+        if parent_guid in own:
+            return False
+        ran = {
+            stage.get("guid"): place
+            for place, stage in enumerate(walk_stages(self.root_block()))
+        }
+        first = ran[group.guids[0]]
+        index = sum(1 for stage in destination if ran[stage.get("guid")] < first)
+        destination[index:index] = self._take(group)
+        self.invalidate()
+        return True
+
+    def remove_stages(self, guids: Iterable[str]) -> None:
+        for guid in self.selection_roots(guids):
+            self.remove_stage(guid)
+
+    def _take(self, group: "SiblingGroup") -> list[Stage]:
+        """Lift a group out of its block, keeping the order it ran in."""
+        block = self.block(group.parent_guid, group.body_key) or []
+        moved = [block[position] for position in group.positions]
+        for position in sorted(group.positions, reverse=True):
+            del block[position]
+        return moved
 
     # -- exports -------------------------------------------------------------------------
 
@@ -781,6 +945,24 @@ def stage_label(stage: Any) -> str:
     if stage_type in STAGE_TYPE_LABELS:
         return STAGE_TYPE_LABELS[stage_type]
     return stage.get("type", "stage")
+
+
+def block_owner_label(stage: Any) -> str:
+    """How a menu that moves stages names a condition or a loop.
+
+    A stage's own name says enough, but no editor sets one, so a user's conditions are all
+    called "Condition" and the menu could not tell two of them apart. What a condition tests
+    and what a loop walks are what the user does tell them apart by, and the row header
+    already shows the same.
+    """
+    label = stage_label(stage)
+    if not isinstance(stage, dict) or (stage.get("name") or "").strip():
+        return label
+    if stage.get("type") == STAGE_CONDITION:
+        detail = _expression_summary(stage.get("predicate"), limit=32)
+    else:
+        detail = (stage.get("input") or {}).get("binding") or ""
+    return f"{label}: {detail}" if detail else label
 
 
 def _blank_result_names(stage: Stage) -> None:

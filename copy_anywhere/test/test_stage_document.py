@@ -13,6 +13,7 @@ from copy_anywhere.logic.definition_schema import (
     STAGE_CONDITION,
     STAGE_EDIT_CARD,
     STAGE_EDIT_NOTE,
+    STAGE_FOR_EACH_CARD,
     STAGE_FOR_EACH_NOTE,
     STAGE_NOTE_QUERY,
     STAGE_VARIABLE,
@@ -45,6 +46,25 @@ def counting_guids(prefix="g"):
 def document(*stages, **kwargs):
     definition = new_definition("def-guid", "A name", stages=list(stages))
     return StageDocument(definition, make_guid=counting_guids(), **kwargs)
+
+
+def guids_of(block):
+    return [stage["guid"] for stage in block]
+
+
+def named_variable(guid, result, text="x"):
+    stage = default_stage(STAGE_VARIABLE, guid)
+    stage["result"] = result
+    stage["value"] = value_expression(text=text)
+    return stage
+
+
+def condition_with(guid, then=(), otherwise=(), predicate=""):
+    stage = default_stage(STAGE_CONDITION, guid)
+    stage["predicate"] = value_expression(mode="code", code=predicate)
+    stage["then"] = list(then)
+    stage["else"] = list(otherwise)
+    return stage
 
 
 # -- defaults -------------------------------------------------------------------------
@@ -162,30 +182,31 @@ def test_removing_a_loop_drops_exports_naming_stages_inside_it():
 
 
 def test_a_stage_moved_into_a_block_and_back_out_keeps_its_export():
-    # Moving goes through `remove_stage`, which strips exports naming what it removed. That
-    # is right for a delete -- the stage is gone -- but a move puts the same stage back, so
-    # stripping there loses the export name the user chose, silently, for a round trip that
-    # ends where it started.
+    # Moving used to go through `remove_stage`, which strips exports naming what it
+    # removed. That is right for a delete -- the stage is gone -- but a move puts the same
+    # stage back, so stripping there lost the export name the user chose, silently, for a
+    # round trip that ends where it started.
     query = default_stage(STAGE_NOTE_QUERY, "q")
     query["result"] = "A1"
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     doc = document(query, loop)
     doc.set_exports([{"name": "shared", "stage_guid": "q", "result": "A1"}])
 
-    assert doc.move_to("q", "loop", "body") is True
-    assert doc.move_to("q", None, None) is True
+    assert doc.move_into(["q"], "loop", "body") is True
+    assert doc.move_into(["q"], None, None) is True
 
     assert doc.exports() == [{"name": "shared", "stage_guid": "q", "result": "A1"}]
 
 
-def test_a_stage_moved_at_the_top_level_keeps_its_export():
+def test_a_stage_moved_out_and_unwrapped_keeps_its_export():
     query = default_stage(STAGE_NOTE_QUERY, "q")
     query["result"] = "A1"
-    other = default_stage(STAGE_VARIABLE, "v")
-    doc = document(query, other)
+    doc = document(condition_with("c", then=[query]))
     doc.set_exports([{"name": "A1", "stage_guid": "q", "result": "A1"}])
 
-    assert doc.move_to("q", None, None, 1) is True
+    assert doc.move_out(["q"], below=True) is True
+    assert doc.wrap(["q"], STAGE_CONDITION) is not None
+    assert doc.unwrap(doc.root_block()[1]["guid"]) is True
 
     assert doc.exports() == [{"name": "A1", "stage_guid": "q", "result": "A1"}]
 
@@ -234,7 +255,7 @@ def test_move_within_block_stops_at_the_block_edges():
 def test_a_stage_cannot_be_moved_inside_itself():
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     doc = document(loop)
-    assert doc.move_to("loop", "loop", "body") is False
+    assert doc.move_into(["loop"], "loop", "body") is False
     assert doc.root_block()[0]["guid"] == "loop"
 
 
@@ -260,14 +281,315 @@ def test_move_targets_of_a_nested_stage_offers_the_top_level_and_not_its_own_blo
     assert ("loop", "body", "Loop Over Notes → Do") not in targets
 
 
-def test_move_to_relocates_the_whole_subtree():
+def test_moving_into_relocates_the_whole_subtree():
     outer = default_stage(STAGE_FOR_EACH_NOTE, "outer")
     inner = default_stage(STAGE_FOR_EACH_NOTE, "inner")
     inner["body"] = [default_stage(STAGE_VARIABLE, "leaf")]
     doc = document(outer, inner)
-    assert doc.move_to("inner", "outer", "body") is True
+    assert doc.move_into(["inner"], "outer", "body") is True
     assert doc.location("leaf") == ("inner", "body", 0)
     assert doc.location("inner") == ("outer", "body", 0)
+
+
+# -- several stages at once -----------------------------------------------------------
+
+
+def test_wrapping_puts_the_stages_in_a_new_condition_where_they_stood():
+    doc = document(*(default_stage(STAGE_VARIABLE, guid) for guid in "abcd"))
+    wrapper = doc.wrap(["c", "b"], STAGE_CONDITION)
+    assert wrapper is not None
+    assert guids_of(doc.root_block()) == ["a", wrapper["guid"], "d"]
+    # in the order they ran, not the order they were checked in
+    assert guids_of(wrapper["then"]) == ["b", "c"]
+    assert wrapper["else"] == []
+
+
+@pytest.mark.parametrize("stage_type", [STAGE_FOR_EACH_NOTE, STAGE_FOR_EACH_CARD])
+def test_wrapping_in_a_loop_makes_the_stages_its_body(stage_type):
+    doc = document(default_stage(STAGE_VARIABLE, "a"), default_stage(STAGE_VARIABLE, "b"))
+    wrapper = doc.wrap(["a", "b"], stage_type)
+    assert wrapper is not None and wrapper["type"] == stage_type
+    assert guids_of(wrapper["body"]) == ["a", "b"]
+    assert guids_of(doc.root_block()) == [wrapper["guid"]]
+
+
+def test_wrapping_works_inside_a_branch():
+    inner = [default_stage(STAGE_VARIABLE, guid) for guid in "xyz"]
+    doc = document(condition_with("c", then=inner))
+    wrapper = doc.wrap(["y", "z"], STAGE_CONDITION)
+    assert guids_of(doc.stage("c")["then"]) == ["x", wrapper["guid"]]
+    assert doc.location("y") == (wrapper["guid"], "then", 0)
+
+
+def test_only_stages_side_by_side_in_one_block_can_be_wrapped():
+    doc = document(
+        *(default_stage(STAGE_VARIABLE, guid) for guid in "abc"),
+        condition_with("c1", then=[default_stage(STAGE_VARIABLE, "inner")]),
+    )
+    # a gap: where would the condition stand for "b"?
+    assert doc.can_wrap(["a", "c"]) is False
+    assert doc.wrap(["a", "c"], STAGE_CONDITION) is None
+    # two blocks
+    assert doc.can_wrap(["c", "inner"]) is False
+    assert doc.can_wrap([]) is False
+    assert doc.wrap(["a", "b"], STAGE_VARIABLE) is None
+    assert guids_of(doc.root_block()) == ["a", "b", "c", "c1"]
+
+
+def test_wrapping_walks_the_stages_it_is_given_only_once():
+    # `wrap` worked the group out and then asked `can_wrap`, which worked it out again from
+    # the same guids. Handed a generator, the second pass found it spent, and the wrap did
+    # nothing without saying so.
+    doc = document(default_stage(STAGE_VARIABLE, "a"), default_stage(STAGE_VARIABLE, "b"))
+    wrapper = doc.wrap((guid for guid in "ab"), STAGE_CONDITION)
+    assert wrapper is not None
+    assert guids_of(wrapper["then"]) == ["a", "b"]
+
+
+def test_a_checked_stage_inside_another_checked_one_travels_with_it():
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [default_stage(STAGE_VARIABLE, "inner")]
+    doc = document(default_stage(STAGE_VARIABLE, "a"), loop)
+    assert doc.selection_roots(["inner", "loop", "a"]) == ["a", "loop"]
+    wrapper = doc.wrap(["inner", "loop", "a"], STAGE_CONDITION)
+    assert guids_of(wrapper["then"]) == ["a", "loop"]
+    assert doc.location("inner") == ("loop", "body", 0)
+
+
+def test_a_wrapped_stage_keeps_its_export_and_the_analyser_marks_it():
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "A1"
+    query["query"] = value_expression(text="deck:Default")
+    doc = document(query)
+    doc.set_exports([{"name": "A1", "stage_guid": "q", "result": "A1"}])
+    doc.wrap(["q"], STAGE_CONDITION)
+    assert doc.exports() == [{"name": "A1", "stage_guid": "q", "result": "A1"}]
+    assert any("A1" in message for message in doc.analysis.problem_messages())
+
+
+def test_a_result_wrapped_away_from_its_reader_blocks_the_save():
+    # What the user chose over rewriting anything: the reader is marked and the save waits.
+    doc = document(named_variable("a", "A"), named_variable("b", "B", text="{{A}}"))
+    assert doc.problems_for("b") == []
+    doc.wrap(["a"], STAGE_CONDITION)
+    assert doc.problems_for("b") != []
+
+
+def test_unwrapping_a_condition_keeps_both_branches_in_order():
+    doc = document(
+        default_stage(STAGE_VARIABLE, "before"),
+        condition_with(
+            "c",
+            then=[default_stage(STAGE_VARIABLE, "t1"), default_stage(STAGE_VARIABLE, "t2")],
+            otherwise=[default_stage(STAGE_VARIABLE, "e1")],
+        ),
+        default_stage(STAGE_VARIABLE, "after"),
+    )
+    assert doc.unwrap("c") is True
+    assert guids_of(doc.root_block()) == ["before", "t1", "t2", "e1", "after"]
+    assert doc.stage("c") is None
+
+
+def test_unwrapping_a_loop_keeps_its_body():
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [default_stage(STAGE_VARIABLE, "inner")]
+    doc = document(condition_with("c", then=[loop]))
+    assert doc.unwrap("loop") is True
+    assert guids_of(doc.stage("c")["then"]) == ["inner"]
+
+
+def test_unwrapping_a_condition_that_was_off_leaves_its_stages_off():
+    # They never ran while the condition was off; unwrapping must not quietly start them.
+    condition = condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")])
+    condition["enabled"] = False
+    doc = document(condition)
+    doc.unwrap("c")
+    assert doc.stage("t")["enabled"] is False
+
+
+def test_only_a_stage_with_blocks_can_be_unwrapped():
+    doc = document(default_stage(STAGE_VARIABLE, "v"))
+    assert doc.unwrap("v") is False
+    assert doc.unwrap("gone") is False
+    assert guids_of(doc.root_block()) == ["v"]
+
+
+def test_moving_out_lands_next_to_the_stage_that_held_them():
+    def fresh():
+        return document(
+            default_stage(STAGE_VARIABLE, "before"),
+            condition_with("c", then=[default_stage(STAGE_VARIABLE, g) for g in "xyz"]),
+            default_stage(STAGE_VARIABLE, "after"),
+        )
+
+    doc = fresh()
+    assert doc.move_out(["z", "x"], below=False) is True
+    assert guids_of(doc.root_block()) == ["before", "x", "z", "c", "after"]
+    assert guids_of(doc.stage("c")["then"]) == ["y"]
+
+    doc = fresh()
+    assert doc.move_out(["x", "y"], below=True) is True
+    assert guids_of(doc.root_block()) == ["before", "c", "x", "y", "after"]
+
+
+def test_moving_out_needs_stages_in_one_block_that_is_not_the_top_level():
+    doc = document(
+        default_stage(STAGE_VARIABLE, "a"),
+        condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")]),
+    )
+    assert doc.move_out(["a"], below=True) is False
+    assert doc.move_out(["a", "t"], below=True) is False
+    assert guids_of(doc.root_block()) == ["a", "c"]
+
+
+def test_moving_into_a_block_below_lands_at_its_top():
+    doc = document(
+        default_stage(STAGE_VARIABLE, "a"),
+        default_stage(STAGE_VARIABLE, "b"),
+        condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")]),
+    )
+    assert doc.move_into(["a", "b"], "c", "then") is True
+    assert guids_of(doc.stage("c")["then"]) == ["a", "b", "t"]
+
+
+def test_moving_into_a_block_above_lands_at_its_bottom():
+    doc = document(
+        condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")]),
+        default_stage(STAGE_VARIABLE, "a"),
+    )
+    assert doc.move_into(["a"], "c", "then") is True
+    assert guids_of(doc.stage("c")["then"]) == ["t", "a"]
+
+
+def test_moving_into_an_enclosing_block_lands_just_below_what_held_it():
+    # Appending sent a stage taken out of a branch to the very end of the definition.
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [default_stage(STAGE_VARIABLE, "deep")]
+    doc = document(
+        condition_with("c", then=[loop]),
+        default_stage(STAGE_VARIABLE, "after"),
+    )
+    assert doc.move_into(["deep"], None, None) is True
+    assert guids_of(doc.root_block()) == ["c", "deep", "after"]
+
+
+def test_moving_from_one_branch_to_the_other():
+    doc = document(
+        condition_with(
+            "c",
+            then=[default_stage(STAGE_VARIABLE, "t")],
+            otherwise=[default_stage(STAGE_VARIABLE, "e")],
+        )
+    )
+    assert doc.move_into(["e"], "c", "then") is True
+    assert guids_of(doc.stage("c")["then"]) == ["t", "e"]
+    assert doc.move_into(["t"], "c", "else") is True
+    assert guids_of(doc.stage("c")["else"]) == ["t"]
+
+
+def test_moving_from_then_into_otherwise_lands_at_its_top():
+    # Otherwise is below Then, so for a stage in Then it is a block below. It was taken for
+    # one above, because the condition that owns both runs before either, and the stage was
+    # appended to it.
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [default_stage(STAGE_VARIABLE, "deep")]
+    doc = document(
+        condition_with(
+            "c",
+            then=[default_stage(STAGE_VARIABLE, "t"), loop],
+            otherwise=[default_stage(STAGE_VARIABLE, "e1"), default_stage(STAGE_VARIABLE, "e2")],
+        )
+    )
+    assert doc.move_into(["t"], "c", "else") is True
+    assert guids_of(doc.stage("c")["else"]) == ["t", "e1", "e2"]
+    # and from further inside Then
+    assert doc.move_into(["deep"], "c", "else") is True
+    assert guids_of(doc.stage("c")["else"]) == ["deep", "t", "e1", "e2"]
+
+
+def test_a_move_into_any_block_keeps_the_running_order_of_what_is_in_it():
+    # "As near as the block allows to where they were" has one reading that needs no case
+    # per kind of block: among the stages already in the block, the one that moved keeps its
+    # place in the order stages run in. Every stage of a tree three blocks deep is moved into
+    # every block it is offered.
+    def variables(*guids):
+        return [default_stage(STAGE_VARIABLE, guid) for guid in guids]
+
+    def fresh():
+        inner_loop = default_stage(STAGE_FOR_EACH_NOTE, "l1")
+        inner_loop["body"] = variables("b1", "b2")
+        last_loop = default_stage(STAGE_FOR_EACH_NOTE, "l2")
+        last_loop["body"] = variables("z1", "z2")
+        return document(
+            *variables("a"),
+            condition_with(
+                "c1",
+                then=[*variables("t1"), inner_loop, *variables("t2")],
+                otherwise=[
+                    *variables("e1"),
+                    condition_with("c2", then=variables("x1"), otherwise=variables("y1")),
+                    *variables("e2"),
+                ],
+            ),
+            *variables("m"),
+            last_loop,
+            *variables("end"),
+        )
+
+    moves = 0
+    for guid in guids_of(walk_stages(fresh().root_block())):
+        for parent_guid, body_key, label in fresh().move_targets(guid):
+            doc = fresh()
+            ran = guids_of(walk_stages(doc.root_block()))
+            there = {guid, *guids_of(doc.block(parent_guid, body_key))}
+            assert doc.move_into([guid], parent_guid, body_key) is True
+            assert guids_of(doc.block(parent_guid, body_key)) == [
+                one for one in ran if one in there
+            ], f"{guid} into {label}"
+            moves += 1
+    assert moves > 50
+
+
+def test_moving_into_refuses_the_own_block_and_the_inside_of_a_moved_stage():
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    doc = document(default_stage(STAGE_VARIABLE, "a"), loop)
+    assert doc.move_into(["a"], None, None) is False
+    assert doc.move_into(["a", "loop"], "loop", "body") is False
+    assert guids_of(doc.root_block()) == ["a", "loop"]
+
+
+def test_move_targets_of_stages_from_two_blocks_is_empty():
+    doc = document(
+        default_stage(STAGE_VARIABLE, "a"),
+        condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")]),
+    )
+    assert doc.move_targets("a", "t") == []
+    assert ("c", "then", "Condition → Then") in doc.move_targets("a")
+
+
+def test_move_targets_tell_two_conditions_apart():
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["input"] = {"binding": "Related"}
+    doc = document(
+        condition_with("c1", predicate="return note['A']"),
+        condition_with("c2", predicate="return note['B']"),
+        loop,
+        default_stage(STAGE_VARIABLE, "v"),
+    )
+    labels = [label for _parent, _key, label in doc.move_targets("v")]
+    assert "Condition: return note['A'] → Then" in labels
+    assert "Condition: return note['B'] → Otherwise" in labels
+    assert "Loop Over Notes: Related → Do" in labels
+
+
+def test_removing_several_stages_takes_their_exports():
+    query = default_stage(STAGE_NOTE_QUERY, "q")
+    query["result"] = "A1"
+    doc = document(query, condition_with("c", then=[default_stage(STAGE_VARIABLE, "t")]))
+    doc.set_exports([{"name": "A1", "stage_guid": "q"}])
+    doc.remove_stages(["t", "q", "c"])
+    assert doc.root_block() == []
+    assert doc.exports() == []
 
 
 def test_set_enabled_marks_the_stage():
