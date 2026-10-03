@@ -341,6 +341,172 @@ def test_an_edit_survives_a_reorder(col, qapp):
     assert tree.document.stage("a")["value"]["text"] == "kept"
 
 
+# -- checking several stages ----------------------------------------------------------
+
+
+def condition_with(guid, then=(), otherwise=()):
+    stage = default_stage(STAGE_CONDITION, guid)
+    stage["then"] = list(then)
+    stage["else"] = list(otherwise)
+    return stage
+
+
+def menu_entries(menu):
+    """A menu's entries by their text, submenus by their title."""
+    return {action.text(): action for action in menu.actions() if action.text()}
+
+
+def test_every_row_can_be_checked_and_the_bar_counts_them(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"))
+    bar = tree.selection_bar
+    assert not tree.rows["a"].select_box.isChecked()
+    assert bar.count_label.text() == "None checked"
+    assert not bar.wrap_button.isEnabled()
+    assert not bar.delete_button.isEnabled()
+    # A button that cannot act says why rather than sitting there greyed out.
+    assert "Check" in bar.wrap_button.toolTip()
+
+    tree.rows["b"].select_box.setChecked(True)
+    tree.rows["a"].select_box.setChecked(True)
+    assert tree.selected_guids() == ["a", "b"]
+    assert bar.count_label.text() == "2 checked"
+    assert bar.wrap_button.isEnabled()
+    assert bar.delete_button.isEnabled()
+    # Both are at the top level already.
+    assert not bar.move_out_button.isEnabled()
+
+
+def test_the_bar_wraps_the_checked_stages(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"), variable("c", "C"))
+    tree.rows["a"].select_box.setChecked(True)
+    tree.rows["b"].select_box.setChecked(True)
+    menu_entries(tree.selection_bar.build_wrap_menu())["Condition"].trigger()
+
+    wrapper = tree.document.root_block()[0]
+    assert wrapper["type"] == STAGE_CONDITION
+    assert [stage["guid"] for stage in wrapper["then"]] == ["a", "b"]
+    assert [row.guid for row in tree.root_block.rows] == [wrapper["guid"], "c"]
+    assert [row.guid for row in tree.rows[wrapper["guid"]].child_blocks[0].rows] == ["a", "b"]
+    # Opened, because it is empty and needs a predicate.
+    assert not tree.rows[wrapper["guid"]].body.isHidden()
+    # Still checked after the rebuild, in the rows that replaced the old ones.
+    assert tree.rows["a"].select_box.isChecked()
+    assert tree.selected_guids() == ["a", "b"]
+
+
+def test_the_bar_says_why_it_cannot_wrap_or_move(col, qapp):
+    tree = tree_for(
+        col,
+        variable("a", "A"),
+        variable("b", "B"),
+        variable("c", "C"),
+        condition_with("cond", then=[variable("t", "T")]),
+    )
+    bar = tree.selection_bar
+    tree.rows["a"].select_box.setChecked(True)
+    tree.rows["c"].select_box.setChecked(True)
+    assert not bar.wrap_button.isEnabled()
+    assert "next to each other" in bar.wrap_button.toolTip()
+    assert bar.move_into_button.isEnabled()
+
+    tree.rows["t"].select_box.setChecked(True)
+    for button in (bar.wrap_button, bar.move_out_button, bar.move_into_button):
+        assert not button.isEnabled()
+        assert "same block" in button.toolTip()
+    # What does not need one block still works.
+    assert bar.off_button.isEnabled()
+
+
+def test_the_bar_moves_the_checked_stages_out_of_a_branch(col, qapp):
+    tree = tree_for(
+        col,
+        condition_with("cond", then=[variable("t1", "T1"), variable("t2", "T2")]),
+        variable("after", "AFTER"),
+    )
+    tree.set_selected("t1", True)
+    tree.set_selected("t2", True)
+    entries = menu_entries(tree.selection_bar.build_move_out_menu())
+    assert set(entries) == {"Above the condition", "Below the condition"}
+    entries["Below the condition"].trigger()
+    assert [row.guid for row in tree.root_block.rows] == ["cond", "t1", "t2", "after"]
+
+
+def test_the_bar_turns_off_and_deletes_the_checked_stages(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"), variable("c", "C"))
+    tree.set_selected("a", True)
+    tree.set_selected("c", True)
+    tree.selection_bar.off_button.click()
+    assert [tree.document.stage(g)["enabled"] for g in "abc"] == [False, True, False]
+    tree.selection_bar.delete_button.click()
+    assert [row.guid for row in tree.root_block.rows] == ["b"]
+    # A deleted stage is no longer checked.
+    assert tree.selected == set()
+    assert tree.selection_bar.count_label.text() == "None checked"
+
+
+def test_uncheck_all_clears_every_box(col, qapp):
+    tree = tree_for(col, variable("a", "A"), variable("b", "B"))
+    tree.rows["a"].select_box.setChecked(True)
+    tree.rows["b"].select_box.setChecked(True)
+    tree.selection_bar.clear_button.click()
+    assert tree.selected == set()
+    assert not tree.rows["a"].select_box.isChecked()
+    assert not tree.selection_bar.wrap_button.isEnabled()
+
+
+def test_a_row_menu_moves_its_own_stage_out_of_its_condition(col, qapp):
+    tree = tree_for(
+        col,
+        variable("before", "B0"),
+        condition_with("cond", then=[variable("t1", "T1"), variable("t2", "T2")]),
+    )
+    # Another stage being checked does not change what a row's own menu acts on.
+    tree.set_selected("before", True)
+    entries = menu_entries(tree.rows["t2"].build_menu())
+    assert "Move out of Condition" in entries
+    assert "Remove this condition, keep its stages" not in entries
+    move_out = menu_entries(entries["Move out of Condition"].menu())
+    move_out["Above the condition"].trigger()
+    assert [row.guid for row in tree.root_block.rows] == ["before", "t2", "cond"]
+    assert tree.document.location("t1") == ("cond", "then", 0)
+
+
+def test_a_top_level_row_menu_has_no_move_out(col, qapp):
+    tree = tree_for(col, variable("a", "A"))
+    entries = menu_entries(tree.rows["a"].build_menu())
+    assert "Wrap in" in entries
+    assert not any(text.startswith("Move out") for text in entries)
+
+
+def test_a_row_menu_wraps_its_own_stage_in_a_loop(col, qapp):
+    tree = tree_for(col, note_query("q", "A1"), variable("v", "M"))
+    wrap = menu_entries(menu_entries(tree.rows["v"].build_menu())["Wrap in"].menu())
+    assert list(wrap) == ["Condition", "Loop Over Notes", "Loop Over Cards"]
+    wrap["Loop Over Notes"].trigger()
+    loop = tree.document.root_block()[1]
+    assert loop["type"] == STAGE_FOR_EACH_NOTE
+    assert tree.document.location("v") == (loop["guid"], "body", 0)
+
+
+def test_a_condition_s_row_menu_removes_it_and_keeps_both_branches(col, qapp):
+    tree = tree_for(
+        col,
+        condition_with("cond", then=[variable("t", "T")], otherwise=[variable("e", "E")]),
+    )
+    entries = menu_entries(tree.rows["cond"].build_menu())
+    entries["Remove this condition, keep its stages"].trigger()
+    assert [row.guid for row in tree.root_block.rows] == ["t", "e"]
+
+
+def test_moving_into_a_closed_block_opens_it(col, qapp):
+    tree = tree_for(col, variable("a", "A"), condition_with("cond"))
+    assert tree.rows["cond"].body.isHidden()
+    into = menu_entries(menu_entries(tree.rows["a"].build_menu())["Move into"].menu())
+    into["Condition → Then"].trigger()
+    assert tree.document.location("a") == ("cond", "then", 0)
+    assert not tree.rows["cond"].body.isHidden()
+
+
 # -- scope menus ----------------------------------------------------------------------
 
 

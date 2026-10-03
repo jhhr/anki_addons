@@ -422,9 +422,31 @@ run, then the exports.
   process chains, tag and card-action editors.
 * **Add stage** offers the sixteen types. *Edit Card* appears only where a card binding is
   in scope, because it names one card and there would be nothing to name.
-* The `⋮` menu on a row duplicates it, deletes it, or moves it into another block; `↑`/`↓`
-  reorder it among its siblings. There is no drag-and-drop; the move menu does the same
-  work, including moving a stage into or out of a loop or a branch.
+* `↑`/`↓` reorder a stage among its siblings and never take it out of its block. Every row
+  also has a checkbox, and the bar above the list acts on the checked stages together; the
+  `⋮` menu on a row offers the same moves for that row alone, checked or not, as well as
+  duplicating and deleting it. There is no drag-and-drop; the menus do the same work.
+  *Wrap in* puts neighbouring stages of one block inside a new condition (as its `then`) or
+  loop (as its `body`), standing where they stood; stages with a gap between them, or from
+  two blocks, have no one place for it to stand and cannot be wrapped together. *Move out*
+  puts stages that share a block just above or just below the stage that holds it. *Move
+  into* lists every other block, a condition named by its predicate and a loop by its list:
+  no editor sets a stage's own name, so two conditions both read "Condition". The stages
+  land as near as the block allows to where they were -- at the top of a block below them,
+  at the bottom of one above, just below the stage that held them in a block enclosing them
+  -- because always appending sent a stage taken out of a branch to the end of the
+  definition. *Remove this condition* (or *loop*) *, keep its stages* is the reverse of a
+  wrap: the stage's blocks take its place, a condition's `then` followed by its `else`, both
+  now run every time, and a migrated copy condition's skipping of the whole note goes with
+  it. A condition or loop that was off keeps its stages off, since they never ran before and
+  running them is a separate decision. Checking a stage and something inside
+  it acts on the outer one, which already carries the rest. The bar also turns the checked
+  stages on or off and deletes them; a move keeps them checked, and a wrap or a move into a
+  block opens the block they landed in.
+* None of those moves rewrites a reference. A result produced inside a branch or a loop body
+  does not escape it, so wrapping its producer leaves every reader further down marked and
+  the save blocked until the reader moves in too or the producer back out; unwrapping can
+  bring together two names that lived in separate branches, which is reported the same way.
 * Every text edit's right-click menu is built from the analyser's record of what is in
   scope *at that stage*. A loop body offers the loop's note; the stage above the loop does
   not. Lists never appear, because no interpolation could turn one into text.
@@ -525,12 +547,12 @@ an edit, or choosing a different note, marks the trace as stale until you run it
 | `logic/unsaved_note_search.py` | judging a search against a note not in the collection yet |
 | `logic/copy_fields.py` | the bulk operation: which notes each definition runs for, undo, the sync tail |
 | `configuration.py` | the config, the trigger accessors, and the startup migration |
-| `ui/stage_document.py` | the editable stage tree: add, move, duplicate, delete, save readiness |
+| `ui/stage_document.py` | the editable stage tree: add, move, wrap, unwrap, duplicate, delete, save readiness |
 | `ui/stage_editor_context.py` | one scope per stage, turned into its menus and Add Stage entries |
 | `ui/stage_edit_state.py` | the state object that lets the older shared widgets be reused |
 | `ui/value_expression_editor.py` | the one editor every value expression uses |
 | `ui/stage_editors.py` | one editor per stage type |
-| `ui/stage_list.py` | the ordered, indented stage list |
+| `ui/stage_list.py` | the ordered, indented stage list, and the bar that acts on the checked stages |
 | `ui/stage_triggers_editor.py` | the trigger settings at the top |
 | `ui/stage_exports_editor.py` | the definition-level exports panel |
 | `ui/stage_preview.py` | the preview pane: note picker, run control, trace |
