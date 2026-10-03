@@ -435,7 +435,9 @@ run, then the exports.
   land as near as the block allows to where they were -- at the top of a block below them,
   at the bottom of one above, just below the stage that held them in a block enclosing them
   -- because always appending sent a stage taken out of a branch to the end of the
-  definition. *Remove this condition* (or *loop*) *, keep its stages* is the reverse of a
+  definition. That is one rule, not three: they go in after every stage of the block that
+  ran before them, which also puts a stage moved from a condition's `then` at the top of its
+  `else`. *Remove this condition* (or *loop*) *, keep its stages* is the reverse of a
   wrap: the stage's blocks take its place, a condition's `then` followed by its `else`, both
   now run every time, and a migrated copy condition's skipping of the whole note goes with
   it. A condition or loop that was off keeps its stages off, since they never ran before and

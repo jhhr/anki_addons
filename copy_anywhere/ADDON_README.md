@@ -203,7 +203,8 @@ menu, for that stage alone, or in the bar above the stages, for every stage you 
 - **Move out** takes them out of the condition or loop they are in, to just above or just
   below it.
 - **Move into** puts them in another block. They land as close as they can to where they
-  were: at the top of a block below them, at the bottom of one above.
+  were: at the top of a block below them, at the bottom of one above. A condition's
+  *Otherwise* counts as below its *Then*.
 - **Remove this condition, keep its stages**, on a condition's own **⋮** (or *this loop*, on
   a loop's), undoes a wrap. A condition's *Then* is followed by its *Otherwise*, and both now
   run every time. If the condition was off, its stages stay off.

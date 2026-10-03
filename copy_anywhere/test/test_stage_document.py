@@ -477,6 +477,69 @@ def test_moving_from_one_branch_to_the_other():
     assert guids_of(doc.stage("c")["else"]) == ["t"]
 
 
+def test_moving_from_then_into_otherwise_lands_at_its_top():
+    # Otherwise is below Then, so for a stage in Then it is a block below. It was taken for
+    # one above, because the condition that owns both runs before either, and the stage was
+    # appended to it.
+    loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
+    loop["body"] = [default_stage(STAGE_VARIABLE, "deep")]
+    doc = document(
+        condition_with(
+            "c",
+            then=[default_stage(STAGE_VARIABLE, "t"), loop],
+            otherwise=[default_stage(STAGE_VARIABLE, "e1"), default_stage(STAGE_VARIABLE, "e2")],
+        )
+    )
+    assert doc.move_into(["t"], "c", "else") is True
+    assert guids_of(doc.stage("c")["else"]) == ["t", "e1", "e2"]
+    # and from further inside Then
+    assert doc.move_into(["deep"], "c", "else") is True
+    assert guids_of(doc.stage("c")["else"]) == ["deep", "t", "e1", "e2"]
+
+
+def test_a_move_into_any_block_keeps_the_running_order_of_what_is_in_it():
+    # "As near as the block allows to where they were" has one reading that needs no case
+    # per kind of block: among the stages already in the block, the one that moved keeps its
+    # place in the order stages run in. Every stage of a tree three blocks deep is moved into
+    # every block it is offered.
+    def variables(*guids):
+        return [default_stage(STAGE_VARIABLE, guid) for guid in guids]
+
+    def fresh():
+        inner_loop = default_stage(STAGE_FOR_EACH_NOTE, "l1")
+        inner_loop["body"] = variables("b1", "b2")
+        last_loop = default_stage(STAGE_FOR_EACH_NOTE, "l2")
+        last_loop["body"] = variables("z1", "z2")
+        return document(
+            *variables("a"),
+            condition_with(
+                "c1",
+                then=[*variables("t1"), inner_loop, *variables("t2")],
+                otherwise=[
+                    *variables("e1"),
+                    condition_with("c2", then=variables("x1"), otherwise=variables("y1")),
+                    *variables("e2"),
+                ],
+            ),
+            *variables("m"),
+            last_loop,
+            *variables("end"),
+        )
+
+    moves = 0
+    for guid in guids_of(walk_stages(fresh().root_block())):
+        for parent_guid, body_key, label in fresh().move_targets(guid):
+            doc = fresh()
+            ran = guids_of(walk_stages(doc.root_block()))
+            there = {guid, *guids_of(doc.block(parent_guid, body_key))}
+            assert doc.move_into([guid], parent_guid, body_key) is True
+            assert guids_of(doc.block(parent_guid, body_key)) == [
+                one for one in ran if one in there
+            ], f"{guid} into {label}"
+            moves += 1
+    assert moves > 50
+
+
 def test_moving_into_refuses_the_own_block_and_the_inside_of_a_moved_stage():
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     doc = document(default_stage(STAGE_VARIABLE, "a"), loop)

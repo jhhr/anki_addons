@@ -619,13 +619,20 @@ class StageDocument:
         the stage they were inside. Always appending, as the first version of the menu did,
         sent a stage taken out of a branch to the very end of the definition, to be walked
         back up one ↑ at a time.
+
+        All three are one rule: the stages keep their place in the order stages run in, so
+        they go in after everything in the block that ran before them. It is the rule, and
+        not a case for each, because the cases left one out. A condition's Otherwise is
+        below its Then but belongs to a stage above both, and a stage moved from Then to
+        Otherwise was sent to the bottom as if into a block above it.
         """
         group = self.sibling_group(guids)
         if group is None:
             return False
         if (parent_guid, body_key) == (group.parent_guid, group.body_key):
             return False
-        if self.block(parent_guid, body_key) is None:
+        destination = self.block(parent_guid, body_key)
+        if destination is None:
             return False
         own = {
             stage.get("guid")
@@ -633,22 +640,13 @@ class StageDocument:
         }
         if parent_guid in own:
             return False
-        holder = self._child_holding(parent_guid, body_key, group.guids[0])
-        comes_after = parent_guid is not None and self._runs_after(parent_guid, group.guids[0])
-        moved = self._take(group)
-        destination = self.block(parent_guid, body_key)
-        assert destination is not None
-        if holder is not None:
-            index = next(
-                position
-                for position, stage in enumerate(destination)
-                if stage.get("guid") == holder
-            ) + 1
-        elif comes_after:
-            index = 0
-        else:
-            index = len(destination)
-        destination[index:index] = moved
+        ran = {
+            stage.get("guid"): place
+            for place, stage in enumerate(walk_stages(self.root_block()))
+        }
+        first = ran[group.guids[0]]
+        index = sum(1 for stage in destination if ran[stage.get("guid")] < first)
+        destination[index:index] = self._take(group)
         self.invalidate()
         return True
 
@@ -663,20 +661,6 @@ class StageDocument:
         for position in sorted(group.positions, reverse=True):
             del block[position]
         return moved
-
-    def _child_holding(
-        self, parent_guid: Optional[str], body_key: Optional[str], guid: str
-    ) -> Optional[str]:
-        """Which stage of the block is an ancestor of `guid`, if any is."""
-        chain = [stage.get("guid") for stage in self.ancestors(guid)]
-        for stage in self.block(parent_guid, body_key) or []:
-            if stage.get("guid") in chain:
-                return stage.get("guid")
-        return None
-
-    def _runs_after(self, guid: str, other: str) -> bool:
-        order = [stage.get("guid") for stage in walk_stages(self.root_block())]
-        return order.index(guid) > order.index(other)
 
     # -- exports -------------------------------------------------------------------------
 
