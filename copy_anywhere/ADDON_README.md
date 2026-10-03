@@ -211,7 +211,8 @@ menu, for that stage alone, or in the bar above the stages, for every stage you 
 - **Turn on**, **Turn off** and **Delete** act on every checked stage, and **✕** unchecks
   them all.
 
-Checking a condition or loop takes everything inside it along. A name produced inside a
+Checking a condition or loop takes everything inside it along. Closing one unchecks the
+stages inside it, so the bar never acts on a stage you cannot see. A name produced inside a
 branch or a loop is gone when that block ends, so wrapping a stage whose result is read
 further down marks those readers in red, and the definition cannot be saved until you move
 them in too or take the stage back out.

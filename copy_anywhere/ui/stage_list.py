@@ -13,9 +13,12 @@ Every row has a checkbox, and the bar above the list acts on the checked rows to
 wrapping a run of stages in a condition or a loop, moving them in or out of one, turning
 them on or off, deleting them. The `⋮` menu offers the same moves for its own row alone.
 Which rows are checked is kept by guid, like which are expanded, so it survives a rebuild.
+A checked row is always one that can be seen: closing a block unchecks what is inside it,
+and a move opens every block around where the stages land. The bar acts on what is checked
+without asking, and that must not include a stage the user is not looking at.
 """
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from aqt.qt import (
     QCheckBox,
@@ -34,6 +37,7 @@ from aqt.qt import (
 )
 
 from ..logic.definition_schema import STAGE_CONDITION, Stage, stage_body_blocks, walk_stages
+from ..shared.utils.block_signals import block_signals
 from .discard import discard_widget
 from .labels import ElidedLabel
 from .stage_document import (
@@ -259,6 +263,10 @@ class StageRow(QFrame):
                 self.tree.stage_expanded.emit(self.guid)
         else:
             self.tree.expanded.discard(self.guid)
+            # The stages in this row's blocks have just gone out of sight, and the bar acts
+            # on whatever is checked: left checked, they were still counted, and Delete took
+            # stages nobody was looking at.
+            self.tree.deselect_inside(self.guid)
 
     def _on_enabled(self, checked: bool) -> None:
         self.tree.set_enabled(self.guid, checked)
@@ -606,9 +614,10 @@ class StageTreeWidget(QWidget):
     # -- several stages at once ----------------------------------------------------------
     #
     # A move keeps the stages checked: they are still there, and what to do with them next
-    # is often another move. Moving them into a block opens it, and so does wrapping them,
-    # since checked stages hidden inside a closed block would leave the bar counting stages
-    # nobody can see.
+    # is often another move. Moving them into a block opens it and every block around it,
+    # and wrapping them opens the new stage, since checked stages hidden inside a closed
+    # block would leave the bar counting stages nobody can see. Closing a block by hand
+    # unchecks what is in it, for the same reason.
 
     def selected_guids(self) -> list[str]:
         """The checked stages, in the order they run."""
@@ -625,13 +634,33 @@ class StageTreeWidget(QWidget):
             self.selected.discard(guid)
         self.selection_bar.refresh()
 
-    def clear_selection(self) -> None:
-        self.selected.clear()
-        for row in self.rows.values():
-            row.select_box.blockSignals(True)
-            row.select_box.setChecked(False)
-            row.select_box.blockSignals(False)
+    def deselect(self, guids: Iterable[str]) -> None:
+        """Uncheck these stages, in what is remembered and in their rows."""
+        for guid in guids:
+            self.selected.discard(guid)
+            row = self.rows.get(guid)
+            if row is not None:
+                # Blocked so that the bar is refreshed once, below, and not once per box.
+                with block_signals(row.select_box):
+                    row.select_box.setChecked(False)
         self.selection_bar.refresh()
+
+    def clear_selection(self) -> None:
+        self.deselect(list(self.selected))
+
+    def deselect_inside(self, guid: str) -> None:
+        """Uncheck every stage in this stage's blocks, at any depth. The stage itself keeps
+        its check: its row is still on screen when its blocks are closed."""
+        stage = self.document.stage(guid)
+        if stage is None:
+            return
+        inside = {
+            child.get("guid", "")
+            for _key, block in stage_body_blocks(stage)
+            for child in walk_stages(block)
+        }
+        if inside & self.selected:
+            self.deselect(inside)
 
     def wrap_stages(self, guids: list[str], stage_type: str) -> None:
         self.apply_editors()
@@ -656,7 +685,12 @@ class StageTreeWidget(QWidget):
         self.apply_editors()
         if self.document.move_into(guids, parent_guid, body_key):
             if parent_guid is not None:
+                # Not the block alone: the menu lists it whether or not it is on screen, and
+                # inside a closed block the stages moved out of sight, still checked.
                 self.expanded.add(parent_guid)
+                self.expanded.update(
+                    stage.get("guid", "") for stage in self.document.ancestors(parent_guid)
+                )
             self.rebuild()
 
     def remove_stages(self, guids: list[str]) -> None:

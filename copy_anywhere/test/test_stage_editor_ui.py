@@ -507,6 +507,69 @@ def test_moving_into_a_closed_block_opens_it(col, qapp):
     assert not tree.rows["cond"].body.isHidden()
 
 
+def loop_with(guid, body=()):
+    stage = default_stage(STAGE_FOR_EACH_NOTE, guid)
+    stage["body"] = list(body)
+    return stage
+
+
+def test_moving_into_a_block_inside_a_closed_one_opens_both(col, qapp):
+    # The menu lists a block whether or not it is on screen, and only the block itself was
+    # opened: inside a closed condition the stages moved out of sight, still checked.
+    tree = tree_for(col, variable("a", "A"), condition_with("outer", then=[loop_with("inner")]))
+    assert tree.rows["outer"].body.isHidden()
+    tree.rows["a"].select_box.setChecked(True)
+    into = menu_entries(tree.selection_bar.build_move_into_menu())
+    into["Loop Over Notes → Do"].trigger()
+    assert tree.document.location("a") == ("inner", "body", 0)
+    assert not tree.rows["inner"].body.isHidden()
+    assert not tree.rows["outer"].body.isHidden()
+    assert tree.rows["a"].select_box.isChecked()
+
+
+def test_closing_a_block_unchecks_the_stages_inside_it(col, qapp):
+    # The bar acts on what is checked whether or not it is on screen. With the condition
+    # closed it still counted the two stages inside, and Delete took stages nobody was
+    # looking at.
+    tree = tree_for(
+        col,
+        condition_with(
+            "cond", then=[variable("t", "T"), loop_with("loop", [variable("deep", "D")])]
+        ),
+        variable("after", "AFTER"),
+    )
+    tree.rows["cond"].set_expanded(True)
+    tree.rows["loop"].set_expanded(True)
+    for guid in ("t", "deep", "after"):
+        tree.rows[guid].select_box.setChecked(True)
+    assert tree.selection_bar.count_label.text() == "3 checked"
+
+    tree.rows["cond"]._toggle()
+
+    assert tree.rows["cond"].body.isHidden()
+    assert tree.selected_guids() == ["after"]
+    assert tree.selection_bar.count_label.text() == "1 checked"
+    # The boxes as well, so that opening the condition again shows what the bar counts.
+    assert not tree.rows["t"].select_box.isChecked()
+    assert not tree.rows["deep"].select_box.isChecked()
+    tree.selection_bar.delete_button.click()
+    assert tree.document.stage("t") is not None
+    assert tree.document.stage("deep") is not None
+    assert tree.document.stage("after") is None
+
+
+def test_closing_a_row_unchecks_nothing_but_what_it_hides(col, qapp):
+    tree = tree_for(col, variable("a", "A"), condition_with("cond", then=[variable("t", "T")]))
+    for guid in ("a", "cond"):
+        tree.rows[guid].set_expanded(True)
+        tree.rows[guid].select_box.setChecked(True)
+    tree.rows["a"]._toggle()
+    tree.rows["cond"]._toggle()
+    # A stage's own row is still on screen when its settings, or its stages, are folded away.
+    assert tree.selected_guids() == ["a", "cond"]
+    assert tree.rows["cond"].select_box.isChecked()
+
+
 # -- scope menus ----------------------------------------------------------------------
 
 

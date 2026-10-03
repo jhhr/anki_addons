@@ -444,7 +444,9 @@ run, then the exports.
   running them is a separate decision. Checking a stage and something inside
   it acts on the outer one, which already carries the rest. The bar also turns the checked
   stages on or off and deletes them; a move keeps them checked, and a wrap or a move into a
-  block opens the block they landed in.
+  block opens the block they landed in and every block around it. Closing a condition or a
+  loop unchecks the stages inside it. Both are for the same reason: the bar acts on what is
+  checked without asking, so a checked stage has to be one that is on screen.
 * None of those moves rewrites a reference. A result produced inside a branch or a loop body
   does not escape it, so wrapping its producer leaves every reader further down marked and
   the save blocked until the reader moves in too or the producer back out; unwrapping can
