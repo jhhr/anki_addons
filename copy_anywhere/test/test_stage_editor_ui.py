@@ -303,7 +303,7 @@ def test_a_stage_moved_into_a_loop_renders_inside_it(col, qapp):
     loop = default_stage(STAGE_FOR_EACH_NOTE, "loop")
     loop["input"] = {"binding": "A1"}
     tree = tree_for(col, note_query("q", "A1"), loop, variable("v", "M"))
-    tree.move_stage_into("v", "loop", "body")
+    tree.move_stages_into(["v"], "loop", "body")
     assert tree.document.location("v") == ("loop", "body", 0)
     assert [row.guid for row in tree.root_block.rows] == ["q", "loop"]
     assert [row.guid for row in tree.rows["loop"].child_blocks[0].rows] == ["v"]

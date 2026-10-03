@@ -622,9 +622,6 @@ class StageTreeWidget(QWidget):
         if self.document.move_within_block(guid, offset):
             self.rebuild()
 
-    def move_stage_into(self, guid: str, parent_guid, body_key) -> None:
-        self.move_stages_into([guid], parent_guid, body_key)
-
     def set_enabled(self, guid: str, enabled: bool) -> None:
         self.apply_editors()
         self.document.set_enabled(guid, enabled)
