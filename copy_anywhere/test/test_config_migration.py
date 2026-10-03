@@ -21,6 +21,7 @@ from copy_anywhere.configuration import (
 )
 from copy_anywhere.logic.definition_migration import (
     SYNTAX_VERSION_LEGACY,
+    fill_in_missing_stage_guids,
     migrate_definition_v1_to_v2,
 )
 from copy_anywhere.logic.definition_schema import (
@@ -279,6 +280,117 @@ class TestRetiringFormat1Syntax:
         assert not is_format_2(definitions[0])
 
 
+class TestIdCarryingReferences:
+    """The 0.5.0 migration: the trigger and card-type slots become structured references.
+
+    Only the shape changes here. `migrate_config()` runs at import time, before `mw.col`
+    exists, so no name can be resolved to an id yet and every one comes out null; the
+    editor binds them when the definition is saved.
+    """
+
+    def a_0_4_0_definition(self):
+        """What 0.4.0 stored: bare names in the slots that now carry ids."""
+        definition = d.staged(
+            definition_name="old",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Note", d.text("{{trigger.Word}}"))],
+                    card_actions=[d.card_action("CA Vocab", "Recognition", set_flag=2)],
+                )
+            ],
+        )
+        definition["triggers"]["note_types"] = ["CA Vocab"]
+        definition["triggers"]["deck_names"] = ["JP vocab"]
+        return definition
+
+    def test_the_trigger_names_become_references_with_no_id(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        triggers = stored(stub_mw)["copy_definitions"][0]["triggers"]
+        assert triggers["note_types"] == [{"id": None, "name": "CA Vocab"}]
+        assert triggers["deck_names"] == [{"id": None, "name": "JP vocab"}]
+
+    def test_a_card_action_names_its_card_type_as_a_reference(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        action = stored(stub_mw)["copy_definitions"][0]["stages"][0]["card_actions"][0]
+        assert action["card_type"] == {
+            "note_type_id": None,
+            "template_id": None,
+            "name": "CA Vocab<::>Recognition",
+        }
+        assert "card_type_name" not in action
+
+    def test_the_version_records_that_the_step_ran(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_0_4_0_definition()]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        assert stored(stub_mw)["version"] == CONFIG_VERSION
+
+    def test_running_it_again_leaves_the_bound_ids_alone(self, config, stub_mw):
+        definition = self.a_0_4_0_definition()
+        definition["triggers"]["note_types"] = [{"id": 42, "name": "CA Vocab"}]
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+        stub_mw.addonManager.configs["copy_anywhere"]["version"] = "0.4.0"
+        migrate_config()
+
+        triggers = stored(stub_mw)["copy_definitions"][0]["triggers"]
+        assert triggers["note_types"] == [{"id": 42, "name": "CA Vocab"}]
+
+    def test_an_empty_card_type_name_becomes_no_reference_at_all(self, config, stub_mw):
+        """An `edit_card` stage's actions name no card type -- the stage named the card.
+
+        The old editor wrote one empty `card_type_name` string for them. A reference with
+        no name and no ids is not a reference to anything, so the slot comes out as the
+        `None` the editor itself writes there now.
+        """
+        action = d.card_action("CA Vocab", "Recognition", set_flag=2)
+        action["card_type_name"] = ""
+        definition = d.staged(
+            definition_name="single card",
+            stages=[
+                d.card_query("cards", "deck:x"),
+                d.for_each_card("cards", [d.edit_card("card", [action])]),
+            ],
+        )
+        config["copy_definitions"] = [definition]
+        config["version"] = "0.4.0"
+
+        migrate_config()
+
+        stage = stored(stub_mw)["copy_definitions"][0]["stages"][1]["body"][0]
+        assert stage["card_actions"][0]["card_type"] is None
+        assert "card_type_name" not in stage["card_actions"][0]
+
+    def test_a_format_1_config_arrives_structured_in_one_pass(self, config, stub_mw):
+        config["copy_definitions"] = [
+            d.within_note(
+                definition_name="w",
+                card_actions=[d.card_action("CA Vocab", "Recognition", set_flag=2)],
+                field_to_field_defs=[d.field_to_field("Note", "{{Word}}")],
+            )
+        ]
+        config["version"] = "0.1.0"
+
+        migrate_config()
+
+        definition = stored(stub_mw)["copy_definitions"][0]
+        assert definition["triggers"]["note_types"] == [{"id": None, "name": "CA Vocab"}]
+        assert "card_type" in definition["stages"][0]["card_actions"][0]
+
+
 class TestStagesWithoutAGuid:
     """A stage with no guid is refused by the editor ("stage has no guid"), so none may be left.
 
@@ -345,6 +457,113 @@ class TestStagesWithoutAGuid:
         first = copy.deepcopy(stored(stub_mw)["copy_definitions"])
         migrate_config()
         assert stored(stub_mw)["copy_definitions"] == first
+
+
+class TestFieldWritesWithoutAGuid:
+    """A rename warning about a field write's text is filed under the write's guid, and only
+    a migrated write or one the editor added since has one, so the start repairs the rest."""
+
+    def a_definition_with_writes_that_have_no_guid(self):
+        return d.staged(
+            definition_name="writes",
+            stages=[
+                d.edit_note(
+                    "trigger",
+                    fields=[d.write("Note", d.text("a")), d.write("Meaning", d.text("b"))],
+                ),
+                d.for_each_note(
+                    "A1", [d.edit_note("note", fields=[d.write("Note", d.text("c"))])]
+                ),
+            ],
+        )
+
+    def writes(self, definition):
+        return [
+            write
+            for stage in walk_stages(definition["stages"])
+            if stage["type"] == "edit_note"
+            for write in stage["fields"]
+        ]
+
+    def test_every_write_is_given_one_derived_from_the_definition(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+
+        assert fill_in_missing_stage_guids(definition) is True
+
+        guids = [write["guid"] for write in self.writes(definition)]
+        assert guids == [f"def-writes::field-write-{n}" for n in (1, 2, 3)]
+        stage_guids = {stage["guid"] for stage in walk_stages(definition["stages"])}
+        assert not stage_guids & set(guids)
+
+    def test_two_repairs_of_the_same_definition_agree(self):
+        one = self.a_definition_with_writes_that_have_no_guid()
+        other = copy.deepcopy(one)
+
+        fill_in_missing_stage_guids(one)
+        fill_in_missing_stage_guids(other)
+
+        assert one == other
+
+    def test_a_card_action_without_one_is_given_one_too(self):
+        # Its code is a location a rename warning is filed under (`card_action_key`).
+        kept = {"guid": "kept", "use_code": True, "action_code": ""}
+        missing = {"use_code": True, "action_code": ""}
+        definition = d.staged(
+            definition_name="actions",
+            stages=[d.edit_note("trigger", card_actions=[kept, missing])],
+        )
+        definition["stages"][0]["guid"] = "stage"
+
+        assert fill_in_missing_stage_guids(definition) is True
+
+        assert kept["guid"] == "kept"
+        assert missing["guid"] == "def-actions::card-action-1"
+        assert fill_in_missing_stage_guids(definition) is False
+
+    def test_a_guid_already_taken_is_not_handed_out_again(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        definition["stages"][0]["fields"][1]["guid"] = "def-writes::field-write-1"
+
+        fill_in_missing_stage_guids(definition)
+
+        guids = [write["guid"] for write in self.writes(definition)]
+        assert len(set(guids)) == 3
+        assert guids[1] == "def-writes::field-write-1"
+
+    def test_a_complete_definition_is_left_untouched(self):
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        fill_in_missing_stage_guids(definition)
+        repaired = copy.deepcopy(definition)
+
+        assert fill_in_missing_stage_guids(definition) is False
+        assert definition == repaired
+
+    def test_a_migrated_write_keeps_its_own(self):
+        definition = migrate_definition_v1_to_v2(
+            d.within_note(field_to_field_defs=[d.field_to_field("Meaning", "{{Word}}")])
+        )
+        before = [write["guid"] for write in self.writes(definition)]
+
+        assert fill_in_missing_stage_guids(definition) is False
+        assert [write["guid"] for write in self.writes(definition)] == before
+        assert before == ["ftf-Meaning-{{Word}}"]
+
+    def test_the_start_repairs_them_and_a_second_start_changes_nothing(self, config, stub_mw):
+        config["copy_definitions"] = [self.a_definition_with_writes_that_have_no_guid()]
+        config["version"] = CONFIG_VERSION
+
+        migrate_config()
+        (definition,) = stored(stub_mw)["copy_definitions"]
+        assert all(write.get("guid") for write in self.writes(definition))
+        first = copy.deepcopy(stored(stub_mw)["copy_definitions"])
+        migrate_config()
+
+        assert stored(stub_mw)["copy_definitions"] == first
+
+    def test_a_write_without_one_still_validates(self):
+        # Stored definitions without write guids must load until the repair has run.
+        definition = self.a_definition_with_writes_that_have_no_guid()
+        assert validate_definition_structure(definition) == []
 
 
 class TestTheBackup:

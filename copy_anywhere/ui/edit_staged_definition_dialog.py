@@ -15,6 +15,7 @@ is far too expensive to run on a keystroke -- so an edit marks it stale and the 
 it when they want the answer.
 """
 
+import html
 from typing import NamedTuple, Optional, Sequence
 
 from aqt.qt import (
@@ -33,10 +34,19 @@ from aqt.utils import showInfo
 
 from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from ..logic.flow_analysis import find_call_cycles, make_lookup
+from ..logic.rename_locations import TRIGGERS_ANCHOR, split_key
+from ..logic.rename_reconcile import drop_cleared_warnings
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from .labels import wrapping
+from .rename_indicator import RenameIndicator
+from .rename_marks_banner import RenameMarksBanner, place_of
 from .stage_document import StageDocument
-from .stage_editor_context import known_fields_for, make_note_types_for
+from .stage_editor_context import (
+    known_fields_for,
+    make_note_types_for,
+    trigger_name_blockers,
+    unresolved_reference_warnings,
+)
 from .stage_editors import StageEditorEnvironment
 from .stage_exports_editor import ExportsEditor
 from .stage_list import StageTreeWidget
@@ -123,11 +133,22 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
             copy_definition,
             lookup=make_lookup(self.all_definitions),
             known_fields=known_fields_for,
+            unresolved_refs=unresolved_reference_warnings,
+            trigger_names=trigger_name_blockers,
         )
 
         self.body = QVBoxLayout(self.inner_widget)
 
-        self.triggers_editor = TriggersEditor(self.inner_widget, self.document.definition)
+        # First, above everything it may be about: a definition with a blocking warning is
+        # not run, which matters more than anything else the editor says about it.
+        self.marks_banner = RenameMarksBanner(self.inner_widget, self.document)
+        self.marks_banner.location_chosen.connect(self.focus_location)
+        self.marks_banner.dismissed.connect(self.refresh_rename_indicators)
+        self.body.addWidget(self.marks_banner)
+
+        self.triggers_editor = TriggersEditor(
+            self.inner_widget, self.document.definition, rename_document=self.document
+        )
         self.triggers_editor.changed.connect(self.schedule_refresh)
         self.body.addWidget(self.triggers_editor)
 
@@ -145,6 +166,7 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
             make_note_types_for(self.document.definition),
             self.all_definitions,
             self.document.definition.get("guid", ""),
+            document=self.document,
         )
         self.stage_tree = StageTreeWidget(self.inner_widget, self.document, environment)
         self.stage_tree.definition_changed.connect(self.schedule_refresh)
@@ -244,6 +266,13 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         # one it ran, rather than being told it is out of date (§9).
         self.preview.set_definition(self.document.definition)
         self.preview.mark_stale()
+        # Each indicator follows its own part as it is typed in; this catches what changed
+        # a part without the user typing, such as a field picker relisted above.
+        self.refresh_rename_indicators()
+
+    def refresh_rename_indicators(self) -> None:
+        for indicator in self.findChildren(RenameIndicator):
+            indicator.refresh()
 
     def focus_stage(self, stage_guid: str) -> None:
         """Open the stage a trace row stands for and scroll the list to it."""
@@ -252,6 +281,24 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
             return
         self.stage_tree.expand(stage_guid)
         self.scroll_area.ensureWidgetVisible(row)
+
+    def focus_location(self, key: str) -> None:
+        """Open and scroll to the part a rename warning's location key names."""
+        anchor, path = split_key(key)
+        if anchor == TRIGGERS_ANCHOR:
+            boxes = {
+                "on_unfocus.edit_fields": self.triggers_editor.unfocus_edit,
+                "on_unfocus.add_fields": self.triggers_editor.unfocus_add,
+            }
+            self.scroll_area.ensureWidgetVisible(boxes.get(path, self.triggers_editor))
+            return
+        stage_guid = place_of(self.document, key).stage_guid
+        if stage_guid is None:
+            return
+        # A stage inside a loop or a condition is out of sight until they are open too.
+        for ancestor in self.document.ancestors(stage_guid):
+            self.stage_tree.expand(ancestor.get("guid", ""))
+        self.focus_stage(stage_guid)
 
     def _cycle_blockers(self) -> list[str]:
         """Call cycles, checked across the whole config rather than one definition.
@@ -284,17 +331,20 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         ]
         # The document's list, not the analyser's: the add-note case is worded from the
         # triggers and named with stage paths, neither of which the analyser knows about.
+        # Escaped: every message is plain text (the same lines go to `showInfo` as they
+        # are) and many quote a name from the collection. A card type's is "Note<::>Card",
+        # whose `<::>` rich text would swallow.
         warnings = self.document.warnings()
         if warnings:
             lines.append(
                 "<span style='color: #b8860b'>Worth knowing:</span><ul>"
-                + "".join(f"<li>{warning}</li>" for warning in warnings)
+                + "".join(f"<li>{html.escape(warning, quote=False)}</li>" for warning in warnings)
                 + "</ul>"
             )
         if blockers:
             lines.append(
                 "<span style='color: #c0392b'>Cannot be saved yet:</span><ul>"
-                + "".join(f"<li>{blocker}</li>" for blocker in blockers)
+                + "".join(f"<li>{html.escape(blocker, quote=False)}</li>" for blocker in blockers)
                 + "</ul>"
             )
         return "<br>".join(lines)
@@ -323,6 +373,15 @@ class EditStagedDefinitionDialog(ScrollableQDialog):
         self.accept()
 
     def get_copy_definition(self) -> CopyDefinitionV2:
-        """The definition as it should be stored, with `effects` freshly derived."""
+        """The definition as it should be stored, with `effects` freshly derived and the
+        rename warnings whose text the user fixed dropped (see
+        "How a warning goes away" in `docs/staged-definitions.md`).
+
+        Only a Save comes here (the picker asks only an accepted dialog), so a warning
+        survives a Cancel however the text was left. The entries a Replace answered in a
+        swap go too, unless the text was put back (`StageDocument.settle_rename_marks`).
+        """
         self.apply_editors()
-        return self.document.to_definition()
+        return drop_cleared_warnings(
+            self.document.to_definition(), self.document.settled_rename_marks()
+        )

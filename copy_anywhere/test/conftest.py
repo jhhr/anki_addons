@@ -163,6 +163,21 @@ def _operation_logs_go_to_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _refusals_forgotten():
+    """Start every test with no refusal already logged by the note hooks.
+
+    The hooks log a refused definition once per session, keyed by guid, and the builders
+    give every definition of one name the same guid; left over, one test's refusal would
+    silence the next test's.
+    """
+    from copy_anywhere.logic import copy_fields
+
+    copy_fields.forget_logged_refusals()
+    yield
+    copy_fields.forget_logged_refusals()
+
+
+@pytest.fixture(autouse=True)
 def _no_stale_modules():
     """Guard against a test importing an addon module before `mw` exists.
 

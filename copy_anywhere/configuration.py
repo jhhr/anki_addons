@@ -19,6 +19,14 @@ from .logic.definition_schema import (
     UnfocusTriggers,
     is_format_2,
     read_effects,
+    walk_stages,
+)
+from .logic.object_refs import (
+    CardTypeRef,
+    ObjectRef,
+    card_action_card_type,
+    card_type_ref_names_nothing,
+    normalize_ref,
 )
 from .shared.jp_text_processing.kana.kana_highlight import FuriReconstruct
 from .logging_setup import operation_logging
@@ -216,7 +224,11 @@ CARD_TYPE_SEPARATOR = "<::>"
 
 # Card action used by GUI or code
 class CardActionDict(TypedDict):
-    card_type_name: str
+    # A structured reference since 0.5.0; the pre-0.5.0 `card_type_name` string is still
+    # read by `object_refs.card_action_card_type` for a config the migration has not
+    # reached and for the README examples, which ship with null ids. An `edit_card` stage's
+    # actions carry None: the stage already names the card.
+    card_type: Optional[CardTypeRef]
     change_deck: Optional[Union[str, int]]
     set_flag: Optional[FlagValueType]
     suspend: Optional[bool]
@@ -393,7 +405,7 @@ def compare_versions(version1: str, version2: str) -> int:
 #: The version a fully migrated config carries. Each migration below owns its own bump and
 #: spells its version out, so adding one is adding a block rather than editing this; this is
 #: here for the readers and tests that want to ask what "up to date" currently means.
-CONFIG_VERSION = "0.4.0"
+CONFIG_VERSION = "0.5.0"
 
 #: Where the format-1 definitions are kept when the staged migration converts them (§11).
 #: One release, so a user who hits a migration bug still has the originals to hand back.
@@ -491,6 +503,44 @@ def promote_definition_syntax(config: "Config") -> None:
     config.data["copy_definitions"] = definitions
 
 
+def structure_object_references(config: "Config") -> None:
+    """The 0.5.0 migration: the objects with a stable id stop being stored as bare names.
+
+    A note type, a deck and a card template each keep their id across a rename, and Anki
+    offers no hook that carries one (`docs/follow-ups.md`, "Following a rename in Anki"), so
+    a definition stores `{"id", "name"}` and resolves by id first. This step only changes
+    the *shape*: `migrate_config()` runs at import time, before `mw.col` exists, so there is
+    no collection to look a name up in and every id comes out null. The ids are bound where
+    a collection is at hand -- by the editor when the definition is saved.
+
+    Idempotent: a slot already holding a reference is left exactly as it is.
+    """
+    for definition in config.data.get("copy_definitions") or []:
+        if not is_format_2(definition):
+            continue
+        triggers = definition.get("triggers")
+        if isinstance(triggers, dict):
+            for key in ("note_types", "deck_names"):
+                stored = triggers.get(key)
+                if isinstance(stored, list):
+                    triggers[key] = [normalize_ref(value) for value in stored]
+        for stage in walk_stages(definition.get("stages") or []):
+            for card_action in stage.get("card_actions") or []:
+                if not isinstance(card_action, dict):
+                    continue
+                if "card_type" not in card_action and "card_type_name" not in card_action:
+                    continue
+                reference = card_action_card_type(card_action)
+                # An `edit_card` stage's actions name no card type -- the stage already
+                # named the card -- and the old spelling for that was an empty string. The
+                # slot stays empty rather than holding a reference to nothing, which every
+                # reader would report as a card type this collection does not have.
+                card_action["card_type"] = (
+                    None if card_type_ref_names_nothing(reference) else reference
+                )
+                card_action.pop("card_type_name", None)
+
+
 def migrate_config():
     """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed."""
     config = Config()
@@ -515,6 +565,11 @@ def migrate_config():
     if compare_versions(reached, "0.3.0") >= 0 and compare_versions(reached, "0.4.0") < 0:
         promote_definition_syntax(config)
         reached = "0.4.0"
+    # Same condition, for the same reason: a config still in format 1 has no `triggers` to
+    # restructure, and the version has to stay behind so the next start runs both.
+    if compare_versions(reached, "0.3.0") >= 0 and compare_versions(reached, "0.5.0") < 0:
+        structure_object_references(config)
+        reached = "0.5.0"
     if compare_versions(reached, "0.3.0") >= 0:
         repair_stage_guids(config)
     config.data["version"] = reached
@@ -522,7 +577,7 @@ def migrate_config():
 
 
 def repair_stage_guids(config: "Config") -> None:
-    """Give a guid to every stage that has none, on every start rather than once.
+    """Give a guid to every stage and field write that has none, on every start, not once.
 
     Not a versioned step: definitions converted before the conversion minted guids for
     format-1 parts that lacked one are already past every version, and a stage can also lose
@@ -568,10 +623,43 @@ def get_variables_dict_from_variable_defs(
 # a config holding both formats behaves the same either way.
 
 
+def definition_note_type_refs(copy_definition: AnyCopyDefinition) -> list[ObjectRef]:
+    """The note types a definition triggers on, as references that carry their ids.
+
+    Format 1 has only names, so its references come out with null ids and resolve by name,
+    which is what that format always did.
+    """
+    stored: Sequence = (
+        (copy_definition.get("triggers") or {}).get("note_types") or []
+        if is_format_2(copy_definition)
+        else definition_note_type_names(copy_definition)
+    )
+    return [normalize_ref(value) for value in stored]
+
+
+def definition_deck_refs(copy_definition: AnyCopyDefinition) -> list[ObjectRef]:
+    """The decks a definition is limited to, as references. Empty means no limit."""
+    stored: Sequence = (
+        (copy_definition.get("triggers") or {}).get("deck_names") or []
+        if is_format_2(copy_definition)
+        else definition_deck_names(copy_definition)
+    )
+    return [normalize_ref(value) for value in stored]
+
+
 def definition_note_type_names(copy_definition: AnyCopyDefinition) -> list[str]:
-    """The note type names a definition triggers on."""
+    """The note type names a definition triggers on, as *stored*.
+
+    The stored name is what the error messages have always spelled and what a picker falls
+    back to when the id resolves to nothing; whether a note is of one of these note types
+    is decided by `definition_note_type_refs` instead, because a renamed note type keeps
+    its id and no longer answers to the name a definition was written with.
+    """
     if is_format_2(copy_definition):
-        return list((copy_definition.get("triggers") or {}).get("note_types") or [])
+        return [
+            normalize_ref(value)["name"]
+            for value in (copy_definition.get("triggers") or {}).get("note_types") or []
+        ]
     stored = _format_1(copy_definition).get("copy_into_note_types") or ""
     if not stored or stored == "-":
         return []
@@ -582,15 +670,18 @@ def definition_note_type_names(copy_definition: AnyCopyDefinition) -> list[str]:
 def definition_note_types_label(copy_definition: AnyCopyDefinition) -> Optional[str]:
     """The note type names as the error messages have always spelled them, or None."""
     if is_format_2(copy_definition):
-        names = (copy_definition.get("triggers") or {}).get("note_types")
+        names = definition_note_type_names(copy_definition)
         return '", "'.join(names) if names else None
     return _format_1(copy_definition).get("copy_into_note_types", None)
 
 
 def definition_deck_names(copy_definition: AnyCopyDefinition) -> list[str]:
-    """The decks a definition is limited to, empty meaning no limit."""
+    """The deck names a definition is limited to, as stored. Empty means no limit."""
     if is_format_2(copy_definition):
-        return list((copy_definition.get("triggers") or {}).get("deck_names") or [])
+        return [
+            normalize_ref(value)["name"]
+            for value in (copy_definition.get("triggers") or {}).get("deck_names") or []
+        ]
     stored = _format_1(copy_definition).get("only_copy_into_decks") or ""
     if not stored or stored == "-":
         return []
@@ -781,10 +872,31 @@ class Config:
 
         Recomputing here rather than in the editor means an import, a delete, or anything
         else that reaches these mutators is covered too.
+
+        The name snapshot is refreshed for the same reason and in the same place: it is what
+        the reconcile pass compares live names against, so a definition saved naming a note
+        type nothing had referenced before has to bring that note type's field and template
+        names with it or the next rename of one has no old name to be recognised by. There
+        is no collection to read at import time, and a save then leaves the snapshot alone.
+        The snapshot records which collection it was taken of (by its path), so a save made
+        in one profile cannot be read as a rename in the next: this config is shared by all
+        of them, and the ids in it are not.
+
+        A definition a rename left warnings on (`logic/rename_warnings.py`) is saved with
+        them as they stand: a warning is only ever taken off in the editor -- dismissed, or
+        dropped by its save once the text no longer spells the old name -- or by the pass,
+        when the rename is undone; never re-derived here.
+
+        The reconcile pass itself saves with `save`: it has just stored the snapshot, and
+        nothing it changes feeds `effects` (`rename_reconcile.reconcile`).
         """
         from .logic.flow_analysis import refresh_effects
+        from .logic.rename_reconcile import SNAPSHOT_KEY, build_name_snapshot
 
-        refresh_effects(self.data["copy_definitions"] or [])
+        definitions = self.data["copy_definitions"] or []
+        refresh_effects(definitions)
+        if mw.col is not None:
+            self.data[SNAPSHOT_KEY] = build_name_snapshot(definitions, mw.col)
         self.save()
 
     def add_definition(self, definition: AnyCopyDefinition):

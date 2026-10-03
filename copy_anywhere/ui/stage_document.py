@@ -50,6 +50,10 @@ from ..logic.definition_schema import (
     walk_stages,
 )
 from ..logic.flow_analysis import AnalysisResult, analyze_definition
+from ..logic.rename_locations import reanchor_key, split_key
+from ..logic.rename_reconcile import Replaced
+from ..logic.rename_scan import still_spelled
+from ..logic.rename_warnings import WARNINGS_KEY, remove_rename_warning, rename_warning_entries
 from ..logic.unsaved_note_search import UnjudgeableSearch, UnsavedNoteSearchError, parse_search
 
 #: Human labels for the Add Stage menu and the stage row headers, in menu order (§10).
@@ -243,18 +247,39 @@ def default_stage(stage_type: str, guid: Optional[str] = None) -> Stage:
     return stage
 
 
-def reguid_stage(stage: Stage, make_guid: Callable[[], str] = new_guid) -> Stage:
+def reguid_stage(
+    stage: Stage,
+    make_guid: Callable[[], str] = new_guid,
+    new_guids: Optional[dict[str, str]] = None,
+) -> Stage:
     """A deep copy of a stage subtree with every guid replaced.
 
     Duplicating a stage has to renumber its whole subtree: two stages sharing a guid would
     make trace correlation and editor focus ambiguous, and exports reference producers by
-    guid.
+    guid. Its field writes and card actions are renumbered too, since a rename warning is
+    filed under the guid of the write or action whose text spells the name
+    (`rename_locations.py`), and one filed under a shared guid would show in both copies.
+    `new_guids`, when given, collects each old guid with the one that replaced it.
     """
+    guids = {} if new_guids is None else new_guids
+
+    def renumber(holder: Any) -> None:
+        old = holder.get("guid")
+        holder["guid"] = make_guid()
+        if isinstance(old, str) and old:
+            guids[old] = holder["guid"]
+
     copied = deepcopy(stage)
-    copied["guid"] = make_guid()
+    renumber(copied)
+    for write in copied.get("fields") or []:
+        if isinstance(write, dict):
+            renumber(write)
+    for action in copied.get("card_actions") or []:
+        if isinstance(action, dict) and action.get("guid"):
+            renumber(action)
     for _key, block in stage_body_blocks(copied):
         for index, child in enumerate(block):
-            block[index] = reguid_stage(child, make_guid)
+            block[index] = reguid_stage(child, make_guid, guids)
     return copied
 
 
@@ -267,6 +292,8 @@ class StageDocument:
         lookup: Optional[Callable[[str], Optional[CopyDefinitionV2]]] = None,
         make_guid: Callable[[], str] = new_guid,
         known_fields: Optional[Callable[[CopyDefinitionV2], Mapping[str, set[str]]]] = None,
+        unresolved_refs: Optional[Callable[[CopyDefinitionV2], list[str]]] = None,
+        trigger_names: Optional[Callable[[CopyDefinitionV2], list[str]]] = None,
     ) -> None:
         self._make_guid = make_guid
         if definition is None:
@@ -284,7 +311,16 @@ class StageDocument:
         # against have to be the ones chosen now. Without it the analyser checks the head
         # of a reference and no further.
         self._known_fields = known_fields
+        # Both asked of the collection rather than of the analyser: whether a stored note
+        # type id still exists, or whether every trigger note type has a field, is not a
+        # question about the definition's shape, and the analyser is built to answer
+        # without a collection at all. The first answers with warnings (a reference that
+        # resolves to nothing fails quietly at run time), the second with save blockers.
+        self._unresolved_refs = unresolved_refs
+        self._trigger_names = trigger_names
         self._analysis: Optional[AnalysisResult] = None
+        #: `(location key, value before, entry)` per warning a Replace answered.
+        self._settled: list[Replaced] = []
 
     # -- analysis ------------------------------------------------------------------------
 
@@ -431,7 +467,8 @@ class StageDocument:
         stage = self.stage(guid)
         if location is None or stage is None:
             return None
-        copy = reguid_stage(stage, self._make_guid)
+        new_guids: dict[str, str] = {}
+        copy = reguid_stage(stage, self._make_guid, new_guids)
         # Result names are unique per block, so a duplicate cannot keep the original's.
         # Blanking is the honest move: the analyser then asks for a name.
         _blank_result_names(copy)
@@ -439,8 +476,24 @@ class StageDocument:
         if block is None:
             return None
         block.insert(location.position + 1, copy)
+        self._copy_rename_marks(new_guids)
         self.invalidate()
         return copy
+
+    def _copy_rename_marks(self, new_guids: dict[str, str]) -> None:
+        """File a copy of every warning about the duplicated texts under the copy's guids.
+
+        The copy spells what the original spells, so it needs the same warnings; without
+        them, fixing only the original and saving dropped the last warning and let the
+        definition run the copy's old name.
+        """
+        stored = self.definition.get(WARNINGS_KEY)
+        if not isinstance(stored, dict):
+            return
+        for key, entries in list(stored.items()):
+            anchor = split_key(key)[0]
+            if anchor in new_guids and isinstance(entries, list):
+                stored[reanchor_key(key, new_guids[anchor])] = deepcopy(entries)
 
     def set_enabled(self, guid: str, enabled: bool) -> bool:
         stage = self.stage(guid)
@@ -699,6 +752,52 @@ class StageDocument:
         self.definition["exports"] = list(exports)
         self.invalidate()
 
+    # -- marks a rename left -------------------------------------------------------------
+    #
+    # The analysis never reads a mark, so dismissing one does not invalidate it: the only
+    # thing a dismissal changes is what `to_definition` stores, and whether the definition
+    # is run afterwards.
+
+    def rename_marks(self) -> list[tuple[str, dict]]:
+        """The warnings a rename left on this definition, each with its location key."""
+        return rename_warning_entries(self.definition)
+
+    def rename_marks_at(self, key: str) -> list[dict]:
+        """The warnings filed under one location key, for the editor part that holds it."""
+        return [entry for location, entry in self.rename_marks() if location == key]
+
+    def dismiss_rename_mark(self, entry: dict) -> None:
+        """Take one warning off: the user says they have updated the definition for it.
+
+        Found by identity (`remove_rename_warning`): two entries can say the same thing,
+        and the editor's rows hold the entries they were built from.
+        """
+        remove_rename_warning(self.definition, entry)
+
+    def dismiss_all_rename_marks(self) -> None:
+        self.definition.pop(WARNINGS_KEY, None)
+
+    def settle_rename_marks(self, key: str, before: Any, entries: Iterable[dict]) -> None:
+        """Remember that a Replace at `key` answered these entries, the location having
+        read `before` until then (`rename_replace_dialog.Replacement.settled`).
+
+        Kept here rather than taken off the store at once, because the text box's own undo
+        can put the old text back: the entries then show again, and a save keeps them.
+        """
+        self._settled.extend((key, before, entry) for entry in entries)
+
+    def rename_mark_is_live(self, key: str, read_as: str, value: Any, entry: dict) -> bool:
+        """Whether an editor part reading `value` at `key` should show this warning: its old
+        name is still spelled there, and it is not one a Replace answered since."""
+        for settled_key, before, settled in self._settled:
+            if settled_key == key and settled is entry and value != before:
+                return False
+        return still_spelled(read_as, value, entry)
+
+    def settled_rename_marks(self) -> list[Replaced]:
+        """The entries a Replace answered, as a save hands them to `drop_cleared_warnings`."""
+        return list(self._settled)
+
     # -- saving --------------------------------------------------------------------------
 
     def add_note_compatible(self) -> bool:
@@ -713,9 +812,12 @@ class StageDocument:
         """Everything standing between this definition and a save, in the order to show it.
 
         Warnings -- mixed note types, an add-note trigger on a definition that edits other
-        notes or cards -- are deliberately absent: §10 says they do not block.
+        notes or cards, a reference that resolves to nothing -- are deliberately absent:
+        §10 says they do not block.
         """
         blockers = [self._describe(problem) for problem in _unique(self.analysis.problems)]
+        if self._trigger_names is not None:
+            blockers.extend(self._trigger_names(self.definition))
         if not (self.definition.get("definition_name") or "").strip():
             blockers.append("The definition needs a name.")
         return blockers
@@ -726,6 +828,8 @@ class StageDocument:
     def warnings(self) -> list[str]:
         """What is worth telling the user about this definition without refusing the save."""
         found = [problem.message for problem in _unique(self.analysis.warnings)]
+        if self._unresolved_refs is not None:
+            found.extend(self._unresolved_refs(self.definition))
         found.extend(self.add_note_warnings())
         return found
 
