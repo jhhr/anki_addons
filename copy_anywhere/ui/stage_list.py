@@ -78,6 +78,16 @@ def add_submenu(menu: QMenu, title: str) -> QMenu:
     return submenu
 
 
+def menu_text(text: str) -> str:
+    """`text` as a menu entry that shows all of it.
+
+    A menu reads `&x` as "x is this entry's shortcut" and draws no `&`. The entries here are
+    built from what the user wrote, and a condition testing for `'&nbsp;'` was listed as one
+    testing for `'nbsp;'`.
+    """
+    return text.replace("&", "&&")
+
+
 def show_menu_below(anchor: QWidget, menu: QMenu) -> None:
     menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
@@ -111,7 +121,7 @@ def fill_move_into_menu(menu: QMenu, tree: "StageTreeWidget", guids: list[str]) 
     targets = tree.document.move_targets(*guids)
     for parent_guid, body_key, label in targets:
         menu.addAction(
-            label,
+            menu_text(label),
             lambda p=parent_guid, k=body_key: tree.move_stages_into(guids, p, k),
         )
     menu.setEnabled(bool(targets))
@@ -280,7 +290,9 @@ class StageRow(QFrame):
         parent = self.tree.document.ancestors(self.guid)
         if parent:
             fill_move_out_menu(
-                add_submenu(menu, f"Move out of {stage_label(parent[-1])}"), self.tree, guids
+                add_submenu(menu, menu_text(f"Move out of {stage_label(parent[-1])}")),
+                self.tree,
+                guids,
             )
         fill_move_into_menu(add_submenu(menu, "Move into"), self.tree, guids)
         if stage_body_blocks(self.stage):

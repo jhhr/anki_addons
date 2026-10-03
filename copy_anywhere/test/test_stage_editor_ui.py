@@ -570,6 +570,26 @@ def test_closing_a_row_unchecks_nothing_but_what_it_hides(col, qapp):
     assert tree.rows["cond"].select_box.isChecked()
 
 
+def test_an_ampersand_in_a_menu_entry_is_shown_and_marks_no_shortcut(col, qapp):
+    # A menu reads "&x" as "x is this entry's shortcut" and draws no "&" at all, so a
+    # condition testing for '&nbsp;' was listed as one testing for 'nbsp;'.
+    from aqt.qt import QKeySequence
+
+    gate = condition_with("gate")
+    gate["predicate"] = value_expression(mode="code", code="'&nbsp;' in Word")
+    named = condition_with("named", then=[variable("n", "N")])
+    named["name"] = "Q&A"
+    tree = tree_for(col, variable("a", "A"), gate, named)
+
+    into = menu_entries(menu_entries(tree.rows["a"].build_menu())["Move into"].menu())
+    assert "Condition: '&&nbsp;' in Word → Then" in into
+    assert "Q&&A → Then" in into
+    own = menu_entries(tree.rows["n"].build_menu())
+    assert "Move out of Q&&A" in own
+    for text in (*into, *own):
+        assert QKeySequence.mnemonic(text).isEmpty(), text
+
+
 # -- scope menus ----------------------------------------------------------------------
 
 
