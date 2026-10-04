@@ -65,6 +65,8 @@ main {
 .label { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 .list { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; font-size: 15px; }
 .studied { font-size: 12px; font-weight: 700; color: var(--schedule); margin-left: 6px; }
+.unstudied { font-size: 12px; font-weight: 700; color: var(--muted); margin-left: 6px; }
+.gloss { color: var(--muted); }
 .reveal {
   font: inherit; font-weight: 500; padding: 14px; border-radius: 12px; cursor: pointer;
   border: 1px dashed var(--muted); background: transparent; color: var(--ink);
@@ -128,6 +130,8 @@ button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
   <div class="state" id="state"></div>
   <p class="note">Suspend: nothing to learn. Schedule: I think I know it, test me years out.
     Learn: I don't know it. Judge the sense and reading shown, as you'd know it today.
+    Part of and Made of: the words the sentence word arrays put above and below this one, and
+    whether you have studied them.
     Wrong data: the note itself is wrong (a reading, meaning or sentence); it leaves the triage
     and is kept, with your note, for fixing.</p>
 </main>
@@ -204,6 +208,18 @@ function markerChip(m) {
   return `<span class="chip" title="${kind ? kind + " " + esc(m.slice(1)) : ""}">(${esc(m)})</span>`;
 }
 
+// A relative's card state (triage_family.py): studied and scheduled are what the user knows
+const STATES = { studied: "studied", scheduled: "scheduled", new: "new", suspended: "suspended" };
+
+function kin(xs) {
+  return (xs || []).map((x) => {
+    const known = x.state === "studied" || x.state === "scheduled";
+    const what = x.state === "new" && x.tagged ? "new · in triage" : (STATES[x.state] || x.state);
+    return `<li><span lang="ja">${esc(x.key)} 【${esc(x.reading)}】</span>
+      <span class="gloss">${esc(x.meaning)}</span><span class="${known ? "studied" : "unstudied"}">${esc(what)}</span></li>`;
+  }).join("");
+}
+
 function render() {
   const total = items.length;
   const done = items.filter((it) => labels.has(String(it.nid))).length;
@@ -250,6 +266,8 @@ function render() {
     `<li>${esc(s.meaning)}${s.studied ? '<span class="studied">studied</span>' : ""}</li>`).join("");
   const readings = (it.readings || []).map((s) =>
     `<li>${esc(s.key)} 【${esc(s.reading)}】${s.studied ? '<span class="studied">studied</span>' : ""}</li>`).join("");
+  const parents = kin(it.parents);
+  const parts = kin(it.parts);
   const back = revealed ? `<div class="back">
       <div class="meaning">${esc(it.meaning)}</div>
       ${it.meaning_jp ? `<div class="jp">${esc(it.meaning_jp)}</div>` : ""}
@@ -257,6 +275,8 @@ function render() {
       ${it.translation ? `<div class="tr">${esc(it.translation)}</div>` : ""}
       ${senses ? `<div><div class="label">Other senses</div><ul class="list">${senses}</ul></div>` : ""}
       ${readings ? `<div><div class="label">Same spelling or kanji</div><ul class="list">${readings}</ul></div>` : ""}
+      ${parents ? `<div><div class="label">Part of</div><ul class="list">${parents}</ul></div>` : ""}
+      ${parts ? `<div><div class="label">Made of</div><ul class="list">${parts}</ul></div>` : ""}
     </div>` : `<button class="reveal" id="b-reveal">Show meaning and sentence</button>`;
   const fix = fixing ? `<div class="fix">
       <label class="label" for="fix-note">What is wrong? (optional, for whoever fixes it)</label>

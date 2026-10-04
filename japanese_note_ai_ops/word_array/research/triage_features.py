@@ -9,11 +9,14 @@ Not a script. `table()` joins, by note id:
 - `opus_features.jsonl` (triage_opus.py), matched to the note by its cached key, so an answer
   given for an older wording of the note is not used;
 - `kanji_recall.jsonl` (triage_kanji.py) for the word's kanji, `exposure.jsonl`
-  (triage_exposure.py), and `agent_judgements.jsonl` (triage_agents.py) when there is one.
+  (triage_exposure.py), and `agent_judgements.jsonl` (triage_agents.py) when there is one;
+- `family.jsonl` (triage_family.py): the notes the sentence word arrays link above the word (the
+  compounds and phrases it is part of) and below it (its parts), and how many of them the user
+  has studied or scheduled, with the best recall today among those studied (`recall_now.jsonl`).
 
 Missing values stay NaN, with an `*_missing` column where the absence itself says something (no
 JMdict entry, no Opus answer yet). Feature names start with their group (`shape_`, `sib_`,
-`jm_`, `freq_`, `op_`, `kanji_`, `exp_`, `agent_`), which is how triage_model.py reports and
+`jm_`, `freq_`, `op_`, `kanji_`, `exp_`, `fam_`, `agent_`), which is how triage_model.py reports and
 drops them by group. The `vocab-frequency` field is not used: its sources vary and disagree.
 """
 
@@ -43,7 +46,9 @@ JM_MISC_KEPT = ("arch", "obs", "rare", "obsc", "uk", "col", "sl", "vulg", "hon",
 JLPT_LEVEL = {"N5": 5, "N4": 4, "N3": 3, "N2": 2, "N1": 1, "beyond": 0}
 COMPOSITIONAL_LEVEL = {"single-unit": 0, "transparent": 1, "partly": 2, "opaque": 3}
 SENSE_LEVEL = {"main": 3, "common": 2, "secondary": 1, "rare": 0}
-GROUPS = ("shape", "sib", "jm", "freq", "op", "kanji", "exp", "agent")
+GROUPS = ("shape", "sib", "jm", "freq", "op", "kanji", "exp", "fam", "agent")
+# triage_family's states of a relative that say the user knows it
+FAMILY_KNOWN = ("studied", "scheduled")
 
 
 def pos_group(pos: str) -> str:
@@ -216,6 +221,38 @@ def exposure_features(e: Optional[dict]) -> dict:
     }
 
 
+def family_features(f: Optional[dict], recall: dict[int, dict]) -> dict:
+    """Over the word's parents and over its parts: how many, how many known, and the best
+    recall today among them; whether every part is known; how often it is a top-level word."""
+    if f is None:
+        row = {"fam_missing": 1.0}
+        for k in ("fam_log_sentences", "fam_top_share", "fam_parts", "fam_parts_known",
+                  "fam_parts_known_share", "fam_parts_all_known", "fam_parts_best_recall",
+                  "fam_parents", "fam_parents_known", "fam_parent_known",
+                  "fam_parent_best_recall"):
+            row[k] = math.nan
+        return row
+    row = {
+        "fam_missing": 0.0,
+        "fam_log_sentences": math.log1p(f["sentences"]),
+        "fam_top_share": f["top_level"] / f["sentences"] if f["sentences"] else math.nan,
+    }
+    for name, rels in (("parts", f["parts"]), ("parents", f["parents"])):
+        known = [r for r in rels if r["state"] in FAMILY_KNOWN]
+        recalls = [recall[r["nid"]]["r_cal"] for r in known if r["nid"] in recall]
+        row[f"fam_{name}"] = float(len(rels))
+        row[f"fam_{name}_known"] = float(len(known))
+        best = max(recalls) if recalls else math.nan
+        if name == "parts":
+            row["fam_parts_known_share"] = len(known) / len(rels) if rels else math.nan
+            row["fam_parts_all_known"] = float(bool(rels) and len(known) == len(rels))
+            row["fam_parts_best_recall"] = best
+        else:
+            row["fam_parent_known"] = float(bool(known))
+            row["fam_parent_best_recall"] = best
+    return row
+
+
 def agent_features(a: Optional[dict]) -> dict:
     if not a:
         return {"agent_missing": 1.0, "agent_score": math.nan}
@@ -260,6 +297,7 @@ def table():
     freq = by_nid("frequency.jsonl")
     exposure = by_nid("exposure.jsonl")
     agents = by_nid("agent_judgements.jsonl")
+    family = by_nid("family.jsonl")
     kanji = {r["kanji"]: r for r in td.read_jsonl(td.data_file("kanji_recall.jsonl"))}
     opus = opus_answers(words)
     rows = []
@@ -272,6 +310,8 @@ def table():
         row.update(opus_features(opus.get(w["nid"])))
         row.update(kanji_features(w, kanji))
         row.update(exposure_features(exposure.get(w["nid"])))
+        # No columns at all until triage_family.py has written its file
+        row.update(family_features(family.get(w["nid"]), recall) if family else {})
         row.update(agent_features(agents.get(w["nid"])))
         rows.append(row)
     frame = pd.DataFrame(rows).set_index("nid")

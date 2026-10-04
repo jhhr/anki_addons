@@ -14,8 +14,9 @@ honest figure for the notes it will act on. Every round adds the `--uncertain` n
 (P(known) near `--learn-line`), the rest near the suspend line (P(suspend) near
 `--suspend-line`), at most one sense or reading of a word per round.
 
-`serve` shows one queued note at a time: the word and its reading, with its meaning, sentence
-and other senses hidden until revealed. Suspend / Schedule / Learn go into
+`serve` shows one queued note at a time: the word and its reading, with its meaning, sentence,
+other senses and its family in the word arrays (the words it is part of and made of, with
+whether the user has studied them; triage_family.py) hidden until revealed. Suspend / Schedule / Learn go into
 `hand_labels.jsonl`; Skip leaves the note queued; Undo takes back the last. Wrong data (label
 `invalid`, with the user's note on what is wrong) is for a note whose own data is wrong, a
 reading or sense the note should not have, a bad split: it leaves the triage (no model trains
@@ -141,7 +142,20 @@ def frequencies() -> dict[int, dict]:
     return {r["nid"]: r for r in td.read_jsonl(td.data_file("frequency.jsonl"))}
 
 
-def item(w: dict, kind: str, freq: Optional[dict] = None) -> dict:
+def families() -> dict[int, dict]:
+    return {r["nid"]: r for r in td.read_jsonl(td.data_file("family.jsonl"))}
+
+
+FAMILY_SHOWN = 6
+
+
+def relatives(rels: list[dict]) -> list[dict]:
+    """triage_family's parents or parts as the page lists them, nearest and commonest first."""
+    return [{"key": r["key"], "reading": r["reading"], "meaning": r["meaning"][:80],
+             "state": r["state"], "tagged": r["tagged"]} for r in rels[:FAMILY_SHOWN]]
+
+
+def item(w: dict, kind: str, freq: Optional[dict] = None, family: Optional[dict] = None) -> dict:
     senses = [s for s in w["siblings"] if s["relation"] == td.MEANING]
     readings = [s for s in w["siblings"] if s["relation"] != td.MEANING]
     return {
@@ -163,6 +177,10 @@ def item(w: dict, kind: str, freq: Optional[dict] = None) -> dict:
         # The ranks the model reads too, shown because the user asked to see them
         "freq": {name: (freq or {}).get(f"freq_{name}_rank")
                  for name in ("jiten", "tubelex", "bccwj")},
+        # The words the sentence word arrays link above and below this one, which the user
+        # reads it by: a compound of studied parts, a part of a studied compound
+        "parents": relatives((family or {}).get("parents", [])),
+        "parts": relatives((family or {}).get("parts", [])),
     }
 
 
@@ -171,6 +189,7 @@ class Session:
         self.lock = threading.Lock()
         self.words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
         self.freq = frequencies()
+        self.family = families()
         self.queue, self.labels = read_state()
         self.skipped: set[int] = set()
         self.history: list[int] = []
@@ -188,7 +207,8 @@ class Session:
             if not fresh:
                 return {"item": None, "stats": stats}
             row = fresh[0]
-            one = item(self.words[row["nid"]], row["kind"], self.freq.get(row["nid"]))
+            one = item(self.words[row["nid"]], row["kind"], self.freq.get(row["nid"]),
+                       self.family.get(row["nid"]))
             return {"item": one, "stats": stats}
 
     def judge(self, nid: int, action: str, note: str = "") -> None:
@@ -282,6 +302,9 @@ function show(data) {
   if (!current) { card.textContent = "Nothing queued: run pick for the next round."; return; }
   const senses = current.senses.map(x => `<li>${esc(x.meaning)}${x.studied ? " <b>(studied)</b>" : ""}</li>`).join("");
   const readings = current.readings.map(x => `<li>${esc(x.key)} [${esc(x.reading)}]${x.studied ? " <b>(studied)</b>" : ""}</li>`).join("");
+  const kin = xs => (xs || []).map(x => `<li>${esc(x.key)} [${esc(x.reading)}] ${esc(x.meaning)}`
+    + ` <b>(${esc(x.state)}${x.tagged && x.state === "new" ? ", in the triage" : ""})</b></li>`).join("");
+  const parents = kin(current.parents), parts = kin(current.parts);
   card.innerHTML = `<div class="word">${esc(current.word)}</div>
     <div class="reading">${esc(current.reading)}${current.spelling ? " / " + esc(current.spelling) : ""}</div>
     <div class="pos">${esc(current.pos)}${rank(current.freq)}</div>
@@ -292,6 +315,8 @@ function show(data) {
       <div class="tr">${esc(current.translation)}</div>
       ${senses ? `<div class="senses">Other senses:<ul>${senses}</ul></div>` : ""}
       ${readings ? `<div class="senses">Same spelling or kanji:<ul>${readings}</ul></div>` : ""}
+      ${parents ? `<div class="senses">Part of:<ul>${parents}</ul></div>` : ""}
+      ${parts ? `<div class="senses">Made of:<ul>${parts}</ul></div>` : ""}
     </div>`;
   document.getElementById("reveal").disabled = false;
 }
@@ -419,13 +444,14 @@ def export_queue(args) -> int:
     """The queue's notes as the artifact's `queue` documents, one file each."""
     words = {w["nid"]: w for w in td.read_jsonl(td.data_file("words.jsonl"))}
     freq = frequencies()
+    family = families()
     queue, _ = read_state()
     args.dir.mkdir(parents=True, exist_ok=True)
     rounds: dict[int, list[dict]] = {}
     for order, row in enumerate(queue):
         if row["nid"] not in words:
             continue
-        one = item(words[row["nid"]], row["kind"], freq.get(row["nid"]))
+        one = item(words[row["nid"]], row["kind"], freq.get(row["nid"]), family.get(row["nid"]))
         del one["kind"]
         one["order"] = order
         rounds.setdefault(row["round"], []).append(one)
