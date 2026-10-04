@@ -613,6 +613,58 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(self.examples[20][0])
         self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])
 
+    def test_a_reading_drops_the_gemination_before_the_word_after_it(self):
+        # The っ a word's furigana ends in is the next word's doing, as rendaku is the word
+        # before's: 坊 of 坊ちゃん is JMdict's ぼう (the first that fits, not ぼん), a number its
+        # own reading or JMdict's (三 is み), and 立, no JMdict word, its on'yomi. The word they
+        # were split out of keeps the reading the text gives it.
+        cases = [
+            ("<k> 御[お]</k> 坊[ぼっ]ちゃんじゃないか", ("坊", "ぼう"), ("坊ちゃん", "ぼっちゃん")),
+            ("<k> 只[たった]</k> 一回[いっかい]のライブ", ("一", "いち"), ("一回", "いっかい")),
+            ("１[いっ]<k> 箇[か]</k> 月[げつ]です。", ("一", "いち"), ("一箇月", "いっかげつ")),
+            ("コップを 三[みっ]つ 買[か]いました。", ("三", "み"), ("三つ", "みっつ")),
+            (" 十[じっ] 回[かい] 見[み]た", ("十", "じゅう"), ("十回", "じっかい")),
+            ("市長[しちょう]に 立候補[りっこうほ]した。", ("立", "りつ"), ("立候補", "りっこうほ")),
+            ("絶不調だ", ("絶", "ぜつ"), ("絶不調", "ぜっふちょう")),  # Sudachi's ぜっ
+            ("何処[どっ]かに 行[い]った", ("何処", "どこ"), ("何処か", "どっか")),
+        ]
+        for sentence, word, parent in cases:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(find_word(arr, word[0])[3], word[1])
+                self.assertEqual(find_word(arr, parent[0])[3], parent[1])
+        # A word of its own before the next is no different
+        for sentence, form, reading in [
+            ("１００[ひゃっ] 件[けん]もライン<k> 為[し]てくる</k>", "百", "ひゃく"),
+            ("村[むら]の 蹄鉄[ていてっ]</b>工[こう]だ。", "蹄鉄", "ていてつ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[3], reading)
+
+    def test_a_small_tsu_that_is_the_words_own_stays(self):
+        # JMdict has 突 read とっ, a prefix; 取っ and 糞ッ are written with theirs
+        for sentence, form, reading in [
+            ("突拍子[とっぴょうし]も 無[な]い", "突", "とっ"),
+            ("引[ひ]き 出[だ]しの 取[と]っ 手[て]", "取っ", "とっ"),
+            ("「<k> 糞[くそ]ッ</k>」と 言[い]った", "糞ッ", "くそっ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[3], reading)
+
+    def test_ungeminated_takes_the_first_known_reading_that_fits(self):
+        ungeminated = self.generator.ungeminated
+        self.assertEqual(ungeminated("ぼっ", ["ぼう", "ぼん"]), "ぼう")
+        self.assertEqual(ungeminated("いっ", ["いち", "ひと", "いつ"]), "いち")
+        self.assertEqual(ungeminated("じっ", ["じゅう", "とお"]), "じゅう")
+        self.assertEqual(ungeminated("みっ", ["さん", "み"]), "み")
+        self.assertEqual(ungeminated("どっ", ["どこ", "いずこ"]), "どこ")
+        self.assertEqual(ungeminated("とっ", ["とつ", "とっ"]), "とっ")
+        # A っ never stands in for ん: 四[よっ]つ is よ
+        self.assertEqual(ungeminated("よっ", ["よん", "し", "よ"]), "よ")
+        self.assertIsNone(ungeminated("よっ", ["よん", "し"]))
+        self.assertIsNone(ungeminated("ぼう", ["ぼう"]))
+        self.assertIsNone(ungeminated("っ", ["か"]))
+
     def test_a_jukujikun_group_splits_between_words_by_their_own_readings(self):
         # かわせそうば has no per-kanji split, but 為替 and 相場 read it between them, so each
         # sub-word keeps furigana of its own: never " 為替" + "相場[かわせそうば]"
