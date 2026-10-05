@@ -2,9 +2,10 @@
 row must pass before it is accepted.
 
 The golden set is every note sentence of the collection kanjified by agents that follow one
-written policy (`kanjify_agents/policy.md`), for scoring kanjify_sentence (`kanjify_eval.py
---rows`). It is built from files only, never from a running Anki, so that its workers also run
-in cloud sessions: the dump is the one step that asks AnkiConnect.
+written policy (`async_api_ops/kanjify_policy.md`, which the op's prompt holds too), for scoring
+kanjify_sentence (`kanjify_eval.py --rows`). It is built from files only, never from a running
+Anki, so that its workers also run in cloud sessions: the dump is the one step that asks
+AnkiConnect.
 
     kanjify_golden_dump.py       every note's sentence fields -> dump.jsonl
     kanjify_golden_inventory.py  dump -> the step 1 words and step 2 sentences
@@ -34,7 +35,8 @@ QUEUES = GOLDEN / "queues"
 RESULTS = GOLDEN / "results"
 COLLATED = GOLDEN / "collated"
 AGENTS_DIR = Path(__file__).resolve().parent / "kanjify_agents"
-POLICY = AGENTS_DIR / "policy.md"
+# Beside the op, whose prompt holds it too: research/ is left out of the release zip
+POLICY = ADDON_ROOT / "async_api_ops" / "kanjify_policy.md"
 # Written by the collate step: the step 1 decisions as step 2 prompts read them
 DECISIONS = GOLDEN / "decisions.jsonl"
 # Every word step 2 handed back that the inventory has no word for, with its sentences, over
@@ -125,7 +127,7 @@ def policy_text() -> str:
 
 
 def policy_version(text: Optional[str] = None) -> str:
-    """The version line of policy.md plus a hash of its text: a result made before an edit
+    """The policy's version line plus a hash of its text: a result made before an edit
     that forgot to bump the line is still told apart."""
     text = policy_text() if text is None else text
     m = VERSION_RE.search(text)
