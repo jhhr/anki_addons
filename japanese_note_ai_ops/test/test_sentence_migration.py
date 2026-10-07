@@ -513,8 +513,8 @@ class LinkCheckTests(unittest.TestCase):
         self.assertEqual([linked[0][4], linked[4][4]], [[], [3]])
 
     def test_a_source_whose_b_cuts_a_furigana_group_marks_the_whole_group(self):
-        # Read another way than the array has it, so only the place can find the word: the
-        # <b> ends inside 無人島[むじんとう], whose reading covers the whole group
+        # Read another way than the array has it, so only the place and the form find the word:
+        # the <b> ends inside 無人島[むじんとう], whose reading covers the whole group
         field_text = " 彼[かれ]は<k> 此[こ]の</k><b> 無人</b>島[むじんとう]に 行[い]った。"
         record = source(1, field_text, mujinto_array(island=["match"]), ("無人島", "むにんとう"))
         result = plan([record])
@@ -527,6 +527,7 @@ class LinkCheckTests(unittest.TestCase):
         self.assertEqual(array_of(result.new_sentences[0]), mujinto_array(mujin=[1]))
 
     def test_the_smallest_element_around_a_sources_b(self):
+        # Spelt another way than the array has it: found by the place and the reading
         sentence = "<b> 食[た]</b>べた"
         subs = [word(" 食[た]べ", "食べる", "たべる"), word("た", "た", "た", pos="auxiliary")]
         arr = [word(" 食[た]べた", "食べた", "たべた", subs=subs)]
@@ -542,6 +543,31 @@ class LinkCheckTests(unittest.TestCase):
         result = plan([source(1, sentence, arr, ("喰べる", "たべる"))])
         self.assertEqual(array_of(result.new_sentences[0]), arr)
         self.assertEqual(result.report.note_ids("link_no_element"), [1])
+
+    def test_a_sources_b_on_a_word_of_neither_its_form_nor_its_reading_links_nothing(self):
+        # An untagged copy of another note's sentence whose <b> is still on that note's word,
+        # unlinked: by place alone it was linked to this note, and bold on its cards for good
+        subs = [word(" 食[た]べ", "食べる", "たべる"), word("た", "た", "た", pos="auxiliary")]
+        eaten = [word(" 食[た]べた", "食べた", "たべた", subs=subs)]
+        for sentence, arr, vocab_word, marked in [
+            (CAT_FISH, cat_fish_array(fish=["match"]), ("鳥", "とり"), "魚[さかな]"),
+            ("<b> 食[た]</b>べた", eaten, ("喰う", "くう"), "食べる[たべる]"),
+        ]:
+            with self.subTest(marked=marked):
+                result = plan([source(1, sentence, arr, vocab_word)])
+                self.assertEqual(array_of(result.new_sentences[0]), arr)
+                self.assertEqual(
+                    result.report.cases,
+                    {
+                        "link_bold_other_word": [
+                            (
+                                1,
+                                f"{vocab_word[0]}[{vocab_word[1]}] in the sentence of 1; its <b>"
+                                f" marks {marked}",
+                            )
+                        ]
+                    },
+                )
 
     def test_a_source_whose_array_is_not_of_its_text_is_not_linked(self):
         edited = CAT_FISH.replace("べた", "べる")

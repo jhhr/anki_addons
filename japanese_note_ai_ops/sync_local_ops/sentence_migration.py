@@ -164,6 +164,7 @@ CASES: dict[str, str] = {
     "link_text_differs": "Not linked: its extraction field is not its example's sentence",
     "link_no_bold": "Not linked: no <b> span in its extraction field",
     "link_no_element": "Not linked: no element of the example's array is its word",
+    "link_bold_other_word": "Not linked: its <b> marks a word of neither its form nor its reading",
     "link_several": "Not linked: several elements could be its word",
     "link_other_note": "Not linked: its word's element links another note",
 }
@@ -347,11 +348,19 @@ class _Vocab:
     def is_word(self, elem: list) -> bool:
         """The element is this note's word: its dict_form is the word's kanjified or normal
         form and its reading the word's, compared in hiragana."""
-        return (
-            bool(self.reading)
-            and _norm(elem[2]) in self.forms
-            and to_hiragana(_norm(elem[3])) == self.reading
-        )
+        return self._has_form(elem) and self._has_reading(elem)
+
+    def has_form_or_reading(self, elem: list) -> bool:
+        """What an element found by place alone must have. A source's <b> marks its own word, but
+        the array may spell or read it otherwise (食べる for 喰べる, むじんとう for むにんとう), so
+        not both; one of them keeps a <b> on another word from linking that word to this note."""
+        return self._has_form(elem) or self._has_reading(elem)
+
+    def _has_form(self, elem: list) -> bool:
+        return _norm(elem[2]) in self.forms
+
+    def _has_reading(self, elem: list) -> bool:
+        return bool(self.reading) and to_hiragana(_norm(elem[3])) == self.reading
 
 
 def _read_vocab(records: Iterable[VocabRecord]) -> dict[int, _Vocab]:
@@ -755,10 +764,10 @@ def _link_check(target: _Target, v: _Vocab, report: Report) -> None:
         return
     if target.entries is None:
         target.entries = _entries(arr)
-    elem, how = _pick_element(target.entries, span, v)
+    elem, how, why = _pick_element(target.entries, span, v)
     word = f"{_norm(v.record.kanjified) or _norm(v.record.normal)}[{_norm(v.record.reading)}]"
     if elem is None:
-        report.add(how, v.id, f"{word} in {target.label}")
+        report.add(how, v.id, f"{word} in {target.label}" + (f"; {why}" if why else ""))
         return
     try:
         state = match_flags.match_state(elem)
@@ -780,39 +789,50 @@ def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
 
 def _pick_element(
     entries: list[_Entry], span: tuple[int, int], v: _Vocab
-) -> tuple[Optional[list], str]:
-    """(the element, how it was found), or (None, the report case). In order: an element at the
-    <b> that is V's word; for a dependent, whose <b> may still mark its source's word (the match
-    op copied the sentence as it was), the one element anywhere that is V's word; for a source,
-    whose <b> marks its own word, the element at exactly the <b>, else the smallest around it."""
+) -> tuple[Optional[list], str, str]:
+    """(the element, how it was found, ""), or (None, the report case, what else its line
+    says). In order: an element at the <b> that is V's word; for a dependent, whose <b> may
+    still mark its source's word (the match op copied the sentence as it was), the one element
+    anywhere that is V's word; for a source, whose <b> marks its own word, the element at
+    exactly the <b>, else the smallest around it, when it has V's form or reading."""
     words = [e for e in entries if v.is_word(e.elem)]
     at_bold = [e for e in words if e.span is not None and _overlaps(e.span, span)]
     # A word whose place is unknown may be at the <b> too
     unplaced = [e for e in words if e.span is None]
     if at_bold:
         if len(at_bold) == 1 and not unplaced:
-            return at_bold[0].elem, "at its <b>"
-        return None, "link_several"
+            return at_bold[0].elem, "at its <b>", ""
+        return None, "link_several", ""
     if v.dependent:
         if len(words) == 1:
-            return words[0].elem, "the one element of its word"
-        return None, "link_several" if words else "link_no_element"
+            return words[0].elem, "the one element of its word", ""
+        return None, "link_several" if words else "link_no_element", ""
     # By place alone: only where every element's place is known
     if any(e.span is None for e in entries):
-        return None, "link_no_element"
+        return None, "link_no_element", ""
     equal = [e for e in entries if e.span == span]
     if equal:
-        return (equal[0].elem, "at exactly its <b>") if len(equal) == 1 else (None, "link_several")
-    around = [
-        e for e in entries if e.span is not None and e.span[0] <= span[0] and span[1] <= e.span[1]
-    ]
-    if not around:
-        return None, "link_no_element"
-    smallest = min(e.span[1] - e.span[0] for e in around if e.span is not None)
-    best = [e for e in around if e.span is not None and e.span[1] - e.span[0] == smallest]
-    if len(best) == 1:
-        return best[0].elem, "around its <b>"
-    return None, "link_several"
+        found, how = equal, "at exactly its <b>"
+    else:
+        around = [
+            e
+            for e in entries
+            if e.span is not None and e.span[0] <= span[0] and span[1] <= e.span[1]
+        ]
+        if not around:
+            return None, "link_no_element", ""
+        smallest = min(e.span[1] - e.span[0] for e in around if e.span is not None)
+        found = [e for e in around if e.span is not None and e.span[1] - e.span[0] == smallest]
+        how = "around its <b>"
+    if len(found) > 1:
+        return None, "link_several", ""
+    elem = found[0].elem
+    # A <b> on another word: an untagged copy's, still on its source's word, or one moved by
+    # hand. Linking there would bold the wrong word on the card for good; a link missed here is
+    # reported, and the match op can still make it
+    if not v.has_form_or_reading(elem):
+        return None, "link_bold_other_word", f"its <b> marks {elem[2]}[{elem[3]}]"
+    return elem, how, ""
 
 
 def _plan(targets: list[_Target], count_seen: bool, report: Report) -> MigrationPlan:
