@@ -629,6 +629,170 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(new_note["new_note_id_field"], "42")
 
 
+class SentenceNote(FakeNote):
+    def note_type(self):
+        return {"name": "Sentence"}
+
+
+def run_plan(mwtn, plan, match_word):
+    """Runs a plan's word tasks with `match_word` standing in for the matching."""
+
+    def inner_bulk_op(config, op, **_):
+        async def process(**op_args):
+            return await op(config, **op_args)
+
+        return process
+
+    async def run():
+        tasks = []
+        plan.spawn(tasks)
+        await asyncio.gather(*tasks)
+
+    with (
+        mock.patch.object(mwtn, "match_single_word_in_word_tuple", match_word),
+        mock.patch.object(mwtn, "make_inner_bulk_op", inner_bulk_op),
+    ):
+        asyncio.run(run())
+
+
+class TwoTypeMatchFieldsTests(unittest.TestCase):
+    """The processed note is a sentence note and its words are notes of its vocab type
+    (SPEC 6 P4). Every field name is its block's own, so a key read from the wrong block names a
+    field the other type does not have."""
+
+    def plan(self, note, arr, updates, edited_nids, config=None):
+        return self.mwtn.plan_word_array_matching(
+            config=config or self.config,
+            note=note,
+            arr=arr,
+            sentence="本を",
+            edited_nids=edited_nids,
+            notes_to_add_dict={},
+            notes_to_update_dict=updates,
+            progress_updater=Progress(),
+            cancel_state=None,
+            gate=None,
+            all_generated_meanings_dict={},
+            word_locks_dict={},
+            word_lock=None,
+            word_note_index_cache=WordIndexCache(),
+            note_cache=None,
+            sentence_cache=None,
+            limit_words_and_readings=None,
+            log_prefix="",
+        )
+
+    def setUp(self):
+        self.mwtn = load_ops_module("match_words_to_notes")
+        self.vocab_keys = [
+            key for key in self.mwtn.MATCH_FIELD_KEYS
+            if key not in self.mwtn.SENTENCE_MATCH_FIELD_KEYS
+        ]
+        self.sentence_fields = {
+            "word_list_field": "s_array",
+            "sentence_field": "s_sentence",
+            "sentence_audio_field": "s_audio",
+            "furigana_sentence_field": "s_furigana",
+            "kanjified_sentence_field": "s_kanjified",
+        }
+        self.config = {
+            "Sentence": {"vocab_note_type": "Word", **self.sentence_fields},
+            "Word": {
+                "sentence_note_type": "Sentence",
+                # the vocab note's copy of its example sentence's audio
+                "sentence_audio_field": "v_audio",
+                **{key: f"v_{key}" for key in self.vocab_keys},
+            },
+            "match_words_model": "model",
+        }
+
+    def test_the_sentence_keys_are_the_sentence_type_s_and_the_rest_the_vocab_type_s(self):
+        fields = self.mwtn.get_match_fields(self.config, {"name": "Sentence"})
+
+        expected = {key: f"v_{key}" for key in self.vocab_keys}
+        expected.update(self.sentence_fields)
+        self.assertEqual(fields, expected)
+
+    def test_in_the_one_type_layout_every_key_is_the_one_block_s(self):
+        config = {"Word": {key: f"w_{key}" for key in self.mwtn.MATCH_FIELD_KEYS}}
+
+        fields = self.mwtn.get_match_fields(config, {"name": "Word"})
+
+        self.assertEqual(fields, {key: f"w_{key}" for key in self.mwtn.MATCH_FIELD_KEYS})
+
+    def test_a_sentence_key_only_the_vocab_type_names_is_a_config_error(self):
+        del self.config["Sentence"]["sentence_audio_field"]
+
+        with self.assertRaisesRegex(Exception, '"sentence_audio_field" with model Sentence'):
+            self.mwtn.get_match_fields(self.config, {"name": "Sentence"})
+
+    def test_placeholders_are_resolved_by_the_vocab_notes_holding_them(self):
+        arr = [word("様", [-111]), word("本", [-222, 4]), word("棚", [-333])]
+        # A field of the vocab type's id field's name on a sentence note holds no placeholder
+        # of a new note: the sentence note is never one
+        fields = {"s_array": json.dumps(arr), "v_new_note_id_field": "-111"}
+        note = SentenceNote(fields)
+        holders = {-111: [54], -222: [55]}
+        queries = []
+
+        def find_notes(query):
+            queries.append(query)
+            return next((nids for fake, nids in holders.items() if f":{fake}\"" in query), [])
+
+        updates, edited_nids = {}, []
+        with mock.patch.object(self.mwtn, "col_find_notes", find_notes):
+            plan = self.plan(note, arr, updates, edited_nids)
+
+        self.assertEqual(
+            queries,
+            [f'"note:Word" "v_new_note_id_field:{fake}"' for fake in (-111, -222, -333)],
+        )
+        saved = json.loads(note["s_array"])
+        self.assertEqual([w[4] for w in saved], [[54], [55, 4], ["match"]])
+        # 棚 matched again, 様 now linked without a quality: rated
+        self.assertEqual(plan.task_count, 2)
+        self.assertEqual((updates, edited_nids), ({1: note}, [1]))
+
+    def match_args_seen(self, note, config) -> list:
+        """The MatchOpArgs each word of `note`'s array is matched with, in part."""
+        arr = json.loads(note[config[note.note_type()["name"]]["word_list_field"]])
+        seen = []
+
+        async def match_word(config, word_lock, word_locks_dict, log_prefix, match_op_args):
+            args = match_op_args
+            seen.append((
+                args["note_type"]["name"],
+                args["vocab_note_type"],
+                args["word_list_field"],
+                args["new_note_id_field"],
+                args["sentence_audio_field"],
+            ))
+            return True
+
+        run_plan(self.mwtn, self.plan(note, arr, {}, [], config=config), match_word)
+        return seen
+
+    def test_each_word_is_matched_with_the_vocab_type_s_name_and_fields(self):
+        note = SentenceNote({"s_array": json.dumps([word("本", ["match"])])})
+
+        seen = self.match_args_seen(note, self.config)
+
+        self.assertEqual(seen, [("Sentence", "Word", "s_array", "v_new_note_id_field", "s_audio")])
+
+    def test_in_the_one_type_layout_the_vocab_type_is_the_note_s_own(self):
+        config = {
+            "Word": {key: key for key in self.mwtn.MATCH_FIELD_KEYS},
+            "match_words_model": "model",
+        }
+        note = FakeNote({"word_list_field": json.dumps([word("本", ["match"])])})
+
+        seen = self.match_args_seen(note, config)
+
+        self.assertEqual(
+            seen, [("Word", "Word", "word_list_field", "new_note_id_field", "sentence_audio_field")]
+        )
+
+
 class CountingNote(FakeNote):
     """Counts the writes of its word array, so that saving one array twice shows."""
 

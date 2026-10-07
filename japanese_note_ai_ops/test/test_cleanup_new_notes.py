@@ -552,11 +552,15 @@ class FakeSearch:
 
     def find_notes(self, query: str) -> list:
         self.queries.append(query)
-        terms = re.findall(r'"(\w+):\*(-\d+)\*"', query)
+        terms = re.findall(r'"(\w+):\*(-?\d+)\*"', query)
+        # The note type a two-type layout's search starts with; a note not in note_types is
+        # a "Word" note
+        of_type = re.match(r'"note:(\w+)" ', query)
         return [
             nid
             for nid, fields in self.saved.items()
-            if any(field in fields and text in fields[field] for field, text in terms)
+            if (of_type is None or self.note_types.get(nid, "Word") == of_type.group(1))
+            and any(field in fields and text in fields[field] for field, text in terms)
         ]
 
     def get_notes(self, nids) -> list:
@@ -1148,6 +1152,164 @@ class DedupeCancelTests(unittest.TestCase):
         # The remapped word and the one the dedupe never reached, both unlinked
         saved = FakeNote(dict(self.search.saved[2]), 2)
         self.assertEqual(match_data(saved), [["match"], ["match"]])
+
+
+# The two-type layout: the arrays are in "Sentence" notes, under a field name the "Word" block
+# does not have, and the new and the duplicate notes are "Word" notes. The vocab notes keep
+# their old array field, under the same name as the sentence type's, until the user deletes it
+TWO_TYPE_CONFIG = {
+    "Sentence": {
+        "vocab_note_type": "Word",
+        "word_list_field": "s_array",
+        "sentence_field": "s_sentence",
+        "sentence_audio_field": "s_audio",
+        "furigana_sentence_field": "s_furigana",
+        "kanjified_sentence_field": "s_kanjified",
+        "insert_deck": "Vocab",
+    },
+    "Word": {
+        "sentence_note_type": "Sentence",
+        "insert_deck": "Vocab",
+        **{key: key for key in mwtn.MATCH_FIELD_KEYS if key not in mwtn.SENTENCE_MATCH_FIELD_KEYS},
+    },
+}
+
+
+def sentence_note(note_id: int, *words: list) -> FakeNote:
+    """A sentence note: its array, and no new_note_id_field."""
+    note = FakeNote({"s_array": mwtn.format_word_array(list(words))}, note_id)
+    note.note_type = lambda: {"name": "Sentence"}  # type: ignore[method-assign]
+    return note
+
+
+def old_array_note(note_id: int, *words: list) -> FakeNote:
+    """A vocab note with its own id and the array it held before the split, never read now."""
+    fields = {"s_array": mwtn.format_word_array(list(words)), "new_note_id_field": str(note_id)}
+    return FakeNote(fields, note_id)
+
+
+def two_type_search(*notes: FakeNote) -> FakeSearch:
+    search = FakeSearch(*notes)
+    for note in notes:
+        search.note_types[note.id] = note.note_type()["name"]
+    return search
+
+
+def array_match_data(note: FakeNote) -> list:
+    arr = mwtn.match_flags.decode_word_array(note["s_array"])
+    assert arr is not None
+    return [elem[4] for _, elem in mwtn.match_flags.iter_words(arr)]
+
+
+class TwoTypeLayoutCleanupTests(unittest.TestCase):
+    """The new notes are vocab notes and the arrays linking them are the sentence notes'
+    (SPEC 6 P4): every search names the sentence type and its field, so a vocab note's old
+    array is never rewritten, and a sentence note, which has no new_note_id_field, is."""
+
+    def setUp(self):
+        self.updater = FakeUpdater()
+        self.old_array = old_array_note(7, w("様", [-1111111]), w("本", [1674931277302]))
+
+    def test_a_new_vocab_note_s_placeholder_is_resolved_in_the_sentence_notes(self):
+        new = FakeNote({"new_note_id_field": "-1111111"}, 501)
+        linking = sentence_note(2, w("様", [-1111111, 3]), w("本", [444]))
+        search = two_type_search(linking, self.old_array)
+
+        with search.patched():
+            updated = mwtn.update_fake_note_ids([new], TWO_TYPE_CONFIG, self.updater)
+
+        self.assertEqual(search.queries, ['"note:Sentence" "s_array:*-1111111*"'])
+        self.assertEqual(list(updated), [2, 501])
+        self.assertEqual(array_match_data(updated[2]), [[501, 3], [444]])
+        self.assertEqual(new["new_note_id_field"], "501")
+        self.assertEqual(search.read, [2])
+
+    def test_the_words_of_a_vocab_note_not_added_are_cleared_in_the_sentence_notes(self):
+        linking = sentence_note(2, w("様", [-1111111, 3]), w("本", [444]))
+        search = two_type_search(linking, self.old_array)
+
+        with search.patched():
+            updated = mwtn.clear_unadded_note_ids(
+                [FakeNote({"new_note_id_field": "-1111111"})], TWO_TYPE_CONFIG, self.updater
+            )
+
+        self.assertEqual(search.queries, ['"note:Sentence" ("s_array:*-1111111*")'])
+        self.assertEqual(list(updated), [2])
+        self.assertEqual(array_match_data(updated[2]), [["match"], [444]])
+
+    def test_a_duplicate_vocab_note_is_repointed_in_the_sentence_notes_only(self):
+        """As the dedupe of existing notes runs it: the group's notes are saved vocab notes,
+        and the one kept still has its old array, linking the duplicate."""
+        kept = old_array_note(1674931277301, w("本", [1674931277302]))
+        kept.fields.update(word_sort_field="hon(m1)", english_meaning_field="book")
+        kept.fields["meaning_field"] = "本"
+        duplicate = FakeNote(
+            {
+                "new_note_id_field": "1674931277302",
+                "word_sort_field": "hon(m2)",
+                "english_meaning_field": "book, volume",
+                "meaning_field": "書物",
+            },
+            1674931277302,
+        )
+        linking = sentence_note(2, w("本", [1674931277302, 4]))
+        search = two_type_search(linking, self.old_array)
+
+        with search.patched():
+            notes, updated = mwtn.deduplicate_notes_list([kept, duplicate], TWO_TYPE_CONFIG)
+
+        self.assertEqual(notes, [kept])
+        self.assertEqual(search.queries, ['"note:Sentence" "s_array:*1674931277302*"'])
+        self.assertEqual(sorted(updated), [2, 1674931277301])
+        self.assertEqual(array_match_data(updated[2]), [[1674931277301, 4]])
+        # the kept note's meaning is the longer one, its old array as it was
+        self.assertEqual(kept["english_meaning_field"], "book, volume")
+        self.assertEqual(array_match_data(kept), [[1674931277302]])
+
+    def test_through_a_cancelled_adding_the_sentence_notes_are_resolved_and_unlinked(self):
+        added, left_out = (FakeNote({"new_note_id_field": p}) for p in ("-1111111", "-2222222"))
+        linking = sentence_note(2, w("様", [-1111111]), w("本", [-2222222, 3]))
+        search = two_type_search(linking, self.old_array)
+        col = SearchableCollection(search, self.updater)
+        col.press_cancel_during = added
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+
+        with search.patched():
+            result = base_ops.add_new_notes(
+                col, [added, left_out], TWO_TYPE_CONFIG, POS, self.updater,
+                mwtn.update_fake_note_ids, filter_new_notes_op=mwtn.deduplicate_notes_list,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 1))
+        self.assertEqual(array_match_data(FakeNote(search.saved[2])), [[501], ["match"]])
+        self.assertEqual(search.saved[501]["new_note_id_field"], "501")
+        self.assertNotIn(7, [note.id for note in col.updated])
+
+
+class UpdateFakeNoteIdsTypesTests(unittest.TestCase):
+    """New notes of two note types, each with its own name for new_note_id_field."""
+
+    def test_each_new_note_is_saved_by_its_own_type_s_id_field(self):
+        """The saving after the resolving read the field of the note that came last, and so
+        left a note of the other type unsaved, its own id written but never stored."""
+        config = {
+            **CONFIG,
+            "Other": {**CONFIG["Word"], "new_note_id_field": "other_id_field"},
+        }
+        word_note = FakeNote({"word_list_field": "", "new_note_id_field": "-1111111"}, 501)
+        other_note = FakeNote({"word_list_field": "", "other_id_field": "-2222222"}, 502)
+        other_note.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
+        search = FakeSearch()
+
+        with search.patched():
+            updated = mwtn.update_fake_note_ids([word_note, other_note], config, FakeUpdater())
+
+        self.assertEqual(updated, {501: word_note, 502: other_note})
+        self.assertEqual(word_note["new_note_id_field"], "501")
+        self.assertEqual(other_note["other_id_field"], "502")
 
 
 def vocab_note(sort: str, note_id: int = 0, **fields: str) -> FakeNote:

@@ -43,16 +43,16 @@ def tag_notes_matched_status_for_note(
     note_word_info = get_note_word_match_query(config, note, note_type, log_prefix)
     if note_word_info is None:
         return False
-    target_word, target_reading, word_list_field = note_word_info
+    target_word, target_reading = note_word_info.word, note_word_info.reading
 
     # A word is matched once it has a note id, and unmatched when judged worth one
     matched_regex = word_array_query_regex(
         target_word, target_reading, [MatchState.LINKED, MatchState.RATED]
     )
     unmatched_regex = word_array_query_regex(target_word, target_reading, [MatchState.MATCH])
-    note_type_name = note_type["name"]
-    matched_query = f'"note:{note_type_name}" "{word_list_field}:re:{matched_regex}"'
-    unmatched_query = f'"note:{note_type_name}" "{word_list_field}:re:{unmatched_regex}"'
+    # In the arrays of the note's sentence type
+    matched_query = note_word_info.search(matched_regex)
+    unmatched_query = note_word_info.search(unmatched_regex)
 
     matched_count = len(mw.col.find_notes(matched_query))
     unmatched_count = len(mw.col.find_notes(unmatched_query))
