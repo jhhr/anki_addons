@@ -448,6 +448,53 @@ class CopyExampleTests(unittest.TestCase):
             roles.copy_example(two_type_config(), VOCAB, sentence_note(), 1712, vocab_note())
 
 
+class RoleErrorTests(unittest.TestCase):
+    """Which notes an op of one role may run on: every type outside the two-type layout, as
+    before roles existed, and in a pair only the type of the op's role."""
+
+    def test_outside_the_two_type_layout_no_type_is_refused(self):
+        config = one_type_config()
+        for name in (VOCAB, "Kanji draw", "Basic", ""):
+            for role in roles.ROLES:
+                with self.subTest(name=name, role=role):
+                    self.assertIsNone(roles.role_error(config, name, role))
+            self.assertEqual(roles.roles_of(config, name), roles.ROLES)
+        # A type of neither role in a two-type config is in no pair either
+        self.assertEqual(roles.roles_of(two_type_config(), "Kanji draw"), roles.ROLES)
+
+    def test_a_pair_type_is_refused_for_the_other_role_naming_both_types(self):
+        config = two_type_config()
+        self.assertIsNone(roles.role_error(config, SENTENCE, roles.SENTENCE_ROLE))
+        self.assertIsNone(roles.role_error(config, VOCAB, roles.VOCAB_ROLE))
+        self.assertEqual(
+            roles.role_error(config, VOCAB, roles.SENTENCE_ROLE),
+            f'This op runs on sentence notes, and "{VOCAB}" is the vocab note type of the'
+            f' settings: run it on notes of "{SENTENCE}".',
+        )
+        self.assertEqual(
+            roles.role_error(config, SENTENCE, roles.VOCAB_ROLE),
+            f'This op runs on vocab notes, and "{SENTENCE}" is the sentence note type of the'
+            f' settings: run it on notes of "{VOCAB}".',
+        )
+        self.assertEqual(roles.roles_of(config, SENTENCE), (roles.SENTENCE_ROLE,))
+        self.assertEqual(roles.roles_of(config, VOCAB), (roles.VOCAB_ROLE,))
+
+    def test_a_broken_pair_is_refused_for_both_roles_with_its_layout_error(self):
+        config = two_type_config()
+        del config[VOCAB]["sentence_note_type"]
+        for name in (SENTENCE, VOCAB):
+            error = roles.layout_error(config, name)
+            self.assertIsNotNone(error)
+            for role in roles.ROLES:
+                with self.subTest(name=name, role=role):
+                    self.assertEqual(roles.role_error(config, name, role), error)
+            self.assertEqual(roles.roles_of(config, name), ())
+
+    def test_an_unknown_role_is_a_bug(self):
+        with self.assertRaises(ValueError):
+            roles.role_error(two_type_config(), VOCAB, "sentences")
+
+
 class NoteTypeSearchTests(unittest.TestCase):
     def test_a_plain_name_is_the_term_the_ops_have_always_built(self):
         self.assertEqual(roles.note_type_search(VOCAB), '"note:Japanese vocab note"')

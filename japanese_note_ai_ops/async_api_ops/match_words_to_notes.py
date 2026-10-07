@@ -39,6 +39,8 @@ from ..html_stripping import strip_html
 from ..kana_conv import to_hiragana
 from ..note_roles import (
     SENTENCE_KEYS,
+    SENTENCE_ROLE,
+    VOCAB_ROLE,
     LayoutError,
     copy_example,
     example_id_field,
@@ -87,6 +89,7 @@ from .collection_access import (
     run_on_collection,
 )
 from .note_cache import NoteCache
+from .role_gate import notes_of_role
 from .sentence_cache import SentenceCache
 from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, word_key
 from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
@@ -3035,7 +3038,7 @@ async def bulk_match_words_to_notes(
         config=config,
         bulk_inner_op=inner_op,
         col=col,
-        notes=notes,
+        notes=notes_of_role(config, notes, SENTENCE_ROLE),
         edited_nids=edited_nids,
         progress_updater=progress_updater,
         notes_to_add_dict=notes_to_add_dict,
@@ -3178,7 +3181,8 @@ def match_single_word_to_notes_from_selected(
         limit_word_and_reading_dict: dict[NoteId, list[RawOneMeaningWordType]] = {}
         all_notes_to_process_dict: dict[NoteId, Note] = {}
         log_prefix = "Match single word to notes--"
-        for cur_note in notes:
+        # The selection is of vocab notes, whose words are looked for in the sentence notes
+        for cur_note in notes_of_role(config, notes, VOCAB_ROLE):
             note_type = cur_note.note_type()
             if note_type is None:
                 logger.error(f"{log_prefix}Error: note_type() call failed for {cur_note.id}")

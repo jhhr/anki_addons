@@ -41,6 +41,7 @@ STARTUP_MODULES = [
     "find_proper_nouns",
     "new_note_all_ops",
     "op_chain",
+    "role_gate",
 ]
 
 # The same, from sync_local_ops

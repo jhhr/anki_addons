@@ -19,11 +19,13 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 
 from ..generator_resources import with_generator_resources
+from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config
 from ..word_array import generator, proper_noun_llm
 from ..word_array.match_flags import decode_word_array, format_word_array
 from .chain_types import ChainStep
 from .base_ops import AsyncTaskProgressUpdater, bulk_notes_op, get_response, selected_notes_op
+from .role_gate import notes_of_role
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +125,7 @@ async def bulk_find_proper_nouns_op(
         config,
         find_proper_nouns_in_note,
         col,
-        notes,
+        notes_of_role(config, notes, SENTENCE_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict,

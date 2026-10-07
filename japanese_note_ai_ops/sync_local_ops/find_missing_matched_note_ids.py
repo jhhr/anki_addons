@@ -19,6 +19,8 @@ from ..async_api_ops.base_ops import (
     selected_notes_op,
 )
 from ..async_api_ops.match_words_to_notes import decode_word_array_field
+from ..async_api_ops.role_gate import notes_of_role
+from ..note_roles import SENTENCE_ROLE
 from ..word_array.match_flags import format_word_array
 from ..word_array.match_targets import unlink_missing_notes
 
@@ -71,7 +73,7 @@ def bulk_find_missing_matched_note_ids_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, SENTENCE_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict,

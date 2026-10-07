@@ -29,6 +29,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
+from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import judge
 from ..word_array.match_flags import (
@@ -51,6 +52,7 @@ from .base_ops import (
     selected_notes_op,
 )
 from .concurrency import ConcurrencyGate
+from .role_gate import notes_of_role
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +222,7 @@ def make_bulk_op(states: frozenset[MatchState]):
             config=config,
             bulk_inner_op=partial(plan_word_matching_judge, states=states),
             col=col,
-            notes=notes,
+            notes=notes_of_role(config, notes, SENTENCE_ROLE),
             edited_nids=edited_nids,
             progress_updater=progress_updater,
             notes_to_add_dict=notes_to_add_dict,

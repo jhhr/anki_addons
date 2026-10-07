@@ -198,6 +198,68 @@ def layout_error(config: Mapping[str, Any], note_type_name: str) -> Optional[str
     return None
 
 
+SENTENCE_ROLE = "sentence"
+VOCAB_ROLE = "vocab"
+ROLES: tuple[str, ...] = (SENTENCE_ROLE, VOCAB_ROLE)
+
+
+def _partner(config: Mapping[str, Any], note_type_name: str) -> str:
+    """The other type of the two-type layout this type is in: the one its block names, else
+    one whose block names it; "" when it is in none."""
+    block = _block(config, note_type_name)
+    if block is None:
+        return ""
+    named = _other(block, "vocab_note_type", note_type_name) or _other(
+        block, "sentence_note_type", note_type_name
+    )
+    if named:
+        return named
+    for other_name, other_block in config.items():
+        if other_name == note_type_name or not isinstance(other_block, Mapping):
+            continue
+        if note_type_name in (
+            _name(other_block, "vocab_note_type"),
+            _name(other_block, "sentence_note_type"),
+        ):
+            return other_name
+    return ""
+
+
+def role_error(config: Mapping[str, Any], note_type_name: str, role: str) -> Optional[str]:
+    """Why an op over notes of `role` (SENTENCE_ROLE or VOCAB_ROLE) must leave this type's
+    notes out, naming the type; None when it may run on them.
+
+    Only the two-type layout refuses. There each type has one role, and an op of the other
+    meets fields the type's block does not name: a raise per note, or the whole match run
+    failing as it plans. A type in no two-type layout (the one-type layout's, one with neither
+    role such as "Kanji draw", one not configured) is never refused, so an op on it works, or
+    fails, as it did before roles existed. A broken pair is refused with `layout_error`'s
+    message, whichever the role.
+    """
+    if role not in ROLES:
+        raise ValueError(f"Unknown role {role!r}")
+    partner = _partner(config, note_type_name)
+    if not partner:
+        return None
+    error = layout_error(config, note_type_name)
+    if error:
+        return error
+    has_role = is_sentence_type if role == SENTENCE_ROLE else is_vocab_type
+    if has_role(config, note_type_name):
+        return None
+    other_role = VOCAB_ROLE if role == SENTENCE_ROLE else SENTENCE_ROLE
+    return (
+        f'This op runs on {role} notes, and "{note_type_name}" is the {other_role} note type'
+        f' of the settings: run it on notes of "{partner}".'
+    )
+
+
+def roles_of(config: Mapping[str, Any], note_type_name: str) -> tuple[str, ...]:
+    """The roles whose ops may run on this type's notes (`role_error` None): both outside the
+    two-type layout, its own in a pair, none in a broken pair."""
+    return tuple(role for role in ROLES if role_error(config, note_type_name, role) is None)
+
+
 def _checked_block(config: Mapping[str, Any], note_type_name: str) -> Mapping[str, Any]:
     error = layout_error(config, note_type_name)
     block = _block(config, note_type_name)

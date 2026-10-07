@@ -12,6 +12,8 @@ from ..async_api_ops.base_ops import (
     selected_notes_op,
 )
 from ..async_api_ops.match_words_to_notes import get_note_word_match_query
+from ..async_api_ops.role_gate import notes_of_role
+from ..note_roles import VOCAB_ROLE
 from ..word_array.match_flags import MatchState, word_array_query_regex
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,7 @@ def bulk_tag_notes_matched_status_op(
         config=config,
         op=tag_notes_matched_status_for_note,
         col=col,
-        notes=notes,
+        notes=notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids=edited_nids,
         progress_updater=progress_updater,
         notes_to_add_dict=notes_to_add_dict,

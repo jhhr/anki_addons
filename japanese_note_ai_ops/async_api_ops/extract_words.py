@@ -46,6 +46,7 @@ from aqt.utils import showWarning
 
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
+from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import merge, names, resources
 from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
@@ -58,6 +59,7 @@ from .base_ops import (
 )
 from .find_proper_nouns import add_proper_nouns, generate_word_array
 from .progress_errors import report_exception
+from .role_gate import notes_of_role
 from .run_errors import report_error
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
@@ -175,7 +177,7 @@ def make_bulk_op(overwrite: bool = False):
             config,
             extract_words_op(overwrite=overwrite),
             col,
-            notes,
+            notes_of_role(config, notes, SENTENCE_ROLE),
             edited_nids,
             progress_updater,
             notes_to_add_dict,

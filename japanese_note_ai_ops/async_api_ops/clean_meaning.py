@@ -14,6 +14,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .note_cache import NoteCache
+from .role_gate import notes_of_role
 from .sentence_cache import SentenceCache
 from .word_index import WordIndex
 from .chain_types import ChainStep
@@ -39,7 +40,7 @@ from .make_all_meanings import (
     make_meaning_dict_key,
 )
 
-from ..note_roles import example_id_field, note_type_search, sentence_type_of
+from ..note_roles import VOCAB_ROLE, example_id_field, note_type_search, sentence_type_of
 from ..utils import get_field_config
 from ..html_stripping import strip_html
 from ..word_array import match_targets
@@ -1235,7 +1236,7 @@ def bulk_clean_notes_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,

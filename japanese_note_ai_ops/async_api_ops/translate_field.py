@@ -14,6 +14,8 @@ from .base_ops import (
     selected_notes_op,
     AsyncTaskProgressUpdater,
 )
+from .role_gate import notes_of_role
+from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
@@ -107,7 +109,7 @@ def bulk_translate_notes_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, SENTENCE_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict,

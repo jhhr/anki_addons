@@ -24,6 +24,7 @@ from test_word_index import FIELDS, VOCAB_MID, VOCAB_ORDS, vocab_row
 wi = load_ops_module("word_index")
 nc = load_ops_module("note_cache")
 mwtn = load_ops_module("match_words_to_notes")
+role_gate = load_ops_module("role_gate")
 tsm = load_ops_module("tag_notes_matched_status", "sync_local_ops")
 
 
@@ -379,6 +380,18 @@ class WordArraySearchTests(unittest.TestCase):
         self.assertEqual(self.queries, [f'"note:Sentence" "s_array:re:{self.rematch_regex()}"'])
         self.assertEqual([found.id for found in handed["notes"]], [11])
         self.assertEqual(handed["limit_word_and_reading_dict"], {11: [("本", "ほん")]})
+
+    def test_a_selected_sentence_note_is_left_out_of_the_rematch_with_one_report(self):
+        # Its type has no word fields: the rematch used to fail the whole run on it
+        note = VocabNote("Sentence", {"s_array": ""})
+
+        with mock.patch.object(role_gate, "report_error") as report:
+            handed = self.rematch(TWO_TYPE, note)
+
+        self.assertEqual(self.queries, [])
+        self.assertEqual(handed["notes"], [])
+        report.assert_called_once()
+        self.assertIn("runs on vocab notes", report.call_args.args[0])
 
     def tag(self, config, note) -> "list[str]":
         col = types.SimpleNamespace(find_notes=self.find_notes)
