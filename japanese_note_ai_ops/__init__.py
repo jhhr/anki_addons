@@ -7,6 +7,7 @@ from anki.notes import Note, NoteId
 from aqt import gui_hooks
 from aqt import mw
 from aqt.browser import Browser
+from aqt.operations.scheduling import suspend_cards
 from aqt.qt import QAction, qconnect, QMenu
 
 # Put the vendored 'lib' on sys.path - the locally rebuilt tree if there is one, then the
@@ -41,6 +42,14 @@ from .shared.utils.vendor_rebuild_ui import install_rebuild_ui  # noqa: E402
 # reach Anki's error report exactly as it always did.
 try:
     from .utils import get_field_config  # noqa: E402
+    from .note_roles import LayoutError  # noqa: E402
+    from .note_hooks import (  # noqa: E402
+        CLEAN_MEANING,
+        EXTRACT_WORDS,
+        ops_on_added_note,
+        suspends_added_cards,
+        translates_on_unfocus,
+    )
     from .configuration import ADDON_USER_FILES_DIR, capture_versions  # noqa: E402
     from .call_logging import current_log_path, in_bulk_op, start_call_log  # noqa: E402
     from .async_api_ops import capture  # noqa: E402
@@ -157,12 +166,14 @@ def run_op_on_field_unfocus(changed: bool, note: Note, field_idx: int):
             with capture.note_scope(note.id or None):
                 return make_story_for_note(config, note, {}, {})
 
-    if note_type_name == "Japanese vocab note":
+    if translates_on_unfocus(config, note_type_name):
         translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
         if field_name == translated_sentence_field and cur_field_value == "":
             start_call_log("translate_sentence")
             with capture.note_scope(note.id or None):
-                return translate_sentence_in_note(config, note, {}, {})
+                # The note the editor shows, which the editor saves. A sentence note's vocab
+                # notes keep their copy of its old translation until "Refresh example sentences"
+                return translate_sentence_in_note(config, note, {}, {}, copy_to_vocab_notes=False)
 
 
 def run_op_on_add_note(note: Note):
@@ -177,12 +188,18 @@ def run_op_on_add_note(note: Note):
         # Happening within match_words_to_notes, which causes some problems
         return
 
+    # A note an op adds in its cleanup is added on the run's thread, inside its bulk op.
+    # Nothing runs on it (ops_on_added_note), and the sentence migration adds thousands: this
+    # answers before the note type and the config are read.
+    op_adding = in_bulk_op()
+    if op_adding:
+        return
+
     logger = logging.getLogger(__name__)
-    if not in_bulk_op():
-        # A note added by hand, which is the case a log file per call was made for. Inside a
-        # bulk op the run owns the handler and the phase it belongs to has already installed
-        # one; replacing it per note is what produced 1,453 log files for a single run.
-        start_call_log("add_note")
+    # A note added by hand, which is the case a log file per call was made for. Inside a bulk
+    # op the run owns the handler and the phase it belongs to has already installed one;
+    # replacing it per note is what produced 1,453 log files for a single run.
+    start_call_log("add_note")
 
     note_type = note.note_type()
     if not note_type:
@@ -192,23 +209,31 @@ def run_op_on_add_note(note: Note):
     if not config:
         logger.error("Error: Missing addon configuration")
         return
+    try:
+        ops = ops_on_added_note(config, note_type_name, note.tags, op_adding=op_adding)
+    except LayoutError as e:
+        logger.error(f"Nothing run on the added note: {e}")
+        return
 
-    if note_type_name == "Japanese vocab note":
+    if ops:
         notes_to_update_dict: dict[NoteId, Note] = {}
-        # The generated meanings are what clean_meaning_in_note maps a note's meaning
-        # against, and it adds one in place when none of them fit, so the one added
-        # note reads the file and writes it back - the bulk ops do the same around a run.
-        all_generated_meanings_dict = load_meanings_dict_from_file()
         try:
             # Not added yet, so id 0: its calls are recorded with no note, not against note 0
             with capture.note_scope(note.id or None):
-                clean_meaning_in_note(
-                    config, note, {}, notes_to_update_dict, all_generated_meanings_dict
-                )
-                write_meanings_dict_to_file(all_generated_meanings_dict)
-                # The lexicon is read here rather than cached: the user rebuilds it from the
-                # collection now and then, and one added note is one small json read.
-                extract_words_op()(config, note, {}, notes_to_update_dict)
+                if CLEAN_MEANING in ops:
+                    # The generated meanings are what clean_meaning_in_note maps a note's
+                    # meaning against, and it adds one in place when none of them fit, so the
+                    # one added note reads the file and writes it back - the bulk ops do the
+                    # same around a run.
+                    all_generated_meanings_dict = load_meanings_dict_from_file()
+                    clean_meaning_in_note(
+                        config, note, {}, notes_to_update_dict, all_generated_meanings_dict
+                    )
+                    write_meanings_dict_to_file(all_generated_meanings_dict)
+                if EXTRACT_WORDS in ops:
+                    # The lexicon is read here rather than cached: the user rebuilds it from
+                    # the collection now and then, and one added note is one small json read.
+                    extract_words_op()(config, note, {}, notes_to_update_dict)
         except Exception as e:
             logger.error(
                 f"Error in clean_meaning_in_note or extract_words_in_note: {e}", exc_info=True
@@ -219,6 +244,19 @@ def run_op_on_add_note(note: Note):
             updated_notes = [n for n in updated_notes if n.id != note.id]
             logger.info(f"Updating {len(updated_notes)} notes after adding new note")
             mw.col.update_notes(updated_notes)
+
+
+def suspend_added_sentence_note(note: Note):
+    # After the Add dialog has added the note: note_will_be_added comes before Anki makes its
+    # cards, and a sentence note gets at least one however its template renders. The Add
+    # dialog only, so always a person's note; an op suspends the cards of the notes it adds.
+    note_type = note.note_type()
+    config = mw.addonManager.getConfig(__name__)
+    if not note_type or not config or not suspends_added_cards(config, note_type["name"]):
+        return
+    card_ids = note.card_ids()
+    if card_ids:
+        suspend_cards(parent=mw, card_ids=card_ids).run_in_background()
 
 
 def add_tools_menu_actions():
@@ -258,6 +296,7 @@ def shutdown_capture_store():
 if MISSING_PACKAGE is None:
     # Register to card adding hook
     hooks.note_will_be_added.append(lambda _col, note, _deck_id: run_op_on_add_note(note))
+    gui_hooks.add_cards_did_add_note.append(suspend_added_sentence_note)
 
     # hooks.note_will_be_added.append(lambda _col, note, _deck_id: translate_sentence_in_note(
     # note, config=mw.addonManager.getConfig(__name__)))

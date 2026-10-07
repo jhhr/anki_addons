@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
+from anki import hooks
 from anki.notes import NoteId
 
 from anki_shared.testing import real_anki
+from japanese_note_ai_ops import call_logging, note_hooks
 from japanese_note_ai_ops.async_api_ops import base_ops
 from japanese_note_ai_ops.sync_local_ops import migrate_to_sentence_notes as migrate_module
 from japanese_note_ai_ops.note_roles import note_type_search
@@ -365,6 +367,35 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
     assert sentence_notes(col) == {}
     assert state(col, ids.values()) == before
     assert col.undo_status().undo == undo_before
+
+
+def test_the_add_hook_runs_nothing_on_the_sentence_notes_the_run_adds(col, tmp_path):
+    """The add hook (__init__.run_op_on_add_note) asks call_logging.in_bulk_op whether an op is
+    adding the note: the migration's sentence notes are added in its cleanup, some with an
+    empty array, and must get no extract (a request each). A sentence note added by hand
+    after the run gets its words extracted."""
+    ids = build(col)
+    config = real_anki.install().addonManager.configs[PACKAGE]
+    seen: list[tuple[str, bool, tuple]] = []
+
+    def on_add(_col: Any, note: Any, _deck_id: Any) -> None:
+        name = note.note_type()["name"]
+        op_adding = call_logging.in_bulk_op()
+        ops = note_hooks.ops_on_added_note(config, name, note.tags, op_adding=op_adding)
+        seen.append((name, op_adding, ops))
+
+    hooks.note_will_be_added.append(on_add)
+    try:
+        _, result = migrate(col, list(ids.values()), tmp_path / "reports")
+        assert result.new_notes == base_ops.NewNotesCounts(added=4)
+        assert seen == [(SENTENCE, True, ())] * 4
+        assert not call_logging.in_bulk_op()
+
+        seen.clear()
+        real_anki.add_note(col, SENTENCE, {"Sentence": "猫だ。"}, deck_name="Sentences")
+        assert seen == [(SENTENCE, False, (note_hooks.EXTRACT_WORDS,))]
+    finally:
+        hooks.note_will_be_added.remove(on_add)
 
 
 def test_a_rerun_over_every_note_joins_the_sentence_notes_a_first_run_made(col, tmp_path):
