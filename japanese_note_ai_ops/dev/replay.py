@@ -3,11 +3,12 @@
 A fixture is what a replay of one capture run needs, as three JSON files a person can review:
 
 - corpus.json: the collection as the run found it, cut down to the notes it read, with their
-  note types and decks; the config it ran with; the generated meanings it read; the dictionary
-  lookups it made. Note ids are synthetic, in every field that holds one. With CopyAnywhere's
-  config (`copy_anywhere`), also what its add definitions read that the run did not: the notes
-  their searches find, from the collection the run ran against, and the media files they open
-  (`media`) (`export_with_copy_anywhere`).
+  note types and decks (and a stand-in for a type its config pairs with one of those and the
+  run read no note of, `_stand_in_notetypes`); the config it ran with; the generated meanings
+  it read; the dictionary lookups it made. Note ids are synthetic, in every field that holds
+  one. With CopyAnywhere's config (`copy_anywhere`), also what its add definitions read that
+  the run did not: the notes their searches find, from the collection the run ran against, and
+  the media files they open (`media`) (`export_with_copy_anywhere`).
 - cassette.json: every AI call's answer, by its request key (capture_store.request_key: the
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
@@ -103,6 +104,14 @@ MATCH_OP = "bulk_match_words_to_notes"
 # which name their decks, tags and note types
 PRIVATE_CONFIG_KEYS = frozenset({"claude_cli_path"})
 PRIVATE_CONFIG_SUFFIX = "_query"
+# A note type block's values a replay never reads that name things of one person's: the user's
+# own tags the sentence migration carries (sentence_migration's MOVE_TAGS_KEY, COPY_TAGS_KEY)
+PRIVATE_BLOCK_KEYS = frozenset({"migration_move_tags", "migration_copy_tags"})
+# The keys by which a note type's block names the other type of its two-type layout
+# (note_roles): a sentence type's names its vocab type, a vocab type's its sentence type
+PARTNER_TYPE_KEYS = ("vocab_note_type", "sentence_note_type")
+# What a note type of the user's is called in a fixture, numbered
+GENERIC_NOTETYPE = "Note type"
 # CopyAnywhere's key for its definitions, in its addon config
 COPY_DEFINITIONS_KEY = "copy_definitions"
 # Where a replay's logs go: this folder beside each addon's own `logs`, in its user_files. A
@@ -394,7 +403,7 @@ def export_fixture(
     type_names = _names(
         [notetypes[mid]["name"] for mid in run_mids]
         + [notetypes[mid]["name"] for mid in sorted(notetypes) if mid not in run_mids],
-        "Note type",
+        GENERIC_NOTETYPE,
         HARDCODED_NOTETYPES,
     )
     run_types = {notetypes[mid]["name"] for mid in run_mids}
@@ -450,6 +459,19 @@ def export_fixture(
         )
     expected_notes = normalized_notes(after, new_ids, ids=ids, failed=failed)
 
+    corpus_config = _renamed_config(config, type_names, decks, run_types)
+    corpus_notetypes = [
+        {
+            "name": type_names[info["name"]],
+            "fields": info["fields"],
+            "sort_field": info["sort_field"],
+            "templates": info["templates"],
+        }
+        for _, info in sorted(notetypes.items())
+    ]
+    corpus_notetypes += _stand_in_notetypes(
+        corpus_config, {notetype["name"] for notetype in corpus_notetypes}
+    )
     corpus = {
         "format": FORMAT,
         "op": "match_words",
@@ -459,18 +481,8 @@ def export_fixture(
             "outcome": run["outcome"],
             "versions": json.loads(run["versions_json"] or "null"),
         },
-        "config": _renamed_config(
-            config, {name: type_names[name] for name in run_types}, decks
-        ),
-        "notetypes": [
-            {
-                "name": type_names[info["name"]],
-                "fields": info["fields"],
-                "sort_field": info["sort_field"],
-                "templates": info["templates"],
-            }
-            for _, info in sorted(notetypes.items())
-        ],
+        "config": corpus_config,
+        "notetypes": corpus_notetypes,
         "decks": sorted(set(deck_rename.values())),
         "notes": corpus_notes,
         "meanings": {key: value for key, value in sorted(meanings.items()) if value is not None},
@@ -518,24 +530,117 @@ class _DeckNames:
         return self._unseen[name]
 
 
-def _renamed_config(config: dict, type_names: dict, decks: _DeckNames) -> dict:
-    """The run's config with its note type keys and their decks under the fixture's names. A
-    note type config of a type the run never saw is dropped: its name is the user's. So are
-    the values a replay never reads that name the user's things (`PRIVATE_CONFIG_KEYS`)."""
+def _renamed_config(
+    config: dict, type_names: Mapping[str, str], decks: _DeckNames, recorded: Iterable[str]
+) -> dict:
+    """The run's config with its note type keys and their decks under the fixture's names.
+    `type_names` names every note type of the corpus, `recorded` are those the run recorded
+    notes of. A note type config of a type the run never saw is dropped: its name is the
+    user's. So are the values a replay never reads that name the user's things
+    (`PRIVATE_CONFIG_KEYS`, and in a block `PRIVATE_BLOCK_KEYS`).
+
+    But the two types of a two-type layout go together (`_linked_types`): a run over sentence
+    notes that read and added no vocab note recorded nothing of the vocab type, and without its
+    block the layout check failed every sentence note of the replay. The names a block gives
+    its partner (`PARTNER_TYPE_KEYS`) are renamed as the keys are; a partner the corpus has no
+    name for gets one of its own, and `_stand_in_notetypes` its note type."""
+    linked = _linked_types(config, recorded)
+    names = dict(type_names)
+    for name in linked:
+        if name not in names:
+            names[name] = name if name in HARDCODED_NOTETYPES else _unused_name(names.values())
     renamed: dict[str, Any] = {}
     for key, value in config.items():
         if isinstance(value, dict):
-            if key not in type_names:
+            if key not in linked:
                 continue
-            value = dict(value)
+            value = {name: item for name, item in value.items() if name not in PRIVATE_BLOCK_KEYS}
             if value.get(DECK_CONFIG_KEY):
                 value[DECK_CONFIG_KEY] = decks(value[DECK_CONFIG_KEY])
-            renamed[type_names[key]] = value
+            for partner_key in PARTNER_TYPE_KEYS:
+                partner = value.get(partner_key)
+                if isinstance(partner, str) and partner:
+                    value[partner_key] = names[partner]
+            renamed[names[key]] = value
         elif not (
             key.startswith("//") or key in PRIVATE_CONFIG_KEYS or key.endswith(PRIVATE_CONFIG_SUFFIX)
         ):
             renamed[key] = value
     return renamed
+
+
+def _linked_types(config: Mapping[str, Any], recorded: Iterable[str]) -> list[str]:
+    """The note types whose blocks a fixture's config keeps: the `recorded` ones and every type
+    linked to one through the two-type layout, the type a kept block names
+    (`PARTNER_TYPE_KEYS`) and a block naming a kept type, until none is added, so a layout the
+    user got wrong is kept whole and fails the replay's layout check as it failed the run's.
+    Then the types only a kept block's value names, which have no block. In the config's order,
+    so the names handed out are the same in every export of one run."""
+    blocks = {key: value for key, value in config.items() if isinstance(value, dict)}
+
+    def partners(block: Mapping[str, Any]) -> list[str]:
+        values = [block.get(key) for key in PARTNER_TYPE_KEYS]
+        return [value for value in values if isinstance(value, str) and value]
+
+    linked = set(recorded)
+    grown = True
+    while grown:
+        grown = False
+        for key, block in blocks.items():
+            named = partners(block)
+            if key in linked:
+                added = set(named) - linked
+            else:
+                added = {key} if linked.intersection(named) else set()
+            if added:
+                linked |= added
+                grown = True
+    ordered = [key for key in blocks if key in linked]
+    ordered += [name for key in ordered for name in partners(blocks[key]) if name not in blocks]
+    return list(dict.fromkeys(ordered))
+
+
+def _unused_name(used: Iterable[str]) -> str:
+    """A generic note type name that none of `used` is, numbered past the names `_names`
+    hands out, which count from 1."""
+    taken = set(used)
+    number = len(taken) + 1
+    while f"{GENERIC_NOTETYPE} {number}" in taken:
+        number += 1
+    return f"{GENERIC_NOTETYPE} {number}"
+
+
+def _stand_in_notetypes(config: Mapping[str, Any], present: Iterable[str]) -> list[dict]:
+    """A note type for each block of the fixture's config whose type is not among `present`,
+    the corpus's: a two-type partner the run recorded no note of (`_renamed_config`). It has the
+    fields its block names, so the run reads and writes the notes it makes in it as in the
+    capture run's collection: the match op makes a new vocab note in the vocab type the config
+    names, which a run whose only new note failed to add recorded nothing of, and without the
+    type the replay could not make the note at all. Its other fields were never read."""
+    known = set(present)
+    stand_ins = []
+    for name, block in config.items():
+        if not isinstance(block, dict) or name in known:
+            continue
+        fields = list(
+            dict.fromkeys(
+                value
+                for key, value in block.items()
+                if key.endswith("_field") and isinstance(value, str) and value
+            )
+        )
+        if not fields:
+            continue
+        sort_field = block.get("word_sort_field")
+        stand_ins.append(
+            {
+                "name": name,
+                "fields": fields,
+                "sort_field": fields.index(sort_field) if sort_field in fields else 0,
+                "templates": [],
+            }
+        )
+    return stand_ins
 
 
 def _renamed_copy_anywhere(

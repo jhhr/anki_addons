@@ -9,6 +9,12 @@ exactly the answers the run was given, and do it again the same.
 The new-note path needs the meaning-making prompts' answers, which a script cannot make up
 convincingly; the fixtures of real capture runs (test_replay.py) cover it. One scripted new note
 is here, for what its failed add leaves behind: a placeholder the fixture must name by a symbol.
+
+The same in the two-type layout (at the end): a sentence note of a type of its own, whose words
+link vocab notes of another, and a new word whose note is made with no dictionary to look it up
+in, so the one meaning generated for it is all it needs. The new note must be a vocab note with
+its example's translation, audio and id, and the fixture must name both types as its corpus
+does, a vocab type the run recorded no note of included.
 """
 
 from __future__ import annotations
@@ -19,18 +25,21 @@ import sqlite3
 import tempfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Mapping, Optional, cast
 
 import pytest
 
 import replay
 from anki_shared.testing import real_anki
+from anki_shared.word_array.field_text import read_word_array
 from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
 from japanese_note_ai_ops.async_api_ops.match_words_to_notes import (
     MATCH_FIELD_KEYS,
+    SENTENCE_MATCH_FIELD_KEYS,
     match_words_spec,
 )
 from japanese_note_ai_ops.configuration import MEANING_MAPPED_TAG, MEANINGS_DICT_FILE
+from japanese_note_ai_ops.sync_local_ops.sentence_migration import COPY_TAGS_KEY, MOVE_TAGS_KEY
 
 NOTETYPE = "Japanese vocab note"
 FIELDS = {key: key.removesuffix("_field") for key in MATCH_FIELD_KEYS}
@@ -62,14 +71,20 @@ def scripted(request: Any) -> Any:
 
 
 def capture_run(
-    tmp_path: Path, build: Any, config: dict, responder: Any
+    tmp_path: Path,
+    build: Any,
+    config: dict,
+    responder: Any,
+    notetypes: Optional[Mapping[str, list[str]]] = None,
 ) -> tuple[Path, int, dict]:
     """A capture run of the match op over the sentence note `build(col)` makes, answered by
-    `responder`: its store, its run id, and the ids `build` names."""
+    `responder`: its store, its run id, and the ids `build` names. The collection, at
+    tmp_path / "collection.anki2", has the `notetypes` (name -> fields), else NOTETYPE."""
     stub = real_anki.install()
     saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
     col = real_anki.open_collection(tmp_path / "collection.anki2")
-    real_anki.make_note_type(col, NOTETYPE, list(FIELDS.values()))
+    for name, fields in (notetypes or {NOTETYPE: list(FIELDS.values())}).items():
+        real_anki.make_note_type(col, name, fields)
     store = tmp_path / "capture.sqlite3"
     try:
         sentence_id, ids = build(col)
@@ -459,6 +474,108 @@ def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
     assert replay.replay(fixture).differences(fixture.expected) == []
 
 
+SENTENCES, WORDS = "My sentences", "My words"
+
+
+def two_type_blocks(words: str = WORDS) -> dict:
+    """A two-type layout's blocks, the sentence block with the user's tag lists."""
+    return {
+        SENTENCES: {"vocab_note_type": words, "word_list_field": "Words",
+                    MOVE_TAGS_KEY: ["moved-tag"], COPY_TAGS_KEY: ["copied-tag"]},
+        words: {"sentence_note_type": SENTENCES, "word_sort_field": "Sort",
+                "example_sentence_id_field": "Example id"},
+    }
+
+
+def renamed_config(config: dict, type_names: dict, recorded: list) -> dict:
+    return replay._renamed_config(config, type_names, replay._DeckNames({}), recorded)
+
+
+def test_a_two_type_layout_s_blocks_name_each_other_by_the_fixture_s_names():
+    config = {**two_type_blocks(), "Unseen type": {"word_list_field": "x"}, "log_level": "INFO"}
+
+    renamed = renamed_config(
+        config, {SENTENCES: "Note type 1", WORDS: "Note type 2"}, [SENTENCES, WORDS]
+    )
+
+    assert renamed["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert renamed["Note type 2"]["sentence_note_type"] == "Note type 1"
+    assert set(renamed) == {"Note type 1", "Note type 2", "log_level"}
+
+
+@pytest.mark.parametrize("recorded", [SENTENCES, WORDS])
+def test_a_partner_the_run_recorded_no_note_of_is_kept_under_a_name_of_its_own(recorded):
+    # A run over sentence notes that read and added no vocab note recorded nothing of their
+    # vocab type: its block was dropped, and the replay's layout check refused every sentence
+    # note
+    unrecorded = WORDS if recorded == SENTENCES else SENTENCES
+    # A carried type has a name in the corpus already, which the new one must not take
+    type_names = {recorded: "Note type 1", "Carried type": "Note type 2"}
+
+    renamed = renamed_config(two_type_blocks(), type_names, [recorded])
+
+    names = {recorded: "Note type 1", unrecorded: "Note type 3"}
+    assert set(renamed) == set(names.values())
+    assert renamed[names[SENTENCES]]["vocab_note_type"] == names[WORDS]
+    assert renamed[names[WORDS]]["sentence_note_type"] == names[SENTENCES]
+
+
+def test_a_partner_keeps_the_name_the_corpus_gives_it_and_a_hardcoded_one_its_own():
+    carried = renamed_config(
+        two_type_blocks(), {SENTENCES: "Note type 1", WORDS: "Note type 2"}, [SENTENCES]
+    )
+    hardcoded = renamed_config(
+        two_type_blocks(NOTETYPE), {SENTENCES: "Note type 1"}, [SENTENCES]
+    )
+
+    assert carried["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert hardcoded["Note type 1"]["vocab_note_type"] == NOTETYPE
+    assert hardcoded[NOTETYPE]["sentence_note_type"] == "Note type 1"
+
+
+def test_a_layout_the_user_got_wrong_is_kept_whole():
+    # The vocab type names another sentence type than the one naming it: the run's layout check
+    # failed, and the replay's must fail the same way
+    config = {**two_type_blocks(), "Other sentences": {"vocab_note_type": WORDS}}
+    config[WORDS] = {**config[WORDS], "sentence_note_type": "Other sentences"}
+
+    renamed = renamed_config(config, {SENTENCES: "Note type 1"}, [SENTENCES])
+
+    assert renamed["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert renamed["Note type 2"]["sentence_note_type"] == "Note type 3"
+    assert renamed["Note type 3"]["vocab_note_type"] == "Note type 2"
+
+
+def test_the_user_s_tag_lists_leave_every_block():
+    # Read by the migration alone, and the tags in them are the user's
+    config = {
+        **two_type_blocks(),
+        NOTETYPE: {**FIELDS, MOVE_TAGS_KEY: ["moved-tag"], COPY_TAGS_KEY: ["copied-tag"]},
+    }
+    type_names = {SENTENCES: "Note type 1", WORDS: "Note type 2", NOTETYPE: NOTETYPE}
+
+    renamed = renamed_config(config, type_names, list(type_names))
+
+    assert replay.PRIVATE_BLOCK_KEYS == {MOVE_TAGS_KEY, COPY_TAGS_KEY}
+    assert "-tag" not in json.dumps(renamed)
+    assert renamed[NOTETYPE] == FIELDS
+
+
+def test_a_stand_in_note_type_has_the_fields_its_block_names():
+    config = {
+        "Note type 1": {"word_list_field": "Words"},
+        "Note type 2": {"sentence_note_type": "Note type 1", "word_kanjified_field": "Word",
+                        "word_field": "Word", "word_sort_field": "Sort", "insert_deck": "Deck 1"},
+        "log_level": "INFO",
+    }
+
+    stand_ins = replay._stand_in_notetypes(config, ["Note type 1"])
+
+    assert stand_ins == [
+        {"name": "Note type 2", "fields": ["Word", "Sort"], "sort_field": 1, "templates": []}
+    ]
+
+
 def test_a_replay_logs_beside_the_addons_own_logs_and_leaves_nothing_attached(
     captured, tmp_path, monkeypatch
 ):
@@ -641,3 +758,221 @@ def test_a_run_a_replay_cannot_reproduce_is_refused(tmp_path, end, ops, refusal)
 
     with pytest.raises(replay.CaptureGap, match=refusal):
         replay.export_fixture(store, run_id)
+
+
+# --- the two-type layout (SPEC 6 P8) ---------------------------------------------------------
+#
+# The sentence type holds the sentence and its word array, in fields of names of its own. The
+# vocab type, under the name the addon hardcodes as the user's is, holds the words, a copy of
+# their example sentence's translation and audio, and its id, and no field named like the
+# sentence type's array: a new note made in the wrong type, or an array written into a vocab
+# note, raises.
+
+SENTENCE_TYPE = "Sentence note"
+SENTENCE_FIELDS = {
+    "sentence_field": "Sentence",
+    "furigana_sentence_field": "Sentence furigana",
+    "kanjified_sentence_field": "Sentence kanjified",
+    "translated_sentence_field": "Sentence translation",
+    "sentence_audio_field": "Sentence audio",
+    "word_list_field": "Words",
+}
+VOCAB_FIELDS = {
+    **{key: name for key, name in FIELDS.items() if key not in SENTENCE_MATCH_FIELD_KEYS},
+    "translated_sentence_field": "example_translation",
+    "sentence_audio_field": "example_audio",
+    "example_sentence_id_field": "example_sentence_id",
+}
+TWO_TYPE_NOTETYPES = {
+    SENTENCE_TYPE: list(SENTENCE_FIELDS.values()),
+    NOTETYPE: list(VOCAB_FIELDS.values()),
+}
+TWO_TYPE_CONFIG = {
+    **CONFIG,
+    SENTENCE_TYPE: {
+        **SENTENCE_FIELDS,
+        "vocab_note_type": NOTETYPE,
+        MOVE_TAGS_KEY: ["private-moved-tag"],
+        COPY_TAGS_KEY: ["private-copied-tag"],
+    },
+    NOTETYPE: {
+        **VOCAB_FIELDS,
+        "sentence_note_type": SENTENCE_TYPE,
+        # The meaning cleaning's, which a new note needs
+        "word_field": VOCAB_FIELDS["word_kanjified_field"],
+        "insert_deck": "Default",
+    },
+}
+
+
+def add_sentence_note(
+    col: Any, text: str, furigana: str, translation: str, audio: str, array: list
+) -> Any:
+    fields = SENTENCE_FIELDS
+    return real_anki.add_note(
+        col,
+        SENTENCE_TYPE,
+        {fields["sentence_field"]: text, fields["furigana_sentence_field"]: furigana,
+         fields["kanjified_sentence_field"]: text, fields["translated_sentence_field"]: translation,
+         fields["sentence_audio_field"]: audio,
+         fields["word_list_field"]: json.dumps(array, ensure_ascii=False)},
+    )
+
+
+def build_box_book_and_buy(col: Any) -> tuple[int, dict]:
+    """A sentence note with three words: 箱, which has no vocab note, so the run makes one; 本,
+    to match against its one vocab note, whose example is another sentence note the prompt
+    shows it in; and 買う, linked to its vocab note already but not rated, whose example is
+    this sentence."""
+    fields = VOCAB_FIELDS
+
+    def vocab_note(form: str, reading: str, meaning: str, english: str) -> Any:
+        return real_anki.add_note(
+            col,
+            NOTETYPE,
+            {fields["word_kanjified_field"]: form, fields["word_normal_field"]: form,
+             fields["word_reading_field"]: reading, fields["word_sort_field"]: form,
+             fields["meaning_field"]: meaning, fields["english_meaning_field"]: english},
+            tags=[MEANING_MAPPED_TAG],
+        )
+
+    def give_example(note: Any, example: Any) -> None:
+        # As the migration and the match op leave a vocab note (note_roles.copy_example)
+        note[fields["example_sentence_id_field"]] = str(example.id)
+        note[fields["translated_sentence_field"]] = example[
+            SENTENCE_FIELDS["translated_sentence_field"]
+        ]
+        note[fields["sentence_audio_field"]] = example[SENTENCE_FIELDS["sentence_audio_field"]]
+        col.update_note(note)
+
+    book = vocab_note("本", "ほん", "書物", "book")
+    buy = vocab_note("買う", "かう", "代金を払って物を得る", "buy")
+    older = add_sentence_note(
+        col, "本が好き。", "本[ほん]が好[す]き。", "I like books.", "[sound:older.mp3]",
+        [word("本", "名詞", "本", "ほん", [book.id, 4]), ["が"],
+         word("好き", "形状詞", "好き", "すき", ["dontmatch"]), ["。"]],
+    )
+    sentence = add_sentence_note(
+        col, "箱の本を買う。", "箱[はこ]の本[ほん]を買[か]う。", "I buy the book in the box.",
+        "[sound:box.mp3]",
+        [word("箱", "名詞", "箱", "はこ", ["match"]), ["の"],
+         word("本", "名詞", "本", "ほん", ["match"]), ["を"],
+         word("買う", "動詞", "買う", "かう", [buy.id]), ["。"]],
+    )
+    give_example(book, older)
+    give_example(buy, sentence)
+    ids = {"book": book.id, "buy": buy.id, "older": older.id, "sentence": sentence.id}
+    return sentence.id, ids
+
+
+def two_type_scripted(request: Any) -> Any:
+    """`scripted`'s answers, and `generated`'s meaning for the word the run makes a note for."""
+    if request.kind == "clean_meaning.generate":
+        return generated(request)
+    return scripted(request)
+
+
+@pytest.fixture
+def two_type_captured(tmp_path: Path):
+    """The capture run in the two-type layout: its store and run id, and the ids of its notes.
+    Its collection stays at tmp_path / "collection.anki2"."""
+    yield capture_run(
+        tmp_path, build_box_book_and_buy, TWO_TYPE_CONFIG, two_type_scripted, TWO_TYPE_NOTETYPES
+    )
+
+
+def test_a_two_type_run_makes_a_vocab_note_holding_its_example_and_links_it(
+    two_type_captured, tmp_path
+):
+    _, _, ids = two_type_captured
+    col = real_anki.open_collection(tmp_path / "collection.anki2")
+    try:
+        [new_id] = set(col.find_notes(f'"note:{NOTETYPE}"')) - {ids["book"], ids["buy"]}
+        new = col.get_note(new_id)
+        notetype = new.note_type()
+        sentence = col.get_note(ids["sentence"])
+    finally:
+        col.close()
+
+    fields = VOCAB_FIELDS
+    assert notetype is not None and notetype["name"] == NOTETYPE
+    assert new[fields["word_kanjified_field"]] == "箱"
+    assert new[fields["meaning_field"]] == "物を入れる器。"
+    # Its example is the sentence note the run processed, copied (note_roles.copy_example)
+    assert new[fields["example_sentence_id_field"]] == str(ids["sentence"])
+    assert new[fields["translated_sentence_field"]] == "I buy the book in the box."
+    assert new[fields["sentence_audio_field"]] == "[sound:box.mp3]"
+    # Neither an array nor anything of the sentence but its own word
+    assert [value for value in new.values() if read_word_array(value)[0] is not None] == []
+    assert not any("買" in value for value in new.values())
+    array = json.loads(sentence[SENTENCE_FIELDS["word_list_field"]])
+    assert array[0][4][0] == new_id
+    assert array[2][4] == [ids["book"], 4]
+    assert array[4][4] == [ids["buy"], 3]
+
+
+def test_a_two_type_run_replays_from_a_fixture_naming_its_types_as_its_corpus_does(
+    two_type_captured, tmp_path
+):
+    store, run_id, _ = two_type_captured
+    fixture = replay.export_fixture(store, run_id)
+    fixture.write(tmp_path / "fixture")
+    fixture = replay.Fixture.read(tmp_path / "fixture")
+
+    config = fixture.corpus["config"]
+    # The sentence type's name is the user's; the vocab type's the addon's own
+    sentence_type = config[NOTETYPE]["sentence_note_type"]
+    assert sentence_type.startswith(f"{replay.GENERIC_NOTETYPE} ")
+    assert config[sentence_type]["vocab_note_type"] == NOTETYPE
+    assert {notetype["name"] for notetype in fixture.corpus["notetypes"]} == {
+        sentence_type, NOTETYPE
+    }
+    text = json.dumps(fixture.corpus, ensure_ascii=False)
+    assert SENTENCE_TYPE not in text and "private-" not in text
+    kinds = sorted(entry["kind"] for entry in fixture.cassette["entries"])
+    assert kinds == ["clean_meaning.generate", "match.meanings", "match.rating"]
+    # The other sentence note, read for the example the prompt shows 本 in
+    assert sorted(note["notetype"] for note in fixture.corpus["notes"]) == [
+        NOTETYPE, NOTETYPE, sentence_type, sentence_type
+    ]
+    [sentence] = [note for note in fixture.corpus["notes"] if note["selected"]]
+    [new] = [note for note in fixture.expected["notes"] if note["note"] == "new-1"]
+    assert new["notetype"] == NOTETYPE
+    assert new["fields"][VOCAB_FIELDS["example_sentence_id_field"]] == str(sentence["id"])
+    assert fixture.expected["new_notes"] == 1
+
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
+        assert result.new_notes == 1
+
+
+def build_box_alone(col: Any) -> tuple[int, dict]:
+    """A sentence note whose one word 箱 has no vocab note, in a collection holding none."""
+    array = [word("箱", "名詞", "箱", "はこ", ["match"]), ["。"]]
+    sentence = add_sentence_note(col, "箱。", "箱[はこ]。", "A box.", "", array)
+    return sentence.id, {"sentence": sentence.id}
+
+
+def test_a_two_type_run_that_recorded_no_vocab_note_replays_in_a_stand_in_vocab_type(tmp_path):
+    # The new vocab note's deck is missing, so its add fails, and the run read no vocab note:
+    # it recorded nothing of the vocab type. Without its block the sentence note failed the
+    # replay's layout check, and without the type the new note could not be made
+    vocab_config = {**TWO_TYPE_CONFIG[NOTETYPE], "insert_deck": "No such deck"}
+    config = {**TWO_TYPE_CONFIG, NOTETYPE: vocab_config}
+    store, run_id, _ = capture_run(
+        tmp_path, build_box_alone, config, generated, TWO_TYPE_NOTETYPES
+    )
+
+    fixture = replay.export_fixture(store, run_id)
+
+    sentence_type = fixture.corpus["config"][NOTETYPE]["sentence_note_type"]
+    assert [note["notetype"] for note in fixture.corpus["notes"]] == [sentence_type]
+    [stand_in] = [nt for nt in fixture.corpus["notetypes"] if nt["name"] == NOTETYPE]
+    assert set(stand_in["fields"]) == set(VOCAB_FIELDS.values())
+    [sentence] = fixture.expected["notes"]
+    assert "[placeholder:failed-1]" in sentence["fields"][SENTENCE_FIELDS["word_list_field"]]
+    assert fixture.expected["new_notes"] == 0
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
