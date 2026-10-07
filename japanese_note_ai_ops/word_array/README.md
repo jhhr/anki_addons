@@ -18,6 +18,14 @@ note's sentence and asks the proper noun model about it; the word matching judge
 which words are worth a note, and match_words_to_notes and clean_meaning read the array. The
 collection was migrated on 2026-09-16.
 
+Where the array lives depends on the config's layout (`note_roles`, `../config.md`). In the
+one-type layout it is a field of the vocab note, beside the sentence it was generated from, and
+a vocab note's example sentence is its own. In the two-type layout it is a field of the
+sentence notes only: a vocab note's example sentence is the sentence note its
+`example_sentence_id_field` names, and its other sentences are the sentence notes whose arrays
+link it. The vocab notes keep their old array field until the user deletes it, and no op
+reads it: every search over the array field names the sentence type.
+
 ## Dependencies
 
 - **SudachiPy** is vendored through `requirements.in` like the other packages: ~1.5 MB per
@@ -378,8 +386,10 @@ saved `[note_id, match_quality]`, or `[note_id]` when the response gave no valid
 occurrence in `<b>` (`highlighted_sentence()`, without the field's `<i>` context), and each
 existing meaning's example sentence with that note's word in `<b>` when the note holds an array
 (`example_sentence()`: the occurrence linked to the note, else the first of its word); a note
-whose field holds no array has its sentence shown as it is. A note whose own field is not a
-readable array is tagged `invalid_word_list_json` and left alone
+whose field holds no array has its sentence shown as it is. In the two-type layout the example
+is built the same way from the note's example sentence note, and is empty when it names none,
+that note is gone or it holds no array (no `<b>` is stored to show). A note whose own field is
+not a readable array is tagged `invalid_word_list_json` and left alone
 (`decode_word_array_field()`). Every run also rates the `[note_id]` words (`states_to_rate()`: unless the
 run matches them again) with a secondary prompt given only the linked note's meaning and the
 `<b>` sentence (`rating_prompt()`, `RATING_INSTRUCTIONS`, same 1-5 scale as the main prompt);
@@ -390,6 +400,9 @@ clean_meaning's sentences (`clean_meaning.get_sentences_for_note`, the word note
 of the notes linking to it) go through `example_sentence()` too: a note holding an array gives
 its sentence with the occurrence linked to the word note in `<b>` (a new note, the first of its
 word), so the meaning is cleaned for the occurrence meant when a sentence uses the word twice.
+In the two-type layout the own sentence is the example sentence note's and the others are the
+sentence notes linking the word, each note once; a note the match op is making is handed its
+target's highlighted sentence instead, since nothing links it yet.
 
 ## Deduplicating the vocab notes
 

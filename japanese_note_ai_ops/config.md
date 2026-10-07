@@ -257,9 +257,9 @@ The roles can be in one note type or in two.
 
 - **One note type** (the original layout): one block with both roles, naming no other type.
   "Japanese vocab note" holds the word and the sentence it was found in. A note the match op
-  creates copies every sentence field the block names (`sentence_field`,
-  `furigana_sentence_field`, `kanjified_sentence_field`, `word_extraction_sentence_field`,
-  `translated_sentence_field`, `sentence_audio_field`) from the note its word was found in.
+  creates takes `sentence_field`, `furigana_sentence_field`, `kanjified_sentence_field` and
+  `sentence_audio_field` from the note its word was found in, as it always has; a note it
+  makes as a copy of another keeps that note's translation and extraction field.
 - **Two note types**: a sentence note type holding the sentences and their arrays, and a vocab
   note type holding the words, each block naming the other:
   - `vocab_note_type` (sentence block): the note type the words of its arrays are notes of.
@@ -287,12 +287,8 @@ The roles can be in one note type or in two.
     notes it was moved or copied from. A moved tag no longer finds the vocab notes in a search
     (a filtered deck, another addon's search).
 
-    "Move sentences to sentence notes" reads each vocab note's sentence and word array by the
-    names the sentence block gives those fields, so while it runs the vocab note type must
-    still have its old sentence fields, named as on the sentence note type (a sentence type
-    made as a copy of the vocab type has the same names); delete them only once you are done
-    with it. Turn `capture_notes` off for it: a run recording its notes would copy most of the
-    collection into the capture store.
+    How and when to run "Move sentences to sentence notes" is in "Moving to sentence notes"
+    below.
 
   A vocab note keeps a copy of its example sentence's fields for each sentence key **both**
   blocks name: the sentence note's field is copied into the vocab note's, and its id into
@@ -348,6 +344,113 @@ both types:
 reads every note type that has a field of one of those names, so sentence notes would become
 candidates for the words of their own arrays. A sentence type made by copying the vocab type
 has those fields: delete or rename them.
+
+### Moving to sentence notes
+
+From the one-type layout to the two-type one, once. The op "Move sentences to sentence notes"
+(AI helper menu, sync ops) makes a sentence note of each sentence the vocab notes hold, with
+their word array, and makes it the example sentence of every vocab note that showed it: the
+vocab note gets its id and a copy of its translation and audio. It does not clear the vocab
+notes' old sentence fields and array (you delete those fields at the end), and it can be run
+again: a vocab note that already names an existing sentence note is skipped, and a sentence
+already in a sentence note is joined rather than made twice. The field and tag names below
+are illustrations, as in the example above.
+
+1. **Back up.** Sync, then File > Create Backup. The run changes nearly every vocab note.
+2. **Make the sentence note type.** Tools > Manage Note Types > Add > "Clone: Japanese vocab
+   note" is the easy way: the clone has every sentence field under the name the vocab type
+   has it, and the run reads the vocab notes' old fields by the names the sentence block
+   gives them, so the names must be the same on both types until it has run. On the clone:
+   - give it one minimal card (Cards...: a front showing the sentence field, say). Sentence
+     notes are never studied, but Anki gives every note a card;
+   - delete or rename the fields named like the vocab block's `word_kanjified_field`,
+     `word_normal_field` and `word_sort_field` (see the warning above), and delete the other
+     word fields it has no use for (meaning, part of speech, ...);
+   - add the field for `sentence_seen_count_field` if you want one.
+3. **Add the example id field to the vocab type** ("Example sentence id"), and fields for the
+   translation and audio copies if they are not to go into the fields that hold them now
+   (the vocab block may name the old translation and audio fields: the run copies the
+   example's into them). Adding a field is a schema change: Anki warns, and the next sync has
+   to upload the whole collection, so sync every other device first.
+4. **Configure both blocks** as in the two-type example above. The sentence block names the
+   sentence fields and `word_list_field` by the names both types have them now, `insert_deck`
+   (a deck that exists; give it options with 0 new cards a day, below), and, if you use them,
+   `sentence_seen_count_field`, `migration_move_tags` and `migration_copy_tags`. The vocab
+   block names `sentence_note_type`, `example_sentence_id_field`, of the sentence keys only
+   `translated_sentence_field` and `sentence_audio_field`, no `word_list_field`, and its word
+   and meaning keys as before. Set `capture_notes` to `false` if it is on: a run recording its
+   notes would copy most of the collection into the capture store.
+5. **Practise on a copy.** Close Anki and copy the profile's `collection.anki2` somewhere else.
+   From this addon's folder in the repository (`dev/` is left out of the released add-on),
+   with the Python that has `anki` and `aqt` installed (the one the tests run with):
+
+       python dev/sentence_migration_run.py --collection <the copy>
+
+   It runs the op over every note of the vocab type in the copy, with the config Anki has
+   saved for the addon (`--note-type "<vocab type>"` when not exactly one block names a
+   `sentence_note_type`; `--set key=<json>` replaces one top-level config value for this run
+   only). It refuses, saying why, whatever the menu's run would refuse: a broken layout, a
+   field or deck the config names that the collection lacks, a tag list that is not a list of
+   names. It writes **to the collection it is given**: never point it at a profile's own. At
+   the end it prints a summary with the path of the report,
+   `user_files/sentence_migration_<timestamp>.txt` in the addon's folder, which every run
+   writes before it changes a note:
+   - its counts (vocab notes read, sources, the copies the match op made, sentence notes to
+     add and existing ones joined, and per listed tag the notes it was moved or copied from:
+     a 0 shows a typo);
+   - every case that needed a decision, with note ids: vocab notes given no example (no
+     sentence text, no sentence linking a copy), arrays that could not be read or combined,
+     sentences with two links to different notes on one word (tagged
+     `sentence-migration-conflict`), sentences without an array (tagged
+     `sentence-needs-extract`), and per vocab note whether its word was linked in its
+     example's array ("Linked to its word by the link check", with the rule that found it)
+     or why not ("Not linked: ...").
+
+   Fix in the real collection what the report shows wrong, then copy and practise again. To
+   look at the result, open the copy in a profile of its own, never synced.
+6. **Run it.** In the browser search `"note:Japanese vocab note"`, open Edit > "Japanese AI
+   ops...", choose "Move sentences to sentence notes" and "Use all notes from current search"
+   (selecting every row of a large collection makes the browser slow), and Run. Or two runs:
+   first `"note:Japanese vocab note" -tag:new_matched_jp_word`, which makes every sentence
+   note, then the whole type again, which gives the copies the match op made their example
+   from the sentence notes the first run made. The end message names the report. A cancelled run keeps
+   the sentence notes it added, with their vocab notes; run it again for the rest. One Undo
+   takes back the whole run, the suspension included.
+7. **Check.** Read the report. In the browser: `tag:sentence-needs-extract` (run "Extract
+   words + Judge matchability", then "Match extracted words to notes" on them, and take the
+   tag off), `tag:sentence-migration-conflict`, vocab notes with no example
+   (`"note:Japanese vocab note" "Example sentence id:"`) and sentence notes not suspended
+   (`"note:Sentence note" -is:suspended`, none after the run). Look at some vocab cards.
+8. **Update what reads the old fields.** A CopyAnywhere definition that reads the sentence or
+   the word array off a vocab note reads them off its example sentence note now: a Query Notes
+   search `nid:{{trigger.Example sentence id}}` finds it, and in its array the word is the
+   element linked to the vocab note's id. A search on a tag the run moved (a filtered deck, a
+   CopyAnywhere or related_card_disperse search) finds sentence notes now, not vocab notes.
+9. **Delete the old fields** from the vocab type once you are satisfied: every field the
+   sentence block names that the vocab block does not, the old word array among them. Take
+   them out of the vocab card templates first. Another schema change: another one-way sync.
+   With them gone the move cannot run again; no op of this addon reads them.
+
+After the move:
+
+- Add new sentences as notes of the sentence type: adding one by hand extracts its words and
+  suspends its cards (but see below). "Judge words matchability" and "Match extracted words
+  to notes" run on sentence notes; a vocab note the match op makes is of the vocab type, its
+  example the sentence note its word was found in. An added vocab note gets nothing. An op run
+  over notes of both types leaves out the notes of the type whose role is not its own, saying
+  so once per note type ("Run all ops for new notes" gives each note its own role's steps).
+- **Suspension.** A sentence note's cards are suspended only by "Move sentences to sentence
+  notes" and by Anki's classic Add dialog. A note added another way, through AnkiConnect or
+  the experimental new Add dialog, is not suspended (and the new dialog does not extract its
+  words either: run "Extract words" on it). A sentence deck whose options give 0 new cards a
+  day keeps sentence cards out of study whatever adds them.
+- **"Refresh example sentences"** (sync ops, on vocab notes) copies each note's example again:
+  run it after changing a sentence note's translation or audio by hand or by its editor's
+  translation (the menu's "Translate sentence" updates the vocab notes itself), or after
+  deleting sentence notes. A vocab note whose example is gone gets the oldest sentence note
+  whose array links it; with none, its id field is emptied and it is tagged
+  `example-sentence-missing`.
+- Leaving an empty translation field translates on a sentence note, no longer on a vocab note.
 
 ## test data exports
 
