@@ -32,14 +32,7 @@ from _bootstrap import ADDON_ROOT, eval_file
 from corpora import CORPORA, read_export
 
 RESULTS = eval_file("proper_noun_eval_results.jsonl")
-MODELS = [
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash-lite",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "claude-haiku-4-5-20251001",
-    "claude-sonnet-5",
-]
+MODELS = ["terminal-claude-opus-5-5", "terminal-claude-sonnet-5-5"]
 TOP_PROPER = "top proper noun"
 
 
@@ -127,15 +120,23 @@ def score(model: str, rows: list, arrays: list, cached: dict, llm) -> list[str]:
     precision = 100 * c["tp"] / ((c["tp"] + c["fp"]) or 1)
     recall = 100 * c["tp"] / ((c["tp"] + c["fn"]) or 1)
     lines = [
-        f"== {model}: {c['sentences']} sentences ({c['with names']} with old proper nouns,"
-        f" {c['without names']} without), {c['no usable response']} without a usable response",
-        f"  names: P {precision:.1f}% R {recall:.1f}% (tp {c['tp']}, fp {c['fp']},"
-        f" fn {c['fn']}); names given where the old list has none: {c['names given where none']}"
-        f" of {c['without names']} sentences",
-        f"  old proper nouns as a top-level proper noun: {c['top proper before']} ->"
-        f" {c['top proper after']} of {c['old proper nouns']}",
-        f"  fix: {c['changed']} names changed ({c['changed not on old list']} not on the old list),"
-        f" {c['unaligned']} not on word boundaries, {c['unlinked']} note ids dropped",
+        (
+            f"== {model}: {c['sentences']} sentences ({c['with names']} with old proper nouns,"
+            f" {c['without names']} without), {c['no usable response']} without a usable response"
+        ),
+        (
+            f"  names: P {precision:.1f}% R {recall:.1f}% (tp {c['tp']}, fp {c['fp']}, fn"
+            f" {c['fn']}); names given where the old list has none: {c['names given where none']}"
+            f" of {c['without names']} sentences"
+        ),
+        (
+            f"  old proper nouns as a top-level proper noun: {c['top proper before']} ->"
+            f" {c['top proper after']} of {c['old proper nouns']}"
+        ),
+        (
+            f"  fix: {c['changed']} names changed ({c['changed not on old list']} not on the old"
+            f" list), {c['unaligned']} not on word boundaries, {c['unlinked']} note ids dropped"
+        ),
     ]
     for title, counter in (
         ("given, not on the old list", wrong),
