@@ -18,7 +18,6 @@ from typing import (
 )
 
 from anki.collection import Collection
-from anki.errors import NotFoundError
 from anki.models import NotetypeDict
 from anki.notes import Note, NoteId
 from aqt import mw
@@ -1054,19 +1053,14 @@ async def _example_sentence_notes(
 ) -> dict[NoteId, Note]:
     """The sentence notes of these ids that exist, by id: as this run has edited them, which is
     how a one-type candidate's own array is read, else through the run's note cache, in one turn
-    with the collection. Anki's get_note raises for an id with no note, and so fails the whole
-    fetch; then each is fetched alone and a gone one is left out."""
+    with the collection. The cache leaves out an id with no note."""
     wanted = list(dict.fromkeys(nid for nid in example_ids if nid is not None))
     found = {nid: notes_to_update_dict[nid] for nid in wanted if nid in notes_to_update_dict}
     to_fetch = [nid for nid in wanted if nid not in found]
-    try:
-        found.update(await note_cache.get_notes(to_fetch))
-    except NotFoundError:
-        for nid in to_fetch:
-            try:
-                found.update(await note_cache.get_notes([nid]))
-            except NotFoundError:
-                logger.warning(f"{log_prefix}Example sentence note {nid} is gone")
+    found.update(await note_cache.get_notes(to_fetch))
+    for nid in to_fetch:
+        if nid not in found:
+            logger.warning(f"{log_prefix}Example sentence note {nid} is gone")
     return found
 
 

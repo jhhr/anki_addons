@@ -619,13 +619,9 @@ def two_type_book_notes(example_ids: tuple[str, str] = ("202", "201")) -> list[F
     return notes
 
 
-class NotFound(Exception):
-    """anki.errors.NotFoundError, which the suite's stubs make a class no code can raise."""
-
-
 class SentenceNoteCache:
-    """The run's note cache over the sentence notes: a fetch of an id with no note raises, as
-    Anki's get_note does, and fails the whole fetch with it."""
+    """The run's note cache over the sentence notes: an id with no note is left out of what it
+    returns, as NoteCache does (test_note_cache.py)."""
 
     def __init__(self, *notes: FakeNote) -> None:
         self.notes = {note.id: note for note in notes}
@@ -634,9 +630,7 @@ class SentenceNoteCache:
     async def get_notes(self, ids) -> dict:
         ids = list(ids)
         self.fetches.append(ids)
-        if any(nid not in self.notes for nid in ids):
-            raise NotFound(ids)
-        return {nid: self.notes[nid] for nid in ids}
+        return {nid: self.notes[nid] for nid in ids if nid in self.notes}
 
 
 class TwoTypeExampleSentenceTests(MatchHarness):
@@ -649,9 +643,6 @@ class TwoTypeExampleSentenceTests(MatchHarness):
         self.config = two_type_config(self.mwtn)
         self.found = two_type_book_notes()
         self.cache = SentenceNoteCache(reading_sentence(101), country_sentence(102))
-        patch = mock.patch.object(self.mwtn, "NotFoundError", NotFound)
-        patch.start()
-        self.addCleanup(patch.stop)
 
     async def find_notes(self, word: str, **_) -> list:
         return self.found if word == "本" else []
@@ -759,7 +750,8 @@ class TwoTypeExampleSentenceTests(MatchHarness):
         examples = self.listed_examples()
 
         self.assertEqual(examples[0], "<b>本</b>を読むのが好きだ。")
-        self.assertEqual(self.cache.fetches, [[99, 201], [99], [201]])
+        # One fetch for both; the cache leaves the gone one out
+        self.assertEqual(self.cache.fetches, [[99, 201]])
 
 
 class MatchTaskTests(MatchHarness):

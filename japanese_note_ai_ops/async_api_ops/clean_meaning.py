@@ -166,7 +166,8 @@ def get_sentences_for_note(
         try:
             example = fetch([example_id]).get(example_id)
         except NotFoundError:
-            # What Anki's get_note raises for an id with no note, through either fetch
+            # What Anki's get_note raises for an id with no note, without a note cache (the
+            # cache leaves such an id out)
             example = None
         if example is None or sentence_field not in example:
             logger.warning(
