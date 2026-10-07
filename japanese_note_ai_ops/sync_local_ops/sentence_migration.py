@@ -115,7 +115,7 @@ class NewSentence:
 @dataclass
 class SentenceUpdate:
     """An existing sentence note the run joins vocab notes to. `word_list` is its new array
-    field text, None when the array stays as it is."""
+    field text, None when the array stays as it is; `tags_to_add` holds none it has already."""
 
     note_id: int
     word_list: Optional[str]
@@ -319,6 +319,38 @@ def _has_tag(tags: Iterable[str], tag: str) -> bool:
     return any(t.casefold() == tag.casefold() for t in tags)
 
 
+def _add_tags(into: list[str], tags: Iterable[str], already: Iterable[str] = ()) -> None:
+    """Append each tag that neither `into` nor `already` has, case aside: Anki's tags are
+    case-insensitive, so two spellings are one tag, and the first one met is kept."""
+    already = list(already)
+    for tag in tags:
+        if not _has_tag(into, tag) and not _has_tag(already, tag):
+            into.append(tag)
+
+
+def _falls_under(tag: str, listed: str) -> bool:
+    """A `tag:` search's match of a tag name: the tag itself, case aside, or one of its
+    children (`Show::ep01` under `Show`; `Showtime` is not). No wildcards: `_` is a wildcard in
+    a search, and many tag names hold one."""
+    tag, listed = tag.casefold(), listed.casefold()
+    return tag == listed or tag.startswith(listed + "::")
+
+
+def _tag_list(tags: Iterable[str], name: str) -> list[str]:
+    """A config list of tag names, each once, blanks dropped (no tag holds a space). TypeError
+    for anything else, which the op can show before the run starts."""
+    if isinstance(tags, str):
+        # Each letter would be a tag name of its own
+        raise TypeError(f"{name} must be a list of tag names, not a string")
+    out: list[str] = []
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise TypeError(f"{name} holds {tag!r}, which is not a tag name")
+        if tag.strip():
+            _add_tags(out, [tag.strip()])
+    return out
+
+
 def _example_note_id(value: str) -> Optional[int]:
     text = _norm(value)
     return int(text) if text.isdecimal() and text.isascii() else None
@@ -437,6 +469,8 @@ def plan_migration(
     selected: Collection[int],
     *,
     count_seen: bool,
+    move_tags: Iterable[str] = (),
+    copy_tags: Iterable[str] = (),
 ) -> MigrationPlan:
     """The plan for moving the selected vocab notes' sentences to sentence notes.
 
@@ -444,7 +478,15 @@ def plan_migration(
     array may link a selected one, and a group's sentence note is made from its origin whether
     or not the origin is selected. `sentence_notes` is every note of the sentence type.
     `count_seen`: the sentence block names `sentence_seen_count_field`.
+
+    `move_tags`, `copy_tags`: the sentence block's `migration_move_tags` and
+    `migration_copy_tags`, the user's tags that go to the sentence note (`_UserTags.carry`).
+    A listed tag also covers its `::` children, case aside, as a `tag:` search does. Raises
+    TypeError when either is not a list of strings.
     """
+    user_tags = _UserTags(
+        _tag_list(move_tags, "migration_move_tags"), _tag_list(copy_tags, "migration_copy_tags")
+    )
     report = Report()
     targets, by_key, existing_ids = _existing_targets(sentence_notes, report)
     vocab = _read_vocab(vocab_notes)
@@ -477,7 +519,7 @@ def plan_migration(
     for target in targets:
         for vocab_id in target.vocab_ids:
             _link_check(target, vocab[vocab_id], report)
-    return _plan(targets, count_seen, report)
+    return _plan(targets, vocab, count_seen, user_tags, report)
 
 
 def _existing_targets(
@@ -835,7 +877,67 @@ def _pick_element(
     return elem, how, ""
 
 
-def _plan(targets: list[_Target], count_seen: bool, report: Report) -> MigrationPlan:
+@dataclass
+class _UserTags:
+    """The user's tags that go to the sentence note: `move` ones are about the sentence alone
+    and leave the vocab notes, `copy` ones are about the word too and stay on them. A tag under
+    both lists moves. Per listed tag, the vocab notes it was moved or copied from are counted."""
+
+    move: list[str]
+    copy: list[str]
+    moved_from: dict[str, int] = field(init=False)
+    copied_from: dict[str, int] = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Every listed tag, so that one matching nothing (a typo) shows as 0
+        self.moved_from = dict.fromkeys(self.move, 0)
+        self.copied_from = dict.fromkeys(self.copy, 0)
+
+    def carry(
+        self, target: _Target, vocab: Mapping[int, _Vocab]
+    ) -> tuple[list[str], dict[int, list[str]]]:
+        """The tags the target's sentence note gets, as the oldest note carrying one spells it,
+        and per vocab note the tags it loses.
+
+        A tag moves from each selected note assigned to the target, sources and dependents
+        alike: a dependent's was put there by hand, about the sentence its card showed. It is
+        copied from the target's sources, selected or not, since the sentence is theirs, and
+        never from a dependent, whose copy is about its own word. A source not selected loses
+        nothing and gives no tag to move: the run changes no vocab note the user left out, and
+        the run that selects it joins it to this sentence note and moves its tags then."""
+        selected = set(target.vocab_ids)
+        sources = {s.id for s in target.sources}
+        added: list[str] = []
+        removed: dict[int, list[str]] = {}
+        for nid in sorted(selected | sources):
+            moved_under: set[str] = set()
+            copied_under: set[str] = set()
+            for tag in vocab[nid].record.tags:
+                under = [listed for listed in self.move if _falls_under(tag, listed)]
+                if under:
+                    if nid in selected:
+                        _add_tags(added, [tag])
+                        _add_tags(removed.setdefault(nid, []), [tag])
+                        moved_under.update(under)
+                    continue
+                under = [listed for listed in self.copy if _falls_under(tag, listed)]
+                if under and nid in sources:
+                    _add_tags(added, [tag])
+                    copied_under.update(under)
+            for listed in moved_under:
+                self.moved_from[listed] += 1
+            for listed in copied_under:
+                self.copied_from[listed] += 1
+        return added, removed
+
+
+def _plan(
+    targets: list[_Target],
+    vocab: Mapping[int, _Vocab],
+    count_seen: bool,
+    user_tags: _UserTags,
+    report: Report,
+) -> MigrationPlan:
     new_sentences: list[NewSentence] = []
     updates: list[SentenceUpdate] = []
     examples: dict[int, Example] = {}
@@ -872,6 +974,10 @@ def _plan(targets: list[_Target], count_seen: bool, report: Report) -> Migration
             tags.append(CONFLICT_TAG)
         if moved:
             tags_to_remove.setdefault(origin.id, []).extend(moved)
+        carried, lost = user_tags.carry(target, vocab)
+        _add_tags(tags, carried)
+        for vocab_id, vocab_tags in lost.items():
+            _add_tags(tags_to_remove.setdefault(vocab_id, []), vocab_tags)
         index = len(new_sentences)
         new_sentences.append(
             NewSentence(
@@ -891,15 +997,17 @@ def _plan(targets: list[_Target], count_seen: bool, report: Report) -> Migration
         word_list = None
         if target.array is not None and target.array != target.original:
             word_list = match_flags.format_word_array(target.array)
+        tags_to_add: list[str] = []
+        _add_tags(tags_to_add, [CONFLICT_TAG] if target.conflict else [], existing.tags)
+        carried, lost = user_tags.carry(target, vocab)
+        _add_tags(tags_to_add, carried, existing.tags)
+        for vocab_id, vocab_tags in lost.items():
+            _add_tags(tags_to_remove.setdefault(vocab_id, []), vocab_tags)
         updates.append(
             SentenceUpdate(
                 note_id=existing.note_id,
                 word_list=word_list,
-                tags_to_add=(
-                    [CONFLICT_TAG]
-                    if target.conflict and not _has_tag(existing.tags, CONFLICT_TAG)
-                    else []
-                ),
+                tags_to_add=tags_to_add,
                 source_ids=[s.id for s in target.sources],
                 vocab_ids=list(target.vocab_ids),
             )
@@ -917,4 +1025,8 @@ def _plan(targets: list[_Target], count_seen: bool, report: Report) -> Migration
         "examples: new sentence notes", sum(len(s.vocab_ids) for s in new_sentences)
     )
     report.count("examples: existing sentence notes", sum(len(u.vocab_ids) for u in updates))
+    for listed, notes in user_tags.moved_from.items():
+        report.count(f'tag "{listed}" moved from vocab notes', notes)
+    for listed, notes in user_tags.copied_from.items():
+        report.count(f'tag "{listed}" copied from vocab notes', notes)
     return MigrationPlan(new_sentences, updates, examples, tags_to_remove, report)

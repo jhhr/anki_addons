@@ -57,10 +57,10 @@ def dependent(nid, extraction, vocab_word, tags=(), **kw):
     return source(nid, extraction, vocab_word=vocab_word, tags=("new_matched_jp_word", *tags), **kw)
 
 
-def plan(vocab, sentences=(), selected=None, count_seen=False):
+def plan(vocab, sentences=(), selected=None, count_seen=False, **tag_lists):
     if selected is None:
         selected = [v.note_id for v in vocab]
-    return sm.plan_migration(vocab, sentences, selected, count_seen=count_seen)
+    return sm.plan_migration(vocab, sentences, selected, count_seen=count_seen, **tag_lists)
 
 
 def array_of(new_sentence):
@@ -688,6 +688,198 @@ class RerunTests(unittest.TestCase):
         result = plan([source(1, CAT_FISH, cat_fish_array(fish=[1]))], existing)
         self.assertEqual([u.note_id for u in result.updates], [500])
         self.assertEqual(result.report.note_ids("existing_duplicate"), [600])
+
+
+# Made-up tags: the lists come from the user's config, and theirs are never in the repo
+MOVE = ["redo-audio", "Made_Up_Show"]
+COPY = ["freq-band-a"]
+# 猫が魚を食べた。 with the <b> on 猫, for a second source of CAT_FISH's sentence
+CAT_FISH_ON_CAT = "<b> 猫[ねこ]</b>が 魚[さかな]を 食[た]べた。"
+
+
+class UserTagTests(unittest.TestCase):
+    def tag_counts(self, result):
+        return {name: n for name, n in result.report.counts.items() if name.startswith("tag ")}
+
+    def test_a_moved_tag_goes_from_a_source_and_a_dependent_and_leaves_both(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio", "mine")),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show",)),
+        ]
+        result = plan(vocab, move_tags=MOVE)
+        (new,) = result.new_sentences
+        self.assertEqual(new.tags, ["redo-audio", "Made_Up_Show"])
+        self.assertEqual(result.tags_to_remove, {1: ["redo-audio"], 2: ["Made_Up_Show"]})
+
+    def test_a_copied_tag_goes_from_a_source_stays_on_it_and_is_not_taken_from_a_dependent(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("freq-band-a",)),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("freq-band-b",)),
+        ]
+        result = plan(vocab, copy_tags=["freq-band-a", "freq-band-b"])
+        self.assertEqual(result.new_sentences[0].tags, ["freq-band-a"])
+        self.assertEqual(result.tags_to_remove, {})
+        self.assertEqual(
+            self.tag_counts(result),
+            {
+                'tag "freq-band-a" copied from vocab notes': 1,
+                'tag "freq-band-b" copied from vocab notes': 0,
+            },
+        )
+
+    def test_any_case_and_the_children_of_a_listed_tag_once_each_as_the_oldest_spells_it(self):
+        vocab = [
+            source(
+                1,
+                CAT_FISH,
+                cat_fish_array(fish=[1]),
+                tags=("made_up_show::EP01", "Made_Up_Showtime", "FREQ-BAND-A"),
+            ),
+            source(
+                3,
+                CAT_FISH_ON_CAT,
+                cat_fish_array(fish=[1]),
+                ("猫", "ねこ"),
+                tags=("Made_Up_Show::ep01", "Made_Up_Show", "freq-band-a"),
+            ),
+        ]
+        for listed in ["Made_Up_Show", "MADE_UP_SHOW"]:
+            with self.subTest(listed=listed):
+                result = plan(vocab, move_tags=[listed], copy_tags=COPY)
+                self.assertEqual(
+                    result.new_sentences[0].tags,
+                    ["made_up_show::EP01", "FREQ-BAND-A", "Made_Up_Show"],
+                )
+                # Made_Up_Showtime is another tag, not a child
+                self.assertEqual(
+                    result.tags_to_remove,
+                    {1: ["made_up_show::EP01"], 3: ["Made_Up_Show::ep01", "Made_Up_Show"]},
+                )
+                self.assertEqual(
+                    self.tag_counts(result),
+                    {
+                        f'tag "{listed}" moved from vocab notes': 2,
+                        'tag "freq-band-a" copied from vocab notes': 2,
+                    },
+                )
+
+    def test_a_rerun_joining_an_existing_sentence_note_adds_the_tags_it_lacks(self):
+        existing = sm.SentenceRecord(
+            note_id=500,
+            tags=("FREQ-band-a", "Redo-Audio"),
+            fields=fields(sm.strip_bold(CAT_FISH)),
+            word_list=match_flags.format_word_array(cat_fish_array(fish=[1], eat=[2])),
+        )
+        vocab = [
+            # Migrated by the first run: none of its tags go anywhere now
+            source(
+                1,
+                CAT_FISH,
+                cat_fish_array(fish=[1], eat=[2]),
+                example_id="500",
+                tags=("Made_Up_Show::ep01", "freq-band-c"),
+            ),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("redo-audio", "Made_Up_Show::ep02")),
+            # A source a cancelled run left unmigrated
+            source(
+                3,
+                CAT_FISH_ON_CAT,
+                cat_fish_array(fish=[1], eat=[2]),
+                ("猫", "ねこ"),
+                tags=("freq-band-a", "freq-band-b"),
+            ),
+        ]
+        copy_tags = ["freq-band-a", "freq-band-b", "freq-band-c"]
+        result = plan(vocab, [existing], move_tags=MOVE, copy_tags=copy_tags)
+        self.assertEqual(result.new_sentences, [])
+        (update,) = result.updates
+        self.assertEqual(update.tags_to_add, ["Made_Up_Show::ep02", "freq-band-b"])
+        # It already has redo-audio, which the vocab note loses all the same
+        self.assertEqual(result.tags_to_remove, {2: ["redo-audio", "Made_Up_Show::ep02"]})
+        self.assertEqual(result.examples, {2: sm.Example(note_id=500), 3: sm.Example(note_id=500)})
+
+    def test_an_unselected_source_gives_its_copied_tags_and_keeps_its_moved_ones(self):
+        vocab = [
+            source(
+                1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio", "freq-band-a")
+            ),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show",)),
+        ]
+        first = plan(vocab, selected=[2], move_tags=MOVE, copy_tags=COPY)
+        (new,) = first.new_sentences
+        self.assertEqual(new.tags, ["freq-band-a", "Made_Up_Show"])
+        self.assertEqual(first.tags_to_remove, {2: ["Made_Up_Show"]})
+
+        # The run that selects it joins it to that sentence note and moves its tag then
+        made = sm.SentenceRecord(
+            note_id=500, tags=tuple(new.tags), fields=new.fields, word_list=new.fields[WORD_LIST]
+        )
+        vocab[1] = dependent(2, CAT_FISH, ("食べる", "たべる"), example_id="500")
+        second = plan(vocab, [made], selected=[1, 2], move_tags=MOVE, copy_tags=COPY)
+        (update,) = second.updates
+        self.assertEqual(update.tags_to_add, ["redo-audio"])
+        self.assertEqual(second.tags_to_remove, {1: ["redo-audio"]})
+
+    def test_without_lists_only_the_addons_own_tags_move(self):
+        vocab = [
+            source(
+                1,
+                CAT_FISH,
+                cat_fish_array(fish=[1], eat=[2]),
+                tags=("kanjify_sentence_mismatch", "redo-audio", "freq-band-a"),
+            ),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("redo-audio",)),
+        ]
+        result = plan(vocab)
+        self.assertEqual(result.new_sentences[0].tags, ["kanjify_sentence_mismatch"])
+        self.assertEqual(result.tags_to_remove, {1: ["kanjify_sentence_mismatch"]})
+        self.assertEqual(self.tag_counts(result), {})
+
+    def test_a_tag_under_both_lists_or_also_the_addons_moves_once(self):
+        vocab = [
+            source(
+                1,
+                CAT_FISH,
+                cat_fish_array(fish=[1]),
+                tags=("Made_Up_Show::ep01", "Kanjify_Sentence_Mismatch"),
+            )
+        ]
+        result = plan(
+            vocab,
+            move_tags=["Made_Up_Show", "kanjify_sentence_mismatch"],
+            copy_tags=["made_up_show::ep01"],
+        )
+        self.assertEqual(
+            result.new_sentences[0].tags, ["Kanjify_Sentence_Mismatch", "Made_Up_Show::ep01"]
+        )
+        self.assertEqual(
+            result.tags_to_remove, {1: ["Kanjify_Sentence_Mismatch", "Made_Up_Show::ep01"]}
+        )
+        self.assertEqual(
+            self.tag_counts(result)['tag "made_up_show::ep01" copied from vocab notes'], 0
+        )
+
+    def test_the_report_counts_every_listed_tag_once(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio",)),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Redo-Audio",)),
+        ]
+        result = plan(vocab, move_tags=["redo-audio", "REDO-AUDIO", " ", "never-used"])
+        self.assertEqual(
+            self.tag_counts(result),
+            {
+                'tag "redo-audio" moved from vocab notes': 2,
+                'tag "never-used" moved from vocab notes': 0,
+            },
+        )
+        self.assertIn('  tag "never-used" moved from vocab notes: 0\n', result.report.text())
+
+    def test_a_list_that_is_not_one_of_tag_names_is_refused(self):
+        vocab = [source(1, CAT_FISH, cat_fish_array(fish=[1]))]
+        with self.assertRaises(TypeError):
+            plan(vocab, move_tags="redo-audio")
+        with self.assertRaises(TypeError):
+            plan(vocab, copy_tags=["freq-band-a", 6])
 
 
 class ReportTests(unittest.TestCase):

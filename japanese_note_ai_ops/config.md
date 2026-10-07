@@ -271,6 +271,21 @@ The roles can be in one note type or in two.
     sentence has been seen in review on a vocab note. "Move sentences to sentence notes" sets it
     to the review count of the vocab note the sentence came from; nothing else writes it, and
     it is never copied to vocab notes.
+  - `migration_move_tags` and `migration_copy_tags` (sentence block, optional): lists of tag
+    names, read only by "Move sentences to sentence notes", for your own tags that describe the
+    sentence. A sentence note it makes or joins gets:
+    - each `migration_move_tags` tag (about the sentence alone: its audio, the show it was
+      mined from) of the selected vocab notes given it as their example, and those notes lose
+      it. A vocab note left unselected keeps its tags until a run selects it.
+    - each `migration_copy_tags` tag (about the word too: a frequency band) of the vocab notes
+      the sentence came from, selected or not, and they keep it. The copies the match op
+      made (tagged `new_matched_jp_word`) give none: theirs are about their own word.
+
+    A name matches as a `tag:` search does, in any case and with its `::` children
+    (`Made_Up_Show` also matches `Made_Up_Show::ep01`, not `Made_Up_Show_2`), but with no
+    wildcards. A tag under both lists moves. The run's report counts, per listed tag, the vocab
+    notes it was moved or copied from. A moved tag no longer finds the vocab notes in a search
+    (a filtered deck, another addon's search).
 
   A vocab note keeps a copy of its example sentence's fields for each sentence key **both**
   blocks name: the sentence note's field is copied into the vocab note's, and its id into
@@ -291,6 +306,8 @@ The roles can be in one note type or in two.
     "translated_sentence_field": "Sentence translation",
     "sentence_audio_field": "Sentence audio",
     "sentence_seen_count_field": "Times seen",
+    "migration_move_tags": ["redo-audio", "Made_Up_Show"],
+    "migration_copy_tags": ["freq-band-a"],
     "insert_deck": "My deck::sentences"
   },
   "Japanese vocab note": {
