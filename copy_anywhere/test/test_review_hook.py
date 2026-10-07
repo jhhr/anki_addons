@@ -33,6 +33,7 @@ write the pre-copy row back over it.
 """
 
 import json
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -121,6 +122,31 @@ def answers_are_tracked(monkeypatch):
     monkeypatch.setattr(V3Scheduler, "answer_card", V3Scheduler.answer_card)
     monkeypatch.setattr(note_hooks, "last_answer_undo_step", None)
     note_hooks.track_answer_undo_steps()
+
+
+@pytest.fixture(autouse=True)
+def the_next_day_starts_hours_from_now(col):
+    """Move the rollover hour so that the collection's next day starts 12 to 13 hours away.
+
+    `answer_card` answers a new card Good, which puts it on a learning step ten minutes out
+    (a little more with Anki's step fuzz). A step due before the next day's cutoff goes in
+    the intraday learning queue (1), one due after it in the interday queue (3), so with the
+    default 4am rollover the same tests saw queue 3 when run in the minutes before 04:00
+    local time and queue 1 the rest of the day. The scheduler reads its clock in the Rust
+    backend, so the time cannot be frozen from here; the cutoff can be moved instead.
+
+    The shift is worked out from the scheduler's own `day_cutoff`, not `time.localtime()`,
+    so it agrees with whatever local offset the backend computed. It goes through
+    `set_preferences` because `set_config("rollover", ...)` does not reach a `day_cutoff`
+    that has already been read; the "Preferences" undo entry that leaves is below every entry
+    a test makes, since no note exists yet.
+    """
+    hours_left = (col.sched.day_cutoff - time.time()) / 3600
+    preferences = col.get_preferences()
+    scheduling = preferences.scheduling
+    scheduling.rollover = (scheduling.rollover + 12 - int(hours_left)) % 24
+    col.set_preferences(preferences)
+    assert col.sched.day_cutoff - time.time() > 3600, "the day cutoff did not move"
 
 
 @pytest.fixture
