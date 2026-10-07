@@ -112,10 +112,11 @@ class UnfocusTests(unittest.TestCase):
         for name in ("Kanji draw", SENTENCE, "Basic"):
             self.assertFalse(hooks.translates_on_unfocus(config, name))
 
-    def test_two_type_the_sentence_type_translates_too(self):
+    def test_two_type_the_sentence_type_translates_instead(self):
         config = two_type_config()
         self.assertTrue(hooks.translates_on_unfocus(config, SENTENCE))
-        self.assertTrue(hooks.translates_on_unfocus(config, VOCAB))
+        # Its translation is a copy of its example sentence's, and it names no sentence
+        self.assertFalse(hooks.translates_on_unfocus(config, VOCAB))
         self.assertFalse(hooks.translates_on_unfocus(config, "Kanji draw"))
 
     def test_a_sentence_type_of_another_vocab_type_does_not(self):

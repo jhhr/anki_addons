@@ -67,10 +67,16 @@ def ops_on_added_note(
 
 def translates_on_unfocus(config: Mapping[str, Any], note_type_name: str) -> bool:
     """Whether leaving an empty translation field of this type's note translates its sentence:
-    the hardcoded vocab type's, as always, and in the two-type layout its sentence type's.
-    False for a sentence type of a broken layout, whose error the add hook and the ops name."""
+    the hardcoded vocab type's in the one-type layout, as always; in the two-type layout its
+    sentence type's instead. A two-type vocab note's translation is a copy of its example
+    sentence's (D1) and its type names no sentence to translate: translating there only logged
+    an error. A broken layout keeps the vocab type translating, as before roles existed, and
+    its sentence type not, whose error the add hook and the ops name."""
     if note_type_name == VOCAB_NOTE_TYPE:
-        return True
+        try:
+            return two_type_sentence_type(config) is None
+        except LayoutError:
+            return True
     return _is_two_type_sentence_type(config, note_type_name)
 
 
