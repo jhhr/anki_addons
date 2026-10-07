@@ -3,6 +3,8 @@ that hold the sentences today, the existing ones to join, and the example each v
 
 The op reads every vocab note of the type, the sentence notes already there and the selection,
 and hands them here as plain records; everything it writes follows from the plan this returns.
+Its pre-flight is here too (`preflight_error`), given the collection's note types and decks as
+plain data.
 The rules are where a mistake costs: a wrong link puts the wrong word in bold on a card,
 silently and for good, while a case the plan cannot decide is listed in the report and left to
 a person. So wherever a rule cannot decide, the plan links nothing and reports it.
@@ -24,13 +26,13 @@ from __future__ import annotations
 import copy
 import re
 import unicodedata
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
-from ..note_roles import SENTENCE_KEYS
+from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, sentence_type_of
 from ..word_array import match_flags, merge
 from ..word_array.match_flags import MatchState
 
@@ -47,6 +49,12 @@ MOVED_TAGS = (KANJIFY_MISMATCH_TAG, INVALID_ARRAY_TAG)
 
 WORD_LIST_KEY = "word_list_field"
 SEEN_COUNT_KEY = "sentence_seen_count_field"
+EXAMPLE_ID_KEY = "example_sentence_id_field"
+# The vocab block's keys naming the word the link check compares elements with
+WORD_KEYS = ("word_kanjified_field", "word_normal_field", "word_reading_field")
+# The sentence block's lists of the user's tags (D13), read by the migration only
+MOVE_TAGS_KEY = "migration_move_tags"
+COPY_TAGS_KEY = "migration_copy_tags"
 _EXTRACTION_KEY = "word_extraction_sentence_field"
 _FURIGANA_KEY = "furigana_sentence_field"
 _AUDIO_KEY = "sentence_audio_field"
@@ -212,6 +220,21 @@ class MigrationPlan:
     # Per vocab note: the tags it loses (as it spells them), once its sentence note exists
     tags_to_remove: dict[int, list[str]]
     report: Report
+
+    def changed_with_new(self) -> list[list[int]]:
+        """Per new sentence note, the vocab notes to change once it has been added: those it is
+        the example of, then any other source of it that loses tags (an unselected origin losing
+        the addon's own). A note of `tags_to_remove` with an example loses its tags with it."""
+        changed = [list(new.vocab_ids) for new in self.new_sentences]
+        source_of = {
+            source_id: index
+            for index, new in enumerate(self.new_sentences)
+            for source_id in new.source_ids
+        }
+        for vocab_id in self.tags_to_remove:
+            if vocab_id not in self.examples and vocab_id in source_of:
+                changed[source_of[vocab_id]].append(vocab_id)
+        return changed
 
 
 # --- sentence text ---------------------------------------------------------------------------
@@ -485,7 +508,7 @@ def plan_migration(
     TypeError when either is not a list of strings.
     """
     user_tags = _UserTags(
-        _tag_list(move_tags, "migration_move_tags"), _tag_list(copy_tags, "migration_copy_tags")
+        _tag_list(move_tags, MOVE_TAGS_KEY), _tag_list(copy_tags, COPY_TAGS_KEY)
     )
     report = Report()
     targets, by_key, existing_ids = _existing_targets(sentence_notes, report)
@@ -1030,3 +1053,119 @@ def _plan(
     for listed, notes in user_tags.copied_from.items():
         report.count(f'tag "{listed}" copied from vocab notes', notes)
     return MigrationPlan(new_sentences, updates, examples, tags_to_remove, report)
+
+
+# --- pre-flight ------------------------------------------------------------------------------
+
+
+def _named_fields(block: Mapping[str, Any], keys: Iterable[str]) -> list[tuple[str, str]]:
+    """(key, field name) for each of `keys` the block names a field for."""
+    return [(key, block[key]) for key in keys if isinstance(block.get(key), str) and block[key]]
+
+
+def _missing(wanted: Iterable[tuple[str, str]], fields: Collection[str]) -> list[str]:
+    return [f'"{name}" ({key})' for key, name in wanted if name not in fields]
+
+
+def preflight_error(
+    config: Mapping[str, Any],
+    selected_types: Collection[str],
+    note_type_fields: Mapping[str, Collection[str]],
+    has_deck: Callable[[str], bool],
+) -> Optional[str]:
+    """Why the migration cannot run over notes of `selected_types`, for the user; None when it
+    can. `note_type_fields`: every note type of the collection by name, with its field names;
+    `has_deck(name)`: whether the collection has that deck.
+
+    Checked before the run starts, and again by the run, which a script starts without the
+    menu: everything the run reads and writes is named in the settings, and a name that finds
+    nothing would fail it note by note (a field the copy writes), or plan wrongly without a
+    word (an old field read as empty is a vocab note with no sentence). The old sentence fields
+    are read off the vocab notes by the sentence block's names, since by now the vocab block
+    names none of them, so the vocab type must still have each under that name."""
+    if not selected_types:
+        return "No notes are selected."
+    if len(selected_types) > 1:
+        names = ", ".join(f'"{name}"' for name in sorted(selected_types))
+        return (
+            f"The selected notes are of several note types ({names}): select the notes of the"
+            " vocab note type only."
+        )
+    [vocab_type] = selected_types
+    error = layout_error(config, vocab_type)
+    if error:
+        return error
+    if not is_vocab_type(config, vocab_type):
+        return (
+            f'"{vocab_type}" is not a vocab note type (its settings name no word_sort_field):'
+            " select the vocab notes whose sentences are to move."
+        )
+    sentence_type = sentence_type_of(config, vocab_type)
+    if sentence_type == vocab_type:
+        return (
+            f'"{vocab_type}" names no sentence_note_type in the settings: the sentences need a'
+            " note type of their own to move to (two note types, see config.md)."
+        )
+    vocab_block, sentence_block = config[vocab_type], config[sentence_type]
+
+    sentence_fields = note_type_fields.get(sentence_type)
+    if sentence_fields is None:
+        return f'The sentence note type "{sentence_type}" is not in the collection.'
+    missing = _missing(
+        _named_fields(sentence_block, [key for key in sentence_block if key.endswith("_field")]),
+        sentence_fields,
+    )
+    if missing:
+        return (
+            f'The sentence note type "{sentence_type}" has no field {", ".join(missing)}, as'
+            " its settings name."
+        )
+
+    if not _named_fields(vocab_block, [EXAMPLE_ID_KEY]):
+        return (
+            f'"{vocab_type}" has no {EXAMPLE_ID_KEY} in the settings: the migration writes the id'
+            " of each vocab note's example sentence note into that field."
+        )
+    unset = [key for key in WORD_KEYS if not _named_fields(vocab_block, [key])]
+    if unset:
+        return (
+            f'"{vocab_type}" has no {", ".join(unset)} in the settings: the migration reads the'
+            " vocab notes' word from them to link it in the sentence's word array."
+        )
+    vocab_fields = note_type_fields.get(vocab_type, ())
+    # The fields copy_example writes: the id, and each sentence key both blocks name
+    copied = [key for key, _ in _named_fields(sentence_block, SENTENCE_KEYS)]
+    missing = _missing(
+        _named_fields(vocab_block, [EXAMPLE_ID_KEY, *WORD_KEYS, *copied]), vocab_fields
+    )
+    if missing:
+        return (
+            f'The vocab note type "{vocab_type}" has no field {", ".join(missing)}, as its'
+            " settings name."
+        )
+    old = _named_fields(sentence_block, [*SENTENCE_KEYS, WORD_LIST_KEY])
+    missing = _missing(old, vocab_fields)
+    if missing:
+        return (
+            f'The vocab note type "{vocab_type}" has no field {", ".join(missing)}. The'
+            f' migration reads the sentences off the vocab notes by the names "{sentence_type}"'
+            " gives its fields, so the vocab notes must keep their old sentence fields, named"
+            f' as on "{sentence_type}", until it has run.'
+        )
+
+    for key in (MOVE_TAGS_KEY, COPY_TAGS_KEY):
+        listed = sentence_block.get(key, [])
+        if not isinstance(listed, list):
+            return f'{key} of "{sentence_type}" must be a list of tag names, not {listed!r}.'
+        try:
+            _tag_list(listed, key)
+        except TypeError as e:
+            return f'The settings of "{sentence_type}": {e}.'
+
+    deck = sentence_block.get("insert_deck")
+    if isinstance(deck, str) and deck and not has_deck(deck):
+        return (
+            f'The deck "{deck}" (insert_deck of "{sentence_type}") is not in the collection:'
+            " every sentence note would fail to be added."
+        )
+    return None

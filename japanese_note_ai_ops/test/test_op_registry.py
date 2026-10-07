@@ -47,6 +47,7 @@ OP_LABELS = [
     "Find missing matched note ids for selected notes",
     "Tag notes matched status",
     "Deduplicate existing meaning notes",
+    "Move sentences to sentence notes",
 ]
 
 SEPARATOR = "---"
@@ -58,6 +59,7 @@ MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:18] + [SEPARATOR] +
     "Build name lexicon from selected notes",
     "Deduplicate existing meaning notes",
     "Export kanjify test data",
+    "Move sentences to sentence notes",
 ]
 
 # key -> (the entry function its start calls, the variant keyword arguments it binds)
@@ -101,6 +103,7 @@ STARTS = {
         "deduplicate_existing_meaning_notes_selected_notes",
         {},
     ),
+    "migrate_to_sentence_notes": ("migrate_to_sentence_notes_from_selected", {}),
 }
 
 # The entry functions by the module that defines them, and whether they wrap their run in
@@ -141,7 +144,15 @@ ENTRY_MODULES = {
         ["deduplicate_existing_meaning_notes_selected_notes"],
         False,
     ),
+    ("migrate_to_sentence_notes", "sync_local_ops"): (
+        ["migrate_to_sentence_notes_from_selected"],
+        False,
+    ),
 }
+
+# The entry functions that check the collection before they start their run, by module: the
+# check patched to pass, so that the run starts
+PREFLIGHTS = {"migrate_to_sentence_notes": "collection_preflight_error"}
 
 NIDS = [11, 12, 13]
 PARENT = object()
@@ -173,7 +184,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_groups_split_where_the_menu_separator_was(self):
         groups = [spec.group for spec in op_registry.OPS]
-        self.assertEqual(groups, ["async"] * 18 + ["sync"] * 3)
+        self.assertEqual(groups, ["async"] * 18 + ["sync"] * 4)
 
     def test_needs_generator_exactly_for_the_ops_that_run_it(self):
         self.assertEqual(
@@ -217,6 +228,12 @@ class EntryFunctionChainTests(unittest.TestCase):
                         # The single-word match reads the config before it starts its run
                         mw = s.enter_context(mock.patch.object(module, "mw"))
                         mw.addonManager.getConfig.return_value = {"a": "config"}
+                        if module_name in PREFLIGHTS:
+                            s.enter_context(
+                                mock.patch.object(
+                                    module, PREFLIGHTS[module_name], return_value=None
+                                )
+                            )
                         if wrapped:
                             resources = s.enter_context(
                                 mock.patch.object(
@@ -247,6 +264,30 @@ class EntryFunctionChainTests(unittest.TestCase):
         self.assertEqual(outcomes[0].status, chain_types.STEP_FAILED)
         self.assertTrue(outcomes[0].stops_chain)
         self.assertIn("configuration", outcomes[0].error)
+
+    def test_a_migration_its_pre_flight_refuses_fails_the_step_and_says_why(self):
+        migrate = load_ops_module("migrate_to_sentence_notes", subdir="sync_local_ops")
+        for chain, outcomes in (recording_chain(), (None, None)):
+            with self.subTest(chain=chain), mock.patch.object(
+                migrate, "mw"
+            ), mock.patch.object(
+                migrate, "collection_preflight_error", return_value="No sentence type"
+            ), mock.patch.object(
+                migrate, "showWarning"
+            ) as warning, mock.patch.object(
+                migrate, "selected_notes_op"
+            ) as run:
+                self.assertIsNone(
+                    migrate.migrate_to_sentence_notes_from_selected(NIDS, PARENT, chain=chain)
+                )
+                run.assert_not_called()
+                warning.assert_called_once()
+                self.assertEqual(warning.call_args.args[0], "No sentence type")
+                if chain is not None:
+                    self.assertEqual(
+                        [(o.status, o.error) for o in outcomes],
+                        [(chain_types.STEP_FAILED, "No sentence type")],
+                    )
 
     def test_single_word_match_without_config_or_chain_just_returns(self):
         match = load_ops_module("match_words_to_notes")

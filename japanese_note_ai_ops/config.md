@@ -287,6 +287,13 @@ The roles can be in one note type or in two.
     notes it was moved or copied from. A moved tag no longer finds the vocab notes in a search
     (a filtered deck, another addon's search).
 
+    "Move sentences to sentence notes" reads each vocab note's sentence and word array by the
+    names the sentence block gives those fields, so while it runs the vocab note type must
+    still have its old sentence fields, named as on the sentence note type (a sentence type
+    made as a copy of the vocab type has the same names); delete them only once you are done
+    with it. Turn `capture_notes` off for it: a run recording its notes would copy most of the
+    collection into the capture store.
+
   A vocab note keeps a copy of its example sentence's fields for each sentence key **both**
   blocks name: the sentence note's field is copied into the vocab note's, and its id into
   `example_sentence_id_field`. Of the sentence keys, name only `translated_sentence_field` and

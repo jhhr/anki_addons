@@ -891,5 +891,179 @@ class ReportTests(unittest.TestCase):
         self.assertIn(f"{sm.CASES['no_sentence_text']} (1)\n  2\n", text)
 
 
+class ChangedWithNewTests(unittest.TestCase):
+    def test_an_unselected_origin_losing_the_addons_tags_waits_for_its_sentence_note(self):
+        # 1, unselected, is the origin of the sentence the dependent 2 is linked from
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(cat=[2]), tags=("kanjify_sentence_mismatch",)),
+            dependent(2, CAT_FISH_ON_CAT, ("猫", "ねこ"), tags=("redo-audio",)),
+            source(3, KOEDA, koeda_array(koeda=[3]), vocab_word=("小枝", "こえだ")),
+        ]
+        result = plan(vocab, selected=[2, 3], move_tags=["redo-audio"])
+        by_origin = {new.origin_id: new for new in result.new_sentences}
+        changed = {
+            new.origin_id: vocab_ids
+            for new, vocab_ids in zip(result.new_sentences, result.changed_with_new())
+        }
+        self.assertEqual(changed[1], [2, 1])
+        self.assertEqual(changed[3], [3])
+        # The dependent's own tags go with its example: it is not listed a second time
+        self.assertEqual(sorted(result.tags_to_remove), [1, 2])
+        self.assertEqual(by_origin[1].vocab_ids, [2])
+
+    def test_no_note_waits_for_an_existing_sentence_note(self):
+        first = plan([source(1, CAT_FISH, cat_fish_array(fish=[1]), tags=("redo-audio",))])
+        self.assertEqual(first.changed_with_new(), [[1]])
+        existing = sm.SentenceRecord(
+            note_id=50, fields=fields(CAT_FISH), word_list=json.dumps(cat_fish_array(fish=[1]))
+        )
+        rerun = plan(
+            [source(1, CAT_FISH, cat_fish_array(fish=[1]), tags=("redo-audio",))],
+            [existing],
+            move_tags=["redo-audio"],
+        )
+        self.assertEqual(rerun.changed_with_new(), [])
+        self.assertEqual(rerun.tags_to_remove, {1: ["redo-audio"]})
+
+
+PREFLIGHT_SENTENCE = {
+    "vocab_note_type": "Japanese vocab note",
+    "word_list_field": "Word array",
+    "sentence_field": "Sentence",
+    "word_extraction_sentence_field": "Sentence for extraction",
+    "translated_sentence_field": "Sentence translation",
+    "sentence_audio_field": "Sentence audio",
+    "sentence_seen_count_field": "Times seen",
+    "migration_move_tags": ["redo-audio"],
+    "migration_copy_tags": ["freq-band-a"],
+    "insert_deck": "My deck::sentences",
+}
+PREFLIGHT_VOCAB = {
+    "sentence_note_type": "Sentence note",
+    "example_sentence_id_field": "Example sentence id",
+    "translated_sentence_field": "Example translation",
+    "sentence_audio_field": "Example audio",
+    "word_kanjified_field": "Word kanjified",
+    "word_normal_field": "Word",
+    "word_reading_field": "Word reading",
+    "word_sort_field": "Word sort key",
+    "insert_deck": "My deck::vocab",
+}
+# The fields each type has: the vocab type still has the old sentence fields
+OLD_FIELDS = [
+    "Word array",
+    "Sentence",
+    "Sentence for extraction",
+    "Sentence translation",
+    "Sentence audio",
+]
+VOCAB_OWN_FIELDS = [
+    "Word sort key",
+    "Word",
+    "Word kanjified",
+    "Word reading",
+    "Example sentence id",
+    "Example translation",
+    "Example audio",
+]
+PREFLIGHT_TYPES = {
+    "Sentence note": [*OLD_FIELDS, "Times seen"],
+    "Japanese vocab note": [*VOCAB_OWN_FIELDS, *OLD_FIELDS],
+    "Kanji draw": ["Kanji"],
+}
+
+
+class PreflightTests(unittest.TestCase):
+    """What the run checks before it starts; the collection's part is given as plain data."""
+
+    def setUp(self):
+        self.config = {
+            "Sentence note": dict(PREFLIGHT_SENTENCE),
+            "Japanese vocab note": dict(PREFLIGHT_VOCAB),
+            "log_level": "ERROR",
+        }
+        self.types = {name: list(fields) for name, fields in PREFLIGHT_TYPES.items()}
+        self.decks = {"My deck::sentences", "My deck::vocab"}
+
+    def error(self, selected=("Japanese vocab note",)):
+        return sm.preflight_error(self.config, list(selected), self.types, self.decks.__contains__)
+
+    def test_a_two_type_layout_whose_fields_and_deck_are_there_passes(self):
+        self.assertIsNone(self.error())
+
+    def test_the_selection_is_of_the_vocab_type_alone(self):
+        self.assertEqual(self.error(selected=()), "No notes are selected.")
+        self.assertIn("several note types", self.error(("Japanese vocab note", "Kanji draw")))
+        self.assertIn('"Sentence note" is not a vocab note type', self.error(("Sentence note",)))
+        self.assertIn('"Kanji draw" has not been configured', self.error(("Kanji draw",)))
+
+    def test_the_one_type_layout_is_refused(self):
+        del self.config["Sentence note"]
+        del self.config["Japanese vocab note"]["sentence_note_type"]
+        self.assertIn("names no sentence_note_type", self.error())
+
+    def test_a_layout_whose_blocks_do_not_name_each_other_is_refused(self):
+        self.config["Sentence note"]["vocab_note_type"] = "Other vocab"
+        self.assertIn("must name each other", self.error())
+
+    def test_the_sentence_type_must_be_in_the_collection_with_every_field_it_names(self):
+        self.types["Sentence note"].remove("Times seen")
+        self.assertIn('"Times seen" (sentence_seen_count_field)', self.error())
+        del self.types["Sentence note"]
+        self.assertEqual(
+            self.error(), 'The sentence note type "Sentence note" is not in the collection.'
+        )
+
+    def test_the_vocab_block_names_the_example_id_field_and_the_type_has_it(self):
+        self.types["Japanese vocab note"].remove("Example sentence id")
+        self.assertIn('"Example sentence id" (example_sentence_id_field)', self.error())
+        del self.config["Japanese vocab note"]["example_sentence_id_field"]
+        self.assertIn("has no example_sentence_id_field in the settings", self.error())
+
+    def test_the_vocab_block_names_the_word_it_is_linked_by(self):
+        del self.config["Japanese vocab note"]["word_reading_field"]
+        self.assertIn("has no word_reading_field in the settings", self.error())
+
+    def test_the_vocab_type_has_the_fields_the_example_is_copied_into(self):
+        self.types["Japanese vocab note"].remove("Example audio")
+        self.assertIn('"Example audio" (sentence_audio_field)', self.error())
+
+    def test_the_vocab_type_still_has_each_old_field_under_the_sentence_types_name(self):
+        for missing, key in (("Word array", "word_list_field"), ("Sentence", "sentence_field")):
+            with self.subTest(field=missing):
+                self.setUp()
+                self.types["Japanese vocab note"].remove(missing)
+                error = self.error()
+                self.assertIn(f'"{missing}" ({key})', error)
+                self.assertIn("old sentence fields", error)
+
+    def test_a_seen_count_field_on_the_sentence_type_alone_is_no_old_field(self):
+        self.assertNotIn("Times seen", self.types["Japanese vocab note"])
+        self.assertIsNone(self.error())
+
+    def test_each_tag_list_is_a_list_of_tag_names(self):
+        for key, value, expected in (
+            ("migration_move_tags", "redo-audio", "must be a list of tag names"),
+            ("migration_copy_tags", None, "must be a list of tag names"),
+            ("migration_move_tags", ["redo-audio", 6], "6, which is not a tag name"),
+        ):
+            with self.subTest(key=key, value=value):
+                self.setUp()
+                self.config["Sentence note"][key] = value
+                error = self.error()
+                self.assertIn(key, error)
+                self.assertIn(expected, error)
+        self.setUp()
+        del self.config["Sentence note"]["migration_move_tags"]
+        self.assertIsNone(self.error())
+
+    def test_the_sentence_types_deck_is_in_the_collection(self):
+        self.decks.discard("My deck::sentences")
+        self.assertIn('The deck "My deck::sentences"', self.error())
+        # None named: base_ops adds into "Default", which every collection has
+        del self.config["Sentence note"]["insert_deck"]
+        self.assertIsNone(self.error())
+
+
 if __name__ == "__main__":
     unittest.main()
