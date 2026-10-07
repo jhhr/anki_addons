@@ -1685,6 +1685,288 @@ class SiblingMarkersTests(NewNoteHarness):
         self.assertEqual(search.saved[2]["word_sort_field"], f"{self.WORD} (r1)")
 
 
+class OneTypeNewNoteTests(NewNoteHarness):
+    """The one-type layout makes its new notes as it always has (SPEC D7): the four sentence
+    fields copied from the processed note, its translation not though the block names one, and
+    no own sentence handed to the cleaning, whose prompts would change with it."""
+
+    CONFIG = {"Word": {**CONFIG["Word"], "translated_sentence_field": "translation"}}
+
+    def setUp(self):
+        super().setUp()
+        self.current.fields.update(
+            sentence_field="言葉を選ぶ。",
+            sentence_audio_field="[sound:sentence.mp3]",
+            furigana_sentence_field=" 言葉[ことば]を 選[えら]ぶ。",
+            kanjified_sentence_field="言葉を選ぶ。",
+            translation="Choosing words.",
+        )
+        self.cleaned: list = []
+
+        def clean_meaning_in_note(**kwargs):
+            self.cleaned.append(kwargs)
+            return cm.CleanResult(True)
+
+        patch = mock.patch.object(mwtn, "clean_meaning_in_note", clean_meaning_in_note)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def assert_sentence_copied(self, new) -> None:
+        for field in ("sentence_field", "sentence_audio_field", "kanjified_sentence_field"):
+            self.assertEqual(new[field], self.current[field])
+        self.assertNotIn("translation", new)
+        [kwargs] = self.cleaned
+        self.assertIs(kwargs["note"], new)
+        self.assertIsNone(kwargs.get("own_sentence"))
+
+    def test_a_note_made_without_a_match(self):
+        args = {
+            **self.args(index=FakeMarkerIndex()),
+            "sentence": self.current["furigana_sentence_field"],
+        }
+        with FakeSearch().patched():
+            self.assertTrue(mwtn.create_new_note_without_matching(self.CONFIG, "", args))
+        new = self.to_add[self.WORD][-1]
+        self.assert_sentence_copied(new)
+        self.assertEqual(new["furigana_sentence_field"], self.current["furigana_sentence_field"])
+
+    def test_a_copied_note(self):
+        old = vocab_note(self.WORD, 2, sentence_field="古い文。", word_list_field="[]")
+        mwtn.create_new_note_from_matched_note(
+            self.CONFIG, old, [old], 2, "意味", "sense", "", self.args()
+        )
+        new = self.to_add[self.WORD][-1]
+        self.assert_sentence_copied(new)
+        self.assertEqual(new["word_list_field"], "")
+
+
+# The two-type layout as the match op makes new notes in it, each sentence field named apart per
+# block: the sentence type's names, which the vocab type has too (a vocab note's sentence and
+# array from before the split, kept until the user deletes the fields), and the vocab type's own
+# copies of its example's translation and audio, and the example's id
+NEW_NOTE_CONFIG = {
+    "Sentence": {
+        "vocab_note_type": "Word",
+        "insert_deck": "Sentences",
+        "word_list_field": "s_array",
+        "sentence_field": "s_sentence",
+        "sentence_audio_field": "s_audio",
+        "furigana_sentence_field": "s_furigana",
+        "kanjified_sentence_field": "s_kanjified",
+        "word_extraction_sentence_field": "s_extraction",
+        "translated_sentence_field": "s_translation",
+    },
+    "Word": {
+        "sentence_note_type": "Sentence",
+        "insert_deck": "Vocab",
+        "example_sentence_id_field": "v_example_id",
+        "translated_sentence_field": "v_translation",
+        "sentence_audio_field": "v_audio",
+        **{key: key for key in mwtn.MATCH_FIELD_KEYS if key not in mwtn.SENTENCE_MATCH_FIELD_KEYS},
+    },
+}
+# The vocab type's fields its notes held their sentence and array in before the split
+OLD_SENTENCE_FIELDS = (
+    "s_array",
+    "s_sentence",
+    "s_audio",
+    "s_furigana",
+    "s_kanjified",
+    "s_extraction",
+    "s_translation",
+)
+# The target's sentence as the main prompt showed it, its occurrence of the word in <b>
+TARGET_SENTENCE = "その<b>言葉</b>を選ぶ。"
+
+
+class TypedNote(FakeNote):
+    def __init__(self, type_name: str, fields: dict, note_id: int = 0):
+        super().__init__(fields, note_id)
+        self.type_name = type_name
+
+    def note_type(self):
+        return {"name": self.type_name}
+
+
+def word_type_note(note_id: int = 0, **fields: str) -> TypedNote:
+    """A note of the two-type layout's vocab type: every field its block names, and the old
+    sentence fields."""
+    names = [name for key, name in NEW_NOTE_CONFIG["Word"].items() if key.endswith("_field")]
+    values = dict.fromkeys((*names, *OLD_SENTENCE_FIELDS), "")
+    values.update(fields)
+    return TypedNote("Word", values, note_id)
+
+
+def processed_sentence_note() -> TypedNote:
+    array = [w("その", ["dontmatch"]), w("言葉", ["match"]), w("を選ぶ", ["dontmatch"]), ["。"]]
+    fields = {
+        "s_array": mwtn.format_word_array(array),
+        "s_sentence": "その言葉を選ぶ。",
+        "s_audio": "[sound:sentence.mp3]",
+        "s_furigana": "その 言葉[ことば]を 選[えら]ぶ。",
+        "s_kanjified": "其の言葉を選ぶ。",
+        "s_extraction": "その言葉を選ぶ。",
+        "s_translation": "Choosing <b>the</b> words.",
+    }
+    return TypedNote("Sentence", fields, 20)
+
+
+class TwoTypeNewNoteTests(unittest.TestCase):
+    """New notes in the two-type layout (SPEC 6 P6): of the vocab type, holding no sentence but
+    their example's translation, audio and id, the example being the sentence note processed;
+    and cleaned with the target's own sentence, which clean_meaning cannot read off a note
+    that is not added yet."""
+
+    WORD = "言葉"
+
+    def setUp(self):
+        self.to_add: dict = {}
+        self.to_update: dict = {}
+        self.sentence = processed_sentence_note()
+        self.cleaned: list = []
+        self.looked_up: list = []
+        collection = types.SimpleNamespace(models=types.SimpleNamespace(by_name=self.by_name))
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, value in (
+            ("clean_meaning_in_note", self.clean_meaning_in_note),
+            ("copy_into_new_note", lambda note: TypedNote(note.type_name, dict(note.fields))),
+            ("Note", self.empty_note),
+            ("run_on_collection", lambda what, fn: fn()),
+            ("make_furigana_from_reading", lambda word, reading: f"{word}[{reading}]"),
+            ("kana_highlight", lambda **_: ""),
+            ("check_word_reading_type", reading_type),
+        ):
+            stack.enter_context(mock.patch.object(mwtn, name, value))
+        stack.enter_context(mock.patch.object(mw, "col", collection, create=True))
+
+    def by_name(self, name: str):
+        self.looked_up.append(name)
+        return {"name": name} if name in NEW_NOTE_CONFIG else None
+
+    def empty_note(self, col, model) -> TypedNote:
+        """Note(col, model): an empty note of the type it is made in."""
+        if model["name"] == "Word":
+            return word_type_note()
+        return TypedNote(model["name"], dict.fromkeys(OLD_SENTENCE_FIELDS, ""))
+
+    def clean_meaning_in_note(self, **kwargs):
+        self.cleaned.append(kwargs)
+        return cm.CleanResult(True)
+
+    def args(self, index=None) -> dict:
+        return {
+            **mwtn.get_match_fields(NEW_NOTE_CONFIG, {"name": "Sentence"}),
+            "word": self.WORD,
+            "reading": "ことば",
+            "sentence": self.sentence["s_furigana"],
+            "prompt_sentence": TARGET_SENTENCE,
+            "word_index": 0,
+            "part_of_speech": "noun",
+            "current_note": self.sentence,
+            "note_type": {"name": "Sentence"},
+            "vocab_note_type": "Word",
+            "notes_to_add_dict": self.to_add,
+            "notes_to_update_dict": self.to_update,
+            "all_generated_meanings_dict": {},
+            "processed_word_tuples": {},
+            "word_note_index": index or FakeMarkerIndex(),
+            "sentence_cache": None,
+            "note_cache": None,
+        }
+
+    def made_without_a_match(self) -> TypedNote:
+        with FakeSearch().patched():
+            created = mwtn.create_new_note_without_matching(NEW_NOTE_CONFIG, "", self.args())
+        self.assertTrue(created)
+        return self.to_add[self.WORD][-1]
+
+    def copied_from(self, note_to_copy: TypedNote) -> TypedNote:
+        created = mwtn.create_new_note_from_matched_note(
+            NEW_NOTE_CONFIG, note_to_copy, [note_to_copy], 2, "意味", "sense", "", self.args()
+        )
+        self.assertTrue(created)
+        return self.to_add[self.WORD][-1]
+
+    def old_note(self) -> TypedNote:
+        """A vocab note of the word holding its own example, and its sentence and array from
+        before the split."""
+        note = word_type_note(
+            2,
+            word_sort_field=self.WORD,
+            meaning_field="言語。",
+            meaning_audio_field="[sound:meaning.mp3]",
+            v_translation="The old example.",
+            v_audio="[sound:old.mp3]",
+            v_example_id="30",
+            **{field: f"old {field}" for field in OLD_SENTENCE_FIELDS},
+        )
+        note.tags = ["studied"]
+        return note
+
+    def assert_example_and_no_sentence(self, new: TypedNote) -> None:
+        self.assertEqual(new.note_type(), {"name": "Word"})
+        self.assertEqual(
+            (new["v_translation"], new["v_audio"], new["v_example_id"]),
+            ("Choosing <b>the</b> words.", "[sound:sentence.mp3]", "20"),
+        )
+        self.assertEqual(
+            {field: new[field] for field in OLD_SENTENCE_FIELDS},
+            dict.fromkeys(OLD_SENTENCE_FIELDS, ""),
+        )
+        # Added to the vocab type's deck: the cleanup reads it off the note's own type
+        self.assertEqual(base_ops._insert_deck_id(FakeCollection(), NEW_NOTE_CONFIG, new), 7)
+
+    def assert_cleaned_with_the_target_s_sentence(self, new: TypedNote) -> None:
+        [kwargs] = self.cleaned
+        self.assertIs(kwargs["note"], new)
+        self.assertEqual(
+            kwargs["own_sentence"],
+            {"jp_sentence": TARGET_SENTENCE, "en_sentence": "Choosing the words."},
+        )
+
+    def test_a_note_made_without_a_match_is_a_vocab_note_with_the_example_only(self):
+        new = self.made_without_a_match()
+
+        self.assert_example_and_no_sentence(new)
+        self.assertEqual(self.looked_up, ["Word"])
+        self.assertEqual(
+            (new["word_kanjified_field"], new["word_reading_field"]), (self.WORD, "ことば")
+        )
+        self.assertEqual(new.tags, ["new_matched_jp_word"])
+
+    def test_a_note_made_without_a_match_is_cleaned_with_the_target_s_sentence(self):
+        self.assert_cleaned_with_the_target_s_sentence(self.made_without_a_match())
+
+    def test_a_copied_note_has_the_example_and_not_the_copied_note_s_sentence_or_array(self):
+        old = self.old_note()
+
+        new = self.copied_from(old)
+
+        self.assert_example_and_no_sentence(new)
+        self.assertEqual(new["meaning_audio_field"], "")
+        self.assertEqual(new.tags, ["new_matched_jp_word"])
+        self.assertEqual((new["meaning_field"], new["english_meaning_field"]), ("意味", "sense"))
+        # The note copied keeps its own example and old fields
+        self.assertEqual((old["v_example_id"], old["s_array"]), ("30", "old s_array"))
+
+    def test_a_copied_note_is_cleaned_with_the_target_s_sentence(self):
+        self.assert_cleaned_with_the_target_s_sentence(self.copied_from(self.old_note()))
+
+    def test_a_field_the_sentence_note_lacks_stops_the_note_before_any_rename(self):
+        # The copy is checked before the word's other notes are renamed for the new one, which
+        # nothing would take back but the tidying
+        del self.sentence.fields["s_translation"]
+        search = FakeSearch(word_type_note(2, word_sort_field=self.WORD))
+
+        with search.patched(), self.assertRaises(mwtn.LayoutError):
+            mwtn.create_new_note_without_matching(
+                NEW_NOTE_CONFIG, "", self.args(FakeMarkerIndex(2))
+            )
+
+        self.assertEqual((self.to_add, self.to_update, self.cleaned), ({}, {}, []))
+
+
 class FinalMessageTests(unittest.TestCase):
     def setUp(self):
         self.shown: list = []

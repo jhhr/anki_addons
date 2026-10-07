@@ -18,6 +18,7 @@ from typing import (
 )
 
 from anki.collection import Collection
+from anki.errors import NotFoundError
 from anki.models import NotetypeDict
 from anki.notes import Note, NoteId
 from aqt import mw
@@ -26,6 +27,7 @@ from rapidfuzz.distance import Levenshtein  # type: ignore
 from ..configuration import (
     MEANING_MAPPED_TAG,
     NO_DICTIONARY_ENTRY_TAG,
+    EnAndJPSentence,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
     MultiMeaningMatchedWordType,
@@ -33,8 +35,17 @@ from ..configuration import (
     RawMultiMeaningWordType,
     RawOneMeaningWordType,
 )
+from ..html_stripping import strip_html
 from ..kana_conv import to_hiragana
-from ..note_roles import note_type_search, sentence_type_of, vocab_type_of
+from ..note_roles import (
+    SENTENCE_KEYS,
+    LayoutError,
+    copy_example,
+    example_id_field,
+    note_type_search,
+    sentence_type_of,
+    vocab_type_of,
+)
 from ..shared.jp_text_processing.kana.check_word_reading_type import (
     WordReadingType,
     check_word_reading_type,
@@ -73,6 +84,7 @@ from .collection_access import (
     find_notes as col_find_notes,
     get_note as col_get_note,
     get_notes as col_get_notes,
+    run_on_collection,
 )
 from .note_cache import NoteCache
 from .sentence_cache import SentenceCache
@@ -969,6 +981,114 @@ class MatchOpArgs(_WordArrayMatchOpArgs, MatchFields):
     cancel_state: CancelState
 
 
+def _two_type_vocab_type(match_op_args: MatchOpArgs) -> Optional[str]:
+    """The name of the vocab type the word's notes are of in the two-type layout, None in the
+    one-type layout, where they are of the processed note's own type. Args naming no
+    vocab_note_type are of the one-type layout."""
+    vocab_type = match_op_args.get("vocab_note_type")
+    if not vocab_type or vocab_type == match_op_args["note_type"]["name"]:
+        return None
+    return vocab_type
+
+
+def _note_type_by_name(name: str) -> NotetypeDict:
+    """The note type a two-type layout's new notes are made in, read on the collection's thread
+    as the run's other reads are. A LayoutError names a vocab type the collection lacks."""
+    note_type = run_on_collection(f"note type {name}", lambda: mw.col.models.by_name(name))
+    if note_type is None:
+        raise LayoutError(
+            f'Note type "{name}", which the settings make the vocab note type, does not exist.'
+        )
+    return note_type
+
+
+def _sentence_type_fields(config: dict, sentence_type_name: str) -> list[str]:
+    """The fields the sentence type's block names for a sentence and its array. In the two-type
+    layout the vocab type keeps fields of these names, holding the sentence and array a vocab
+    note had before the split, until the user deletes them."""
+    block = config.get(sentence_type_name)
+    if not isinstance(block, dict):
+        return []
+    names = [block.get(key) for key in ("word_list_field", *SENTENCE_KEYS)]
+    return [name for name in names if isinstance(name, str) and name]
+
+
+def _own_sentence(config: dict, match_op_args: MatchOpArgs) -> EnAndJPSentence:
+    """What a two-type vocab note being made is cleaned with as its own sentence (clean_meaning's
+    own_sentence): the target's, its occurrence in <b> as the main prompt showed it, and the
+    processed sentence note's translation, by the sentence type's field name. The new note's
+    example id names that sentence note already, but read from there the <b> would go on the
+    word's first occurrence: nothing links a note that is not added yet."""
+    current_note = match_op_args["current_note"]
+    translation_field = get_field_config(
+        config, "translated_sentence_field", match_op_args["note_type"]
+    )
+    return EnAndJPSentence(
+        jp_sentence=match_op_args.get("prompt_sentence") or match_op_args["sentence"],
+        en_sentence=(
+            strip_html(current_note[translation_field]) if translation_field in current_note else ""
+        ),
+    )
+
+
+def _example_sentence_id(note: Note, id_field: Optional[str]) -> Optional[NoteId]:
+    """The sentence note a two-type vocab note's example id field names, None when it names
+    none: no such field, empty, or not a note id."""
+    if not id_field or id_field not in note:
+        return None
+    try:
+        example_id = int(note[id_field].strip())
+    except ValueError:
+        return None
+    return NoteId(example_id) if example_id > 0 else None
+
+
+async def _example_sentence_notes(
+    example_ids: Iterable[Optional[NoteId]],
+    notes_to_update_dict: dict[NoteId, Note],
+    note_cache: NoteCache,
+    log_prefix: str,
+) -> dict[NoteId, Note]:
+    """The sentence notes of these ids that exist, by id: as this run has edited them, which is
+    how a one-type candidate's own array is read, else through the run's note cache, in one turn
+    with the collection. Anki's get_note raises for an id with no note, and so fails the whole
+    fetch; then each is fetched alone and a gone one is left out."""
+    wanted = list(dict.fromkeys(nid for nid in example_ids if nid is not None))
+    found = {nid: notes_to_update_dict[nid] for nid in wanted if nid in notes_to_update_dict}
+    to_fetch = [nid for nid in wanted if nid not in found]
+    try:
+        found.update(await note_cache.get_notes(to_fetch))
+    except NotFoundError:
+        for nid in to_fetch:
+            try:
+                found.update(await note_cache.get_notes([nid]))
+            except NotFoundError:
+                logger.warning(f"{log_prefix}Example sentence note {nid} is gone")
+    return found
+
+
+def _sentence_note_example(
+    example: Optional[Note],
+    fields: MatchFields,
+    word: str,
+    reading: str,
+    note_id: int,
+) -> str:
+    """A two-type candidate's example sentence in the main prompt: its example sentence note's,
+    made from that note's array as a one-type note's is made from its own, so a migrated note
+    shows the text it showed before. "" when it has none, as a generated meaning has: no note,
+    or one holding no array, which leaves nothing to mark the word in (D5: no <b> is stored)."""
+    sentence_field = fields["furigana_sentence_field"]
+    word_list_field = fields["word_list_field"]
+    if example is None or sentence_field not in example or word_list_field not in example:
+        return ""
+    if not match_flags.decode_word_array(example[word_list_field]):
+        return ""
+    return match_targets.example_sentence(
+        example[sentence_field], example[word_list_field], word, reading, note_id
+    )
+
+
 def create_new_note_without_matching(
     config: dict,
     log_prefix: str,
@@ -1013,15 +1133,32 @@ def create_new_note_without_matching(
     word_note_index = match_op_args["word_note_index"]
     sentence_cache = match_op_args["sentence_cache"]
     note_cache = match_op_args["note_cache"]
+    vocab_type = _two_type_vocab_type(match_op_args)
 
-    new_note = Note(col=mw.col, model=note_type)
+    new_note = Note(
+        col=mw.col, model=note_type if vocab_type is None else _note_type_by_name(vocab_type)
+    )
     new_note[word_kanjified_field] = word
     new_note[word_normal_field] = word
     new_note[word_reading_field] = reading
-    new_note[sentence_field] = current_note[sentence_field]
-    new_note[sentence_audio_field] = current_note[sentence_audio_field]
-    new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-    new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    own_sentence: Optional[EnAndJPSentence] = None
+    if vocab_type is None:
+        new_note[sentence_field] = current_note[sentence_field]
+        new_note[sentence_audio_field] = current_note[sentence_audio_field]
+        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
+        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    else:
+        # A vocab note holds no sentence, only its example's translation, audio and id, the
+        # sentence note being processed, which is in the collection. Before any other note is
+        # renamed for this one: a field the settings name and a note lacks raises here
+        copy_example(
+            config,
+            vocab_type,
+            sentence_note=current_note,
+            sentence_id=current_note.id,
+            vocab_note=new_note,
+        )
+        own_sentence = _own_sentence(config, match_op_args)
     new_note_furigana = make_furigana_from_reading(word, reading)
     new_note[word_furigana_field] = new_note_furigana
     logger.debug(
@@ -1275,7 +1412,8 @@ def create_new_note_without_matching(
             if largest_r_number == 0:
                 update_marker_notes_with_r1(marker_notes)
 
-    new_note[furigana_sentence_field] = sentence
+    if vocab_type is None:
+        new_note[furigana_sentence_field] = sentence
     new_note[meaning_field] = ""
     new_note[part_of_speech_field] = match_op_args["part_of_speech"]
     new_note[english_meaning_field] = ""
@@ -1291,6 +1429,7 @@ def create_new_note_without_matching(
         word_note_index=word_note_index,
         sentence_cache=sentence_cache,
         note_cache=note_cache,
+        own_sentence=own_sentence,
     ).changed
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
@@ -1423,16 +1562,34 @@ def create_new_note_from_matched_note(
         note_to_copy = notes_to_update_dict[note_to_copy.id]
     logger.debug(f"{log_prefix} Starting")
 
+    vocab_type = _two_type_vocab_type(match_op_args)
     new_note = copy_into_new_note(note_to_copy)
-    # Don't copy tags and the word list field to the new note
+    # Don't copy tags, the meaning's audio and the copied note's sentence to the new note
     new_note.set_tags_from_str("")
-    new_note[word_list_field] = ""
     new_note[meaning_audio_field] = ""
     new_note.add_tag("new_matched_jp_word")
-    new_note[sentence_field] = current_note[sentence_field]
-    new_note[sentence_audio_field] = current_note[sentence_audio_field]
-    new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-    new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    own_sentence: Optional[EnAndJPSentence] = None
+    if vocab_type is None:
+        new_note[word_list_field] = ""
+        new_note[sentence_field] = current_note[sentence_field]
+        new_note[sentence_audio_field] = current_note[sentence_audio_field]
+        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
+        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    else:
+        # The copy brings along the copied note's example and, while the vocab type keeps the
+        # fields, the sentence and array it held before the split: another note's sentence,
+        # blanked before the example is copied from the sentence note being processed
+        for field in _sentence_type_fields(config, match_op_args["note_type"]["name"]):
+            if field in new_note:
+                new_note[field] = ""
+        copy_example(
+            config,
+            vocab_type,
+            sentence_note=current_note,
+            sentence_id=current_note.id,
+            vocab_note=new_note,
+        )
+        own_sentence = _own_sentence(config, match_op_args)
     new_note[meaning_field] = jp_meaning.strip() if jp_meaning else ""
     new_note[english_meaning_field] = en_meaning.strip() if en_meaning else ""
     new_note_id = make_new_note_id(new_note)
@@ -1456,6 +1613,7 @@ def create_new_note_from_matched_note(
         other_meaning_notes=matching_notes,
         sentence_cache=match_op_args.get("sentence_cache"),
         note_cache=match_op_args.get("note_cache"),
+        own_sentence=own_sentence,
     )
     if cleaned.same_sense_as is not None:
         # The new meaning is one a note of the word holds: the word is linked to that note and
@@ -1807,6 +1965,24 @@ async def match_single_word_in_word_tuple(
             # to check against, so we are comparing against both existing notes and new notes
             matching_notes.extend(matching_new_notes)
 
+        # In the two-type layout a note's example sentence is its example sentence note's, read
+        # for every note whose meaning is listed in one turn with the collection
+        vocab_type = _two_type_vocab_type(match_op_args)
+        id_field: Optional[str] = None
+        example_notes: dict[NoteId, Note] = {}
+        if vocab_type is not None:
+            id_field = example_id_field(config, vocab_type)
+            example_notes = await _example_sentence_notes(
+                (
+                    _example_sentence_id(note, id_field)
+                    for note in matching_notes
+                    if meaning_field in note and note[meaning_field]
+                ),
+                notes_to_update_dict,
+                match_op_args["note_cache"],
+                log_prefix,
+            )
+
         # Get all the meanings from the notes to check against the sentence
         meanings: list[tuple[str, int, Optional[NoteId], str, str, str]] = []
         # meaning is a tuple of (jp_meaning, meaning_number, note_id, example_sentence, en_meaning)
@@ -1829,13 +2005,25 @@ async def match_single_word_in_word_tuple(
                     note[english_meaning_field] if english_meaning_field in note else ""
                 )
                 match_word = note[word_kanjified_field] if word_kanjified_field in note else ""
-                other_sentence = match_targets.example_sentence(
-                    note[furigana_sentence_field] if furigana_sentence_field in note else "",
-                    note[word_list_field] if word_list_field in note else "",
-                    match_word,
-                    note[word_reading_field] if word_reading_field in note else "",
-                    note.id,
-                )
+                if vocab_type is None:
+                    other_sentence = match_targets.example_sentence(
+                        note[furigana_sentence_field] if furigana_sentence_field in note else "",
+                        note[word_list_field] if word_list_field in note else "",
+                        match_word,
+                        note[word_reading_field] if word_reading_field in note else "",
+                        note.id,
+                    )
+                else:
+                    example_id = _example_sentence_id(note, id_field)
+                    if example_id is None:
+                        logger.debug(f"{log_prefix}Note {note.id} names no example sentence note")
+                    other_sentence = _sentence_note_example(
+                        example_notes.get(example_id) if example_id is not None else None,
+                        match_op_args,
+                        match_word,
+                        note[word_reading_field] if word_reading_field in note else "",
+                        note.id,
+                    )
                 if meaning:
                     sort_field = note[word_sort_field]
                     # Get the meaning number, if any from sort field, in the form (m1), (m2), etc.

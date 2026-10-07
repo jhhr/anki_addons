@@ -540,6 +540,228 @@ class MatchMappingTests(MatchHarness):
         self.assertNotIn("other_meaning_notes", kwargs)
 
 
+def two_type_config(mwtn: types.ModuleType) -> dict:
+    """The two-type layout: the vocab notes hold their example sentence note's id, and their
+    sentence and array from before the split under the sentence type's field names, never read
+    now."""
+    return {
+        "Sentence": {
+            "vocab_note_type": "Word",
+            "word_list_field": "s_array",
+            "sentence_field": "s_sentence",
+            "sentence_audio_field": "s_audio",
+            "furigana_sentence_field": "s_furigana",
+            "kanjified_sentence_field": "s_kanjified",
+        },
+        "Word": {
+            "sentence_note_type": "Sentence",
+            "example_sentence_id_field": "v_example_id",
+            **{
+                key: key
+                for key in mwtn.MATCH_FIELD_KEYS
+                if key not in mwtn.SENTENCE_MATCH_FIELD_KEYS
+            },
+        },
+        "match_words_model": MODEL,
+    }
+
+
+def sentence_array(*words: tuple[str, str, str, list]) -> str:
+    """A sentence note's array of (raw text, dict form, reading, match data) words."""
+    return json.dumps(
+        [[raw, "noun", form, reading, data, []] for raw, form, reading, data in words],
+        ensure_ascii=False,
+    )
+
+
+def sentence_note(note_id: int, array: str, furigana: str = "") -> FakeNote:
+    return FakeNote(note_id, {"s_furigana": furigana, "s_array": array})
+
+
+def reading_sentence(linked: int) -> FakeNote:
+    """本を読むのが好きだ。, 本 linked to `linked`."""
+    return sentence_note(
+        201,
+        sentence_array(
+            ("本", "本", "ほん", [linked]),
+            ("を", "を", "を", ["dontmatch"]),
+            ("読むのが", "読む", "よむ", ["dontmatch"]),
+            ("好きだ。", "好き", "すき", ["dontmatch"]),
+        ),
+        "本[ほん]を 読[よ]むのが 好[す]きだ。",
+    )
+
+
+def country_sentence(linked: int) -> FakeNote:
+    """農は国の本である。, 本 linked to `linked`."""
+    return sentence_note(
+        202,
+        sentence_array(
+            ("農は国の", "農", "のう", ["dontmatch"]),
+            ("本", "本", "ほん", [linked]),
+            ("である。", "だ", "だ", ["dontmatch"]),
+        ),
+        "農[のう]は 国[くに]の 本[もと]である。",
+    )
+
+
+def two_type_book_notes(example_ids: tuple[str, str] = ("202", "201")) -> list[FakeNote]:
+    """book_notes as vocab notes: each with its example sentence note's id, and an old sentence
+    and array linking it in a sentence its example is not."""
+    notes = book_notes()
+    for note, example_id in zip(notes, example_ids):
+        del note.fields["furigana_sentence_field"], note.fields["word_list_field"]
+        note.fields.update(
+            v_example_id=example_id,
+            s_furigana="本[ほん] 棚[だな]",
+            s_array=sentence_array(("本", "本", "ほん", [note.id]), ("棚", "棚", "たな", [])),
+        )
+    return notes
+
+
+class NotFound(Exception):
+    """anki.errors.NotFoundError, which the suite's stubs make a class no code can raise."""
+
+
+class SentenceNoteCache:
+    """The run's note cache over the sentence notes: a fetch of an id with no note raises, as
+    Anki's get_note does, and fails the whole fetch with it."""
+
+    def __init__(self, *notes: FakeNote) -> None:
+        self.notes = {note.id: note for note in notes}
+        self.fetches: list[list[int]] = []
+
+    async def get_notes(self, ids) -> dict:
+        ids = list(ids)
+        self.fetches.append(ids)
+        if any(nid not in self.notes for nid in ids):
+            raise NotFound(ids)
+        return {nid: self.notes[nid] for nid in ids}
+
+
+class TwoTypeExampleSentenceTests(MatchHarness):
+    """A word's notes' example sentences in the main prompt, in the two-type layout (SPEC 6
+    P6): each from the note's example sentence note, made from that note's array with the
+    note's own word in <b> as a one-type note's is made from its own array; "" without one."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.config = two_type_config(self.mwtn)
+        self.found = two_type_book_notes()
+        self.cache = SentenceNoteCache(reading_sentence(101), country_sentence(102))
+        patch = mock.patch.object(self.mwtn, "NotFoundError", NotFound)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    async def find_notes(self, word: str, **_) -> list:
+        return self.found if word == "本" else []
+
+    def listed_examples(self, notes_to_update: Optional[dict] = None) -> list[str]:
+        """match_single_word_in_word_tuple for 本 in a sentence note: the example sentences of
+        the meanings its prompt lists, in the prompt's order."""
+        calls: list[dict[str, Any]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append({"prompt": prompt, **kwargs})
+            return answer(model, prompt, **kwargs)
+
+        async def run() -> bool:
+            return await self.mwtn.match_single_word_in_word_tuple(
+                config=self.config,
+                word_lock=asyncio.Lock(),
+                word_locks_dict={},
+                log_prefix="",
+                match_op_args=self.mwtn.MatchOpArgs(
+                    **self.mwtn.get_match_fields(self.config, {"name": "Sentence"}),
+                    current_note=None,
+                    note_type={"name": "Sentence"},
+                    vocab_note_type="Word",
+                    word_index=0,
+                    part_of_speech="Noun",
+                    multi_meaning_index=None,
+                    word="本",
+                    reading="ほん",
+                    sentence="図書館で本を借りた。",
+                    prompt_sentence=PROMPT_SENTENCE,
+                    match_qualities={},
+                    processed_word_tuples={},
+                    all_generated_meanings_dict=generated_meanings(),
+                    notes_to_add_dict={},
+                    notes_to_update_dict=notes_to_update or {},
+                    word_note_index=None,
+                    note_cache=self.cache,
+                    sentence_cache=None,
+                    cancel_state=None,
+                ),
+            )
+
+        with (
+            mock.patch.object(self.mwtn, "get_response", get_response),
+            mock.patch.object(
+                self.mwtn, "get_matching_notes_for_word_and_reading", self.find_notes
+            ),
+        ):
+            self.assertTrue(asyncio.run(run()))
+        [call] = calls
+        self.prompt = call["prompt"]
+        return [meaning["example_sentence"] for meaning in call["inputs"]["meanings"]]
+
+    def test_for_migrated_notes_the_prompt_is_unchanged(self):
+        # The same arrays and note ids as the one-type notes held give the same text
+        self.listed_examples()
+
+        self.assertEqual(self.prompt, MEANINGS_PROMPT)
+        # Read in one turn, in the order the word's notes were found
+        self.assertEqual(self.cache.fetches, [[202, 201]])
+
+    def test_the_occurrence_linked_to_the_note_is_marked(self):
+        twice = sentence_note(
+            201,
+            sentence_array(
+                ("本", "本", "ほん", ["dontmatch"]),
+                ("の", "の", "の", ["dontmatch"]),
+                ("本", "本", "ほん", [101, 4]),
+            ),
+        )
+        self.cache.notes[201] = twice
+
+        examples = self.listed_examples()
+
+        self.assertEqual(examples[0], "本の<b>本</b>")
+
+    def test_an_example_the_run_edited_is_read_as_edited(self):
+        edited = reading_sentence(101)
+        edited.fields["s_array"] = sentence_array(
+            ("この", "この", "この", ["dontmatch"]), ("本", "本", "ほん", [101])
+        )
+
+        examples = self.listed_examples({201: edited})
+
+        self.assertEqual(examples[0], "この<b>本</b>")
+        self.assertEqual(self.cache.fetches, [[202]])
+
+    def test_a_note_without_an_example_sentence_note_gets_none(self):
+        no_array = sentence_note(203, "", "本[ほん]です。")
+        self.cache.notes[203] = no_array
+        for example_ids in (("", "201"), ("not an id", "201"), ("99", "201"), ("203", "201")):
+            with self.subTest(example_id=example_ids[0]):
+                self.found = two_type_book_notes(example_ids)
+                self.cache.fetches.clear()
+
+                examples = self.listed_examples()
+
+                # The note with (m2), listed second; the generated meaning has none either
+                self.assertEqual(examples, ["<b>本</b>を読むのが好きだ。", "", ""])
+
+    def test_a_gone_example_costs_only_its_own_note(self):
+        self.found = two_type_book_notes(("99", "201"))
+
+        examples = self.listed_examples()
+
+        self.assertEqual(examples[0], "<b>本</b>を読むのが好きだ。")
+        self.assertEqual(self.cache.fetches, [[99, 201], [99], [201]])
+
+
 class MatchTaskTests(MatchHarness):
     """A note's word array matched through the real get_response, with a store installed: the
     calls made for one word target are one task."""
