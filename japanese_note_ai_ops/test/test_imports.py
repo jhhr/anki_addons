@@ -50,6 +50,7 @@ STARTUP_SYNC_MODULES = [
     "tag_notes_matched_status",
     "deduplicate_existing_meaning_notes",
     "make_fine_tuning_data",
+    "refresh_example_sentences",
 ]
 
 # Top-level modules that reach for aqt

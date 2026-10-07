@@ -47,6 +47,7 @@ OP_LABELS = [
     "Find missing matched note ids for selected notes",
     "Tag notes matched status",
     "Deduplicate existing meaning notes",
+    "Refresh example sentences",
     "Move sentences to sentence notes",
 ]
 
@@ -59,6 +60,7 @@ MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:18] + [SEPARATOR] +
     "Build name lexicon from selected notes",
     "Deduplicate existing meaning notes",
     "Export kanjify test data",
+    "Refresh example sentences",
     "Move sentences to sentence notes",
 ]
 
@@ -103,6 +105,7 @@ STARTS = {
         "deduplicate_existing_meaning_notes_selected_notes",
         {},
     ),
+    "refresh_example_sentences": ("refresh_example_sentences_from_selected", {}),
     "migrate_to_sentence_notes": ("migrate_to_sentence_notes_from_selected", {}),
 }
 
@@ -144,6 +147,10 @@ ENTRY_MODULES = {
         ["deduplicate_existing_meaning_notes_selected_notes"],
         False,
     ),
+    ("refresh_example_sentences", "sync_local_ops"): (
+        ["refresh_example_sentences_from_selected"],
+        False,
+    ),
     ("migrate_to_sentence_notes", "sync_local_ops"): (
         ["migrate_to_sentence_notes_from_selected"],
         False,
@@ -152,7 +159,10 @@ ENTRY_MODULES = {
 
 # The entry functions that check the collection before they start their run, by module: the
 # check patched to pass, so that the run starts
-PREFLIGHTS = {"migrate_to_sentence_notes": "collection_preflight_error"}
+PREFLIGHTS = {
+    "migrate_to_sentence_notes": "collection_preflight_error",
+    "refresh_example_sentences": "refresh_preflight_error",
+}
 
 NIDS = [11, 12, 13]
 PARENT = object()
@@ -184,7 +194,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_groups_split_where_the_menu_separator_was(self):
         groups = [spec.group for spec in op_registry.OPS]
-        self.assertEqual(groups, ["async"] * 18 + ["sync"] * 4)
+        self.assertEqual(groups, ["async"] * 18 + ["sync"] * 5)
 
     def test_needs_generator_exactly_for_the_ops_that_run_it(self):
         self.assertEqual(
@@ -287,6 +297,30 @@ class EntryFunctionChainTests(unittest.TestCase):
                     self.assertEqual(
                         [(o.status, o.error) for o in outcomes],
                         [(chain_types.STEP_FAILED, "No sentence type")],
+                    )
+
+    def test_a_refresh_of_one_type_notes_is_refused_and_fails_the_step(self):
+        refresh = load_ops_module("refresh_example_sentences", subdir="sync_local_ops")
+        refusal = "Refresh example sentences needs the two-type layout"
+        for chain, outcomes in (recording_chain(), (None, None)):
+            with self.subTest(chain=chain), mock.patch.object(
+                refresh, "mw"
+            ), mock.patch.object(
+                refresh, "refresh_preflight_error", return_value=refusal
+            ), mock.patch.object(
+                refresh, "showWarning"
+            ) as warning, mock.patch.object(
+                refresh, "selected_notes_op"
+            ) as run:
+                self.assertIsNone(
+                    refresh.refresh_example_sentences_from_selected(NIDS, PARENT, chain=chain)
+                )
+                run.assert_not_called()
+                self.assertEqual(warning.call_args.args[0], refusal)
+                if chain is not None:
+                    self.assertEqual(
+                        [(o.status, o.error) for o in outcomes],
+                        [(chain_types.STEP_FAILED, refusal)],
                     )
 
     def test_single_word_match_without_config_or_chain_just_returns(self):

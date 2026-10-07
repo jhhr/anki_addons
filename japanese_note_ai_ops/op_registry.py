@@ -54,6 +54,7 @@ from .sync_local_ops.find_missing_matched_note_ids import (
     find_missing_matched_note_ids_selected_notes,
 )
 from .sync_local_ops.migrate_to_sentence_notes import migrate_to_sentence_notes_from_selected
+from .sync_local_ops.refresh_example_sentences import refresh_example_sentences_from_selected
 from .sync_local_ops.tag_notes_matched_status import tag_notes_matched_status_from_selected
 from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED
 
@@ -257,6 +258,15 @@ OPS: tuple[OpSpec, ...] = (
         "deduplicate_existing_meaning_notes",
         "Deduplicate existing meaning notes",
         lambda nids, parent, chain: deduplicate_existing_meaning_notes_selected_notes(
+            nids, parent=parent, chain=chain
+        ),
+        needs_generator=False,
+        group=GROUP_SYNC,
+    ),
+    OpSpec(
+        "refresh_example_sentences",
+        "Refresh example sentences",
+        lambda nids, parent, chain: refresh_example_sentences_from_selected(
             nids, parent=parent, chain=chain
         ),
         needs_generator=False,
