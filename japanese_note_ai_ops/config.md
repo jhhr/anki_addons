@@ -243,6 +243,88 @@ You need to define
   10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
       into the "Default" deck
 
+### sentence and vocab note types
+
+A configured note type gets a role from the keys its block names:
+
+- **sentence role**: the block names `word_list_field`. Its notes hold a sentence and its word
+  array; words are extracted, judged and matched from them.
+- **vocab role**: the block names `word_sort_field`. Its notes are the words the arrays link
+  to; the match op finds its candidates among them and creates new ones in this type.
+- A block with neither (e.g. "Kanji draw") has no role.
+
+The roles can be in one note type or in two.
+
+- **One note type** (the original layout): one block with both roles, naming no other type.
+  "Japanese vocab note" holds the word and the sentence it was found in. A note the match op
+  creates copies every sentence field the block names (`sentence_field`,
+  `furigana_sentence_field`, `kanjified_sentence_field`, `word_extraction_sentence_field`,
+  `translated_sentence_field`, `sentence_audio_field`) from the note its word was found in.
+- **Two note types**: a sentence note type holding the sentences and their arrays, and a vocab
+  note type holding the words, each block naming the other:
+  - `vocab_note_type` (sentence block): the note type the words of its arrays are notes of.
+    The match op creates new vocab notes in it.
+  - `sentence_note_type` (vocab block): the note type whose arrays link its notes.
+  - `example_sentence_id_field` (vocab block, optional): the field a vocab note keeps the id of
+    its **example sentence** in, the sentence note its word was found in.
+  - `sentence_seen_count_field` (sentence block, optional): a field counting how many times the
+    sentence has been seen in review on a vocab note. "Move sentences to sentence notes" sets it
+    to the review count of the vocab note the sentence came from; nothing else writes it, and
+    it is never copied to vocab notes.
+
+  A vocab note keeps a copy of its example sentence's fields for each sentence key **both**
+  blocks name: the sentence note's field is copied into the vocab note's, and its id into
+  `example_sentence_id_field`. Of the sentence keys, name only `translated_sentence_field` and
+  `sentence_audio_field` on the vocab block to keep just the translation and the audio. Each
+  block names its own type's fields, so the two names need not match. Each block's
+  `insert_deck` is where new notes of its type go.
+
+```json
+{
+  "Sentence note": {
+    "vocab_note_type": "Japanese vocab note",
+    "word_list_field": "Word array",
+    "sentence_field": "Sentence",
+    "furigana_sentence_field": "Sentence furigana",
+    "kanjified_sentence_field": "Sentence kanjified",
+    "word_extraction_sentence_field": "Sentence for extraction",
+    "translated_sentence_field": "Sentence translation",
+    "sentence_audio_field": "Sentence audio",
+    "sentence_seen_count_field": "Times seen",
+    "insert_deck": "My deck::sentences"
+  },
+  "Japanese vocab note": {
+    "sentence_note_type": "Sentence note",
+    "example_sentence_id_field": "Example sentence id",
+    "translated_sentence_field": "Example translation",
+    "sentence_audio_field": "Example audio",
+    "word_kanjified_field": "Word kanjified",
+    "word_normal_field": "Word",
+    "word_reading_field": "Word reading",
+    "word_sort_field": "Word sort key",
+    "meaning_field": "Meaning",
+    ...the other keys for matching extracted words, as above
+    "insert_deck": "My deck::vocab"
+  }
+}
+```
+
+An op refuses to run on a note type whose layout breaks one of these, with a message naming
+both types:
+
+- the two blocks name each other: a sentence block naming a vocab type that names no sentence
+  type, or another one, is an error, and so is naming a type that has no block;
+- a block names only one of `vocab_note_type` and `sentence_note_type` (a block naming its own
+  type is the one-type layout);
+- the sentence block names `word_list_field` and no `word_sort_field`, the vocab block
+  `word_sort_field` and no `word_list_field`.
+
+**The sentence note type must have no field named like the vocab block's
+`word_kanjified_field`, `word_normal_field` or `word_sort_field`.** The match op's word lookup
+reads every note type that has a field of one of those names, so sentence notes would become
+candidates for the words of their own arrays. A sentence type made by copying the vocab type
+has those fields: delete or rename them.
+
 ## test data exports
 
 Tools > "AI ops: generate test data" runs the browser-menu export, on the notes an Anki
