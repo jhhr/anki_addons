@@ -345,6 +345,15 @@ class ScoreCardTest(unittest.TestCase):
         self.assertEqual(words[0].op_verdicts, {"draft": False, "まおまお": True})
         self.assertEqual(words[0].gold, "まおまお")
 
+    def test_a_draft_with_a_kanji_sudachi_could_not_read_is_never_written(self):
+        word = {"end": 2, "surface": "翠苓", "sudachi": "すい苓", "caption": None}
+        card = self.card("翠苓は", {**word, "kinds": ["name"]})
+        show = {"翠苓": ("name", "すいれい")}
+        words, _, _ = score.score_card(card, "スイレイワ", "kana-whisper", tokenize, show)
+        self.assertEqual(words[0].op_verdicts, {"draft": False, "すいれい": True})
+        words, _, _ = score.score_card(card, "スイワ", "kana-whisper", tokenize, {})
+        self.assertEqual(words[0].op_verdicts, {"draft": False})
+
 
 class CombineTest(unittest.TestCase):
     """What the op would write, accepting a reading where a quorum of the models hear it."""

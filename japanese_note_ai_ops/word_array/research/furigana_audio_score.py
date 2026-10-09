@@ -349,7 +349,11 @@ def score_card(
         choices = {
             key: r for key, r in choices.items() if key == "draft" or not agrees(r, w["sudachi"])
         }
-        result.op_verdicts = hears(choices, hyp, lo, hi)
+        if fa.KANJI_RE.search(w["sudachi"]):
+            # Sudachi had no reading for one of its kanji (苓 of 翠苓), so the draft is none
+            # the op could write, however well its kana fit
+            del choices["draft"]
+        result.op_verdicts = {"draft": False, **(hears(choices, hyp, lo, hi) if choices else {})}
     return words, cost, len(ref)
 
 
