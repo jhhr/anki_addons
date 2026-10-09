@@ -147,15 +147,15 @@ class PlanTests(unittest.TestCase):
             with self.subTest(group=group):
                 self.assertIn(judge.WHOLE_COUNT_RULE, judge.POS_RULES[group])
 
-    def test_the_one_count_that_is_kept_is_kept_in_either_shape(self):
+    def test_a_count_with_a_second_meaning_is_kept_in_either_shape(self):
         """一杯 as one glass comes out split (１杯) or whole (一杯[いっぱい]) like any count,
-        and neither set of rules may turn it down, or the word's second meaning has no note."""
-        self.assertIn(judge.KEPT_COUNT_RULE, judge.POS_RULES[judge.NUMBER_COUNTER_GROUP])
-        self.assertIn(judge.KEPT_COUNT_RULE, judge.WHOLE_COUNT_RULE)
-        # and no rule still gives it as the example of a count to turn down
+        and neither set of rules may turn it down, or half the word has no note."""
+        self.assertIn(judge.BOTH_MEANINGS_RULE, judge.POS_RULES[judge.NUMBER_COUNTER_GROUP])
+        self.assertIn(judge.BOTH_MEANINGS_RULE, judge.WHOLE_COUNT_RULE)
+        # and no rule still tells such a word's count from its meaning by the sentence
         for group, rules in judge.POS_RULES.items():
             with self.subTest(group=group):
-                self.assertNotIn("(one glass)", rules)
+                self.assertNotIn("are only a count, dontmatch", rules)
 
     def test_a_word_with_more_than_a_number_and_a_counter_keeps_its_own_group(self):
         arr = [
