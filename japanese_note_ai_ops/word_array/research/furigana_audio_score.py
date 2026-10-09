@@ -65,6 +65,7 @@ VOWEL_ROWS = {
 VOWEL_OF = {ch: v for v, row in VOWEL_ROWS.items() for ch in row}
 VOWEL_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ"}
 PARTICLE_SOUND = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
+SYMBOLS = ("記号", "補助記号", "空白")
 RUBY_RE = re.compile(r"[^\s\[\]]+?\[([^\]]*)\]")
 KINDS = ("name", "caption_word", "ambiguous", "number")
 # A card whose transcript is off its line by more than this share of morae is taken for one
@@ -197,9 +198,14 @@ def hears(readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int) -> dic
 
 
 def spoken(mo: Any) -> list[str]:
-    """A morpheme's morae as pronounced: its reading, a particle は/へ/を as ワ/エ/オ."""
+    """A morpheme's morae as pronounced: its reading, a particle は/へ/を as ワ/エ/オ. A space,
+    a bracket or ♪ is no sound, though Sudachi reads it キゴウ ("symbol"), which put three
+    morae no one says into the line at every one."""
     surface = mo.surface()
-    if mo.part_of_speech()[0] == "助詞" and to_katakana(surface) in PARTICLE_SOUND:
+    pos = mo.part_of_speech()[0]
+    if pos in SYMBOLS:
+        return morae(surface)
+    if pos == "助詞" and to_katakana(surface) in PARTICLE_SOUND:
         return [PARTICLE_SOUND[to_katakana(surface)]]
     return morae(mo.reading_form())
 

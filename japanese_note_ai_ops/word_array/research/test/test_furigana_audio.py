@@ -26,6 +26,8 @@ PROPER = ("名詞", "固有名詞", "人名", "一般", "*", "*")
 PARTICLE = ("助詞", "格助詞", "*", "*", "*", "*")
 NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
+SPACE = ("空白", "*", "*", "*", "*", "*")
+BRACKET = ("補助記号", "括弧開", "*", "*", "*", "*")
 
 
 class Morpheme:
@@ -64,6 +66,9 @@ LEXICON = {
     "三": ("サン", NUMERAL),
     "人": ("ニン", COUNTER),
     "高順": ("タカノブ", PROPER),
+    # Sudachi's reading of a space or a bracket
+    "\u3000": ("キゴウ", SPACE),
+    "《": ("キゴウ", BRACKET),
 }
 
 
@@ -315,6 +320,13 @@ class ScoreCardTest(unittest.TestCase):
 
     def card(self, line, word):
         return {"id": "c1", "lines": [line], "words": [{"line": 0, "start": 0, **word}]}
+
+    def test_a_space_or_a_bracket_is_no_sound(self):
+        word = {"end": 2, "surface": "他", "sudachi": "ほか", "caption": None, "kinds": []}
+        card = self.card("《他\u3000に", {**word, "start": 1})
+        ref, owner, _ = score.reference(card, tokenize)
+        self.assertEqual(ref, ["ホ", "カ", "ニ"])
+        self.assertEqual(owner, [0, 0, -1])
 
     def test_a_reading_the_dictionary_has_for_the_spelling(self):
         word = {"end": 1, "surface": "他", "sudachi": "ほか", "caption": None}
