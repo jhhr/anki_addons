@@ -584,7 +584,8 @@ as `research.old_word_lists`, relative imports, excluded from mypy); `research/c
 the corpus loader the other scripts read their sentences through. Collection repair scripts talk to
 a running Anki over AnkiConnect, list changes by default, write only with `--apply`, undo
 with `--revert`, and log to `output/`. Never run one with `--apply` unless the user asked for
-that run. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
+that run. `number_counter_unlink.py` is the one that deletes notes: its `--revert` puts the
+arrays back and no note, so it keeps what each deleted note held in `output/`. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
 pre-migration export and its hand-checked subset (`corpora.py`), `kanjify_sentence_data.jsonl`
 and the answer caches (`*_eval_results.jsonl`, `vocab_reading_judge_results.jsonl`) are hand
 work and paid answers found nowhere else, so they live in `japanese_note_ai_ops/evals/` of the
@@ -681,7 +682,8 @@ current). `config.md` lists outdated models, and `log_to_console` is `true` in
 Declares `jp_text_processing`, `ui`, `utils`, `word_array`. Uses `utils.vendor_path` and
 `utils.vendor_rebuild_ui`, `word_array.field_text`, `ui.note_source_buttons` (the multi-op
 dialog), and from the submodule `kana_highlight`,
-`make_furigana_from_reading`, `check_word_reading_type`, `main_types`. It does not use the
+`make_furigana_from_reading`, `check_word_reading_type`, `main_types` and `all_kanji_data`
+(the generator reads a lone kanji's on'yomi from it). It does not use the
 shared `utils/logger.py`, and its config access is inline `getConfig(__name__)`. General
 Japanese text logic belongs in the `jp_text_processing` repo, kept free of anything specific
 to this addon. Before adding a generic helper, check

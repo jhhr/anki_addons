@@ -114,6 +114,17 @@ up, the word simply keeps no sub-words, which is what stops a jukujikun word bei
 (今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
 has the plain reading (閏日 -> 日[び] -> ひ).
 
+A word's reading drops the gemination before the word after it too (`ungeminated`). The っ its
+reading ends in, the note's furigana or Sudachi's, stands in for the reading's last kana or was
+put in after it, and the first reading JMdict has for the word that fits is the word's:
+坊[ぼっ]ちゃん -> 坊 ぼう, 絶不調 -> 絶 ぜつ, 何処[どっ]か -> 何処 どこ, 蹄鉄[ていてっ] 工 ->
+ていてつ, 根[ねっ]こ -> 根 ね. Never ん, which a っ doesn't replace (四[よっ]つ is よ, not よん). A
+number takes its own reading before JMdict's (一[いっ] 回 いち, １００[ひゃっ] 件 ひゃく, 十[じっ]
+じゅう; 三[みっ]つ み), and a lone kanji JMdict has no such word for its on'yomi (立[りっ] of
+立候補 りつ). The word it was split out of keeps the reading the text gives it (ぼっちゃん,
+いっかい). A reading JMdict lists stays (突[とっ], a prefix), and so does a word written with its
+っ (取っ of 取っ手, 真っ, 糞ッ). Export: 42 words re-read, 30 of them numbers.
+
 Where the note gives no furigana, Sudachi's reading is shared out the same way, since its short
 units don't always add up to the long unit: 無人島 comes as 無人[むじん] + 島[むじんとう], so 島
 takes its own Sudachi or JMdict reading (とう), and 一日中[いちにちじゅう] as 一 + 日中[にっちゅう],
@@ -309,16 +320,25 @@ words prompt" and the extract-words fine-tuning export.
 4. `[note_id]` - migrated with a note id: judged already, lacks `match_quality`.
 5. `[note_id, match_quality]` - fully matched.
 
-Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
-built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
-else is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
+Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`: numbers have been
+a steady source of junk notes. Everything else, a word built on a number included (二十八日,
+十一時), is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
 `REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away.
 
 The judge (`judge.py`, op `async_api_ops/word_matching_judge.py`, one browser menu entry per
 mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
 `word_matching_judge_model`) asks about each word alone: its prompt has the rules for its group
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
-cases apart - nouns into `noun-main` at the top level, `noun-phrase` inside a word made with a
+cases apart - a word made of exactly a number and a counter into `number-counter` under any part
+of speech and at any depth (三階 a noun, 一度 an adverb, 二つ an expression; `dontmatch` unless
+it is a native number word like 三つ or 一人 or means more than the count, like 一番; and a
+word with such a second meaning is matched as the plain count too, `BOTH_MEANINGS_RULE`, so
+that 一杯 the glass has a note beside 一杯 "full", but only the number that has the double
+meaning: 三番 and 二時 stay counts; the
+generator makes the two sub-words only where the furigana reads them apart, so a count it left
+whole, 九人[きゅうにん], stays in its own group, and `noun-main`, `noun-sub` and `adverb` carry
+the same test in short, `WHOLE_COUNT_RULE`), nouns
+into `noun-main` at the top level, `noun-phrase` inside a word made with a
 particle (本当に, 羽目を外す) and `noun-sub` inside any other word, either verb of a two-verb
 compound verb into `prefix-verb` / `suffix-verb`, affixes into `prefix`, `suffix` and `counter`,
 and expressions of verbs only into

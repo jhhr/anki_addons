@@ -33,6 +33,7 @@ from typing import Iterable, Optional
 from sudachipy import Dictionary, SplitMode
 
 from ..kana_conv import to_hiragana
+from ..shared.jp_text_processing.kanji.all_kanji_data import all_kanji_data
 from . import jmdict_index as jmdict
 from . import match_flags, numbers, resources, text_map
 from .names import build_lexicon, find_names, jmdict_word
@@ -1026,6 +1027,36 @@ def voiced(kana: str) -> str:
     return (first if len(first) == 1 else kana[:1]) + kana[1:]
 
 
+def ungeminated(kana: str, known: Iterable[str]) -> Optional[str]:
+    """Undo gemination before the word after it, against the readings the word is known by. The
+    っ stands in for the reading's last kana (坊 ぼっ -> ぼう, 一 いっ -> いち, 何処 どっ -> どこ; 十
+    じっ -> じゅう), or was put in after it (三[みっ]つ -> み). Never for ん, which a っ doesn't
+    replace: 四[よっ]つ is よ, not よん. The first known reading that fits, so their order decides
+    (いち before いつ); the reading itself when it is one of them (突[とっ], a prefix of its own);
+    None when it doesn't end in っ or none fits."""
+    stem = kana[:-1]
+    if not stem or kana[-1] != "っ":
+        return None
+    known = list(known)
+    if kana in known:
+        return kana
+    return next(
+        (
+            r
+            for r in known
+            if r in (stem, stem + "ゅう")
+            or (len(r) == len(kana) and r.startswith(stem) and r[-1] != "ん")
+        ),
+        None,
+    )
+
+
+def onyomi(kanji: str) -> list[str]:
+    """A kanji's on'yomi, from the data kana_highlight splits a group's reading per kanji by."""
+    listed = all_kanji_data.get(kanji, {"onyomi": "", "kunyomi": ""})["onyomi"]
+    return [to_hiragana(r.split("(")[0].strip()) for r in listed.split("、") if r.strip()]
+
+
 def _piece(tm: TextMap, start: int, end: int, second: bool) -> Optional[Word]:
     """Natural span [start, end) as a sub-word, if JMdict has it with the reading the note
     gives it (a second piece may be voiced by rendaku) and it isn't a lone on'yomi kanji."""
@@ -1149,8 +1180,9 @@ def _unread_subs_add_up(tm: TextMap, w: Word) -> bool:
     for i, s in enumerate(w.subs):
         readings = [_furigana_reading(tm, s.start, s.end, s.morphs)]
         own = len(s.morphs) == 1 and KANJI_RE.search(tm.surface_reading(s.start, s.end))
-        if number_value(tm, s) is not None:
-            readings.append(dict_reading(tm, s))  # Sudachi reads ３ as ３
+        value = number_value(tm, s)
+        if value is not None:
+            readings.append(_number_reading(tm, s, value))  # Sudachi reads ３ as ３
         if own:
             written = tm.written_form(s.start, s.end)
             readings += [_sudachi_reading(written)] + list(jmdict.readings(written))
@@ -1332,8 +1364,9 @@ def _has_unread_number(tm: TextMap, w: Word) -> bool:
 
 
 def _surface_reading(tm: TextMap, w: Word) -> str:
-    if number_value(tm, w) is not None:
-        return dict_reading(tm, w)
+    value = number_value(tm, w)
+    if value is not None:
+        return _number_reading(tm, w, value)
     if w.kind == "expression" and w.subs:
         return "".join(_surface_reading(tm, s) for s in w.subs)
     return _furigana_reading(tm, w.start, w.end, w.morphs)
@@ -1609,16 +1642,25 @@ def _own_share(tm: TextMap, w: Word, furi: str) -> str:
     return furi
 
 
+def _number_reading(tm: TextMap, w: Word, value: int) -> str:
+    """How the text reads a number: the note's furigana (一[ひと]つ) where it reads the whole
+    number. Numbers mostly have none, or only on their units (１万[まん]２千[せん])."""
+    furi = to_hiragana(tm.surface_reading(w.start, w.end))
+    if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
+        return furi
+    return numbers.number_reading(value)
+
+
 def dict_reading(tm: TextMap, w: Word) -> str:
     head = w.head
     value = number_value(tm, w)
     if value is not None:
-        furi = to_hiragana(tm.surface_reading(w.start, w.end))
-        # The note's furigana (一[ひと]つ) where it reads the whole number; numbers mostly have
-        # none, or only on their units (１万[まん]２千[せん])
-        if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
-            return furi
-        return numbers.number_reading(value)
+        furi = _number_reading(tm, w, value)
+        # Less the counter's gemination: 一[いっ] 回[かい] is いち, １００[ひゃっ] 件[けん] ひゃく,
+        # and 三[みっ]つ is JMdict's み
+        known = [numbers.number_reading(value)]
+        known += [to_hiragana(r) for r in jmdict.readings(numbers.numeral(value))]
+        return ungeminated(furi, known) or furi
     if w.kind == "expression":
         if w.surface_match:
             reading = _surface_reading(tm, w)
@@ -1643,14 +1685,19 @@ def dict_reading(tm: TextMap, w: Word) -> str:
     lemma = dict_form(tm, w)
     written = tm.written_form(w.start, w.end)
     if lemma == written:
-        # Uninflected: the note's furigana is the reading, less any rendaku from the compound
-        # the word was split out of (閏日 -> 日[び] -> ひ)
+        # Uninflected: the note's furigana is the reading, less what the words around it did to
+        # it: rendaku from the compound the word was split out of (閏日 -> 日[び] -> ひ), or
+        # gemination before the word after it (御坊ちゃん -> 坊[ぼっ] -> ぼう)
         if not KANJI_RE.search(tm.surface_reading(w.start, w.end)):
             furi = _own_share(tm, w, furi)
-        if KANJI_RE.search(written) and unvoiced(furi) != furi:
+        if KANJI_RE.search(written) and (unvoiced(furi) != furi or furi.endswith("っ")):
             known = [to_hiragana(r) for r in jmdict.readings(written)]
             if furi not in known and unvoiced(furi) in known:
                 return unvoiced(furi)
+            # A lone kanji JMdict has no word for, or none read so, is read by its on'yomi:
+            # 立[りっ] of 立候補 is りつ
+            kanji_readings = onyomi(written) if len(written) == 1 else []
+            return ungeminated(furi, known) or ungeminated(furi, kanji_readings) or furi
         return furi
     if head.lemma == "する" and lemma.endswith("れる"):
         return "される"

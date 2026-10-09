@@ -73,6 +73,16 @@ class AnkiConnect:
     def remove_tags(self, nids, tags: str) -> None:
         self.invoke("removeTags", notes=list(nids), tags=tags)
 
+    def find_notes(self, query: str) -> list[int]:
+        """The ids of the notes an Anki search finds."""
+        return self.invoke("findNotes", query=query)
+
+    def delete_notes(self, nids) -> None:
+        """Deletes the notes with all their cards and review history. Like a field update it
+        skips Anki's undo queue, and nothing can write a note back under its old id: whoever
+        deletes keeps what the note held."""
+        self.invoke("deleteNotes", notes=list(nids))
+
     def gui_browse(self, query: str) -> list[int]:
         """Opens Anki's browser on `query`; the ids of the cards it found."""
         return self.invoke("guiBrowse", query=query)
