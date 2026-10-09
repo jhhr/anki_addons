@@ -323,7 +323,8 @@ mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/ju
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
 cases apart - a word made of exactly a number and a counter into `number-counter` under any part
 of speech and at any depth (三階 a noun, 一度 an adverb, 二つ an expression; `dontmatch` unless
-it is a native number word like 三つ or 一人 or means more than the count, like 一番; the
+it is a native number word like 三つ or 一人 or means more than the count, like 一番, or is
+一杯, the one count kept, `KEPT_COUNT_RULE`, so that its glass has a note beside its "full"; the
 generator makes the two sub-words only where the furigana reads them apart, so a count it left
 whole, 九人[きゅうにん], stays in its own group, and `noun-main`, `noun-sub` and `adverb` carry
 the same test in short, `WHOLE_COUNT_RULE`), nouns

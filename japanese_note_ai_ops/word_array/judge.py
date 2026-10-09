@@ -59,12 +59,17 @@ OTHER_GROUP = "other"
 # Left to the noun rules, which said to match a number plus a counter, every 一階 and 二回 got
 # a note that taught nothing the notes of 一 and 階 didn't.
 NUMBER_COUNTER_GROUP = "number-counter"
+# The one plain count that keeps its note. 一杯 is a glass in one sentence and "full" in the
+# next, and a learner who only ever meets the note for "full" does not find out that the word
+# has both meanings: with the glass turned down as a count, half the word had no note.
+KEPT_COUNT_RULE = """- match 一杯 (いっぱい) also where it is only a count, one glass or cupful (水を一杯下さい, 珈琲をもう一杯): the word has that meaning beside "full" and "a lot", and the two are learned side by side. It is the one exception: 二杯 and 三杯 are counts like any other."""
 # The generator gives a number and its counter their two sub-words only where the furigana
 # reads them apart (九[きゅう] 人[にん]). Read as one (九人[きゅうにん]) the word comes out
 # whole, like 一緒 or 一生, and lands in its part of speech's group, so the groups such a
 # word lands in say in short what NUMBER_COUNTER_GROUP's rules say. Without it there a count
 # was matched or not by how its furigana happened to be grouped.
-WHOLE_COUNT_RULE = """- dontmatch a word that is only a number and its counter when it means no more than that number of that thing, a date or a length of time included: 三人, 九人, 二回, 一万円, 二番目, 七月, 一週間, 一ヶ月, 一杯 in 水を一杯 (one glass), 三人 in 三人目, 一日 (いちにち) in 一日中. Any other number could stand in it, so the whole is nothing to learn. But match a native Japanese number word, learned as a word of its own (一人 (ひとり), 二人 (ふたり), 二十歳 (はたち), 二日 (ふつか), 三日 (みっか), 十日 (とおか), 二十日 (はつか)), and a word that has come to mean more than the count: 一番 (most), 一杯 (full, a lot), 一種 (a kind of), 一部 (a part)."""
+WHOLE_COUNT_RULE = """- dontmatch a word that is only a number and its counter when it means no more than that number of that thing, a date or a length of time included: 三人, 九人, 二回, 一万円, 二番目, 七月, 一週間, 一ヶ月, 三人 in 三人目, 一日 (いちにち) in 一日中. Any other number could stand in it, so the whole is nothing to learn. But match a native Japanese number word, learned as a word of its own (一人 (ひとり), 二人 (ふたり), 二十歳 (はたち), 二日 (ふつか), 三日 (みっか), 十日 (とおか), 二十日 (はつか)), and a word that has come to mean more than the count: 一番 (most), 一杯 (full, a lot), 一種 (a kind of), 一部 (a part).
+""" + KEPT_COUNT_RULE
 # rule_group() splits these further by the word's place in the array
 SPLIT_GROUPS = {
     "noun": ("noun-main", "noun-sub", "noun-phrase"),
@@ -112,7 +117,9 @@ POS_RULES = {
 - dontmatch a word that means no more than that number of that thing: 一階, 三階, 一回, 二回, 三人, 二本, 一枚, 一匹, 千円, 十万, 九時, 五分, 七月, 三年, 一週間, 一ヶ月, 二位, 三歳, 二倍. Any other number could stand in its place and the meaning is plain from the two parts, so the whole is nothing to learn, however common it is; the number and the counter keep their notes. A sound that changes where the two join (いっかい, さんがい, ろっぽん, じゅっぷん) does not make it a word of its own.
 - dontmatch it the same where 何, 数 or 幾 stands for the number: 何人, 何回, 何年, 数人, 数年, 幾度.
 - match the native Japanese number words, a closed set learned as words of their own: 一つ to 九つ and 幾つ, 一人 (ひとり) and 二人 (ふたり), 二十歳 (はたち), and the day words 一日 (ついたち), 二日 (ふつか), 三日 (みっか) to 十日 (とおか) and 二十日 (はつか), as a date or a number of days. Read as the plain number plus the counter the same kanji are only a count: 一日 (いちにち) and 一人 (いちにん) are dontmatch.
-- match a word that has come to mean something of its own, more than the count: 一番 (most, best), 一杯 (full, a lot), 十分 (じゅうぶん, enough), 一時 (for a time), 一体 (what on earth), 一種 (a kind of), 一段落 (a stopping point), 二重 (double), 三角形 (triangle). Go by what it means in this sentence: 一杯 in 水を一杯 (one glass), 一番 in 一番の窓口 (window one) and 一時 in 午後一時 (one o'clock) are only a count, dontmatch.""",
+- match a word that has come to mean something of its own, more than the count: 一番 (most, best), 一杯 (full, a lot), 十分 (じゅうぶん, enough), 一時 (for a time), 一体 (what on earth), 一種 (a kind of), 一段落 (a stopping point), 二重 (double), 三角形 (triangle). Go by what it means in this sentence: 一番 in 一番の窓口 (window one) and 一時 in 午後一時 (one o'clock) are only a count, dontmatch.
+"""
+    + KEPT_COUNT_RULE,
     "verb": """Rules for verbs (given in their dictionary form, whatever form the sentence has):
 - match an ordinary verb, however common or easy, 為る (する) included, also where it only makes the noun before it a verb (勉強為る).
 - match a verb used as an auxiliary after a て-form: 見る in て見る, 呉れる, 貰う, 置く, 行く, 来る, 下さい.
