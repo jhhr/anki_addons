@@ -562,6 +562,7 @@ python word_array/research/furigana_audio_select.py  # the furigana audio eval's
 python word_array/research/furigana_audio_copy.py --media DIR  # copy their clips into the test data
 python word_array/research/furigana_audio_run.py MODEL   # a transcriber over the clips (its own venv)
 python word_array/research/furigana_audio_score.py       # score the runs against the captions' readings
+python word_array/research/furigana_audio_score.py --combine A B [--quorum 1]  # what the op's rule would write
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

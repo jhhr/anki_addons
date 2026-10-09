@@ -627,7 +627,11 @@ strips or keeps; the op will need the same cleaning. `furigana_audio_run.py` run
 transcriber over the clips into `runs/`, in an environment of its own (PyTorch, transformers,
 Ruby-ASR's package: none of them is a dev dependency here, and the script imports them only
 when it runs); `furigana_audio_score.py` scores the runs against the readings the captions
-give, since the hand labels are still to come.
+give, since the hand labels are still to come. With `--combine` it writes what the op's rule
+would (`decide`): the draft where the models hear it, a reading JMdict has for the spelling or
+the show has for a name where they hear that instead, review otherwise. Its limits on a
+correction (`CORRECT`, and a stretch `fit` may not shrink for one) each came from readings
+the runs got wrong; the op's check should keep them.
 
 ## Tests and types
 
