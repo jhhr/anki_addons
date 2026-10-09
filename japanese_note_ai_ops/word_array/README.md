@@ -560,6 +560,8 @@ py -3.10 word_array/research/unbalanced_tags.py      # array words whose html do
 py -3.10 word_array/research/canonical_forms.py      # what one spelling per entry changes
 python word_array/research/furigana_audio_select.py  # the furigana audio eval's lines, from a subs2srs export
 python word_array/research/furigana_audio_copy.py --media DIR  # copy their clips into the test data
+python word_array/research/furigana_audio_run.py MODEL   # a transcriber over the clips (its own venv)
+python word_array/research/furigana_audio_score.py       # score the runs against the captions' readings
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

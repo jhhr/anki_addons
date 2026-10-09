@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import furigana_audio as fa  # noqa: E402
 import furigana_audio_copy as copy_script  # noqa: E402
+import furigana_audio_score as score  # noqa: E402
 import furigana_audio_select as select  # noqa: E402
 
 NOUN = ("名詞", "普通名詞", "一般", "*", "*", "*")
@@ -267,3 +268,36 @@ class CopyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScoreTest(unittest.TestCase):
+    """The comparison of a transcript with a reading, in morae as pronounced."""
+
+    def test_morae_join_small_kana_and_lengthen_vowels(self):
+        self.assertEqual(score.morae("きょうはいい"), ["キョ", "ウ", "ハ", "イ", "イ"])
+        self.assertEqual(score.morae("キョーワ"), ["キョ", "オ", "ワ"])
+        self.assertEqual(score.morae("ぢづを、！"), ["ジ", "ズ", "オ"])
+
+    def test_one_sound_spelled_two_ways_agrees(self):
+        self.assertTrue(score.agrees("とうきょう", "トーキョー"))
+        self.assertTrue(score.agrees("せんせい", "センセー"))
+
+    def test_speech_dropping_a_long_vowel_or_geminate_agrees(self):
+        self.assertTrue(score.agrees("いじょう", "イジョ"))
+        self.assertTrue(score.agrees("いった", "イタ"))
+
+    def test_another_reading_does_not(self):
+        self.assertFalse(score.agrees("ねこねこ", "まおまお"))
+        self.assertFalse(score.agrees("ほか", "た"))
+        # rendaku is a reading of its own: 洗濯係 is せんたくがかり
+        self.assertFalse(score.agrees("かかり", "がかり"))
+
+    def test_a_word_heard_as_another_of_its_length_lines_up_mora_by_mora(self):
+        ref = score.morae("ですおうかです")
+        hyp = score.morae("ですいんふぁです")
+        _, pairs = score.align(ref, hyp)
+        self.assertEqual([hyp[j] for j in pairs[2:5] if j is not None], ["イ", "ン", "ファ"])
+
+    def test_ruby_answers_keep_their_readings(self):
+        self.assertEqual(score.heard_text("ruby", "七[なな]年間[ねんかん]で"), "ななねんかんで")
+        self.assertEqual(score.heard_text("kana-whisper", "ナナネン"), "ナナネン")
