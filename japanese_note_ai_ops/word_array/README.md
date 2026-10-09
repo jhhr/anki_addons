@@ -312,16 +312,19 @@ words prompt" and the extract-words fine-tuning export.
 4. `[note_id]` - migrated with a note id: judged already, lacks `match_quality`.
 5. `[note_id, match_quality]` - fully matched.
 
-Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
-built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
-else is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
+Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`: numbers have been
+a steady source of junk notes. Everything else, a word built on a number included (二十八日,
+十一時), is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
 `REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away.
 
 The judge (`judge.py`, op `async_api_ops/word_matching_judge.py`, one browser menu entry per
 mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
 `word_matching_judge_model`) asks about each word alone: its prompt has the rules for its group
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
-cases apart - nouns into `noun-main` at the top level, `noun-phrase` inside a word made with a
+cases apart - a word made of exactly a number and a counter into `number-counter` under any part
+of speech and at any depth (三階 a noun, 一度 an adverb, 二つ an expression; `dontmatch` unless
+it is a native number word like 三つ or 一人 or means more than the count, like 一番), nouns
+into `noun-main` at the top level, `noun-phrase` inside a word made with a
 particle (本当に, 羽目を外す) and `noun-sub` inside any other word, either verb of a two-verb
 compound verb into `prefix-verb` / `suffix-verb`, affixes into `prefix`, `suffix` and `counter`,
 and expressions of verbs only into
