@@ -66,7 +66,9 @@ VOWEL_OF = {ch: v for v, row in VOWEL_ROWS.items() for ch in row}
 VOWEL_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ"}
 PARTICLE_SOUND = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
 SYMBOLS = ("記号", "補助記号", "空白")
-RUBY_RE = re.compile(r"[^\s\[\]]+?\[([^\]]*)\]")
+# A ruby base is the kanji before the reading: anything wider took the kana before them too,
+# でも優[やさ] for やさ
+RUBY_RE = re.compile(f"[{fa.KANJI}]+\\[([^\\]]*)\\]")
 KINDS = ("name", "caption_word", "ambiguous", "number")
 # A card whose transcript is off its line by more than this share of morae is taken for one
 # whose captions and clip differ

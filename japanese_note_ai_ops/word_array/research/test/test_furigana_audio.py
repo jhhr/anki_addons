@@ -304,6 +304,8 @@ class ScoreTest(unittest.TestCase):
     def test_ruby_answers_keep_their_readings(self):
         heard = score.heard_text("ruby", "七[なな]年間[ねんかん]で", tokenize)
         self.assertEqual(heard, "ななねんかんで")
+        heard = score.heard_text("ruby", "でも優[やさ]しい親父[おやじ]", tokenize)
+        self.assertEqual(heard, "でもやさしいおやじ")
         self.assertEqual(score.heard_text("kana-whisper", "ナナネン", tokenize), "ナナネン")
 
     def test_ordinary_text_is_read_as_sudachi_reads_it(self):
