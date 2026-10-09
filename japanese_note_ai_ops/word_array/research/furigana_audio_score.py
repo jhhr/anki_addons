@@ -18,10 +18,12 @@ A transcript is compared with the line as pronounced. Both become katakana morae
 vowel mark is the vowel it lengthens, は/へ/を as particles are ワ/エ/オ, ヂ/ヅ are ジ/ズ. Then
 they are aligned by edit distance, with a cheap step for the spellings of one sound (オウ and
 オー, エイ and エー, a dropped っ or long vowel), and each word gets the stretch of the
-transcript that lines up with its reading (`heard`). A word agrees with a reading when the
-transcript between the word's aligned neighbours holds that reading, only cheap steps off: a
-word heard as another reading pulls the alignment's edges about (猫猫 heard オマオ), and every
-reading a word is tested against gets the same leeway.
+transcript that lines up with its reading (`heard`). A word is heard as a reading when
+the transcript between the word's aligned neighbours holds that reading, only cheap steps off,
+and holds no other reading of the word better: a word heard as another reading pulls the
+alignment's edges about (猫猫 heard オマオ), so every reading a word is tested against may
+move either edge by a mora, at a small cost that lets the reading covering the most win (婆
+heard ババア is ばばあ, not ばあ).
 
 A card whose transcript is far from its line is mostly not the model's fault: the captions of
 a card can hold text its clip cuts off, or lines spoken over each other. Cards whose morae are
@@ -164,17 +166,32 @@ def agrees(a: str, b: str) -> bool:
     return align(morae(a), morae(b))[0] <= AGREE
 
 
-def found_in(reading: str, hyp: Sequence[str], lo: int, hi: int) -> bool:
-    """Whether hyp[lo:hi], or a stretch of it a mora shorter or longer at either end, agrees
-    with `reading`."""
+# What moving either end of the stretch by a mora costs a reading: less than any real step,
+# enough that a reading covering the whole stretch beats one inside it (ばばあ over ばあ)
+SHIFT = 0.1
+
+
+def fit(reading: str, hyp: Sequence[str], lo: int, hi: int) -> float:
+    """How far `reading` is from hyp[lo:hi], or from a stretch a mora shorter or longer at
+    either end, each such move costing SHIFT."""
     want = morae(reading)
     if not want:
-        return False
+        return float("inf")
+    best = float("inf")
     for a in range(max(0, lo - 1), min(len(hyp), lo + 2)):
         for b in range(max(a + 1, hi - 1), min(len(hyp), hi + 1) + 1):
-            if align(want, hyp[a:b])[0] <= AGREE:
-                return True
-    return False
+            moved = SHIFT * (abs(a - lo) + abs(b - hi))
+            best = min(best, align(want, hyp[a:b])[0] + moved)
+    return best
+
+
+def hears(readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int) -> dict[str, bool]:
+    """For each named reading of a word, whether the transcript holds it there: within AGREE,
+    and no further than the reading that fits best, since a draft read ばあ fits inside the
+    ババア heard for ばばあ."""
+    fits = {key: fit(reading, hyp, lo, hi) for key, reading in readings.items()}
+    best = min(fits.values())
+    return {key: f <= AGREE and f <= best + 1e-9 for key, f in fits.items()}
 
 
 def heard_text(model: str, text: str) -> str:
@@ -271,9 +288,9 @@ def score_card(
         result.clean = clean
         lo, hi = neighbours(owner, pairs, k, len(hyp))
         w = result.word
-        result.verdicts["draft"] = found_in(w["sudachi"], hyp, lo, hi)
+        readings = {"draft": w["sudachi"]}
         if w["caption"]:
-            result.verdicts["caption"] = found_in(w["caption"], hyp, lo, hi)
+            readings["caption"] = w["caption"]
             result.gold = w["caption"]
         elif w["surface"] in show:
             # Judged only where the pick took the word for one: 子 is a clan read シ in one
@@ -282,9 +299,10 @@ def score_card(
             if (script == "name" and "name" in w["kinds"]) or (
                 script == "word" and "caption_word" in w["kinds"]
             ):
-                result.verdicts[f"show_{script}"] = found_in(reading, hyp, lo, hi)
+                readings[f"show_{script}"] = reading
                 if script == "name":
                     result.gold = reading
+        result.verdicts = hears(readings, hyp, lo, hi)
     return words, cost, len(ref)
 
 

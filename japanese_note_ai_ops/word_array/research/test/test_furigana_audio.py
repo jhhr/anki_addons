@@ -344,3 +344,16 @@ class CombineTest(unittest.TestCase):
         self.assertIn("accepted wrongly 50.0%, corrected 50.0%, review 0.0%", text)
         self.assertIn("ordinary                   3 words", text)
         self.assertIn("accepted 33.3%, one other reading 33.3%, review 33.3%", text)
+
+
+class HearsTest(unittest.TestCase):
+    def test_the_reading_covering_what_was_heard_wins(self):
+        hyp = score.morae("ババア")
+        verdicts = score.hears({"draft": "ばあ", "caption": "ばばあ"}, hyp, 0, len(hyp))
+        self.assertEqual(verdicts, {"draft": False, "caption": True})
+
+    def test_a_reading_may_move_an_edge_by_a_mora(self):
+        # the alignment gave 猫猫 only オマオ of the マオマオ heard
+        hyp = score.morae("ノマオマオガ")
+        verdicts = score.hears({"draft": "ねこねこ", "show_name": "まおまお"}, hyp, 2, 5)
+        self.assertEqual(verdicts, {"draft": False, "show_name": True})

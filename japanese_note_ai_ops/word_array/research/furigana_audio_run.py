@@ -64,6 +64,9 @@ class Model(NamedTuple):
     repo: str
     kind: str  # "whisper", "ruby-mora" or "ruby"
     generate: dict  # Whisper generate() arguments besides the language
+    # The repo whose generation config to use, for a fine-tune that ships none: without one
+    # generate() cannot turn language="ja" into its token
+    generation_config: Optional[str] = None
 
 
 MODELS = {
@@ -72,7 +75,12 @@ MODELS = {
         "rose3/kana-anime-whisper", "whisper", {"num_beams": 2, "repetition_penalty": 1.1}
     ),
     "kana-whisper": Model("sbintuitions/kana-whisper", "whisper", {}),
-    "phone-accent": Model("AkitoP/whisper-large-v3-japense-phone_accent", "whisper", {}),
+    "phone-accent": Model(
+        "AkitoP/whisper-large-v3-japense-phone_accent",
+        "whisper",
+        {},
+        generation_config="openai/whisper-large-v3-turbo",
+    ),
     "ruby-mora": Model(RUBY_REPO, "ruby-mora", {}),
     "ruby": Model(RUBY_REPO, "ruby", {}),
     # anime-whisper's own evaluation decoded with this against Whisper's repetition loops
@@ -104,6 +112,10 @@ def whisper(model: Model, device: str) -> Transcriber:
     torch, transformers = module("torch"), module("transformers")
     processor = transformers.WhisperProcessor.from_pretrained(model.repo)
     net = transformers.WhisperForConditionalGeneration.from_pretrained(model.repo)
+    if model.generation_config:
+        net.generation_config = transformers.GenerationConfig.from_pretrained(
+            model.generation_config
+        )
     net = net.to(device).eval()
 
     def transcribe(wav: Any) -> str:
