@@ -616,6 +616,15 @@ subagents instead (`agent_items.py` takes and saves items, the types in the repo
 `.claude/agents/kanjify-*.md` fix model, effort and tools; `kanjify_agents/cloud_runbook.md` is
 what such a session follows), writing the same result files.
 
+The **furigana audio eval** (`furigana_audio*.py`, overview in `furigana_audio.py`'s docstring)
+is for the planned op that sets a sentence's furigana from its audio clip: it measures which
+transcriber or reading check gets the reading the speaker used. Its corpus is a subs2srs export
+of one show in `evals/furigana_audio/` of the test data checkout, not notes: the picking reads
+the TSV, and the picked cards' clips are copied there from the subs2srs output on the machine
+that has it (`furigana_audio_copy.py`). The export's Japanese closed captions have speaker
+labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), which `furigana_audio`
+strips or keeps; the op will need the same cleaning.
+
 ## Tests and types
 
 - `test/` (about 70 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
