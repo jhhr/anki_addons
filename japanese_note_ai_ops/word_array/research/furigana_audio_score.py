@@ -14,7 +14,9 @@ There are no hand labels yet, so each word is scored against what is known of it
   so a model disagreeing with it there is mostly the model's error, and a review a note would
   get for nothing.
 
-A transcript is compared with the line as pronounced. Both become katakana morae: a long
+A transcript is compared with the line as pronounced; one in ordinary text (anime-whisper's)
+is first read as Sudachi reads it, so it tells a word's reading only where the model wrote
+the word in kana or in other kanji than the caption's. Both become katakana morae: a long
 vowel mark is the vowel it lengthens, は/へ/を as particles are ワ/エ/オ, ヂ/ヅ are ジ/ズ. Then
 they are aligned by edit distance, with a cheap step for the spellings of one sound (オウ and
 オー, エイ and エー, a dropped っ or long vowel), and each word gets the stretch of the
@@ -46,10 +48,10 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import furigana_audio as fa
-from furigana_audio_run import RUNS
+from furigana_audio_run import MODELS, RUNS
 from furigana_audio_select import sudachi_tokenizer
 
 SMALL = "ャュョァィゥェォヮ"
@@ -194,11 +196,25 @@ def hears(readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int) -> dic
     return {key: f <= AGREE and f <= best + 1e-9 for key, f in fits.items()}
 
 
-def heard_text(model: str, text: str) -> str:
+def spoken(mo: Any) -> list[str]:
+    """A morpheme's morae as pronounced: its reading, a particle は/へ/を as ワ/エ/オ."""
+    surface = mo.surface()
+    if mo.part_of_speech()[0] == "助詞" and to_katakana(surface) in PARTICLE_SOUND:
+        return [PARTICLE_SOUND[to_katakana(surface)]]
+    return morae(mo.reading_form())
+
+
+def heard_text(model: str, text: str, tokenize: Callable[[str], Sequence]) -> str:
     """The kana a model's answer gives: Ruby-ASR's ruby text keeps its readings and loses the
-    kanji they read; the kana models' answers are kana already, marks aside."""
-    if model == "ruby":
-        text = RUBY_RE.sub(lambda m: m.group(1), text)
+    kanji they read; the kana models' answers are kana already, marks aside. Ordinary text is
+    read as Sudachi reads it, which says nothing of a word's reading where the model wrote the
+    caption's kanji, and something where it wrote kana or other kanji (a name it does not
+    know, a word the caption does not have)."""
+    writes = MODELS[model].writes if model in MODELS else "kana"
+    if writes == "ruby":
+        return RUBY_RE.sub(lambda m: m.group(1), text)
+    if writes == "text":
+        return "".join(m for mo in tokenize(text) for m in spoken(mo))
     return text
 
 
@@ -259,11 +275,7 @@ def reference(
                     ref.extend(got)
                     owner.extend([len(words) - 1] * len(got))
                 continue
-            surface = mo.surface()
-            if mo.part_of_speech()[0] == "助詞" and to_katakana(surface) in PARTICLE_SOUND:
-                got = [PARTICLE_SOUND[to_katakana(surface)]]
-            else:
-                got = morae(mo.reading_form())
+            got = spoken(mo)
             ref.extend(got)
             owner.extend([-1] * len(got))
     return ref, owner, words
@@ -275,7 +287,7 @@ def score_card(
     """The card's words with what the model heard for each, the alignment's cost and the
     number of reference morae."""
     ref, owner, words = reference(card, tokenize)
-    hyp = morae(heard_text(model, text))
+    hyp = morae(heard_text(model, text, tokenize))
     cost, pairs = align(ref, hyp)
     clean = cost <= MISMATCH * max(len(ref), 1)
     spans: dict[int, list[int]] = defaultdict(list)

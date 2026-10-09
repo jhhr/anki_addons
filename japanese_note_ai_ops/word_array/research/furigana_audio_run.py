@@ -70,6 +70,8 @@ class Model(NamedTuple):
     # The repo whose generation config to use, for a fine-tune that ships none: without one
     # generate() cannot turn language="ja" into its token
     generation_config: Optional[str] = None
+    # What its answer is: "kana", "ruby" (漢字[かんじ]) or "text", with kanji as usually written
+    writes: str = "kana"
 
 
 MODELS = {
@@ -85,9 +87,11 @@ MODELS = {
         generation_config="openai/whisper-large-v3-turbo",
     ),
     "ruby-mora": Model(RUBY_REPO, "ruby-mora", {}),
-    "ruby": Model(RUBY_REPO, "ruby", {}),
+    "ruby": Model(RUBY_REPO, "ruby", {}, writes="ruby"),
     # anime-whisper's own evaluation decoded with this against Whisper's repetition loops
-    "anime-whisper": Model("litagin/anime-whisper", "whisper", {"no_repeat_ngram_size": 5}),
+    "anime-whisper": Model(
+        "litagin/anime-whisper", "whisper", {"no_repeat_ngram_size": 5}, writes="text"
+    ),
 }
 
 # Audio in, text out

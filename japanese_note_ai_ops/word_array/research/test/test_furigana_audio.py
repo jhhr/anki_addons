@@ -268,10 +268,6 @@ class CopyTest(unittest.TestCase):
             self.assertEqual((dest / "b.opus").read_bytes(), b"old")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ScoreTest(unittest.TestCase):
     """The comparison of a transcript with a reading, in morae as pronounced."""
 
@@ -301,8 +297,16 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual([hyp[j] for j in pairs[2:5] if j is not None], ["イ", "ン", "ファ"])
 
     def test_ruby_answers_keep_their_readings(self):
-        self.assertEqual(score.heard_text("ruby", "七[なな]年間[ねんかん]で"), "ななねんかんで")
-        self.assertEqual(score.heard_text("kana-whisper", "ナナネン"), "ナナネン")
+        heard = score.heard_text("ruby", "七[なな]年間[ねんかん]で", tokenize)
+        self.assertEqual(heard, "ななねんかんで")
+        self.assertEqual(score.heard_text("kana-whisper", "ナナネン", tokenize), "ナナネン")
+
+    def test_ordinary_text_is_read_as_sudachi_reads_it(self):
+        # the kanji give Sudachi's reading back; a name written in kana gives the name's
+        heard = score.heard_text("anime-whisper", "猫猫は薬", tokenize)
+        self.assertEqual(heard, "ネコネコワクスリ")
+        heard = score.heard_text("anime-whisper", "マオマオは薬", tokenize)
+        self.assertEqual(heard, "マオマオワクスリ")
 
 
 class CombineTest(unittest.TestCase):
@@ -373,3 +377,7 @@ class FoldTest(unittest.TestCase):
                 run_script.fold(out, part)
             self.assertEqual([r["id"] for r in fa.read_jsonl(out)], ["a", "b", "c"])
             self.assertFalse(part.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
