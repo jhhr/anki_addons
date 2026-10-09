@@ -188,13 +188,22 @@ def fit(reading: str, hyp: Sequence[str], lo: int, hi: int) -> float:
     return best
 
 
-def hears(readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int) -> dict[str, bool]:
+# A reading other than the draft is written only on a closer fit than the one that confirms
+# the draft: one cheap step at most. 一 of 一期生, heard イッ, fit the イー JMdict also has a
+# long vowel and an edge move away, and was written so three times
+CORRECT = CHEAP
+
+
+def hears(
+    readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int, strict: Iterable[str] = ()
+) -> dict[str, bool]:
     """For each named reading of a word, whether the transcript holds it there: within AGREE,
-    and no further than the reading that fits best, since a draft read ばあ fits inside the
-    ババア heard for ばばあ."""
+    or CORRECT for the `strict` ones, and no further than the reading that fits best, since a
+    draft read ばあ fits inside the ババア heard for ばばあ."""
     fits = {key: fit(reading, hyp, lo, hi) for key, reading in readings.items()}
     best = min(fits.values())
-    return {key: f <= AGREE and f <= best + 1e-9 for key, f in fits.items()}
+    limit = {key: CORRECT if key in strict else AGREE for key in readings}
+    return {key: f <= limit[key] + 1e-9 and f <= best + 1e-9 for key, f in fits.items()}
 
 
 def spoken(mo: Any) -> list[str]:
@@ -353,7 +362,9 @@ def score_card(
             # Sudachi had no reading for one of its kanji (苓 of 翠苓), so the draft is none
             # the op could write, however well its kana fit
             del choices["draft"]
-        result.op_verdicts = {"draft": False, **(hears(choices, hyp, lo, hi) if choices else {})}
+        others = [key for key in choices if key != "draft"]
+        heard = hears(choices, hyp, lo, hi, strict=others) if choices else {}
+        result.op_verdicts = {"draft": False, **heard}
     return words, cost, len(ref)
 
 

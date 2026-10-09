@@ -443,6 +443,13 @@ class HearsTest(unittest.TestCase):
         verdicts = score.hears({"draft": "ばあ", "caption": "ばばあ"}, hyp, 0, len(hyp))
         self.assertEqual(verdicts, {"draft": False, "caption": True})
 
+    def test_a_correction_needs_a_closer_fit_than_the_draft(self):
+        # イッ is a long vowel and an edge move from イー: close enough to confirm a draft read
+        # so, not to write it instead of one
+        hyp = score.morae("イッ")
+        self.assertEqual(score.hears({"draft": "いー"}, hyp, 0, 2), {"draft": True})
+        self.assertEqual(score.hears({"x": "いー"}, hyp, 0, 2, strict=["x"]), {"x": False})
+
     def test_a_reading_may_move_an_edge_by_a_mora(self):
         # the alignment gave 猫猫 only オマオ of the マオマオ heard
         hyp = score.morae("ノマオマオガ")
