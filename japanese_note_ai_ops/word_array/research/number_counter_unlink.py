@@ -63,6 +63,18 @@ id. `--revert` puts the arrays back and no note: a word whose note is
 gone is put back to `["match"]` by the next `match_words_to_notes` run
 (`match_targets.unlink_missing_notes`), which then makes the note again.
 
+    py -3.10 word_array/research/number_counter_unlink.py --restore [--ask]   # list
+    py -3.10 word_array/research/number_counter_unlink.py --restore --apply
+
+`--restore` is for a change of the judge's rules after a run, which has happened twice: 一杯
+was to keep its note as a glass too, then every count with a second meaning was. It asks the
+judge again, under the rules as they are now, about each element the undo file says a run
+turned to `["dontmatch"]` and that still is one, and gives back the match_data it had where
+the answer is now `match`. An element whose note the run deleted goes to `["match"]`
+instead, for `match_words_to_notes` to make the note again. The undo file is kept in step, so
+`--revert` still works on what is left. Report
+`output/number_counter_unlink_restore_report.txt`.
+
 Report `output/number_counter_unlink_report.txt`.
 """
 
@@ -85,6 +97,7 @@ judge = load("judge")
 match_flags = load("match_flags")
 
 REPORT = ADDON_ROOT / "output" / "number_counter_unlink_report.txt"
+RESTORE_REPORT = ADDON_ROOT / "output" / "number_counter_unlink_restore_report.txt"
 ANSWERS = ADDON_ROOT / "output" / "number_counter_unlink_answers.jsonl"
 UNDO = ADDON_ROOT / "output" / "number_counter_unlink_undo.jsonl"
 DELETED = ADDON_ROOT / "output" / "number_counter_unlink_deleted.jsonl"
@@ -498,6 +511,147 @@ def revert(client, undo: Path) -> tuple:
     return reverted, refused
 
 
+# --- putting links back after the rules changed -------------------------------------------
+
+
+def _field(info: dict) -> str:
+    return info.get("fields", {}).get(ARRAY_FIELD, {}).get("value", "") or ""
+
+
+def _links_a_note(match_data: list) -> bool:
+    """Whether the match_data names a note, a placeholder's negative id included."""
+    return bool(match_data) and isinstance(match_data[0], int)
+
+
+def turned_words(entries: list, infos: list) -> tuple:
+    """What an earlier run turned to dontmatch, as Anki holds it now: `[(Word, the match_data
+    it had)]` for each such element that still is `["dontmatch"]`, `{note id: (field text,
+    decoded array)}` of the notes those words are elements of, and why an element is skipped.
+
+    An element is found by its place in the array (`iter_words` order) and must still be the
+    same word: an array regenerated since is left alone."""
+    live = {info["noteId"]: _field(info) for info in infos if info}
+    turned, arrays, skipped = [], {}, []
+    for entry in entries:
+        nid = entry["nid"]
+        before = match_flags.decode_word_array(entry["before"]) or []
+        after = match_flags.decode_word_array(entry["after"]) or []
+        took = {
+            index: b[4]
+            for index, ((_, b), (_, a)) in enumerate(
+                zip(match_flags.iter_words(before), match_flags.iter_words(after))
+            )
+            if b[4] != a[4] and a[4] == [match_flags.DONT_MATCH]
+        }
+        if not took:
+            continue
+        if nid not in live:
+            skipped.append("nid %d: the note is gone" % nid)
+            continue
+        if nid not in arrays:
+            array = match_flags.decode_word_array(live[nid]) if live[nid].strip() else None
+            if not array:
+                skipped.append("nid %d: %s holds no word array now" % (nid, ARRAY_FIELD))
+                continue
+            arrays[nid] = (live[nid], array)
+        words = list(_walk(arrays[nid][1]))
+        was = [elem for _, elem in match_flags.iter_words(before)]
+        for index, data in sorted(took.items()):
+            same = index < len(words) and words[index][0][2:4] == was[index][2:4]
+            if not same or words[index][0][4] != [match_flags.DONT_MATCH]:
+                skipped.append(
+                    "nid %d: %s is not as the run left it" % (nid, was[index][2])
+                )
+                continue
+            elem, parents, sentence = words[index]
+            group = judge.rule_group(elem, parents)
+            prompt = judge.word_prompt(**judge.word_inputs(elem, sentence, parents, group))
+            turned.append((Word(nid, elem, prompt, sentence, None), data))
+    return turned, arrays, skipped
+
+
+def plan_restore(turned: list, answers: dict, model: str) -> tuple:
+    """The turned words the judge matches under the rules as they are now, with the
+    match_data to give back; those it still turns down; and those with no answer yet."""
+    back, stay, unasked = [], [], []
+    for word, data in turned:
+        answer = decision(word, answers, model)
+        if answer == match_flags.MATCH:
+            back.append((word, data))
+        elif answer == match_flags.DONT_MATCH:
+            stay.append(word)
+        else:
+            unasked.append(word)
+    return back, stay, unasked
+
+
+def restore(client, entries: list, arrays: dict, back: list, undo: Optional[Path]) -> tuple:
+    """Gives the words in `back` their links again, in the live arrays of `arrays`; a word
+    whose note is gone goes to `["match"]`, for match_words_to_notes to find or make its
+    note. Written only with `undo`, whose entries then follow what Anki holds, so that
+    `--revert` still knows the notes. How many arrays, what each word went back to, and what
+    did not land."""
+    linked = sorted({data[0] for _, data in back if _links_a_note(data)})
+    found = client.notes_info(linked) if linked else []
+    gone = {nid for nid, info in zip(linked, found) if not info}
+    put = []
+    for word, data in back:
+        missing = _links_a_note(data) and data[0] in gone
+        word.elem[4] = [match_flags.MATCH] if missing else list(data)
+        put.append((word, word.elem[4]))
+    texts = {
+        nid: (arrays[nid][0], match_flags.format_word_array(arrays[nid][1]))
+        for nid in sorted({word.nid for word, _ in back})
+    }
+    if undo is None:
+        return len(texts), put, []
+    for nid, (_, new) in texts.items():
+        client.update_note_fields(nid, {ARRAY_FIELD: new})
+    landed = {info["noteId"]: _field(info) for info in client.notes_info(list(texts)) if info}
+    failed = [
+        "nid %d: the write did not land; is the note open in an editor?" % nid
+        for nid, (_, new) in texts.items()
+        if landed.get(nid) != new
+    ]
+    kept = []
+    for entry in entries:
+        old, new = texts.get(entry["nid"], (None, None))
+        if landed.get(entry["nid"]) == new and entry["after"] == old:
+            # By the arrays, not the text: a field is written out anew, laid out as
+            # format_word_array lays it out, which the text it had may not have been
+            if arrays[entry["nid"]][1] == match_flags.decode_word_array(entry["before"]):
+                continue  # all of it is back: nothing left to revert
+            entry = {**entry, "after": new}
+        kept.append(entry)
+    tmp = undo.with_name(undo.name + ".tmp")
+    tmp.write_text(
+        "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in kept), encoding="utf-8"
+    )
+    tmp.replace(undo)
+    return len(texts) - len(failed), put, failed
+
+
+def restore_report(put: list, stay: list, unasked: list, skipped: list) -> list:
+    rematch = [word for word, data in put if data == [match_flags.MATCH]]
+    lines = [
+        "%d words get their link back, %d of them as [\"match\"] because their note is gone;"
+        " %d stay dontmatch." % (len(put), len(rematch), len(stay))
+    ]
+    if unasked:
+        lines.append("%d words have no answer yet: rerun with --ask." % len(unasked))
+    for title, words in (
+        ("back to their note, by word", [w for w, d in put if d != [match_flags.MATCH]]),
+        ('back to ["match"], their note is gone', rematch),
+        ("still dontmatch, by word", stay),
+        ("no answer yet", unasked),
+    ):
+        if words:
+            lines += ["", "--- %s ---" % title] + ["    %s" % w for w in _by_word(words)]
+    if skipped:
+        lines += ["", "--- skipped ---"] + ["    %s" % line for line in skipped]
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fetch", action="store_true", help="re-dump the notes over AnkiConnect")
@@ -508,16 +662,47 @@ def main() -> int:
     parser.add_argument("--undo", type=Path, default=UNDO)
     parser.add_argument("--deleted", type=Path, default=DELETED)
     parser.add_argument("--anki-connect", default=anki_connect.URL)
+    parser.add_argument(
+        "--restore", action="store_true", help="put back what the rules as they are now match"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--revert", action="store_true")
     args = parser.parse_args()
+    if args.restore and args.revert:
+        parser.error("--restore puts some links back, --revert all of them: one or the other")
 
     client = anki_connect.AnkiConnect(args.anki_connect, timeout=300)
     try:
         if args.revert:
             reverted, refused = revert(client, args.undo)
             print("\n".join(refused + ["reverted %d word arrays" % reverted]))
+            return 0
+        if args.restore:
+            entries = read_jsonl(args.undo)
+            nids = sorted({entry["nid"] for entry in entries})
+            infos = client.notes_info(nids) if nids else []
+            turned, arrays, skipped = turned_words(entries, infos)
+            op, _, _, config = load_judge()
+            model = args.model or op.judge_model(config)
+            back, stay, unasked = plan_restore(turned, read_answers(args.answers), model)
+            if args.ask and unasked:
+                prompts = sorted({word.prompt for word in unasked})
+                print("asking %s about %d words" % (model, len(prompts)), file=sys.stderr)
+                answered, failed = ask(prompts, model, args.workers, args.answers)
+                print("%d answered, %d failed" % (answered, failed), file=sys.stderr)
+                back, stay, unasked = plan_restore(turned, read_answers(args.answers), model)
+            undo = args.undo if args.apply else None
+            written, put, failed_writes = restore(client, entries, arrays, back, undo)
+            lines = restore_report(put, stay, unasked, skipped + failed_writes)
+            RESTORE_REPORT.parent.mkdir(parents=True, exist_ok=True)
+            RESTORE_REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            print(lines[0])
+            print("report in %s" % RESTORE_REPORT)
+            if args.apply:
+                print("rewrote %d word arrays" % written)
+            else:
+                print("check it, then rerun with --restore --apply")
             return 0
         if args.fetch:
             print("%d notes -> %s" % (vocab_dupes.fetch(), vocab_dupes.DUMP))

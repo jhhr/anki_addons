@@ -417,6 +417,92 @@ class TestWriting(unittest.TestCase):
         self.assertEqual(refused, ["nid 2: the note is gone, nothing to put back"])
         self.assertEqual(self.undo.read_text("utf-8"), "")
 
+    def run_restore(self, anki, decisions: dict, apply: bool = True):
+        """`--restore` on what the undo file holds, the judge now answering `decisions` by
+        word."""
+        entries = unlink.read_jsonl(self.undo)
+        nids = sorted({entry["nid"] for entry in entries})
+        turned, arrays, skipped = unlink.turned_words(entries, anki.notes_info(nids))
+        answers = {
+            unlink.prompt_key(MODEL, word.prompt): decisions[word.elem[2]]
+            for word, _ in turned
+            if word.elem[2] in decisions
+        }
+        back, stay, unasked = unlink.plan_restore(turned, answers, MODEL)
+        undo = self.undo if apply else None
+        written, put, failed = unlink.restore(anki, entries, arrays, back, undo)
+        return written, put, stay, unasked, skipped + failed
+
+    def test_restore_gives_back_the_link_the_rules_now_match_and_nothing_else(self):
+        rows = [
+            note(1, counted("一杯", [50, 4]), counted("三階", [60, 5]), word("noun", "水", [4, 5])),
+            note(50, word("noun", "杯", [2, 5])),
+            note(60, word("noun", "階", [2, 5])),
+        ]
+        anki, _ = self.run_apply(rows, {"一杯": "dontmatch", "三階": "dontmatch"})
+        self.assertEqual(states(anki.array(1))["一杯"], ["dontmatch"])
+
+        written, put, stay, unasked, problems = self.run_restore(
+            anki, {"一杯": "match", "三階": "dontmatch"}
+        )
+        self.assertEqual((written, unasked, problems), (1, [], []))
+        self.assertEqual([(w.elem[2], data) for w, data in put], [("一杯", [50, 4])])
+        self.assertEqual([w.elem[2] for w in stay], ["三階"])
+        self.assertEqual(
+            states(anki.array(1)),
+            {"一杯": [50, 4], "一": [1, 5], "杯": [2, 5], "三階": ["dontmatch"], "三": [1, 5],
+             "階": [2, 5], "水": [4, 5]},
+        )
+        # the undo file follows, so a revert still puts the rest back
+        reverted, refused = unlink.revert(anki, self.undo)
+        self.assertEqual((reverted, refused), (1, []))
+        self.assertEqual(states(anki.array(1))["三階"], [60, 5])
+
+    def test_restore_without_apply_writes_nothing(self):
+        rows = [note(1, counted("一杯", [50, 4])), note(50, word("noun", "杯", [2, 5]))]
+        anki, _ = self.run_apply(rows, {"一杯": "dontmatch"})
+        undo_before = self.undo.read_text("utf-8")
+        written, put, _, _, _ = self.run_restore(anki, {"一杯": "match"}, apply=False)
+        self.assertEqual((written, len(put)), (1, 1))
+        self.assertEqual(states(anki.array(1))["一杯"], ["dontmatch"])
+        self.assertEqual(self.undo.read_text("utf-8"), undo_before)
+
+    def test_restore_drops_the_undo_entry_of_an_array_that_is_all_back(self):
+        rows = [note(1, counted("一杯", [50, 4])), note(50, word("noun", "杯", [2, 5]))]
+        anki, _ = self.run_apply(rows, {"一杯": "dontmatch"})
+        self.run_restore(anki, {"一杯": "match"})
+        self.assertEqual(anki.array(1), json.loads(rows[0][unlink.ARRAY_FIELD]))
+        self.assertEqual(self.undo.read_text("utf-8"), "")
+
+    def test_restore_puts_a_word_whose_note_was_deleted_back_to_match(self):
+        # The run deleted the note it had added for one o'clock; the next match run makes it
+        rows = [
+            note(1, counted("一時", [50, 5])),
+            note(50, counted("一時", [50, 5]), tags=ADDED),
+        ]
+        anki, (_, gone, _) = self.run_apply(rows, {"一時": "dontmatch"})
+        self.assertEqual(gone, 1)
+        written, put, _, _, problems = self.run_restore(anki, {"一時": "match"})
+        self.assertEqual((written, problems), (1, []))
+        self.assertEqual(states(anki.array(1))["一時"], ["match"])
+
+    def test_restore_leaves_an_element_that_changed_since(self):
+        rows = [note(1, counted("一杯", [50, 4])), note(50, word("noun", "杯", [2, 5]))]
+        anki, _ = self.run_apply(rows, {"一杯": "dontmatch"})
+        # judged by hand since: no longer the dontmatch the run left
+        anki.update_note_fields(1, {unlink.ARRAY_FIELD: array(counted("一杯", ["match"]))})
+        written, put, _, _, problems = self.run_restore(anki, {"一杯": "match"})
+        self.assertEqual((written, put), (0, []))
+        self.assertEqual(problems, ["nid 1: 一杯 is not as the run left it"])
+        self.assertEqual(states(anki.array(1))["一杯"], ["match"])
+
+    def test_restore_asks_about_a_word_with_no_answer_under_the_new_rules(self):
+        rows = [note(1, counted("一杯", [50, 4])), note(50, word("noun", "杯", [2, 5]))]
+        anki, _ = self.run_apply(rows, {"一杯": "dontmatch"})
+        written, put, stay, unasked, _ = self.run_restore(anki, {})
+        self.assertEqual((written, put, stay), (0, [], []))
+        self.assertEqual([w.elem[2] for w in unasked], ["一杯"])
+
     def test_revert_leaves_an_array_that_changed_since(self):
         rows = [note(1, counted("三階", [50, 5])), note(50, word("noun", "階", [2, 5]))]
         anki, _ = self.run_apply(rows, {"三階": "dontmatch"})
