@@ -7,6 +7,7 @@ suite runs without SudachiPy or the downloaded dictionaries."""
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from collections import Counter
 from pathlib import Path
 
@@ -301,3 +302,45 @@ class ScoreTest(unittest.TestCase):
     def test_ruby_answers_keep_their_readings(self):
         self.assertEqual(score.heard_text("ruby", "七[なな]年間[ねんかん]で"), "ななねんかんで")
         self.assertEqual(score.heard_text("kana-whisper", "ナナネン"), "ナナネン")
+
+
+class CombineTest(unittest.TestCase):
+    """Accepting a reading only where every model hears it."""
+
+    def word(self, start, heard, draft, gold=None, kinds=(), clean=True, **verdicts):
+        return {
+            "id": "c1",
+            "line": 0,
+            "start": start,
+            "surface": "x",
+            "sudachi": "ほか",
+            "caption": gold,
+            "kinds": list(kinds),
+            "heard": heard,
+            "clean": clean,
+            "gold": gold,
+            "gold_is_draft": False if gold else None,
+            "hears": {"draft": draft, **verdicts},
+        }
+
+    def test_the_outcomes_of_each_kind_of_word(self):
+        a = [
+            self.word(0, "ほか", True, gold="た", caption=False),  # both hear the wrong draft
+            self.word(1, "た", False, gold="た", caption=True),  # both hear the caption's
+            self.word(2, "ほか", True),  # an ordinary word both confirm
+            self.word(3, "なに", False),  # both hear one other reading
+            self.word(4, "なに", False),  # the models disagree
+            self.word(5, "ほか", True, clean=False),  # a card that does not match its line
+        ]
+        b = [dict(w) for w in a]
+        b[4]["heard"] = "なん"
+        with tempfile.TemporaryDirectory() as d:
+            runs = Path(d)
+            fa.write_jsonl(runs / "a.words.jsonl", a)
+            fa.write_jsonl(runs / "b.words.jsonl", b)
+            with unittest.mock.patch.object(score, "RUNS", runs):
+                text = score.combine(["a", "b"])
+        self.assertIn("5 words of 1 cards", text)
+        self.assertIn("accepted wrongly 50.0%, corrected 50.0%, review 0.0%", text)
+        self.assertIn("ordinary                   3 words", text)
+        self.assertIn("accepted 33.3%, one other reading 33.3%, review 33.3%", text)
