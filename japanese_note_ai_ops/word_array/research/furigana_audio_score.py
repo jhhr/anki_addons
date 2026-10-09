@@ -33,12 +33,12 @@ off by more than `MISMATCH` are counted apart (`clean` and `all` in the table).
 
 Writes `runs/<model>.words.jsonl` (each word with what the model heard, for the labelling) and
 prints a table per model. `--combine` reads those files back and says what accepting a reading
-only where every one of the given models hears it would do, which is the plan's rule: the
-words that would go to review, and how often the models agree on a draft the captions show to
-be wrong, the error that rule lets through.
+only where every one of the given models hears it would do, which is the plan's rule, or where
+`--quorum` of them do: the words that would go to review, and how often the models agree on a
+draft the captions show to be wrong, the error that rule lets through.
 
     python word_array/research/furigana_audio_score.py [MODEL ...]
-    python word_array/research/furigana_audio_score.py --combine MODEL MODEL [...]
+    python word_array/research/furigana_audio_score.py --combine MODEL MODEL [...] [--quorum K]
 """
 
 from __future__ import annotations
@@ -395,16 +395,21 @@ def report(
     return "\n".join(lines)
 
 
-def combine(models: Sequence[str]) -> str:
-    """What accepting a reading only where every model hears it does, over the words of the
-    cards whose transcript matches the line in every run.
+def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
+    """What accepting a reading where `quorum` of the models hear it (all, by default) does,
+    over the words of the cards whose transcript matches the line in every run.
 
     A word whose reading is known (the line's caption, or the show's for a name) and differs
-    from Sudachi's is accepted wrongly when every model hears Sudachi's, and corrected when
-    every model hears the known one. Any other word is accepted when every model hears
-    Sudachi's; where they all hear one other reading, the op would still have to license it
-    (a JMdict reading, a name the English line gives), and where they disagree it goes to
-    review."""
+    from Sudachi's is accepted wrongly when a quorum hears Sudachi's, and corrected when a
+    quorum hears the known one. Any other word is accepted when a quorum hears Sudachi's;
+    where a quorum hears one other reading, the op would still have to license it (a JMdict
+    reading, a name the English line gives), and the rest goes to review. A word for which a
+    quorum hears each of two readings, as with one model of two, goes to review too.
+
+    The random stratum's cards are the ones like a show's other lines, so the share of them
+    with a word to resolve is the review an op would make; the other strata were picked for
+    their hard words."""
+    k = quorum or len(models)
     tables = []
     for m in models:
         rows = fa.read_jsonl(RUNS / f"{m}.words.jsonl")
@@ -413,7 +418,7 @@ def combine(models: Sequence[str]) -> str:
         tables.append({(r["id"], r["line"], r["start"]): r for r in rows if r["clean"]})
     keys = sorted(set.intersection(*(set(t) for t in tables)))
     counts: dict[str, int] = defaultdict(int)
-    review_cards: set[str] = set()
+    to_resolve: list[tuple] = []
     for key in keys:
         rows = [t[key] for t in tables]
         first = rows[0]
@@ -421,30 +426,33 @@ def combine(models: Sequence[str]) -> str:
         gold_key = (
             "caption" if first["caption"] else "show_name" if "show_name" in hears[0] else None
         )
-        confirm = all(h["draft"] for h in hears)
+        drafts = sum(h["draft"] for h in hears)
         if gold_key and all(gold_key in h for h in hears) and first["gold_is_draft"] is False:
             group = "known, Sudachi wrong"
-            if confirm:
-                counts[f"{group}: accepted wrongly"] += 1
-            elif all(h[gold_key] for h in hears):
-                counts[f"{group}: corrected"] += 1
+            golds = sum(h[gold_key] for h in hears)
+            if drafts >= k and golds < k:
+                outcome = "accepted wrongly"
+            elif golds >= k and drafts < k:
+                outcome = "corrected"
             else:
-                counts[f"{group}: review"] += 1
-                review_cards.add(first["id"])
-            counts[group] += 1
-            continue
-        group = "ordinary" if not first["kinds"] else "other hard"
-        counts[group] += 1
-        if confirm:
-            counts[f"{group}: accepted"] += 1
-        elif all(agrees(rows[0]["heard"], r["heard"]) for r in rows[1:]) and rows[0]["heard"]:
-            counts[f"{group}: one other reading"] += 1
-            review_cards.add(first["id"])
+                outcome = "review"
+                to_resolve.append(key)
         else:
-            counts[f"{group}: review"] += 1
-            review_cards.add(first["id"])
-    cards = {k[0] for k in keys}
-    lines = [f"== {' + '.join(models)}: {len(keys)} words of {len(cards)} cards clean in every run"]
+            group = "ordinary" if not first["kinds"] else "other hard"
+            others = [r["heard"] for r, h in zip(rows, hears) if not h["draft"] and r["heard"]]
+            other = any(sum(agrees(a, b) for b in others) >= k for a in others)
+            if drafts >= k and not other:
+                outcome = "accepted"
+            else:
+                outcome = "one other reading" if other and drafts < k else "review"
+                to_resolve.append(key)
+        counts[group] += 1
+        counts[f"{group}: {outcome}"] += 1
+    rule = "every model" if k == len(models) else f"{k} of {len(models)}"
+    lines = [
+        f"== {' + '.join(models)}, {rule}: {len(keys)} words of"
+        f" {len({key[0] for key in keys})} cards clean in every run"
+    ]
     for group, outcomes in (
         ("known, Sudachi wrong", ("accepted wrongly", "corrected", "review")),
         ("ordinary", ("accepted", "one other reading", "review")),
@@ -453,10 +461,18 @@ def combine(models: Sequence[str]) -> str:
         total = counts[group]
         parts = [f"{o} {100 * counts[f'{group}: {o}'] / max(total, 1):.1f}%" for o in outcomes]
         lines.append(f"  {group:<22} {total:>5} words: " + ", ".join(parts))
-    lines.append(
-        f"  cards with a word to resolve: {len(review_cards)} of {len(cards)}"
-        f" ({100 * len(review_cards) / max(len(cards), 1):.0f}%)"
-    )
+    stratum = {c["id"]: c["stratum"] for c in fa.read_jsonl(fa.SELECTION)}
+    for name, pick in (("all", None), ("random", "random")):
+        mine = [key for key in keys if pick in (None, stratum.get(key[0]))]
+        cards = {key[0] for key in mine}
+        resolve = [key for key in to_resolve if key[0] in cards]
+        flagged = {key[0] for key in resolve}
+        lines.append(
+            f"  {name + ' cards:':<14} {len(flagged)} of {len(cards)}"
+            f" ({100 * len(flagged) / max(len(cards), 1):.0f}%) have a word to resolve,"
+            f" {len(resolve)} of {len(mine)} words"
+            f" ({100 * len(resolve) / max(len(mine), 1):.1f}%)"
+        )
     return "\n".join(lines)
 
 
@@ -464,9 +480,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("models", nargs="*", help="the runs to score (default: every run there is)")
     ap.add_argument("--combine", action="store_true", help="the models' runs together")
+    ap.add_argument(
+        "--quorum", type=int, help="with --combine: how many models must hear a reading (all)"
+    )
     args = ap.parse_args(argv)
     if args.combine:
-        print(combine(args.models))
+        print(combine(args.models, args.quorum))
         return 0
     models = args.models or sorted(
         p.stem for p in RUNS.glob("*.jsonl") if not p.stem.endswith(".words")

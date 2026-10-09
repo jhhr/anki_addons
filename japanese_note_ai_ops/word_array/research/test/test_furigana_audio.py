@@ -339,16 +339,43 @@ class CombineTest(unittest.TestCase):
         ]
         b = [dict(w) for w in a]
         b[4]["heard"] = "なん"
-        with tempfile.TemporaryDirectory() as d:
-            runs = Path(d)
-            fa.write_jsonl(runs / "a.words.jsonl", a)
-            fa.write_jsonl(runs / "b.words.jsonl", b)
-            with unittest.mock.patch.object(score, "RUNS", runs):
-                text = score.combine(["a", "b"])
+        text = self.combine({"a": a, "b": b})
         self.assertIn("5 words of 1 cards", text)
         self.assertIn("accepted wrongly 50.0%, corrected 50.0%, review 0.0%", text)
         self.assertIn("ordinary                   3 words", text)
         self.assertIn("accepted 33.3%, one other reading 33.3%, review 33.3%", text)
+        # the card is of the random stratum: the line an op's review rate is read from
+        self.assertIn("1 of 1 (100%) have a word to resolve, 2 of 5 words (40.0%)", text)
+
+    def test_a_quorum_of_the_models(self):
+        a = [
+            self.word(0, "ほか", True),  # two of three hear the draft
+            self.word(1, "た", False, gold="た", caption=True),  # two of three the caption's
+        ]
+        b = [dict(w) for w in a]
+        c = [
+            self.word(0, "なに", False),
+            self.word(1, "ほか", True, gold="た", caption=False),
+        ]
+        runs = {"a": a, "b": b, "c": c}
+        every = self.combine(runs)
+        self.assertIn("accepted wrongly 0.0%, corrected 0.0%, review 100.0%", every)
+        self.assertIn("accepted 0.0%, one other reading 0.0%, review 100.0%", every)
+        two = self.combine(runs, quorum=2)
+        self.assertIn("a + b + c, 2 of 3", two)
+        self.assertIn("accepted wrongly 0.0%, corrected 100.0%, review 0.0%", two)
+        self.assertIn("accepted 100.0%, one other reading 0.0%, review 0.0%", two)
+
+    def combine(self, runs, quorum=None):
+        with tempfile.TemporaryDirectory() as d:
+            here = Path(d)
+            for name, words in runs.items():
+                fa.write_jsonl(here / f"{name}.words.jsonl", words)
+            selection = here / "selection.jsonl"
+            fa.write_jsonl(selection, [{"id": "c1", "stratum": "random"}])
+            with unittest.mock.patch.object(score, "RUNS", here):
+                with unittest.mock.patch.object(fa, "SELECTION", selection):
+                    return score.combine(list(runs), quorum)
 
 
 class HearsTest(unittest.TestCase):
