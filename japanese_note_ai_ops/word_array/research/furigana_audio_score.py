@@ -276,14 +276,17 @@ def score_card(
     return words, cost, len(ref)
 
 
-def neighbours(owner: Sequence[int], pairs: Sequence[Optional[int]], k: int, n: int):
+def neighbours(
+    owner: Sequence[int], pairs: Sequence[Optional[int]], k: int, n: int
+) -> tuple[int, int]:
     """The stretch of the transcript between the last mora aligned before word `k` and the
     first aligned after it."""
     mine = [i for i, o in enumerate(owner) if o == k]
     if not mine:
         return 0, 0
-    before = [pairs[i] for i in range(mine[0]) if pairs[i] is not None]
-    after = [pairs[i] for i in range(mine[-1] + 1, len(owner)) if pairs[i] is not None]
+    aligned = [(i, j) for i, j in enumerate(pairs) if j is not None]
+    before = [j for i, j in aligned if i < mine[0]]
+    after = [j for i, j in aligned if i > mine[-1]]
     lo = before[-1] + 1 if before else 0
     hi = after[0] if after else n
     return lo, max(lo, hi)
