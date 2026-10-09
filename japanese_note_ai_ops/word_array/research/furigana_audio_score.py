@@ -18,8 +18,14 @@ A transcript is compared with the line as pronounced. Both become katakana morae
 vowel mark is the vowel it lengthens, は/へ/を as particles are ワ/エ/オ, ヂ/ヅ are ジ/ズ. Then
 they are aligned by edit distance, with a cheap step for the spellings of one sound (オウ and
 オー, エイ and エー, a dropped っ or long vowel), and each word gets the stretch of the
-transcript that lines up with its reading. A word agrees with a reading when only cheap steps
-separate them.
+transcript that lines up with its reading (`heard`). A word agrees with a reading when the
+transcript between the word's aligned neighbours holds that reading, only cheap steps off: a
+word heard as another reading pulls the alignment's edges about (猫猫 heard オマオ), and every
+reading a word is tested against gets the same leeway.
+
+A card whose transcript is far from its line is mostly not the model's fault: the captions of
+a card can hold text its clip cuts off, or lines spoken over each other. Cards whose morae are
+off by more than `MISMATCH` are counted apart (`clean` and `all` in the table).
 
 Writes `runs/<model>.words.jsonl` (each word with what the model heard, for the labelling) and
 prints a table per model.
@@ -53,6 +59,9 @@ VOWEL_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ"}
 PARTICLE_SOUND = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
 RUBY_RE = re.compile(r"[^\s\[\]]+?\[([^\]]*)\]")
 KINDS = ("name", "caption_word", "ambiguous", "number")
+# A card whose transcript is off its line by more than this share of morae is taken for one
+# whose captions and clip differ
+MISMATCH = 0.35
 # Two readings agree when the steps between them cost no more than this: cheap ones only
 AGREE = 0.45
 CHEAP = 0.2
@@ -151,6 +160,19 @@ def agrees(a: str, b: str) -> bool:
     return align(morae(a), morae(b))[0] <= AGREE
 
 
+def found_in(reading: str, hyp: Sequence[str], lo: int, hi: int) -> bool:
+    """Whether hyp[lo:hi], or a stretch of it a mora shorter or longer at either end, agrees
+    with `reading`."""
+    want = morae(reading)
+    if not want:
+        return False
+    for a in range(max(0, lo - 1), min(len(hyp), lo + 2)):
+        for b in range(max(a + 1, hi - 1), min(len(hyp), hi + 1) + 1):
+            if align(want, hyp[a:b])[0] <= AGREE:
+                return True
+    return False
+
+
 def heard_text(model: str, text: str) -> str:
     """The kana a model's answer gives: Ruby-ASR's ruby text keeps its readings and loses the
     kanji they read; the kana models' answers are kana already, marks aside."""
@@ -166,6 +188,7 @@ class WordResult:
     expected: str  # the reading the line is aligned with: the caption's, else Sudachi's
     heard: str = ""
     verdicts: dict = field(default_factory=dict)
+    clean: bool = True  # the card's transcript is close enough to its line (MISMATCH)
 
     def row(self) -> dict:
         w = self.word
@@ -177,6 +200,7 @@ class WordResult:
             "caption": w["caption"],
             "kinds": w["kinds"],
             "heard": self.heard,
+            "clean": self.clean,
             **self.verdicts,
         }
 
@@ -227,6 +251,7 @@ def score_card(
     ref, owner, words = reference(card, tokenize)
     hyp = morae(heard_text(model, text))
     cost, pairs = align(ref, hyp)
+    clean = cost <= MISMATCH * max(len(ref), 1)
     spans: dict[int, list[int]] = defaultdict(list)
     for i, j in enumerate(pairs):
         if owner[i] >= 0 and j is not None:
@@ -234,14 +259,34 @@ def score_card(
     for k, result in enumerate(words):
         js = spans.get(k)
         result.heard = "".join(hyp[min(js) : max(js) + 1]) if js else ""
+        result.clean = clean
+        lo, hi = neighbours(owner, pairs, k, len(hyp))
         w = result.word
-        result.verdicts["draft"] = agrees(result.heard, w["sudachi"])
+        result.verdicts["draft"] = found_in(w["sudachi"], hyp, lo, hi)
         if w["caption"]:
-            result.verdicts["caption"] = agrees(result.heard, w["caption"])
+            result.verdicts["caption"] = found_in(w["caption"], hyp, lo, hi)
         elif w["surface"] in show:
+            # Judged only where the pick took the word for one: 子 is a clan read シ in one
+            # line, and the child こ everywhere else
             script, reading = show[w["surface"]]
-            result.verdicts[f"show_{script}"] = agrees(result.heard, reading)
+            if (script == "name" and "name" in w["kinds"]) or (
+                script == "word" and "caption_word" in w["kinds"]
+            ):
+                result.verdicts[f"show_{script}"] = found_in(reading, hyp, lo, hi)
     return words, cost, len(ref)
+
+
+def neighbours(owner: Sequence[int], pairs: Sequence[Optional[int]], k: int, n: int):
+    """The stretch of the transcript between the last mora aligned before word `k` and the
+    first aligned after it."""
+    mine = [i for i, o in enumerate(owner) if o == k]
+    if not mine:
+        return 0, 0
+    before = [pairs[i] for i in range(mine[0]) if pairs[i] is not None]
+    after = [pairs[i] for i in range(mine[-1] + 1, len(owner)) if pairs[i] is not None]
+    lo = before[-1] + 1 if before else 0
+    hi = after[0] if after else n
+    return lo, max(lo, hi)
 
 
 def show_readings() -> dict[str, tuple[str, str]]:
@@ -254,11 +299,16 @@ def show_readings() -> dict[str, tuple[str, str]]:
 
 
 def rate(results: Sequence[WordResult], key: str, test: Callable[[WordResult], bool]) -> str:
-    chosen = [r for r in results if test(r) and key in r.verdicts]
-    if not chosen:
-        return "-"
-    hits = sum(r.verdicts[key] for r in chosen)
-    return f"{100 * hits / len(chosen):5.1f}% of {len(chosen)}"
+    """The share of the words `test` picks that agree with the `key` reading: on the cards
+    whose transcript matches their line, then on all."""
+    out = []
+    for only_clean in (True, False):
+        chosen = [
+            r for r in results if test(r) and key in r.verdicts and (r.clean or not only_clean)
+        ]
+        hits = sum(r.verdicts[key] for r in chosen)
+        out.append(f"{100 * hits / len(chosen):5.1f}% of {len(chosen):<4}" if chosen else "-" * 14)
+    return "   ".join(out)
 
 
 def report(
@@ -288,9 +338,12 @@ def report(
     rows += [(f"{name} word", "draft", kind(name), "Sudachi's") for name in KINDS]
     rows.append(("ordinary word", "draft", lambda r: not r.word["kinds"], "Sudachi's"))
     mean = sum(secs) / max(len(secs), 1)
+    cards = {r.card: r.clean for r in results}
     lines = [
         f"== {model}: {len(secs)} cards, {mean:.1f} s a card,"
-        f" morae off {100 * cost / max(ref_len, 1):.1f}% of the line as read"
+        f" morae off {100 * cost / max(ref_len, 1):.1f}% of the line as read;"
+        f" {sum(cards.values())} cards match their line",
+        f"  {'':<36} {'':<19} {'clean cards':<17}   all cards",
     ]
     for label, key, test, whose in rows:
         lines.append(f"  {label:<36} hears {whose:<13} {rate(results, key, test)}")
