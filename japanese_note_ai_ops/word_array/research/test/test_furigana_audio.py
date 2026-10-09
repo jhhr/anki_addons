@@ -450,6 +450,14 @@ class HearsTest(unittest.TestCase):
         self.assertEqual(score.hears({"draft": "いー"}, hyp, 0, 2), {"draft": True})
         self.assertEqual(score.hears({"x": "いー"}, hyp, 0, 2, strict=["x"]), {"x": False})
 
+    def test_a_correction_explains_all_that_was_heard_in_its_place(self):
+        # 匹 of 一匹 heard ピキ: き fits once ピ is dropped, which only the draft may do
+        hyp = score.morae("イッピキ")
+        readings = {"draft": "ひき", "x": "き"}
+        self.assertEqual(score.hears(readings, hyp, 2, 4), {"draft": False, "x": True})
+        verdicts = score.hears(readings, hyp, 2, 4, strict=["x"])
+        self.assertEqual(verdicts, {"draft": False, "x": False})
+
     def test_a_reading_may_move_an_edge_by_a_mora(self):
         # the alignment gave 猫猫 only オマオ of the マオマオ heard
         hyp = score.morae("ノマオマオガ")

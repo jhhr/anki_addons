@@ -174,23 +174,27 @@ def agrees(a: str, b: str) -> bool:
 SHIFT = 0.1
 
 
-def fit(reading: str, hyp: Sequence[str], lo: int, hi: int) -> float:
-    """How far `reading` is from hyp[lo:hi], or from a stretch a mora shorter or longer at
-    either end, each such move costing SHIFT."""
+def fit(reading: str, hyp: Sequence[str], lo: int, hi: int, inward: bool = True) -> float:
+    """How far `reading` is from hyp[lo:hi], or from a stretch a mora longer at either end
+    and, with `inward`, a mora shorter, each such move costing SHIFT."""
     want = morae(reading)
     if not want:
         return float("inf")
     best = float("inf")
-    for a in range(max(0, lo - 1), min(len(hyp), lo + 2)):
-        for b in range(max(a + 1, hi - 1), min(len(hyp), hi + 1) + 1):
+    last_a = lo + 1 if inward else lo
+    first_b = hi - 1 if inward else hi
+    for a in range(max(0, lo - 1), min(len(hyp), last_a + 1)):
+        for b in range(max(a + 1, first_b), min(len(hyp), hi + 1) + 1):
             moved = SHIFT * (abs(a - lo) + abs(b - hi))
             best = min(best, align(want, hyp[a:b])[0] + moved)
     return best
 
 
 # A reading other than the draft is written only on a closer fit than the one that confirms
-# the draft: one cheap step at most. 一 of 一期生, heard イッ, fit the イー JMdict also has a
-# long vowel and an edge move away, and was written so three times
+# the draft: one cheap step at most, and never on a stretch shrunk to fit, which leaves a mora
+# heard in the word's place unexplained. 一 of 一期生, heard イッ, fit the イー JMdict also has
+# a long vowel and an edge move away, and 匹 of 一匹, heard ピキ, its き inside the stretch;
+# each was written so three times
 CORRECT = CHEAP
 
 
@@ -198,9 +202,10 @@ def hears(
     readings: dict[str, str], hyp: Sequence[str], lo: int, hi: int, strict: Iterable[str] = ()
 ) -> dict[str, bool]:
     """For each named reading of a word, whether the transcript holds it there: within AGREE,
-    or CORRECT for the `strict` ones, and no further than the reading that fits best, since a
-    draft read ばあ fits inside the ババア heard for ばばあ."""
-    fits = {key: fit(reading, hyp, lo, hi) for key, reading in readings.items()}
+    or CORRECT on a stretch never shrunk for the `strict` ones, and no further than the
+    reading that fits best, since a draft read ばあ fits inside the ババア heard for ばばあ."""
+    strict = set(strict)
+    fits = {key: fit(r, hyp, lo, hi, inward=key not in strict) for key, r in readings.items()}
     best = min(fits.values())
     limit = {key: CORRECT if key in strict else AGREE for key in readings}
     return {key: f <= limit[key] + 1e-9 and f <= best + 1e-9 for key, f in fits.items()}
