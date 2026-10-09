@@ -309,62 +309,100 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(heard, "マオマオワクスリ")
 
 
-class CombineTest(unittest.TestCase):
-    """Accepting a reading only where every model hears it."""
+class ScoreCardTest(unittest.TestCase):
+    """A card's words, and the readings the op may write for each: the dictionary's and, for a
+    name, the show's."""
 
-    def word(self, start, heard, draft, gold=None, kinds=(), clean=True, **verdicts):
+    def card(self, line, word):
+        return {"id": "c1", "lines": [line], "words": [{"line": 0, "start": 0, **word}]}
+
+    def test_a_reading_the_dictionary_has_for_the_spelling(self):
+        word = {"end": 1, "surface": "他", "sudachi": "ほか", "caption": None}
+        card = self.card("他に", {**word, "kinds": ["ambiguous"]})
+        words, _, _ = score.score_card(
+            card, "タニ", "kana-whisper", tokenize, {}, lambda w: ["た", "ほか"]
+        )
+        self.assertEqual(words[0].op_verdicts, {"draft": False, "た": True})
+
+    def test_the_shows_reading_of_a_name(self):
+        word = {"end": 2, "surface": "猫猫", "sudachi": "ねこねこ", "caption": None}
+        card = self.card("猫猫が", {**word, "kinds": ["name"]})
+        show = {"猫猫": ("name", "まおまお")}
+        words, _, _ = score.score_card(card, "マオマオガ", "kana-whisper", tokenize, show)
+        self.assertEqual(words[0].verdicts, {"draft": False, "show_name": True})
+        self.assertEqual(words[0].op_verdicts, {"draft": False, "まおまお": True})
+        self.assertEqual(words[0].gold, "まおまお")
+
+
+class CombineTest(unittest.TestCase):
+    """What the op would write, accepting a reading where a quorum of the models hear it."""
+
+    def word(self, start, heard, op_hears, gold=None, kinds=(), clean=True):
         return {
             "id": "c1",
             "line": 0,
             "start": start,
-            "surface": "x",
+            "surface": "他",
             "sudachi": "ほか",
             "caption": gold,
             "kinds": list(kinds),
             "heard": heard,
             "clean": clean,
             "gold": gold,
-            "gold_is_draft": False if gold else None,
-            "hears": {"draft": draft, **verdicts},
+            "gold_is_draft": score.agrees(gold, "ほか") if gold else None,
+            "hears": {},
+            "op_hears": op_hears,
         }
 
     def test_the_outcomes_of_each_kind_of_word(self):
+        draft = {"draft": True, "た": False}
+        other = {"draft": False, "た": True}
+        neither = {"draft": False, "た": False}
         a = [
-            self.word(0, "ほか", True, gold="た", caption=False),  # both hear the wrong draft
-            self.word(1, "た", False, gold="た", caption=True),  # both hear the caption's
-            self.word(2, "ほか", True),  # an ordinary word both confirm
-            self.word(3, "なに", False),  # both hear one other reading
-            self.word(4, "なに", False),  # the models disagree
-            self.word(5, "ほか", True, clean=False),  # a card that does not match its line
+            self.word(0, "ホカ", draft, gold="た"),  # both hear the wrong draft
+            self.word(1, "タ", other, gold="た"),  # both hear the caption's, which JMdict has
+            self.word(2, "タ", other, gold="ほか"),  # both hear another reading than the right one
+            self.word(3, "ホカ", draft),  # an ordinary word both confirm
+            self.word(4, "タ", other),  # both hear a reading the op may write instead
+            self.word(5, "ナニ", neither),  # both hear one reading nothing licenses
+            self.word(6, "ナニ", neither),  # the models disagree
+            self.word(7, "ホカ", draft, clean=False),  # a card that does not match its line
         ]
         b = [dict(w) for w in a]
-        b[4]["heard"] = "なん"
+        b[6]["heard"] = "ナン"
         text = self.combine({"a": a, "b": b})
-        self.assertIn("5 words of 1 cards", text)
-        self.assertIn("accepted wrongly 50.0%, corrected 50.0%, review 0.0%", text)
-        self.assertIn("ordinary                   3 words", text)
-        self.assertIn("accepted 33.3%, one other reading 33.3%, review 33.3%", text)
+        self.assertIn("7 words of 1 cards", text)
+        self.assertIn("2 words: right 50.0%, wrong 50.0%, review 0.0%", text)
+        self.assertIn("1 words: right 0.0%, wrong 100.0%, review 0.0%", text)
+        self.assertIn(
+            "4 words: draft 25.0%, other reading 25.0%,"
+            " review 50.0% (25.0% one reading nothing licenses)",
+            text,
+        )
         # the card is of the random stratum: the line an op's review rate is read from
-        self.assertIn("1 of 1 (100%) have a word to resolve, 2 of 5 words (40.0%)", text)
+        self.assertIn("1 of 1 (100%) have a word to review, 2 of 7 words (28.6%)", text)
 
     def test_a_quorum_of_the_models(self):
-        a = [
-            self.word(0, "ほか", True),  # two of three hear the draft
-            self.word(1, "た", False, gold="た", caption=True),  # two of three the caption's
-        ]
+        draft = {"draft": True, "た": False}
+        other = {"draft": False, "た": True}
+        a = [self.word(0, "ホカ", draft), self.word(1, "タ", other, gold="た")]
         b = [dict(w) for w in a]
-        c = [
-            self.word(0, "なに", False),
-            self.word(1, "ほか", True, gold="た", caption=False),
-        ]
+        c = [self.word(0, "タ", other), self.word(1, "ホカ", draft, gold="た")]
         runs = {"a": a, "b": b, "c": c}
         every = self.combine(runs)
-        self.assertIn("accepted wrongly 0.0%, corrected 0.0%, review 100.0%", every)
-        self.assertIn("accepted 0.0%, one other reading 0.0%, review 100.0%", every)
+        self.assertIn("1 words: right 0.0%, wrong 0.0%, review 100.0%", every)
+        self.assertIn("1 words: draft 0.0%, other reading 0.0%, review 100.0%", every)
         two = self.combine(runs, quorum=2)
         self.assertIn("a + b + c, 2 of 3", two)
-        self.assertIn("accepted wrongly 0.0%, corrected 100.0%, review 0.0%", two)
-        self.assertIn("accepted 100.0%, one other reading 0.0%, review 0.0%", two)
+        self.assertIn("right 100.0%, wrong 0.0%, review 0.0%", two)
+        self.assertIn("draft 100.0%, other reading 0.0%, review 0.0%", two)
+
+    def test_a_quorum_hearing_two_readings_is_a_review(self):
+        rows = [{"sudachi": "ほか", "op_hears": {"draft": True, "た": False}}]
+        rows.append({"sudachi": "ほか", "op_hears": {"draft": False, "た": True}})
+        self.assertIsNone(score.decide(rows, 1))
+        self.assertIsNone(score.decide(rows, 2))
+        self.assertEqual(score.decide(rows[:1], 1), "ほか")
 
     def combine(self, runs, quorum=None):
         with tempfile.TemporaryDirectory() as d:

@@ -48,11 +48,11 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import furigana_audio as fa
 from furigana_audio_run import MODELS, RUNS
-from furigana_audio_select import sudachi_tokenizer
+from furigana_audio_select import jmdict_readings, sudachi_tokenizer
 
 SMALL = "ャュョァィゥェォヮ"
 VOWEL_ROWS = {
@@ -225,6 +225,8 @@ class WordResult:
     expected: str  # the reading the line is aligned with: the caption's, else Sudachi's
     heard: str = ""
     verdicts: dict = field(default_factory=dict)
+    # Whether the model hears the draft, and each reading the op may write instead
+    op_verdicts: dict = field(default_factory=dict)
     clean: bool = True  # the card's transcript is close enough to its line (MISMATCH)
     gold: Optional[str] = None  # the reading known: the line's caption, else the show's name
 
@@ -244,6 +246,9 @@ class WordResult:
             "gold_is_draft": agrees(self.gold, w["sudachi"]) if self.gold else None,
             # Whether the model hears each reading: the draft's, the caption's, the show's
             "hears": self.verdicts,
+            # The same for the readings the op chooses from: "draft", and each other reading
+            # by its kana
+            "op_hears": self.op_verdicts,
         }
 
 
@@ -281,8 +286,21 @@ def reference(
     return ref, owner, words
 
 
+# A word's other readings in the dictionary, which the op may write instead of the draft
+Alternatives = Callable[[dict], Iterable[str]]
+
+
+def no_alternatives(word: dict) -> Iterable[str]:
+    return ()
+
+
 def score_card(
-    card: dict, text: str, model: str, tokenize: Callable[[str], Sequence], show: dict
+    card: dict,
+    text: str,
+    model: str,
+    tokenize: Callable[[str], Sequence],
+    show: dict,
+    alternatives: Alternatives = no_alternatives,
 ) -> tuple[list[WordResult], float, int]:
     """The card's words with what the model heard for each, the alignment's cost and the
     number of reference morae."""
@@ -301,20 +319,31 @@ def score_card(
         lo, hi = neighbours(owner, pairs, k, len(hyp))
         w = result.word
         readings = {"draft": w["sudachi"]}
+        # What the op may write: the draft, a reading the dictionary has for the spelling and,
+        # for a name, the show's. Never the line's own caption, which needs no audio
+        choices = {"draft": w["sudachi"]}
+        for other in alternatives(w):
+            choices.setdefault(other, other)
         if w["caption"]:
             readings["caption"] = w["caption"]
             result.gold = w["caption"]
-        elif w["surface"] in show:
+        if w["surface"] in show:
             # Judged only where the pick took the word for one: 子 is a clan read シ in one
             # line, and the child こ everywhere else
             script, reading = show[w["surface"]]
             if (script == "name" and "name" in w["kinds"]) or (
                 script == "word" and "caption_word" in w["kinds"]
             ):
-                readings[f"show_{script}"] = reading
+                if not w["caption"]:
+                    readings[f"show_{script}"] = reading
                 if script == "name":
-                    result.gold = reading
+                    choices.setdefault(reading, reading)
+                    result.gold = result.gold or reading
         result.verdicts = hears(readings, hyp, lo, hi)
+        choices = {
+            key: r for key, r in choices.items() if key == "draft" or not agrees(r, w["sudachi"])
+        }
+        result.op_verdicts = hears(choices, hyp, lo, hi)
     return words, cost, len(ref)
 
 
@@ -341,6 +370,20 @@ def show_readings() -> dict[str, tuple[str, str]]:
         reading = max(row["readings"], key=row["readings"].get)
         out[row["surface"]] = ("name" if row["script"] == "katakana" else "word", reading)
     return out
+
+
+def dictionary_readings() -> Alternatives:
+    """A word's JMdict readings, by its spelling as the line writes it: a conjugated verb
+    (言わ) is no spelling JMdict has, so it gets none and only its draft is written."""
+    cache: dict[str, list[str]] = {}
+
+    def readings(word: dict) -> list[str]:
+        surface = word["surface"]
+        if surface not in cache:
+            cache[surface] = sorted(jmdict_readings(surface))
+        return cache[surface]
+
+    return readings
 
 
 def rate(results: Sequence[WordResult], key: str, test: Callable[[WordResult], bool]) -> str:
@@ -395,57 +438,75 @@ def report(
     return "\n".join(lines)
 
 
-def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
-    """What accepting a reading where `quorum` of the models hear it (all, by default) does,
-    over the words of the cards whose transcript matches the line in every run.
+def percent(n: int, total: int) -> str:
+    return f"{100 * n / max(total, 1):.1f}%"
 
-    A word whose reading is known (the line's caption, or the show's for a name) and differs
-    from Sudachi's is accepted wrongly when a quorum hears Sudachi's, and corrected when a
-    quorum hears the known one. Any other word is accepted when a quorum hears Sudachi's;
-    where a quorum hears one other reading, the op would still have to license it (a JMdict
-    reading, a name the English line gives), and the rest goes to review. A word for which a
-    quorum hears each of two readings, as with one model of two, goes to review too.
+
+def decide(rows: Sequence[dict], quorum: int) -> Optional[str]:
+    """The reading the op writes for a word, given each model's row of it, or None for a
+    review: the draft where a quorum hears it, another reading it may write where a quorum
+    hears that one; never when a quorum hears each of two readings."""
+
+    def votes(key: str) -> int:
+        return sum(r["op_hears"].get(key, False) for r in rows)
+
+    draft = votes("draft") >= quorum
+    heard = {key for r in rows for key, yes in r["op_hears"].items() if yes and key != "draft"}
+    others = {key for key in heard if votes(key) >= quorum}
+    if draft and not others:
+        return rows[0]["sudachi"]
+    if not draft and others:
+        first = sorted(others)[0]
+        if all(agrees(first, key) for key in others):
+            return first
+    return None
+
+
+def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
+    """What the op would write over the words of the cards whose transcript matches the line
+    in every run, accepting a reading where `quorum` of the models hear it (all, by default):
+    the draft, or a reading the dictionary has for the spelling or the show has for a name
+    (`decide`). Anything else goes to review, a reading a quorum hears that nothing licenses
+    included: the English line or a person has to settle it.
+
+    Where the reading is known (the line's caption, or the show's for a name) a written
+    reading is right or wrong; that is the error the rule lets through. Elsewhere the draft is
+    usually right, so a word written otherwise is counted apart, to be checked by hand.
 
     The random stratum's cards are the ones like a show's other lines, so the share of them
-    with a word to resolve is the review an op would make; the other strata were picked for
+    with a word to review is the review an op would make; the other strata were picked for
     their hard words."""
     k = quorum or len(models)
     tables = []
     for m in models:
         rows = fa.read_jsonl(RUNS / f"{m}.words.jsonl")
-        if not rows or "start" not in rows[0]:
+        if not rows or "op_hears" not in rows[0]:
             return f"{m}: score it first (furigana_audio_score.py {m})"
         tables.append({(r["id"], r["line"], r["start"]): r for r in rows if r["clean"]})
     keys = sorted(set.intersection(*(set(t) for t in tables)))
     counts: dict[str, int] = defaultdict(int)
-    to_resolve: list[tuple] = []
+    review: list[tuple] = []
     for key in keys:
         rows = [t[key] for t in tables]
         first = rows[0]
-        hears = [r["hears"] for r in rows]
-        gold_key = (
-            "caption" if first["caption"] else "show_name" if "show_name" in hears[0] else None
-        )
-        drafts = sum(h["draft"] for h in hears)
-        if gold_key and all(gold_key in h for h in hears) and first["gold_is_draft"] is False:
-            group = "known, Sudachi wrong"
-            golds = sum(h[gold_key] for h in hears)
-            if drafts >= k and golds < k:
-                outcome = "accepted wrongly"
-            elif golds >= k and drafts < k:
-                outcome = "corrected"
-            else:
-                outcome = "review"
-                to_resolve.append(key)
+        written = decide(rows, k)
+        if first["gold"]:
+            group = "known, Sudachi " + ("right" if first["gold_is_draft"] else "wrong")
+            right = written is not None and agrees(written, first["gold"])
+            outcome = "review" if written is None else "right" if right else "wrong"
         else:
             group = "ordinary" if not first["kinds"] else "other hard"
-            others = [r["heard"] for r, h in zip(rows, hears) if not h["draft"] and r["heard"]]
-            other = any(sum(agrees(a, b) for b in others) >= k for a in others)
-            if drafts >= k and not other:
-                outcome = "accepted"
-            else:
-                outcome = "one other reading" if other and drafts < k else "review"
-                to_resolve.append(key)
+            outcome = (
+                "review"
+                if written is None
+                else "draft" if written == first["sudachi"] else "other reading"
+            )
+            if written is None and all(
+                r["heard"] and agrees(first["heard"], r["heard"]) for r in rows
+            ):
+                counts[f"{group}: one unlicensed reading"] += 1
+        if written is None:
+            review.append(key)
         counts[group] += 1
         counts[f"{group}: {outcome}"] += 1
     rule = "every model" if k == len(models) else f"{k} of {len(models)}"
@@ -454,24 +515,28 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
         f" {len({key[0] for key in keys})} cards clean in every run"
     ]
     for group, outcomes in (
-        ("known, Sudachi wrong", ("accepted wrongly", "corrected", "review")),
-        ("ordinary", ("accepted", "one other reading", "review")),
-        ("other hard", ("accepted", "one other reading", "review")),
+        ("known, Sudachi wrong", ("right", "wrong", "review")),
+        ("known, Sudachi right", ("right", "wrong", "review")),
+        ("ordinary", ("draft", "other reading", "review")),
+        ("other hard", ("draft", "other reading", "review")),
     ):
         total = counts[group]
-        parts = [f"{o} {100 * counts[f'{group}: {o}'] / max(total, 1):.1f}%" for o in outcomes]
+        parts = [f"{o} {percent(counts[f'{group}: {o}'], total)}" for o in outcomes]
+        unlicensed = counts.get(f"{group}: one unlicensed reading")
+        if unlicensed:
+            parts[-1] += f" ({percent(unlicensed, total)} one reading nothing licenses)"
         lines.append(f"  {group:<22} {total:>5} words: " + ", ".join(parts))
     stratum = {c["id"]: c["stratum"] for c in fa.read_jsonl(fa.SELECTION)}
     for name, pick in (("all", None), ("random", "random")):
         mine = [key for key in keys if pick in (None, stratum.get(key[0]))]
         cards = {key[0] for key in mine}
-        resolve = [key for key in to_resolve if key[0] in cards]
-        flagged = {key[0] for key in resolve}
+        flagged = [key for key in review if key[0] in cards]
+        flagged_cards = {key[0] for key in flagged}
         lines.append(
-            f"  {name + ' cards:':<14} {len(flagged)} of {len(cards)}"
-            f" ({100 * len(flagged) / max(len(cards), 1):.0f}%) have a word to resolve,"
-            f" {len(resolve)} of {len(mine)} words"
-            f" ({100 * len(resolve) / max(len(mine), 1):.1f}%)"
+            f"  {name + ' cards:':<14} {len(flagged_cards)} of {len(cards)}"
+            f" ({100 * len(flagged_cards) / max(len(cards), 1):.0f}%) have a word to review,"
+            f" {len(flagged)} of {len(mine)} words"
+            f" ({100 * len(flagged) / max(len(mine), 1):.1f}%)"
         )
     return "\n".join(lines)
 
@@ -493,6 +558,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cards = {c["id"]: c for c in fa.read_jsonl(fa.SELECTION)}
     tokenize = sudachi_tokenizer()
     show = show_readings()
+    alternatives = dictionary_readings()
     for model in models:
         rows = fa.read_jsonl(RUNS / f"{model}.jsonl")
         results: list[WordResult] = []
@@ -500,7 +566,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for row in rows:
             if row["id"] not in cards:
                 continue
-            words, cost, ref_len = score_card(cards[row["id"]], row["text"], model, tokenize, show)
+            words, cost, ref_len = score_card(
+                cards[row["id"]], row["text"], model, tokenize, show, alternatives
+            )
             results.extend(words)
             total_cost += cost
             total_ref += ref_len
