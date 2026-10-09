@@ -59,6 +59,12 @@ OTHER_GROUP = "other"
 # Left to the noun rules, which said to match a number plus a counter, every 一階 and 二回 got
 # a note that taught nothing the notes of 一 and 階 didn't.
 NUMBER_COUNTER_GROUP = "number-counter"
+# The generator gives a number and its counter their two sub-words only where the furigana
+# reads them apart (九[きゅう] 人[にん]). Read as one (九人[きゅうにん]) the word comes out
+# whole, like 一緒 or 一生, and lands in its part of speech's group, so the groups such a
+# word lands in say in short what NUMBER_COUNTER_GROUP's rules say. Without it there a count
+# was matched or not by how its furigana happened to be grouped.
+WHOLE_COUNT_RULE = """- dontmatch a word that is only a number and its counter when it means no more than that number of that thing, a date or a length of time included: 三人, 九人, 二回, 一万円, 二番目, 七月, 一週間, 一ヶ月, 一杯 in 水を一杯 (one glass), 三人 in 三人目, 一日 (いちにち) in 一日中. Any other number could stand in it, so the whole is nothing to learn. But match a native Japanese number word, learned as a word of its own (一人 (ひとり), 二人 (ふたり), 二十歳 (はたち), 二日 (ふつか), 三日 (みっか), 十日 (とおか), 二十日 (はつか)), and a word that has come to mean more than the count: 一番 (most), 一杯 (full, a lot), 一種 (a kind of), 一部 (a part)."""
 # rule_group() splits these further by the word's place in the array
 SPLIT_GROUPS = {
     "noun": ("noun-main", "noun-sub", "noun-phrase"),
@@ -82,7 +88,9 @@ POS_RULES = {
 - dontmatch a word that is only 御 plus a word: 御寺, 御姉さん, 御話. The word and 御 keep their notes. But 御前 (you) is a word of its own: match it.
 - dontmatch a pronoun that is only a pronoun plus a plural suffix (彼等, 私達, 奴等, 此奴等): the pronoun keeps the note.
 - match a proper noun as a whole, and a four-kanji idiom (yojijukugo).
-- match a number standing alone: 百, 二十.""",
+- match a number standing alone: 百, 二十.
+"""
+    + WHOLE_COUNT_RULE,
     "noun-phrase": """Rules for nouns, pronouns, proper nouns and numbers that are a component of a phrase or word made with a particle ("Part of" names it; that phrase is judged separately):
 - match a noun of an idiom or set phrase: 羽目 in 羽目を外す, 根 in 根に持つ, 迷惑 in 迷惑を掛ける, 気 in 気に為る, 意表 in 意表を突く, 希望 and 光 in 希望の光. The phrase and its nouns can all have notes.
 - match a noun where the phrase is only this noun plus the particle it happens to take here, its meaning unchanged: 其れ in 其れは or 其れ迄, 此れ in 此れで or 此れ程, 其処 in 其処迄, 誰 in 誰も, 自分 in 自分で, 物 in 物を, 何 in 何を.
@@ -97,7 +105,9 @@ POS_RULES = {
 - dontmatch the single kanji 此, 其, 彼 or 何 as the first piece of a demonstrative or question word like 其の, 其れ, 此等, 何時, 何故: the whole word keeps the note. A two-kana pronoun like 其れ or 此れ is a word: match it also inside a larger word.
 - dontmatch the components of a proper noun and of a four-kanji idiom (yojijukugo): the whole keeps the note.
 - dontmatch a component that is not a word of its own in this sentence, like 合 in 場合 or 供 in 子供.
-- match the number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月, 一 in 一日, 十 in 十年): a numeral is a word of its own wherever it counts, and the counter and the whole are judged separately.""",
+- match the number inside a number plus a counter (三 in 三つ, 二 in 二度, 七 in 七月, 一 in 一日, 十 in 十年): a numeral is a word of its own wherever it counts, and the counter and the whole are judged separately.
+"""
+    + WHOLE_COUNT_RULE,
     NUMBER_COUNTER_GROUP: """Rules for a word made of a number and a counter or unit ("Made of" lists the two; each is judged separately), whatever part of speech it is given, and also where it is a component of a larger word:
 - dontmatch a word that means no more than that number of that thing: 一階, 三階, 一回, 二回, 三人, 二本, 一枚, 一匹, 千円, 十万, 九時, 五分, 七月, 三年, 一週間, 一ヶ月, 二位, 三歳, 二倍. Any other number could stand in its place and the meaning is plain from the two parts, so the whole is nothing to learn, however common it is; the number and the counter keep their notes. A sound that changes where the two join (いっかい, さんがい, ろっぽん, じゅっぷん) does not make it a word of its own.
 - dontmatch it the same where 何, 数 or 幾 stands for the number: 何人, 何回, 何年, 数人, 数年, 幾度.
@@ -132,7 +142,9 @@ POS_RULES = {
     "adverb": """Rules for adverbs, conjunctions and interjections:
 - match an ordinary adverb or conjunction, however common or easy: 先ず, 然し, 又, 迚も.
 - match an interjection that is a word (はい, 否, 矢張り); dontmatch a bare exclamation sound: あ, ああ, えっ, うっ, おお.
-- dontmatch a word that is only another word plus the particle it happens to take here: 此れは, 上に. match one that is a fixed word of its own, or far more common than the bare word: 正に, 共に, 先ずは, 本当に, 確かに, 絶対に.""",
+- dontmatch a word that is only another word plus the particle it happens to take here: 此れは, 上に. match one that is a fixed word of its own, or far more common than the bare word: 正に, 共に, 先ずは, 本当に, 確かに, 絶対に.
+"""
+    + WHOLE_COUNT_RULE,
     "expression": """Rules for expressions (multi-word dictionary entries):
 - match a fixed expression whose meaning is more than its words, or that is learned as a unit: 鳥肌が立つ, 間も無く, に就いて, かも知れない.
 - dontmatch a grammar pattern built from a word the sentence also lists plus particles, the copula or an auxiliary verb: ように, のように, ような, ようになる, ことになる, ことができる, ほうがいい, と言う, じゃない, そうだ, みたいだ, ために, に関して, を通して, において. Its words keep their notes.

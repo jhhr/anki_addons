@@ -131,6 +131,22 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(groups["もう一回"], "expression")
         self.assertEqual(groups["何度も"], "expression")
 
+    def test_a_count_with_no_sub_words_is_judged_in_its_own_group_under_the_same_rule(self):
+        """九[きゅう] 人[にん] comes out as a number and a counter, 九人[きゅうにん] whole: the
+        same count, so every group a whole one lands in carries the rule in short."""
+        arr = [
+            word("九人"),
+            word("三人目", subs=[word("三人"), word("目", "suffix")]),
+            word("一杯", "adverb"),
+        ]
+        groups = {a.elem[2]: a.group for a in judge.plan_judgements(arr).asks}
+        self.assertEqual(
+            (groups["九人"], groups["三人"], groups["一杯"]), ("noun-main", "noun-sub", "adverb")
+        )
+        for group in ("noun-main", "noun-sub", "adverb"):
+            with self.subTest(group=group):
+                self.assertIn(judge.WHOLE_COUNT_RULE, judge.POS_RULES[group])
+
     def test_a_word_with_more_than_a_number_and_a_counter_keeps_its_own_group(self):
         arr = [
             word("第三者", subs=[word("第", "prefix"), word("三", "number"), word("者", "counter")]),
