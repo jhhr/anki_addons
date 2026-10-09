@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import furigana_audio as fa  # noqa: E402
 import furigana_audio_copy as copy_script  # noqa: E402
+import furigana_audio_run as run_script  # noqa: E402
 import furigana_audio_score as score  # noqa: E402
 import furigana_audio_select as select  # noqa: E402
 
@@ -357,3 +358,18 @@ class HearsTest(unittest.TestCase):
         hyp = score.morae("ノマオマオガ")
         verdicts = score.hears({"draft": "ねこねこ", "show_name": "まおまお"}, hyp, 2, 5)
         self.assertEqual(verdicts, {"draft": False, "show_name": True})
+
+
+class FoldTest(unittest.TestCase):
+    def test_a_runs_part_joins_its_file_in_the_selections_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            runs = Path(d)
+            selection = runs / "selection.jsonl"
+            fa.write_jsonl(selection, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+            out, part = runs / "m.jsonl", runs / "m.jsonl.part"
+            fa.write_jsonl(out, [{"id": "c", "text": "C"}])
+            fa.write_jsonl(part, [{"id": "a", "text": "A"}, {"id": "b", "text": "B"}])
+            with unittest.mock.patch.object(fa, "SELECTION", selection):
+                run_script.fold(out, part)
+            self.assertEqual([r["id"] for r in fa.read_jsonl(out)], ["a", "b", "c"])
+            self.assertFalse(part.exists())

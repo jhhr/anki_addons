@@ -3,7 +3,10 @@
 Each run writes `evals/furigana_audio/runs/<model>.jsonl` in the test data checkout, one row per
 card: its id, the text the model gave and the seconds it took; `<model>.meta.json` beside it
 says which revision of the model, with which settings, on what. Cards already in the file are
-skipped, so a run that stops is started again and goes on where it was.
+skipped, so a run that stops is started again and goes on where it was. While a run goes on,
+its rows go to `<model>.jsonl.part`, which the test data repo ignores, and into the run file
+when it ends: the tracked file changes once a run, not with every card, and a part a stopped
+run leaves is picked up by the next.
 
 A model hears the clip and nothing else: no subtitle, prompt or name list. Audio models follow
 text they are given rather than the audio, and what each one hears by itself is what the eval
@@ -182,11 +185,13 @@ def run(name: str, limit: Optional[int], device: str, stratum: Optional[str] = N
         print(f"{fa.SELECTION} is missing or empty: run furigana_audio_select.py", file=sys.stderr)
         return 2
     out = RUNS / f"{name}.jsonl"
-    done = {row["id"] for row in fa.read_jsonl(out)}
+    part = RUNS / f"{name}.jsonl.part"
+    done = {row["id"] for row in fa.read_jsonl(out) + fa.read_jsonl(part)}
     todo = [row for row in selection if row["id"] not in done]
     if limit:
         todo = todo[:limit]
     if not todo:
+        fold(out, part)
         print(f"{out}: every picked card is done")
         return 0
     missing = [row["audio"] for row in todo if not (fa.AUDIO / row["audio"]).exists()]
@@ -201,7 +206,7 @@ def run(name: str, limit: Optional[int], device: str, stratum: Optional[str] = N
         json.dumps(meta(name, model, device), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    with out.open("a", encoding="utf-8", newline="\n") as f:
+    with part.open("a", encoding="utf-8", newline="\n") as f:
         for n, row in enumerate(todo, 1):
             wav = load_clip(fa.AUDIO / row["audio"])
             start = time.perf_counter()
@@ -211,7 +216,18 @@ def run(name: str, limit: Optional[int], device: str, stratum: Optional[str] = N
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
             f.flush()
             print(f"{n}/{len(todo)} {row['id']} {seconds}s {text[:60]}", flush=True)
+    fold(out, part)
     return 0
+
+
+def fold(out: Path, part: Path) -> None:
+    """The part's rows into the run file, every row in the selection's order."""
+    if not part.exists():
+        return
+    order = {row["id"]: n for n, row in enumerate(fa.read_jsonl(fa.SELECTION))}
+    rows = {row["id"]: row for row in fa.read_jsonl(out) + fa.read_jsonl(part)}
+    fa.write_jsonl(out, sorted(rows.values(), key=lambda row: order.get(row["id"], len(order))))
+    part.unlink()
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
