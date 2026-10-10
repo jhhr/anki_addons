@@ -11,7 +11,6 @@ import io
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Optional
 
 ADDON_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "jnaio_dev"
@@ -60,22 +59,32 @@ def load_shared(dotted: str) -> ModuleType:
     return _import(f"shared.{dotted}")
 
 
-_data_paths: Optional[ModuleType] = None
+_dev_modules: dict[str, ModuleType] = {}
 
 
-def data_paths() -> ModuleType:
-    """dev/data_paths.py, loaded by its path once: it imports nothing of the addon, and dev/ is
-    not on a research script's sys.path."""
-    global _data_paths
-    if _data_paths is None:
+def _dev(name: str) -> ModuleType:
+    """dev/<name>.py, loaded by its path once: dev/ is not on a research script's sys.path,
+    and the modules taken from there import nothing of the addon's."""
+    if name not in _dev_modules:
         spec = importlib.util.spec_from_file_location(
-            "jnaio_data_paths", ADDON_ROOT / "dev" / "data_paths.py"
+            f"jnaio_{name}", ADDON_ROOT / "dev" / f"{name}.py"
         )
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        _data_paths = module
-    return _data_paths
+        _dev_modules[name] = module
+    return _dev_modules[name]
+
+
+def data_paths() -> ModuleType:
+    """dev/data_paths.py: where the private test data checkout is."""
+    return _dev("data_paths")
+
+
+def transcribe_server() -> ModuleType:
+    """dev/transcribe_server.py: the models the op transcribes with and their loaders, which
+    the furigana audio eval's runner runs, so the eval measures what the op will hear."""
+    return _dev("transcribe_server")
 
 
 def eval_file(name: str) -> Path:
