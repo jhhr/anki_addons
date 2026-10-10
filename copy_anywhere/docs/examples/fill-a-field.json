@@ -3,7 +3,7 @@
   "format_version": 2,
   "definition_name": "Fill the Note field",
   "triggers": {
-    "note_types": ["CA Vocab"],
+    "note_types": [{ "id": null, "name": "CA Vocab" }],
     "deck_names": [],
     "include_subdecks": false,
     "on_sync": false,

@@ -863,6 +863,67 @@ class TestWhichFieldFiresAStagedDefinition:
         assert ran.names() == []
 
 
+class TestADefinitionARenameMarkedIsRefused:
+    """A marked definition is filtered out before either way the handler runs one."""
+
+    @staticmethod
+    def marked(name="marked", message='Field "Word" is no longer here', **effects):
+        definition = d.staged(
+            name,
+            on_unfocus={"edit_fields": ["Word"], "add_fields": ["Word"]},
+            stages=[d.edit_note("trigger", [d.write("Note", d.text("marked ran"))])],
+        )
+        d.warned(definition, d.rename_warning(message, old="Word"))
+        definition["effects"].update(effects)
+        return definition
+
+    def test_it_is_neither_run_here_nor_handed_to_copy_fields(
+        self, col, set_definitions, ran, copies, hook_logger
+    ):
+        set_definitions(
+            self.marked("here"),
+            # Claims to edit other notes, so it would be collected for `copy_fields`.
+            self.marked("elsewhere", edits_other_notes=True),
+        )
+        note = existing_note(col, Word="neko")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert (ran.names(), copies.count()) == ([], 0)
+        assert note["Note"] == ""
+        assert len(hook_logger.errors) == 2
+        assert hook_logger.has_error("'elsewhere' was not run")
+
+    def test_a_field_that_would_not_run_it_says_nothing(
+        self, col, set_definitions, hook_logger
+    ):
+        set_definitions(self.marked())
+
+        run_copy_fields_on_unfocus_field(False, existing_note(col, Word="neko"), MEANING)
+
+        assert hook_logger.errors == []
+
+    def test_it_is_logged_once_a_session_and_again_when_the_mark_changes(
+        self, col, set_definitions, hook_logger
+    ):
+        # Each unfocus opens its own operation log, so a line per unfocus would be a new file
+        # per field left, and the log cap would soon hold nothing else.
+        definition = self.marked()
+        set_definitions(definition)
+        note = existing_note(col, Word="neko")
+
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+        assert len(hook_logger.errors) == 1
+
+        d.warned(definition, d.rename_warning("Something else now", old="Word"))
+        run_copy_fields_on_unfocus_field(False, note, WORD)
+
+        assert len(hook_logger.errors) == 2
+        assert hook_logger.has_error("'marked' was not run: Something else now.")
+        assert note["Note"] == ""
+
+
 class TestAMigratedDefinitionsPerWriteUnfocusSettings:
     """The two settings format 1 kept on each field write, after the startup migration.
 
@@ -1713,7 +1774,7 @@ class TestAnkiKeepsCallingTheHooks:
             raise RuntimeError("a bug")
 
         # Outside any one definition, which `run_one_definition` already contains.
-        monkeypatch.setattr(note_hooks, "definition_note_type_names", raise_)
+        monkeypatch.setattr(note_hooks, "definition_triggers_on", raise_)
 
     def test_after_an_unfocus_that_failed(self, col, set_definitions, hooks, broken, hook_logger):
         set_definitions(within("ok", field="Note"))

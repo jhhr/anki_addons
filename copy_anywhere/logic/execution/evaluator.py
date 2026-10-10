@@ -38,6 +38,7 @@ from ..definition_schema import (
     export_result_name,
     stage_result_name,
 )
+from ..rename_warnings import blocking_explanation, blocking_messages
 from . import actions
 from .context import (
     Cancelled,
@@ -316,6 +317,16 @@ def _run_call(
     if not is_format_2(callee):
         raise frame.error(
             f"definition '{callee_guid}' is not in format 2 and cannot be called", stage
+        )
+    broken = blocking_messages(callee)
+    if broken:
+        # Refused the way a direct run of it is, and for the same reason: a callee a rename
+        # left spelling a field its note types disagree on would go wrong somewhere, and the
+        # caller failing loudly beats it running the rest of a chain around the gap.
+        raise frame.error(
+            f"calls definition '{callee.get('definition_name') or callee_guid}', which was"
+            f" not run: {blocking_explanation(broken)}",
+            stage,
         )
 
     trigger = actions.resolve_note(env, stage.get("trigger"), frame, stage, "call trigger")

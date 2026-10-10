@@ -19,15 +19,31 @@ from aqt import mw
 from aqt.qt import (
     QCheckBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QWidget,
     pyqtSignal,
 )
 
 from ..logic.definition_schema import CopyDefinitionV2, Triggers
+from ..logic.object_refs import (
+    ObjectRef,
+    deck_display_name,
+    deck_ref,
+    normalize_ref,
+    normalize_refs,
+    not_found_label,
+    note_type_display_name,
+    resolve_deck_id,
+    resolve_note_type,
+)
+from ..logic.rename_locations import trigger_key
+from ..logic.rename_scan import READ_AS_TRIGGER_SLOT
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_text_input import RequiredLineEdit
 from .labels import wrapping
+from .rename_indicator import LiveLocation, RenameIndicator
+from .stage_document import StageDocument
 
 
 def quoted_items(names) -> list[str]:
@@ -40,6 +56,37 @@ def selected_names(box: MultiComboBox) -> list[str]:
     if not text:
         return []
     return [name for name in text.strip('""').split('", "') if name]
+
+
+def select_names(box: MultiComboBox, names: list[str]) -> None:
+    """Tick exactly `names` in the box, adding any it does not offer as items of their own.
+
+    The Replace button's way of swapping an old field name for the new one in a list: the
+    new name is on offer unless the box lists another note type's fields, and a name the
+    user asked for by pressing Apply is not one to drop.
+    """
+    offered = [box.itemText(index) for index in range(box.count())]
+    box.addItems([item for item in quoted_items(names) if item not in offered])
+    box.setCurrentText(", ".join(quoted_items(names)))
+
+
+def note_type_label(ref, col) -> str:
+    """What the note type box shows one stored reference as.
+
+    The live name once the id resolves, so a note type renamed in Anki appears where the
+    user would look for it; the stored name, marked, when neither half resolves. A
+    reference that names nothing has to stay visible or the box would answer "not chosen"
+    for it and the next save would drop it without saying so.
+    """
+    if resolve_note_type(ref, col) is None:
+        return not_found_label(normalize_ref(ref)["name"])
+    return note_type_display_name(ref, col)
+
+
+def deck_label(ref, col) -> str:
+    if resolve_deck_id(ref, col) is None:
+        return not_found_label(normalize_ref(ref)["name"])
+    return deck_display_name(ref, col)
 
 
 def decks_of_note_types(note_type_names) -> list[dict]:
@@ -88,9 +135,17 @@ class TriggersEditor(QWidget):
 
     changed = pyqtSignal()
 
-    def __init__(self, parent: Optional[QWidget], definition: CopyDefinitionV2) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        definition: CopyDefinitionV2,
+        rename_document: Optional[StageDocument] = None,
+    ) -> None:
+        """`rename_document` is the definition editor's, whose rename warnings about the
+        unfocus lists show beside them."""
         super().__init__(parent)
         self.definition = definition
+        self.rename_indicators: list[RenameIndicator] = []
         triggers: Triggers = definition.setdefault(
             "triggers",
             {
@@ -121,8 +176,27 @@ class TriggersEditor(QWidget):
         self.note_types_box.addItems(
             quoted_items(model.name for model in mw.col.models.all_names_and_ids())
         )
+        # The boxes list and answer in names; the definition stores references. A stored
+        # reference is shown under its *live* name, so a note type the user renamed in Anki
+        # appears where they would look for it rather than under the name the definition
+        # was written with.
+        self._stored_note_types = normalize_refs(triggers.get("note_types"))
+        self._stored_decks = normalize_refs(triggers.get("deck_names"))
+        self._missing_note_types = [
+            note_type_label(ref, mw.col)
+            for ref in self._stored_note_types
+            if resolve_note_type(ref, mw.col) is None
+        ]
+        self._missing_decks = [
+            deck_label(ref, mw.col)
+            for ref in self._stored_decks
+            if resolve_deck_id(ref, mw.col) is None
+        ]
+        self.note_types_box.addItems(quoted_items(self._missing_note_types))
         self.note_types_box.setCurrentText(
-            ", ".join(quoted_items(triggers.get("note_types", []) or []))
+            ", ".join(
+                quoted_items(note_type_label(ref, mw.col) for ref in self._stored_note_types)
+            )
         )
         self.note_types_box.currentTextChanged.connect(self._on_note_types_changed)
         form.addRow(QLabel("<h3>Trigger note type</h3>", self), self.note_types_box)
@@ -175,12 +249,13 @@ class TriggersEditor(QWidget):
         # a wrapped label the height its extra lines need, so the end of it was cut off.
         form.addRow(
             QLabel("<h4>Run when leaving a field, editing a note</h4>", self),
-            self.unfocus_edit,
+            self._with_indicator(self.unfocus_edit, 0, rename_document),
         )
         self.unfocus_add = MultiComboBox(self, placeholder_text="No fields (never)")
         self.unfocus_add.currentTextChanged.connect(self._on_changed)
         form.addRow(
-            QLabel("<h4>Run when leaving a field, adding a note</h4>", self), self.unfocus_add
+            QLabel("<h4>Run when leaving a field, adding a note</h4>", self),
+            self._with_indicator(self.unfocus_add, 1, rename_document),
         )
         form.addRow(
             "",
@@ -196,7 +271,7 @@ class TriggersEditor(QWidget):
         # boxes are rebuilt from the note types on every change, so their contents cannot be
         # the record: a name that the current note types do not have would be read back as
         # "not chosen" and lost. Kept here instead, and narrowed only by what the user does.
-        self._chosen_decks = list(triggers.get("deck_names", []) or [])
+        self._chosen_decks = [deck_label(ref, mw.col) for ref in self._stored_decks]
         self._chosen_unfocus = [
             list(unfocus.get("edit_fields", []) or []),
             list(unfocus.get("add_fields", []) or []),
@@ -207,6 +282,75 @@ class TriggersEditor(QWidget):
         self._offered_decks: Optional[list[str]] = None
         self._offered_unfocus: list[Optional[list[str]]] = [None, None]
         self._refresh_dependent_boxes()
+
+    # -- rename warnings -----------------------------------------------------------------
+
+    #: Where each unfocus list stores its names, in the order of `_chosen_unfocus`.
+    UNFOCUS_PATHS = ("on_unfocus.edit_fields", "on_unfocus.add_fields")
+
+    def _with_indicator(
+        self, box: MultiComboBox, index: int, document: Optional[StageDocument]
+    ) -> QWidget:
+        """The box, with the rename indicator of the list it edits beside it."""
+        if document is None:
+            return box
+        key = trigger_key(self.UNFOCUS_PATHS[index])
+        indicator = RenameIndicator(
+            self,
+            document,
+            lambda: [
+                LiveLocation(
+                    key,
+                    READ_AS_TRIGGER_SLOT,
+                    self._live_unfocus(index),
+                    lambda names: self._replace_unfocus(index, names),
+                )
+            ],
+        )
+        self.rename_indicators.append(indicator)
+        box.currentTextChanged.connect(indicator.refresh)
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(box, 1)
+        layout.addWidget(indicator)
+        return row
+
+    def _live_unfocus(self, index: int) -> list[str]:
+        """What `apply` would store for one unfocus list now, without folding it back.
+
+        The chosen names outside what the box offers are kept whatever the box shows, so a
+        name the note type no longer has -- the one a rename warning is about -- is still
+        spelled until the user replaces or dismisses it.
+        """
+        chosen = getattr(self, "_chosen_unfocus", None)
+        if chosen is None:
+            # Asked while the boxes are being built, before anything is chosen in them.
+            return []
+        offered = self._offered_unfocus[index]
+        box = (self.unfocus_edit, self.unfocus_add)[index]
+        if offered is None:
+            return list(chosen[index])
+        return [name for name in chosen[index] if name not in offered] + selected_names(box)
+
+    def _replace_unfocus(self, index: int, names: list[str]) -> None:
+        """Make `names` what one unfocus list has chosen: the Replace button's Apply.
+
+        Both halves of the record change together. `_chosen_unfocus` answers for the names
+        the box does not offer and the box for those it does, and the next `_take_choice`
+        folds the box back into the list: a name set in only one of them would be undone
+        there, the new one dropped as "unticked" or the old one brought back.
+        """
+        box = (self.unfocus_edit, self.unfocus_add)[index]
+        offered = self._offered_unfocus[index] or []
+        self._chosen_unfocus[index][:] = list(names)
+        box.setCurrentText(", ".join(quoted_items(name for name in names if name in offered)))
+        self.refresh_rename_indicators()
+        self.changed.emit()
+
+    def refresh_rename_indicators(self) -> None:
+        for indicator in self.rename_indicators:
+            indicator.refresh()
 
     # -- reacting ------------------------------------------------------------------------
 
@@ -222,6 +366,8 @@ class TriggersEditor(QWidget):
         self._refresh_decks(note_types)
         self._refresh_unfocus(note_types)
         self._refresh_warning(note_types)
+        # The boxes were refilled with their signals blocked.
+        self.refresh_rename_indicators()
 
     def _take_choice(
         self, box: MultiComboBox, chosen: list[str], offered: Optional[list[str]]
@@ -245,20 +391,24 @@ class TriggersEditor(QWidget):
     def _refresh_decks(self, note_types) -> None:
         decks = decks_of_note_types(note_types)
         self._take_choice(self.decks_box, self._chosen_decks, self._offered_decks)
-        self._offered_decks = [deck["name"] for deck in decks]
+        # A whitelisted deck the collection no longer has is offered too, marked, so the
+        # user can see which one went and untick it. It has no note type to belong to, so
+        # it stays on offer whatever is selected above.
+        names = [deck["name"] for deck in decks] + self._missing_decks
+        self._offered_decks = names
         chosen = self._chosen_decks
         self.decks_box.blockSignals(True)
         self.decks_box.clear()
-        for deck in decks:
-            self.decks_box.addItem(f'"{deck["name"]}"')
-            if deck["name"] in chosen:
-                self.decks_box.addSelectedItem(f'"{deck["name"]}"')
+        for name in names:
+            self.decks_box.addItem(f'"{name}"')
+            if name in chosen:
+                self.decks_box.addSelectedItem(f'"{name}"')
         self.decks_box.set_popup_and_box_width()
         self.decks_box.blockSignals(False)
-        if not note_types:
+        if not note_types and not self._missing_decks:
             self.decks_box.setPlaceholderText("First, select a trigger note type")
             self.decks_box.setDisabled(True)
-        elif decks:
+        elif names:
             self.decks_box.setPlaceholderText("Select decks (optional)")
             self.decks_box.setDisabled(False)
         else:
@@ -293,9 +443,37 @@ class TriggersEditor(QWidget):
 
     # -- writing back ---------------------------------------------------------------------
 
+    def _note_type_refs(self, names: list[str]) -> list[ObjectRef]:
+        """The chosen note type names, as references that carry their ids.
+
+        A name the collection no longer offers keeps whichever stored reference showed it:
+        a definition written for a note type the user has not made yet, or one whose note
+        type was deleted, must survive being opened and saved.
+        """
+        assert mw is not None and mw.col is not None
+        live = {entry.name: entry.id for entry in mw.col.models.all_names_and_ids()}
+        stored = {note_type_label(ref, mw.col): ref for ref in self._stored_note_types}
+        return [
+            {"id": live[name], "name": name}
+            if name in live
+            else stored.get(name, {"id": None, "name": name})
+            for name in names
+        ]
+
+    def _deck_refs(self, names: list[str]) -> list[ObjectRef]:
+        assert mw is not None and mw.col is not None
+        live = {entry.name: entry.id for entry in mw.col.decks.all_names_and_ids()}
+        stored = {deck_label(ref, mw.col): ref for ref in self._stored_decks}
+        return [
+            deck_ref(live[name], name)
+            if name in live
+            else stored.get(name, {"id": None, "name": name})
+            for name in names
+        ]
+
     def apply(self) -> None:
         self.definition["definition_name"] = self.name_edit.text().strip()
-        self.triggers["note_types"] = selected_names(self.note_types_box)
+        self.triggers["note_types"] = self._note_type_refs(selected_names(self.note_types_box))
         # What gets saved is the chosen list, not the box. The box holds only what the
         # currently selected note types put in it, so a whitelisted deck whose cards have
         # moved, or a field belonging to a note type the user has just deselected, has no
@@ -307,7 +485,11 @@ class TriggersEditor(QWidget):
             (self.unfocus_edit, self.unfocus_add), self._chosen_unfocus, self._offered_unfocus
         ):
             self._take_choice(box, chosen, offered)
-        self.triggers["deck_names"] = list(self._chosen_decks)
+        self.triggers["deck_names"] = self._deck_refs(list(self._chosen_decks))
+        # Written back so a second apply() in the same dialog still answers for a name the
+        # collection does not offer.
+        self._stored_note_types = list(self.triggers["note_types"])
+        self._stored_decks = list(self.triggers["deck_names"])
         self.triggers["include_subdecks"] = self.include_subdecks.isChecked()
         self.triggers["on_sync"] = self.on_sync.isChecked()
         self.triggers["on_add"] = self.on_add.isChecked()

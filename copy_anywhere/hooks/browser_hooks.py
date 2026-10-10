@@ -10,6 +10,7 @@ from aqt.qt import QAction, qconnect, QMenu
 
 from ..configuration import Config
 from ..logic.copy_fields import copy_fields
+from ..logic.rename_warnings import blocking_messages, blocking_tooltip
 from ..utils.replace_custom_field_values import replace_custom_field_values
 from ..ui.pick_copy_definition_dialog import show_copy_dialog
 
@@ -94,9 +95,18 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
 
         return run_copy_def
 
+    # A definition a rename or deletion in Anki left a blocking warning on is not run, so it
+    # is offered the way the definition list offers it: listed, disabled, and saying why on
+    # hover. A warning that does not block leaves it enabled, as the list does. A QMenu
+    # hides its actions' tooltips unless told otherwise.
+    copy_fields_menu.setToolTipsVisible(True)
     for copy_definition in config.copy_definitions:
         copy_fields_action = QAction(copy_definition["definition_name"], browser)
         qconnect(copy_fields_action.triggered, make_copy_fields_runner(copy_definition))
+        broken = blocking_messages(copy_definition)
+        if broken:
+            copy_fields_action.setEnabled(False)
+            copy_fields_action.setToolTip(blocking_tooltip(broken))
         copy_fields_menu.addAction(copy_fields_action)
 
 
