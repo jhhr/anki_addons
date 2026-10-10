@@ -94,6 +94,9 @@ class WordResult:
     # Whether the model hears the draft, and each reading the op may write instead
     op_verdicts: dict = field(default_factory=dict)
     clean: bool = True  # the card's transcript is close enough to its line (MISMATCH)
+    # The readings the op may write besides the draft, before `reading_check.choices` drops
+    # those that sound like it
+    licensed: list = field(default_factory=list)
     gold: Optional[str] = None  # the reading known: the line's caption, else the show's name
     label: Optional[dict] = None  # the label given by ear, if any (fa.read_labels)
 
@@ -116,6 +119,7 @@ class WordResult:
             # The same for the readings the op chooses from: "draft", and each other reading
             # by its kana
             "op_hears": self.op_verdicts,
+            "licensed": self.licensed,
             "label": self.label["reading"] if self.label else None,
             "label_verdict": self.label["verdict"] if self.label else None,
         }
@@ -189,6 +193,7 @@ def score_card(
                     result.gold = result.gold or reading
         result.verdicts = hears(readings, hyp, lo, hi)
         result.op_verdicts = rc.hears_choices(rc.choices(w["sudachi"], others), hyp, lo, hi)
+        result.licensed = others
         key = (card["id"], w["line"], w["start"])
         result.label = fa.label_for(labels or {}, key, w["surface"])
         if result.label and result.label["verdict"] == "heard":
@@ -300,7 +305,9 @@ def percent(n: int, total: int) -> str:
 def decide(rows: Sequence[dict], quorum: int) -> Optional[str]:
     """The reading the op writes for a word, given each model's row of it, or None for a
     review (`reading_check.decide`)."""
-    return rc.decide([r["op_hears"] for r in rows], rows[0]["sudachi"], quorum)
+    first = rows[0]
+    hearings = [r["op_hears"] for r in rows]
+    return rc.decide(hearings, first["sudachi"], quorum, first.get("licensed", ()))
 
 
 # Why a word is written as it is, or not: the rule writes another reading than the draft, sends

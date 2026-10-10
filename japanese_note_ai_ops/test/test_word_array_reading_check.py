@@ -186,6 +186,18 @@ class RuleTest(unittest.TestCase):
         other = {"draft": False, "た": True}
         self.assertEqual(check.decide([other, other], "ほか", 2), "た")
 
+    def test_no_correction_a_vowels_length_tells_from_another_licensed_reading(self):
+        # 婆 said ばばあ, heard ババ by both: JMdict reads it ばば too
+        heard = {"draft": False, "ばば": True, "ばばあ": False}
+        self.assertEqual(check.decide([heard, heard], "ばあ", 2), "ばば")
+        self.assertIsNone(check.decide([heard, heard], "ばあ", 2, licensed=["ばば", "ばばあ"]))
+        # A reading spelled two ways is no sibling of itself
+        self.assertEqual(check.decide([heard, heard], "ばあ", 2, licensed=["ばば", "ババ"]), "ばば")
+
+    def test_a_draft_is_confirmed_whatever_its_siblings(self):
+        heard = {"draft": True}
+        self.assertEqual(check.decide([heard], "ほんとう", 1, licensed=["ほんと"]), "ほんとう")
+
     def test_a_quorum_hearing_two_readings_is_a_review(self):
         hearings = [{"draft": True, "た": False}, {"draft": False, "た": True}]
         self.assertIsNone(check.decide(hearings, "ほか", 1))

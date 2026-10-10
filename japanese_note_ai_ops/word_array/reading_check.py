@@ -16,7 +16,8 @@ The rule (`decide`) writes the draft where a quorum of the transcripts hears it,
 dictionary has for the spelling or the show has for a name where they hear that instead
 (`choices`), and nothing else: a word heard as two readings, or as one nothing licenses, goes to
 review. A correction must fit more closely than a confirmation (`CORRECT`), on a stretch never
-shrunk to fit. Each limit came from readings the furigana audio eval
+shrunk to fit, and none is written where a vowel's length is all that tells it from another
+licensed reading (`length_sibling`). Each limit came from readings the furigana audio eval
 (`research/furigana_audio*.py`) got wrong. That eval scores its transcripts through this
 module, so it is this check's regression test: a change here shows in its numbers.
 """
@@ -308,10 +309,28 @@ def hears_choices(
     return {"draft": False, **heard}
 
 
-def decide(hearings: Sequence[Mapping[str, bool]], draft: str, quorum: int) -> Optional[str]:
+def length_sibling(reading: str, readings: Iterable[str]) -> bool:
+    """Whether one of `readings` differs from `reading` only in what a transcript is unsure
+    of, a long vowel or a っ: it `agrees` and is not the `same_reading`."""
+    return any(agrees(r, reading) and not same_reading(r, reading) for r in readings)
+
+
+def decide(
+    hearings: Sequence[Mapping[str, bool]],
+    draft: str,
+    quorum: int,
+    licensed: Iterable[str] = (),
+) -> Optional[str]:
     """The reading the op writes for a word, given what each transcript hears of its choices
     (`hears_choices`), or None for a review: the draft where a quorum hears it, another reading
-    where a quorum hears that one; never when a quorum hears each of two readings."""
+    where a quorum hears that one; never when a quorum hears each of two readings.
+
+    Nor another reading while one of the word's `licensed` readings (the `others` its choices
+    were made of) is a `length_sibling` of it. The models drop a final long vowel: 婆 said
+    ばばあ was heard ババ by both, and JMdict reads it ばば too, which the rule wrote, three
+    times in the eval with 爺 じじ for じじい. Kept to corrections: a draft confirmed with such
+    a sibling (本当 ほんとう, ほんと) was never found wrong, and holding those back sent five
+    times as many words to review, on ordinary lines too."""
 
     def votes(key: str) -> int:
         return sum(h.get(key, False) for h in hearings)
@@ -323,6 +342,6 @@ def decide(hearings: Sequence[Mapping[str, bool]], draft: str, quorum: int) -> O
         return draft
     if not heard_draft and others:
         first = sorted(others)[0]
-        if all(agrees(first, key) for key in others):
+        if all(agrees(first, key) for key in others) and not length_sibling(first, licensed):
             return first
     return None

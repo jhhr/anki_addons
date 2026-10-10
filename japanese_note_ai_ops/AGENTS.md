@@ -633,8 +633,9 @@ give and the labels by ear, through the op's own check (`word_array/reading_chec
 morae, the alignment, what a word is heard as). With `--combine` it writes what the op's rule
 would (`reading_check.decide`): the draft where the models hear it, a reading JMdict has for
 the spelling or the show has for a name where they hear that instead, review otherwise. The
-check's limits on a correction (`CORRECT`, and a stretch `fit` may not shrink for one) each
-came from readings the runs got wrong, so a change to the check shows in the eval's numbers. `furigana_audio_label.py` gets the labels
+check's limits on a correction (`CORRECT`, a stretch `fit` may not shrink for one, and none
+that only a vowel's length tells from another licensed reading) each came from readings the
+runs got wrong, so a change to the check shows in the eval's numbers. `furigana_audio_label.py` gets the labels
 by ear: `queue`, where the scored runs are, picks the words the rule corrects, sends to review
 or writes on fewer than every model's hearing, and a sample of the rest; `serve` (standard
 library only, so it runs on the machine with the clips) plays each card's clip in a page on
