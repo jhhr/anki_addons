@@ -1,6 +1,7 @@
 import logging
 import re
 from typing import Any, NamedTuple, Optional, Sequence
+from anki.errors import NotFoundError
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -13,6 +14,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .note_cache import NoteCache
+from .role_gate import notes_of_role
 from .sentence_cache import SentenceCache
 from .word_index import WordIndex
 from .chain_types import ChainStep
@@ -38,6 +40,7 @@ from .make_all_meanings import (
     make_meaning_dict_key,
 )
 
+from ..note_roles import VOCAB_ROLE, example_id_field, note_type_search, sentence_type_of
 from ..utils import get_field_config
 from ..html_stripping import strip_html
 from ..word_array import match_targets
@@ -57,12 +60,43 @@ def _field_value(config: dict[str, str], note: Note, field_key: str) -> str:
     return note[field] if field in note else ""
 
 
+def _example_sentence_id(
+    config: dict[str, str], note: Note, vocab_type_name: str
+) -> Optional[NoteId]:
+    """The id of a two-type vocab note's example sentence note, None when it names none.
+
+    Logged rather than raised: a vocab note without an example still has the sentences that
+    link it, and its meaning is cleaned from those.
+    """
+    id_field = example_id_field(config, vocab_type_name)
+    if not id_field or id_field not in note:
+        logger.error(
+            f'Note type "{vocab_type_name}" has no example sentence id field'
+            f" ({id_field or 'example_sentence_id_field is not set'}): the sentences of note"
+            f" {note.id} are without its own"
+        )
+        return None
+    value = note[id_field].strip()
+    try:
+        example_id = int(value)
+    except ValueError:
+        example_id = 0
+    if example_id <= 0:
+        logger.warning(
+            f"Note {note.id} names no example sentence note ({id_field}: {value!r}): its"
+            " sentences are without its own"
+        )
+        return None
+    return NoteId(example_id)
+
+
 def get_sentences_for_note(
     config: dict[str, str],
     note: Note,
     exclude_self: bool = False,
     sentence_cache: Optional[SentenceCache] = None,
     note_cache: Optional[NoteCache] = None,
+    own_sentence: Optional[EnAndJPSentence] = None,
 ) -> list[EnAndJPSentence]:
     """The sentences this note's word appears in, its own first unless excluded.
 
@@ -73,6 +107,18 @@ def get_sentences_for_note(
     :param note_cache: The run's fetched notes, if the caller has one. The sibling notes are
         fetched in one turn either way; through the cache, a note the run already holds costs
         no turn at all.
+    :param own_sentence: The note's own sentence, from a caller that holds it, in place of the
+        one read off the note or its example sentence note. The match op has it for the note
+        it is making (id 0), whose sentence is the one being matched. The others are found as
+        without it.
+
+    The own sentence is the note's own fields in the one-type layout. In the two-type layout
+    (note_roles) it is its example sentence note's (`example_sentence_id_field`), and there is
+    none when the note names no example or that note is gone. The others are the notes whose
+    word list field links this note, each once and never the own sentence's note; in the
+    two-type layout only notes of its sentence type, read by that type's field names, since
+    the vocab notes keep their old sentence fields, under the same names, until the user
+    deletes them.
 
     A sentence from a note whose word list field holds a word array has this note's word in
     `<b>`: the occurrence linked to this note, else the first of its word
@@ -83,9 +129,14 @@ def get_sentences_for_note(
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
         return []
-    word_list_field = get_field_config(config, "word_list_field", note_type)
-    sentence_field = get_field_config(config, "sentence_field", note_type)
-    translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
+    sentence_type = sentence_type_of(config, note_type["name"])
+    two_type = sentence_type != note_type["name"]
+    sentence_note_type: dict[str, Any] = {"name": sentence_type} if two_type else note_type
+    word_list_field = get_field_config(config, "word_list_field", sentence_note_type)
+    sentence_field = get_field_config(config, "sentence_field", sentence_note_type)
+    translated_sentence_field = get_field_config(
+        config, "translated_sentence_field", sentence_note_type
+    )
     word = _field_value(config, note, "word_kanjified_field") or _field_value(
         config, note, "word_field"
     )
@@ -103,30 +154,75 @@ def get_sentences_for_note(
             en_sentence=strip_html(onote[translated_sentence_field]),
         )
 
-    cur_note_sentence = make_en_and_jp_sentence(note)
-    if note.id == 0:
-        # New note, can't search for others using its ID
-        if exclude_self:
-            return []
-        return [cur_note_sentence]
-
-    def scan_for_other_sentences() -> list[EnAndJPSentence]:
-        query = f'"{word_list_field}:*{note.id}*" -nid:{note.id}'
-        logger.debug(f"Getting sentences for note {note.id} with query: {query}")
-        other_sentence_note_ids = col_find_notes(query)
+    def fetch(note_ids: Sequence[NoteId]) -> dict[NoteId, Note]:
         # One turn with the collection for all of them rather than one turn each: a note's
         # word list names a handful of siblings, and taking and releasing the collection per
         # note let every other waiting caller in between.
         if note_cache is not None:
-            by_id = note_cache.get_notes_blocking(other_sentence_note_ids)
-        else:
-            by_id = {onote.id: onote for onote in col_get_notes(other_sentence_note_ids)}
+            return note_cache.get_notes_blocking(note_ids)
+        return {onote.id: onote for onote in col_get_notes(note_ids)}
+
+    def read_example_sentence(example_id: NoteId) -> list[EnAndJPSentence]:
+        try:
+            example = fetch([example_id]).get(example_id)
+        except NotFoundError:
+            # What Anki's get_note raises for an id with no note, without a note cache (the
+            # cache leaves such an id out)
+            example = None
+        if example is None or sentence_field not in example:
+            logger.warning(
+                f"Note {note.id}'s example sentence note {example_id} is gone or is not a"
+                f' "{sentence_type}" note: its sentences are without its own'
+            )
+            return []
+        return [make_en_and_jp_sentence(example)]
+
+    # The note the own sentence is read off, which the others leave out. A note not added yet
+    # has no others, so its example is not looked up when its sentence is not wanted either.
+    own_note_id: Optional[NoteId] = note.id
+    if two_type:
+        wanted = note.id != 0 or (own_sentence is None and not exclude_self)
+        own_note_id = _example_sentence_id(config, note, note_type["name"]) if wanted else None
+    if own_sentence is not None:
+        cur_note_sentences = [own_sentence]
+    elif not two_type:
+        cur_note_sentences = [make_en_and_jp_sentence(note)]
+    elif own_note_id is None or exclude_self:
+        cur_note_sentences = []
+    else:
+        cur_note_sentences = read_example_sentence(own_note_id)
+    if note.id == 0:
+        # New note, can't search for others using its ID
+        if exclude_self:
+            return []
+        return cur_note_sentences
+
+    if two_type:
+        # Only the sentence type's notes: a vocab note keeps its old word list field, under
+        # the same name, until the user deletes it, and nothing keeps the array there current
+        query = note_type_search(sentence_type) + f' "{word_list_field}:*{note.id}*"'
+        if own_note_id is not None:
+            query += f" -nid:{own_note_id}"
+    else:
+        query = f'"{word_list_field}:*{note.id}*" -nid:{note.id}'
+
+    def scan_for_other_sentences() -> list[EnAndJPSentence]:
+        logger.debug(f"Getting sentences for note {note.id} with query: {query}")
+        other_sentence_note_ids = col_find_notes(query)
+        by_id = fetch(other_sentence_note_ids)
         # Back into the order the search gave them: these become prompt lines, and neither the
-        # cache's hit-then-miss order nor a fetch's is the order the run used to see.
+        # cache's hit-then-miss order nor a fetch's is the order the run used to see. Each note
+        # once and never the own sentence's note, told apart by note id; the check this
+        # replaces compared a note's sentence text with the dicts listed so far, and so never
+        # left anything out.
+        listed = {own_note_id}
         sentences: list[EnAndJPSentence] = []
-        for onote in (by_id[onid] for onid in other_sentence_note_ids if onid in by_id):
-            if sentence_field in onote and onote[sentence_field] not in sentences:
-                sentences.append(make_en_and_jp_sentence(onote))
+        for onid in other_sentence_note_ids:
+            onote = by_id.get(onid)
+            if onote is None or onid in listed or sentence_field not in onote:
+                continue
+            listed.add(onid)
+            sentences.append(make_en_and_jp_sentence(onote))
         return sentences
 
     if sentence_cache is not None:
@@ -137,7 +233,7 @@ def get_sentences_for_note(
         # Copied, because the cached list belongs to the cache and every caller gets the same
         # one; the callers below build on what they are handed.
         return list(other_sentences)
-    return [cur_note_sentence] + list(other_sentences)
+    return cur_note_sentences + list(other_sentences)
 
 
 def get_other_meaning_notes(
@@ -748,6 +844,7 @@ def clean_meaning_in_note(
     word_note_index: Optional[WordIndex] = None,
     sentence_cache: Optional[SentenceCache] = None,
     note_cache: Optional[NoteCache] = None,
+    own_sentence: Optional[EnAndJPSentence] = None,
 ) -> CleanResult:
     """Clean the meaning of `note`, and of no other note.
 
@@ -784,6 +881,8 @@ def clean_meaning_in_note(
         get_sentences_for_note, which scans the collection once per note id instead of once
         per ask.
     :param note_cache: The run's fetched notes, if the caller has one. Passed the same way.
+    :param own_sentence: The note's own sentence, when the caller has it: passed to
+        get_sentences_for_note for this note only, never for the others.
     :return: Whether the note's meaning changed, and the other note of its word whose sense it
         repeats, if the cleaning found one.
     """
@@ -792,12 +891,20 @@ def clean_meaning_in_note(
         logger.error(f"note_type() call failed for note {note.id}")
         return NOT_CHANGED
 
+    # A missing key or a broken layout goes past the KeyError below to the caller, as
+    # get_field_config's Exception or note_roles' LayoutError: each names the type and key
     try:
         meaning_field = get_field_config(config, "meaning_field", note_type)
         english_meaning_field = get_field_config(config, "english_meaning_field", note_type)
         word_field = get_field_config(config, "word_field", note_type)
         word_reading_field = get_field_config(config, "word_reading_field", note_type)
-        sentence_field = get_field_config(config, "sentence_field", note_type)
+        # A vocab note of the two-type layout holds no sentence: its sentences are its sentence
+        # type's notes' (get_sentences_for_note)
+        sentence_fields = (
+            [get_field_config(config, "sentence_field", note_type)]
+            if sentence_type_of(config, note_type["name"]) == note_type["name"]
+            else []
+        )
         new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
     except KeyError as e:
         logger.error(str(e))
@@ -809,7 +916,7 @@ def clean_meaning_in_note(
             english_meaning_field,
             word_field,
             word_reading_field,
-            sentence_field,
+            *sentence_fields,
             new_note_id_field,
         )
     ):
@@ -907,15 +1014,30 @@ def clean_meaning_in_note(
         key=lambda n: (n.id <= 0, meaning_note_key(n)),
     )
 
-    def usage(n: Note, max_sentences: Optional[int] = None) -> WordAndSentences:
+    def usage(
+        n: Note, max_sentences: Optional[int] = None, own: Optional[EnAndJPSentence] = None
+    ) -> WordAndSentences:
         sentences = get_sentences_for_note(
-            config, n, sentence_cache=sentence_cache, note_cache=note_cache
+            config, n, sentence_cache=sentence_cache, note_cache=note_cache, own_sentence=own
         )
         return WordAndSentences(
             jp_meaning=n[meaning_field],
             en_meaning=n[english_meaning_field],
             sentences=sentences[:max_sentences],
         )
+
+    def without_sentences(sentences: Sequence[EnAndJPSentence]) -> bool:
+        """Whether the note has no sentence to clean its meaning from, which only a vocab note
+        of the two-type layout can have: no example sentence note, and none linking it. The
+        extract and generate prompts are built on the first sentence, and the map and rework
+        prompts would ask about a use they cannot show."""
+        if sentences:
+            return False
+        logger.warning(
+            f"Note {meaning_note_key(note)} of word {word_key} has no sentence to clean its"
+            " meaning from: left as it was"
+        )
+        return True
 
     def holder_of(en_meaning: str) -> Optional[Note]:
         """The other note that holds this generated meaning already: the note would be its
@@ -954,7 +1076,9 @@ def clean_meaning_in_note(
                 register()
             return CleanResult(False, holder)
 
-        target = usage(note)
+        target = usage(note, own=own_sentence)
+        if without_sentences(target["sentences"]):
+            return NOT_CHANGED
         other_usages = [usage(o, OTHER_NOTE_SENTENCES) for o in others]
 
         def mapped(
@@ -1008,11 +1132,14 @@ def clean_meaning_in_note(
         )
 
     if others:
+        target = usage(note, own=own_sentence)
+        if without_sentences(target["sentences"]):
+            return NOT_CHANGED
         reworked = rework_note_meaning(
             config,
             word,
             reading,
-            usage(note),
+            target,
             [usage(o, OTHER_NOTE_SENTENCES) for o in others],
             jp_mdx_dict_entry,
             # `same_sense_as` counts in other_note_ids
@@ -1027,8 +1154,14 @@ def clean_meaning_in_note(
         return write(jp_meaning, en_meaning, ["updated_jp_meaning"], numbered(same_sense))
 
     sentences = get_sentences_for_note(
-        config, note, sentence_cache=sentence_cache, note_cache=note_cache
+        config,
+        note,
+        sentence_cache=sentence_cache,
+        note_cache=note_cache,
+        own_sentence=own_sentence,
     )
+    if without_sentences(sentences):
+        return NOT_CHANGED
     if jp_mdx_dict_entry:
         # Call API to get single meaning from the raw dictionary entry
         new_jp_meaning, new_en_meaning = get_single_meaning_from_mdx_dict_entry(
@@ -1104,7 +1237,7 @@ def bulk_clean_notes_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,

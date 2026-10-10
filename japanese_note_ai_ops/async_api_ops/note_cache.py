@@ -36,6 +36,8 @@ few thousand Note objects and the cache dies with the run that made it.
 import logging
 from typing import TYPE_CHECKING, Iterable, Optional
 
+from anki.errors import NotFoundError
+
 from .collection_access import get_notes, get_notes_async
 
 if TYPE_CHECKING:
@@ -86,8 +88,11 @@ class NoteCache:
     async def get_notes(self, note_ids: "Iterable[NoteId]") -> "dict[NoteId, Note]":
         """The notes for these ids, taking one turn with the collection for the ones missing.
 
-        Ids the collection has no note for are absent from the result rather than raising, so
-        a caller can treat this exactly like the `get_notes_async` it replaces.
+        Ids the collection has no note for are absent from the result rather than raising, which
+        every caller is written for: a word linked to a note deleted since, say, is left
+        unrated. Anki's `get_note` raises `NotFoundError` for such an id, and with it the whole
+        batch `get_notes_async` fetches in one turn, so then each is fetched alone: a turn per
+        note, but only after a fetch has met a gone note.
         """
         ids = list(note_ids)
         if not ids:
@@ -107,7 +112,7 @@ class NoteCache:
         if missing:
             # One turn for all of them, as before: taking and releasing the collection per note
             # lets every other waiting caller in between.
-            for note in await get_notes_async(missing):
+            for note in await _fetch_each_async(missing):
                 found[note.id] = self._store(note)
             self.fetched += len(missing)
         self._report()
@@ -118,7 +123,7 @@ class NoteCache:
 
         The synchronous ops run in `asyncio.to_thread` workers and reach the collection
         through the blocking wrappers, so they cannot await this. Same cache, same one turn
-        for whatever is missing.
+        for whatever is missing, and an id with no note left out the same way.
         """
         ids = list(note_ids)
         if not ids:
@@ -136,7 +141,7 @@ class NoteCache:
         self.hits += len(found)
 
         if missing:
-            for note in get_notes(missing):
+            for note in _fetch_each(missing):
                 found[note.id] = self._store(note)
             self.fetched += len(missing)
         self._report()
@@ -154,3 +159,42 @@ class NoteCache:
             100 * self.hits / self.asked,
             len(self._notes),
         )
+
+
+async def _fetch_each_async(note_ids: "list[NoteId]") -> "list[Note]":
+    """`get_notes_async`, leaving out the ids the collection has no note for: one turn for all
+    of them, and a turn each only once that has raised (a lone id is then known to be gone)."""
+    try:
+        return await get_notes_async(note_ids)
+    except NotFoundError:
+        if len(note_ids) == 1:
+            _log_gone(note_ids[0])
+            return []
+    notes: "list[Note]" = []
+    for note_id in note_ids:
+        try:
+            notes.extend(await get_notes_async([note_id]))
+        except NotFoundError:
+            _log_gone(note_id)
+    return notes
+
+
+def _fetch_each(note_ids: "list[NoteId]") -> "list[Note]":
+    """`_fetch_each_async` for a caller off the event loop."""
+    try:
+        return get_notes(note_ids)
+    except NotFoundError:
+        if len(note_ids) == 1:
+            _log_gone(note_ids[0])
+            return []
+    notes: "list[Note]" = []
+    for note_id in note_ids:
+        try:
+            notes.extend(get_notes([note_id]))
+        except NotFoundError:
+            _log_gone(note_id)
+    return notes
+
+
+def _log_gone(note_id: "NoteId") -> None:
+    logger.warning("Note %s is not in the collection, left out of the fetch", note_id)

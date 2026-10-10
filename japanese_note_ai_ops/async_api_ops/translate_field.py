@@ -14,6 +14,18 @@ from .base_ops import (
     selected_notes_op,
     AsyncTaskProgressUpdater,
 )
+from .collection_access import (
+    find_notes as col_find_notes,
+    get_notes as col_get_notes,
+)
+from .role_gate import notes_of_role
+from ..note_roles import (
+    SENTENCE_ROLE,
+    example_field_pairs,
+    example_id_field,
+    note_type_search,
+    vocab_type_of,
+)
 from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
@@ -45,12 +57,45 @@ def get_translated_field_from_model(config: dict[str, str], sentence: str) -> Un
         return None
 
 
+def copy_translation_to_vocab_notes(
+    config: dict,
+    sentence_note: Note,
+    vocab_type: str,
+    translated_sentence_field: str,
+    notes_to_update_dict: dict[NoteId, Note],
+) -> None:
+    """Give the vocab notes whose example `sentence_note` is (two-type layout) its new
+    translation, in the vocab type's translation field: their copy of it (note_roles,
+    `copy_example`) would otherwise keep the old one until "Refresh example sentences".
+
+    Reads through collection_access, as on the run's worker threads; registers each vocab note
+    it changes, and the run's own version of one already registered.
+    """
+    id_field = example_id_field(config, vocab_type)
+    vocab_field = dict(example_field_pairs(config, vocab_type)).get(translated_sentence_field)
+    if not id_field or not vocab_field or sentence_note.id <= 0:
+        return
+    translation = sentence_note[translated_sentence_field]
+    nids = col_find_notes(f'{note_type_search(vocab_type)} "{id_field}:{sentence_note.id}"')
+    registered = [notes_to_update_dict[nid] for nid in nids if nid in notes_to_update_dict]
+    fetched = col_get_notes([nid for nid in nids if nid not in notes_to_update_dict])
+    for vocab_note in [*registered, *fetched]:
+        if vocab_field in vocab_note and vocab_note[vocab_field] != translation:
+            vocab_note[vocab_field] = translation
+            notes_to_update_dict[vocab_note.id] = vocab_note
+
+
 def translate_sentence_in_note(
     config: dict,
     note: Note,
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
+    *,
+    copy_to_vocab_notes: bool = True,
 ) -> bool:
+    """Translate the note's sentence into its translation field. In the two-type layout a
+    sentence note's vocab notes get the translation too, unless `copy_to_vocab_notes` is off:
+    the editor's hook translates only the note it shows, which the editor saves."""
     note_type = note.note_type()
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
@@ -58,6 +103,9 @@ def translate_sentence_in_note(
     try:
         sentence_field = get_field_config(config, "sentence_field", note_type)
         translated_sentence_field = get_field_config(config, "translated_sentence_field", note_type)
+        # Read before the request, so a broken layout costs none: the type itself outside the
+        # two-type layout, where there is nothing to copy to
+        vocab_type = vocab_type_of(config, note_type["name"]) if copy_to_vocab_notes else None
     except Exception as e:
         logger.error(str(e))
         return False
@@ -80,6 +128,10 @@ def translate_sentence_in_note(
                 note[translated_sentence_field] = translated_sentence
                 if note.id != 0 and note.id not in notes_to_update_dict:
                     notes_to_update_dict[note.id] = note
+                if vocab_type is not None and vocab_type != note_type["name"]:
+                    copy_translation_to_vocab_notes(
+                        config, note, vocab_type, translated_sentence_field, notes_to_update_dict
+                    )
                 return True
             return False
         return False
@@ -107,7 +159,7 @@ def bulk_translate_notes_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, SENTENCE_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict,

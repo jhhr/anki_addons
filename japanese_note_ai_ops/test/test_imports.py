@@ -41,6 +41,7 @@ STARTUP_MODULES = [
     "find_proper_nouns",
     "new_note_all_ops",
     "op_chain",
+    "role_gate",
 ]
 
 # The same, from sync_local_ops
@@ -49,6 +50,7 @@ STARTUP_SYNC_MODULES = [
     "tag_notes_matched_status",
     "deduplicate_existing_meaning_notes",
     "make_fine_tuning_data",
+    "refresh_example_sentences",
 ]
 
 # Top-level modules that reach for aqt

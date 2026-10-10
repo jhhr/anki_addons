@@ -14,10 +14,13 @@ one test that runs the real one with a store installed in a temporary directory.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import sys
 import tempfile
 import unittest
 from contextlib import closing
@@ -31,6 +34,8 @@ mam = load_ops_module("make_all_meanings")
 capture = load_ops_module("capture")
 capture_store = load_ops_module("capture_store")
 base_ops = load_ops_module("base_ops")
+# The one clean_meaning imported, whose LayoutError it raises
+note_roles = sys.modules[cm.sentence_type_of.__module__]
 
 CONFIG = {"word_meaning_model": "model", "make_meanings_model": "model"}
 WORD, READING = "引く", "ひく"
@@ -985,5 +990,265 @@ class StoreTests(unittest.TestCase):
         )
         # Nothing to read make_all_meanings' answers against that the inputs do not say
         self.assertIsNone(rows["make_all_meanings.merge"]["context_json"])
+
+
+# The notes the two-type layout's sentences come from: the vocab notes name them by id
+TARGET_NOTE = 1712000000003
+LINE_EXAMPLE, LINE_AGAIN, PULL_EXAMPLE = 1712000000101, 1712000000102, 1712000000103
+
+
+def hiku_array(before: list, linked: int) -> list:
+    """「<before>を引く」, its 引く linked to the note `linked`."""
+    return [
+        *before,
+        ["を", "particle", "を", "を", ["dontmatch"], []],
+        ["引[ひ]く", "verb", "引く", "ひく", [linked], []],
+    ]
+
+
+LINE = ["線[せん]", "noun", "線", "せん", ["dontmatch"], []]
+AGAIN = ["また", "adverb", "また", "また", ["dontmatch"], []]
+
+
+class SentenceNote:
+    """A note of the two-type layout's sentence type, as get_sentences_for_note reads it."""
+
+    def __init__(self, note_id: int, arr: list, translation: str):
+        self.id = note_id
+        self.fields = {
+            "s-sentence": "",
+            "s-array": json.dumps(arr, ensure_ascii=False),
+            "s-translation": translation,
+        }
+
+    def note_type(self) -> dict:
+        return {"name": "Sentence"}
+
+    def __contains__(self, field: str) -> bool:
+        return field in self.fields
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
+
+
+def two_type_word_note(
+    note_id: int, meaning: str, en_meaning: str, example_id: Any, placeholder: str = ""
+) -> WordNote:
+    """A vocab note of the two-type layout: no sentence field of its own, its example sentence
+    note's id, and the old sentence fields it keeps until the user deletes them, never read."""
+    note = WordNote(note_id, meaning, en_meaning, placeholder)
+    del note.fields["sentence_field"]
+    note.fields.update(
+        {
+            "word_sort_field": WORD,
+            "example_sentence_id_field": str(example_id),
+            "s-sentence": "古い文。",
+            "s-array": "",
+            "s-translation": "an old translation",
+        }
+    )
+    return note
+
+
+LINE_SENTENCE = {"jp_sentence": "線を<b>引く</b>", "en_sentence": "I draw a line."}
+LINE_AGAIN_SENTENCE = {"jp_sentence": "また線を<b>引く</b>", "en_sentence": "I draw it again."}
+PULL_SENTENCE = {"jp_sentence": "綱を<b>引く</b>", "en_sentence": "The dog pulls the leash."}
+GIVEN = {"jp_sentence": "ここに線を<b>引く</b>", "en_sentence": "I draw a line here."}
+
+
+class TwoTypeCleanNoteTests(unittest.TestCase):
+    """clean_meaning_in_note on a vocab note of the two-type layout, through the real
+    get_sentences_for_note over a faked collection: the note has no sentence field, and what a
+    call records and sends is its sentence notes' text, read by the sentence type's names."""
+
+    CONFIG = {
+        "Word": {
+            **{key: key for key in WordNote(0, "", "").fields if key != "sentence_field"},
+            "sentence_note_type": "Sentence",
+            "word_sort_field": "word_sort_field",
+            "example_sentence_id_field": "example_sentence_id_field",
+        },
+        "Sentence": {
+            "vocab_note_type": "Word",
+            "word_list_field": "s-array",
+            "sentence_field": "s-sentence",
+            "translated_sentence_field": "s-translation",
+        },
+        "word_meaning_model": "model",
+        "make_meanings_model": "model",
+    }
+
+    def setUp(self) -> None:
+        self.notes = {
+            note.id: note
+            for note in (
+                SentenceNote(LINE_EXAMPLE, hiku_array([LINE], TARGET_NOTE), "I draw a line."),
+                SentenceNote(
+                    LINE_AGAIN, hiku_array([AGAIN, LINE], TARGET_NOTE), "I draw it again."
+                ),
+                SentenceNote(
+                    PULL_EXAMPLE,
+                    hiku_array([["綱[つな]", "noun", "綱", "つな", ["dontmatch"], []]], PULL_NOTE),
+                    "The dog pulls the leash.",
+                ),
+            )
+        }
+        self.searches: list[str] = []
+        self.fetches: list[list[int]] = []
+
+    def find_notes(self, query: str) -> list[int]:
+        """The sentence notes whose array names the id. `-nid` is not read, so a note's example
+        is found again and left out by get_sentences_for_note's own check, by note id."""
+        self.searches.append(query)
+        [linked] = re.findall(r'"s-array:\*(\d+)\*"', query)
+        assert query.startswith('"note:Sentence" '), query
+        return [nid for nid, note in self.notes.items() if linked in note["s-array"]]
+
+    def get_notes(self, note_ids) -> list:
+        self.fetches.append(list(note_ids))
+        return [self.notes[nid] for nid in note_ids]
+
+    def clean(
+        self,
+        note: WordNote,
+        others: list,
+        entry,
+        answer: Any,
+        config: Any = None,
+        generated: bool = True,
+        **kwargs: Any,
+    ) -> Cleaning:
+        """`others` given by the caller, as the match op's CREATE NEW gives them; the word's
+        generated meanings unless not `generated`."""
+        calls = Recorder(answer)
+        adds = Recorder({"meanings": []})
+        to_update: dict = {}
+        with (
+            no_mdx_load(),
+            mdx_entry(entry),
+            mock.patch.object(cm, "col_find_notes", self.find_notes),
+            mock.patch.object(cm, "col_get_notes", self.get_notes),
+            mock.patch.object(cm, "get_response", calls),
+            mock.patch.object(mam, "get_response", adds),
+        ):
+            result = cm.clean_meaning_in_note(
+                config=config or self.CONFIG,
+                note=note,
+                notes_to_add_dict={},
+                notes_to_update_dict=to_update,
+                all_generated_meanings_dict={WORD_KEY: generated_meanings()} if generated else {},
+                other_meaning_notes=others,
+                **kwargs,
+            )
+        return Cleaning(result, calls, adds, to_update)
+
+    def assert_built_from(self, builder: Callable[..., str], prompt: str, inputs: dict) -> None:
+        self.assertEqual(builder(**inputs), prompt)
+        self.assertEqual(builder(**json.loads(capture_store.canonical_json(inputs))), prompt)
+        # Nothing of the vocab notes' old sentence fields
+        self.assertNotIn("古い文", prompt)
+        self.assertNotIn("an old translation", prompt)
+
+    def test_the_calls_record_and_send_the_sentences_of_the_sentence_notes(self):
+        target = two_type_word_note(TARGET_NOTE, "線を描く。", "to draw", LINE_EXAMPLE)
+        pull = two_type_word_note(PULL_NOTE, "手元へ寄せる。", "to pull", PULL_EXAMPLE)
+
+        cleaning = self.clean(target, [pull], ENTRY, map_answer(2, 5))
+
+        prompt, kwargs = cleaning.calls.one()
+        self.assertEqual(kwargs["kind"], "clean_meaning.map_note")
+        inputs = kwargs["inputs"]
+        # Its example first, then the other sentence note linking it; the other note's likewise
+        self.assertEqual(inputs["target"]["sentences"], [LINE_SENTENCE, LINE_AGAIN_SENTENCE])
+        self.assertEqual(inputs["others"][0]["sentences"], [PULL_SENTENCE])
+        self.assert_built_from(cm.map_note_prompt, prompt, inputs)
+        self.assertEqual(
+            self.searches,
+            [
+                f'"note:Sentence" "s-array:*{TARGET_NOTE}*" -nid:{LINE_EXAMPLE}',
+                f'"note:Sentence" "s-array:*{PULL_NOTE}*" -nid:{PULL_EXAMPLE}',
+            ],
+        )
+        self.assertEqual(target["english_meaning_field"], "to draw (a line)")
+
+    def test_a_sentence_handed_in_is_the_new_note_own_and_no_other_note_gets_it(self):
+        new = two_type_word_note(0, "線を描く。", "to draw", "", placeholder="-5550009")
+        pull = two_type_word_note(PULL_NOTE, "手元へ寄せる。", "to pull", PULL_EXAMPLE)
+
+        cleaning = self.clean(new, [pull], ENTRY, map_answer(2, 5), own_sentence=GIVEN)
+
+        prompt, kwargs = cleaning.calls.one()
+        self.assertEqual(kwargs["inputs"]["target"]["sentences"], [GIVEN])
+        self.assertEqual(kwargs["inputs"]["others"][0]["sentences"], [PULL_SENTENCE])
+        self.assert_built_from(cm.map_note_prompt, prompt, kwargs["inputs"])
+
+    def test_a_meaning_generated_for_a_new_note_is_from_the_sentence_handed_in(self):
+        jp, en = NEW_MEANING
+        new = two_type_word_note(0, "", "", LINE_EXAMPLE, placeholder="-5550002")
+        # No generated meanings to map to, no others and no dictionary entry: generated
+        cleaning = self.clean(
+            new,
+            [],
+            None,
+            {"new_meaning": jp, "english_meaning": en},
+            generated=False,
+            own_sentence=GIVEN,
+        )
+
+        prompt, kwargs = cleaning.calls.one()
+        self.assertEqual(kwargs["kind"], "clean_meaning.generate")
+        self.assertEqual(kwargs["inputs"]["sentences"], [GIVEN["jp_sentence"]])
+        self.assert_built_from(cm.generate_meaning_prompt, prompt, kwargs["inputs"])
+        self.assertEqual((self.searches, self.fetches), ([], []))
+        self.assertEqual(new.meaning(), NEW_MEANING)
+
+    def test_a_note_with_no_sentence_at_all_is_left_as_it_was(self):
+        # No example and no sentence note linking it. The extract and generate prompts are built
+        # on the first sentence, and raised on none
+        jp, en = NEW_MEANING
+        pull = two_type_word_note(PULL_NOTE, "手元へ寄せる。", "to pull", PULL_EXAMPLE)
+        cases = [
+            ("extract", ENTRY, {"cleaned_meaning": jp, "english_meaning": en}, [], False),
+            ("generate", None, {"new_meaning": jp, "english_meaning": en}, [], False),
+            ("rework", ENTRY, rework_answer(), [pull], False),
+            ("map", ENTRY, map_answer(2, 5), [], True),
+        ]
+        for name, entry, answer, others, generated in cases:
+            with self.subTest(name):
+                note = two_type_word_note(1712000000009, "線を描く。", "to draw", "")
+
+                with self.assertLogs(cm.logger, "WARNING"):
+                    cleaning = self.clean(note, others, entry, answer, generated=generated)
+
+                self.assertEqual(cleaning.calls.calls, [])
+                self.assertEqual(cleaning.result, cm.NOT_CHANGED)
+                self.assertEqual(note.meaning(), ("線を描く。", "to draw"))
+
+    def test_a_one_type_note_without_its_sentence_field_is_still_left_alone(self):
+        note = WordNote(PULL_NOTE, "", "")
+        del note.fields["sentence_field"]
+
+        with self.assertLogs(cm.logger, "ERROR"):
+            cleaning = self.clean(note, [], ENTRY, None, config=CleanNoteTests.CONFIG)
+
+        self.assertEqual(cleaning.result, cm.NOT_CHANGED)
+        self.assertEqual(cleaning.calls.calls, [])
+
+    def test_a_broken_layout_is_a_layout_error(self):
+        config = copy.deepcopy(self.CONFIG)
+        del config["Sentence"]["vocab_note_type"]
+        target = two_type_word_note(TARGET_NOTE, "線を描く。", "to draw", LINE_EXAMPLE)
+        with self.assertRaises(note_roles.LayoutError):
+            self.clean(target, [], ENTRY, None, config=config)
+
+    def test_a_key_the_sentence_block_lacks_is_an_error_naming_it(self):
+        config = copy.deepcopy(self.CONFIG)
+        del config["Sentence"]["sentence_field"]
+        target = two_type_word_note(TARGET_NOTE, "線を描く。", "to draw", LINE_EXAMPLE)
+        with self.assertRaises(Exception) as raised:
+            self.clean(target, [], ENTRY, map_answer(2, 5), config=config)
+        self.assertNotIsInstance(raised.exception, KeyError)
+        self.assertIn("sentence_field", str(raised.exception))
+        self.assertIn("Sentence", str(raised.exception))
 
 

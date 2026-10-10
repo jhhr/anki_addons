@@ -21,6 +21,7 @@ from ..configuration import (
     MakeMeaningsResult,
     WordAndSentences,
 )
+from ..note_roles import VOCAB_ROLE
 from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
 from . import capture_notes
@@ -30,6 +31,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .diagnostics import StageTimer, log_stage
+from .role_gate import notes_of_role
 from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -638,7 +640,7 @@ def bulk_make_meanings_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,
@@ -693,7 +695,7 @@ def bulk_merge_meanings_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,

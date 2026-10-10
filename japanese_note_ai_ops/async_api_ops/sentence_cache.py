@@ -1,9 +1,10 @@
 """The sentences a note's word appears in, looked up once per note rather than once per ask.
 
 `get_sentences_for_note` asks the collection which *other* notes list this note's id in their
-`sentence-vocab-list` field. That is a leading-wildcard match on a note field, so it is a
-whole-collection scan by the same argument as every other one here - 0.389s measured, and no
-index exists or can exist for it.
+`sentence-vocab-list` field (in the two-type layout, which notes of its sentence type do, other
+than its example sentence note: the search is built there and the cache only runs it). That is
+a leading-wildcard match on a note field, so it is a whole-collection scan by the same argument
+as every other one here - 0.389s measured, and no index exists or can exist for it.
 
 It is not asked often, but it is asked about the same handful of notes over and over. Three
 runs, counted:

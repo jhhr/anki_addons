@@ -4,14 +4,20 @@ Read the root [AGENTS.md](../AGENTS.md) first.
 
 Runs LLM prompts and local operations over Japanese notes, from the browser's "AI helper"
 right-click submenu, from the browser's Edit > "Japanese AI ops..." dialog (several ops in a
-row, see "Chains" below) and from a few automatic triggers: adding a "Japanese vocab note" runs
-`clean_meaning` and `extract_words`; unfocusing an empty story field on a "Kanji draw" note
-writes a story; unfocusing an empty translation field translates. Those two note type names
-are hardcoded in the hooks. Operations: clean/generate a meaning from MDX dictionary
-entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a **word
-array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
-judge which words deserve a note, match words to vocab notes or create them. Bulk runs are
-asynchronous, parallel, memory-aware, pausable and cancellable.
+row, see "Chains" below) and from a few automatic triggers. A note added by a person: in the
+one-type layout a "Japanese vocab note" gets `clean_meaning` and `extract_words`; in the
+two-type layout (below) a note of that type's sentence type gets `extract_words`, and its cards
+are suspended when the classic Add dialog added it (`add_cards_did_add_note`; the experimental
+Add dialog fires neither hook), a vocab note nothing. A note an op adds gets nothing
+(`in_bulk_op()`). Unfocusing an empty story field on a "Kanji draw" note writes a story;
+unfocusing an empty translation field translates, on the vocab type in the one-type layout and
+on the sentence type in the two-type one. Those two note type names are hardcoded in the hooks;
+what each hook does is decided in `note_hooks.py`. Operations: clean/generate a meaning from
+MDX dictionary entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a
+**word array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
+judge which words deserve a note, match words to vocab notes or create them, and for the
+two-type layout move the sentences out of the vocab notes and refresh their example copies.
+Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 
 ## Map
 
@@ -21,11 +27,13 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
 | `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
-| `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
+| `op_registry.py` | `OPS`: the 23 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
+| `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses). Every function takes a type **name**. anki- and aqt-free |
+| `note_hooks.py` | what `__init__.py`'s note hooks do, decided without Anki so it can be tested: `ops_on_added_note`, `translates_on_unfocus`, `suspends_added_cards`. anki- and aqt-free |
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
@@ -41,14 +49,17 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/op_chain.py` | `run_op_chain(specs, nids, parent)`; `OpChain`, the sequencing with every Anki dependency passed in as a hook; `existing_note_ids(col, nids)` |
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
-| `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 2800 lines |
+| `async_api_ops/role_gate.py` | `notes_of_role(config, notes, role)`: the notes an op of one role may run on, the rest left out with one `run_errors` report per note type; `notes_passing` for any other refusal. anki- and aqt-free |
+| `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3250 lines |
 | `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
+| `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing` |
+| `sync_local_ops/sentence_migration.py`, `migrate_to_sentence_notes.py` | "Move sentences to sentence notes", single-use (see "Sentence and vocab note types"): the pure planner (`plan_migration`, `preflight_error`, the report's `CASES`; anki- and aqt-free) and the op that reads every vocab and sentence note in one SQL pass each, writes the report to `user_files/sentence_migration_<timestamp>.txt` and applies the plan (`SentenceMigration`, `migrate_spec()`) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
-| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
+| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs, `sentence_migration_run.py` for the migration's practice run (every note of the vocab type, not `capture_run`'s notes holding an array; prints a summary naming the report). **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
 | `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl` |
-| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds); `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -62,7 +73,9 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 5. `install_rebuild_ui(...)`, unconditionally, so a broken install can still repair itself.
 
 In `run_op_on_add_note` the `new_matched_jp_word` tag check stays first; a comment records
-that checking later cost 25 minutes per bulk run.
+that checking later cost 25 minutes per bulk run. The `in_bulk_op()` exit comes right after it,
+before the note type and config are read: an op's cleanup adds on the run's thread inside its
+bulk op, and the migration adds thousands of notes the hook must leave alone.
 
 ### An operation is three functions
 
@@ -76,7 +89,10 @@ that checking later cost 25 minutes per bulk run.
    `bulk_nested_notes_op(...)` (several requests per note; the inner op returns a
    `NotePlan(task_count, spawn, flush=None)` and must not start work itself; a note saved once
    all its tasks are done gives a `flush`, see Invariants). Local ops pass
-   `is_sync_op=True`. Multi-phase operations pass a list of `OpPhase(name, bulk_op)`.
+   `is_sync_op=True`. Multi-phase operations pass a list of `OpPhase(name, bulk_op)`. An op
+   that reads one role's fields passes `role_gate.notes_of_role(config, notes, SENTENCE_ROLE
+   or VOCAB_ROLE)` instead of `notes`: in the two-type layout a note of the other type lacks
+   them, and a selection or a chain's search holding both types is ordinary.
 3. `*_selected_notes(nids, parent, chain=None)` ending in `selected_notes_op(..., chain=chain)`
    with an `AsyncTaskProgressUpdater`. Every path that returns before that call must
    `fail_step(chain, reason)`, or a chain waits forever; a wrapper in
@@ -231,12 +247,21 @@ cheap no-op and nothing is recorded.
 - **Replays** (`dev/replay.py`). `export_fixture(store, run_id)` makes a fixture of a notes run:
   `corpus.json` (the notes the run read, their note types and decks under generic names but the
   hardcoded ones, note ids synthetic in every field, the run's config but for what a replay never
-  reads that names the user's things (`replay.PRIVATE_CONFIG_KEYS`, the `*_query` searches),
-  meanings read, dictionary lookups), `cassette.json` (the answers by `request_key`, in the order received) and
+  reads that names the user's things (`replay.PRIVATE_CONFIG_KEYS`, the `*_query` searches, and
+  in a block `PRIVATE_BLOCK_KEYS`, the migration's tag lists), meanings read, dictionary
+  lookups), `cassette.json` (the answers by `request_key`, in the order received) and
   `expected.json` (the notes as the run left them, new notes' ids and placeholders and a failed
   add's placeholder as symbols). It raises `CaptureGap` rather than guess, and for a run a
   replay cannot reproduce: one that lost records or has no recorded end (`dropped` NULL), one
-  not `completed`, one of another op.
+  not `completed`, one of another op. The config keeps the blocks of the note types the run
+  recorded notes of and, through `vocab_note_type`/`sentence_note_type` in either direction,
+  every type linked to them (`_linked_types`; a run over sentence notes that read and added no
+  vocab note recorded nothing of the vocab type, and without its block the layout check fails
+  every note; a wrong layout is kept whole and fails the replay as it failed the run); those
+  two keys' values are renamed with the types, a partner the corpus has no name for gets a
+  generic one of its own (a hardcoded name stays), and the corpus a stand-in note type with
+  the fields its block names (`_stand_in_notetypes`), in which the match op makes its new
+  vocab notes.
   `replay(fixture)` builds the corpus in a fresh collection, points every module's `mdx_helper`
   at the corpus's lookups, answers every `get_response` from the cassette through
   `base_ops.set_responder` (the one seam: a responder
@@ -444,7 +469,9 @@ cheap no-op and nothing is recorded.
   `capture.py`, `sync_local_ops/mdx_memo.py`, `html_stripping.py`, all of `word_array/*.py`. An
   `aqt` import in one of them takes the test suite offline (`test/addon_modules.py` says so).
   `async_api_ops/chain_types.py` is kept free of both too, so the chain's types need nothing
-  of Anki.
+  of Anki, and so are `note_roles.py`, `note_hooks.py`, `async_api_ops/role_gate.py` and
+  `sync_local_ops/sentence_migration.py`: their tests run on dicts and hand-written arrays,
+  and `note_hooks` exists because `__init__.py` cannot be imported by a test.
 - **Nothing the addon logs reaches stderr**, which Anki shows as an error dialog. The addon
   logger does not propagate, and `__init__.setup_addon_logging` gives it a `NullHandler` at
   import, unflagged, so that opening and closing log files never leaves it with no handler
@@ -460,6 +487,19 @@ cheap no-op and nothing is recorded.
   under `op_key=message`, so rewording it resets the estimate.
 - `bulk_*_op` signatures have mutable `{}` defaults, harmless only because
   `selected_notes_op` always passes fresh dicts. Do not call them without.
+- **The one-type layout behaves as before roles existed**, its searches and prompts byte for
+  byte: an untyped search stays untyped there (a note copied from a candidate of another
+  configured type is of that type, linked from the processed note's), a new note copies the
+  four sentence fields it always did, and `note_roles` answers each type as its own vocab and
+  sentence type. Every two-type change is behind the test that the type's partner is another
+  type (`sentence_type_of(config, V) != V`, `vocab_type_of(config, S) != S`), with tests of its
+  own next to the one-type ones.
+- **In the two-type layout the arrays are on the sentence type's notes only.** The vocab notes
+  keep their old array and sentence fields, under the sentence block's names, until the user
+  deletes them, and nothing may read them there: every search over the array field names the
+  sentence type (`note_roles.note_type_search`), and a vocab note's sentence is its example
+  sentence note's (`example_sentence_id_field`), read on worker threads through the run's
+  note cache or `collection_access`.
 - A note that already holds a word array is skipped unless the Regenerate merge path is
   used; a field that does not parse as an array is never overwritten. Every note holds an
   array now, and the old per-part-of-speech dict format has no reader left: a field that is
@@ -469,9 +509,58 @@ cheap no-op and nothing is recorded.
   `vocab-kanji-grades` is regenerated by a copy_anywhere definition. Fix data in the authored
   field or the generator, or the next regeneration undoes it
   (`word_array/research/vocab_respell.py` docstring). The note lookup key is
-  `(dict_form, reading)` against `vocab-kanjified` plus `vocab-kana`.
+  `(dict_form, reading)` against `vocab-kanjified` plus `vocab-kana`: the vocab block's
+  `word_kanjified_field` and `word_reading_field`. `word_index` reads every note type that has
+  a field named like its kanjified, normal or sort field, which is why a sentence type must
+  have none (config.md).
 - The sources contain Japanese text. On Windows set `PYTHONIOENCODING=utf-8` for scripts, and
   do not pass Japanese through an inline shell heredoc; write a script file.
+
+## Sentence and vocab note types
+
+A configured note type's role comes from its config block (`note_roles`): `word_list_field`
+gives it the **sentence role** (its notes hold a sentence and its word array), `word_sort_field`
+the **vocab role** (its notes are the words the arrays link). The **one-type layout** is one
+block with both, "Japanese vocab note" holding the word and the sentence it was found in: every
+config before this, and still valid. In the **two-type layout** a sentence type's block names
+its `vocab_note_type` and the vocab type's names it back as `sentence_note_type`; a vocab note
+keeps only copies of its **example sentence** note's fields that both blocks name (translation
+and audio) and its id in `example_sentence_id_field` (`note_roles.copy_example`), and the
+sentence notes are never studied. `layout_error` is stricter than "name each other": in a pair
+the sentence block has `word_list_field` and no `word_sort_field`, the vocab block the reverse,
+since the roles decide what is done to a type's notes. config.md has the keys, both layouts and
+the user's steps.
+
+In the two-type layout, besides the hooks (top of this file) and the role gating ("An operation
+is three functions"):
+
+- Match op: `get_match_fields` reads `SENTENCE_MATCH_FIELD_KEYS` from the processed sentence
+  type's block and the rest from its vocab type's; `MatchOpArgs.vocab_note_type` names the
+  latter. A new note is of the vocab type, with `copy_example` from the processed note (a
+  CREATE NEW copy first blanks every field the sentence block names that it has), and is
+  cleaned with the target's highlighted sentence handed in (`own_sentence`). A candidate's
+  example in the prompt is its example sentence note's array (`_sentence_note_example`; `""`
+  without one, since no `<b>` is stored). The cleanup's searches go through `_ArrayLinks`.
+- clean_meaning (`get_sentences_for_note`): the own sentence is the example note's, the others
+  the sentence notes linking the word, each note once.
+- "Translate sentence" on a sentence note copies the translation into the vocab notes whose
+  example it is; the editor's unfocus translation does not (it saves only its note). "Refresh
+  example sentences" copies the examples again.
+- "Run all ops for new notes" gives each note its type's role's steps (`roles_of`).
+
+**"Move sentences to sentence notes" is single-use.** It moves the one-type layout's sentences
+into sentence notes once: the user runs it after a practice run on a copy, by the steps in
+config.md "Moving to sentence notes", and it can be rerun after a cancel or over notes a first
+run left out. Once the user's real run is done and the old fields are deleted, remove it:
+`sync_local_ops/migrate_to_sentence_notes.py` and `sentence_migration.py`, its `OpSpec` in
+`op_registry.OPS` and its entries in `test/test_op_registry.py`, its `headless.op_specs()`
+entry, `dev/sentence_migration_run.py`, `test/test_sentence_migration.py`,
+`test_replay/test_migrate_to_sentence_notes.py` (whose add-hook test is the real-collection
+proof that an op's adds get nothing, which `test/test_note_hooks.py` points to: move that to
+another op's adds), `test_replay/test_pipeline.py`'s import of the tag list keys, and the steps
+and the migration-only keys in config.md (`migration_move_tags`, `migration_copy_tags`; nothing
+then writes `sentence_seen_count_field`). Keep `replay.PRIVATE_BLOCK_KEYS` while a config may
+still hold the lists.
 
 ## word_array
 
@@ -529,7 +618,7 @@ what such a session follows), writing the same result files.
 
 ## Tests and types
 
-- `test/` (about 60 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
+- `test/` (about 70 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
   this directory: `python -m pytest test`. `test/pytest.ini` makes `test/` the rootdir so pytest
   never imports the addon's aqt-importing `__init__.py`, and sets `--import-mode=importlib`.
   `test/addon_modules.py` provides `load_addon_module`, `load_ops_module(name, subdir)`
@@ -542,6 +631,15 @@ what such a session follows), writing the same result files.
   `CollectionOp`; `test_op_chain.py` runs `OpChain` with fake ops and hooks;
   `test_op_registry.py` pins the menu's labels, order and wiring. `__init__.py`'s Edit-menu
   hook has no test.
+- Two note types: `test_note_roles.py` (roles, layouts, `copy_example`, the search term),
+  `test_note_hooks.py` (what each hook does; the hooks in `__init__.py` themselves have no
+  test), `test_role_gate.py` and `test_role_gating_ops.py` (every op's bulk function leaves the
+  other role's notes out), `test_new_note_all_ops.py`, `test_translate_field.py`,
+  `test_sentence_migration.py` (the planner and pre-flight), and two-type tests (mostly
+  `TwoType*` classes) beside the one-type ones in `test_cleanup_new_notes.py`,
+  `test_word_array_match_targets.py`, `test_match_word_lookup.py`, `test_sentence_cache.py`,
+  `test_capture_kinds.py` and `test_capture_meaning_kinds.py`, where the one-type prompts stay
+  pinned byte for byte. The ops' real-collection tests are in `test_replay/` (Map).
 - The suite's `aqt.qt` is a stub of empty classes. `test_multi_op_dialog.py` still runs real
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
