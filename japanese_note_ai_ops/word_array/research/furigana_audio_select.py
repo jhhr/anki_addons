@@ -22,7 +22,9 @@ any, and why the word is hard:
 - `number`: a number with the counter after it, or one with a kanji in it, as one word, its
   digits too (10日, 七日, 一匹, １万): its reading belongs to the whole and seldom divides by
   kanji (とおか, なのか, いっぴき). A number with digits is read as Sudachi reads it spelt in
-  kanji numerals (`furigana_audio.kanji_numerals`): it reads 10 digit by digit;
+  kanji numerals (`furigana_audio.kanji_numerals`): it reads 10 digit by digit. A number
+  Sudachi cut into a numeral and another word (三|十分, さん|じゅうぶん, enough) is read by
+  itself, where Sudachi reads 三十|分;
 - `split`: a kanji run Sudachi cut into single kanji (神|美, 羅|半) or into pieces one of which
   it could not read (響|迂), taken as one word: a name, mostly, which the captions never read.
   Kanji by kanji its parts get readings of their own (神 かみ), and an unread one has no sound,
@@ -85,6 +87,8 @@ SECOND_READING_SHARE = 0.05
 
 # Sudachi's part of speech for a numeral
 NUMERAL = ("名詞", "数詞")
+# The kanji a number is spelt with, as `furigana_audio.kanji_number` writes it
+NUMERAL_KANJI = frozenset(fa.KANJI_DIGITS + "十百千万億兆")
 
 
 @dataclass
@@ -216,8 +220,9 @@ def kanji_words(
     may run past it (玉葉|妃 for 玉葉). An inline reading covers its kanji only, 噛(か)みつい, so
     the word's caption takes in the kana around them as written (かみつい); a word with other
     kanji around them gets none. `read` gives the reading of a number with digits, which
-    Sudachi reads digit by digit; without it the morphemes' readings are joined. Last, a kanji
-    run Sudachi cut where it should not have (`split_runs`) is one word."""
+    Sudachi reads digit by digit, and of one it cut into a numeral and another word (三|十分,
+    じゅうぶん); without it the morphemes' readings are joined. Last, a kanji run Sudachi cut
+    where it should not have (`split_runs`) is one word."""
     spans: list[tuple[int, int, Optional[str], bool]] = []  # start, end, caption, is_name
     for r in readings:
         spans.append((r.start, r.end, r.reading, r.katakana))
@@ -264,10 +269,12 @@ def kanji_words(
             continue
         lo, hi = morphemes[i].begin(), morphemes[j - 1].end()
         surface = text[lo:hi]
-        if read is not None and fa.DIGITS_RE.search(surface):
+        parts = morphemes[i:j]
+        cut = not all(is_numeral(m) or is_counter(m) for m in parts)
+        if read is not None and (fa.DIGITS_RE.search(surface) or cut):
             sudachi = fa.to_hiragana(read(surface))
         else:
-            sudachi = "".join(fa.to_hiragana(m.reading_form()) for m in morphemes[i:j])
+            sudachi = "".join(fa.to_hiragana(m.reading_form()) for m in parts)
         words.append(Word(line_no, lo, hi, surface, sudachi, None, ["number"]))
         used.update(range(i, j))
     for i, j in split_runs(morphemes, used):
@@ -297,18 +304,26 @@ def is_counter(m) -> bool:
     return pos[0] == "接尾辞" or tuple(pos[:3]) == ("名詞", "普通名詞", "助数詞可能")
 
 
+def is_numeral(m) -> bool:
+    return tuple(m.part_of_speech()[:2]) == NUMERAL
+
+
 def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
     """[i, j) morpheme ranges of the numbers that are one word: a run of numerals and the
     counter after it, if any, where a kanji is among them (10日, 十月, １万). With none, as in
-    175 or 3つ, the number has no kanji to give furigana to."""
+    175 or 3つ, the number has no kanji to give furigana to. A word right after the numerals
+    that starts with a numeral kanji is the number's too, with the counter after it if any: in
+    a line Sudachi cuts 三十分 into 三|十分, which it reads じゅうぶん, enough."""
     spans = []
     i = 0
     while i < len(morphemes):
-        if tuple(morphemes[i].part_of_speech()[:2]) != NUMERAL:
+        if not is_numeral(morphemes[i]):
             i += 1
             continue
         j = i
-        while j < len(morphemes) and tuple(morphemes[j].part_of_speech()[:2]) == NUMERAL:
+        while j < len(morphemes) and is_numeral(morphemes[j]):
+            j += 1
+        if j < len(morphemes) and morphemes[j].surface()[:1] in NUMERAL_KANJI:
             j += 1
         end = j + 1 if j < len(morphemes) and is_counter(morphemes[j]) else j
         if any(fa.KANJI_RE.search(m.surface()) for m in morphemes[i:end]):

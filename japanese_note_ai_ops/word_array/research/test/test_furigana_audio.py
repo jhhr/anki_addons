@@ -28,6 +28,7 @@ NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
 COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
 SPACE = ("空白", "*", "*", "*", "*", "*")
+ADVERB = ("副詞", "*", "*", "*", "*", "*")
 BRACKET = ("補助記号", "括弧開", "*", "*", "*", "*")
 
 
@@ -208,6 +209,23 @@ class KanjiWordsTest(unittest.TestCase):
                 ("物置", "ものおき", []),
                 ("小屋", "こや", []),
             ],
+        )
+
+    def test_a_number_sudachi_cut_into_a_numeral_and_a_word_is_read_by_itself(self):
+        # In a line Sudachi cuts 三十分 into 三|十分 and reads 十分 as "enough"
+        LEXICON["十分"] = ("ジュウブン", ADVERB)
+
+        def read(text):
+            self.assertEqual(text, "三十分")
+            return "さんじゅっぷん"
+
+        try:
+            words = self.words("三十分で", read=read)
+        finally:
+            del LEXICON["十分"]
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words],
+            [("三十分", "さんじゅっぷん", ["number"])],
         )
 
     def test_digits_alone_or_with_a_kana_counter_are_no_word(self):
