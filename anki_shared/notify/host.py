@@ -100,13 +100,15 @@ class ToastWindow(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer.addWidget(self._scroll)
 
-        container = QWidget()
-        container.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._cards_layout = QVBoxLayout(container)
+        # Kept rather than read back with self._scroll.widget(), which Qt types
+        # as Optional although this widget is set once and never replaced.
+        self._container = QWidget()
+        self._container.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._cards_layout = QVBoxLayout(self._container)
         self._cards_layout.setContentsMargins(8, 8, 8, 8)
         self._cards_layout.setSpacing(6)
         self._cards_layout.addStretch(1)
-        self._scroll.setWidget(container)
+        self._scroll.setWidget(self._container)
 
         self.resize(WIDTH, 120)
 
@@ -173,10 +175,10 @@ class ToastWindow(QWidget):
 
         for handle in list(self._cards):
             if handle not in wanted:
-                card = self._cards.pop(handle)
-                card.stop_timer()
-                card.setParent(None)
-                card.deleteLater()
+                stale = self._cards.pop(handle)
+                stale.stop_timer()
+                stale.setParent(None)
+                stale.deleteLater()
 
         for entry in entries:
             handle = entry["handle"]
@@ -202,8 +204,7 @@ class ToastWindow(QWidget):
 
     def _relayout(self, entries: List[Dict[str, Any]]) -> None:
         """Put the cards back in display order, with a header per named group."""
-        while self._cards_layout.count():
-            item = self._cards_layout.takeAt(0)
+        while (item := self._cards_layout.takeAt(0)) is not None:
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
@@ -222,7 +223,7 @@ class ToastWindow(QWidget):
                     self._cards_layout.addWidget(header)
                 last_group = group_id
             card = self._cards[entry["handle"]]
-            card.setParent(self._scroll.widget())
+            card.setParent(self._container)
             card.show()
             self._cards_layout.addWidget(card)
         self._cards_layout.addStretch(1)
@@ -248,8 +249,7 @@ class ToastWindow(QWidget):
         """Grow to fit the cards, unless the user has taken over the sizing."""
         if not self._auto_size:
             return
-        container = self._scroll.widget()
-        wanted = container.sizeHint().height() + 4
+        wanted = self._container.sizeHint().height() + 4
         screen = self.screen()
         if screen is not None:
             wanted = min(wanted, int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION))

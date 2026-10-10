@@ -115,4 +115,4 @@ def dismiss(handle: str) -> bool:
 
 
 def owns(handle: Optional[str]) -> bool:
-    return bool(handle) and handle.startswith(PREFIX)
+    return isinstance(handle, str) and handle.startswith(PREFIX)

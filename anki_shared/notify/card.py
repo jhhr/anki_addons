@@ -20,6 +20,7 @@ from aqt.qt import (
     QHBoxLayout,
     QLabel,
     Qt,
+    QTimer,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -43,7 +44,7 @@ PALETTE = {
 }
 
 
-def _tool_button(text: str, tooltip: str, on_click: Callable[[], None]) -> QToolButton:
+def _tool_button(text: str, tooltip: str, on_click: Callable[[], object]) -> QToolButton:
     button = QToolButton()
     button.setText(text)
     button.setToolTip(tooltip)
@@ -63,7 +64,7 @@ class ToastCard(QFrame):
         self,
         handle: str,
         spec: Dict[str, Any],
-        on_dismiss: Callable[[str], None],
+        on_dismiss: Callable[[str], object],
         on_pin: Callable[[str, bool], None],
         parent: Optional[QWidget] = None,
     ):
@@ -72,7 +73,7 @@ class ToastCard(QFrame):
         self.spec = spec
         self._on_dismiss = on_dismiss
         self._on_pin = on_pin
-        self._timer = None
+        self._timer: Optional[QTimer] = None
         self._timeout_ms: Optional[int] = None
         self.pinned = False
         # Tracked rather than read back off the widget: isVisible() is False
@@ -136,8 +137,7 @@ class ToastCard(QFrame):
         self.apply_theme()
 
     def _rebuild_actions(self, actions) -> None:
-        while self.actions_row.count():
-            item = self.actions_row.takeAt(0)
+        while (item := self.actions_row.takeAt(0)) is not None:
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()

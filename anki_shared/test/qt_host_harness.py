@@ -17,6 +17,43 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QTimer
 
 
+class Progress:
+    def __init__(self):
+        self.busy_flag = False
+        self._keep = []
+
+    def _guard(self, func):
+        def fire():
+            if self.busy_flag:
+                QTimer.singleShot(50, fire)
+                return
+            func()
+
+        return fire
+
+    def timer(self, ms, func, repeat, requiresCollection=True, parent=None):
+        t = QTimer(parent)
+        t.setSingleShot(not repeat)
+        t.timeout.connect(self._guard(func))
+        t.start(ms)
+        self._keep.append(t)
+        return t
+
+    def single_shot(self, ms, func, requires_collection=True):
+        QTimer.singleShot(ms, self._guard(func))
+
+    def busy(self):
+        return self.busy_flag
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    """mw: a plain main window carrying the progress manager the host leans on."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.progress = Progress()
+
+
 def install_fake_aqt():
     aqt = types.ModuleType("aqt")
     qt = types.ModuleType("aqt.qt")
@@ -42,36 +79,7 @@ def install_fake_aqt():
     utils.tooltip = lambda *a, **k: None
     utils.closeTooltip = lambda *a, **k: None
 
-    class Progress:
-        def __init__(self):
-            self.busy_flag = False
-            self._keep = []
-
-        def _guard(self, func):
-            def fire():
-                if self.busy_flag:
-                    QTimer.singleShot(50, fire)
-                    return
-                func()
-
-            return fire
-
-        def timer(self, ms, func, repeat, requiresCollection=True, parent=None):
-            t = QTimer(parent)
-            t.setSingleShot(not repeat)
-            t.timeout.connect(self._guard(func))
-            t.start(ms)
-            self._keep.append(t)
-            return t
-
-        def single_shot(self, ms, func, requires_collection=True):
-            QTimer.singleShot(ms, self._guard(func))
-
-        def busy(self):
-            return self.busy_flag
-
     aqt.qt, aqt.theme, aqt.gui_hooks, aqt.utils, aqt.mw = qt, theme, hooks, utils, None
-    aqt.Progress = Progress
     for name, module in [
         ("aqt", aqt), ("aqt.qt", qt), ("aqt.theme", theme),
         ("aqt.gui_hooks", hooks), ("aqt.utils", utils),
@@ -83,9 +91,8 @@ def install_fake_aqt():
 def main() -> int:
     aqt = install_fake_aqt()
     app = QtWidgets.QApplication(["harness"])
-    mw = QtWidgets.QMainWindow()
+    mw = MainWindow()
     mw.resize(900, 700)
-    mw.progress = aqt.Progress()
     aqt.mw = mw
     mw.show()
 
