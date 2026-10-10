@@ -563,6 +563,8 @@ python word_array/research/furigana_audio_copy.py --media DIR  # copy their clip
 python word_array/research/furigana_audio_run.py MODEL   # a transcriber over the clips (its own venv)
 python word_array/research/furigana_audio_score.py       # score the runs against the captions' readings
 python word_array/research/furigana_audio_score.py --combine A B [--quorum 1]  # what the op's rule would write
+python word_array/research/furigana_audio_label.py queue   # the words worth an ear, from the scored runs
+python word_array/research/furigana_audio_label.py serve   # label them by ear in the browser (stdlib only)
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

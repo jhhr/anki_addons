@@ -347,6 +347,21 @@ class ScoreCardTest(unittest.TestCase):
         self.assertEqual(words[0].op_verdicts, {"draft": False, "まおまお": True})
         self.assertEqual(words[0].gold, "まおまお")
 
+    def test_a_labelled_word_says_whether_the_model_heard_the_label(self):
+        word = {"end": 1, "surface": "他", "sudachi": "ほか", "caption": None}
+        card = self.card("他に", {**word, "kinds": ["ambiguous"]})
+        said = {"id": "c1", "line": 0, "start": 0, "reading": "た", "verdict": "heard"}
+        labels = {("c1", 0, 0): said}
+        words, _, _ = score.score_card(card, "タニ", "kana-whisper", tokenize, {}, labels=labels)
+        self.assertTrue(words[0].verdicts["label"])
+        self.assertEqual(words[0].row()["label"], "た")
+        words, _, _ = score.score_card(card, "ホカニ", "kana-whisper", tokenize, {}, labels=labels)
+        self.assertFalse(words[0].verdicts["label"])
+        unclear = {("c1", 0, 0): {**said, "reading": None, "verdict": "not_said"}}
+        words, _, _ = score.score_card(card, "タニ", "kana-whisper", tokenize, {}, labels=unclear)
+        self.assertNotIn("label", words[0].verdicts)
+        self.assertEqual(words[0].row()["label_verdict"], "not_said")
+
     def test_a_draft_with_a_kanji_sudachi_could_not_read_is_never_written(self):
         word = {"end": 2, "surface": "翠苓", "sudachi": "すい苓", "caption": None}
         card = self.card("翠苓は", {**word, "kinds": ["name"]})
@@ -427,16 +442,42 @@ class CombineTest(unittest.TestCase):
         self.assertIsNone(score.decide(rows, 2))
         self.assertEqual(score.decide(rows[:1], 1), "ほか")
 
-    def combine(self, runs, quorum=None):
+    def test_a_label_is_the_known_reading_and_each_bucket_is_counted_against_them(self):
+        other = {"draft": False, "た": True}
+        draft = {"draft": True, "た": False}
+        a = [
+            self.word(0, "タ", other),  # written た, said た
+            self.word(1, "ホカ", draft),  # written ほか, said た
+            self.word(2, "ナニ", {"draft": False, "た": False}),  # review, said ほか
+            self.word(3, "ホカ", draft),  # can't tell
+            self.word(4, "ホカ", draft),  # not labelled
+        ]
+        labels = [
+            {"id": "c1", "line": 0, "start": 0, "reading": "た", "verdict": "heard"},
+            {"id": "c1", "line": 0, "start": 1, "reading": "た", "verdict": "heard"},
+            {"id": "c1", "line": 0, "start": 2, "reading": "ほか", "verdict": "heard"},
+            {"id": "c1", "line": 0, "start": 3, "reading": None, "verdict": "unsure"},
+        ]
+        text = self.combine({"a": a, "b": [dict(w) for w in a]}, labels=labels)
+        self.assertIn("2 words: right 50.0%, wrong 50.0%, review 0.0%", text)  # Sudachi wrong
+        self.assertIn("1 words: right 0.0%, wrong 0.0%, review 100.0%", text)  # Sudachi right
+        self.assertIn("labelled by ear: 4 words, of them 1 can't tell and 0 not said", text)
+        self.assertIn("correction     1 written: right 1, wrong 0", text)
+        self.assertIn("review         1: said as the draft 1, otherwise 0", text)
+        self.assertIn("agreed         1 written: right 0, wrong 1", text)
+
+    def combine(self, runs, quorum=None, labels=()):
         with tempfile.TemporaryDirectory() as d:
             here = Path(d)
             for name, words in runs.items():
                 fa.write_jsonl(here / f"{name}.words.jsonl", words)
             selection = here / "selection.jsonl"
             fa.write_jsonl(selection, [{"id": "c1", "stratum": "random"}])
+            fa.write_jsonl(here / "labels.jsonl", labels)
             with unittest.mock.patch.object(score, "RUNS", here):
                 with unittest.mock.patch.object(fa, "SELECTION", selection):
-                    return score.combine(list(runs), quorum)
+                    with unittest.mock.patch.object(fa, "LABELS", here / "labels.jsonl"):
+                        return score.combine(list(runs), quorum)
 
 
 class HearsTest(unittest.TestCase):

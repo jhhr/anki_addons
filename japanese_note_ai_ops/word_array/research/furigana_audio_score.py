@@ -1,7 +1,8 @@
 """Score the furigana audio eval's runs: how far each transcriber's kana give the readings of
 the picked cards' kanji words.
 
-There are no hand labels yet, so each word is scored against what is known of its reading:
+Each word is scored against what is known of its reading: the reading `furigana_audio_label.py`
+says was heard where a person labelled the word by ear, else
 
 - `caption`: the line reads it itself (`妃(きさき)`). The words where Sudachi reads it
   otherwise are the test that matters: how often a model's kana give the caption's reading,
@@ -171,6 +172,18 @@ def agrees(a: str, b: str) -> bool:
     return align(morae(a), morae(b))[0] <= AGREE
 
 
+def sound(kana: str) -> tuple[str, ...]:
+    """The morae as said, オウ and エイ as the long vowels they are, so that とうきょう and
+    トーキョー are one sound and ほんと and ほんとう two."""
+    out: list[str] = []
+    for m in morae(kana):
+        before = vowel(out[-1]) if out else ""
+        if (m, before) in {("ウ", "o"), ("イ", "e")}:
+            m = VOWEL_KANA[before]
+        out.append(m)
+    return tuple(out)
+
+
 # What moving either end of the stretch by a mora costs a reading: less than any real step,
 # enough that a reading covering the whole stretch beats one inside it (ばばあ over ばあ)
 SHIFT = 0.1
@@ -251,6 +264,7 @@ class WordResult:
     op_verdicts: dict = field(default_factory=dict)
     clean: bool = True  # the card's transcript is close enough to its line (MISMATCH)
     gold: Optional[str] = None  # the reading known: the line's caption, else the show's name
+    label: Optional[dict] = None  # the label given by ear, if any (fa.read_labels)
 
     def row(self) -> dict:
         w = self.word
@@ -271,6 +285,8 @@ class WordResult:
             # The same for the readings the op chooses from: "draft", and each other reading
             # by its kana
             "op_hears": self.op_verdicts,
+            "label": self.label["reading"] if self.label else None,
+            "label_verdict": self.label["verdict"] if self.label else None,
         }
 
 
@@ -323,9 +339,11 @@ def score_card(
     tokenize: Callable[[str], Sequence],
     show: dict,
     alternatives: Alternatives = no_alternatives,
+    labels: Optional[dict] = None,
 ) -> tuple[list[WordResult], float, int]:
     """The card's words with what the model heard for each, the alignment's cost and the
-    number of reference morae."""
+    number of reference morae. A word labelled by ear (`labels`, fa.read_labels) also says
+    whether the model heard the labelled reading rather than the draft."""
     ref, owner, words = reference(card, tokenize)
     hyp = morae(heard_text(model, text, tokenize))
     cost, pairs = align(ref, hyp)
@@ -372,6 +390,12 @@ def score_card(
         others = [key for key in choices if key != "draft"]
         heard = hears(choices, hyp, lo, hi, strict=others) if choices else {}
         result.op_verdicts = {"draft": False, **heard}
+        result.label = (labels or {}).get((card["id"], w["line"], w["start"]))
+        if result.label and result.label["verdict"] == "heard":
+            said = {"label": result.label["reading"]}
+            if not fa.KANJI_RE.search(w["sudachi"]):
+                said["draft"] = w["sudachi"]
+            result.verdicts["label"] = hears(said, hyp, lo, hi)["label"]
     return words, cost, len(ref)
 
 
@@ -453,6 +477,19 @@ def report(
     ]
     rows += [(f"{name} word", "draft", kind(name), "Sudachi's") for name in KINDS]
     rows.append(("ordinary word", "draft", lambda r: not r.word["kinds"], "Sudachi's"))
+
+    def labelled(as_draft: bool) -> Callable[[WordResult], bool]:
+        return lambda r: (
+            "label" in r.verdicts
+            and r.label is not None
+            and agrees(r.label["reading"], r.word["sudachi"]) == as_draft
+        )
+
+    if any("label" in r.verdicts for r in results):
+        rows += [
+            ("labelled, said otherwise than Sudachi", "label", labelled(False), "the label's"),
+            ("labelled, said as Sudachi reads it", "label", labelled(True), "the label's"),
+        ]
     mean = sum(secs) / max(len(secs), 1)
     cards = {r.card: r.clean for r in results}
     lines = [
@@ -490,6 +527,22 @@ def decide(rows: Sequence[dict], quorum: int) -> Optional[str]:
     return None
 
 
+# Why a word is written as it is, or not: the rule writes another reading than the draft, sends
+# the word to review, or writes the draft that a quorum but not every model heard, or every one
+BUCKETS = ("correction", "review", "partial", "agreed")
+
+
+def outcome(rows: Sequence[dict], quorum: int) -> tuple[Optional[str], str]:
+    """What the op writes for a word, given each model's row of it, and its bucket."""
+    written = decide(rows, quorum)
+    if written is None:
+        return None, "review"
+    if written != rows[0]["sudachi"]:
+        return written, "correction"
+    votes = sum(r["op_hears"]["draft"] for r in rows)
+    return written, "agreed" if votes == len(rows) else "partial"
+
+
 def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
     """What the op would write over the words of the cards whose transcript matches the line
     in every run, accepting a reading where `quorum` of the models hear it (all, by default):
@@ -497,9 +550,12 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
     (`decide`). Anything else goes to review, a reading a quorum hears that nothing licenses
     included: the English line or a person has to settle it.
 
-    Where the reading is known (the line's caption, or the show's for a name) a written
-    reading is right or wrong; that is the error the rule lets through. Elsewhere the draft is
-    usually right, so a word written otherwise is counted apart, to be checked by hand.
+    Where the reading is known (a label given by ear, else the line's caption or the show's
+    for a name) a written reading is right or wrong; that is the error the rule lets through.
+    Elsewhere the draft is usually right, so a word written otherwise is counted apart, to be
+    checked by hand. A word labelled "can't tell" or "not said" has no known reading. The
+    labelled words are also counted by why the rule wrote them as it did (`outcome`), which is
+    how the queue picked them: the error rate of each bucket.
 
     The random stratum's cards are the ones like a show's other lines, so the share of them
     with a word to review is the review an op would make; the other strata were picked for
@@ -512,19 +568,31 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
             return f"{m}: score it first (furigana_audio_score.py {m})"
         tables.append({(r["id"], r["line"], r["start"]): r for r in rows if r["clean"]})
     keys = sorted(set.intersection(*(set(t) for t in tables)))
+    labels = fa.read_labels()
     counts: dict[str, int] = defaultdict(int)
+    by_ear: dict[str, int] = defaultdict(int)
     review: list[tuple] = []
     for key in keys:
         rows = [t[key] for t in tables]
         first = rows[0]
-        written = decide(rows, k)
-        if first["gold"]:
-            group = "known, Sudachi " + ("right" if first["gold_is_draft"] else "wrong")
-            right = written is not None and agrees(written, first["gold"])
-            outcome = "review" if written is None else "right" if right else "wrong"
+        written, bucket = outcome(rows, k)
+        label = labels.get(key)
+        said = label["reading"] if label and label["verdict"] == "heard" else None
+        gold = said if label else first["gold"]
+        if label and said is None:
+            by_ear[label["verdict"]] += 1
+        elif said and written is None:
+            as_draft = agrees(said, first["sudachi"])
+            by_ear[f"review: {'as' if as_draft else 'not as'} the draft"] += 1
+        elif said and written is not None:
+            by_ear[f"{bucket}: {'right' if agrees(written, said) else 'wrong'}"] += 1
+        if gold:
+            group = "known, Sudachi " + ("right" if agrees(gold, first["sudachi"]) else "wrong")
+            right = written is not None and agrees(written, gold)
+            result = "review" if written is None else "right" if right else "wrong"
         else:
             group = "ordinary" if not first["kinds"] else "other hard"
-            outcome = (
+            result = (
                 "review"
                 if written is None
                 else "draft" if written == first["sudachi"] else "other reading"
@@ -536,7 +604,7 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
         if written is None:
             review.append(key)
         counts[group] += 1
-        counts[f"{group}: {outcome}"] += 1
+        counts[f"{group}: {result}"] += 1
     rule = "every model" if k == len(models) else f"{k} of {len(models)}"
     lines = [
         f"== {' + '.join(models)}, {rule}: {len(keys)} words of"
@@ -566,6 +634,39 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
             f" {len(flagged)} of {len(mine)} words"
             f" ({100 * len(flagged) / max(len(mine), 1):.1f}%)"
         )
+    if by_ear:
+        lines.append(labelled_lines(by_ear))
+    return "\n".join(lines)
+
+
+def labelled_lines(by_ear: dict[str, int]) -> str:
+    """The labelled words by the rule's bucket: of those it wrote, how many are right, and of
+    those it sent to review, how many were said as the draft has it."""
+    total = sum(by_ear.values())
+    unclear = by_ear.get("unsure", 0) + by_ear.get("not_said", 0)
+    lines = [
+        f"  labelled by ear: {total} words, of them {by_ear.get('unsure', 0)} can't tell and"
+        f" {by_ear.get('not_said', 0)} not said"
+    ]
+    for bucket in BUCKETS:
+        if bucket == "review":
+            as_draft, other = by_ear["review: as the draft"], by_ear["review: not as the draft"]
+            if as_draft + other:
+                lines.append(
+                    f"    {bucket:<11} {as_draft + other:>4}: said as the draft {as_draft},"
+                    f" otherwise {other}"
+                )
+            continue
+        right, wrong = by_ear[f"{bucket}: right"], by_ear[f"{bucket}: wrong"]
+        if right + wrong:
+            # With no error among n, an error rate above 3/n would show one 95% of the time;
+            # under 30 that says nothing worth printing
+            bound = f", under {percent(3, right)} wrong at 95%" if not wrong and right >= 30 else ""
+            lines.append(
+                f"    {bucket:<11} {right + wrong:>4} written: right {right}, wrong {wrong}{bound}"
+            )
+    if total == unclear:
+        lines.append("    no reading heard yet")
     return "\n".join(lines)
 
 
@@ -587,6 +688,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     tokenize = sudachi_tokenizer()
     show = show_readings()
     alternatives = dictionary_readings()
+    labels = fa.read_labels()
     for model in models:
         rows = fa.read_jsonl(RUNS / f"{model}.jsonl")
         results: list[WordResult] = []
@@ -595,7 +697,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if row["id"] not in cards:
                 continue
             words, cost, ref_len = score_card(
-                cards[row["id"]], row["text"], model, tokenize, show, alternatives
+                cards[row["id"]], row["text"], model, tokenize, show, alternatives, labels
             )
             results.extend(words)
             total_cost += cost

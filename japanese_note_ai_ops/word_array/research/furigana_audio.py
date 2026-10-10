@@ -9,6 +9,10 @@ holds that show's subtitles, so it lives in the private test data checkout
 (`evals/furigana_audio/`, `_bootstrap.eval_file`), never in this repo.
 
     furigana_audio_select.py   export -> the lines to label, and why each was picked
+    furigana_audio_copy.py     the picked cards' clips, from the subs2srs output
+    furigana_audio_run.py      one transcriber over the clips
+    furigana_audio_score.py    the runs against the captions' readings and the labels
+    furigana_audio_label.py    the words worth an ear, and a page to label them by ear
 
 The subtitles are Japanese closed captions, which differ from the dialogue in ways the
 cleaning has to know about:
@@ -30,7 +34,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Callable, Iterable, NamedTuple
+from typing import Callable, Iterable, NamedTuple, Optional
 
 from _bootstrap import eval_file
 
@@ -39,6 +43,9 @@ EXPORT = HOME / "kusuriya_ep1-49_sentences.tsv"
 SELECTION = HOME / "selection.jsonl"
 CAPTION_READINGS = HOME / "caption_readings.jsonl"
 AUDIO = HOME / "audio"
+# The words to label by ear, a card a row, and the readings said, a word a row
+LABEL_QUEUE = HOME / "label_queue.jsonl"
+LABELS = HOME / "labels.jsonl"
 
 KANJI = "一-鿿㐀-䶿々〆ヶ"
 KANJI_RE = re.compile(f"[{KANJI}]")
@@ -167,6 +174,20 @@ def read_jsonl(path: Path) -> list[dict]:
         return []
     with path.open(encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+# A word of a card: the card's id, its line and where it starts in the line without readings
+WordKey = tuple[str, int, int]
+
+
+def word_key(row: dict) -> WordKey:
+    return (row["id"], row["line"], row["start"])
+
+
+def read_labels(path: Optional[Path] = None) -> dict[WordKey, dict]:
+    """The labels given by ear, by word: `reading` (kana) with `verdict` "heard", or none with
+    "unsure" or "not_said"."""
+    return {word_key(row): row for row in read_jsonl(path or LABELS)}
 
 
 def write_jsonl(path: Path, rows: Iterable[dict]) -> int:

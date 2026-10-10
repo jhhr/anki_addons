@@ -631,7 +631,11 @@ give, since the hand labels are still to come. With `--combine` it writes what t
 would (`decide`): the draft where the models hear it, a reading JMdict has for the spelling or
 the show has for a name where they hear that instead, review otherwise. Its limits on a
 correction (`CORRECT`, and a stretch `fit` may not shrink for one) each came from readings
-the runs got wrong; the op's check should keep them.
+the runs got wrong; the op's check should keep them. `furigana_audio_label.py` gets the labels
+by ear: `queue`, where the scored runs are, picks the words the rule corrects, sends to review
+or writes on fewer than every model's hearing, and a sample of the rest; `serve` (standard
+library only, so it runs on the machine with the clips) plays each card's clip in a page on
+localhost and writes `labels.jsonl`, which the scorer then takes for the known reading.
 
 ## Tests and types
 
