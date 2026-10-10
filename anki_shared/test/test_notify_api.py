@@ -9,6 +9,7 @@ import pytest
 
 from anki_shared import notify
 from anki_shared.notify import fallback, registry
+from anki_shared.notify.spec import HOST_DEFAULT
 
 
 class Anchor:
@@ -142,6 +143,45 @@ class TestHostFailure:
         registry.register(anchor, "addon_a", ExplodingHost)
         assert notify.update("host-1", title="x") is False
         assert notify.dismiss("host-1") is False
+
+
+class TestUpdateCorrectsItsFields:
+    """update() states only some fields, and each is corrected as post() would.
+
+    Uncorrected, a bad value got through, update() reported success, and the
+    host's redraw raised on it later from a Qt timer, where nothing catches it.
+    """
+
+    def test_the_host_is_handed_corrected_fields(self, anchor, shown):
+        host = FakeHost()
+        registry.register(anchor, "addon_a", lambda: host)
+        handle = notify.post(source="A", title="first")
+        notify.update(
+            handle,
+            actions=[("no callback",)],
+            timeout_ms="soon",
+            body=5,
+            level="loud",
+            colour="red",
+        )
+        assert host.updated == [
+            (
+                handle,
+                {
+                    "actions": (),
+                    "timeout_ms": HOST_DEFAULT,
+                    "body": "5",
+                    "level": "info",
+                    "extra": {"colour": "red"},
+                },
+            )
+        ]
+
+    def test_the_fallback_is_handed_corrected_fields(self, anchor, shown):
+        handle = notify.post(source="A", title="first", timeout_ms=3000)
+        notify.update(handle, timeout_ms="soon", actions="Open")
+        assert shown[-1]["timeout_ms"] == HOST_DEFAULT
+        assert shown[-1]["actions"] == ()
 
 
 class TestFallbackHandles:

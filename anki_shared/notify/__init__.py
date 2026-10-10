@@ -29,7 +29,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Sequence, Tuple
 
 from . import fallback, registry
-from .spec import HOST_DEFAULT, LEVELS, STICKY, make_spec
+from .spec import HOST_DEFAULT, LEVELS, STICKY, clean_fields, make_spec
 
 __all__ = ["post", "update", "dismiss", "HOST_DEFAULT", "STICKY", "LEVELS"]
 
@@ -118,7 +118,14 @@ def post(
 
 
 def update(handle: str, **fields: Any) -> bool:
-    """Change a live entry. Unstated fields keep their current values."""
+    """Change a live entry. Unstated fields keep their current values.
+
+    The stated ones are corrected as post() corrects its fields. Passed on as
+    given, a bad value was accepted here, update() returned True, and the
+    host's redraw raised on it later from a Qt timer, outside _via_host: Anki's
+    error dialog, every time the entry was drawn.
+    """
+    fields = clean_fields(fields)
     if fallback.owns(handle):
         return fallback.update(handle, fields)
     result = _via_host("update", handle, fields)

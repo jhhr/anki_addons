@@ -51,6 +51,49 @@ def _clean_timeout(timeout_ms: Any) -> int:
     return timeout_ms
 
 
+def _clean_text(value: Any) -> str:
+    return str(value or "")
+
+
+def _clean_level(level: Any) -> str:
+    return level if level in LEVELS else DEFAULT_LEVEL
+
+
+# What make_spec does to each field it states. update() runs the fields it is
+# given through the same table, so a value a post would have corrected cannot
+# reach the host by way of an update instead.
+_CLEANERS: Dict[str, Callable[[Any], Any]] = {
+    "source": _clean_text,
+    "title": _clean_text,
+    "body": _clean_text,
+    "level": _clean_level,
+    "timeout_ms": _clean_timeout,
+    "group": _clean_text,
+    "key": _clean_text,
+    "actions": _clean_actions,
+}
+
+
+def clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields of an update(), corrected the way make_spec corrects a post.
+
+    Only the stated fields come back, so merge_spec still keeps the rest of
+    the entry as it was. Unknown keys go under "extra", where a post puts
+    them, rather than onto the spec beside the fields the host renders.
+    """
+    cleaned: Dict[str, Any] = {}
+    extra: Dict[str, Any] = {}
+    for name, value in fields.items():
+        clean = _CLEANERS.get(name)
+        if clean is None:
+            extra[name] = value
+        else:
+            cleaned[name] = clean(value)
+    if extra:
+        cleaned["extra"] = extra
+    return cleaned
+
+
 def make_spec(
     source: str,
     title: str,
@@ -77,17 +120,20 @@ def make_spec(
     :param extra: unknown keys from a newer client. Kept, never interpreted, so
         that a client can outrun the elected host without breaking it.
     """
-    return {
-        "source": str(source or ""),
-        "title": str(title or ""),
-        "body": str(body or ""),
-        "level": level if level in LEVELS else DEFAULT_LEVEL,
-        "timeout_ms": _clean_timeout(timeout_ms),
-        "group": str(group or ""),
-        "key": str(key or ""),
-        "actions": _clean_actions(actions),
-        "extra": dict(extra),
-    }
+    spec = clean_fields(
+        {
+            "source": source,
+            "title": title,
+            "body": body,
+            "level": level,
+            "timeout_ms": timeout_ms,
+            "group": group,
+            "key": key,
+            "actions": actions,
+        }
+    )
+    spec["extra"] = dict(extra)
+    return spec
 
 
 def merge_spec(old: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:

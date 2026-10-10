@@ -6,7 +6,7 @@ a Qt-free module and are exercised directly.
 """
 
 from anki_shared.notify.policy import Stack
-from anki_shared.notify.spec import HOST_DEFAULT, STICKY, make_spec, merge_spec
+from anki_shared.notify.spec import HOST_DEFAULT, STICKY, clean_fields, make_spec, merge_spec
 
 
 def spec(source="Copy Anywhere", title="done", **kwargs):
@@ -35,6 +35,16 @@ class TestMakeSpec:
     def test_a_bool_timeout_is_not_taken_as_a_duration(self):
         # True is an int; silently posting a 1ms toast would be baffling.
         assert spec(timeout_ms=True)["timeout_ms"] == HOST_DEFAULT
+
+    def test_clean_fields_returns_only_the_fields_stated(self):
+        # An update's fields, so merge_spec still keeps the rest of the entry.
+        assert clean_fields({"title": None, "timeout_ms": -5}) == {
+            "title": "",
+            "timeout_ms": STICKY,
+        }
+
+    def test_clean_fields_keeps_unknown_keys_aside_as_a_post_does(self):
+        assert clean_fields({"icon": "star"}) == {"extra": {"icon": "star"}}
 
     def test_merge_keeps_unstated_fields_and_unions_extra(self):
         old = spec(title="first", body="detail", icon="a")
