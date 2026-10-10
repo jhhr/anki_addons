@@ -622,8 +622,10 @@ transcriber or reading check gets the reading the speaker used. Its corpus is a 
 of one show in `evals/furigana_audio/` of the test data checkout, not notes: the picking reads
 the TSV, and the picked cards' clips are copied there from the subs2srs output on the machine
 that has it (`furigana_audio_copy.py`). The export's Japanese closed captions have speaker
-labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), which `furigana_audio`
-strips or keeps; the op will need the same cleaning. `furigana_audio_run.py` runs one
+labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), which
+`word_array/captions.py` strips or keeps, and a line's words are `word_array/kanji_words.py`'s
+(names, numbers with their counters and runs Sudachi cut, each taken whole): the op's own
+modules, so the eval reads a line as the op will. `furigana_audio_run.py` runs one
 transcriber over the clips into `runs/`, in an environment of its own (PyTorch, transformers,
 Ruby-ASR's package: none of them is a dev dependency here, and the script imports them only
 when it runs); `furigana_audio_score.py` scores the runs against the readings the captions

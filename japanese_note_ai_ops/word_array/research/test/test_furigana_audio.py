@@ -1,5 +1,6 @@
-"""The furigana audio eval's scripts: reading a subs2srs export, cleaning a caption line,
-placing its inline readings, finding the hard words and picking the lines, copying the clips.
+"""The furigana audio eval's scripts: reading a subs2srs export, finding the hard words and
+picking the lines, copying the clips, scoring the runs. The caption cleaning and the word units
+they use are the op's, tested with it (test/test_word_array_captions.py, _kanji_words.py).
 
 Nothing here tokenizes with Sudachi: a stand-in segments the few lines the tests use, so the
 suite runs without SudachiPy or the downloaded dictionaries."""
@@ -28,7 +29,6 @@ NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
 COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
 SPACE = ("空白", "*", "*", "*", "*", "*")
-ADVERB = ("副詞", "*", "*", "*", "*", "*")
 BRACKET = ("補助記号", "括弧開", "*", "*", "*", "*")
 
 
@@ -127,138 +127,6 @@ class ExportTest(unittest.TestCase):
         self.assertIn("01_0006", skipped[0])
 
 
-class CleaningTest(unittest.TestCase):
-    def test_labels_sound_descriptions_and_ass_tags_are_not_spoken(self):
-        jp = (
-            "（羅門(ルォメン)）猫猫(マオマオ)<br>（猫猫）ん？<br>（赤ん坊のはしゃぎ声）"
-            "<br>{\\an8}（客）おお～っ"
-        )
-        self.assertEqual(fa.spoken_lines(jp), ["猫猫(マオマオ)", "ん？", "おお～っ"])
-
-    def test_a_label_in_the_middle_of_a_line(self):
-        self.assertEqual(fa.spoken_lines("（白鈴）あら 猫猫 （猫猫）ん？"), ["あら 猫猫 ん？"])
-
-    def test_noisy_cards_have_ass_tags(self):
-        self.assertTrue(fa.is_noisy("これじゃ {\\an8}（客）おお～っ これじゃ"))
-        self.assertFalse(fa.is_noisy("（猫猫）ん？"))
-
-    def test_readings_are_taken_out_and_kept_by_place(self):
-        text, readings = fa.split_readings("あら 猫猫(マオマオ) 緑青館(ろくしょうかん)に")
-        self.assertEqual(text, "あら 猫猫 緑青館に")
-        self.assertEqual(
-            readings,
-            [
-                fa.InlineReading("猫猫", "まおまお", True, 3, 5),
-                fa.InlineReading("緑青館", "ろくしょうかん", False, 6, 9),
-            ],
-        )
-
-    def test_a_reading_after_other_kanji_takes_the_tail_base_gives(self):
-        text, readings = fa.split_readings("白鈴姐(ねえ)ちゃん", base=lambda run, reading: 1)
-        self.assertEqual(text, "白鈴姐ちゃん")
-        self.assertEqual(readings, [fa.InlineReading("姐", "ねえ", False, 2, 3)])
-
-    def test_labels_readings_count_for_the_show(self):
-        readings = fa.all_inline_readings("（羅門(ルォメン)）ん？")
-        self.assertEqual([(r.surface, r.reading) for r in readings], [("羅門", "るぉめん")])
-
-
-class ReadingBaseTest(unittest.TestCase):
-    def base(self, rows=(), dictionary=None):
-        table = dictionary or {}
-        return select.ReadingBase(rows, lambda form: table.get(form, set()))
-
-    def test_a_tail_the_dictionary_reads_so(self):
-        base = self.base(dictionary={"妓楼": {"ぎろう"}})
-        self.assertEqual(base("高級妓楼", "ぎろう"), 2)
-
-    def test_a_tail_the_captions_read_so_on_its_own(self):
-        base = self.base(rows=[row(1, "公主(ひめ)")])
-        self.assertEqual(base("鈴麗公主", "ひめ"), 2)
-
-    def test_the_whole_run_when_the_reading_can_cover_it(self):
-        self.assertEqual(self.base()("緑青館", "ろくしょうかん"), 3)
-
-    def test_no_more_kanji_than_the_reading_has_kana(self):
-        self.assertEqual(self.base()("白鈴姐", "ね"), 1)
-
-
-class KanjiWordsTest(unittest.TestCase):
-    def words(self, line, names=(), read=None):
-        text, readings = fa.split_readings(line)
-        return select.kanji_words(0, text, tokenize(text), readings, names, read)
-
-    def test_a_number_and_its_counter_are_one_word_its_digits_too(self):
-        def read(text):
-            return select.numeral_reading(text, tokenize)
-
-        words = self.words("10日に七日", read=read)
-        self.assertEqual(
-            [(w.surface, w.start, w.end, w.sudachi, w.kinds) for w in words],
-            [("10日", 0, 3, "とおか", ["number"]), ("七日", 4, 6, "ななにち", ["number"])],
-        )
-
-    def test_a_run_sudachi_cut_into_single_kanji_or_could_not_read_is_one_word(self):
-        # 迂 is not in the stand-in's lexicon: its reading stays the kanji, as Sudachi's does
-        words = self.words("響迂は神美に物置小屋")
-        self.assertEqual(
-            [(w.surface, w.sudachi, w.kinds) for w in words],
-            [
-                ("響迂", "ひびき迂", ["split"]),
-                ("神美", "かみび", ["split"]),
-                ("物置", "ものおき", []),
-                ("小屋", "こや", []),
-            ],
-        )
-
-    def test_a_number_sudachi_cut_into_a_numeral_and_a_word_is_read_by_itself(self):
-        # In a line Sudachi cuts 三十分 into 三|十分 and reads 十分 as "enough"
-        LEXICON["十分"] = ("ジュウブン", ADVERB)
-
-        def read(text):
-            self.assertEqual(text, "三十分")
-            return "さんじゅっぷん"
-
-        try:
-            words = self.words("三十分で", read=read)
-        finally:
-            del LEXICON["十分"]
-        self.assertEqual(
-            [(w.surface, w.sudachi, w.kinds) for w in words],
-            [("三十分", "さんじゅっぷん", ["number"])],
-        )
-
-    def test_digits_alone_or_with_a_kana_counter_are_no_word(self):
-        self.assertEqual(self.words("175と3つ"), [])
-
-    def test_a_name_the_tokenizer_cut_is_one_word(self):
-        words = self.words("あら 猫猫", names={"猫猫"})
-        self.assertEqual(
-            [(w.surface, w.sudachi, w.kinds) for w in words], [("猫猫", "ねこねこ", ["name"])]
-        )
-
-    def test_an_inline_reading_is_the_words_caption(self):
-        words = self.words("猫猫(マオマオ)")
-        self.assertEqual(
-            [(w.surface, w.caption, w.kinds) for w in words], [("猫猫", "まおまお", ["name"])]
-        )
-
-    def test_a_reading_of_a_words_kanji_takes_in_its_okurigana(self):
-        LEXICON["噛みつい"] = ("カミツイ", NOUN)
-        try:
-            words = self.words("噛(か)みついた")
-        finally:
-            del LEXICON["噛みつい"]
-        self.assertEqual([(w.surface, w.caption) for w in words], [("噛みつい", "かみつい")])
-
-    def test_a_one_kanji_name_only_where_it_is_a_proper_noun(self):
-        # 馬 is the horse here: the stand-in tags it a common noun
-        self.assertEqual([w.kinds for w in self.words("馬", names={"馬"})], [[]])
-
-    def test_a_proper_noun_of_sudachis_is_a_name(self):
-        self.assertEqual([(w.surface, w.kinds) for w in self.words("高順")], [("高順", ["name"])])
-
-
 class LabellingFilesTest(unittest.TestCase):
     def test_a_typed_reading_as_the_captions_write_one(self):
         for typed in ("父上[ちちうえ]が", " 父上（ちちうえ）が "):
@@ -304,16 +172,6 @@ class LabellingFilesTest(unittest.TestCase):
         self.assertEqual(show, {"猫猫": ("name", "まおまお"), "子翠": ("name", "しすい")})
 
 
-class NumeralsTest(unittest.TestCase):
-    def test_a_number_in_kanji_numerals(self):
-        cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}
-        cases.update({10000: "一万", 12345: "一万二千三百四十五", 100000000: "一億"})
-        self.assertEqual({n: fa.kanji_number(n) for n in cases}, cases)
-
-    def test_digits_of_either_width_in_a_text(self):
-        self.assertEqual(fa.kanji_numerals("船で10日、１万人"), "船で十日、一万人")
-
-
 class RewordTest(unittest.TestCase):
     def test_the_same_cards_in_the_same_strata_with_their_words_found_again(self):
         def card(card_id, surface):
@@ -355,7 +213,7 @@ class SelectTest(unittest.TestCase):
     ]
 
     def cards(self, fixes=None, named=()):
-        base = select.ReadingBase(self.ROWS, lambda form: set())
+        base = fa.captions.ReadingBase((r.jp for r in self.ROWS), lambda form: set())
         show = select.ShowReadings()
         for r in self.ROWS:
             show.add(r, base)

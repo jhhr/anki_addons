@@ -53,7 +53,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 import furigana_audio as fa
 from furigana_audio_run import MODELS, RUNS
-from furigana_audio_select import jmdict_readings, numeral_reading, sudachi_tokenizer
+from furigana_audio_select import jmdict_readings, kw, sudachi_tokenizer
 
 SMALL = "ャュョァィゥェォヮ"
 VOWEL_ROWS = {
@@ -328,7 +328,7 @@ def reference(
                 continue
             # A number no word took, digits alone (175): read as a number, not digit by digit
             got = (
-                morae(numeral_reading(mo.surface(), tokenize))
+                morae(kw.numeral_reading(mo.surface(), tokenize))
                 if fa.DIGITS_RE.search(mo.surface())
                 else spoken(mo)
             )

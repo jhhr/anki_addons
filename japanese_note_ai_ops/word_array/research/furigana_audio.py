@@ -1,5 +1,5 @@
 """What the furigana audio eval's scripts share: where its files are, the rows of a subs2srs
-export and how a subtitle line is cleaned before its readings are drafted.
+export, and the labelling's files.
 
 The eval measures how well a sentence's furigana can be set from its audio clip: which
 transcriber or reading check gets the reading the speaker used, for the names and the words
@@ -14,19 +14,9 @@ holds that show's subtitles, so it lives in the private test data checkout
     furigana_audio_score.py    the runs against the captions' readings and the labels
     furigana_audio_label.py    the words worth an ear, and a page to label them by ear
 
-The subtitles are Japanese closed captions, which differ from the dialogue in ways the
-cleaning has to know about:
-- a speaker label opens a speaker's part, `（猫猫）ん？`, and a sound description stands alone,
-  `（赤ん坊のはしゃぎ声）`. Neither is spoken, so both are dropped, full-width parentheses and
-  all;
-- a reading follows a word in half-width parentheses, `猫猫(マオマオ)` or `緑青館(ろくしょうかん)`,
-  usually only at the word's first mention in an episode, sometimes inside a label
-  (`（羅門(ルォメン)）`). It is the caption writer's reading, so it is kept as the word's furigana.
-  The word can follow other kanji, `白鈴姐(ねえ)` or `鈴麗公主(ひめ)`, so which of them the
-  reading is for is a guess (`split_readings`' `base`);
-- ASS override tags (`{\\an8}`) mark a line drawn at the top of the screen while another one
-  runs at the bottom. subs2srs merged such overlapping events into one card and repeated
-  their text, so the card's text and its audio no longer match.
+The subtitles are Japanese closed captions, cleaned as the op cleans a sentence note's
+(`word_array/captions.py`: speaker labels and sound descriptions dropped, the captions' own
+readings kept), so the eval reads each line as the op will.
 """
 
 from __future__ import annotations
@@ -35,9 +25,16 @@ import difflib
 import json
 import re
 from pathlib import Path
-from typing import Callable, Iterable, NamedTuple, Optional
+from typing import TYPE_CHECKING, Iterable, NamedTuple, Optional
 
-from _bootstrap import eval_file
+from _bootstrap import eval_file, load
+
+if TYPE_CHECKING:
+    # `load()` gives a module object, so what comes out of it is untyped; the real module is
+    # named for type checking only (the runtime import is what _bootstrap avoids).
+    from japanese_note_ai_ops.word_array import captions
+else:
+    captions = load("captions")
 
 HOME = eval_file("furigana_audio")
 EXPORT = HOME / "kusuriya_ep1-49_sentences.tsv"
@@ -52,23 +49,28 @@ LABELS = HOME / "labels.jsonl"
 NAMES = HOME / "names.jsonl"
 FIXES = HOME / "fixes.jsonl"
 
-KANJI = "一-鿿㐀-䶿々〆ヶ"
-KANJI_RE = re.compile(f"[{KANJI}]")
-# A reading the captions give in half-width parentheses right after the kanji it reads
-INLINE_READING_RE = re.compile(f"([{KANJI}]+)\\(([ぁ-ゖァ-ヺー・]+)\\)")
-# Labels and sound descriptions; the half-width parentheses of a reading inside a label are no
-# delimiter here, so （羅門(ルォメン)） is one segment
-UNSPOKEN_RE = re.compile(r"（[^（）]*）")
-ASS_TAG_RE = re.compile(r"\{\\[^}]*\}")
+# The scripts here reach the op's caption cleaning as fa.<name>
+KANJI = captions.KANJI
+KANJI_RE = captions.KANJI_RE
+DIGITS_RE = captions.DIGITS_RE
+KANJI_DIGITS = captions.KANJI_DIGITS
+InlineReading = captions.InlineReading
+BaseFinder = captions.BaseFinder
+whole_run = captions.whole_run
+kanji_number = captions.kanji_number
+kanji_numerals = captions.kanji_numerals
+to_hiragana = captions.to_hiragana
+is_noisy = captions.is_noisy
+spoken_lines = captions.spoken_lines
+split_readings = captions.split_readings
+all_inline_readings = captions.all_inline_readings
+
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 # A media column of a subs2srs export: its audio, snapshot, animated snapshot and video
 MEDIA_RE = re.compile(r"^(\[sound:|<img |\[video:)")
-KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
 # A reading typed after its kanji as Anki writes furigana, 父上[ちちうえ], or in full-width
 # parentheses, 父上（ちちうえ）
 TYPED_READING_RE = re.compile(f"([{KANJI}]+)(?:\\[([ぁ-ゖァ-ヺー・]+)\\]|（([ぁ-ゖァ-ヺー・]+)）)")
-DIGITS_RE = re.compile(r"[0-9０-９]+")
-KANJI_DIGITS = "〇一二三四五六七八九"
 
 
 class Row(NamedTuple):
@@ -102,107 +104,6 @@ def read_export(path: Path = EXPORT) -> tuple[list[Row], list[str]]:
             seq = cols[1]
             rows.append(Row(seq, seq.split("_", 1)[0], sound.group(1), texts[0], texts[1]))
     return rows, skipped
-
-
-def kanji_number(n: int) -> str:
-    """`n` in kanji numerals as a word spells it: 10 十, 2010 二千十, 10000 一万."""
-    if n == 0 or n >= 10**16:
-        return "".join(KANJI_DIGITS[int(d)] for d in str(n))
-    out = []
-    for size, unit in ((10**12, "兆"), (10**8, "億"), (10**4, "万"), (1, "")):
-        group = n // size % 10000
-        if not group:
-            continue
-        for place, name in ((1000, "千"), (100, "百"), (10, "十")):
-            digit = group // place % 10
-            if digit:
-                out.append(("" if digit == 1 else KANJI_DIGITS[digit]) + name)
-        if group % 10:
-            out.append(KANJI_DIGITS[group % 10])
-        out.append(unit)
-    return "".join(out)
-
-
-def kanji_numerals(text: str) -> str:
-    """`text` with each run of digits, half or full width, spelt in kanji numerals, the form
-    a number is read and looked up in: Sudachi reads 10 digit by digit, イチレイ, and JMdict
-    has 十日 (とおか) but no 10日."""
-    return DIGITS_RE.sub(lambda m: kanji_number(int(m.group())), text)
-
-
-def to_hiragana(text: str) -> str:
-    return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in text)
-
-
-def is_noisy(jp: str) -> bool:
-    """A card whose text holds overlapping caption events, merged and repeated: its audio
-    says each once, so the text is no transcript of it."""
-    return ASS_TAG_RE.search(jp) is not None
-
-
-def spoken_lines(jp: str) -> list[str]:
-    """The card's caption lines with what is not spoken taken out: ASS tags, speaker labels and
-    sound descriptions. Inline readings stay, `猫猫(マオマオ)`; a line left empty is dropped."""
-    out = []
-    for line in ASS_TAG_RE.sub("", jp).split("<br>"):
-        line = UNSPOKEN_RE.sub("", line).strip(" 　")
-        if line:
-            out.append(line)
-    return out
-
-
-class InlineReading(NamedTuple):
-    surface: str  # the kanji the reading belongs to
-    reading: str  # in hiragana; the captions write names in katakana
-    katakana: bool  # whether the caption wrote it in katakana, which it does for names
-    start: int  # where the surface starts in the line with the readings removed
-    end: int
-
-
-# How many kanji at the end of the run before a reading the reading is for. A caption puts the
-# reading after its word, which may follow other kanji: 白鈴姐(ねえ) reads only 姐
-BaseFinder = Callable[[str, str], int]
-
-
-def whole_run(run: str, reading: str) -> int:
-    return len(run)
-
-
-def split_readings(line: str, base: BaseFinder = whole_run) -> tuple[str, list[InlineReading]]:
-    """The line without its inline readings, and each reading at its surface's place there:
-    the last `base(run, reading)` kanji of the kanji run before it."""
-    out: list[str] = []
-    readings: list[InlineReading] = []
-    pos = 0
-    length = 0
-    for m in INLINE_READING_RE.finditer(line):
-        upto_run = line[pos : m.end(1)]
-        out.append(upto_run)
-        length += len(upto_run)
-        run, given = m.group(1), m.group(2)
-        reading = to_hiragana(given)
-        n = max(1, min(len(run), base(run, reading)))
-        readings.append(
-            InlineReading(
-                run[len(run) - n :],
-                reading,
-                KATAKANA_RE.fullmatch(given) is not None,
-                length - n,
-                length,
-            )
-        )
-        pos = m.end()
-    out.append(line[pos:])
-    return "".join(out), readings
-
-
-def all_inline_readings(jp: str, base: BaseFinder = whole_run) -> list[InlineReading]:
-    """Every inline reading of a card, labels' included: a name read in a label (（羅門(ルォメン)）)
-    is read so wherever it is spoken."""
-    found: list[InlineReading] = []
-    for line in ASS_TAG_RE.sub("", jp).split("<br>"):
-        found.extend(split_readings(line, base)[1])
-    return found
 
 
 def read_jsonl(path: Path) -> list[dict]:
