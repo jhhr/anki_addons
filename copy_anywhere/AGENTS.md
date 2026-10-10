@@ -158,7 +158,8 @@ widgets.
 
 ## Shared code
 
-Declares `interpolate`, `ui`, `utils`, `anki`, `jp_text_processing`, `word_array`.
+Declares `interpolate`, `ui`, `utils`, `anki`, `jp_text_processing`, `word_array`, `notify`
+(the sync report).
 `word_array` and `jp_text_processing` are partly there for the shared `execute_code`, which
 exposes `kana_highlight`, `decode_word_array` and `format_word_array` to code mode when they
 import. The interpolation engine and most widgets this addon uses are shared with

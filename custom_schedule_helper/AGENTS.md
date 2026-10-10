@@ -135,8 +135,8 @@ Verified by reading, not by running. Do not build on them; fix them as their own
 
 ## Shared code
 
-Declares `anki` (`write_custom_data`, `sync_hook_base`) and `scheduling` (`due_dates`, which
-was extracted from this addon's `utils.py`). `related_card_disperse` uses the same three
+Declares `anki` (`write_custom_data`, `sync_hook_base`), `scheduling` (`due_dates`, which
+was extracted from this addon's `utils.py`) and `notify` (the reschedule report). `related_card_disperse` uses the same three
 modules: a change to them is a change to both. The gear-menu helpers in `__init__.py` exist
 verbatim in `copy_anywhere`, and the config boilerplate in three addons; see
 [docs/shared-code.md](../docs/shared-code.md) before adding another copy of anything.

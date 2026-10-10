@@ -30,7 +30,7 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   the second check every sync would report changes.
 - `media_sync_did_start_or_stop` fires several times. `read_configs_on_sync` returns early
   while `media_sync_status` is `True` and calls `on_finish_callback` exactly once when it
-  actually reads; the summary dialog depends on that.
+  actually reads; the summary notification depends on that.
 - `SUPPRESS_AUTO_SYNC_ACTIONS` is set by the dialog's "Sync media only now" so the automatic
   handlers stand down; the queued `SUPPRESS_SYNC_FINISH_CALLBACKS` run once when media sync
   stops, then the list is cleared.
@@ -52,7 +52,7 @@ testable with `tmp_path` and a stubbed `mw.pm` (`anki_shared.testing.real_anki` 
 
 ## Shared code
 
-Declares none. `utils.show_non_blocking_info` and `standard_icon` are generic Qt helpers
+Declares `notify`, for the `show_summary_on_sync` report. `utils.show_non_blocking_info` and `standard_icon` are generic Qt helpers
 with one owner, and this addon has its own variant of the config boilerplate and of
 `build_action`. If another addon needs one of these, move it to `anki_shared/` per
 [docs/shared-code.md](../docs/shared-code.md) and declare the package in `build.json`

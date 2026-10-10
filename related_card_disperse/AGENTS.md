@@ -51,8 +51,8 @@ cap; the anchor card is exempt from the cap) → `build_disperse_plan` →
   sync and browser runs use `add_custom_undo_entry` + per-card `merge_undo_entries`.
 - Threading: sync, browser and deck runs use `mw.taskman.run_in_background` with
   `mw.progress`, cancellation, and `mw.reset()` when done; not `CollectionOp`. The review
-  hook is synchronous on the main thread, so it must stay cheap. Tooltips are deferred with
-  `mw.progress.single_shot(100, ...)` because the closing progress dialog would kill them.
+  hook is synchronous on the main thread, so it must stay cheap. The sync result is a
+  `notify.post` in the `sync` group; the notify host waits out the progress dialog itself.
   The browser run calls `browser.table.reset()`.
 - Loop guards: `processed_rule_card_pairs` prevents re-running a (rule, card) pair;
   `remaining_note_cards` always drops the anchor. The sync run resolves candidates uncapped,
@@ -95,8 +95,8 @@ behaviour use `anki_shared.testing.real_anki` as `copy_anywhere/test/conftest.py
 
 ## Shared code
 
-Declares `interpolate`, `ui`, `scheduling`, `anki`. The interpolation engine, `execute_code`
-and the dialog widgets are shared with `copy_anywhere`; `write_custom_data`,
+Declares `interpolate`, `ui`, `scheduling`, `anki`, `notify`. The interpolation engine,
+`execute_code` and the dialog widgets are shared with `copy_anywhere`; `write_custom_data`,
 `sync_hook_base` and `due_dates` with `custom_schedule_helper`. Edit them in `anki_shared/`
 and run all suites. Already duplicated here: `logic._filter_revlogs` and
 `logic._last_review_date` mirror `shared/scheduling/due_dates.py` but take pre-fetched

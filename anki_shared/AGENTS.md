@@ -40,7 +40,8 @@ them the grep and a careful read are the only check there is.
   addon's zip and only `japanese_note_ai_ops` vendors anything.
 - **Keep Anki-free code Anki-free.** `word_array/field_text.py`, `utils/vendor_path.py`,
   `utils/vendor_rebuild.py`, `utils/make_query_string.py`, `utils/block_signals.py`,
-  `interpolate/to_lowercase_dict.py` import neither `anki` nor `aqt`, and
+  `interpolate/to_lowercase_dict.py`, `notify/spec.py`, `notify/policy.py`,
+  `notify/registry.py` import neither `anki` nor `aqt`, and
   `anki/write_custom_data.py` does not touch `mw`. That is what lets them be tested and used
   from scripts. Put logic that needs no collection in a module that does not import one.
 - **Qt from `aqt.qt` only.** Overrides of Qt virtuals carry `# type: ignore[override]` where

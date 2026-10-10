@@ -35,11 +35,11 @@ material is in [`docs/`](docs/):
 
 | addon dir | what it is | shared packages |
 | --- | --- | --- |
-| [copy_anywhere](copy_anywhere/AGENTS.md) | saved "copy definitions" that fill fields from templates, code and other notes | interpolate, ui, utils, anki, jp_text_processing, word_array |
+| [copy_anywhere](copy_anywhere/AGENTS.md) | saved "copy definitions" that fill fields from templates, code and other notes | interpolate, ui, utils, anki, jp_text_processing, word_array, notify |
 | [japanese_note_ai_ops](japanese_note_ai_ops/AGENTS.md) | AI and local operations that generate fields on Japanese notes | jp_text_processing, ui, utils, word_array |
-| [custom_schedule_helper](custom_schedule_helper/AGENTS.md) | rescheduling helpers for a custom FSRS scheduler | anki, scheduling |
-| [related_card_disperse](related_card_disperse/AGENTS.md) | keeps related cards from coming due together | interpolate, ui, scheduling, anki |
-| [addon_config_sync](addon_config_sync/AGENTS.md) | syncs addon `meta.json` configs through the media folder | none |
+| [custom_schedule_helper](custom_schedule_helper/AGENTS.md) | rescheduling helpers for a custom FSRS scheduler | anki, scheduling, notify |
+| [related_card_disperse](related_card_disperse/AGENTS.md) | keeps related cards from coming due together | interpolate, ui, scheduling, anki, notify |
+| [addon_config_sync](addon_config_sync/AGENTS.md) | syncs addon `meta.json` configs through the media folder | notify |
 | [desired_retention](desired_retention/AGENTS.md) | adds a Desired Retention row to the card info dialog | none |
 | [spotify_desktop_link](spotify_desktop_link/AGENTS.md) | opens `spotify:` pycmd links in the desktop app | none |
 | [untracked_media_syncer](untracked_media_syncer/AGENTS.md) | makes edited media files upload on sync | none |
