@@ -26,6 +26,7 @@ PROPER = ("名詞", "固有名詞", "人名", "一般", "*", "*")
 PARTICLE = ("助詞", "格助詞", "*", "*", "*", "*")
 NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
+COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
 SPACE = ("空白", "*", "*", "*", "*", "*")
 BRACKET = ("補助記号", "括弧開", "*", "*", "*", "*")
 
@@ -66,6 +67,21 @@ LEXICON = {
     "三": ("サン", NUMERAL),
     "人": ("ニン", COUNTER),
     "高順": ("タカノブ", PROPER),
+    # Sudachi reads digits one by one, kanji numerals as numbers
+    "10": ("イチレイ", NUMERAL),
+    "175": ("イチナナゴ", NUMERAL),
+    "百七十五": ("ヒャクナナジュウゴ", NUMERAL),
+    "七": ("ナナ", NUMERAL),
+    # A name Sudachi cuts into kanji, and a compound it cuts into words it knows
+    "響": ("ヒビキ", NOUN),
+    "神": ("カミ", NOUN),
+    "美": ("ビ", NOUN),
+    "物置": ("モノオキ", NOUN),
+    "小屋": ("コヤ", NOUN),
+    "日": ("ニチ", COUNTER_NOUN),
+    "十日": ("トオカ", NOUN),
+    "3": ("サン", NUMERAL),
+    "つ": ("ツ", COUNTER),
     # Sudachi's reading of a space or a bracket
     "\u3000": ("キゴウ", SPACE),
     "《": ("キゴウ", BRACKET),
@@ -167,9 +183,35 @@ class ReadingBaseTest(unittest.TestCase):
 
 
 class KanjiWordsTest(unittest.TestCase):
-    def words(self, line, names=()):
+    def words(self, line, names=(), read=None):
         text, readings = fa.split_readings(line)
-        return select.kanji_words(0, text, tokenize(text), readings, names)
+        return select.kanji_words(0, text, tokenize(text), readings, names, read)
+
+    def test_a_number_and_its_counter_are_one_word_its_digits_too(self):
+        def read(text):
+            return select.numeral_reading(text, tokenize)
+
+        words = self.words("10日に七日", read=read)
+        self.assertEqual(
+            [(w.surface, w.start, w.end, w.sudachi, w.kinds) for w in words],
+            [("10日", 0, 3, "とおか", ["number"]), ("七日", 4, 6, "ななにち", ["number"])],
+        )
+
+    def test_a_run_sudachi_cut_into_single_kanji_or_could_not_read_is_one_word(self):
+        # 迂 is not in the stand-in's lexicon: its reading stays the kanji, as Sudachi's does
+        words = self.words("響迂は神美に物置小屋")
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words],
+            [
+                ("響迂", "ひびき迂", ["split"]),
+                ("神美", "かみび", ["split"]),
+                ("物置", "ものおき", []),
+                ("小屋", "こや", []),
+            ],
+        )
+
+    def test_digits_alone_or_with_a_kana_counter_are_no_word(self):
+        self.assertEqual(self.words("175と3つ"), [])
 
     def test_a_name_the_tokenizer_cut_is_one_word(self):
         words = self.words("あら 猫猫", names={"猫猫"})
@@ -197,6 +239,33 @@ class KanjiWordsTest(unittest.TestCase):
 
     def test_a_proper_noun_of_sudachis_is_a_name(self):
         self.assertEqual([(w.surface, w.kinds) for w in self.words("高順")], [("高順", ["name"])])
+
+
+class NumeralsTest(unittest.TestCase):
+    def test_a_number_in_kanji_numerals(self):
+        cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}
+        cases.update({10000: "一万", 12345: "一万二千三百四十五", 100000000: "一億"})
+        self.assertEqual({n: fa.kanji_number(n) for n in cases}, cases)
+
+    def test_digits_of_either_width_in_a_text(self):
+        self.assertEqual(fa.kanji_numerals("船で10日、１万人"), "船で十日、一万人")
+
+
+class RewordTest(unittest.TestCase):
+    def test_the_same_cards_in_the_same_strata_with_their_words_found_again(self):
+        def card(card_id, surface):
+            r = fa.Row(card_id, "01", f"{card_id}.opus", surface, "-")
+            return select.Card(r, [surface], [select.Word(0, 0, len(surface), surface, "x")])
+
+        picked = [
+            select.selection_row("names", card("b", "日")),
+            select.selection_row("random", card("a", "他")),
+        ]
+        cards = [card("a", "他"), card("b", "10日")]
+        rows, changed = select.reword(picked, cards)
+        self.assertEqual([(r["id"], r["stratum"]) for r in rows], [("b", "names"), ("a", "random")])
+        self.assertEqual(rows[0]["words"][0]["surface"], "10日")
+        self.assertEqual(changed, 1)
 
 
 class SecondReadingTest(unittest.TestCase):
@@ -237,7 +306,7 @@ class SelectTest(unittest.TestCase):
     def test_the_hard_words_of_a_card(self):
         cards = {c.row.id: c for c in self.cards()}
         self.assertEqual(cards[row(2, "").id].reasons, ["name:猫猫"])
-        self.assertEqual(cards[row(4, "").id].reasons, ["ambiguous:他", "number:三", "number:人"])
+        self.assertEqual(cards[row(4, "").id].reasons, ["ambiguous:他", "number:三人"])
         third = cards[row(3, "").id]
         self.assertEqual(
             [(w.surface, w.caption, w.kinds) for w in third.words],
@@ -308,6 +377,9 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(heard, "でもやさしいおやじ")
         self.assertEqual(score.heard_text("kana-whisper", "ナナネン", tokenize), "ナナネン")
 
+    def test_ordinary_text_reads_digits_as_a_number(self):
+        self.assertEqual(score.heard_text("anime-whisper", "10日", tokenize), "トオカ")
+
     def test_ordinary_text_is_read_as_sudachi_reads_it(self):
         # the kanji give Sudachi's reading back; a name written in kana gives the name's
         heard = score.heard_text("anime-whisper", "猫猫は薬", tokenize)
@@ -322,6 +394,25 @@ class ScoreCardTest(unittest.TestCase):
 
     def card(self, line, word):
         return {"id": "c1", "lines": [line], "words": [{"line": 0, "start": 0, **word}]}
+
+    def test_digits_no_word_took_are_read_as_a_number(self):
+        ref, _, _ = score.reference({"id": "c1", "lines": ["175"], "words": []}, tokenize)
+        self.assertEqual(ref, score.morae("ヒャクナナジュウゴ"))
+
+    def test_a_numbers_dictionary_readings_are_those_of_it_in_kanji(self):
+        found = {"十日": {"とおか", "じゅうにち"}}
+        with unittest.mock.patch.object(score, "jmdict_readings", lambda f: found.get(f, set())):
+            readings = score.dictionary_readings()
+            self.assertEqual(readings({"surface": "10日"}), ["じゅうにち", "とおか"])
+
+    def test_a_label_given_to_another_word_at_its_place_is_stale(self):
+        word = {"end": 1, "surface": "他", "sudachi": "ほか", "caption": None}
+        card = self.card("他に", {**word, "kinds": []})
+        said = {"id": "c1", "line": 0, "start": 0, "reading": "た", "verdict": "heard"}
+        labels = {("c1", 0, 0): {**said, "surface": "七"}}
+        words, _, _ = score.score_card(card, "タニ", "kana-whisper", tokenize, {}, labels=labels)
+        self.assertIsNone(words[0].label)
+        self.assertNotIn("label", words[0].verdicts)
 
     def test_a_space_or_a_bracket_is_no_sound(self):
         word = {"end": 2, "surface": "他", "sudachi": "ほか", "caption": None, "kinds": []}
@@ -350,8 +441,8 @@ class ScoreCardTest(unittest.TestCase):
     def test_a_labelled_word_says_whether_the_model_heard_the_label(self):
         word = {"end": 1, "surface": "他", "sudachi": "ほか", "caption": None}
         card = self.card("他に", {**word, "kinds": ["ambiguous"]})
-        said = {"id": "c1", "line": 0, "start": 0, "reading": "た", "verdict": "heard"}
-        labels = {("c1", 0, 0): said}
+        said = {"id": "c1", "line": 0, "start": 0, "surface": "他", "reading": "た"}
+        labels = {("c1", 0, 0): {**said, "verdict": "heard"}}
         words, _, _ = score.score_card(card, "タニ", "kana-whisper", tokenize, {}, labels=labels)
         self.assertTrue(words[0].verdicts["label"])
         self.assertEqual(words[0].row()["label"], "た")
@@ -458,6 +549,7 @@ class CombineTest(unittest.TestCase):
             {"id": "c1", "line": 0, "start": 2, "reading": "ほか", "verdict": "heard"},
             {"id": "c1", "line": 0, "start": 3, "reading": None, "verdict": "unsure"},
         ]
+        labels = [{**row, "surface": "他"} for row in labels]
         text = self.combine({"a": a, "b": [dict(w) for w in a]}, labels=labels)
         self.assertIn("2 words: right 50.0%, wrong 50.0%, review 0.0%", text)  # Sudachi wrong
         self.assertIn("1 words: right 0.0%, wrong 0.0%, review 100.0%", text)  # Sudachi right

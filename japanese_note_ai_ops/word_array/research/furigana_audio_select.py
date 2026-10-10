@@ -18,7 +18,15 @@ any, and why the word is hard:
   かた), the second way often enough to be no slip (`second_reading`), or one of the classic
   cases in `HETERONYMS`. JMdict cannot pick these: without the
   readings' frequency marks it gives over a thousand of the show's words two readings or more;
-- `number`: a numeral before a counter (一人, 三日);
+- `number`: a number with the counter after it, or one with a kanji in it, as one word, its
+  digits too (10日, 七日, 一匹, １万): its reading belongs to the whole and seldom divides by
+  kanji (とおか, なのか, いっぴき). A number with digits is read as Sudachi reads it spelt in
+  kanji numerals (`furigana_audio.kanji_numerals`): it reads 10 digit by digit;
+- `split`: a kanji run Sudachi cut into single kanji (神|美, 羅|半) or into pieces one of which
+  it could not read (響|迂), taken as one word: a name, mostly, which the captions never read.
+  Kanji by kanji its parts get readings of their own (神 かみ), and an unread one has no sound,
+  so the audio of the whole would go to its neighbour. A run cut into longer pieces stays cut
+  (物置|小屋, 柘榴|宮): the dictionary knows those pieces;
 - `inline`: the word has its caption reading in this very line, which makes the line a check
   on a transcriber: that word's reading is known. The `inline` stratum takes only the ones
   Sudachi reads otherwise (妃(きさき) as ひ), known tokenizer errors with their answer.
@@ -36,6 +44,12 @@ the captions give, the seed of the show's name list) to `evals/furigana_audio/` 
 data checkout.
 
     python word_array/research/furigana_audio_select.py [--count 400] [--seed 1] [--tsv FILE]
+    python word_array/research/furigana_audio_select.py --reword
+
+`--reword` keeps the picked cards, whose clips are copied already, and finds their words again
+with the rules as they are now. The runs then need scoring again and the label queue building
+again; labels given to a word whose span changed no longer apply to it (`furigana_audio.
+label_for`).
 """
 
 from __future__ import annotations
@@ -65,9 +79,8 @@ SHARES = {"names": 0.35, "readings": 0.35, "inline": 0.1}
 SECOND_READING_USES = 3
 SECOND_READING_SHARE = 0.05
 
-# Sudachi's part of speech for a numeral and for a counter
+# Sudachi's part of speech for a numeral
 NUMERAL = ("名詞", "数詞")
-COUNTER_SUFFIX = ("接尾辞", "名詞的", "助数詞")
 
 
 @dataclass
@@ -79,7 +92,8 @@ class Word:
     start: int
     end: int
     surface: str
-    sudachi: str  # Sudachi's reading, the morphemes' joined
+    # Sudachi's reading, the morphemes' joined; of a number with digits, of it in kanji
+    sudachi: str
     caption: Optional[str] = None  # the captions' reading in this line, hiragana
     kinds: list[str] = field(default_factory=list)
 
@@ -190,12 +204,16 @@ def kanji_words(
     morphemes: Sequence,
     readings: Sequence[fa.InlineReading],
     names: Iterable[str],
+    read: Optional[Callable[[str], str]] = None,
 ) -> list[Word]:
     """The line's kanji words: one per kanji morpheme, the morphemes an inline reading or a
-    name of `names` spans merged into one word. A span the tokenizer cut across takes in the
-    whole of each morpheme it touches, so the word may run past it (玉葉|妃 for 玉葉). An
-    inline reading covers its kanji only, 噛(か)みつい, so the word's caption takes in the kana
-    around them as written (かみつい); a word with other kanji around them gets none."""
+    name of `names` spans merged into one word, and so are those of a number (`number_spans`).
+    A span the tokenizer cut across takes in the whole of each morpheme it touches, so the word
+    may run past it (玉葉|妃 for 玉葉). An inline reading covers its kanji only, 噛(か)みつい, so
+    the word's caption takes in the kana around them as written (かみつい); a word with other
+    kanji around them gets none. `read` gives the reading of a number with digits, which
+    Sudachi reads digit by digit; without it the morphemes' readings are joined. Last, a kanji
+    run Sudachi cut where it should not have (`split_runs`) is one word."""
     spans: list[tuple[int, int, Optional[str], bool]] = []  # start, end, caption, is_name
     for r in readings:
         spans.append((r.start, r.end, r.reading, r.katakana))
@@ -237,6 +255,22 @@ def kanji_words(
             )
         )
         used.update(inside)
+    for i, j in number_spans(morphemes):
+        if used.intersection(range(i, j)):
+            continue
+        lo, hi = morphemes[i].begin(), morphemes[j - 1].end()
+        surface = text[lo:hi]
+        if read is not None and fa.DIGITS_RE.search(surface):
+            sudachi = fa.to_hiragana(read(surface))
+        else:
+            sudachi = "".join(fa.to_hiragana(m.reading_form()) for m in morphemes[i:j])
+        words.append(Word(line_no, lo, hi, surface, sudachi, None, ["number"]))
+        used.update(range(i, j))
+    for i, j in split_runs(morphemes, used):
+        lo, hi = morphemes[i].begin(), morphemes[j - 1].end()
+        sudachi = "".join(fa.to_hiragana(m.reading_form()) for m in morphemes[i:j])
+        words.append(Word(line_no, lo, hi, text[lo:hi], sudachi, None, ["split"]))
+        used.update(range(i, j))
     for i, m in enumerate(morphemes):
         if i in used or not fa.KANJI_RE.search(m.surface()):
             continue
@@ -252,13 +286,64 @@ def is_proper_noun(m) -> bool:
     return m.part_of_speech()[1] == "固有名詞"
 
 
-def numbers(morphemes: Sequence) -> set[tuple[int, int]]:
-    """(start, end) of each numeral followed by a counter, both morphemes."""
-    out = set()
-    for a, b in zip(morphemes, morphemes[1:]):
-        if a.part_of_speech()[:2] == NUMERAL and b.part_of_speech()[:3] == COUNTER_SUFFIX:
-            out.add((a.begin(), b.end()))
-    return out
+def is_counter(m) -> bool:
+    """Whether a morpheme after a numeral counts it: a suffix (日 of 七日, 人 of 3人) or a noun
+    that can be a counter (日 of 10日, 月, 年)."""
+    pos = m.part_of_speech()
+    return pos[0] == "接尾辞" or tuple(pos[:3]) == ("名詞", "普通名詞", "助数詞可能")
+
+
+def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
+    """[i, j) morpheme ranges of the numbers that are one word: a run of numerals and the
+    counter after it, if any, where a kanji is among them (10日, 十月, １万). With none, as in
+    175 or 3つ, the number has no kanji to give furigana to."""
+    spans = []
+    i = 0
+    while i < len(morphemes):
+        if tuple(morphemes[i].part_of_speech()[:2]) != NUMERAL:
+            i += 1
+            continue
+        j = i
+        while j < len(morphemes) and tuple(morphemes[j].part_of_speech()[:2]) == NUMERAL:
+            j += 1
+        end = j + 1 if j < len(morphemes) and is_counter(morphemes[j]) else j
+        if any(fa.KANJI_RE.search(m.surface()) for m in morphemes[i:end]):
+            spans.append((i, end))
+        i = j
+    return spans
+
+
+def split_runs(morphemes: Sequence, used: set[int]) -> list[tuple[int, int]]:
+    """[i, j) morpheme ranges of the kanji runs that are one word though Sudachi cut them: two
+    morphemes of kanji only or more in a row, not taken by another word, each a single kanji
+    or one of them unread (its reading still the kanji, which is how Sudachi reads one it
+    does not know)."""
+
+    def kanji_only(k: int) -> bool:
+        surface = morphemes[k].surface()
+        return k not in used and bool(surface) and all(fa.KANJI_RE.match(c) for c in surface)
+
+    spans = []
+    i = 0
+    while i < len(morphemes):
+        if not kanji_only(i):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(morphemes) and kanji_only(j):
+            j += 1
+        run = morphemes[i:j]
+        single = all(len(m.surface()) == 1 for m in run)
+        unread = any(fa.KANJI_RE.search(m.reading_form()) for m in run)
+        if len(run) > 1 and (single or unread):
+            spans.append((i, j))
+        i = j
+    return spans
+
+
+def numeral_reading(text: str, tokenize: Callable[[str], Sequence]) -> str:
+    """Sudachi's reading of `text` with its digits spelt in kanji numerals, hiragana."""
+    return "".join(fa.to_hiragana(m.reading_form()) for m in tokenize(fa.kanji_numerals(text)))
 
 
 def read_cards(
@@ -289,8 +374,9 @@ def read_cards(
     for row, lines, per_line in parsed:
         words: list[Word] = []
         for n, (text, readings, morphemes) in enumerate(per_line):
-            line_words = kanji_words(n, text, morphemes, readings, names)
-            counted = numbers(morphemes)
+            line_words = kanji_words(
+                n, text, morphemes, readings, names, lambda s: numeral_reading(s, tokenize)
+            )
             for w in line_words:
                 lemmas = {m.dictionary_form() for m in morphemes if w.start <= m.begin() < w.end}
                 if w.surface in show.words and "name" in w.kinds and w.caption is None:
@@ -303,8 +389,6 @@ def read_cards(
                     w.surface in two_ways or w.surface in HETERONYMS or lemmas & HETERONYMS
                 ):
                     w.kinds.append("ambiguous")
-                if any(s <= w.start < e for s, e in counted):
-                    w.kinds.append("number")
                 if w.caption is not None:
                     w.kinds.append("inline")
             words.extend(line_words)
@@ -416,11 +500,26 @@ def summary(picked: Sequence[tuple[str, Card]], cards: Sequence[Card]) -> str:
     )
 
 
+def reword(picked: Sequence[dict], cards: Sequence[Card]) -> tuple[list[dict], int]:
+    """The picked rows with their words found again, in the same order and strata, and how
+    many cards' words changed. A card no longer pickable keeps its row."""
+    by_id = {c.row.id: c for c in cards}
+    rows = []
+    changed = 0
+    for row in picked:
+        card = by_id.get(row["id"])
+        new = selection_row(row["stratum"], card) if card else row
+        changed += new["words"] != row["words"]
+        rows.append(new)
+    return rows, changed
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--tsv", type=Path, default=fa.EXPORT, help="the subs2srs export")
     ap.add_argument("--count", type=int, default=400, help="cards to pick (default 400)")
     ap.add_argument("--seed", type=int, default=1, help="shuffle seed (default 1)")
+    ap.add_argument("--reword", action="store_true", help="the same cards, their words again")
     args = ap.parse_args(argv)
 
     rows, skipped = fa.read_export(args.tsv)
@@ -431,6 +530,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for row in rows:
         show.add(row, base)
     cards = read_cards(rows, sudachi_tokenizer(), show, base)
+    if args.reword:
+        old = fa.read_jsonl(fa.SELECTION)
+        if not old:
+            print(f"{fa.SELECTION} is missing or empty: nothing to reword", file=sys.stderr)
+            return 2
+        new, changed = reword(old, cards)
+        fa.write_jsonl(fa.SELECTION, new)
+        print(f"{changed} of {len(new)} cards' words changed; wrote {fa.SELECTION}")
+        return 0
     picked = select(cards, args.count, args.seed)
     picked.sort(key=lambda sc: sc[1].row.id)
     fa.write_jsonl(fa.SELECTION, (selection_row(s, c) for s, c in picked))

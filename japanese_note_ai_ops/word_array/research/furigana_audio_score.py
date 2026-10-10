@@ -53,7 +53,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 import furigana_audio as fa
 from furigana_audio_run import MODELS, RUNS
-from furigana_audio_select import jmdict_readings, sudachi_tokenizer
+from furigana_audio_select import jmdict_readings, numeral_reading, sudachi_tokenizer
 
 SMALL = "ャュョァィゥェォヮ"
 VOWEL_ROWS = {
@@ -70,7 +70,7 @@ SYMBOLS = ("記号", "補助記号", "空白")
 # A ruby base is the kanji before the reading: anything wider took the kana before them too,
 # でも優[やさ] for やさ
 RUBY_RE = re.compile(f"[{fa.KANJI}]+\\[([^\\]]*)\\]")
-KINDS = ("name", "caption_word", "ambiguous", "number")
+KINDS = ("name", "caption_word", "ambiguous", "number", "split")
 # A card whose transcript is off its line by more than this share of morae is taken for one
 # whose captions and clip differ
 MISMATCH = 0.35
@@ -249,7 +249,7 @@ def heard_text(model: str, text: str, tokenize: Callable[[str], Sequence]) -> st
     if writes == "ruby":
         return RUBY_RE.sub(lambda m: m.group(1), text)
     if writes == "text":
-        return "".join(m for mo in tokenize(text) for m in spoken(mo))
+        return "".join(m for mo in tokenize(fa.kanji_numerals(text)) for m in spoken(mo))
     return text
 
 
@@ -312,13 +312,18 @@ def reference(
             if k < len(spans) and spans[k]["start"] <= mo.begin() < spans[k]["end"]:
                 if mo.begin() == spans[k]["start"]:
                     w = spans[k]
-                    reading = w["caption"] or w["sudachi"]
-                    words.append(WordResult(card["id"], w, reading))
-                    got = morae(reading)
+                    expected = w["caption"] or w["sudachi"]
+                    words.append(WordResult(card["id"], w, expected))
+                    got = morae(expected)
                     ref.extend(got)
                     owner.extend([len(words) - 1] * len(got))
                 continue
-            got = spoken(mo)
+            # A number no word took, digits alone (175): read as a number, not digit by digit
+            got = (
+                morae(numeral_reading(mo.surface(), tokenize))
+                if fa.DIGITS_RE.search(mo.surface())
+                else spoken(mo)
+            )
             ref.extend(got)
             owner.extend([-1] * len(got))
     return ref, owner, words
@@ -390,7 +395,8 @@ def score_card(
         others = [key for key in choices if key != "draft"]
         heard = hears(choices, hyp, lo, hi, strict=others) if choices else {}
         result.op_verdicts = {"draft": False, **heard}
-        result.label = (labels or {}).get((card["id"], w["line"], w["start"]))
+        key = (card["id"], w["line"], w["start"])
+        result.label = fa.label_for(labels or {}, key, w["surface"])
         if result.label and result.label["verdict"] == "heard":
             said = {"label": result.label["reading"]}
             if not fa.KANJI_RE.search(w["sudachi"]):
@@ -425,14 +431,16 @@ def show_readings() -> dict[str, tuple[str, str]]:
 
 
 def dictionary_readings() -> Alternatives:
-    """A word's JMdict readings, by its spelling as the line writes it: a conjugated verb
-    (言わ) is no spelling JMdict has, so it gets none and only its draft is written."""
+    """A word's JMdict readings, by its spelling as the line writes it, a number's digits as
+    kanji numerals (10日 as 十日): a conjugated verb (言わ) is no spelling JMdict has, so it gets
+    none and only its draft is written."""
     cache: dict[str, list[str]] = {}
 
     def readings(word: dict) -> list[str]:
         surface = word["surface"]
         if surface not in cache:
-            cache[surface] = sorted(jmdict_readings(surface))
+            forms = {surface, fa.kanji_numerals(surface)}
+            cache[surface] = sorted(set().union(*(jmdict_readings(f) for f in forms)))
         return cache[surface]
 
     return readings
@@ -576,7 +584,7 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
         rows = [t[key] for t in tables]
         first = rows[0]
         written, bucket = outcome(rows, k)
-        label = labels.get(key)
+        label = fa.label_for(labels, key, first["surface"])
         said = label["reading"] if label and label["verdict"] == "heard" else None
         gold = said if label else first["gold"]
         if label and said is None:

@@ -82,17 +82,21 @@ class QueueTest(unittest.TestCase):
             heard("ほか", "ホカ", draft, "c3", clean=False),  # a card not matching its line
             heard("ほか", "ホカ", draft, "c4"),  # one hears the draft, the other nothing
             heard("ほか", "ナニ", neither, "c5"),  # neither: a review
+            heard("ほか", "ホカ", draft, "c5", start=2),  # both hear the draft, not asked
         ]
         b = [dict(w) for w in a]
         b[4] = heard("ほか", "", neither, "c4")
+        word = {"line": 0, "start": 0, "end": 1, "surface": "他", "caption": None}
+        neko = {**word, "start": 2, "end": 3, "surface": "猫"}
         selection = [
             {
                 "id": card,
                 "audio": f"{card}.opus",
                 "en": "-",
-                "lines": ["他に猫(ねこ)"],
-                "words": [{"line": 0, "start": 0, "end": 1, "surface": "他"}]
-                + ([{"line": 0, "start": 2, "end": 3, "surface": "猫"}] if card == "c1" else []),
+                "lines": ["他に猫(ねこ)" if card == "c1" else "他に猫"],
+                "words": [word]
+                + ([{**neko, "caption": "ねこ"}] if card == "c1" else [])
+                + ([neko] if card == "c5" else []),
             }
             for card in ("c1", "c2", "c3", "c4", "c5")
         ]
@@ -111,16 +115,28 @@ class QueueTest(unittest.TestCase):
             ("c1", "correction"), ("c5", "review"), ("c4", "partial"),
         ])
         self.assertEqual(len(cards[0]["words"]), 1, "the caption-read word is left out")
-        self.assertEqual(cards[0]["lines"], [{"text": "他に猫", "ruby": [[2, 3, "ねこ"]]}])
+        self.assertEqual(cards[0]["lines"], [{"text": "他に猫", "ruby": [[2, 3, "ねこ", "caption"]]}])
+
+    def test_a_word_not_asked_about_shows_the_reading_the_rule_writes(self):
+        c5 = next(c for c in self.build(sample=0.0) if c["id"] == "c5")
+        self.assertEqual([w["start"] for w in c5["words"]], [0])
+        self.assertEqual(c5["lines"], [{"text": "他に猫", "ruby": [[2, 3, "ほか", "rule"]]}])
 
     def test_the_drafts_every_model_heard_are_sampled(self):
         self.assertEqual([c["id"] for c in self.build(sample=1.0)][-1], "c2")
         self.assertNotIn("c2", [c["id"] for c in self.build(sample=0.0)])
 
+    def test_a_words_place_in_the_sample_is_its_own(self):
+        # c2's agreed word is in the sample by its own draw, whatever the other cards hold
+        draw = label.stable_random(0, "c2", 0, 0, "他")
+        self.assertIn("c2", [c["id"] for c in self.build(sample=draw + 1e-9)])
+        self.assertNotIn("c2", [c["id"] for c in self.build(sample=draw)])
+        self.assertEqual(draw, label.stable_random(0, "c2", 0, 0, "他"))
+
     def test_the_summary_counts_words_by_bucket(self):
         text = label.queue_summary(self.build(sample=1.0))
         self.assertEqual(
-            text, "4 cards, 4 words to label: correction 1, review 1, partial 1, agreed 1"
+            text, "4 cards, 5 words to label: correction 1, review 1, partial 1, agreed 2"
         )
 
 
@@ -190,6 +206,18 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(data["card"]["id"], "c2")
         again = label.Session(queue(), self.path)
         self.assertEqual(again.handle("/api/next", {})["card"]["id"], "c1")
+
+    def test_a_label_given_to_another_word_at_its_place_asks_again(self):
+        fa.write_jsonl(self.path, [
+            {"id": "c2", "line": 0, "start": 0, "surface": "七", "reading": "な", "verdict": "heard"}
+        ])
+        session = label.Session(queue(), self.path)
+        self.assertEqual(session.stats()["labelled"], 0)
+        data = session.handle("/api/skip", {"id": "c1"})
+        self.assertIsNone(data["card"]["words"][0]["label"])
+        session.handle("/api/label", {"id": "c2", "line": 0, "start": 0, "verdict": "heard",
+                                      "reading": "ほか"})
+        self.assertEqual([r["surface"] for r in fa.read_jsonl(self.path)], ["他"])
 
     def test_labels_given_before_are_kept(self):
         self.post("/api/label", id="c2", line=0, start=0, verdict="heard", reading="た")

@@ -17,7 +17,9 @@ heard, and what each model heard where it sounds like none of those.
 with the test data checkout and no model environment. It serves a page on localhost that plays
 a card's clip and asks, word by word, which reading was said: one of the readings offered,
 typed in, "can't tell" or "not said". The readings are in kana order and do not say where they
-came from, so the draft gets no head start; a toggle shows that. Each label goes to
+came from, so the draft gets no head start; a toggle shows that. Each word not asked about shows
+the reading it has over the line, the caption's or the one the rule writes, so a word is never
+labelled without knowing what its neighbours got. Each label goes to
 `labels.jsonl` as it is given, and `furigana_audio_score.py` scores the runs and the rule
 against the labels where there are any. Cards come in the queue's order, the corrections first,
 then the reviews, the drafts not every model heard, the sample, so stopping anywhere leaves the
@@ -29,9 +31,10 @@ The clips are Ogg Opus, which Chrome, Edge and Firefox play.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+from collections import defaultdict
 import os
-import random
 import re
 import sys
 import threading
@@ -52,6 +55,13 @@ QUORUM = 1
 SAMPLE = 0.1
 ORDER = {bucket: n for n, bucket in enumerate(("correction", "review", "partial", "agreed"))}
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
+
+
+def stable_random(seed: int, *parts: object) -> float:
+    """A number in [0, 1) fixed by `seed` and `parts` alone, so that a word's place in the
+    sample and a card's in the order stay as they were when other words are found again."""
+    digest = hashlib.sha1(repr((seed, *parts)).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / 2**64
 
 
 def choices(rows: Sequence[dict], models: Sequence[str]) -> list[dict]:
@@ -103,18 +113,25 @@ def build_queue(
         if not rows or "op_hears" not in rows[0]:
             raise SystemExit(f"{m}: score it first (furigana_audio_score.py {m})")
         runs.append({fa.word_key(r): r for r in rows})
-    rng = random.Random(seed)
     cards: list[tuple[int, float, dict]] = []
     for card in fa.read_jsonl(fa.SELECTION):
         words = []
+        # The readings of the words not asked about, by line: the show's for a name, else what
+        # the rule writes; a caption's is on the line already
+        shown: dict[int, list[list]] = defaultdict(list)
         for w in card["words"]:
             key = (card["id"], w["line"], w["start"])
             found = [run.get(key) for run in runs]
             heard = [r for r in found if r is not None]
-            if len(heard) < len(runs) or not all(r["clean"] for r in heard) or heard[0]["gold"]:
+            if len(heard) < len(runs) or not all(r["clean"] for r in heard):
                 continue
-            _, bucket = outcome(heard, quorum)
-            if bucket == "agreed" and rng.random() >= sample:
+            if heard[0]["gold"]:
+                if not w["caption"]:
+                    shown[w["line"]].append([w["start"], w["end"], heard[0]["gold"], "rule"])
+                continue
+            written, bucket = outcome(heard, quorum)
+            if bucket == "agreed" and stable_random(seed, *key, w["surface"]) >= sample:
+                shown[w["line"]].append([w["start"], w["end"], written, "rule"])
                 continue
             words.append(
                 {
@@ -129,9 +146,10 @@ def build_queue(
         if not words:
             continue
         lines = []
-        for line in card["lines"]:
+        for n, line in enumerate(card["lines"]):
             text, readings = fa.split_readings(line)
-            lines.append({"text": text, "ruby": [[r.start, r.end, r.reading] for r in readings]})
+            ruby = [[r.start, r.end, r.reading, "caption"] for r in readings] + shown[n]
+            lines.append({"text": text, "ruby": sorted(ruby)})
         bucket = min((w["bucket"] for w in words), key=ORDER.__getitem__)
         row = {
             "id": card["id"],
@@ -142,7 +160,7 @@ def build_queue(
             "words": words,
         }
         # Random within a bucket, so that the labels given before stopping are a fair sample
-        cards.append((ORDER[bucket], rng.random(), row))
+        cards.append((ORDER[bucket], stable_random(seed, card["id"]), row))
     cards.sort(key=lambda c: c[:2])
     return [row for _, _, row in cards]
 
@@ -174,17 +192,18 @@ class Session:
         }
         self.lock = threading.Lock()
 
+    def _label(self, card_id: str, word: dict) -> Optional[dict]:
+        key = (card_id, word["line"], word["start"])
+        return fa.label_for(self.labels, key, word["surface"])
+
     def card(self, card_id: str) -> dict:
         """A card for the page, each word with its label if it has one."""
         card = dict(self.cards[card_id])
-        card["words"] = [
-            {**w, "label": self.labels.get((card_id, w["line"], w["start"]))}
-            for w in card["words"]
-        ]
+        card["words"] = [{**w, "label": self._label(card_id, w)} for w in card["words"]]
         return card
 
     def _open(self, card: dict) -> bool:
-        return any((card["id"], w["line"], w["start"]) not in self.labels for w in card["words"])
+        return any(self._label(card["id"], w) is None for w in card["words"])
 
     def next_card(self) -> Optional[dict]:
         for card in self.queue:
@@ -232,7 +251,7 @@ class Session:
         for card in self.queue:
             for w in card["words"]:
                 total[w["bucket"]] += 1
-                done[w["bucket"]] += (card["id"], w["line"], w["start"]) in self.labels
+                done[w["bucket"]] += self._label(card["id"], w) is not None
         return {
             "buckets": [[b, done[b], total[b]] for b in ORDER],
             "labelled": sum(done.values()),
@@ -285,6 +304,7 @@ main { max-width:760px; margin:0 auto; }
 .player audio { flex:1 1 260px; min-width:0; }
 .lines { font-size:24px; line-height:2.3; margin:12px 0 4px; overflow-wrap:anywhere; }
 .lines rt { font-size:11px; color:var(--muted); }
+.lines rt.rule { color:var(--accent); }
 mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 2px; cursor:pointer;
   white-space:nowrap; }
 mark.active { outline:3px solid var(--active); outline-offset:1px; }
@@ -316,6 +336,8 @@ label.toggle { font-size:13px; color:var(--muted); display:inline-flex; gap:6px;
 <div class="card" id="card">Loading...</div>
 <p class="message" id="message"></p>
 <label class="toggle"><input type="checkbox" id="sources"> Show where each reading came from</label>
+<p class="message">Over the line: grey, the captions' readings; blue, what the rule writes for
+a word not asked about.</p>
 </main><script>
 const $ = id => document.getElementById(id);
 const ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"};
@@ -330,13 +352,15 @@ function lineHtml(line, n) {
   const marks = card.words.map((w, i) => [w, i]).filter(([w]) => w.line === n);
   let out = "", pos = 0;
   const cuts = [...marks.map(([w, i]) => ({start: w.start, end: w.end, i})),
-                ...line.ruby.map(([start, end, reading]) => ({start, end, reading}))]
+                ...line.ruby.map(([start, end, reading, source]) =>
+                  ({start, end, reading, source}))]
     .sort((a, b) => a.start - b.start);
   for (const c of cuts) {
     if (c.start < pos) continue;
     out += esc(line.text.slice(pos, c.start));
     const text = esc(line.text.slice(c.start, c.end));
-    if (c.reading !== undefined) out += `<ruby>${text}<rt>${esc(c.reading)}</rt></ruby>`;
+    if (c.reading !== undefined)
+      out += `<ruby>${text}<rt class="${esc(c.source || "")}">${esc(c.reading)}</rt></ruby>`;
     else {
       const w = card.words[c.i];
       const cls = [c.i === active ? "active" : "", w.label ? "done" : ""].join(" ");

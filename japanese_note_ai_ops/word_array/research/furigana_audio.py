@@ -59,6 +59,8 @@ SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 # A media column of a subs2srs export: its audio, snapshot, animated snapshot and video
 MEDIA_RE = re.compile(r"^(\[sound:|<img |\[video:)")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
+DIGITS_RE = re.compile(r"[0-9０-９]+")
+KANJI_DIGITS = "〇一二三四五六七八九"
 
 
 class Row(NamedTuple):
@@ -92,6 +94,32 @@ def read_export(path: Path = EXPORT) -> tuple[list[Row], list[str]]:
             seq = cols[1]
             rows.append(Row(seq, seq.split("_", 1)[0], sound.group(1), texts[0], texts[1]))
     return rows, skipped
+
+
+def kanji_number(n: int) -> str:
+    """`n` in kanji numerals as a word spells it: 10 十, 2010 二千十, 10000 一万."""
+    if n == 0 or n >= 10**16:
+        return "".join(KANJI_DIGITS[int(d)] for d in str(n))
+    out = []
+    for size, unit in ((10**12, "兆"), (10**8, "億"), (10**4, "万"), (1, "")):
+        group = n // size % 10000
+        if not group:
+            continue
+        for place, name in ((1000, "千"), (100, "百"), (10, "十")):
+            digit = group // place % 10
+            if digit:
+                out.append(("" if digit == 1 else KANJI_DIGITS[digit]) + name)
+        if group % 10:
+            out.append(KANJI_DIGITS[group % 10])
+        out.append(unit)
+    return "".join(out)
+
+
+def kanji_numerals(text: str) -> str:
+    """`text` with each run of digits, half or full width, spelt in kanji numerals, the form
+    a number is read and looked up in: Sudachi reads 10 digit by digit, イチレイ, and JMdict
+    has 十日 (とおか) but no 10日."""
+    return DIGITS_RE.sub(lambda m: kanji_number(int(m.group())), text)
 
 
 def to_hiragana(text: str) -> str:
@@ -182,6 +210,13 @@ WordKey = tuple[str, int, int]
 
 def word_key(row: dict) -> WordKey:
     return (row["id"], row["line"], row["start"])
+
+
+def label_for(labels: dict[WordKey, dict], key: WordKey, surface: str) -> Optional[dict]:
+    """The label given to the word at `key`, if it was this word: one given before the words
+    were found again to a word with another surface (七 where 七日 starts now) is stale."""
+    found = labels.get(key)
+    return found if found is not None and found.get("surface") == surface else None
 
 
 def read_labels(path: Optional[Path] = None) -> dict[WordKey, dict]:
