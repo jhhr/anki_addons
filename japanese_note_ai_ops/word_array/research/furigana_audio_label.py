@@ -33,6 +33,7 @@ line's edit button takes the line as the clip says it, a reading as the captions
 父上(ちちうえ), or "not in the clip". `fixes.jsonl` keeps it with the line it was, and the
 selection reads the line so corrected (`--reword`), the scorer compares the transcripts with
 it, and the card comes back to label once the queue is built again; until then it is left out.
+The labels given on the line move with their words (`furigana_audio.moved_labels`).
 
 The clips are Ogg Opus, which Chrome, Edge and Firefox play.
 """
@@ -202,7 +203,8 @@ class Session:
         self.names = {row["surface"]: row for row in fa.read_jsonl(self.names_path)}
         self.fixes = {(row["id"], row["line"]): row for row in fa.read_jsonl(self.fixes_path)}
         # Each step Undo takes back: ("label", key, the label before, (surface, the name before)
-        # when it named the word) or ("fix", (card id, line), the correction before)
+        # when it named the word) or ("fix", (card id, line), the correction before, the line's
+        # labels before, by key)
         self.history: list[tuple] = []
         self.skipped: set[str] = set()
         self.cards = {card["id"]: card for card in queue}
@@ -277,7 +279,8 @@ class Session:
         self._save()
 
     def fix(self, card_id: str, line: int, text: str) -> None:
-        """Corrects a line of a card to what the clip says, empty for a line it does not hold."""
+        """Corrects a line of a card to what the clip says, empty for a line it does not hold,
+        and moves the labels given on the line to where their words are in it now."""
         card = self.cards[card_id]
         if not 0 <= line < len(card["lines"]):
             return
@@ -291,8 +294,18 @@ class Session:
             "was": before["was"] if before else caption_form(card["lines"][line]),
             "at": now(),
         }
-        self.history.append(("fix", key, before))
+        # The text the labels are at: the queue's line, or the correction before this one,
+        # which moved them already if the queue was not built again since
+        old = fa.split_readings(before["text"])[0] if before else card["lines"][line]["text"]
+        kept = {k: row for k, row in self.labels.items() if k[:2] == key}
+        for k in kept:
+            del self.labels[k]
+        new = fa.split_readings(self.fixes[key]["text"])[0]
+        for row in fa.moved_labels(kept.values(), old, new):
+            self.labels[fa.word_key(row)] = row
+        self.history.append(("fix", key, before, kept))
         self._save_fixes()
+        self._save()
 
     def undo(self) -> Optional[tuple[str, Optional[list[int]]]]:
         """Takes back the last step: the card to show and the word to make active."""
@@ -300,9 +313,13 @@ class Session:
             return None
         step = self.history.pop()
         if step[0] == "fix":
-            _, key, before = step
+            _, key, before, kept = step
             restore(self.fixes, key, before)
+            for k in [k for k in self.labels if k[:2] == key]:
+                del self.labels[k]
+            self.labels.update(kept)
             self._save_fixes()
+            self._save()
             self.skipped.discard(key[0])
             return key[0], None
         _, key, before, named = step

@@ -272,6 +272,26 @@ class LabellingFilesTest(unittest.TestCase):
             self.assertEqual(fa.read_names(names), {"子翠": "しすい"})
             self.assertEqual(fa.read_fixes(fixes)[("c1", 2)]["was"], "響")
 
+    def test_a_corrected_lines_labels_move_with_their_words(self):
+        rows = [
+            {"id": "c1", "line": 1, "start": 0, "surface": "養父", "reading": "ちち"},
+            {"id": "c1", "line": 1, "start": 4, "end": 6, "surface": "座っ", "reading": "すわっ"},
+        ]
+        moved = fa.moved_labels(rows, "養父上が座った", "父上が座った")
+        # 養父 is no word of the line now: its label stays where it was, stale
+        self.assertEqual(
+            [(r["surface"], r["start"], r.get("end")) for r in moved],
+            [("養父", 0, None), ("座っ", 3, 5)],
+        )
+
+    def test_a_moved_label_takes_the_place_of_a_stale_one(self):
+        rows = [
+            {"id": "c1", "line": 0, "start": 0, "surface": "他", "reading": "ほか"},
+            {"id": "c1", "line": 0, "start": 1, "surface": "物", "reading": "もの"},
+        ]
+        moved = fa.moved_labels(rows, "他物", "物")
+        self.assertEqual([(r["surface"], r["start"]) for r in moved], [("物", 0)])
+
     def test_a_name_given_by_ear_is_a_show_name(self):
         with tempfile.TemporaryDirectory() as d:
             names, captions = Path(d) / "names.jsonl", Path(d) / "captions.jsonl"

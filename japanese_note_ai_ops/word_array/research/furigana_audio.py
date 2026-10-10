@@ -31,6 +31,7 @@ cleaning has to know about:
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from pathlib import Path
@@ -224,6 +225,27 @@ def label_for(labels: dict[WordKey, dict], key: WordKey, surface: str) -> Option
     were found again to a word with another surface (七 where 七日 starts now) is stale."""
     found = labels.get(key)
     return found if found is not None and found.get("surface") == surface else None
+
+
+def moved_labels(rows: Iterable[dict], old: str, new: str) -> list[dict]:
+    """A line's labels, given on its text `old`, at the places their words have in `new`, the
+    line corrected. A correction moves the words it leaves as they were (座っ of 養父上が座っ
+    one place back in 父上が座っ), and a label kept at its old place would find another word
+    there, or none. A label of a word the correction changed, or of none `old`
+    has at its place (stale already), stays where it was, unless a moved one lands there."""
+    blocks = difflib.SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks()
+    stale, moved = [], []
+    for row in rows:
+        start, end = row["start"], row["start"] + len(row["surface"])
+        shift = None
+        if old[start:end] == row["surface"]:
+            shift = next((b - a for a, b, size in blocks if a <= start and end <= a + size), None)
+        if shift is None:
+            stale.append(row)
+        else:
+            moved.append({**row, "start": start + shift, "end": end + shift})
+    taken = {word_key(row) for row in moved}
+    return [row for row in stale if word_key(row) not in taken] + moved
 
 
 def read_names(path: Optional[Path] = None) -> dict[str, str]:

@@ -246,6 +246,23 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(data["card"]["id"], "c1")
         self.assertEqual(fa.read_fixes(self.path.with_name("fixes.jsonl")), {})
 
+    def test_a_correction_moves_the_lines_labels_and_undo_moves_them_back(self):
+        self.post("/api/label", id="c1", line=0, start=0, verdict="heard", reading="た")
+        self.post("/api/label", id="c1", line=0, start=2, verdict="heard", reading="ほか")
+
+        def labels():
+            return [(r["start"], r["reading"]) for r in fa.read_jsonl(self.path)]
+
+        # The first 他 is gone: its label stays where it was, and no word is there to take it
+        self.post("/api/fix", id="c1", line=0, text="に他")
+        self.assertEqual(labels(), [(0, "た"), (1, "ほか")])
+        # Corrected again before the queue is built again: from where the first one put them
+        self.post("/api/fix", id="c1", line=0, text="ああ に他")
+        self.assertEqual(labels(), [(0, "た"), (4, "ほか")])
+        self.post("/api/undo")
+        self.post("/api/undo")
+        self.assertEqual(labels(), [(0, "た"), (2, "ほか")])
+
     def test_a_line_the_clip_does_not_hold(self):
         self.post("/api/fix", id="c2", line=0, text="")
         self.assertEqual(fa.read_fixes(self.path.with_name("fixes.jsonl"))[("c2", 0)]["text"], "")
