@@ -13,6 +13,12 @@ took focus would eat answers.
 Reconciliation runs one way only. Callers mutate the Stack, then the widgets
 are rebuilt to match Stack.visible(). There is no change-event protocol, so
 the model and the widget tree cannot drift apart.
+
+What other copies call is ToastHost, a plain object holding the window, not
+the window itself. As a QWidget the contract shared Qt's namespace:
+update(handle, fields) overrode QWidget.update(), the repaint slot, and
+close(), show() and hide() are taken as well, so the contract could not grow
+without colliding with Qt again.
 """
 
 from __future__ import annotations
@@ -43,7 +49,27 @@ MAX_HEIGHT_FRACTION = 0.6
 COALESCE_MS = 60
 
 
-class ToastHost(QWidget):
+class ToastHost:
+    """post, update and dismiss: what the registry hands out, and nothing else.
+
+    Every copy reaches the elected host by calling these by name, across addon
+    versions, so they live where nothing else can claim the names.
+    """
+
+    def __init__(self) -> None:
+        self.window = ToastWindow()
+
+    def post(self, spec: Dict[str, Any]) -> str:
+        return self.window.post_entry(spec)
+
+    def update(self, handle: str, fields: Dict[str, Any]) -> bool:
+        return self.window.update_entry(handle, fields)
+
+    def dismiss(self, handle: str) -> bool:
+        return self.window.dismiss_entry(handle)
+
+
+class ToastWindow(QWidget):
     def __init__(self) -> None:
         from aqt import mw
 
@@ -91,20 +117,20 @@ class ToastHost(QWidget):
 
         gui_hooks.theme_did_change.append(self._on_theme_did_change)
 
-    # -- the contract other copies call ------------------------------------
+    # -- entries, as ToastHost hands them on --------------------------------
 
-    def post(self, spec: Dict[str, Any]) -> str:
+    def post_entry(self, spec: Dict[str, Any]) -> str:
         handle = self._stack.post(spec, self._now_ms())
         self._schedule_reconcile()
         return handle
 
-    def update(self, handle: str, fields: Dict[str, Any]) -> bool:
+    def update_entry(self, handle: str, fields: Dict[str, Any]) -> bool:
         changed = self._stack.update(handle, fields)
         if changed:
             self._schedule_reconcile()
         return changed
 
-    def dismiss(self, handle: str) -> bool:
+    def dismiss_entry(self, handle: str) -> bool:
         removed = self._stack.dismiss(handle)
         if removed:
             self._schedule_reconcile()
@@ -156,7 +182,7 @@ class ToastHost(QWidget):
             handle = entry["handle"]
             card = self._cards.get(handle)
             if card is None:
-                card = ToastCard(handle, entry["spec"], self.dismiss, self._set_pinned)
+                card = ToastCard(handle, entry["spec"], self.dismiss_entry, self._set_pinned)
                 self._cards[handle] = card
                 card.arm(self._stack.timeout_ms(entry))
             elif card.spec is not entry["spec"]:

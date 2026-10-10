@@ -102,11 +102,15 @@ def main() -> int:
         loop.exec()
 
     host = ToastHost()
+    # The contract is called through host; everything Qt is on its window.
+    window = host.window
 
     # -- focus safety: the reviewer must keep the keyboard ------------------
-    assert host.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
-    assert host.windowFlags() & QtCore.Qt.WindowType.Tool
-    assert host.testAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    assert window.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
+    assert window.windowFlags() & QtCore.Qt.WindowType.Tool
+    assert window.testAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    # Qt owns a widget's namespace (update, close, show...); the contract keeps out of it.
+    assert not isinstance(host, QtWidgets.QWidget)
 
     # -- stacking and grouping ---------------------------------------------
     h1 = host.post(make_spec(source="Copy Anywhere", title="Copied fields",
@@ -117,15 +121,15 @@ def main() -> int:
     host.post(make_spec(source="Custom Schedule Helper", title="Rescheduled 30",
                         timeout_ms=STICKY))
     pump(250)
-    assert len(host._cards) == 3, host._cards
-    assert [h.text() for h in host._headers] == ["SYNC"]
+    assert len(window._cards) == 3, window._cards
+    assert [h.text() for h in window._headers] == ["SYNC"]
 
     # Anchored inside the main window's bottom-right corner.
-    assert host.geometry().right() <= mw.frameGeometry().right()
-    assert host.geometry().bottom() <= mw.frameGeometry().bottom()
+    assert window.geometry().right() <= mw.frameGeometry().right()
+    assert window.geometry().bottom() <= mw.frameGeometry().bottom()
 
     # -- disclosure state is tracked, not read back off the widget ----------
-    card = host._cards[h1]
+    card = window._cards[h1]
     assert card.expanded is False
     card.toggle_details()
     pump(50)
@@ -142,45 +146,45 @@ def main() -> int:
                         body="12 + 3", level="success", group="sync",
                         key="sync", timeout_ms=STICKY))
     pump(250)
-    assert len(host._cards) == 3, "keyed repost must not add a card"
-    assert "Copied local and remote" in host._cards[h1].summary.text()
+    assert len(window._cards) == 3, "keyed repost must not add a card"
+    assert "Copied local and remote" in window._cards[h1].summary.text()
 
     # -- overflow queues ---------------------------------------------------
     for i in range(5):
         host.post(make_spec(source=f"Addon {i}", title=f"m{i}", timeout_ms=STICKY))
     pump(250)
-    assert len(host._cards) == host._stack.max_visible
-    assert len(host._stack.queued()) == 8 - host._stack.max_visible
+    assert len(window._cards) == window._stack.max_visible
+    assert len(window._stack.queued()) == 8 - window._stack.max_visible
 
     # -- close clears everything, queue included ---------------------------
-    host.close()
-    assert host._cards == {}
-    assert host._stack.ordered() == []
-    assert host._headers == []
+    window.close()
+    assert window._cards == {}
+    assert window._stack.ordered() == []
+    assert window._headers == []
 
     # -- expiry, and the hover re-arm --------------------------------------
     h = host.post(make_spec(source="A", title="short lived", timeout_ms=200))
     pump(120)
-    assert len(host._cards) == 1
+    assert len(window._cards) == 1
     pump(400)
-    assert len(host._cards) == 0, "should have expired"
+    assert len(window._cards) == 0, "should have expired"
 
     h = host.post(make_spec(source="A", title="hovered", timeout_ms=200))
     pump(120)
-    card = host._cards[h]
+    card = window._cards[h]
     card.underMouse = lambda: True
     pump(600)
-    assert len(host._cards) == 1, "a hovered card must not close under the cursor"
+    assert len(window._cards) == 1, "a hovered card must not close under the cursor"
     card.underMouse = lambda: False
     pump(600)
-    assert len(host._cards) == 0, "and must expire once the cursor leaves"
+    assert len(window._cards) == 0, "and must expire once the cursor leaves"
 
     # -- pinning suspends expiry -------------------------------------------
     h = host.post(make_spec(source="A", title="pinned", timeout_ms=200))
     pump(120)
-    host._cards[h].toggle_pin()
+    window._cards[h].toggle_pin()
     pump(600)
-    assert len(host._cards) == 1, "a pinned card never expires"
+    assert len(window._cards) == 1, "a pinned card never expires"
     host.dismiss(h)
     pump(200)
 
@@ -188,11 +192,11 @@ def main() -> int:
     mw.progress.busy_flag = True
     host.post(make_spec(source="A", title="posted under progress", timeout_ms=STICKY))
     pump(400)
-    assert len(host._cards) == 0, "reconcile must wait for the progress dialog"
-    assert len(host._stack.ordered()) == 1, "but the model records it immediately"
+    assert len(window._cards) == 0, "reconcile must wait for the progress dialog"
+    assert len(window._stack.ordered()) == 1, "but the model records it immediately"
     mw.progress.busy_flag = False
     pump(400)
-    assert len(host._cards) == 1, "and it appears once the dialog is gone"
+    assert len(window._cards) == 1, "and it appears once the dialog is gone"
 
     # -- theme changes restyle without error -------------------------------
     aqt.theme.theme_manager.night_mode = True
@@ -200,32 +204,32 @@ def main() -> int:
     pump(250)
 
     # -- an action runs, and acting on a notification dismisses it ---------
-    host.close()
+    window.close()
     fired = []
     h = host.post(make_spec(source="Addon Config Sync", title="Loaded config",
                             timeout_ms=STICKY,
                             actions=[("Open config manager…", lambda: fired.append(1))]))
     pump(250)
-    button = host._cards[h].actions_row.itemAt(0).widget()
+    button = window._cards[h].actions_row.itemAt(0).widget()
     assert button.text() == "Open config manager…"
     assert button.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
     button.click()
     pump(250)
     assert fired == [1], "the action callback should have run"
-    assert len(host._cards) == 0, "acting on a notification dismisses it"
+    assert len(window._cards) == 0, "acting on a notification dismisses it"
 
     # -- controls work when clicked, not just when called ------------------
     # clicked emits a bool; letting it reach the slot turned pin into "unpin".
     h = host.post(make_spec(source="A", title="clicked controls",
                             body="detail", timeout_ms=250))
     pump(150)
-    card = host._cards[h]
+    card = window._cards[h]
     assert card.pinned is False
     card.pin_button.click()
     pump(100)
     assert card.pinned is True, "clicking pin must toggle, not set False"
     pump(600)
-    assert len(host._cards) == 1, "a card pinned by click must not expire"
+    assert len(window._cards) == 1, "a card pinned by click must not expire"
 
     card.disclosure.click()
     pump(100)
@@ -233,7 +237,7 @@ def main() -> int:
 
     card.close_button.click()
     pump(200)
-    assert len(host._cards) == 0, "clicking close must dismiss"
+    assert len(window._cards) == 0, "clicking close must dismiss"
 
     result = check_cross_addon_election()
     print(f"cross-addon election: {result}")
@@ -281,10 +285,10 @@ def check_cross_addon_election() -> str:
     host_b = second.registry.host(anchor)
     assert host_a is host_b, "each copy elected its own host"
 
-    before = len(host_a._stack.ordered())
+    before = len(host_a.window._stack.ordered())
     first.post(source="Copy Anywhere", title="from copy A", timeout_ms=-1)
     second.post(source="Related Card Disperse", title="from copy B", timeout_ms=-1)
-    after = len(host_a._stack.ordered())
+    after = len(host_a.window._stack.ordered())
     assert after == before + 2, f"both posts should land in one stack ({before} -> {after})"
     return "two distinct copies, one host, both posts in it"
 
