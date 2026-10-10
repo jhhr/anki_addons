@@ -27,14 +27,14 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
 | `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
-| `op_registry.py` | `OPS`: the 23 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
+| `op_registry.py` | `OPS`: the 24 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
 | `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses). Every function takes a type **name**. anki- and aqt-free |
 | `note_hooks.py` | what `__init__.py`'s note hooks do, decided without Anki so it can be tested: `ops_on_added_note`, `translates_on_unfocus`, `suspends_added_cards`. anki- and aqt-free |
-| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
+| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), and `get_transcript` each transcription, the same way; `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
 | `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, a notes run's `snapshot_note`, `event`, `reference_notes`, `note_added`, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
@@ -179,6 +179,10 @@ No SDKs; raw `requests` POSTs through `api_client.post_with_retry`. `get_respons
 prompt, ...)` dispatches on the model name: `terminal-` to the Claude CLI, `gemini`, `gpt` /
 `o1` / `o3` to OpenAI, `claude` / `anthropic` to Anthropic (accepts `effort`), any name
 containing `/` to Together. Keys and per-operation `*_model` names are in the addon config.
+`get_transcript(model, audio, ...)` does the same for a transcriber: `local-<model>` posts the
+clip, base64 in JSON, to the local transcription server (`dev/transcribe_server.py`) at
+`transcribe_url`; its calls are recorded and replayed like `get_response`'s, the clip by its
+file name and sha1 (kind `transcribe.audio`, `async_api_ops/transcribe_audio.py`).
 There is no configured rate; throttling reacts to `retry-after`. Concurrency is
 memory-driven, with learned per-operation costs in `user_files/memory_estimates.json`.
 Never log, print or commit an API key, and never read the user's `meta.json` to find one.
@@ -686,6 +690,12 @@ the selection's `--reword` and the scorer read both, so the queue is built again
   batch timer, and clears `capture._quiet_until` in `setUp` (capture's warnings are rate limited
   per process).
 
+- Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py` and
+  `test_word_array_reading_check.py` (the caption cleaning, the word units and the check, on a
+  stand-in tokenizer), `test_transcribe_audio.py` (the transcription field, which transcribers
+  a note is asked for, the server check before a run), `test_capture_calls.py`'s
+  `TranscriptTests` (the request, its record without the audio, a replay answering it) and
+  `test_transcribe_server.py` (the server's HTTP side, with stand-in models).
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`.
 - The root `mypy.ini` puts `test/` and `word_array/research/` on `mypy_path` for the

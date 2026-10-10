@@ -3,6 +3,7 @@ for the models and the decoder, so neither PyTorch nor ffmpeg is needed."""
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import subprocess
@@ -100,18 +101,30 @@ class HttpTest(unittest.TestCase):
 
     def request(self, path, data=None):
         req = urllib.request.Request(self.url + path, data=data)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def clip(self, data: bytes, *models: str) -> bytes:
+        audio = base64.b64encode(data).decode("ascii")
+        return json.dumps({"audio": audio, "models": list(models)}).encode("utf-8")
+
     def test_a_clip_posted_and_its_transcript(self):
-        status, answer = self.request("/transcribe?models=kana-anime-whisper", b"12345")
+        status, answer = self.request("/transcribe", self.clip(b"12345", "kana-anime-whisper"))
         self.assertEqual((status, answer["transcripts"]), (200, {"kana-anime-whisper": "き5"}))
 
+    def test_a_body_that_is_not_json_with_base64_audio_is_refused(self):
+        for body in (b"12345", b'{"audio": "not base64!"}', b"[1]"):
+            status, answer = self.request("/transcribe", body)
+            self.assertEqual(status, 400, body)
+            self.assertIn("base64", answer["error"])
+
     def test_a_model_failing_answers_with_its_error_and_the_server_goes_on(self):
-        status, answer = self.request("/transcribe?models=ruby-mora", b"12345")
+        status, answer = self.request("/transcribe", self.clip(b"12345", "ruby-mora"))
         self.assertEqual(status, 500)
         self.assertIn("out of memory", answer["error"])
         self.assertEqual(self.request("/health")[0], 200)

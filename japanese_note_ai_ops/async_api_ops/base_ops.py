@@ -1,3 +1,4 @@
+import base64
 import html
 import json
 import asyncio
@@ -229,6 +230,11 @@ class DialogCancelState:
         return bool(mw.progress.want_cancel())
 
 
+# What a request may be cancelled by: the run's own state, or, on a sync op's thread, the
+# progress dialog's
+AnyCancelState = Union[CancelState, DialogCancelState]
+
+
 class ResponseRequest(NamedTuple):
     """One `get_response` as a responder is handed it (`set_responder`)."""
 
@@ -293,36 +299,49 @@ def get_response(
     # What every provider sends when it is given none, so the record is what was sent
     sent_instructions = instructions or DEFAULT_SYSTEM_INSTRUCTION
     params = {"max_output_tokens": max_output_tokens, "temperature": temperature, "effort": effort}
+    request = ResponseRequest(
+        kind, inputs, model, prompt, sent_instructions, response_schema, params
+    )
+    return _answer(
+        request,
+        lambda: _dispatch_response(
+            model,
+            prompt,
+            cancel_state=cancel_state,
+            instructions=instructions,
+            response_schema=response_schema,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            json_result_corrector=json_result_corrector,
+            effort=effort,
+        ),
+        cancel_state,
+        context,
+    )
+
+
+def _answer(
+    request: ResponseRequest,
+    send: Callable[[], Any],
+    cancel_state: Optional[AnyCancelState],
+    context: Optional[dict] = None,
+) -> Any:
+    """One recorded call: `send()`'s answer, or the responder's in its place, with the call's
+    row in the capture store around it."""
+    kind = request.kind
     with capture.call(
         kind,
-        inputs,
-        model=model,
-        prompt=prompt,
-        instructions=sent_instructions,
-        schema=response_schema,
-        params=params,
+        request.inputs,
+        model=request.model,
+        prompt=request.prompt,
+        instructions=request.instructions,
+        schema=request.schema,
+        params=request.params,
         context=context,
     ) as trace:
         try:
             responder = _responder
-            if responder is not None:
-                result = responder(
-                    ResponseRequest(
-                        kind, inputs, model, prompt, sent_instructions, response_schema, params
-                    )
-                )
-            else:
-                result = _dispatch_response(
-                    model,
-                    prompt,
-                    cancel_state=cancel_state,
-                    instructions=instructions,
-                    response_schema=response_schema,
-                    max_output_tokens=max_output_tokens,
-                    temperature=temperature,
-                    json_result_corrector=json_result_corrector,
-                    effort=effort,
-                )
+            result = responder(request) if responder is not None else send()
         except Exception:
             if trace is not None:
                 # The row records the exception as the outcome; the trace never sees it
@@ -333,8 +352,75 @@ def get_response(
     return result
 
 
+# A transcriber named `local-<model>` is a model of the local transcription server
+# (dev/transcribe_server.py), which runs outside Anki: Anki's Python never loads PyTorch
+LOCAL_TRANSCRIBER_PREFIX = "local-"
+DEFAULT_TRANSCRIBE_URL = "http://127.0.0.1:8792"
+
+
+def transcribe_url(config: dict) -> str:
+    return str(config.get("transcribe_url") or DEFAULT_TRANSCRIBE_URL).rstrip("/")
+
+
+def get_transcript(
+    model: str,
+    audio: bytes,
+    *,
+    kind: str,
+    inputs: dict,
+    cancel_state: Optional[AnyCancelState] = None,
+) -> Optional[dict]:
+    """`audio` heard by the transcriber `model`: {"text": its kana}, or None, reported, when
+    none could be had. Recorded as `get_response`'s calls are (`kind`, `inputs`: the clip's
+    file name and sha1, never its bytes), and answered by the responder in a replay, which so
+    needs no transcriber."""
+    request = ResponseRequest(kind, inputs, model, "", "", None, {})
+    return _answer(request, lambda: _dispatch_transcript(model, audio, cancel_state), cancel_state)
+
+
+def _dispatch_transcript(
+    model: str, audio: bytes, cancel_state: Optional[AnyCancelState]
+) -> Optional[dict]:
+    """`get_transcript`'s request, sent to the transcriber the model's name selects."""
+    config = mw.addonManager.getConfig(__name__)
+    if config is None:
+        logger.error("No configuration found for the addon.")
+        capture.note_outcome("error", "no configuration found for the addon")
+        return None
+    if model.startswith(LOCAL_TRANSCRIBER_PREFIX):
+        return get_transcript_from_local_server(model, audio, config, cancel_state)
+    logger.error(f"Unsupported transcriber: {model}")
+    report_error(f"{model}: no such transcriber (a local one is named local-<model>)")
+    capture.note_outcome("error", f"unsupported transcriber: {model}")
+    return None
+
+
+def get_transcript_from_local_server(
+    model: str, audio: bytes, config: dict, cancel_state: Optional[AnyCancelState] = None
+) -> Optional[dict]:
+    """A transcript from the local transcription server, which has the model loaded. The clip
+    goes base64 in a JSON body, so the request is retried, paused and cancelled as every
+    provider's is."""
+    name = model[len(LOCAL_TRANSCRIBER_PREFIX) :]
+    body = {"audio": base64.b64encode(audio).decode("ascii"), "models": [name]}
+    url = f"{transcribe_url(config)}/transcribe"
+    response = post_to_api("local", model, url, {}, body, config, cancel_state=cancel_state)
+    if response is None:
+        return None
+    if response.status_code != 200:
+        report_refused(model, response)
+        return None
+    capture.note_response(raw=response.text)
+    try:
+        text = json.loads(response.text)["transcripts"][name]
+    except (ValueError, KeyError, TypeError) as e:
+        report_unreadable(model, e, response)
+        return None
+    return {"text": str(text)}
+
+
 def _finish_call(
-    trace: capture.CallTrace, kind: str, result: Any, cancel_state: Optional[CancelState]
+    trace: capture.CallTrace, kind: str, result: Any, cancel_state: Optional[AnyCancelState]
 ) -> None:
     """Give a captured call its result and log its reference line. Never raises: the result
     is the op's whether or not it could be recorded."""
@@ -441,7 +527,7 @@ def post_to_api(
     headers: dict,
     data: dict,
     config: dict,
-    cancel_state: Optional[CancelState] = None,
+    cancel_state: Optional[AnyCancelState] = None,
 ):
     """Send a request to a provider, waiting out any rate limits it reports.
 

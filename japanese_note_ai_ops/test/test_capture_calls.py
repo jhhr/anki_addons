@@ -10,6 +10,7 @@ in a cleanup, as in test_capture; rows are read after `flush()`.
 
 from __future__ import annotations
 
+import base64
 import functools
 import json
 import logging
@@ -654,6 +655,80 @@ class TerminalProviderTests(CallCaptureTestCase):
         self.assertTrue(api.run_cancelled())
         row = self.assert_outcome("error")
         self.assertIn("login has expired", row["error"])
+
+
+class TranscriptTests(CallCaptureTestCase):
+    """get_transcript: a clip to the local transcription server, recorded as get_response's
+    calls are, with the clip known by name and hash and its bytes nowhere in the store."""
+
+    CLIP = b"OggS one clip's bytes"
+    KIND = "transcribe.audio"
+    INPUTS = {"audio": "clip.opus", "sha1": "ab12", "model": "local-ruby-mora"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.install()
+
+    def transcribe(self, model: str = "local-ruby-mora"):
+        return base_ops.get_transcript(model, self.CLIP, kind=self.KIND, inputs=self.INPUTS)
+
+    def serve_local(self, *outcomes) -> FakeSession:
+        session = FakeSession(*outcomes)
+        api._sessions["local"] = session
+        return session
+
+    def test_the_clip_goes_base64_in_json_and_the_answer_is_recorded(self):
+        answer = {"transcripts": {"ruby-mora": "ネコ"}, "seconds": {"ruby-mora": 0.4}}
+        session = self.serve_local(FakeResponse(200, body=answer))
+        self.assertEqual(self.transcribe(), {"text": "ネコ"})
+        sent = session.calls[0]
+        self.assertEqual(sent["url"], "http://127.0.0.1:8792/transcribe")
+        self.assertEqual(sent["json"]["models"], ["ruby-mora"])
+        self.assertEqual(base64.b64decode(sent["json"]["audio"]), self.CLIP)
+        row = self.assert_outcome("ok")
+        self.assertEqual((row["kind"], row["model"]), (self.KIND, "local-ruby-mora"))
+        self.assertEqual(json.loads(row["inputs_json"]), self.INPUTS)
+        self.assertEqual(json.loads(row["response_json"]), {"text": "ネコ"})
+        # Shut down, so every file of the store is written out, and the write-ahead log with it
+        self.assertTrue(capture.shutdown())
+        files = [p for p in Path(self.directory).rglob("*") if p.is_file()]
+        self.assertTrue(files)
+        for path in files:
+            for form in (self.CLIP, sent["json"]["audio"].encode("ascii")):
+                self.assertNotIn(form, path.read_bytes(), path.name)
+
+    def test_a_refused_clip_is_reported_and_recorded_with_the_servers_error(self):
+        self.serve_local(FakeResponse(400, body={"error": "ffmpeg could not decode the clip"}))
+        self.assertIsNone(self.transcribe())
+        row = self.assert_outcome("refused")
+        self.assertIn("ffmpeg could not decode", row["error"])
+        self.assertIn("local-ruby-mora", self.reports[0])
+
+    def test_an_answer_without_the_models_transcript_is_unreadable(self):
+        self.serve_local(FakeResponse(200, body={"transcripts": {"other": "x"}}))
+        self.assertIsNone(self.transcribe())
+        self.assert_outcome("unreadable")
+
+    def test_an_unknown_transcriber_is_an_error_and_nothing_is_sent(self):
+        session = self.serve_local(FakeResponse(200, body={}))
+        self.assertIsNone(self.transcribe("whisper"))
+        self.assert_outcome("error", attempts=0)
+        self.assertEqual(session.calls, [])
+
+    def test_a_replay_answers_in_the_servers_place(self):
+        session = self.serve_local(FakeResponse(500, body={}))
+        asked: list = []
+
+        def responder(request):
+            asked.append(request)
+            return {"text": "ねこ"}
+
+        previous = base_ops.set_responder(responder)
+        self.addCleanup(base_ops.set_responder, previous)
+        self.assertEqual(self.transcribe(), {"text": "ねこ"})
+        self.assertEqual(session.calls, [])
+        self.assertEqual((asked[0].kind, asked[0].inputs), (self.KIND, self.INPUTS))
+        self.assert_outcome("ok", attempts=0)
 
 
 class NoStoreTests(CallCaptureTestCase):

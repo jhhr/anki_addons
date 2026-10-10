@@ -183,6 +183,32 @@ in again by running `claude` in a terminal, then rerun.
 - `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
   `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
 
+### transcribing sentence audio
+
+"Transcribe sentence audio" sends each sentence note's clip (`sentence_audio_field`) to speech
+models and keeps what they heard, in kana, in the sentence block's
+`sentence_transcription_field`: a line per model, such as `kana-anime-whisper: そのときは`. Add
+that field to the sentence note type first. "Set furigana from audio" then checks the
+sentence's readings against those lines. A model hears the clip alone, never the sentence: an
+audio model shown text writes the text back, and what it hears by itself is the point.
+
+The models run in a program of their own on your PC, `dev/transcribe_server.py` in this
+add-on's folder, since Anki cannot load them. Set it up once and start it before a run, as the
+top of that file says: a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970
+and other Maxwell cards), then `python dev/transcribe_server.py --device cuda`. Its first start
+downloads the two models, about 5.5 GB, and for a moment takes about 7 GB of memory while it
+loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
+
+- `transcribe_models`: Default `["local-kana-anime-whisper", "local-ruby-mora"]`. The models a
+  clip is sent to, each `local-<model>` for one the server has loaded. The default pair is the
+  one the furigana audio eval picked: on 400 clips checked by ear, the furigana check wrote one
+  wrong reading among 846. A note is only asked for the models its field has no line for, so
+  a model added here later is asked for its own line alone.
+- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens.
+
+Notes are transcribed one after another, since the server hears one clip at a time: about
+seven seconds a clip on the CPU alone in the eval, less with the GPU (not measured yet).
+
 ## config fields per note type name
 
 Add the fields by note type like this. You can set multiple different note types. You can't set
@@ -221,6 +247,9 @@ You need to define
 - for translating sentences
   1. `sentence_field`
   2. `translated_sentence_field`
+- for transcribing sentence audio:
+  1. `sentence_audio_field`
+  2. `sentence_transcription_field`
 - for generating kanji stories:
   1. `kanji_field`
   2. `story_field`

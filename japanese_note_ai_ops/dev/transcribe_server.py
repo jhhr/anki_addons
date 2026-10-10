@@ -45,11 +45,16 @@ The first start downloads the models into the Hugging Face cache, about 5.5 GB f
 `--device cuda` puts the Whisper models on the GPU in float16, about 1.5 GB of it for
 kana-anime-whisper; ruby-mora stays on the CPU, where it took 0.4 s a clip in the eval, unless
 `--ruby-device` says otherwise. Only its audio encoder and mora head run, so the rest of that
-2B-parameter model is dropped once loaded.
+2B-parameter model is dropped once loaded; loading it takes about 7 GB of memory for a moment,
+since Ruby-ASR's package loads the whole model first.
 
     GET  /health      the models loaded: repo, revision, device
-    POST /transcribe  the clip's bytes, in any format ffmpeg reads; `?models=a,b` picks some of
-                      the loaded ones -> {"transcripts": {model: kana}, "seconds": {model: s}}
+    POST /transcribe  {"audio": the clip in base64, any format ffmpeg reads, "models": some of
+                      the loaded ones, all by default}
+                      -> {"transcripts": {model: kana}, "seconds": {model: s}}
+
+The clip comes in JSON as Anki's other requests do, so the add-on sends, retries, pauses and
+cancels it as it does those.
 
 It listens on 127.0.0.1 unless `--host` says otherwise, and asks for no password: whatever can
 reach its port can have clips transcribed.
@@ -58,6 +63,7 @@ reach its port can have clips transcribed.
 from __future__ import annotations
 
 import argparse
+import base64
 import gc
 import importlib
 import json
@@ -70,7 +76,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional, Sequence
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 SAMPLE_RATE = 16000
 RUBY_REPO = "hshispeech/Ruby-ASR-1.7B"
@@ -317,14 +323,15 @@ def make_handler(service: Service):
             if url.path != "/transcribe":
                 self._send(404, {"error": f"no {url.path} here"})
                 return
-            wanted = [
-                name
-                for value in parse_qs(url.query).get("models", [])
-                for name in value.split(",")
-                if name
-            ]
             length = int(self.headers.get("Content-Length") or 0)
-            data = self.rfile.read(length) if length > 0 else b""
+            raw = self.rfile.read(length) if length > 0 else b""
+            try:
+                body = json.loads(raw or b"{}")
+                data = base64.b64decode(body.get("audio") or "", validate=True)
+                wanted = [str(name) for name in body.get("models") or []]
+            except (ValueError, TypeError, AttributeError) as e:
+                self._send(400, {"error": f"the body is no JSON with the clip in base64: {e}"})
+                return
             try:
                 status, payload = service.transcribe(data, wanted)
             except Exception as e:  # a model failing on one clip must not take the server down
