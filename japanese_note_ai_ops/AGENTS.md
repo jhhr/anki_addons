@@ -629,11 +629,12 @@ modules, so the eval reads a line as the op will. `furigana_audio_run.py` runs o
 transcriber over the clips into `runs/`, in an environment of its own (PyTorch, transformers,
 Ruby-ASR's package: none of them is a dev dependency here, and the script imports them only
 when it runs); `furigana_audio_score.py` scores the runs against the readings the captions
-give, since the hand labels are still to come. With `--combine` it writes what the op's rule
-would (`decide`): the draft where the models hear it, a reading JMdict has for the spelling or
-the show has for a name where they hear that instead, review otherwise. Its limits on a
-correction (`CORRECT`, and a stretch `fit` may not shrink for one) each came from readings
-the runs got wrong; the op's check should keep them. `furigana_audio_label.py` gets the labels
+give and the labels by ear, through the op's own check (`word_array/reading_check.py`: the
+morae, the alignment, what a word is heard as). With `--combine` it writes what the op's rule
+would (`reading_check.decide`): the draft where the models hear it, a reading JMdict has for
+the spelling or the show has for a name where they hear that instead, review otherwise. The
+check's limits on a correction (`CORRECT`, and a stretch `fit` may not shrink for one) each
+came from readings the runs got wrong, so a change to the check shows in the eval's numbers. `furigana_audio_label.py` gets the labels
 by ear: `queue`, where the scored runs are, picks the words the rule corrects, sends to review
 or writes on fewer than every model's hearing, and a sample of the rest; `serve` (standard
 library only, so it runs on the machine with the clips) plays each card's clip in a page on

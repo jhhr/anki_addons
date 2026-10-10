@@ -277,42 +277,9 @@ class CopyTest(unittest.TestCase):
             self.assertEqual((dest / "b.opus").read_bytes(), b"old")
 
 
-class ScoreTest(unittest.TestCase):
-    """The comparison of a transcript with a reading, in morae as pronounced."""
-
-    def test_morae_join_small_kana_and_lengthen_vowels(self):
-        self.assertEqual(score.morae("きょうはいい"), ["キョ", "ウ", "ハ", "イ", "イ"])
-        self.assertEqual(score.morae("キョーワ"), ["キョ", "オ", "ワ"])
-        self.assertEqual(score.morae("ぢづを、！"), ["ジ", "ズ", "オ"])
-
-    def test_one_sound_spelled_two_ways_agrees(self):
-        self.assertTrue(score.agrees("とうきょう", "トーキョー"))
-        self.assertTrue(score.agrees("せんせい", "センセー"))
-
-    def test_speech_dropping_a_long_vowel_or_geminate_agrees(self):
-        self.assertTrue(score.agrees("いじょう", "イジョ"))
-        self.assertTrue(score.agrees("いった", "イタ"))
-
-    def test_one_reading_as_furigana_counts_a_vowels_length(self):
-        self.assertTrue(score.same_reading("せんせい", "センセー"))
-        self.assertTrue(score.same_reading("とうきょう", "トーキョー"))
-        # A transcript that drops a long vowel agrees with the reading, but as furigana ばば is
-        # another word than ばばあ
-        self.assertTrue(score.agrees("ばばあ", "ババ"))
-        self.assertFalse(score.same_reading("ばばあ", "ばば"))
-        self.assertFalse(score.same_reading("ほんとう", "ほんと"))
-
-    def test_another_reading_does_not(self):
-        self.assertFalse(score.agrees("ねこねこ", "まおまお"))
-        self.assertFalse(score.agrees("ほか", "た"))
-        # rendaku is a reading of its own: 洗濯係 is せんたくがかり
-        self.assertFalse(score.agrees("かかり", "がかり"))
-
-    def test_a_word_heard_as_another_of_its_length_lines_up_mora_by_mora(self):
-        ref = score.morae("ですおうかです")
-        hyp = score.morae("ですいんふぁです")
-        _, pairs = score.align(ref, hyp)
-        self.assertEqual([hyp[j] for j in pairs[2:5] if j is not None], ["イ", "ン", "ファ"])
+class HeardTextTest(unittest.TestCase):
+    """What a model's answer says was heard, whatever it writes: kana, ruby text or ordinary
+    text. The comparison itself is the op's, tested with it (test_word_array_reading_check.py)."""
 
     def test_ruby_answers_keep_their_readings(self):
         heard = score.heard_text("ruby", "七[なな]年間[ねんかん]で", tokenize)
@@ -476,13 +443,6 @@ class CombineTest(unittest.TestCase):
         text = self.combine({"a": a, "b": [dict(w) for w in a]})
         self.assertIn("1 words: right 0.0%, wrong 100.0%, review 0.0%", text)
 
-    def test_a_quorum_hearing_two_readings_is_a_review(self):
-        rows = [{"sudachi": "ほか", "op_hears": {"draft": True, "た": False}}]
-        rows.append({"sudachi": "ほか", "op_hears": {"draft": False, "た": True}})
-        self.assertIsNone(score.decide(rows, 1))
-        self.assertIsNone(score.decide(rows, 2))
-        self.assertEqual(score.decide(rows[:1], 1), "ほか")
-
     def test_a_label_is_the_known_reading_and_each_bucket_is_counted_against_them(self):
         other = {"draft": False, "た": True}
         draft = {"draft": True, "た": False}
@@ -520,34 +480,6 @@ class CombineTest(unittest.TestCase):
                 with unittest.mock.patch.object(fa, "SELECTION", selection):
                     with unittest.mock.patch.object(fa, "LABELS", here / "labels.jsonl"):
                         return score.combine(list(runs), quorum)
-
-
-class HearsTest(unittest.TestCase):
-    def test_the_reading_covering_what_was_heard_wins(self):
-        hyp = score.morae("ババア")
-        verdicts = score.hears({"draft": "ばあ", "caption": "ばばあ"}, hyp, 0, len(hyp))
-        self.assertEqual(verdicts, {"draft": False, "caption": True})
-
-    def test_a_correction_needs_a_closer_fit_than_the_draft(self):
-        # イッ is a long vowel and an edge move from イー: close enough to confirm a draft read
-        # so, not to write it instead of one
-        hyp = score.morae("イッ")
-        self.assertEqual(score.hears({"draft": "いー"}, hyp, 0, 2), {"draft": True})
-        self.assertEqual(score.hears({"x": "いー"}, hyp, 0, 2, strict=["x"]), {"x": False})
-
-    def test_a_correction_explains_all_that_was_heard_in_its_place(self):
-        # 匹 of 一匹 heard ピキ: き fits once ピ is dropped, which only the draft may do
-        hyp = score.morae("イッピキ")
-        readings = {"draft": "ひき", "x": "き"}
-        self.assertEqual(score.hears(readings, hyp, 2, 4), {"draft": False, "x": True})
-        verdicts = score.hears(readings, hyp, 2, 4, strict=["x"])
-        self.assertEqual(verdicts, {"draft": False, "x": False})
-
-    def test_a_reading_may_move_an_edge_by_a_mora(self):
-        # the alignment gave 猫猫 only オマオ of the マオマオ heard
-        hyp = score.morae("ノマオマオガ")
-        verdicts = score.hears({"draft": "ねこねこ", "show_name": "まおまお"}, hyp, 2, 5)
-        self.assertEqual(verdicts, {"draft": False, "show_name": True})
 
 
 class FoldTest(unittest.TestCase):
