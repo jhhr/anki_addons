@@ -25,6 +25,15 @@ against the labels where there are any. Cards come in the queue's order, the cor
 then the reviews, the drafts not every model heard, the sample, so stopping anywhere leaves the
 most useful labels done. Undo takes back the last label; a skipped card comes back next time.
 
+Two things besides readings come out of listening. A name: ticking "Name" when labelling one
+puts its reading in `names.jsonl`, and from then on no word of that surface is asked about; the
+selection makes it one word and the scorer takes the reading as known wherever it is written.
+And a caption line that is not what the clip says, or that the clip does not hold at all: the
+line's edit button takes the line as the clip says it, a reading as the captions write one,
+父上(ちちうえ), or "not in the clip". `fixes.jsonl` keeps it with the line it was, and the
+selection reads the line so corrected (`--reword`), the scorer compares the transcripts with
+it, and the card comes back to label once the queue is built again; until then it is left out.
+
 The clips are Ogg Opus, which Chrome, Edge and Firefox play.
 """
 
@@ -114,6 +123,7 @@ def build_queue(
             raise SystemExit(f"{m}: score it first (furigana_audio_score.py {m})")
         runs.append({fa.word_key(r): r for r in rows})
     cards: list[tuple[int, float, dict]] = []
+    fixes = fa.read_fixes()
     for card in fa.read_jsonl(fa.SELECTION):
         words = []
         # The readings of the words not asked about, by line: the show's for a name, else what
@@ -150,6 +160,9 @@ def build_queue(
             text, readings = fa.split_readings(line)
             ruby = [[r.start, r.end, r.reading, "caption"] for r in readings] + shown[n]
             lines.append({"text": text, "ruby": sorted(ruby)})
+            fix = fixes.get((card["id"], n))
+            if fix is not None:
+                lines[-1]["was"] = fix["was"]
         bucket = min((w["bucket"] for w in words), key=ORDER.__getitem__)
         row = {
             "id": card["id"],
@@ -176,13 +189,21 @@ def queue_summary(cards: Sequence[dict]) -> str:
 
 
 class Session:
-    """The queue, the labels given and this session's undo history and skipped cards."""
+    """The queue, the labels, names and line corrections given, and this session's undo
+    history and skipped cards. The names and corrections are kept in files beside the labels
+    (`furigana_audio.NAMES`, `FIXES`), which the selection and the scorer read."""
 
     def __init__(self, queue: list[dict], path: Path):
         self.queue = queue
         self.path = path
+        self.names_path = path.with_name(fa.NAMES.name)
+        self.fixes_path = path.with_name(fa.FIXES.name)
         self.labels = fa.read_labels(path)
-        self.history: list[fa.WordKey] = []
+        self.names = {row["surface"]: row for row in fa.read_jsonl(self.names_path)}
+        self.fixes = {(row["id"], row["line"]): row for row in fa.read_jsonl(self.fixes_path)}
+        # Each step Undo takes back: ("label", key, the label before, (surface, the name before)
+        # when it named the word) or ("fix", (card id, line), the correction before)
+        self.history: list[tuple] = []
         self.skipped: set[str] = set()
         self.cards = {card["id"]: card for card in queue}
         self.position = {
@@ -193,8 +214,23 @@ class Session:
         self.lock = threading.Lock()
 
     def _label(self, card_id: str, word: dict) -> Optional[dict]:
+        """The word's label, else the name list's reading for its surface: a name is read so
+        wherever it is said, so it is never asked about again."""
         key = (card_id, word["line"], word["start"])
-        return fa.label_for(self.labels, key, word["surface"])
+        found = fa.label_for(self.labels, key, word["surface"])
+        if found is None and word["surface"] in self.names:
+            reading = self.names[word["surface"]]["reading"]
+            return {"reading": reading, "verdict": "heard", "by": "name"}
+        return found
+
+    def _corrected(self, card: dict) -> bool:
+        """Whether a line of the card was corrected since the queue was built: its words are
+        the old line's until the queue is built again from the corrected one."""
+        for n, line in enumerate(card["lines"]):
+            fix = self.fixes.get((card["id"], n))
+            if fix is not None and fa.split_readings(fix["text"])[0] != line["text"]:
+                return True
+        return False
 
     def card(self, card_id: str) -> dict:
         """A card for the page, each word with its label if it has one."""
@@ -203,6 +239,8 @@ class Session:
         return card
 
     def _open(self, card: dict) -> bool:
+        if self._corrected(card):
+            return False
         return any(self._label(card["id"], w) is None for w in card["words"])
 
     def next_card(self) -> Optional[dict]:
@@ -211,51 +249,99 @@ class Session:
                 return self.card(card["id"])
         return None
 
-    def label(self, key: fa.WordKey, reading: Optional[str], verdict: str) -> None:
+    def label(
+        self, key: fa.WordKey, reading: Optional[str], verdict: str, name: bool = False
+    ) -> None:
+        """Labels a word and, with `name`, puts its reading in the name list for its surface."""
         card = self.cards[key[0]]
         word = next(w for w in card["words"] if (w["line"], w["start"]) == key[1:])
+        heard = fa.to_hiragana(reading) if verdict == "heard" and reading else None
+        before = self.labels.get(key)
         self.labels[key] = {
             "id": key[0],
             "line": key[1],
             "start": key[2],
             "end": word["end"],
             "surface": word["surface"],
-            "reading": fa.to_hiragana(reading) if verdict == "heard" and reading else None,
+            "reading": heard,
             "verdict": verdict,
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "at": now(),
         }
-        self.history.append(key)
+        named = None
+        if name and heard:
+            surface = word["surface"]
+            named = (surface, self.names.get(surface))
+            self.names[surface] = {"surface": surface, "reading": heard, "at": now()}
+            self._save_names()
+        self.history.append(("label", key, before, named))
         self._save()
 
-    def undo(self) -> Optional[fa.WordKey]:
-        while self.history:
-            key = self.history.pop()
-            if self.labels.pop(key, None) is not None:
-                self.skipped.discard(key[0])
-                self._save()
-                return key
-        return None
+    def fix(self, card_id: str, line: int, text: str) -> None:
+        """Corrects a line of a card to what the clip says, empty for a line it does not hold."""
+        card = self.cards[card_id]
+        if not 0 <= line < len(card["lines"]):
+            return
+        key = (card_id, line)
+        before = self.fixes.get(key)
+        self.fixes[key] = {
+            "id": card_id,
+            "line": line,
+            "text": fa.typed_line(text),
+            # The caption's line, kept through later corrections of the same line
+            "was": before["was"] if before else caption_form(card["lines"][line]),
+            "at": now(),
+        }
+        self.history.append(("fix", key, before))
+        self._save_fixes()
+
+    def undo(self) -> Optional[tuple[str, Optional[list[int]]]]:
+        """Takes back the last step: the card to show and the word to make active."""
+        if not self.history:
+            return None
+        step = self.history.pop()
+        if step[0] == "fix":
+            _, key, before = step
+            restore(self.fixes, key, before)
+            self._save_fixes()
+            self.skipped.discard(key[0])
+            return key[0], None
+        _, key, before, named = step
+        restore(self.labels, key, before)
+        self._save()
+        if named is not None:
+            restore(self.names, named[0], named[1])
+            self._save_names()
+        self.skipped.discard(key[0])
+        return key[0], [key[1], key[2]]
 
     def _save(self) -> None:
-        """Every label, in the queue's order and stale ones last, written whole and then moved
-        over the file, so a crash mid-write never loses the labels already given."""
+        """Every label, in the queue's order and stale ones last."""
         last = (len(self.queue), 0)
         rows = sorted(self.labels.values(), key=lambda r: self.position.get(fa.word_key(r), last))
-        tmp = self.path.with_suffix(".jsonl.tmp")
-        fa.write_jsonl(tmp, rows)
-        os.replace(tmp, self.path)
+        write_whole(self.path, rows)
+
+    def _save_names(self) -> None:
+        write_whole(self.names_path, sorted(self.names.values(), key=lambda r: r["surface"]))
+
+    def _save_fixes(self) -> None:
+        write_whole(self.fixes_path, [self.fixes[k] for k in sorted(self.fixes)])
 
     def stats(self) -> dict:
         done = {b: 0 for b in ORDER}
         total = {b: 0 for b in ORDER}
+        named = 0
         for card in self.queue:
             for w in card["words"]:
                 total[w["bucket"]] += 1
-                done[w["bucket"]] += self._label(card["id"], w) is not None
+                found = self._label(card["id"], w)
+                done[w["bucket"]] += found is not None
+                named += found is not None and found.get("by") == "name"
         return {
             "buckets": [[b, done[b], total[b]] for b in ORDER],
             "labelled": sum(done.values()),
             "words": sum(total.values()),
+            "named": named,
+            "waiting": sum(self._corrected(card) for card in self.queue),
             "now": len(self.history),
             "can_undo": bool(self.history),
         }
@@ -263,24 +349,60 @@ class Session:
     def handle(self, path: str, body: dict) -> dict:
         """One of the page's requests: the card to show next, and the progress."""
         with self.lock:
-            active = None
             if path == "/api/label":
                 key = (str(body["id"]), int(body["line"]), int(body["start"]))
                 verdict = body.get("verdict")
                 if key in self.position and verdict in ("heard", "unsure", "not_said"):
                     reading = str(body.get("reading") or "").strip()
                     if verdict != "heard" or reading:
-                        self.label(key, reading, verdict)
+                        self.label(key, reading, verdict, bool(body.get("name")))
                 if key[0] in self.cards and self._open(self.cards[key[0]]):
                     return {"card": self.card(key[0]), "stats": self.stats()}
+            elif path == "/api/fix":
+                card_id = str(body["id"])
+                if card_id in self.cards:
+                    self.fix(card_id, int(body["line"]), str(body.get("text") or ""))
             elif path == "/api/skip":
                 self.skipped.add(str(body.get("id")))
             elif path == "/api/undo":
                 undone = self.undo()
                 if undone is not None:
-                    active = [undone[1], undone[2]]
-                    return {"card": self.card(undone[0]), "active": active, "stats": self.stats()}
+                    card_id, active = undone
+                    shown = {"card": self.card(card_id), "stats": self.stats()}
+                    return {**shown, "active": active} if active else shown
             return {"card": self.next_card(), "stats": self.stats()}
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def restore(table: dict, key: object, before: Optional[dict]) -> None:
+    """Puts back what a table held at `key` before a step: the row, or nothing."""
+    if before is None:
+        table.pop(key, None)
+    else:
+        table[key] = before
+
+
+def write_whole(path: Path, rows: Sequence[dict]) -> None:
+    """The rows written whole and then moved over the file, so that a crash mid-write never
+    loses what the file held."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    fa.write_jsonl(tmp, rows)
+    os.replace(tmp, path)
+
+
+def caption_form(line: dict) -> str:
+    """A queue line as the captions write it, each caption reading in half-width parentheses
+    after its kanji: the form a correction is typed and kept in."""
+    out, pos = [], 0
+    for start, end, reading, source in sorted(line["ruby"]):
+        if source == "caption" and start >= pos:
+            out.append(f"{line['text'][pos:end]}({reading})")
+            pos = end
+    out.append(line["text"][pos:])
+    return "".join(out)
 
 
 PAGE = """<!doctype html>
@@ -310,6 +432,18 @@ mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 2px; 
 mark.active { outline:3px solid var(--active); outline-offset:1px; }
 mark.done { background:transparent; border-bottom:3px solid var(--done); }
 mark sup { font-size:11px; color:var(--muted); margin-left:1px; }
+.line { position:relative; padding-right:34px; }
+.line .edit { position:absolute; right:0; top:50%; transform:translateY(-50%); font-size:14px;
+  padding:2px 8px; color:var(--muted); }
+.line .was { font-size:11px; color:var(--muted); border:1px solid var(--line);
+  border-radius:99px; padding:0 6px; margin-left:6px; vertical-align:middle; }
+.line .gone { font-size:15px; color:var(--muted); }
+.line .gone s { margin-left:6px; }
+.editor { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:4px 0; }
+.editor input { font-size:20px; padding:6px 8px; border-radius:8px; border:1px solid var(--line);
+  background:var(--card); color:var(--fg); flex:1 1 260px; min-width:0; }
+.editor button { font-size:14px; padding:6px 10px; }
+.editor .hint { flex-basis:100%; font-size:12px; color:var(--muted); line-height:1.5; }
 .word { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin:6px 0 10px; }
 .word .surface { font-size:30px; }
 .word .meta { color:var(--muted); font-size:13px; }
@@ -337,12 +471,13 @@ label.toggle { font-size:13px; color:var(--muted); display:inline-flex; gap:6px;
 <p class="message" id="message"></p>
 <label class="toggle"><input type="checkbox" id="sources"> Show where each reading came from</label>
 <p class="message">Over the line: grey, the captions' readings; blue, what the rule writes for
-a word not asked about.</p>
+a word not asked about. ✎ (E) corrects a line that is not what the clip says, or marks one the
+clip does not hold; the card comes back when the queue is built again.</p>
 </main><script>
 const $ = id => document.getElementById(id);
 const ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"};
 const esc = s => String(s).replace(/[&<>"]/g, c => ESC[c]);
-let card = null, active = 0, slow = false;
+let card = null, active = 0, slow = false, editing = null;
 try { $("sources").checked = localStorage.getItem("sources") === "1" } catch (e) {}
 $("sources").onchange = () => {
   try { localStorage.setItem("sources", $("sources").checked ? "1" : "0") } catch (e) {}
@@ -370,8 +505,43 @@ function lineHtml(line, n) {
   }
   return out + esc(line.text.slice(pos));
 }
+function captionForm(line) {
+  let out = "", pos = 0;
+  for (const [start, end, reading, source] of [...line.ruby].sort((a, b) => a[0] - b[0])) {
+    if (source !== "caption" || start < pos) continue;
+    out += line.text.slice(pos, end) + "(" + reading + ")";
+    pos = end;
+  }
+  return out + line.text.slice(pos);
+}
+function lineBlock(line, n) {
+  if (editing === n) return `<div class="line editor">
+    <input id="fixtext" type="text" lang="ja" value="${esc(captionForm(line))}" autocomplete="off">
+    <button onclick="saveFix(${n})">Save</button>
+    <button onclick="saveFix(${n}, true)">Not in the clip</button>
+    <button onclick="editLine(null)">Cancel</button>
+    <span class="hint">The line as the clip says it, a reading as 父上(ちちうえ) if you know it.
+      The card comes back once the queue is built again.</span></div>`;
+  const was = line.was !== undefined
+    ? `<span class="was" title="${esc("was: " + line.was)}">corrected</span>` : "";
+  const text = line.text ? lineHtml(line, n)
+    : `<span class="gone">not in the clip<s>${esc(line.was || "")}</s></span>`;
+  return `<div class="line">${text}${was}<button class="edit" onclick="editLine(${n})"
+    title="Correct this line (E)">✎</button></div>`;
+}
+function editLine(n) {
+  editing = n;
+  renderWord();
+  if (n !== null) { const input = $("fixtext"); input.focus(); input.select(); }
+}
+async function saveFix(n, gone) {
+  const text = gone ? "" : $("fixtext").value.trim();
+  editing = null;
+  show(await post("/api/fix", {id: card.id, line: n, text}));
+}
 function show(data) {
   card = data.card;
+  editing = null;
   if (!card) {
     $("card").innerHTML = '<p class="empty">Every word in the queue is labelled.</p>';
     showStats(data.stats);
@@ -403,7 +573,11 @@ function show(data) {
   renderWord();
 }
 function renderWord() {
-  $("lines").innerHTML = card.lines.map(lineHtml).join("<br>");
+  $("lines").innerHTML = card.lines.map(lineBlock).join("");
+  if ($("fixtext")) $("fixtext").addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.isComposing) saveFix(editing);
+    if (e.key === "Escape") editLine(null);
+  });
   const w = card.words[active], sources = $("sources").checked;
   const picked = w.label && w.label.verdict === "heard" ? w.label.reading : null;
   const given = w.label ? " · labelled " + esc(w.label.reading || w.label.verdict) : "";
@@ -415,7 +589,9 @@ function renderWord() {
       ? `<span class="from">${esc(c.from.join(" · "))}</span>` : ""}</button>`).join("")}</div>
     <div class="other"><input id="typed" type="text" lang="ja"
       placeholder="Other reading, in kana (T)"
-      autocomplete="off"><button onclick="typed()">Save</button></div>`;
+      autocomplete="off"><button onclick="typed()">Save</button></div>
+    <label class="toggle name"><input type="checkbox" id="asname"> Name: give every
+      ${esc(w.surface)} the reading picked <small>(A)</small></label>`;
   $("typed").addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.isComposing) typed();
     if (e.key === "Escape") e.target.blur();
@@ -430,7 +606,8 @@ async function label(verdict, reading) {
   const w = card.words[active];
   $("message").textContent = "";
   const word = {id: card.id, line: w.line, start: w.start};
-  const data = await post("/api/label", {...word, verdict, reading});
+  const name = verdict === "heard" && $("asname") && $("asname").checked;
+  const data = await post("/api/label", {...word, verdict, reading, name});
   if (data.card && card && data.card.id === card.id) {
     card = data.card;
     const next = card.words.findIndex((x, i) => i > active && !x.label);
@@ -442,7 +619,9 @@ async function label(verdict, reading) {
 function showStats(s) {
   $("stats").innerHTML =
     `<span>${s.labelled} of ${s.words} labelled, ${s.now} this session</span>` +
-    s.buckets.map(([b, n, t]) => `<span>${esc(b)} ${n}/${t}</span>`).join("");
+    s.buckets.map(([b, n, t]) => `<span>${esc(b)} ${n}/${t}</span>`).join("") +
+    (s.named ? `<span>${s.named} by the name list</span>` : "") +
+    (s.waiting ? `<span>${s.waiting} corrected cards wait for the queue</span>` : "");
   if ($("undo")) $("undo").disabled = !s.can_undo;
 }
 const pick = i => card && label("heard", card.words[active].choices[i].kana);
@@ -479,6 +658,8 @@ document.addEventListener("keydown", e => {
   else if (k === "r") replay();
   else if (k === "s") toggleSlow();
   else if (k === "t") { e.preventDefault(); $("typed").focus(); }
+  else if (k === "e") { e.preventDefault(); editLine(card.words[active].line); }
+  else if (k === "a") { const box = $("asname"); if (box) box.checked = !box.checked; }
   else if (k === " ") {
     e.preventDefault();
     const a = $("audio");
@@ -543,7 +724,7 @@ def make_handler(session: Session, audio_dir: Path):
 
         def do_POST(self):
             path = urlparse(self.path).path
-            if path not in ("/api/next", "/api/label", "/api/skip", "/api/undo"):
+            if path not in ("/api/next", "/api/label", "/api/fix", "/api/skip", "/api/undo"):
                 self.send_error(404)
                 return
             length = int(self.headers.get("Content-Length") or 0)

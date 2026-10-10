@@ -4,8 +4,9 @@ tokenizer is likely to get wrong, plus a random share that shows what an ordinar
 Each line's kanji words are listed with Sudachi's reading, the reading the captions give, if
 any, and why the word is hard:
 
-- `name`: a name the captions read in katakana somewhere in the show (猫猫(マオマオ)), found
-  wherever it is written, or a word Sudachi tags as a proper noun in this line. The captions
+- `name`: a name the captions read in katakana somewhere in the show (猫猫(マオマオ)) or that the
+  labelling gave a reading by ear (`furigana_audio.read_names`), found wherever it is written,
+  or a word Sudachi tags as a proper noun in this line. The captions
   read a name at its first mention in an episode only, so most mentions have no reading, and
   Sudachi reads them as common words (猫猫 ねこねこ, 高順 たかのぶ). A one-kanji name is
   matched only where Sudachi also takes it for a proper noun: 馬 is a family name read まー
@@ -46,10 +47,13 @@ data checkout.
     python word_array/research/furigana_audio_select.py [--count 400] [--seed 1] [--tsv FILE]
     python word_array/research/furigana_audio_select.py --reword
 
+A line the labelling corrected (`furigana_audio.read_fixes`: a caption that is not what the
+clip says, or a line the clip does not hold) is read as corrected.
+
 `--reword` keeps the picked cards, whose clips are copied already, and finds their words again
-with the rules as they are now. The runs then need scoring again and the label queue building
-again; labels given to a word whose span changed no longer apply to it (`furigana_audio.
-label_for`).
+with the rules, names and corrections as they are now. The runs then need scoring again and
+the label queue building again; labels given to a word whose span changed no longer apply to
+it (`furigana_audio.label_for`).
 """
 
 from __future__ import annotations
@@ -351,9 +355,12 @@ def read_cards(
     tokenize: Callable[[str], Sequence],
     show: ShowReadings,
     base: fa.BaseFinder = fa.whole_run,
+    fixes: Optional[dict[tuple[str, int], dict]] = None,
+    named: Iterable[str] = (),
 ) -> list[Card]:
-    """Every card that can be picked, its kanji words found and the hard ones marked."""
-    names = set(show.names)
+    """Every card that can be picked, its kanji words found and the hard ones marked: a line
+    as `fixes` corrected it, if it did, and the names given by ear (`named`) as names."""
+    names = set(show.names) | set(named)
     cards: list[Card] = []
     sudachi_readings: dict[str, Counter] = defaultdict(Counter)
     parsed = []
@@ -361,6 +368,11 @@ def read_cards(
         if fa.is_noisy(row.jp):
             continue
         lines = fa.spoken_lines(row.jp)
+        for n in range(len(lines)):
+            fix = (fixes or {}).get((row.id, n))
+            if fix is not None:
+                # An empty line keeps its place, so that the lines after it keep their numbers
+                lines[n] = fix["text"]
         per_line = []
         for line in lines:
             text, readings = fa.split_readings(line, base)
@@ -529,7 +541,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     show = ShowReadings()
     for row in rows:
         show.add(row, base)
-    cards = read_cards(rows, sudachi_tokenizer(), show, base)
+    cards = read_cards(rows, sudachi_tokenizer(), show, base, fa.read_fixes(), fa.read_names())
     if args.reword:
         old = fa.read_jsonl(fa.SELECTION)
         if not old:

@@ -422,11 +422,14 @@ def neighbours(
 
 
 def show_readings() -> dict[str, tuple[str, str]]:
-    """surface -> (script, its most common caption reading) over the show."""
+    """surface -> (script, its most common caption reading) over the show, and the names given
+    by ear (fa.read_names), which say what the captions never did, or otherwise."""
     out = {}
     for row in fa.read_jsonl(fa.CAPTION_READINGS):
         reading = max(row["readings"], key=row["readings"].get)
         out[row["surface"]] = ("name" if row["script"] == "katakana" else "word", reading)
+    for surface, reading in fa.read_names().items():
+        out[surface] = ("name", reading)
     return out
 
 

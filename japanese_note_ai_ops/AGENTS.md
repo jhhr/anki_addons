@@ -635,7 +635,10 @@ the runs got wrong; the op's check should keep them. `furigana_audio_label.py` g
 by ear: `queue`, where the scored runs are, picks the words the rule corrects, sends to review
 or writes on fewer than every model's hearing, and a sample of the rest; `serve` (standard
 library only, so it runs on the machine with the clips) plays each card's clip in a page on
-localhost and writes `labels.jsonl`, which the scorer then takes for the known reading.
+localhost and writes `labels.jsonl`, which the scorer then takes for the known reading. The
+page also takes the show's names (`names.jsonl`: one reading for a surface wherever it is
+written) and corrections of caption lines that are not what the clip says (`fixes.jsonl`);
+the selection's `--reword` and the scorer read both, so the queue is built again after either.
 
 ## Tests and types
 

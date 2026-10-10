@@ -241,6 +241,31 @@ class KanjiWordsTest(unittest.TestCase):
         self.assertEqual([(w.surface, w.kinds) for w in self.words("高順")], [("高順", ["name"])])
 
 
+class LabellingFilesTest(unittest.TestCase):
+    def test_a_typed_reading_as_the_captions_write_one(self):
+        for typed in ("父上[ちちうえ]が", " 父上（ちちうえ）が "):
+            self.assertEqual(fa.typed_line(typed), "父上(ちちうえ)が")
+
+    def test_names_and_fixes_read_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            names, fixes = Path(d) / "names.jsonl", Path(d) / "fixes.jsonl"
+            fa.write_jsonl(names, [{"surface": "子翠", "reading": "しすい"}])
+            fa.write_jsonl(fixes, [{"id": "c1", "line": 2, "text": "", "was": "響"}])
+            self.assertEqual(fa.read_names(names), {"子翠": "しすい"})
+            self.assertEqual(fa.read_fixes(fixes)[("c1", 2)]["was"], "響")
+
+    def test_a_name_given_by_ear_is_a_show_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            names, captions = Path(d) / "names.jsonl", Path(d) / "captions.jsonl"
+            fa.write_jsonl(names, [{"surface": "子翠", "reading": "しすい"}])
+            caption = {"surface": "猫猫", "script": "katakana", "readings": {"まおまお": 3}}
+            fa.write_jsonl(captions, [caption])
+            with unittest.mock.patch.object(fa, "NAMES", names):
+                with unittest.mock.patch.object(fa, "CAPTION_READINGS", captions):
+                    show = score.show_readings()
+        self.assertEqual(show, {"猫猫": ("name", "まおまお"), "子翠": ("name", "しすい")})
+
+
 class NumeralsTest(unittest.TestCase):
     def test_a_number_in_kanji_numerals(self):
         cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}
@@ -291,12 +316,26 @@ class SelectTest(unittest.TestCase):
         row(8, "猫猫 薬"),
     ]
 
-    def cards(self):
+    def cards(self, fixes=None, named=()):
         base = select.ReadingBase(self.ROWS, lambda form: set())
         show = select.ShowReadings()
         for r in self.ROWS:
             show.add(r, base)
-        return select.read_cards(self.ROWS, tokenize, show, base)
+        return select.read_cards(self.ROWS, tokenize, show, base, fixes, named)
+
+    def test_a_corrected_line_is_read_as_corrected_and_an_empty_one_keeps_its_place(self):
+        fixes = {(row(8, "").id, 0): {"text": "響迂 薬"}}
+        cards = {c.row.id: c for c in self.cards(fixes, named={"響迂"})}
+        eight = cards[row(8, "").id]
+        self.assertEqual(eight.lines, ["響迂 薬"])
+        words = [(w.surface, w.kinds) for w in eight.words]
+        self.assertEqual(words, [("響迂", ["name"]), ("薬", [])])
+        two_lines = row(9, "猫猫<br>薬")
+        show = select.ShowReadings()
+        fixes = {(two_lines.id, 0): {"text": ""}}
+        card = select.read_cards([two_lines], tokenize, show, fa.whole_run, fixes)[0]
+        self.assertEqual(card.lines, ["", "薬"])
+        self.assertEqual([(w.line, w.surface) for w in card.words], [(1, "薬")])
 
     def test_noisy_cards_and_cards_without_kanji_are_never_picked(self):
         ids = {c.row.id for c in self.cards()}

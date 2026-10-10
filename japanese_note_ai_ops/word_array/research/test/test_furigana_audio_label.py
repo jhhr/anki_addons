@@ -219,6 +219,41 @@ class SessionTest(unittest.TestCase):
                                       "reading": "ほか"})
         self.assertEqual([r["surface"] for r in fa.read_jsonl(self.path)], ["他"])
 
+    def test_a_name_is_read_so_wherever_it_is_said_and_undo_takes_it_back(self):
+        word = {"id": "c1", "line": 0, "start": 0, "verdict": "heard", "reading": "ホカ"}
+        self.post("/api/label", **word, name=True)
+        self.assertEqual(fa.read_names(self.path.with_name("names.jsonl")), {"他": "ほか"})
+        stats = self.session.stats()
+        # c1's other 他 and c2's are read by the name now: nothing is left to ask
+        self.assertEqual((stats["labelled"], stats["named"]), (3, 2))
+        self.assertIsNone(self.post("/api/next")["card"])
+        data = self.post("/api/undo")
+        self.assertEqual((data["card"]["id"], data["active"]), ("c1", [0, 0]))
+        self.assertEqual(fa.read_names(self.path.with_name("names.jsonl")), {})
+        self.assertEqual(self.session.stats()["labelled"], 0)
+
+    def test_a_corrected_line_sets_its_card_aside_until_the_queue_is_built_again(self):
+        data = self.post("/api/fix", id="c1", line=0, text="他に[ほか]他")
+        self.assertEqual(data["card"]["id"], "c2")
+        self.assertEqual(data["stats"]["waiting"], 1)
+        fixes = fa.read_fixes(self.path.with_name("fixes.jsonl"))
+        self.assertEqual(fixes[("c1", 0)]["was"], "他に他")
+        self.assertEqual(fixes[("c1", 0)]["text"], "他に[ほか]他")  # no kanji before the bracket
+        rebuilt = queue()
+        rebuilt[0]["lines"][0]["text"] = "他に[ほか]他"
+        self.assertEqual(label.Session(rebuilt, self.path).stats()["waiting"], 0)
+        data = self.post("/api/undo")
+        self.assertEqual(data["card"]["id"], "c1")
+        self.assertEqual(fa.read_fixes(self.path.with_name("fixes.jsonl")), {})
+
+    def test_a_line_the_clip_does_not_hold(self):
+        self.post("/api/fix", id="c2", line=0, text="")
+        self.assertEqual(fa.read_fixes(self.path.with_name("fixes.jsonl"))[("c2", 0)]["text"], "")
+
+    def test_a_line_as_the_captions_write_it(self):
+        line = {"text": "猫猫が他に", "ruby": [[0, 2, "まおまお", "caption"], [3, 4, "ほか", "rule"]]}
+        self.assertEqual(label.caption_form(line), "猫猫(まおまお)が他に")
+
     def test_labels_given_before_are_kept(self):
         self.post("/api/label", id="c2", line=0, start=0, verdict="heard", reading="た")
         again = label.Session(queue(), self.path)

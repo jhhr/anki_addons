@@ -46,6 +46,10 @@ AUDIO = HOME / "audio"
 # The words to label by ear, a card a row, and the readings said, a word a row
 LABEL_QUEUE = HOME / "label_queue.jsonl"
 LABELS = HOME / "labels.jsonl"
+# What the labelling found besides readings: the show's names with the reading said, and the
+# caption lines that are not what the clip says, corrected
+NAMES = HOME / "names.jsonl"
+FIXES = HOME / "fixes.jsonl"
 
 KANJI = "一-鿿㐀-䶿々〆ヶ"
 KANJI_RE = re.compile(f"[{KANJI}]")
@@ -59,6 +63,9 @@ SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 # A media column of a subs2srs export: its audio, snapshot, animated snapshot and video
 MEDIA_RE = re.compile(r"^(\[sound:|<img |\[video:)")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
+# A reading typed after its kanji as Anki writes furigana, 父上[ちちうえ], or in full-width
+# parentheses, 父上（ちちうえ）
+TYPED_READING_RE = re.compile(f"([{KANJI}]+)(?:\\[([ぁ-ゖァ-ヺー・]+)\\]|（([ぁ-ゖァ-ヺー・]+)）)")
 DIGITS_RE = re.compile(r"[0-9０-９]+")
 KANJI_DIGITS = "〇一二三四五六七八九"
 
@@ -217,6 +224,25 @@ def label_for(labels: dict[WordKey, dict], key: WordKey, surface: str) -> Option
     were found again to a word with another surface (七 where 七日 starts now) is stale."""
     found = labels.get(key)
     return found if found is not None and found.get("surface") == surface else None
+
+
+def read_names(path: Optional[Path] = None) -> dict[str, str]:
+    """The show's names given by ear: surface -> the reading said. A name is read so wherever it
+    is written, so it is a known reading everywhere and asked about nowhere."""
+    return {row["surface"]: row["reading"] for row in read_jsonl(path or NAMES)}
+
+
+def read_fixes(path: Optional[Path] = None) -> dict[tuple[str, int], dict]:
+    """The caption lines corrected by ear, by card id and line number: `text`, the line as
+    the clip says it with any reading in the captions' half-width parentheses, empty where the
+    clip does not hold the line at all, and `was`, the line before."""
+    return {(row["id"], row["line"]): row for row in read_jsonl(path or FIXES)}
+
+
+def typed_line(text: str) -> str:
+    """A corrected line as typed, its readings written as the captions write them: 父上[ちちうえ]
+    and 父上（ちちうえ） both become 父上(ちちうえ), which `split_readings` takes."""
+    return TYPED_READING_RE.sub(lambda m: f"{m.group(1)}({m.group(2) or m.group(3)})", text.strip())
 
 
 def read_labels(path: Optional[Path] = None) -> dict[WordKey, dict]:
