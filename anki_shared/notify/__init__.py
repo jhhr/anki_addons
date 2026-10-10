@@ -95,9 +95,10 @@ def post(
 ) -> str:
     """Show an entry and return its handle. See spec.make_spec for the fields.
 
-    Reposting under the same `key` replaces that entry in place rather than
-    adding a second one, which is how a two-stage operation reports progress
-    without leaving its first message behind.
+    Reposting under the same `key` replaces that entry rather than adding a
+    second one, which is how a two-stage operation reports progress without
+    leaving its first message behind. A grouped repost moves to the group of
+    its name that is open now, as a fresh post would.
     """
     spec = make_spec(
         source=source,

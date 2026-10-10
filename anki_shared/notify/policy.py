@@ -67,7 +67,7 @@ class Stack:
         if existing is not None:
             existing["spec"] = merge_spec(existing["spec"], spec)
             existing["posted_ms"] = now_ms
-            self._touch_group(existing["group_id"], now_ms)
+            self._regroup(existing, now_ms)
             return existing["handle"]
 
         self._counter += 1
@@ -199,10 +199,21 @@ class Stack:
         }
         return group_id
 
-    def _touch_group(self, group_id: str, now_ms: int) -> None:
-        bucket = self._groups.get(group_id)
-        if bucket is not None:
-            bucket["last_ms"] = now_ms
+    def _regroup(self, entry: Dict[str, Any], now_ms: int) -> None:
+        """Put a reposted entry where a fresh post of its group would go.
+
+        A repost is news from the burst it arrives in. Kept in the bucket it
+        was first posted to, Copy Anywhere's sync report stayed in the group
+        its local pass opened as the sync started, and a sync that outlasted
+        the window had the other addons' results open a second "sync" group
+        beside it. An ungrouped entry keeps its private bucket, and so its
+        place in the stack.
+        """
+        name = entry["spec"].get("group", "")
+        if not name and not self._groups[entry["group_id"]]["name"]:
+            return
+        entry["group_id"] = self._assign_group(name, now_ms)
+        self._prune_groups()
 
     def _prune_groups(self) -> None:
         live = {e["group_id"] for e in self._entries}

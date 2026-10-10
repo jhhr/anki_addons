@@ -73,6 +73,36 @@ class TestKeyedReposts:
         stack.post(spec(), now_ms=0)
         assert len(stack.ordered()) == 2
 
+    def test_a_repost_joins_the_group_open_now_not_the_one_it_began_in(self):
+        # Copy Anywhere's local pass posts as the sync starts and its remote
+        # pass reposts after it ends. Left in its first bucket, a sync that
+        # outlasted the window showed two "sync" groups.
+        stack = Stack(group_window_ms=5000)
+        ca = stack.post(spec(source="Copy Anywhere", group="sync", key="sync"), now_ms=0)
+        rcd = stack.post(spec(source="Related Card Disperse", group="sync"), now_ms=8000)
+        stack.post(spec(source="Copy Anywhere", group="sync", key="sync"), now_ms=9000)
+        assert stack.entry(ca)["group_id"] == stack.entry(rcd)["group_id"]
+        assert len({e["group_id"] for e in stack.ordered()}) == 1
+
+    def test_a_repost_into_another_group_moves_there(self):
+        # custom_schedule_helper reposts one key ungrouped from the menu and
+        # in "sync" from the sync hook.
+        stack = Stack(group_window_ms=5000)
+        csh = stack.post(spec(source="Custom Schedule Helper", key="reschedule"), now_ms=0)
+        rcd = stack.post(spec(source="Related Card Disperse", group="sync"), now_ms=1000)
+        stack.post(
+            spec(source="Custom Schedule Helper", key="reschedule", group="sync"), now_ms=2000
+        )
+        assert stack.entry(csh)["group_id"] == stack.entry(rcd)["group_id"]
+        assert stack.group_name(stack.entry(csh)) == "sync"
+
+    def test_an_ungrouped_repost_keeps_its_place(self):
+        stack = Stack()
+        stack.post(spec(source="A", key="k"), now_ms=0)
+        stack.post(spec(source="B"), now_ms=100)
+        stack.post(spec(source="A", key="k", title="again"), now_ms=200)
+        assert [e["spec"]["source"] for e in stack.ordered()] == ["A", "B"]
+
 
 class TestGrouping:
     def test_posts_within_the_window_share_a_group(self):
