@@ -217,6 +217,20 @@ def main() -> int:
     host.dismiss(h)
     pump(200)
 
+    # -- a card reposted while pinned expires again once unpinned ----------
+    # The repost re-armed the card with the pinned entry's "never expires",
+    # which it kept as its lifetime, so unpinning left it up for good.
+    h = host.post(make_spec(source="A", title="first", key="k", timeout_ms=200))
+    pump(120)
+    card = window._cards[h]
+    card.pin_button.click()
+    host.post(make_spec(source="A", title="second", key="k", timeout_ms=200))
+    pump(150)
+    assert h in window._cards, "still pinned, so still up"
+    card.pin_button.click()
+    pump(600)
+    assert h not in window._cards, "unpinned, it must expire again"
+
     # -- nothing is drawn while a progress dialog is up --------------------
     mw.progress.busy_flag = True
     host.post(make_spec(source="A", title="posted under progress", timeout_ms=STICKY))

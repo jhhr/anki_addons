@@ -149,9 +149,13 @@ class Stack:
     # -- timing ------------------------------------------------------------
 
     def timeout_ms(self, entry: Dict[str, Any]) -> Optional[int]:
-        """How long this entry should live, or None if it should not expire."""
-        if entry["pinned"]:
-            return None
+        """How long this entry lives once shown, or None if it is sticky.
+
+        Pinning does not change the answer: a pinned card holds its countdown
+        and restarts it from this when unpinned. Answering None for a pinned
+        entry made any re-arm while it was pinned, a keyed repost or an update,
+        store "never" as the card's lifetime, and it never expired again.
+        """
         requested = entry["spec"].get("timeout_ms", HOST_DEFAULT)
         if requested == STICKY:
             return None

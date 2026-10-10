@@ -167,11 +167,14 @@ class TestTimeouts:
         handle = stack.post(spec(timeout_ms=STICKY), now_ms=0)
         assert stack.timeout_ms(stack.entry(handle)) is None
 
-    def test_pinning_suspends_expiry(self):
-        stack = Stack()
+    def test_pinning_leaves_the_lifetime_alone(self):
+        # The card holds its countdown while pinned and restarts it from this
+        # when unpinned. None here became its lifetime on a re-arm while
+        # pinned, and the card never expired again.
+        stack = Stack(default_timeout_ms=7000)
         handle = stack.post(spec(), now_ms=0)
         stack.set_pinned(handle, True)
-        assert stack.timeout_ms(stack.entry(handle)) is None
+        assert stack.timeout_ms(stack.entry(handle)) == 7000
 
 
 class TestMissingHandles:
