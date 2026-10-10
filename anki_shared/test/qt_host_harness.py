@@ -15,7 +15,6 @@ import types
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtCore import QTimer
-from PyQt6.QtGui import QCloseEvent
 
 
 def install_fake_aqt():
@@ -93,18 +92,14 @@ def main() -> int:
     from anki_shared.notify.host import ToastHost
     from anki_shared.notify.spec import STICKY, make_spec
 
-    # The offscreen platform closes any shown Qt.Tool window -- a bare QWidget
-    # with the same flags does it too -- so neuter the handler and call the real
-    # one directly where close behaviour is what is under test.
-    real_close = ToastHost.closeEvent
-    ToastHost.closeEvent = lambda self, event: event.accept()
-
     def pump(ms):
-        quit_timer = QTimer()
-        quit_timer.setSingleShot(True)
-        quit_timer.timeout.connect(app.quit)
-        quit_timer.start(ms)
-        app.exec()
+        # A local loop, not app.exec() and app.quit(): under Qt 6 quit() closes
+        # every top-level window on its way out, so each pump closed the host,
+        # whose closeEvent clears the stack, and no step ever saw the window
+        # stay up between posts.
+        loop = QtCore.QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
 
     host = ToastHost()
 
@@ -158,7 +153,7 @@ def main() -> int:
     assert len(host._stack.queued()) == 8 - host._stack.max_visible
 
     # -- close clears everything, queue included ---------------------------
-    real_close(host, QCloseEvent())
+    host.close()
     assert host._cards == {}
     assert host._stack.ordered() == []
     assert host._headers == []
@@ -205,7 +200,7 @@ def main() -> int:
     pump(250)
 
     # -- an action runs, and acting on a notification dismisses it ---------
-    real_close(host, QCloseEvent())
+    host.close()
     fired = []
     h = host.post(make_spec(source="Addon Config Sync", title="Loaded config",
                             timeout_ms=STICKY,
