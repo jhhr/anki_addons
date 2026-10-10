@@ -272,8 +272,12 @@ class ToastWindow(QWidget):
         self.move(corner.x() - self.width() - MARGIN, corner.y() - self.height() - MARGIN)
 
     def resizeEvent(self, event) -> None:
-        # A resize we did not ask for is the user taking control of the size.
-        if not self._applying_size:
+        # The user taking over the size arrives from the window system, which
+        # Qt marks spontaneous. Its own resizes are not, and counting them was
+        # wrong: the pending one delivered while show() runs switched auto-sizing
+        # off the first time the window appeared. _applying_size still covers a
+        # platform answering our own resize() synchronously.
+        if event.spontaneous() and not self._applying_size:
             self._auto_size = False
         super().resizeEvent(event)
 

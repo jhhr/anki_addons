@@ -169,6 +169,28 @@ def main() -> int:
     assert window._stack.ordered() == []
     assert window._headers == []
 
+    # -- the window keeps fitting its cards after it first appears ---------
+    # Qt delivers a pending resize while show() runs. Taken for the user's, it
+    # switched auto-sizing off the first time the window appeared.
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    pump(150)
+    one_card = window.height()
+    host.post(make_spec(source="B", title="two", timeout_ms=STICKY))
+    host.post(make_spec(source="C", title="three", timeout_ms=STICKY))
+    pump(150)
+    assert window.height() > one_card, "the window must grow with its cards"
+
+    # A resize through the native window arrives spontaneous, as a user's drag
+    # does, and hands the size over to them.
+    native = window.windowHandle()
+    assert native is not None
+    native.resize(window.width(), one_card)
+    pump(100)
+    host.post(make_spec(source="D", title="four", timeout_ms=STICKY))
+    pump(150)
+    assert window.height() == one_card, "a size the user chose must stick"
+    window.close()
+
     # -- expiry, and the hover re-arm --------------------------------------
     h = host.post(make_spec(source="A", title="short lived", timeout_ms=200))
     pump(120)
