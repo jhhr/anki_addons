@@ -433,17 +433,23 @@ are illustrations, as in the example above.
 
 After the move:
 
-- Add new sentences as notes of the sentence type: adding one by hand extracts its words and
-  suspends its cards (but see below). "Judge words matchability" and "Match extracted words
-  to notes" run on sentence notes; a vocab note the match op makes is of the vocab type, its
-  example the sentence note its word was found in. An added vocab note gets nothing. An op run
-  over notes of both types leaves out the notes of the type whose role is not its own, saying
-  so once per note type ("Run all ops for new notes" gives each note its own role's steps).
+- New sentences are notes of the sentence type. **An import (File > Import, e.g. a .tsv of
+  mined sentences) runs no add hooks**: the notes arrive with nothing extracted and their
+  cards not suspended. Find them in the browser (`"note:Sentence note" added:1`) and run the
+  ops on them there: "Extract words + Judge matchability", then "Match extracted words to
+  notes" (Edit > "Japanese AI ops..." runs them as one chain), then the CopyAnywhere
+  definitions that fill their other fields. A vocab note the match op makes is of the vocab
+  type, its example the sentence note its word was found in. An op run over notes of both
+  types leaves out the notes of the type whose role is not its own, saying so once per note
+  type ("Run all ops for new notes" gives each note its own role's steps).
+- A sentence note added one at a time instead: in Anki's classic Add dialog its words are
+  extracted and its cards suspended; through AnkiConnect its words are extracted but its
+  cards are not suspended; the experimental new Add dialog does neither. An added vocab note
+  gets nothing.
 - **Suspension.** A sentence note's cards are suspended only by "Move sentences to sentence
-  notes" and by Anki's classic Add dialog. A note added another way, through AnkiConnect or
-  the experimental new Add dialog, is not suspended (and the new dialog does not extract its
-  words either: run "Extract words" on it). A sentence deck whose options give 0 new cards a
-  day keeps sentence cards out of study whatever adds them.
+  notes" and by the classic Add dialog, never by an import. Import into a sentence deck whose
+  options give 0 new cards a day, which keeps sentence cards out of study whatever adds them,
+  or suspend the imported notes' cards in the browser (Cards > Toggle Suspend).
 - **"Refresh example sentences"** (sync ops, on vocab notes) copies each note's example again:
   run it after changing a sentence note's translation or audio by hand or by its editor's
   translation (the menu's "Translate sentence" updates the vocab notes itself), or after

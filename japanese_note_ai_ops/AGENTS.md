@@ -9,7 +9,9 @@ one-type layout a "Japanese vocab note" gets `clean_meaning` and `extract_words`
 two-type layout (below) a note of that type's sentence type gets `extract_words`, and its cards
 are suspended when the classic Add dialog added it (`add_cards_did_add_note`; the experimental
 Add dialog fires neither hook), a vocab note nothing. A note an op adds gets nothing
-(`in_bulk_op()`). Unfocusing an empty story field on a "Kanji draw" note writes a story;
+(`in_bulk_op()`), and so does an imported one: Anki's import runs no add hooks, and the user's
+sentences arrive by .tsv import, so the ops are run on them afterwards (config.md, "Moving to
+sentence notes"). Unfocusing an empty story field on a "Kanji draw" note writes a story;
 unfocusing an empty translation field translates, on the vocab type in the one-type layout and
 on the sentence type in the two-type one. Those two note type names are hardcoded in the hooks;
 what each hook does is decided in `note_hooks.py`. Operations: clean/generate a meaning from
