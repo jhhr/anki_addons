@@ -435,6 +435,15 @@ class ScoreTest(unittest.TestCase):
         self.assertTrue(score.agrees("いじょう", "イジョ"))
         self.assertTrue(score.agrees("いった", "イタ"))
 
+    def test_one_reading_as_furigana_counts_a_vowels_length(self):
+        self.assertTrue(score.same_reading("せんせい", "センセー"))
+        self.assertTrue(score.same_reading("とうきょう", "トーキョー"))
+        # A transcript that drops a long vowel agrees with the reading, but as furigana ばば is
+        # another word than ばばあ
+        self.assertTrue(score.agrees("ばばあ", "ババ"))
+        self.assertFalse(score.same_reading("ばばあ", "ばば"))
+        self.assertFalse(score.same_reading("ほんとう", "ほんと"))
+
     def test_another_reading_does_not(self):
         self.assertFalse(score.agrees("ねこねこ", "まおまお"))
         self.assertFalse(score.agrees("ほか", "た"))
@@ -555,7 +564,7 @@ class CombineTest(unittest.TestCase):
             "heard": heard,
             "clean": clean,
             "gold": gold,
-            "gold_is_draft": score.agrees(gold, "ほか") if gold else None,
+            "gold_is_draft": score.same_reading(gold, "ほか") if gold else None,
             "hears": {},
             "op_hears": op_hears,
         }
@@ -602,6 +611,12 @@ class CombineTest(unittest.TestCase):
         self.assertIn("a + b + c, 2 of 3", two)
         self.assertIn("right 100.0%, wrong 0.0%, review 0.0%", two)
         self.assertIn("draft 100.0%, other reading 0.0%, review 0.0%", two)
+
+    def test_a_reading_written_a_vowel_short_of_the_one_said_is_wrong(self):
+        # Both hear ババ and the op writes ばば, where the line says ばばあ
+        a = [self.word(0, "ババ", {"draft": False, "ばば": True}, gold="ばばあ")]
+        text = self.combine({"a": a, "b": [dict(w) for w in a]})
+        self.assertIn("1 words: right 0.0%, wrong 100.0%, review 0.0%", text)
 
     def test_a_quorum_hearing_two_readings_is_a_review(self):
         rows = [{"sudachi": "ほか", "op_hears": {"draft": True, "た": False}}]

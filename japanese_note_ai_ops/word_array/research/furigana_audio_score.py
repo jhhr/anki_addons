@@ -184,6 +184,14 @@ def sound(kana: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def same_reading(a: str, b: str) -> bool:
+    """Whether two readings are one as furigana: the same morae as said, however spelled
+    (せんせい and センセー), and vowel length counts (婆 ばば and ばばあ, ほんと and ほんとう).
+    `agrees` lets a length pass because a transcript is unsure of it; the eval judges a
+    reading against the one said by this."""
+    return sound(a) == sound(b)
+
+
 # What moving either end of the stretch by a mora costs a reading: less than any real step,
 # enough that a reading covering the whole stretch beats one inside it (ばばあ over ばあ)
 SHIFT = 0.1
@@ -279,7 +287,7 @@ class WordResult:
             "heard": self.heard,
             "clean": self.clean,
             "gold": self.gold,
-            "gold_is_draft": agrees(self.gold, w["sudachi"]) if self.gold else None,
+            "gold_is_draft": same_reading(self.gold, w["sudachi"]) if self.gold else None,
             # Whether the model hears each reading: the draft's, the caption's, the show's
             "hears": self.verdicts,
             # The same for the readings the op chooses from: "draft", and each other reading
@@ -466,10 +474,11 @@ def report(
     model: str, results: Sequence[WordResult], cost: float, ref_len: int, secs: Sequence[float]
 ) -> str:
     def caption_differs(r: WordResult) -> bool:
-        return bool(r.word["caption"]) and not agrees(r.word["caption"], r.word["sudachi"])
+        caption = r.word["caption"]
+        return bool(caption) and not same_reading(caption, r.word["sudachi"])
 
     def caption_same(r: WordResult) -> bool:
-        return bool(r.word["caption"]) and agrees(r.word["caption"], r.word["sudachi"])
+        return bool(r.word["caption"]) and same_reading(r.word["caption"], r.word["sudachi"])
 
     def has(key: str) -> Callable[[WordResult], bool]:
         return lambda r: key in r.verdicts
@@ -493,7 +502,7 @@ def report(
         return lambda r: (
             "label" in r.verdicts
             and r.label is not None
-            and agrees(r.label["reading"], r.word["sudachi"]) == as_draft
+            and same_reading(r.label["reading"], r.word["sudachi"]) == as_draft
         )
 
     if any("label" in r.verdicts for r in results):
@@ -562,7 +571,8 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
     included: the English line or a person has to settle it.
 
     Where the reading is known (a label given by ear, else the line's caption or the show's
-    for a name) a written reading is right or wrong; that is the error the rule lets through.
+    for a name) a written reading is right or wrong, its vowels' length included
+    (`same_reading`); that is the error the rule lets through.
     Elsewhere the draft is usually right, so a word written otherwise is counted apart, to be
     checked by hand. A word labelled "can't tell" or "not said" has no known reading. The
     labelled words are also counted by why the rule wrote them as it did (`outcome`), which is
@@ -593,13 +603,15 @@ def combine(models: Sequence[str], quorum: Optional[int] = None) -> str:
         if label and said is None:
             by_ear[label["verdict"]] += 1
         elif said and written is None:
-            as_draft = agrees(said, first["sudachi"])
+            as_draft = same_reading(said, first["sudachi"])
             by_ear[f"review: {'as' if as_draft else 'not as'} the draft"] += 1
         elif said and written is not None:
-            by_ear[f"{bucket}: {'right' if agrees(written, said) else 'wrong'}"] += 1
+            by_ear[f"{bucket}: {'right' if same_reading(written, said) else 'wrong'}"] += 1
         if gold:
-            group = "known, Sudachi " + ("right" if agrees(gold, first["sudachi"]) else "wrong")
-            right = written is not None and agrees(written, gold)
+            group = "known, Sudachi " + (
+                "right" if same_reading(gold, first["sudachi"]) else "wrong"
+            )
+            right = written is not None and same_reading(written, gold)
             result = "review" if written is None else "right" if right else "wrong"
         else:
             group = "ordinary" if not first["kinds"] else "other hard"
