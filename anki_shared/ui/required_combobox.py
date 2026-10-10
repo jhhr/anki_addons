@@ -29,7 +29,7 @@ else:
 
 class ComboboxPlaceholderListView(QListView):
     def __init__(self, combobox, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(combobox, **kwargs)
         self.combobox = combobox
 
     def keyPressEvent(self, event):
@@ -101,6 +101,7 @@ class RequiredCombobox(QComboBox):
         # --- Placeholder management
         self.setLineEdit(
             ComboBoxPlaceholderLineEdit(
+                parent=self,
                 placeholder_text=placeholder_text,
             )
         )

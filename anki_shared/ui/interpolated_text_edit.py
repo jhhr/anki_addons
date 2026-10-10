@@ -1,6 +1,7 @@
 from typing import Optional, Union
 
 from aqt.qt import (
+    QWidget,
     QVBoxLayout,
     QLabel,
 )
@@ -51,32 +52,34 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         height: Optional[int] = None,
         placeholder_text: Optional[str] = None,
         is_required: bool = False,
+        validate_dict: Optional[dict[str, bool]] = None,
     ):
         super().__init__(parent)
+        widget_parent = parent if isinstance(parent, QWidget) else None
         # options dict is a 2-level dict
         # with menu group names as keys and a list of options as values
         if options_dict is None:
             options_dict = {}
         self.options_dict = options_dict
         # validation dict is 1-level dict with all possible fields as keys
-        self.validate_dict: dict[str, bool] = {}
+        self.validate_dict: dict[str, bool] = validate_dict or {}
 
         self.text_edit = PasteableTextEdit(
-            parent,
+            widget_parent,
             options_dict=options_dict,
             height=height,
             placeholder_text=placeholder_text,
             is_required=is_required,
         )
-        self.error_label = QLabel()
+        self.error_label = QLabel(widget_parent)
         # Connect text changed to validation
         self.text_edit.textChanged.connect(self.validate_text)
         # Allow providing a QLabel that the provider can then modify
-        main_label = QLabel(label) if isinstance(label, str) else label
+        self.main_label = QLabel(label, widget_parent) if isinstance(label, str) else label
+        if self.main_label is not None:
+            self.addWidget(self.main_label)
 
-        self.addWidget(main_label)
-
-        self.optional_description = QLabel("")
+        self.optional_description = QLabel("", widget_parent)
         self.optional_description.setWordWrap(True)
         self.optional_description.setStyleSheet("font-size: 10px;")
         self.addWidget(self.optional_description)
@@ -95,6 +98,19 @@ class InterpolatedTextEditLayout(QVBoxLayout):
         """Set the text in the text field."""
         self.text_edit.setPlainText(text)
         self.text_edit.update_required_style()
+
+    def set_label(self, label: Optional[str]) -> None:
+        """Change the caption over the box, for a field whose meaning depends on a choice.
+
+        Kept as an attribute rather than a local because a caller that passed a plain string
+        has no other way back to it, and the caption is the thing that says what belongs in
+        the box. `CodeEditLayout.set_label` is the same method, so the two layouts stay
+        interchangeable.
+        """
+        if self.main_label is None:
+            return
+        self.main_label.setText(label or "")
+        self.main_label.setVisible(bool(label))
 
     def set_description(self, description):
         """Set the description text."""

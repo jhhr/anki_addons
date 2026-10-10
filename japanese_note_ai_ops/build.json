@@ -1,11 +1,23 @@
 {
-  "package": "simple_anki_ai_prompts",
-  "name": "Simple Anki AI Prompts",
-  "dev_dir_name": "simple_anki_ai_prompts",
+  "package": "japanese_note_ai_ops",
+  "name": "Japanese Note AI Ops",
   "human_version": "1.0.0",
   "homepage": "https://github.com/jhhr/anki_addons",
   "shared": [
-    "jp_text_processing"
+    "jp_text_processing",
+    "ui",
+    "utils",
+    "word_array"
   ],
-  "exclude": []
+  "exclude": [
+    "word_array/research",
+    "dev",
+    "test_replay"
+  ],
+  "vendor_keep": [
+    "mdict_query"
+  ],
+  "vendor_no_binaries": [
+    "rapidfuzz"
+  ]
 }

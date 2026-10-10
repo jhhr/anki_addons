@@ -153,7 +153,7 @@ def adjust_fsrs_revlog_background(
                         state=state,
                     )
                 )
-            step_results: StepResults = fsrs_calculator.steps(
+            step_results: list[StepResults] = fsrs_calculator.steps(
                 card_id=card_id,
                 reviews=reviews,
             )

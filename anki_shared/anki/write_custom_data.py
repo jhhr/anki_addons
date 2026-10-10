@@ -28,10 +28,16 @@ def add_dict_key_value(
         dict.pop(key, None)
 
 
-class KeyValueDict(TypedDict):
-    key: str
+# `value` and `new_key` are omissible: leaving out `value` removes the key, leaving out
+# `new_key` keeps its name. Optional keys need a `total=False` base class on 3.10, which
+# has no `NotRequired`.
+class _KeyValueDictOptional(TypedDict, total=False):
     value: Optional[Union[str, int, float, bool]]
     new_key: Optional[str]
+
+
+class KeyValueDict(_KeyValueDictOptional):
+    key: str
 
 
 def write_custom_data(

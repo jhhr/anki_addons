@@ -1,0 +1,472 @@
+"""The two dictionary lookups that were scanning a table their own index already covers.
+
+Nothing in the suite reached `mdx_dictionary.py` before this, because it imports aqt and
+`load_ops_module` takes a subdir for exactly that.
+
+Everything here runs against a temporary SQLite database shaped like a real `.mdx.db` - the
+`MDX_INDEX` table and the `key_index` that `IndexBuilder` puts on it - with a stub standing in
+for the builder. That is the whole of what the two changes touch, and it means the tests say
+something about SQLite's actual behaviour rather than about a fake of it.
+
+The prefix rewrite is the part that needs holding: `LIKE 'p%'` and a `>= ? AND < ?` range are
+the same question only for prefixes with no ASCII letter and no wildcard character, and none
+of the three ways they can differ occurs in the kana readings this add-on looks up. So the
+workload cannot tell anyone if a rewrite gets it wrong; only these can.
+"""
+
+import json
+import sqlite3
+import tempfile
+import unittest
+import unittest.mock
+from pathlib import Path
+
+import addon_modules
+
+mdx = addon_modules.load_ops_module("mdx_dictionary", "sync_local_ops")
+
+
+# Keys in the order a real .mdx.db holds them: MDX files carry their keys sorted, and the
+# index build inserts them in that order, which is why a scan and an index walk agree.
+KEYS = [
+    "Apple",
+    "apple",
+    "applesauce",
+    "ごはん",
+    "ご飯",
+    "たべる",
+    "た_べ",
+    "た%び",
+    "食べる",
+    "食べ物",
+]
+
+
+class StubBuilder:
+    """The one attribute of IndexBuilder that the two changes use, plus the shipped LIKE."""
+
+    def __init__(self, db_path: str):
+        self._mdx_db = db_path
+        self._title = "stub"
+        self._description = ""
+
+    def get_mdx_keys(self, query: str = "") -> list:
+        """`IndexBuilder.get_keys`, copied so a test can compare against what shipped."""
+        if query:
+            query = query.replace("*", "%") if "*" in query else query + "%"
+            sql = 'SELECT key_text FROM MDX_INDEX WHERE key_text LIKE "' + query + '"'
+        else:
+            sql = "SELECT key_text FROM MDX_INDEX"
+        conn = sqlite3.connect(self._mdx_db)
+        try:
+            return [row[0] for row in conn.execute(sql)]
+        finally:
+            conn.close()
+
+
+class MDXDictionaryTestCase(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.dir.name) / "stub.mdx.db")
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "CREATE TABLE MDX_INDEX (key_text text not null unique, file_pos integer,"
+            " compressed_size integer, decompressed_size integer, record_block_type integer,"
+            " record_start integer, record_end integer, offset integer)"
+        )
+        conn.executemany(
+            "INSERT INTO MDX_INDEX VALUES (?, 0, 0, 0, 0, 0, 0, 0)",
+            [(key,) for key in KEYS],
+        )
+        conn.execute("CREATE INDEX key_index ON MDX_INDEX (key_text)")
+        conn.commit()
+        conn.close()
+        self.dictionary = self.make_dictionary()
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def make_dictionary(self):
+        """An MDXDictionary over the stub database, without loading a real .mdx file."""
+        dictionary = object.__new__(mdx.MDXDictionary)
+        dictionary.mdx_path = str(Path(self.dir.name) / "stub.mdx")
+        dictionary.builder = StubBuilder(self.db_path)
+        return dictionary
+
+    def shipped_prefix_keys(self, prefix: str, max_results: int = 10) -> list:
+        """What `get_keys_by_prefix` returned before the rewrite."""
+        keys = self.dictionary.builder.get_mdx_keys(f"{prefix}*")
+        return keys[:max_results] if keys else []
+
+    def indexes_on(self, db_path=None) -> list:
+        conn = sqlite3.connect(db_path or self.db_path)
+        try:
+            # (seq, name, unique, origin, partial)
+            return [row[1] for row in conn.execute("PRAGMA index_list(MDX_INDEX)")]
+        finally:
+            conn.close()
+
+
+class LookupIndexesTests(MDXDictionaryTestCase):
+    """The keyword bound as a parameter instead of formatted into the SQL.
+
+    Compared against the shipped `IndexBuilder.lookup_indexes` itself rather than a copy of it,
+    so what these say holds for the function actually being replaced.
+    """
+
+    def shipped(self, keyword, ignorecase):
+        from mdict_query import IndexBuilder  # noqa: E402  (needs lib/ on sys.path first)
+
+        return IndexBuilder.lookup_indexes(self.db_path, keyword, ignorecase)
+
+    def test_the_same_rows_come_back_as_the_shipped_query(self):
+        for keyword, ignorecase in [
+            ("ご飯", False),
+            ("ご飯", True),
+            ("apple", True),
+            ("Apple", False),
+            ("食べる", False),
+        ]:
+            with self.subTest(keyword=keyword, ignorecase=ignorecase):
+                self.assertEqual(
+                    self.dictionary._lookup_indexes(keyword, ignorecase),
+                    self.shipped(keyword, ignorecase),
+                )
+
+    def test_a_word_that_is_not_in_the_dictionary_finds_nothing(self):
+        self.assertEqual(self.dictionary._lookup_indexes("ざぶとん", False), [])
+
+    def test_the_case_insensitive_form_still_folds_ascii(self):
+        """The whole point of the ignorecase branch, and of the index under it."""
+        self.assertEqual(len(self.dictionary._lookup_indexes("APPLE", True)), 2)
+        self.assertEqual(len(self.dictionary._lookup_indexes("APPLE", False)), 0)
+
+    def test_a_key_containing_a_double_quote_is_a_lookup_rather_than_a_syntax_error(self):
+        """The reason for the change. MDX keys are arbitrary text from a dictionary file."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO MDX_INDEX VALUES (?, 1, 2, 3, 4, 5, 6, 7)", ('say "yes"',))
+        conn.commit()
+        conn.close()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            self.shipped('say "yes"', False)
+        self.assertEqual(
+            self.dictionary._lookup_indexes('say "yes"', False),
+            [
+                {
+                    "file_pos": 1,
+                    "compressed_size": 2,
+                    "decompressed_size": 3,
+                    "record_block_type": 4,
+                    "record_start": 5,
+                    "record_end": 6,
+                    "offset": 7,
+                }
+            ],
+        )
+
+
+class ConnectionTests(MDXDictionaryTestCase):
+    """Every read of the index closes the connection it opened.
+
+    Not a tidiness rule. Anki runs with automatic garbage collection off and skips its periodic
+    `gc.collect()` while a progress dialog is up, and a connection is only freed by the cycle
+    collector - so one left to `with sqlite3.connect(...)` lives until the run ends, holding
+    the page cache its query filled. The whole-table LIKE in `_find_keys_containing_all_words`
+    did exactly that, 2.2MB a scan, and grew one run by 5.4GB.
+    """
+
+    def connections_opened_by(self, read) -> list:
+        opened = []
+        real_connect = sqlite3.connect
+
+        def tracking_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        sqlite3.connect = tracking_connect
+        try:
+            read()
+        finally:
+            sqlite3.connect = real_connect
+        return opened
+
+    def test_no_read_leaves_its_connection_open(self):
+        reads = {
+            "exact lookup": lambda: self.dictionary._lookup_indexes("ご飯", False),
+            "whole-word keys": lambda: self.dictionary._find_keys_containing_all_words(
+                ["食べる"], match_whole_word=True
+            ),
+            "partial keys": lambda: self.dictionary._find_keys_containing_all_words(["食べ"]),
+            "prefix range": lambda: self.dictionary.get_keys_by_prefix("た"),
+            "prefix LIKE fallback": lambda: self.dictionary.get_keys_by_prefix("apple"),
+        }
+        for name, read in reads.items():
+            with self.subTest(read=name):
+                opened = self.connections_opened_by(read)
+                self.assertEqual(len(opened), 1)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    opened[0].execute("SELECT 1")
+
+
+class FindKeysContainingAllWordsTests(MDXDictionaryTestCase):
+    """Strategy 1 of `query_japanese`: keys holding every word, optionally as whole words."""
+
+    def test_partial_matching_finds_every_key_containing_the_words(self):
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べ"]), ["食べる", "食べ物"]
+        )
+
+    def test_whole_word_matching_rejects_a_word_inside_a_longer_one(self):
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べ"], match_whole_word=True), []
+        )
+        self.assertEqual(
+            self.dictionary._find_keys_containing_all_words(["食べる"], match_whole_word=True),
+            ["食べる"],
+        )
+
+    def test_every_word_has_to_be_in_the_key(self):
+        self.assertEqual(self.dictionary._find_keys_containing_all_words(["ご", "飯"]), ["ご飯"])
+
+    def test_a_missing_database_is_not_an_error(self):
+        self.dictionary.builder._mdx_db = str(Path(self.dir.name) / "gone.mdx.db")
+        self.assertEqual(self.dictionary._find_keys_containing_all_words(["食べ"]), [])
+
+
+class PrefixRangeTests(MDXDictionaryTestCase):
+    """`LIKE 'p%'` will not use a BINARY index; the same question as a range will."""
+
+    def test_a_kana_prefix_returns_what_the_like_pattern_returned(self):
+        for prefix in ("ご", "た", "食べ", "食"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    self.dictionary.get_keys_by_prefix(prefix),
+                    self.shipped_prefix_keys(prefix),
+                )
+
+    def test_the_order_is_the_same_and_so_the_truncation_is_too(self):
+        """The result is cut to max_results and the caller filters what survives.
+
+        Set equality is not enough here: if the range walked the keys in a different order
+        from the scan, the ten that survive would be a different ten and the definitions built
+        from them would differ.
+        """
+        self.assertEqual(
+            self.dictionary.get_keys_by_prefix("た", max_results=2),
+            self.shipped_prefix_keys("た", max_results=2),
+        )
+
+    def test_a_prefix_that_matches_nothing_still_matches_nothing(self):
+        self.assertEqual(self.dictionary.get_keys_by_prefix("ざ"), [])
+
+    def test_an_ascii_prefix_keeps_the_case_folding_like_does(self):
+        """LIKE is case-insensitive for ASCII and a range is not, so ASCII falls back.
+
+        Losing this would silently drop "Apple" from a lookup for "apple".
+        """
+        self.assertEqual(
+            self.dictionary.get_keys_by_prefix("apple"),
+            self.shipped_prefix_keys("apple"),
+        )
+        self.assertIn("Apple", self.dictionary.get_keys_by_prefix("apple"))
+
+    def test_a_wildcard_in_the_prefix_stays_a_wildcard(self):
+        """`%`, `_` and `*` are wildcards to the pattern and literals to a range."""
+        for prefix in ("た_", "た%", "た*"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    self.dictionary.get_keys_by_prefix(prefix),
+                    self.shipped_prefix_keys(prefix),
+                )
+
+    def test_an_empty_prefix_falls_back(self):
+        self.assertEqual(
+            self.dictionary.get_keys_by_prefix(""),
+            self.shipped_prefix_keys(""),
+        )
+
+    def test_the_range_actually_seeks(self):
+        """The whole point: the plan has to be a search, not a scan.
+
+        Without this the rewrite could be correct and worthless - which is precisely what the
+        shipped LIKE is, against an index that has been sitting there the whole time.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            plan = " ".join(
+                str(row)
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT key_text FROM MDX_INDEX"
+                    " WHERE key_text >= ? AND key_text < ? LIMIT ?",
+                    ("た", "だ", 10),
+                )
+            )
+        finally:
+            conn.close()
+        self.assertIn("key_index", plan)
+        self.assertNotIn("SCAN", plan)
+
+    def test_the_last_code_point_there_is_falls_back_rather_than_overflowing(self):
+        # chr(ord(c) + 1) has nowhere to go above U+10FFFF
+        self.assertIsNone(self.dictionary._keys_in_prefix_range("\U0010ffff", 10))
+
+    def test_a_missing_database_is_not_an_error(self):
+        self.dictionary.builder._mdx_db = str(Path(self.dir.name) / "gone.mdx.db")
+        self.assertEqual(self.dictionary.get_keys_by_prefix("た"), [])
+
+
+class LowerKeyIndexTests(MDXDictionaryTestCase):
+    """`lower(key_text) = lower(?)` cannot use `key_index`; an expression index it can."""
+
+    def test_the_index_is_created(self):
+        self.assertNotIn(mdx.LOWER_KEY_INDEX, self.indexes_on())
+        self.dictionary._add_lower_key_index()
+        self.assertIn(mdx.LOWER_KEY_INDEX, self.indexes_on())
+
+    def test_the_shipped_case_insensitive_lookup_seeks_once_it_exists(self):
+        """No SQL changes anywhere: the vendored query becomes a seek on its own."""
+        self.dictionary._add_lower_key_index()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            plan = " ".join(
+                str(row)
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT * FROM MDX_INDEX"
+                    ' WHERE lower(key_text) = lower("apple")'
+                )
+            )
+        finally:
+            conn.close()
+        self.assertIn(mdx.LOWER_KEY_INDEX, plan)
+        self.assertNotIn("SCAN", plan)
+
+    def test_the_same_rows_come_back_with_the_index_as_without(self):
+        def rows():
+            conn = sqlite3.connect(self.db_path)
+            try:
+                return sorted(
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT key_text FROM MDX_INDEX WHERE lower(key_text) = lower(?)",
+                        ("APPLE",),
+                    )
+                )
+            finally:
+                conn.close()
+
+        before = rows()
+        self.dictionary._add_lower_key_index()
+        self.assertEqual(rows(), before)
+        self.assertEqual(before, ["Apple", "apple"])
+
+    def test_creating_it_twice_is_free_and_harmless(self):
+        self.dictionary._add_lower_key_index()
+        self.dictionary._add_lower_key_index()
+        self.assertEqual(self.indexes_on().count(mdx.LOWER_KEY_INDEX), 1)
+
+    def test_a_database_that_cannot_be_written_degrades_to_the_old_behaviour(self):
+        """A read-only dictionary directory or a full disk must not fail a load.
+
+        The lookups all still work without the index; they just scan the way they always did.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA query_only = ON")
+        finally:
+            conn.close()
+        Path(self.db_path).chmod(0o444)
+        try:
+            self.dictionary._add_lower_key_index()  # must not raise
+        finally:
+            Path(self.db_path).chmod(0o644)
+
+    def test_a_missing_database_is_not_an_error(self):
+        self.dictionary.builder._mdx_db = str(Path(self.dir.name) / "gone.mdx.db")
+        self.dictionary._add_lower_key_index()  # must not raise
+
+
+class UnloadedDictionariesTests(unittest.TestCase):
+    """A helper whose dictionaries were never loaded answers every lookup without scanning: "in
+    none of them" when the config names none, a failed lookup when it names some that did not
+    load. The second returned None too, and every note looked up was tagged as in no dictionary,
+    a tag no later run looks past. A notes run records both, as it records every lookup."""
+
+    def setUp(self):
+        self.reports: list = []
+        mdx.run_errors.deliver_with(lambda title, text: self.reports.append((title, text)))
+        self.addCleanup(mdx.run_errors.deliver_with, None)
+        self.helper = mdx.AnkiMDXHelper()
+
+    def load(self, filenames, dictionaries=()):
+        loaded = type("Loaded", (), {"dictionaries": list(dictionaries)})
+        with unittest.mock.patch.object(mdx, "MultiDictionaryQuery", lambda *a, **k: loaded()):
+            return self.helper.load_mdx_dictionaries_if_needed({"mdx_filenames": filenames})
+
+    def recorded_lookups(self, look_up):
+        capture = mdx.capture
+        capture._quiet_until.clear()
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "capture.sqlite3")
+            self.assertTrue(capture.install(path))
+            try:
+                run_id = capture.begin_run("run", notes=True)
+                with capture.run_scope(run_id):
+                    look_up()
+                    capture.end_run(run_id, "completed")
+                self.assertTrue(capture.current_store().flush())
+                with sqlite3.connect(path) as connection:
+                    rows = connection.execute(
+                        "SELECT payload_json FROM events WHERE kind = 'dictionary.lookup'"
+                    ).fetchall()
+                connection.close()
+            finally:
+                capture.shutdown()
+        return [json.loads(payload) for (payload,) in rows]
+
+    def test_with_none_configured_a_lookup_finds_nothing_and_is_recorded(self):
+        self.assertIsNone(self.load([]))
+
+        lookups = self.recorded_lookups(
+            lambda: self.assertIsNone(self.helper.get_definition_text("本", "ほん"))
+        )
+
+        self.assertEqual(
+            lookups,
+            [{"word": "本", "reading": "ほん", "pick": "all", "max_length": None, "text": None}],
+        )
+        self.assertEqual(self.reports, [])
+
+    def test_configured_dictionaries_that_did_not_load_fail_every_lookup(self):
+        self.assertIsNone(self.load(["missing.mdx"]))
+
+        def look_up():
+            for _ in range(2):
+                with self.assertRaises(mdx.MDXLookupError):
+                    self.helper.get_definition_text("本", "ほん")
+
+        lookups = self.recorded_lookups(look_up)
+
+        self.assertEqual(len(lookups), 2)
+        self.assertIn("none of the 1 configured MDX dictionaries loaded", lookups[0]["error"])
+        # Said once, where the run's errors are shown, not once per note
+        self.assertEqual(len(self.reports), 1)
+        self.assertIn("mdx_filenames", self.reports[0][1])
+
+    def test_a_load_that_raises_fails_every_lookup_too(self):
+        def broken(*args, **kwargs):
+            raise OSError("unable to open database file")
+
+        with unittest.mock.patch.object(mdx, "MultiDictionaryQuery", broken):
+            self.assertIsNone(
+                self.helper.load_mdx_dictionaries_if_needed({"mdx_filenames": ["a.mdx"]})
+            )
+
+        with self.assertRaises(mdx.MDXLookupError):
+            self.helper.get_definition_text("本", "ほん")
+        self.assertEqual(len(self.reports), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

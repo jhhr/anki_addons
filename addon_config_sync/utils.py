@@ -5,13 +5,13 @@ from typing import Any, Literal
 from aqt import mw
 from aqt.qt import (
     Qt,
+    QIcon,
     QWidget,
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
     QDialogButtonBox,
-    QMessageBox,
     QStyle,
 )
 from aqt.utils import qconnect
@@ -44,13 +44,24 @@ def get_configs_in_media(media_path: Path) -> list[str]:
 TextFormat = Literal["plain", "rich", "markdown"]
 
 
+def standard_icon(widget: QWidget, pixmap: QStyle.StandardPixmap) -> QIcon:
+    """
+    Get one of Qt's standard icons from a widget's style.
+    QWidget.style() is Optional in the Qt stubs; a constructed widget always has a style, so
+    the check lives here instead of at every call site.
+    """
+    style = widget.style()
+    assert style is not None
+    return style.standardIcon(pixmap)
+
+
 def show_non_blocking_info(
     text: str,
     parent: QWidget | None = None,
     type: str = "info",
     title: str = "Anki",
     textFormat: TextFormat | None = None,
-    customBtns: list[QMessageBox.StandardButton] | None = None,
+    customBtns: list[QDialogButtonBox.StandardButton] | None = None,
 ) -> QDialog:
     """
     Show a small non-blocking info window with an OK button.
@@ -79,7 +90,7 @@ def show_non_blocking_info(
     # Add icon and text
     h_layout = QHBoxLayout()
     icon_label = QLabel()
-    icon_label.setPixmap(dialog.style().standardIcon(icon).pixmap(32, 32))
+    icon_label.setPixmap(standard_icon(dialog, icon).pixmap(32, 32))
     h_layout.addWidget(icon_label)
 
     text_label = QLabel(text)

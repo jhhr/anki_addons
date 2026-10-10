@@ -1,19 +1,18 @@
 import logging
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 
 from anki.collection import Collection
 from anki.notes import Note, NoteId
 from aqt import mw
 
+from ..async_api_ops.chain_types import ChainStep
 from ..async_api_ops.base_ops import (
     AsyncTaskProgressUpdater,
     bulk_notes_op,
     selected_notes_op,
 )
-from ..async_api_ops.match_words_to_notes import (
-    get_note_word_match_query,
-    get_word_list_query_regex_for_word_and_reading,
-)
+from ..async_api_ops.match_words_to_notes import get_note_word_match_query
+from ..word_array.match_flags import MatchState, word_array_query_regex
 
 logger = logging.getLogger(__name__)
 
@@ -38,21 +37,19 @@ def tag_notes_matched_status_for_note(
     """
     note_type = note.note_type()
     log_prefix = f"Tag notes matched status--nid:{note.id}--"
+    if note_type is None:
+        logger.error(f"{log_prefix}Error: Note has no note type")
+        return False
     note_word_info = get_note_word_match_query(config, note, note_type, log_prefix)
     if note_word_info is None:
         return False
     target_word, target_reading, word_list_field = note_word_info
 
-    matched_regex = get_word_list_query_regex_for_word_and_reading(
-        word=target_word,
-        reading=target_reading,
-        with_processed="only_processed",
+    # A word is matched once it has a note id, and unmatched when judged worth one
+    matched_regex = word_array_query_regex(
+        target_word, target_reading, [MatchState.LINKED, MatchState.RATED]
     )
-    unmatched_regex = get_word_list_query_regex_for_word_and_reading(
-        word=target_word,
-        reading=target_reading,
-        with_processed="only_unprocessed",
-    )
+    unmatched_regex = word_array_query_regex(target_word, target_reading, [MatchState.MATCH])
     note_type_name = note_type["name"]
     matched_query = f'"note:{note_type_name}" "{word_list_field}:re:{matched_regex}"'
     unmatched_query = f'"note:{note_type_name}" "{word_list_field}:re:{unmatched_regex}"'
@@ -108,6 +105,7 @@ def bulk_tag_notes_matched_status_op(
 def tag_notes_matched_status_from_selected(
     nids: Sequence[NoteId],
     parent: Any,
+    chain: Optional[ChainStep] = None,
 ):
     """
     Tag selected notes to indicate whether all, some, or no notes in the collection
@@ -121,4 +119,4 @@ def tag_notes_matched_status_from_selected(
     progress_updater = AsyncTaskProgressUpdater(title="Sync op: Tagging notes matched status")
     done_text = "Tagged notes matched status"
     bulk_op = bulk_tag_notes_matched_status_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

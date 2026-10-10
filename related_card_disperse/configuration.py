@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict, cast
 
 from aqt import mw
 
@@ -48,15 +48,23 @@ class ConfigData(TypedDict):
     hide_review_unchanged: bool
     dedupe_sync_groups: bool
     disperse_siblings_default: bool
+    disperse_across_decks: bool
     rules: list[RelatedRule]
 
 
-def load_config() -> ConfigData:
-    return mw.addonManager.getConfig(tag)
+def load_config() -> dict[str, Any]:
+    """The stored config as Anki holds it, before ``migrate_data`` shapes it.
+
+    An addon that has never been configured has no config at all, which is the
+    same starting point as an empty one.
+    """
+    return mw.addonManager.getConfig(tag) or {}
 
 
 def save_config(data: ConfigData) -> None:
-    mw.addonManager.writeConfig(tag, data)
+    # A TypedDict is a dict at runtime; only the invariance of dict's value type
+    # stops it being passed to an API that takes a plain one.
+    mw.addonManager.writeConfig(tag, cast("dict[Any, Any]", data))
 
 
 def _normalize_name_list(value: object) -> str:
@@ -149,6 +157,7 @@ def migrate_data(data: dict) -> ConfigData:
     data.setdefault("hide_review_unchanged", False)
     data.setdefault("dedupe_sync_groups", True)
     data.setdefault("disperse_siblings_default", False)
+    data.setdefault("disperse_across_decks", True)
     data.setdefault("bury_min_gap", 0)
     rules = data.get("rules", []) or []
 
@@ -192,6 +201,7 @@ def migrate_data(data: dict) -> ConfigData:
     data["hide_review_unchanged"] = bool(data["hide_review_unchanged"])
     data["dedupe_sync_groups"] = bool(data["dedupe_sync_groups"])
     data["disperse_siblings_default"] = bool(data["disperse_siblings_default"])
+    data["disperse_across_decks"] = bool(data["disperse_across_decks"])
     try:
         data["bury_min_gap"] = max(0, int(data["bury_min_gap"]))
     except (TypeError, ValueError):
@@ -210,6 +220,7 @@ class Config:
             "hide_review_unchanged": False,
             "dedupe_sync_groups": True,
             "disperse_siblings_default": False,
+            "disperse_across_decks": True,
             "rules": [],
         }
 
@@ -283,6 +294,19 @@ class Config:
         """
         return self.data["bury_min_gap"]
 
+    @property
+    def disperse_across_decks(self) -> bool:
+        """Whether "Disperse due cards" looks at the whole day or one deck tree.
+
+        A rule query is not deck-scoped, so relations routinely point from one
+        top-level deck into another -- and a session gathered from a single tree
+        resolves those relations only to throw them away, reporting no
+        collisions on a session full of them. On by default because the review
+        hook has always buried across decks; off restores the old behaviour for
+        anyone who wants the command to touch only the deck they named.
+        """
+        return self.data["disperse_across_decks"]
+
     def update_global(
         self,
         *,
@@ -293,6 +317,7 @@ class Config:
         hide_review_unchanged: bool,
         dedupe_sync: bool,
         disperse_siblings_default: bool,
+        disperse_across_decks: bool,
     ) -> None:
         self.data["default_max_related_cards"] = max(1, int(default_cap))
         self.data["bury_min_gap"] = max(0, int(bury_min_gap))
@@ -300,6 +325,7 @@ class Config:
         self.data["hide_review_details"] = bool(hide_review_details)
         self.data["hide_review_unchanged"] = bool(hide_review_unchanged)
         self.data["dedupe_sync_groups"] = bool(dedupe_sync)
+        self.data["disperse_across_decks"] = bool(disperse_across_decks)
         self.data["disperse_siblings_default"] = bool(disperse_siblings_default)
         self.save()
 

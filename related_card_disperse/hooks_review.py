@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from anki.cards import Card
+from anki.cards import Card, CardId
 from aqt import mw
 from aqt.gui_hooks import reviewer_did_answer_card
 from aqt.utils import tooltip
 
 from .configuration import Config
-from .logic import card_type_name_for, get_applicable_rules, run_rule_for_reviewed_card
+from .logic import (
+    StatsCache,
+    card_type_name_for,
+    describe_buried_decks,
+    get_applicable_rules,
+    merge_buried_by_deck,
+    run_rule_for_reviewed_card,
+)
+
+
+def _home_deck_name(card: Card) -> str:
+    """The deck the card belongs to, filtered decks resolved to the real one."""
+    return mw.col.decks.name(card.odid if card.odid else card.did)
 
 
 def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
@@ -28,8 +40,8 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
         return
 
     answer_undo_entry = mw.col.undo_status().last_step
-    stats_cache = {}
-    processed_rule_card_pairs: set[tuple[str, int]] = set()
+    stats_cache: StatsCache = {}
+    processed_rule_card_pairs: set[tuple[str, CardId]] = set()
 
     outcomes = []
     for rule in rules:
@@ -50,16 +62,27 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
     if not reportable:
         return
 
+    # A rule reaches wherever its query points, so answering one card can bury
+    # related cards sitting in decks the user is not studying. That deck is just
+    # quietly shorter tomorrow unless the tooltip names it, so it gets its own
+    # line -- under both report styles, since it is news either way.
+    buried_by_deck: dict[str, int] = {}
+    for outcome in reportable:
+        merge_buried_by_deck(buried_by_deck, outcome.buried_by_deck)
+    elsewhere = describe_buried_decks(buried_by_deck, current_deck=_home_deck_name(card))
+
     if config.hide_review_details:
         total = sum(o.updated for o in reportable)
         runs = len(outcomes)
-        tooltip(
+        lines = [
             f"Dispersed {total} card{'' if total == 1 else 's'}"
-            f" ({runs} rule run{'' if runs == 1 else 's'})",
-            period=7000,
-        )
+            f" ({runs} rule run{'' if runs == 1 else 's'})"
+        ]
     else:
-        tooltip("<br><br>".join(o.message for o in reportable), period=7000)
+        lines = [o.message for o in reportable]
+    if elsewhere:
+        lines.append(elsewhere)
+    tooltip("<br><br>".join(lines), period=7000)
 
 
 def init_review_hook() -> None:

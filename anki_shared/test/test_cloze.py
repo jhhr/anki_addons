@@ -4,6 +4,7 @@ from anki_shared.interpolate.interpolate_fields import (
     extract_cloze_patterns,
     get_fields_from_text,
     interpolate_from_text,
+    map_outside_clozes,
 )
 
 
@@ -159,3 +160,38 @@ class TestInterpolateFromTextCloze:
         result_text, result_invalid = interpolate_from_text(text, source_note=note)
         assert result_text == expected_text
         assert result_invalid == expected_invalid
+
+
+class TestMapOutsideClozes:
+    """The one routine that keeps cloze markers away from whatever reads references.
+
+    Interpolation, the format-2 resolver and the format-1 converter all transform text whose
+    cloze markers look like references and are not, while the references inside them are.
+    """
+
+    def test_the_transform_never_sees_a_cloze_marker(self):
+        seen = []
+
+        def transform(part):
+            seen.append(part)
+            return part
+
+        map_outside_clozes("a {{c1::b}} c {{c2::d}}", transform)
+        assert not any("c1::" in part or "c2::" in part for part in seen), seen
+
+    def test_the_content_of_every_cloze_is_transformed_and_the_markers_kept(self):
+        mapped = map_outside_clozes("x {{c1::a {{c2::b}}::hint}} {{c3::c}}", str.upper)
+        assert mapped == "X {{c1::A {{c2::B}}::HINT}} {{c3::C}}"
+
+    def test_the_contents_go_before_the_text_around_them_last_cloze_first(self):
+        order = []
+
+        def transform(part):
+            order.append(part.replace("\x00", "|"))
+            return part
+
+        map_outside_clozes("out {{c1::one}} {{c2::two}}", transform)
+        assert order == ["two", "one", "out |CLOZE1| |CLOZE0|"]
+
+    def test_a_cloze_that_is_never_closed_is_left_to_the_transform(self):
+        assert map_outside_clozes("{{c1::a", str.upper) == "{{C1::A"

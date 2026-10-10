@@ -3,6 +3,7 @@ import uuid
 import copy as copy_module
 from anki.notes import NoteId
 from aqt import mw
+from aqt.utils import showInfo
 
 from aqt.qt import (
     QVBoxLayout,
@@ -20,16 +21,27 @@ from aqt.qt import (
     QSizePolicy,
 )
 
-from .edit_copy_definition_dialog import EditCopyDefinitionDialog
 from ..shared.ui.scrollable_dialog import ScrollableQDialog
 from ..configuration import (
+    AnyCopyDefinition,
     Config,
     CopyDefinition,
+    definition_deck_names,
+    definition_note_type_names,
 )
+from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
+from ..logic.definition_schema import CopyDefinitionV2, is_format_2
+from .discard import discard_widget
+from .edit_staged_definition_dialog import EditStagedDefinitionDialog
 from ..logic.copy_fields import (
     copy_fields,
 )
 from ..shared.utils.make_query_string import make_query_string
+from ..shared.ui.note_source_buttons import (
+    NoteSource,
+    NoteSourceButtons,
+    browser_note_source,
+)
 
 if qtmajor > 5:
     WindowModal = Qt.WindowModality.WindowModal
@@ -260,9 +272,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
     def __init__(
         self,
         parent,
-        copy_definitions: list[CopyDefinition],
-        browser_note_ids: Optional[list[int]],
-        browser_search: Optional[str],
+        copy_definitions: list[AnyCopyDefinition],
+        note_source: NoteSource,
     ):
         super().__init__(parent)
 
@@ -272,8 +283,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         self.applicable_note_type_names: list[str] = []
         self.checkboxes: list[QCheckBox] = []
         self.definition_note_ids: list[Sequence[Union[int, NoteId]]] = []
-        self.browser_note_ids = browser_note_ids
-        self.browser_search = browser_search
+        self.note_source = note_source
 
         # GUID-based definition UI tracking
         self.definition_ui_components: dict[str, dict] = (
@@ -292,20 +302,12 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         self.vbox = QVBoxLayout(self.inner_widget)
 
         # Create note selection buttons (will be moved to footer later)
-        self.use_browser_selection_button = QPushButton(
-            f"Use selected notes ({len(browser_note_ids or [])})"
-        )
-        self.use_browser_selection_button.clicked.connect(
-            lambda: self.toggle_card_selected_button(self.use_browser_selection_button)
-        )
-        self.use_all_cards_button = QPushButton("Use all notes from current search")
-        self.use_all_cards_button.clicked.connect(
-            lambda: self.toggle_card_selected_button(self.use_all_cards_button)
+        self.note_source_buttons = NoteSourceButtons(
+            note_source, on_change=self.update_card_counts_for_all_cards
         )
 
         # Create notes selected label (will be moved to footer later)
         self.notes_selected_label = QLabel(DEFAULT_CARDS_SELECTED_LABEL)
-        self.toggle_card_selected_button(self.use_browser_selection_button)
 
         self.select_label = QLabel("Select copy definitions to apply")
         self.top_grid = self.make_grid()
@@ -341,8 +343,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         self.close_button.clicked.connect(self.reject)
 
         buttons_layout.addWidget(self.apply_button)
-        buttons_layout.addWidget(self.use_browser_selection_button)
-        buttons_layout.addWidget(self.use_all_cards_button)
+        buttons_layout.addWidget(self.note_source_buttons)
         buttons_layout.addStretch()
         buttons_layout.addWidget(self.close_button)
 
@@ -384,7 +385,7 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         def remove_row_ui():
             # Remove the entire definition row from the layout
             self.definitions_layout.removeWidget(definition_row)
-            definition_row.deleteLater()
+            discard_widget(definition_row)
 
             # Remove from checkboxes list
             if definition_row.checkbox in self.checkboxes:
@@ -524,8 +525,30 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
 
         return self.edit_definition(definition_index, definition_to_edit)
 
+    def run_definition_editor(
+        self, definition: Optional[AnyCopyDefinition], config: Config
+    ) -> Optional[CopyDefinitionV2]:
+        """Open the stage editor on this definition, converting it first if it is format 1.
+
+        There is one editor. A definition only reaches here in format 1 if the startup
+        migration could not convert the config it is in, so it goes through the same pure
+        migrator on the way to the editor -- and one that still cannot be converted is said
+        so, rather than opened in an editor that has no shape for it.
+        """
+        staged_definitions = [
+            other for other in config.copy_definitions if is_format_2(other)
+        ]
+        if definition is not None and not is_format_2(definition):
+            try:
+                definition = migrate_definition_v1_to_v2(definition)
+            except MigrationError as error:
+                showInfo(f"This definition could not be converted to stages: {error}")
+                return None
+        dialog = EditStagedDefinitionDialog(self, definition, staged_definitions)
+        return dialog.get_copy_definition() if dialog.exec() else None
+
     def edit_definition(
-        self, index: Optional[int] = None, copy_definition: Optional[CopyDefinition] = None
+        self, index: Optional[int] = None, copy_definition: Optional[AnyCopyDefinition] = None
     ):
         """
         Opens the edit dialog for the selected copy definition
@@ -539,10 +562,8 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         else:
             definition = self.copy_definitions[index]
 
-        dialog = EditCopyDefinitionDialog(self, definition)
-
-        if dialog.exec():
-            copy_definition = dialog.get_copy_definition()
+        copy_definition = self.run_definition_editor(definition, config)
+        if copy_definition is not None:
             if index is None and copy_definition is not None:
                 # Adding new definition
                 if "guid" not in copy_definition:
@@ -586,28 +607,11 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             # "Cancel" was pressed
             return -1
 
-    def toggle_card_selected_button(self, selected_button):
-        # reset styles
-        self.use_browser_selection_button.setStyleSheet("")
-        self.use_all_cards_button.setStyleSheet("")
-        style = "background-color: #e0e0e0; color: black;"
-        if selected_button == self.use_browser_selection_button:
-            self.use_browser_selection = True
-            self.use_browser_selection_button.setStyleSheet(style)
-        else:
-            self.use_browser_selection = False
-            self.use_all_cards_button.setStyleSheet(style)
-        self.update_card_counts_for_all_cards()
-
     def update_card_counts_for_all_cards(self):
         """
         Sets the cards that would be applicable for the selected copy definitions
         """
-        browser_query = ""
-        if self.use_browser_selection and self.browser_note_ids:
-            browser_query = f"nid:{','.join(map(str, self.browser_note_ids))}"
-        elif self.browser_search:
-            browser_query = self.browser_search
+        browser_query = self.note_source.browser_query()
 
         self.selected_definitions_applicable_notes = set()
         total_applicable_notes: list[Union[int, NoteId]] = []
@@ -617,20 +621,22 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             if checkbox.isChecked():
                 nothing_checked = False
                 checked_definition = self.copy_definitions[index]
-                decks_query = ""
-                whitelist_decknames = checked_definition.get("only_copy_into_decks")
-                if whitelist_decknames and whitelist_decknames != "-":
-                    # Remove the quotes and split the string into a list of deck names
-                    deck_names = whitelist_decknames.strip('""').split('", "')
-                    decks_query = make_query_string("deck", deck_names)
+                deck_names = definition_deck_names(checked_definition)
+                decks_query = make_query_string("deck", deck_names) if deck_names else ""
 
-                note_type_query = ""
-                # Split by comma and remove the first wrapping " but keeping the last one
-                note_type_names = checked_definition.get("copy_into_note_types")
-                if note_type_names and note_type_names != "-":
-                    note_type_names_list = note_type_names.strip('""').split('", "')
-                    note_type_query = make_query_string("note", note_type_names_list)
-                def_note_ids = mw.col.find_notes(f"{note_type_query} {decks_query} {browser_query}")
+                note_type_names_list = definition_note_type_names(checked_definition)
+                note_type_query = (
+                    make_query_string("note", note_type_names_list)
+                    if note_type_names_list
+                    else ""
+                )
+                if browser_query is None:
+                    # Nothing selected: no notes, not the whole search a find would give
+                    def_note_ids: Sequence[Union[int, NoteId]] = []
+                else:
+                    def_note_ids = mw.col.find_notes(
+                        f"{note_type_query} {decks_query} {browser_query}"
+                    )
 
                 self.selected_definitions_applicable_notes.update(def_note_ids)
                 self.definition_note_ids[index] = def_note_ids
@@ -663,10 +669,7 @@ def show_copy_dialog(browser):
     """
     Shows a dialog for the user to select a copy definition to apply, edit or remove.
     """
-    current_search = None
-    if browser:
-        note_ids = browser.selected_notes()
-        current_search = browser.current_search()
+    note_source = browser_note_source(browser)
 
     # Put the saved configuration to show in the dialog box
     config = Config()
@@ -674,7 +677,7 @@ def show_copy_dialog(browser):
     copy_definitions = config.copy_definitions
 
     parent = mw.app.activeWindow()
-    d = PickCopyDefinitionDialog(parent, copy_definitions, note_ids, current_search)
+    d = PickCopyDefinitionDialog(parent, copy_definitions, note_source)
     if d.exec():
         # Run all selected copy definitions according to the checkboxes
         config.load()

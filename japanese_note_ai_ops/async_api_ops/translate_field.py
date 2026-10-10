@@ -1,5 +1,5 @@
 import logging
-from typing import Union
+from typing import Optional, Union
 from anki.notes import Note, NoteId
 from anki.collection import Collection
 from aqt import mw
@@ -7,6 +7,7 @@ from aqt.browser import Browser
 from aqt.utils import showWarning
 from collections.abc import Sequence
 
+from .chain_types import ChainStep
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -17,17 +18,24 @@ from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
 
+TRANSLATED_SENTENCE_RETURN_FIELD = "english_sentence"
 
-def get_translated_field_from_model(config: dict[str, str], sentence: str) -> Union[str, None]:
-    return_field = "english_sentence"
+
+def translate_sentence_prompt(sentence: str) -> str:
     # HTML-keeping prompt
-    no_html_prompt = (
+    return (
         f"sentence_to_translate_into_english: {sentence}\n\nIgnore any HTML in the"
         " sentence.\nReturn an HTML-free English translation of the sentence in a JSON string as"
-        f' the value of the key "{return_field}".'
+        f' the value of the key "{TRANSLATED_SENTENCE_RETURN_FIELD}".'
     )
+
+
+def get_translated_field_from_model(config: dict[str, str], sentence: str) -> Union[str, None]:
+    return_field = TRANSLATED_SENTENCE_RETURN_FIELD
+    inputs = {"sentence": sentence}
+    no_html_prompt = translate_sentence_prompt(**inputs)
     model = config.get("translate_sentence_model", "")
-    result = get_response(model, no_html_prompt)
+    result = get_response(model, no_html_prompt, kind="translate.sentence", inputs=inputs)
     if result is None:
         # If translation failed, return nothing
         return None
@@ -92,8 +100,6 @@ def bulk_translate_notes_op(
     if not config:
         showWarning("Missing addon configuration")
         return
-    model = config.get("translate_sentence_model", "")
-    rate_limit = config.get("rate_limits", {}).get(model, None)
     message = "Translating sentences"
     op = translate_sentence_in_note
     return bulk_notes_op(
@@ -106,12 +112,13 @@ def bulk_translate_notes_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
-        rate_limit=rate_limit,
     )
 
 
-def translate_selected_notes(nids: Sequence[NoteId], parent: Browser):
+def translate_selected_notes(
+    nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
+):
     progress_updater = AsyncTaskProgressUpdater(title="Async AI op: Translating sentences")
     done_text = "Updated translation"
     bulk_op = bulk_translate_notes_op
-    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater)
+    return selected_notes_op(done_text, bulk_op, nids, parent, progress_updater, chain=chain)

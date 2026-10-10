@@ -4,9 +4,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from anki.cards import Card
+from anki.cards import Card, CardId
 from anki.consts import CARD_TYPE_REV
 from anki.errors import NotFoundError
+from anki.notes import NoteId
 from anki.stats import REVLOG_CRAM
 from anki.stats_pb2 import CardStatsResponse
 from anki.utils import ids2str
@@ -19,9 +20,12 @@ from .core import (
     group_overlapping_sets,
     normalize_card_id_result,
     qualified_card_type_name,
+    describe_rule_errors,
+    merge_rule_error,
     remaining_note_cards,
-    review_order_uses_due,
     reviewed_card_variables,
+    rule_display_name,
+    select_backlog_cards_to_bury,
     split_quoted_names,
     summarize_outcome,
 )
@@ -36,28 +40,41 @@ class QueryResolution:
     raw_count: int
     filtered_count: int
     capped_count: int
-    card_ids: list[int]
-    due_by_id: dict[int, int]
+    card_ids: list[CardId]
+    due_by_id: dict[CardId, int]
     # Every id the query returned, before the review-state filter and the cap
     # narrowed it to what is worth rescheduling. A browser run reads this to
     # tell which of a note's cards a rule has already accounted for: a card the
     # query found but the filter dropped would find the very same group again.
-    raw_ids: list[int] = field(default_factory=list)
+    raw_ids: list[CardId] = field(default_factory=list)
     error: Optional[str] = None
 
 
 @dataclass
 class DispersePlan:
-    card_ids: list[int]
-    due_ranges: dict[int, tuple[int, int]]
-    current_dues: dict[int, int]
-    last_reviews: dict[int, int]
-    best_due_dates: dict[int, int]
+    card_ids: list[CardId]
+    due_ranges: dict[CardId, tuple[int, int]]
+    current_dues: dict[CardId, int]
+    last_reviews: dict[CardId, int]
+    best_due_dates: dict[CardId, int]
     min_gap: int
-    # Cards pinned at their current due date because they are backlogged in a
-    # deck whose review order ignores due dates. They still anchor the group;
-    # they just cannot be part of the answer.
-    backlogged: set[int] = field(default_factory=set)
+    # Cards pinned at their current due date because they are already late.
+    # They still anchor the group; their dates just cannot be part of the
+    # answer, which is what ``to_bury`` is for.
+    backlogged: set[CardId] = field(default_factory=set)
+    # The backlogged cards to take out of today's session, all but the one that
+    # keeps the group's slot for the day.
+    to_bury: list[CardId] = field(default_factory=list)
+
+
+@dataclass
+class ApplyResult:
+    """What applying a plan actually did, split by the two levers it pulls."""
+
+    messages: list[str]
+    moved: int
+    buried: int
+    buried_by_deck: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -66,17 +83,19 @@ class RuleOutcome:
     updated: int
     # The rule's raw query result, as QueryResolution.raw_ids; empty when the
     # rule never got as far as resolving one.
-    covered_ids: list[int] = field(default_factory=list)
+    covered_ids: list[CardId] = field(default_factory=list)
+    # How many cards the run buried, by the name of the deck each one lives in.
+    buried_by_deck: dict[str, int] = field(default_factory=dict)
 
 
-StatsCache = dict[int, CardStatsResponse]
+StatsCache = dict[CardId, CardStatsResponse]
 
 # (label, value, max) -> whether the user asked to cancel.
 ProgressReporter = Callable[[str, int, int], bool]
 
 
 def _rule_name(rule: RelatedRule) -> str:
-    return rule.get("name") or f"Rule {rule.get('guid', '')[:8]}"
+    return rule_display_name(rule)
 
 
 def _rule_cap(rule: RelatedRule, config: Config) -> int:
@@ -97,7 +116,7 @@ def card_type_name_for(card: Card) -> str:
         template = card.template()
     except Exception:
         return ""
-    return template.get("name", "") if template else ""
+    return str(template.get("name", "")) if template else ""
 
 
 def get_applicable_rules(
@@ -137,7 +156,7 @@ def get_applicable_rules(
 def _as_query_or_ids(
     rule: RelatedRule,
     reviewed_card: Card,
-) -> tuple[Optional[str], list[int], Optional[str]]:
+) -> tuple[Optional[str], list[CardId], Optional[str]]:
     note = reviewed_card.note()
     # Which card was reviewed is not something note-level interpolation can
     # reach, and a query gated to one card type usually wants to name it.
@@ -191,9 +210,9 @@ def _as_query_or_ids(
 
 
 def _post_filter_review_cards(
-    card_ids: list[int],
+    card_ids: list[CardId],
     require_review_state: bool = True,
-) -> tuple[list[int], dict[int, int]]:
+) -> tuple[list[CardId], dict[CardId, int]]:
     """Keep the live review cards among ``card_ids``, preserving the given order.
 
     The due day comes back from the same row, so callers get it for free: that
@@ -207,6 +226,7 @@ def _post_filter_review_cards(
     """
     if not card_ids:
         return [], {}
+    assert mw.col.db is not None
     rows = mw.col.db.all(f"""
         SELECT id, type, queue, CASE WHEN odid == 0 THEN due ELSE odue END
         FROM cards
@@ -277,7 +297,7 @@ def _filter_revlogs(
     return [x for x in revlogs if x.review_kind != REVLOG_CRAM or x.ease != 0]
 
 
-def _get_stats(card_id: int, stats_cache: StatsCache) -> CardStatsResponse:
+def _get_stats(card_id: CardId, stats_cache: StatsCache) -> CardStatsResponse:
     cached = stats_cache.get(card_id)
     if cached is not None:
         return cached
@@ -294,120 +314,188 @@ def _last_review_date(card: Card, revlogs: list[CardStatsResponse.StatsRevlogEnt
     return due - card.ivl
 
 
-def _get_desired_retention(card: Card) -> float:
-    dr = getattr(card, "desired_retention", None)
-    if isinstance(dr, (int, float)) and 0 < float(dr) < 1:
-        return float(dr)
-    deck_id = card.odid if card.odid else card.did
-    deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-    preset_dr = deck_conf.get("desiredRetention", 0.9)
-    if isinstance(preset_dr, (int, float)) and 0 < float(preset_dr) < 1:
-        return float(preset_dr)
-    return 0.9
+# Queues that are not part of any session: suspended, and the scheduler's and
+# the user's buried. Spelled out rather than imported so an older Anki cannot
+# change what this means underneath us.
+OUT_OF_SESSION_QUEUES = frozenset({-1, -2, -3})
 
 
-def _max_interval(card: Card) -> int:
-    deck_id = card.odid if card.odid else card.did
-    deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-    return int(deck_conf.get("rev", {}).get("maxIvl", 36500))
+def _reviewed_today(card_id: CardId, stats_cache: StatsCache) -> bool:
+    """Whether this card has already been answered today.
 
-
-def _deck_orders_by_due(card: Card, order_cache: dict[int, bool]) -> bool:
-    """Whether the card's home deck sorts its reviews by due date.
-
-    The home deck, not the current one: a card sitting in a filtered deck is
-    shown in that deck's build order and takes its real due date back with it
-    when it leaves, so its preset is the one that decides whether moving that
-    date is worth anything.
+    A related group gets one card a day, and a card answered today has spent
+    that slot -- the same reasoning behind Anki burying the siblings of the card
+    you just answered. Only a real revlog entry counts here: the ``due - ivl``
+    fallback in ``_last_review_date`` is a guess, and a guess that happened to
+    land on today would bury a whole group for nothing.
     """
-    deck_id = card.odid if card.odid else card.did
-    cached = order_cache.get(deck_id)
-    if cached is not None:
-        return cached
     try:
-        deck_conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-        uses_due = review_order_uses_due(int(deck_conf.get("reviewOrder", 0)))
-    except Exception:
-        # Assume the order does use due dates: that is Anki's default, and
-        # guessing it wrong here would silently stop dispersing a deck.
-        uses_due = True
-    order_cache[deck_id] = uses_due
-    return uses_due
+        revlogs = _filter_revlogs(_get_stats(card_id, stats_cache).revlog)
+    except NotFoundError:
+        return False
+    for revlog in revlogs:
+        if revlog.button_chosen >= 1:
+            day = math.ceil((revlog.time - mw.col.sched.day_cutoff) / 86400) + mw.col.sched.today
+            return day >= mw.col.sched.today
+    return False
+
+
+def count_buried_by_deck(card_ids: list[CardId]) -> dict[str, int]:
+    """How many of these cards live in each deck, by deck name.
+
+    The home deck, not the current one: a card sitting in a filtered deck goes
+    back to its own deck when that deck is emptied, and the home deck is the
+    name the user will recognise when they wonder why it is short.
+
+    One grouped query rather than a card each -- a rule that buries a large
+    backlog would otherwise pay a fetch per card just to name its deck.
+    """
+    if not card_ids:
+        return {}
+    assert mw.col.db is not None
+    rows = mw.col.db.all(f"""
+        SELECT CASE WHEN odid == 0 THEN did ELSE odid END AS home, count(*)
+        FROM cards
+        WHERE id IN {ids2str(card_ids)}
+        GROUP BY home
+        """)
+    counts: dict[str, int] = {}
+    for deck_id, count in rows:
+        name = mw.col.decks.name(deck_id)
+        counts[name] = counts.get(name, 0) + count
+    return counts
+
+
+def merge_buried_by_deck(into: dict[str, int], extra: dict[str, int]) -> None:
+    for name, count in extra.items():
+        into[name] = into.get(name, 0) + count
+
+
+def describe_buried_decks(buried_by_deck: dict[str, int], current_deck: str = "") -> str:
+    """One line naming where the buried cards were, or "" when there is nothing
+    worth saying.
+
+    A rule follows its query wherever it points, so a dispersal can take cards
+    out of today in decks the user is not looking at. That is invisible until
+    they open one of those decks and find it short, which is exactly the thing a
+    tooltip should say out loud.
+
+    ``current_deck`` is the deck the run was started from, and is left out: its
+    count is already inside the surrounding "dispersed N cards" total, and
+    naming it would bury the decks that are actually news in noise.
+    """
+    elsewhere = {name: n for name, n in buried_by_deck.items() if name and name != current_deck}
+    if not elsewhere:
+        return ""
+    total = sum(elsewhere.values())
+    lead = "Buried elsewhere" if current_deck else "Buried"
+    cards = f"{total} card{'' if total == 1 else 's'}"
+    if len(elsewhere) == 1:
+        return f"{lead}: {cards} in {next(iter(elsewhere))}"
+    parts = ", ".join(f"{name} ({n})" for name, n in sorted(elsewhere.items()))
+    return f"{lead}: {cards} across {parts}"
 
 
 def _get_due_range(
     card: Card,
-    desired_retention: float,
-    maximum_interval: int,
     stats_cache: StatsCache,
-    orders_by_due: bool = True,
 ) -> tuple[tuple[int, int], int, bool]:
     """The days this card may be moved to, its last review day, and whether it
     was pinned for being backlogged.
 
-    A card that is already overdue has left the part of the schedule a due date
-    controls. Anki gathers every card with ``due <= today`` into one pool and
-    sorts that pool by the deck's review order; unless that order is a due-date
-    one, where inside the past the date sits changes nothing about when the card
-    comes up. Moving it into the future, meanwhile, postpones a card that is
-    already late. So in a deck that does not order by due date, a backlogged
-    card is pinned: it still anchors the group, and the cards that can still be
-    moved arrange themselves around it.
+    A card already in today's pool has left the part of the schedule a due date
+    controls. Anki gathers every card with ``due <= today`` into one pool, so
+    the only date that would take a card out of it is a future one -- which
+    postpones a card that is due now, or already late. So a card due today or
+    earlier is pinned, whatever its deck's review order: it still anchors the
+    group, the cards that can still be moved arrange themselves around it, and
+    burying is what disperses the pinned ones -- it leaves the due date alone
+    and Anki lifts it at the next rollover (see
+    ``select_backlog_cards_to_bury``).
+
+    The range is a fuzz window around where the card already sits, so a
+    dispersal only nudges a card a few percent either way and never re-decides
+    its schedule. Choosing the interval belongs to whatever last answered the
+    card -- Anki's scheduler, with its own fuzz and load balancing, or Set Due
+    Date, or a custom scheduler -- and rederiving one here from FSRS memory
+    state would silently overrule all three, most visibly by undoing Anki's
+    load balancing. It would also narrow the addon to FSRS collections, an SM-2
+    card having no stability to rederive from.
+
+    The interval used is ``due - last_review`` rather than ``card.ivl``. The
+    two agree for a card Anki scheduled itself, but a custom scheduler may move
+    the due date while deliberately leaving ``ivl`` alone, and it is the due
+    date that says where the card actually is.
     """
-    ivl = card.ivl
     due = card.odue if card.odid else card.due
 
     stats = _get_stats(card.id, stats_cache)
     revlogs = _filter_revlogs(stats.revlog)
     last_review = _last_review_date(card, revlogs)
 
-    if due < mw.col.sched.today and not orders_by_due:
+    if due <= mw.col.sched.today:
         return (due, due), last_review, True
 
-    new_ivl = int(round(9 * ivl * (1 / desired_retention - 1)))
-    new_ivl = min(new_ivl, maximum_interval)
+    current_ivl = due - last_review
 
-    if new_ivl <= 2:
+    if current_ivl <= 2:
         return (due, due), last_review, False
 
     last_elapsed_days = int((revlogs[0].time - revlogs[1].time) / 86400) if len(revlogs) >= 2 else 0
 
-    min_ivl, max_ivl = get_fuzz_range(new_ivl, last_elapsed_days)
+    min_ivl, max_ivl = get_fuzz_range(current_ivl, last_elapsed_days)
 
-    if due >= mw.col.sched.today:
-        due_range = (
-            max(last_review + min_ivl, mw.col.sched.today),
-            max(last_review + max_ivl, mw.col.sched.today),
-        )
-    elif last_review + max_ivl > mw.col.sched.today:
-        due_range = (mw.col.sched.today, last_review + max_ivl)
-    else:
-        due_range = (due, due)
+    # Everything still here is due after today; today's pool returned above.
+    due_range = (
+        max(last_review + min_ivl, mw.col.sched.today),
+        max(last_review + max_ivl, mw.col.sched.today),
+    )
 
     return due_range, last_review, False
 
 
-def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> DispersePlan:
-    due_ranges: dict[int, tuple[int, int]] = {}
-    current_dues: dict[int, int] = {}
-    last_reviews: dict[int, int] = {}
-    backlogged: set[int] = set()
-    order_cache: dict[int, bool] = {}
+def build_disperse_plan(
+    card_ids: list[CardId],
+    stats_cache: StatsCache,
+    anchor_id: Optional[CardId] = None,
+) -> DispersePlan:
+    """Plan a group's dispersal: dates for its future, buries for its past.
+
+    ``anchor_id`` is the card the run started from -- reviewed, synced, or
+    picked in the browser. It need not be in ``card_ids``: a card answered a
+    moment ago fails the review-state filter and so is not part of the group it
+    just triggered, but it is still the reason the group's slot for today is
+    gone.
+    """
+    due_ranges: dict[CardId, tuple[int, int]] = {}
+    current_dues: dict[CardId, int] = {}
+    last_reviews: dict[CardId, int] = {}
+    backlogged: set[CardId] = set()
+    live_past_due: list[CardId] = []
+    slot_taken = anchor_id is not None and _reviewed_today(anchor_id, stats_cache)
 
     for cid in card_ids:
         card = mw.col.get_card(cid)
         current_dues[cid] = card.odue if card.odid else card.due
         due_range, last_review, is_backlogged = _get_due_range(
             card,
-            desired_retention=_get_desired_retention(card),
-            maximum_interval=_max_interval(card),
             stats_cache=stats_cache,
-            orders_by_due=_deck_orders_by_due(card, order_cache),
         )
         due_ranges[cid] = due_range
         last_reviews[cid] = last_review
         if is_backlogged:
             backlogged.add(cid)
+            # A suspended or already-buried card is not in today's session, so
+            # it collides with nothing and there is nothing to bury it out of.
+            if card.queue not in OUT_OF_SESSION_QUEUES:
+                live_past_due.append(cid)
+        if not slot_taken and _reviewed_today(cid, stats_cache):
+            slot_taken = True
+
+    # Most overdue first, so the card that has waited longest is the one that
+    # keeps the day when no anchor claims it.
+    live_past_due.sort(key=lambda cid: (current_dues[cid], cid))
+    to_bury = select_backlog_cards_to_bury(live_past_due, anchor_id, slot_taken)
 
     min_gap, best_due_dates = maximize_due_gap(due_ranges)
     return DispersePlan(
@@ -418,20 +506,43 @@ def build_disperse_plan(card_ids: list[int], stats_cache: StatsCache) -> Dispers
         best_due_dates=best_due_dates,
         min_gap=min_gap,
         backlogged=backlogged,
+        to_bury=to_bury,
     )
 
 
-def apply_disperse_plan(plan: DispersePlan, undo_entry: int) -> list[str]:
-    """Write the plan's due dates, skipping every card it did not actually move.
+def apply_disperse_plan(plan: DispersePlan, undo_entry: int) -> ApplyResult:
+    """Bury the plan's backlog, then write its due dates.
 
-    The skip has to be per card, not per plan. A group usually mixes cards the
-    optimiser could place with cards it had to leave where they were, and the
-    ``today + 1`` floor below turns "leave it where it was" into "make it due
-    tomorrow" for anything already overdue -- which is how a run over a large
-    backlog ended up stacking most of a deck onto one day. A card whose assigned
-    date equals its current one is finished; it never reaches the floor.
+    The buries go first because they are the half of the answer the dates
+    cannot give: a pinned card keeps the date it has, so it is skipped by the
+    loop below and would otherwise leave the group with nothing done to it.
+
+    The date skip has to be per card, not per plan. A group usually mixes cards
+    the optimiser could place with cards it had to leave where they were, and
+    the ``today + 1`` floor below turns "leave it where it was" into "make it
+    due tomorrow" for anything already overdue -- which is how a run over a
+    large backlog ended up stacking most of a deck onto one day. A card whose
+    assigned date equals its current one is finished; it never reaches the
+    floor.
     """
     messages: list[str] = []
+    moved = 0
+    buried = 0
+    buried_by_deck: dict[str, int] = {}
+    if plan.to_bury:
+        # Buried as the scheduler rather than as the user, as the deck run does:
+        # this is the same job Anki's own sibling burying performs, and it keeps
+        # "Unbury > Manually buried" meaning what the user did by hand.
+        buried_by_deck = count_buried_by_deck(plan.to_bury)
+        mw.col.sched.bury_cards(plan.to_bury, manual=False)
+        mw.col.merge_undo_entries(undo_entry)
+        buried = len(plan.to_bury)
+        where = ", ".join(f"{name} ({n})" for name, n in sorted(buried_by_deck.items()))
+        messages.append(
+            f"Buried {buried} backlogged card{'' if buried == 1 else 's'}"
+            f" out of today: {where}"
+        )
+
     for cid, due in plan.best_due_dates.items():
         card = mw.col.get_card(cid)
         old_due = card.odue if card.odid else card.due
@@ -447,14 +558,17 @@ def apply_disperse_plan(plan: DispersePlan, undo_entry: int) -> list[str]:
         write_custom_data(card, "v", "d")
         mw.col.update_card(card)
         mw.col.merge_undo_entries(undo_entry)
+        moved += 1
         messages.append(
             f"Dispersed card {cid} from {due_to_date(old_due)} to {due_to_date(adjusted_due)}"
         )
-    return messages
+    return ApplyResult(
+        messages=messages, moved=moved, buried=buried, buried_by_deck=buried_by_deck
+    )
 
 
 def _is_noop_plan(plan: DispersePlan) -> bool:
-    return plan.best_due_dates == plan.current_dues
+    return not plan.to_bury and plan.best_due_dates == plan.current_dues
 
 
 def _noop_outcome_text(plan: DispersePlan) -> str:
@@ -467,10 +581,12 @@ def _noop_outcome_text(plan: DispersePlan) -> str:
 
     Backlog is checked first because it is the answer whenever it applies: a
     group whose cards are all pinned has no arrangement to look for, and saying
-    the ranges were too tight would be technically true and useless.
+    the ranges were too tight would be technically true and useless. Reaching
+    here at all means the burying found nothing to do either -- one card is the
+    whole live group, or the rest had already left today's session.
     """
     if plan.backlogged and len(plan.backlogged) >= len(plan.card_ids):
-        return "skipped(backlogged; due dates do not order these decks)"
+        return "skipped(backlogged; one card already keeps the day)"
     if plan.min_gap == 0:
         return "skipped(due ranges too tight to separate)"
     return "skipped(already optimally placed)"
@@ -482,7 +598,7 @@ def run_rule_for_reviewed_card(
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
 ) -> RuleOutcome:
     pair_key = (rule["guid"], reviewed_card.id)
     if pair_key in processed_rule_card_pairs:
@@ -500,7 +616,16 @@ def run_rule_for_reviewed_card(
             0,
         )
 
-    if len(query_result.card_ids) <= 1:
+    # A lone card usually has nothing to disperse against, but a lone card in
+    # today's pool can still need burying: the anchor that triggered the rule
+    # may have just spent the group's slot for the day. The resolution already
+    # carries every due date, so telling the two apart here is free, whereas
+    # planning a group that cannot move is not.
+    if not query_result.card_ids or (
+        len(query_result.card_ids) == 1
+        and query_result.due_by_id.get(query_result.card_ids[0], mw.col.sched.today + 1)
+        > mw.col.sched.today
+    ):
         return RuleOutcome(
             summarize_outcome(
                 rule_name,
@@ -514,7 +639,7 @@ def run_rule_for_reviewed_card(
             query_result.raw_ids,
         )
 
-    plan = build_disperse_plan(query_result.card_ids, stats_cache)
+    plan = build_disperse_plan(query_result.card_ids, stats_cache, anchor_id=reviewed_card.id)
     if _is_noop_plan(plan):
         return RuleOutcome(
             summarize_outcome(
@@ -530,26 +655,29 @@ def run_rule_for_reviewed_card(
             query_result.raw_ids,
         )
 
-    details = apply_disperse_plan(plan, undo_entry)
+    applied = apply_disperse_plan(plan, undo_entry)
+    changed = applied.moved + applied.buried
     return RuleOutcome(
         summarize_outcome(
             rule_name,
             query_result.raw_count,
             query_result.filtered_count,
             query_result.capped_count,
-            len(details),
-            "dispersed" if details else _noop_outcome_text(plan),
+            applied.moved,
+            "dispersed" if changed else _noop_outcome_text(plan),
             len(plan.backlogged),
+            applied.buried,
         )
         + "<br>"
-        + "<br>".join(details),
-        len(details),
+        + "<br>".join(applied.messages),
+        changed,
         query_result.raw_ids,
+        applied.buried_by_deck,
     )
 
 
 def run_sync_grouped(
-    reviewed_card_ids: list[int],
+    reviewed_card_ids: list[CardId],
     config: Config,
     report: Optional[ProgressReporter] = None,
 ) -> list[str]:
@@ -564,6 +692,8 @@ def run_sync_grouped(
         return messages
 
     stats_cache: StatsCache = {}
+    buried_by_deck: dict[str, int] = {}
+    rule_errors: dict[str, tuple[str, int]] = {}
     undo_entry = mw.col.add_custom_undo_entry("Disperse related cards after sync")
 
     total_cards = len(reviewed_card_ids)
@@ -599,24 +729,32 @@ def run_sync_grouped(
                 config,
                 apply_cap=False,
             )
+            # A rule whose code raises fails on every card it is asked
+            # about, so it is collected once and reported at the end -- silence
+            # here is what let a broken rule look like a rule with nothing to do.
+            if resolution.error:
+                merge_rule_error(rule_errors, _rule_name(rule), resolution.error)
+                continue
             # A lone card is nothing to disperse against; skip it here rather
             # than emitting a "single card" line per remotely reviewed card.
-            if resolution.error or len(resolution.card_ids) <= 1:
+            if len(resolution.card_ids) <= 1:
                 continue
             by_rule[rule_guid]["sets"].append(set(resolution.card_ids))
             by_rule[rule_guid]["dues"].update(resolution.due_by_id)
 
-    planned: list[tuple[RelatedRule, list[int], dict[int, int]]] = []
+    planned: list[tuple[RelatedRule, list[CardId], dict[CardId, int]]] = []
     for entry in by_rule.values():
-        rule: RelatedRule = entry["rule"]
-        sets: list[set[int]] = entry["sets"]
-        due_by_id: dict[int, int] = entry["dues"]
+        # Not `rule`: the collecting loop above binds that name, and a second
+        # annotation of it is a redefinition rather than a new variable.
+        entry_rule: RelatedRule = entry["rule"]
+        sets: list[set[CardId]] = entry["sets"]
+        due_by_id: dict[CardId, int] = entry["dues"]
         if not sets:
             continue
         grouped = group_overlapping_sets(sets) if config.dedupe_sync_groups else sets
         for group in grouped:
             planned.append(
-                (rule, sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid)), due_by_id)
+                (entry_rule, sorted(group, key=lambda cid: (due_by_id.get(cid, 0), cid)), due_by_id)
             )
 
     total_groups = len(planned)
@@ -652,24 +790,34 @@ def run_sync_grouped(
                 )
             )
             continue
-        details = apply_disperse_plan(plan, undo_entry)
+        applied = apply_disperse_plan(plan, undo_entry)
+        merge_buried_by_deck(buried_by_deck, applied.buried_by_deck)
         messages.append(
             summarize_outcome(
                 _rule_name(rule),
                 len(group_ids),
                 0,
                 capped_count,
-                len(details),
-                "dispersed" if details else _noop_outcome_text(plan),
+                applied.moved,
+                "dispersed" if applied.moved + applied.buried else _noop_outcome_text(plan),
                 len(plan.backlogged),
+                applied.buried,
             )
         )
 
+    # A sync's rule lines are per group and easy to lose in; the decks it took
+    # cards out of are the part the user has to act on, so they get their own
+    # line at the end.
+    where = describe_buried_decks(buried_by_deck)
+    if where:
+        messages.append(where)
+    if rule_errors:
+        messages.append(describe_rule_errors(rule_errors))
     return messages
 
 
 def run_sync_disperse_in_background(
-    reviewed_card_ids: list[int],
+    reviewed_card_ids: list[CardId],
     config: Config,
     on_done: Callable[[list[str]], None],
 ) -> None:
@@ -706,7 +854,7 @@ class NoteRuleRun:
     """One rule's share of a note: which of its cards to anchor a run on."""
 
     rule: RelatedRule
-    card_ids: list[int]
+    card_ids: list[CardId]
     # True when the rule names card types, and so gets a run per eligible card.
     # False when it applies to the whole note, and one run may cover the rest.
     per_card: bool
@@ -719,13 +867,17 @@ class BrowserRunResult:
     notes: int = 0
     anchor_cards: int = 0
     cancelled: bool = False
+    # Where the run's buried cards live, by deck name. A browser selection is
+    # not tied to a deck, so every deck here is one the user may not have been
+    # thinking about.
+    buried_by_deck: dict[str, int] = field(default_factory=dict)
 
 
 def plan_note_rule_runs(
     rules: list[RelatedRule],
     note_type_name: str,
-    card_type_names: dict[int, str],
-    ordered_card_ids: list[int],
+    card_type_names: dict[CardId, str],
+    ordered_card_ids: list[CardId],
 ) -> list[NoteRuleRun]:
     """Split one note's cards among the rules that apply to it.
 
@@ -763,6 +915,7 @@ def _record_browser_outcome(
 ) -> None:
     result.rule_runs += 1
     result.updated += outcome.updated
+    merge_buried_by_deck(result.buried_by_deck, outcome.buried_by_deck)
 
 
 def _disperse_browser_card(
@@ -770,7 +923,7 @@ def _disperse_browser_card(
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
     result: BrowserRunResult,
 ) -> None:
     note_type = card.note().note_type()
@@ -792,15 +945,15 @@ def _disperse_browser_card(
 
 
 def _disperse_browser_note(
-    note_id: int,
+    note_id: NoteId,
     config: Config,
     stats_cache: StatsCache,
     undo_entry: int,
-    processed_rule_card_pairs: set[tuple[str, int]],
+    processed_rule_card_pairs: set[tuple[str, CardId]],
     result: BrowserRunResult,
 ) -> None:
-    cards: dict[int, Card] = {}
-    ordered: list[int] = []
+    cards: dict[CardId, Card] = {}
+    ordered: list[CardId] = []
     for cid in mw.col.card_ids_of_note(note_id):
         try:
             cards[cid] = mw.col.get_card(cid)
@@ -856,8 +1009,8 @@ def _disperse_browser_note(
 def run_browser_disperse(
     config: Config,
     *,
-    note_ids: Optional[list[int]] = None,
-    card_ids: Optional[list[int]] = None,
+    note_ids: Optional[list[NoteId]] = None,
+    card_ids: Optional[list[CardId]] = None,
     report: Optional[ProgressReporter] = None,
 ) -> BrowserRunResult:
     """Disperse a browser selection on demand, with no review to trigger it.
@@ -878,7 +1031,7 @@ def run_browser_disperse(
     """
     result = BrowserRunResult()
     stats_cache: StatsCache = {}
-    processed_rule_card_pairs: set[tuple[str, int]] = set()
+    processed_rule_card_pairs: set[tuple[str, CardId]] = set()
     undo_entry = mw.col.add_custom_undo_entry("Disperse related cards")
 
     if note_ids:
@@ -912,8 +1065,8 @@ def run_browser_disperse_in_background(
     config: Config,
     on_done: Callable[[BrowserRunResult], None],
     *,
-    note_ids: Optional[list[int]] = None,
-    card_ids: Optional[list[int]] = None,
+    note_ids: Optional[list[NoteId]] = None,
+    card_ids: Optional[list[CardId]] = None,
     parent: Optional[Any] = None,
 ) -> None:
     """Run a browser selection's dispersal off the UI thread, as sync does.
@@ -945,7 +1098,7 @@ def run_browser_disperse_in_background(
     mw.taskman.run_in_background(task, done)
 
 
-def maximize_due_gap(points_dict: Dict[int, Tuple[int, int]]) -> tuple[int, dict[int, int]]:
+def maximize_due_gap(points_dict: Dict[CardId, Tuple[int, int]]) -> tuple[int, dict[CardId, int]]:
     """Return the maximum minimum gap and the assigned due date per card id."""
     if not points_dict:
         return 0, {}

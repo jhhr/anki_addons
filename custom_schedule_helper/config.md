@@ -56,7 +56,7 @@ much less and adapt the most slowly to your actual performance.
 
 ### `stats_duration`
 
-- Length of time the tooltips persist (only relevant if show_stats is True)
+- Length of time the tooltips persist (only relevant if stats_enabled is true)
 - default: 5000
 
 ### `stats_enabled`

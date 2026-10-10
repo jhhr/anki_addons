@@ -31,14 +31,53 @@ Clone into `addons21` with submodules, then, with Anki closed:
 python build.py install
 ```
 
+Each addon is linked into `addons21` under its `package` name from `build.json`. If this
+device's Anki already knows an addon under another folder name (so its `meta.json` config
+lives there), say so first in a `build.local.json` next to `build.py`. The file is
+gitignored and both keys are optional:
+
+```json
+{
+  "addons_dir": "D:/Anki2/addons21",
+  "dev_dir_names": { "copy_anywhere": "my_folder_name" }
+}
+```
+
 ## Commands
 
 | command | what it does |
 | --- | --- |
-| `python build.py install [addon...]` | per-device setup: `shared/` links plus the `addons21/<dev_dir_name>` junctions |
+| `python build.py install [addon...]` | per-device setup: `shared/` links plus a junction per addon in `addons21` |
 | `python build.py link [addon...]` | just the `shared/` links |
 | `python build.py check` | fail if an addon imports a shared package it did not declare |
 | `python build.py dist [addon...]` | write `dist/<addon>-<version>.ankiaddon` |
+
+An addon's `README.md` is for whoever works on it. When the addon also has an
+`ADDON_README.md`, that is the user guide, and `dist` ships it in place of `README.md`.
+
+## Tests
+
+One command runs every suite in the root `pytest.ini`'s `testpaths`, from the repo root:
+
+```
+python -m pytest
+```
+
+Two suites run on their own: `japanese_note_ai_ops/test`, from that addon's directory (see
+its README), and the `anki_shared/jp_text_processing` submodule's, from the submodule.
+
+It needs the dev dependencies in the interpreter the tests run on, which should also be the
+one mypy and your editor use. Two steps, because `pytest-anki2` has to go in without its
+declared dependencies:
+
+```
+python -m pip install -r requirements-dev.txt
+python -m pip install --no-deps -r requirements-dev-nodeps.txt
+```
+
+No `build.py link` is needed first; the root `conftest.py` stands in for a missing
+`<addon>/shared/`. How the suites work, and how an addon adds tests of its own, is in
+[`anki_shared/testing/README.md`](anki_shared/testing/README.md).
 
 ## Hazards
 

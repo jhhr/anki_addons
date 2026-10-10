@@ -73,9 +73,9 @@ def code_notice_available_names(
         for name, desc in (*CODE_NOTICE_CORE_NAMES, *extra_names)
     ]
     return (
-        "<tt>{{Field}}</tt> markers are resolved before execution.<br>"
-        "Available names: " + ", ".join(rendered) + ". "
-        "<small>Built-ins are restricted to a safe subset.</small>"
+        "<tt>{{Field}}</tt> markers are resolved before execution.<br>Available names: "
+        + ", ".join(rendered)
+        + ". <small>Built-ins are restricted to a safe subset.</small>"
     )
 
 
@@ -95,10 +95,11 @@ class CodeEditLayout(QWidget):
         label: Optional[str] = None,
         description: Optional[str] = None,
         notice: Optional[str] = None,
+        validate_dict: Optional[dict] = None,
     ) -> None:
         super().__init__(parent)
 
-        self._validate_dict: dict = {}
+        self._validate_dict: dict = validate_dict or {}
         self._options_dict: dict = options_dict or {}
 
         layout = QVBoxLayout(self)

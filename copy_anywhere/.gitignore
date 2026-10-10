@@ -4,3 +4,5 @@ meta.json
 .vscode/*
 !.vscode/launch.json
 !.vscode/tasks.json
+# Anki's per-install state, and the per-operation logs logging_setup.py writes there.
+user_files/

@@ -33,9 +33,10 @@ config = Config()
 config.load()
 
 
-# A tiny helper for menu items, since type checking is broken there
+# A tiny helper for menu items
 def checkable(title: str, on_click: Callable[[bool], None]) -> QAction:
-    action = QAction(title, mw, checkable=True)  # noqa
+    action = QAction(title, mw)
+    action.setCheckable(True)
     action.triggered.connect(on_click)  # noqa
     return action
 
@@ -194,6 +195,7 @@ def adjust_menu():
 
 def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
     custom_scheduler_menu = menu.addMenu("Custom Scheduler")
+    assert custom_scheduler_menu is not None
     postpone_action = QAction("Postpone", browser)
     adjust_ease_action = QAction("Adjust Ease", browser)
     adjust_fsrs_action = QAction("Adjust FSRS Revlog", browser)
@@ -218,7 +220,7 @@ browser_will_show_context_menu.append(on_browser_will_show_context_menu)
 
 
 @state_did_change.append
-def state_did_change(_next_state, _previous_state):
+def on_state_did_change(_next_state, _previous_state):
     adjust_menu()
 
 

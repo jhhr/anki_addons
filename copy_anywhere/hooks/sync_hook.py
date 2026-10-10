@@ -1,6 +1,6 @@
 from aqt.gui_hooks import sync_will_start, sync_did_finish
 
-from ..configuration import Config
+from ..configuration import Config, definition_runs_on_sync
 from ..logic.copy_fields import copy_fields
 from ..shared.notify import post
 
@@ -71,7 +71,7 @@ def _copy_on_sync_definitions():
     return [
         definition
         for definition in config.copy_definitions
-        if definition.get("copy_on_sync", False)
+        if definition_runs_on_sync(definition)
     ]
 
 

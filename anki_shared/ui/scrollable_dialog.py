@@ -1,3 +1,5 @@
+from typing import Optional
+
 from aqt.qt import (
     QScrollArea,
     QWidget,
@@ -13,7 +15,7 @@ class ScrollableQDialog(QDialog):
     def __init__(
         self,
         parent=None,
-        footer_layout: QLayout = None,
+        footer_layout: Optional[QLayout] = None,
         no_fixed_size: bool = False,
     ):
         super().__init__(parent)

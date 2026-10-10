@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from anki.decks import DeckId
 from aqt import mw
 from aqt.gui_hooks import deck_browser_will_show_options_menu
 from aqt.qt import QAction, QMenu, qconnect
@@ -17,7 +18,7 @@ def _show_result(result: BuryRunResult) -> None:
     mw.progress.single_shot(100, lambda: tooltip(describe_result(result), period=10000))
 
 
-def run_disperse_on_deck(deck_id: int) -> None:
+def run_disperse_on_deck(deck_id: DeckId) -> None:
     """Bury whatever would collide in this deck's session today.
 
     Meant to be run against the deck you are about to study -- for a backlog,
@@ -25,18 +26,26 @@ def run_disperse_on_deck(deck_id: int) -> None:
     again after you rebuild it. Rebuilding leaves the buried cards behind
     (Anki appends ``-is:buried`` to a filtered deck's search), so a rebuilt
     deck is a clean session to disperse afresh.
+
+    By default the session is the whole day across every deck, not this deck's
+    tree: rules point wherever their queries do, and a one-tree session throws
+    away every relation that leaves it. The deck named here still leads, so a
+    collision between it and another deck buries the other deck's card.
     """
     config = Config()
     config.load()
     if not config.has_any_rules():
         tooltip("No rules configured")
         return
-    run_deck_bury_disperse_in_background(deck_id, config, _show_result)
+    run_deck_bury_disperse_in_background(
+        deck_id, config, _show_result, across_decks=config.disperse_across_decks
+    )
 
 
 def on_deck_browser_will_show_options_menu(menu: QMenu, deck_id: int) -> None:
+    # The hook hands over a plain int; everything below speaks Anki's deck id.
     action = QAction(MENU_LABEL, menu)
-    qconnect(action.triggered, lambda: run_disperse_on_deck(deck_id))
+    qconnect(action.triggered, lambda: run_disperse_on_deck(DeckId(deck_id)))
     menu.addAction(action)
 
 

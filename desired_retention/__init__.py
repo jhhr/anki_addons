@@ -131,7 +131,8 @@ def _patch_card_info_dialog() -> None:
             if ok and self.web:
                 _inject_dr(self)
 
-        qconnect(self.web.loadFinished, on_load_finished)  # type: ignore[union-attr]
+        if self.web:
+            qconnect(self.web.loadFinished, on_load_finished)
 
     def patched_update_card(self: CardInfoDialog, card_id: object) -> None:
         self._dr_card_id = card_id  # type: ignore[attr-defined]

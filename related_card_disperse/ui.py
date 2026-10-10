@@ -244,6 +244,11 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         )
         self.dedupe_sync_groups.setChecked(self.config.dedupe_sync_groups)
 
+        self.disperse_across_decks = QCheckBox(
+            "Disperse due cards across all decks, not just the one it was run on", self
+        )
+        self.disperse_across_decks.setChecked(self.config.disperse_across_decks)
+
         self.disperse_siblings_default = ToggleSwitch("Disperse siblings for all note types", self)
         self.disperse_siblings_default.setChecked(self.config.disperse_siblings_default)
         self.siblings_default_help = QLabel(DISPERSE_SIBLINGS_HELP, self)
@@ -255,6 +260,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
         global_form.addRow(self.hide_review_details)
         global_form.addRow(self.hide_review_unchanged)
         global_form.addRow(self.dedupe_sync_groups)
+        global_form.addRow(self.disperse_across_decks)
         global_form.addRow(self.disperse_siblings_default)
         global_form.addRow(self.siblings_default_help)
 
@@ -764,6 +770,7 @@ class RelatedCardDisperseDialog(ScrollableQDialog):
             hide_review_unchanged=self.hide_review_unchanged.isChecked(),
             dedupe_sync=self.dedupe_sync_groups.isChecked(),
             disperse_siblings_default=self.disperse_siblings_default.isChecked(),
+            disperse_across_decks=self.disperse_across_decks.isChecked(),
         )
         # Derived entries were never in the config and do not enter it now.
         self.config.replace_rules([e.rule for e in self.entries if not e.derived])

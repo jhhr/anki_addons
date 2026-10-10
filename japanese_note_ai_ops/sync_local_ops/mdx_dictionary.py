@@ -16,8 +16,56 @@ except ImportError:
 
 from ..html_stripping import strip_html_advanced
 from ..configuration import ADDON_USER_FILES_DIR
+from ..async_api_ops import capture, run_errors
+from ..async_api_ops.concurrency import cpu_bound_section
+from .mdx_memo import DefinitionMemo
 
 logger = logging.getLogger(__name__)
+
+
+# Characters in a prefix that mean the LIKE pattern and a key_text range are not the same
+# question. LIKE is case-insensitive for ASCII and a range is not; `%`, `_` and `*` are
+# wildcards to the pattern and literals to a range. None of them occurs in a kana reading,
+# which is what every caller on the hot path passes, so the range answers all of those and
+# anything else degrades to the shipped scan rather than to a different set of keys.
+PREFIX_NEEDS_LIKE = re.compile(r"[A-Za-z%_*]")
+
+# Expression index over the same column `key_index` already covers. See _add_lower_key_index.
+LOWER_KEY_INDEX = "key_lower_index"
+
+
+class MDXLookupError(Exception):
+    """A dictionary could not answer, as distinct from answering "not in here".
+
+    The two used to be the same value. Every SQL path in this module caught its exception,
+    logged it and returned `None` or `[]` - which is byte-identical to what a word genuinely
+    absent from the dictionary returns, and the memo caches absence deliberately, because a
+    miss is the most expensive lookup there is. So a failure became a cached fact.
+
+    It was measured. One run hit 36 `unable to open database file` inside a single 600ms
+    window - something briefly made the add-on directory unreachable - and the log holds the
+    proof rather than the inference: a word errored while being computed under `[all]`, and
+    eight lines later was served from the memo as a hit under `[first]`. Six pairs were
+    poisoned that run. A later run on another machine found a second failure mode with a
+    different errno, `[Errno 22] Invalid argument`, down the same path; two distinct transient
+    failures on two machines is the argument for fixing the class rather than the instance.
+
+    And the memo is process-scoped, not run-scoped - the dictionaries do not change, so its
+    entries stay valid for the life of the process - which means a poisoned entry outlives the
+    run that poisoned it and survives until Anki restarts.
+
+    Retrying is not the fix: a 600ms outage defeats a retry loop as easily as a single attempt.
+    The fix is that this must not be storable. `DefinitionMemo.get` already declines to store
+    anything for a compute that raised, so raising is all it takes.
+
+    The memo is not the only place a failure could be stored as a fact, which is why this
+    reaches the callers rather than stopping at `get_definition_text`. "In none of the
+    dictionaries" is written to the *collection*, as NO_DICTIONARY_ENTRY_TAG, and
+    `needs_meaning_mapping` made that tag terminal: a note carrying it is skipped by both the
+    meaning-making and the matching path on every subsequent run. A returned None cannot be
+    told from a real miss, so an outage that lasted 600ms would tag every note it touched and
+    those notes would never be looked up again.
+    """
 
 
 class MDXDictionary:
@@ -53,6 +101,7 @@ class MDXDictionary:
         # IndexBuilder automatically creates a SQLite index for fast lookups
         # It will reuse existing .mdx.db file if available
         self.builder = IndexBuilder(mdx_path, sql_index=True, check=False)
+        self._add_lower_key_index()
 
         elapsed = time.time() - start_time
         loaded_msg = f"""Loaded MDX file: {os.path.basename(mdx_path)} in {elapsed:.2f}s
@@ -61,6 +110,117 @@ class MDXDictionary:
         print(loaded_msg)
         if show_progress and finish:
             mw.taskman.run_on_main(lambda: mw.progress.finish())
+
+    def _add_lower_key_index(self) -> None:
+        """Give the shipped case-insensitive lookup an index it can actually seek.
+
+        Two of the four strategies in `query_japanese` reach `IndexBuilder.lookup_indexes`
+        with `ignorecase=True`, which issues `WHERE lower(key_text) = lower(?)`. A function on
+        the indexed column cannot use `key_index`, so both scan every row - 881,654 of them in
+        one dictionary, 3.36M across the seven - to fetch a key the index beside them already
+        holds. The `ignorecase=False` branch of the same function issues `key_text = ?` and
+        seeks in 145us, so the code has been proving the index works and then not using it on
+        three of its four paths. Measured on one dictionary: 0.2470s scanning, 0.000127s
+        against this index, for the same rows. End to end on 25 real pairs against all seven
+        dictionaries, with the prefix range below, a lookup costs 71% less and returns
+        byte-identical definitions.
+
+        Here rather than in `lib/mdict_query`: that file is vendored, and its index-building
+        only runs when a `.mdx.db` is first created, so every dictionary already cached on
+        every existing install would never get this. `IF NOT EXISTS` makes it a one-off - ~3s
+        across all seven the first time, ~0ms on every load after - at the price of about a
+        third more disk in `user_files` (283MB -> 377MB measured).
+
+        SQLite's `lower()` is ASCII-only and deterministic, which is what makes it legal in an
+        index at all. Japanese keys have no case, so for this add-on the index is exactly the
+        one the query asks for.
+
+        A dictionary directory that is read-only, or a disk that is full, must leave the run
+        working the way it worked before rather than failing to load a dictionary at all.
+        """
+        db_path = getattr(self.builder, "_mdx_db", None)
+        if not db_path or not os.path.exists(db_path):
+            return
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {LOWER_KEY_INDEX}"
+                    " ON MDX_INDEX (lower(key_text))"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            # Not an error: the lookups all still work, they just scan the way they always did
+            logger.warning(
+                "Could not index lower(key_text) for %s (%s); lookups will scan as before",
+                os.path.basename(self.mdx_path),
+                e,
+            )
+
+    def _select(self, sql: str, params: tuple = ()) -> list[tuple]:
+        """Every row of one query against the index, on a connection closed before returning.
+
+        Every read of the index goes through here, because the one read that did not close its
+        connection cost a run its memory. `with sqlite3.connect(...)` - what the vendored
+        library and the old `_find_keys_containing_all_words` both used - commits a
+        transaction; it does not close anything. And a connection is not freed when its last
+        reference goes: on Python 3.13 it sits in a reference cycle with its own statement
+        cache, so only the cycle collector frees it. Anki runs with automatic collection off, and its 15-minute `gc.collect()`
+        skips every turn while a progress dialog is up - which is the whole of a bulk run. So
+        each connection lived until the run ended, holding the page cache its query had
+        filled: a `LIKE '%word%'` scan fills it, about 2.2MB. One 74-minute run made 2,478 of
+        those scans and grew 5,454MB, 2.20MB a scan in every five-minute window, until the
+        concurrency gate had cut the run to 4 tasks for want of memory that cutting could not
+        free.
+        """
+        conn = sqlite3.connect(self.builder._mdx_db)
+        try:
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+
+    def _lookup_indexes(self, keyword: str, ignorecase: bool) -> list[dict]:
+        """`IndexBuilder.lookup_indexes`, with the keyword bound as a parameter.
+
+        The shipped one builds its SQL with `.format()` on the raw keyword and wraps it in
+        double quotes, so a key containing a `"` produces a query that is either a syntax error
+        or a different question - and MDX keys are arbitrary text from someone else's
+        dictionary file. Nothing here is a security boundary: the database is a local file this
+        add-on built itself. It is simply the wrong way to ask, and the right way costs nothing.
+
+        Here rather than in `lib/mdict_query/__init__.py` because that tree is vendored and a
+        `lib/` update would silently revert anything put in it - the same reason the
+        `lower(key_text)` index is created from this file. The SQL is otherwise the shipped
+        query verbatim, `SELECT *` included, so the column order below is the one
+        `get_data_by_index` expects. Through `_select`, so the connection is closed.
+        """
+        if ignorecase:
+            sql = "SELECT * FROM MDX_INDEX WHERE lower(key_text) = lower(?)"
+        else:
+            sql = "SELECT * FROM MDX_INDEX WHERE key_text = ?"
+        rows = self._select(sql, (keyword,))
+        return [
+            {
+                "file_pos": row[1],
+                "compressed_size": row[2],
+                "decompressed_size": row[3],
+                "record_block_type": row[4],
+                "record_start": row[5],
+                "record_end": row[6],
+                "offset": row[7],
+            }
+            for row in rows
+        ]
+
+    def _mdx_lookup(self, keyword: str, ignorecase: bool = False) -> list[str]:
+        """`IndexBuilder.mdx_lookup` over `_lookup_indexes` above. Same results, bound keyword."""
+        indexes = self._lookup_indexes(keyword, ignorecase)
+        if not indexes:
+            return []
+        with open(self.builder._mdx_file, "rb") as mdx_file:
+            return [self.builder.get_mdx_by_index(mdx_file, index) for index in indexes]
 
     def _parse_link_entries(self, result: str) -> list[str]:
         """Parse @@@LINK= entries from a dictionary result.
@@ -132,7 +292,7 @@ class MDXDictionary:
         for entry in linked_entries:
             logger.debug(f"Following link to: {entry} (depth {depth + 1})")
             # Query the linked entry
-            linked_result = self.builder.mdx_lookup(entry, ignorecase=False)
+            linked_result = self._mdx_lookup(entry, ignorecase=False)
 
             if linked_result:
                 # Join all results for this entry
@@ -188,7 +348,7 @@ class MDXDictionary:
                 # Collect all matching entries
                 all_results = []
                 for key in matching_keys:
-                    entry_result = self.builder.mdx_lookup(key, ignorecase=False)
+                    entry_result = self._mdx_lookup(key, ignorecase=False)
                     if entry_result:
                         all_results.extend(entry_result)
 
@@ -200,7 +360,7 @@ class MDXDictionary:
                 # Single word lookup using mdict-query's built-in method
                 # mdx_lookup returns a list of matching results
                 # With ignorecase=True, it will find matches regardless of case
-                results = self.builder.mdx_lookup(query, ignorecase=ignorecase)
+                results = self._mdx_lookup(query, ignorecase=ignorecase)
 
                 if not results:
                     logger.debug(f"Word '{query}' not found in {os.path.basename(self.mdx_path)}")
@@ -210,22 +370,27 @@ class MDXDictionary:
                 result = "\n".join(result for result in results if result)
 
             # Follow any @@@LINK= references to get actual definitions
-            result = self._follow_links(result)
+            followed = self._follow_links(result)
 
-            if not result:
+            if not followed:
                 logger.debug(
                     f"Links for '{query}' led to no content in {os.path.basename(self.mdx_path)}"
                 )
                 return None
+            result = followed
 
             if strip_html_tags:
                 result = strip_html_advanced(result, preserve_structure)
 
             logger.debug(f"Query result for '{query}': {result}")
             return result
+        except MDXLookupError:
+            raise
         except Exception as e:
             logger.error(f"Error querying '{query}': {e}")
-            return None
+            raise MDXLookupError(
+                f"querying {query!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
 
     def query_japanese(
         self,
@@ -277,6 +442,12 @@ class MDXDictionary:
 
                         if all_results:
                             return "\n\n".join(all_results)
+            except MDXLookupError:
+                # A dictionary that could not answer is not a strategy that found nothing.
+                # Falling through to strategies 3 and 4 here would let this lookup return
+                # None - "not in any dictionary" - off the back of a failure, and the memo
+                # would keep that answer for the life of the process.
+                raise
             except Exception as e:
                 logger.debug(f"Wildcard search failed for '{word}': {e}")
 
@@ -315,55 +486,57 @@ class MDXDictionary:
             if not os.path.exists(db_path):
                 return []
 
-            with sqlite3.connect(db_path) as conn:
-                if match_whole_word:
-                    # Get candidate keys using LIKE for initial filtering
-                    conditions = " AND ".join(["key_text LIKE ?"] * len(words))
-                    sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
-                    params = tuple(f"%{word}%" for word in words)
+            # LIKE for the candidates, a whole-table scan: the page cache it fills is why this
+            # goes through `_select`, which closes the connection
+            conditions = " AND ".join(["key_text LIKE ?"] * len(words))
+            sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
+            params = tuple(f"%{word}%" for word in words)
+            candidate_keys = [row[0] for row in self._select(sql, params)]
+            if not match_whole_word:
+                return candidate_keys
 
-                    cursor = conn.execute(sql, params)
-                    candidate_keys = [row[0] for row in cursor.fetchall()]
+            # Filter to only keys where each word appears as a complete unit
+            # A word is complete if it's not preceded or followed by other word characters
+            filtered_keys = []
+            for key in candidate_keys:
+                all_words_match = True
+                for word in words:
+                    # Create pattern that matches word with word boundaries
+                    # Word boundary = start/end of string or non-alphanumeric character
+                    # Escape special regex characters in the word
+                    escaped_word = re.escape(word)
+                    # Match word that is either at boundaries or surrounded by non-word chars
+                    # Using lookahead/lookbehind for zero-width boundary assertions
+                    pattern = f"(?<![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯]){escaped_word}(?![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯])"
+                    if not re.search(pattern, key):
+                        all_words_match = False
+                        break
 
-                    # Filter to only keys where each word appears as a complete unit
-                    # A word is complete if it's not preceded or followed by other word characters
-                    import re
+                if all_words_match:
+                    filtered_keys.append(key)
 
-                    filtered_keys = []
-                    for key in candidate_keys:
-                        all_words_match = True
-                        for word in words:
-                            # Create pattern that matches word with word boundaries
-                            # Word boundary = start/end of string or non-alphanumeric character
-                            # Escape special regex characters in the word
-                            escaped_word = re.escape(word)
-                            # Match word that is either at boundaries or surrounded by non-word chars
-                            # Using lookahead/lookbehind for zero-width boundary assertions
-                            pattern = f"(?<![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯]){escaped_word}(?![a-zA-Z0-9ぁ-ゟァ-ヿ一-龯])"
-                            if not re.search(pattern, key):
-                                all_words_match = False
-                                break
-
-                        if all_words_match:
-                            filtered_keys.append(key)
-
-                    return filtered_keys
-                else:
-                    # Standard partial matching with LIKE
-                    conditions = " AND ".join(["key_text LIKE ?"] * len(words))
-                    sql = f"SELECT key_text FROM MDX_INDEX WHERE {conditions}"
-                    params = tuple(f"%{word}%" for word in words)
-
-                    cursor = conn.execute(sql, params)
-                    keys = [row[0] for row in cursor.fetchall()]
-                    return keys
+            return filtered_keys
         except Exception as e:
             logger.error(f"Error searching for keys containing all words {words}: {e}")
-            return []
+            raise MDXLookupError(
+                f"searching for {words!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
 
     def get_keys_by_prefix(self, prefix: str, max_results: int = 10) -> list[str]:
         """
-        Get all dictionary keys starting with prefix using SQL LIKE query
+        Get all dictionary keys starting with prefix, as a range over the key index
+
+        `get_mdx_keys(f"{prefix}*")` becomes `key_text LIKE 'p%'`, and SQLite will not put a
+        prefix pattern onto a BINARY index unless `case_sensitive_like` is on - which is a
+        connection-global setting and would change every other LIKE in the process. Asked as a
+        range instead, the same question seeks: measured 207x faster, with identical rows *and
+        identical order*, because both forms walk `key_index`. Order is load-bearing here -
+        the result is truncated to `max_results` and the caller then filters what survives -
+        so the check that mattered was that the `[:10]` slice matched too, over 200 real
+        (pair, dictionary) comparisons.
+
+        This is strategy 2 of four in `query_japanese` and it runs on 75.2% of (pair,
+        dictionary) combinations, so it is not a rare fallback.
 
         Args:
             prefix: Prefix to search for
@@ -373,13 +546,53 @@ class MDXDictionary:
             List of matching keys
         """
         try:
-            # Use wildcard pattern for prefix search
-            pattern = f"{prefix}*"
-            keys = self.builder.get_mdx_keys(pattern)
-            return keys[:max_results] if keys else []
+            keys = self._keys_in_prefix_range(prefix, max_results)
+            if keys is not None:
+                return keys
+            return self._keys_like_prefix(prefix)[:max_results]
         except Exception as e:
             logger.error(f"Error getting keys by prefix '{prefix}': {e}")
+            raise MDXLookupError(
+                f"getting keys by prefix {prefix!r} in {os.path.basename(self.mdx_path)}: {e}"
+            ) from e
+
+    def _keys_in_prefix_range(self, prefix: str, max_results: int) -> Optional[list[str]]:
+        """The prefix search as a half-open range, or None if a range cannot answer it.
+
+        A range is only the same question as `LIKE 'p%'` when the prefix holds no ASCII letter
+        (LIKE folds case, a range does not), no `%`, `_` or `*` (wildcards to the pattern,
+        literals to a range), and ends below the last code point there is. Every caller on the
+        hot path passes a kana reading, which satisfies all three; anything else falls back.
+        """
+        if not prefix or PREFIX_NEEDS_LIKE.search(prefix):
+            return None
+        last = ord(prefix[-1])
+        if last >= 0x10FFFF:
+            return None
+        upper = prefix[:-1] + chr(last + 1)
+
+        db_path = self.builder._mdx_db
+        if not db_path or not os.path.exists(db_path):
             return []
+        rows = self._select(
+            "SELECT key_text FROM MDX_INDEX WHERE key_text >= ? AND key_text < ? LIMIT ?",
+            (prefix, upper, max_results),
+        )
+        return [row[0] for row in rows]
+
+    def _keys_like_prefix(self, prefix: str) -> list[str]:
+        """`IndexBuilder.get_mdx_keys(f"{prefix}*")`, for the prefixes a range cannot answer.
+
+        The shipped query verbatim - every `*` becomes `%`, and LIKE folds ASCII case - but
+        through `_select`, so the connection is closed rather than left to `with`, and with the
+        pattern bound rather than pasted between double quotes.
+        """
+        db_path = self.builder._mdx_db
+        if not db_path or not os.path.exists(db_path):
+            return []
+        pattern = f"{prefix}*".replace("*", "%")
+        rows = self._select("SELECT key_text FROM MDX_INDEX WHERE key_text LIKE ?", (pattern,))
+        return [row[0] for row in rows]
 
     def query_multiple(
         self,
@@ -548,6 +761,13 @@ class AnkiMDXHelper:
         """
         self.multi_dict: Union[MultiDictionaryQuery, None] = None
         self._init_failed = False
+        # Why dictionaries the config names could not be loaded; None when it names none. Kept
+        # for the life of the process, as _init_failed is: every lookup then fails as one
+        # dictionary that could not answer does (MDXLookupError), rather than answering "in
+        # none of them", which the callers write to the collection as a terminal tag
+        self._load_error: Optional[str] = None
+        # One scan per distinct lookup for the life of the process; see mdx_memo.
+        self.memo = DefinitionMemo()
 
     def load_mdx_dictionaries_if_needed(
         self, config: dict[str, Any], show_progress: bool = False, finish_progress: bool = True
@@ -583,16 +803,33 @@ class AnkiMDXHelper:
             # Check if any dictionaries were actually loaded
             if not self.multi_dict.dictionaries:
                 print("No MDX dictionaries were successfully loaded")
-                self._init_failed = True
+                self._failed_to_load(
+                    f"none of the {len(mdx_paths)} configured MDX dictionaries loaded"
+                )
                 self.multi_dict = None
                 return None
 
+            # Memoised answers belong to the dictionaries that gave them, so a fresh set of
+            # dictionaries starts from nothing. Today this only ever runs once per process.
+            self.memo.clear()
             return self
         except Exception as e:
             print(f"Failed to initialize MDX helper: {e}")
-            self._init_failed = True
+            self._failed_to_load(f"loading the MDX dictionaries failed: {e}")
             self.multi_dict = None
             return None
+
+    def _failed_to_load(self, reason: str) -> None:
+        """The configured dictionaries could not be loaded: every lookup fails from now on, and
+        the run's error pane says why once, since each note is then left for a later run."""
+        self._init_failed = True
+        self._load_error = reason
+        logger.error("%s; every lookup fails until Anki restarts", reason)
+        run_errors.report_error(
+            f"{reason}. Notes that need a dictionary lookup are left for a later run; check"
+            " mdx_filenames and the files in user_files, then restart Anki.",
+            "MDX dictionaries",
+        )
 
     def get_definition_text(
         self,
@@ -610,24 +847,124 @@ class AnkiMDXHelper:
             max_length: Optional maximum character length for truncation
 
         Returns:
-            Plain text string with definitions from all dictionaries
+            Plain text string with definitions from all dictionaries, or None when the word is
+            in none of them.
+
+        Raises:
+            MDXLookupError: a dictionary could not answer. Distinct from None, and the
+                distinction has to reach the caller: "not in any dictionary" is a fact the
+                callers write to the collection as a tag, and since `needs_meaning_mapping`
+                made that tag terminal, writing it for an outage skips the note on every
+                later run. See MDXLookupError.
         """
         if self.multi_dict is None:
+            if self._load_error is not None:
+                # Configured and not loaded: an outage, not an absence (MDXLookupError). This
+                # returned None, and every note looked up was tagged as in no dictionary
+                error = MDXLookupError(self._load_error)
+                self._record(word, reading, pick_dictionary, max_length, error=repr(error))
+                raise error
+            # None configured: nothing to look in, which is what a miss says. Recorded like one,
+            # or a notes run's export has no answer for the replay to give
+            self._record(word, reading, pick_dictionary, max_length, text=None)
             return None
 
-        if reading:
-            results = self.multi_dict.query_all_japanese(
+        # A lookup is up to 28 full scans of the dictionaries' key tables and was measured to
+        # be the entire length of a bulk run, so the same word is never scanned for twice. The
+        # memo is consulted before the CPU gate in _scan, since a remembered answer needs no
+        # core; see mdx_memo for why the results can be kept and how one scan serves the two
+        # callers' differing `pick_dictionary`. Only the scan is memoised: `max_length` and the
+        # formatting are applied on the way out, so they cost nothing and stay out of the key.
+        try:
+            result = self.memo.lookup(
+                word, reading, pick_dictionary, lambda pick: self._scan(word, reading, pick)
+            )
+        except MDXLookupError as e:
+            # Logged here, where the word and the pick are in hand, and then re-raised rather
+            # than collapsed into None. Nothing was stored - the same word asked again, by
+            # this run or a later one in the same Anki session, scans again rather than being
+            # served this failure as a fact - and nothing should be written to the collection
+            # either, which is what returning None used to cause: the callers cannot tell it
+            # from "in none of the dictionaries" and tag the note accordingly. See
+            # MDXLookupError.
+            logger.error(
+                "MDX lookup failed: '%s' (%s) [%s] - %s; not remembered",
                 word,
                 reading,
-                strip_html_tags=True,
-                preserve_structure=True,
-                pick_dictionary=pick_dictionary,
+                pick_dictionary,
+                e,
             )
-        else:
-            results = self.multi_dict.query(
-                word, strip_html_tags=True, preserve_structure=True, pick_dictionary=pick_dictionary
-            )
+            self._record(word, reading, pick_dictionary, max_length, error=repr(e))
+            raise
+        logger.debug(f"MDX lookup {result.outcome}: '{word}' ({reading}) [{pick_dictionary}]")
+        text = self._format_definition_text(word, reading, result.value, max_length)
+        self._record(word, reading, pick_dictionary, max_length, text=text)
+        return text
 
+    @staticmethod
+    def _record(
+        word: str,
+        reading: Optional[str],
+        pick_dictionary: PickDictionaryResult,
+        max_length: Optional[int],
+        text: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """A run that records its notes records what each lookup answered, the text the prompt
+        is then built from: a replay without the dictionary files answers the same from it."""
+        if not capture.notes_on():
+            return
+        lookup: dict[str, Any] = {
+            "word": word,
+            "reading": reading,
+            "pick": pick_dictionary,
+            "max_length": max_length,
+        }
+        lookup["error" if error is not None else "text"] = error if error is not None else text
+        capture.event("dictionary.lookup", lookup)
+
+    def _scan(
+        self,
+        word: str,
+        reading: Optional[str],
+        pick_dictionary: PickDictionaryResult,
+    ) -> list[dict[str, str]]:
+        """Scan the dictionaries for real. Called at most once per distinct lookup."""
+        assert self.multi_dict is not None
+
+        # The query is SQLite full table scans over the dictionaries' key indexes - no socket,
+        # no collection - so it needs a core, and the callers reach it from asyncio.to_thread
+        # on a pool sized for waiting rather than for computing. Both bulk paths arrive here (a
+        # word's meanings being generated, and a note's meaning being cleaned), so the bound
+        # belongs on the lookup rather than on either caller. Only the query is inside: the LLM
+        # call that follows it in both callers waits on the network and must not hold a core.
+        with cpu_bound_section():
+            if reading:
+                results = self.multi_dict.query_all_japanese(
+                    word,
+                    reading,
+                    strip_html_tags=True,
+                    preserve_structure=True,
+                    pick_dictionary=pick_dictionary,
+                )
+            else:
+                results = self.multi_dict.query(
+                    word,
+                    strip_html_tags=True,
+                    preserve_structure=True,
+                    pick_dictionary=pick_dictionary,
+                )
+
+        return results
+
+    @staticmethod
+    def _format_definition_text(
+        word: str,
+        reading: Optional[str],
+        results: Optional[list[dict[str, str]]],
+        max_length: Optional[int],
+    ) -> Union[str, None]:
+        """Lay a result list out as plain text. Cheap, so it runs on every ask, hit or not."""
         if not results:
             return None
 
