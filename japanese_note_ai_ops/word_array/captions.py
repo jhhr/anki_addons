@@ -22,7 +22,7 @@ reads its captions through this module.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Callable, Iterable, NamedTuple
 
 from ..kana_conv import to_hiragana
@@ -135,6 +135,23 @@ def all_inline_readings(jp: str, base: BaseFinder = whole_run) -> list[InlineRea
     for line in ASS_TAG_RE.sub("", jp).split("<br>"):
         found.extend(split_readings(line, base)[1])
     return found
+
+
+def show_readings(
+    texts: Iterable[str], base: BaseFinder = whole_run
+) -> tuple[dict[str, str], set[str]]:
+    """What a show's captions read, from all of them: the surfaces they read in katakana, its
+    names, each with the reading given most (the first given, of two given as often), and the
+    surfaces they read in hiragana, words the caption writer thought needed a reading."""
+    names: dict[str, Counter] = defaultdict(Counter)
+    words: set[str] = set()
+    for text in texts:
+        for r in all_inline_readings(text, base):
+            if r.katakana:
+                names[r.surface][r.reading] += 1
+            else:
+                words.add(r.surface)
+    return {surface: c.most_common(1)[0][0] for surface, c in names.items()}, words
 
 
 class ReadingBase:

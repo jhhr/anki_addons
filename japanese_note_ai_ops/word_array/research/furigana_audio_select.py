@@ -132,9 +132,8 @@ class ShowReadings:
 
 
 def jmdict_readings(form: str) -> set[str]:
-    """Every reading of the JMdict entries spelled `form`."""
-    jmdict = load("jmdict_index")
-    return {reb for kebs, rebs, _ in jmdict.lookup(form) if form in kebs for reb in rebs}
+    """Every reading of the JMdict entries spelled `form`, as the op looks them up."""
+    return load("jmdict_index").spelling_readings(form)
 
 
 def read_cards(

@@ -70,6 +70,22 @@ class ReadingBaseTest(unittest.TestCase):
         self.assertEqual(self.base()("白鈴姐", "ね"), 1)
 
 
+class ShowReadingsTest(unittest.TestCase):
+    def test_names_by_the_reading_given_most_and_words_read_in_hiragana(self):
+        texts = ["猫猫(ネコネコ)が", "（猫猫(マオマオ)）妃(きさき)", "猫猫(マオマオ)", "高順(ガオシュン)"]
+        names, words = captions.show_readings(texts)
+        self.assertEqual(names, {"猫猫": "まおまお", "高順": "がおしゅん"})
+        self.assertEqual(words, {"妃"})
+
+    def test_of_two_readings_given_as_often_the_first(self):
+        names, _ = captions.show_readings(["猫猫(ネコネコ)", "猫猫(マオマオ)"])
+        self.assertEqual(names, {"猫猫": "ねこねこ"})
+
+    def test_a_reading_goes_to_the_tail_base_gives(self):
+        names, words = captions.show_readings(["白鈴姐(ねえ)ちゃん"], base=lambda run, r: 1)
+        self.assertEqual((names, words), ({}, {"姐"}))
+
+
 class NumeralsTest(unittest.TestCase):
     def test_a_number_in_kanji_numerals(self):
         cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}
