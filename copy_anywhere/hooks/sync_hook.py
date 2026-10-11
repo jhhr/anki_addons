@@ -1,10 +1,8 @@
 from aqt.gui_hooks import sync_will_start, sync_did_finish
 
 from ..configuration import Config, definition_runs_on_sync
-from ..logic.copy_fields import copy_fields
+from ..logic.copy_fields import NOTIFY_SOURCE, copy_fields
 from ..shared.notify import post
-
-SOURCE = "Copy Anywhere"
 
 # One entry per sync, replaced in place: the local pass reports as soon as it
 # lands and the remote pass overwrites that same entry rather than leaving two
@@ -51,7 +49,7 @@ class SyncResult:
 def show_result(sync_result: SyncResult, clear: bool = True) -> None:
     if sync_result.has_changes():
         post(
-            source=SOURCE,
+            source=NOTIFY_SOURCE,
             title=sync_result.title(),
             body=sync_result.body(),
             level="success",

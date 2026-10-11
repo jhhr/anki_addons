@@ -13,7 +13,8 @@ four things here:
 * **`copy_fields()` above the `op`.** The stub suite drives the `op` closure inline and
   deliberately never calls `on_success` / `on_failure`, because both build Qt widgets. Here
   the real `CollectionOp` runs on a real background thread and both callbacks fire, so the
-  tooltip, the operation's log file and the progress title are observable.
+  tooltip or the report posted in its place, the operation's log file and the progress
+  title are observable, and so is the browser's right-click menu that starts a run.
 
 * **The sync hooks**, which are `gui_hooks` and so do not exist outside a running Anki.
 
@@ -28,11 +29,12 @@ Two facts worth knowing before reading the assertions:
    what `flagged_note()` does, and without it every sync assertion here would pass
    vacuously with an empty result.
 
-2. **`tooltip`, `open_log_file` and the sync hook's `post` are replaced with recorders.**
-   The first is a real Qt window with a real timer, the second hands a path to the
-   desktop's file associations, and the third elects a notification window shared with
-   other addons; what is under test is whether they are reached, with what text and which
-   file, not whether Qt can draw a toast or Windows can open a .log.
+2. **`tooltip`, `open_log_file` and the two `post`s, `copy_fields`' and the sync hook's,
+   are replaced with recorders.** The first is a real Qt window with a real timer, the
+   second hands a path to the desktop's file associations, and the posts elect a
+   notification window shared with other addons; what is under test is whether they are
+   reached, with what text and which file, not whether Qt can draw a toast or Windows can
+   open a .log.
 """
 
 import sys
@@ -133,11 +135,15 @@ def dialogs(monkeypatch):
     """Records what `on_success` / `on_failure` show the user, instead of showing it."""
     from copy_anywhere.logic import copy_fields as copy_fields_module
 
-    recorded: dict[str, list] = {"tooltips": [], "logs": []}
+    recorded: dict[str, list] = {"tooltips": [], "posts": [], "logs": []}
     monkeypatch.setattr(
         copy_fields_module,
         "tooltip",
         lambda text, **kwargs: recorded["tooltips"].append((text, kwargs)),
+    )
+    # A run asked to notify, as the browser's runs are, posts one kwargs dict instead.
+    monkeypatch.setattr(
+        copy_fields_module, "post", lambda **kwargs: recorded["posts"].append(kwargs)
     )
     monkeypatch.setattr(
         copy_fields_module,
@@ -151,8 +157,8 @@ def dialogs(monkeypatch):
 def sync_posts(monkeypatch):
     """What `sync_hook` posts to the shared notification stack, one kwargs dict per post.
 
-    `copy_fields`' own completion message is still a `tooltip`; only the sync report goes
-    through `notify.post`.
+    A sync's `copy_fields` runs hand their text to the sync hook rather than posting it
+    themselves, so this is the whole of a sync's report.
     """
     from copy_anywhere.hooks import sync_hook
 
@@ -361,6 +367,64 @@ class TestTheCollectionOpPath:
         # Nothing was logged at the default `error` level, so `delay=True` meant no file was
         # ever created and there is nothing to open.
         assert dialogs["logs"] == []
+        assert dialogs["posts"] == []
+
+    def test_a_run_asked_to_notify_posts_its_report_instead_of_a_tooltip(
+        self, anki_session, real_mw, addon_config, dialogs
+    ):
+        from copy_anywhere.logic.copy_fields import copy_fields
+
+        addon_config()
+        note = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"})
+        done: list[int] = []
+
+        copy_fields(
+            copy_definitions=[within_note("a<b")],
+            note_ids=[note.id],
+            notify=True,
+            on_done=lambda: done.append(1),
+        )
+        anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
+
+        assert real_mw.col.get_note(note.id)["Meaning"] == "inu!"
+        assert dialogs["tooltips"] == []
+        [post] = dialogs["posts"]
+        assert post["source"] == "Copy Anywhere"
+        # Worded as the undo entry is, "Copy fields (a<b)", and escaped: a card's title is
+        # rich text, and the name is the user's.
+        assert post["title"] == "Copied fields (a&lt;b)"
+        # The tooltip's text, unchanged: the dangling "Finished in " included.
+        assert post["body"].startswith("Finished in <br>")
+        assert "1 destinations" in post["body"]
+        assert post["level"] == "success"
+        assert post["timeout_ms"] == 6000
+        # Neither grouped with a sync's reports nor keyed: every run is a report of its own.
+        assert "group" not in post and "key" not in post
+
+    def test_a_notifying_run_of_several_definitions_is_titled_by_their_count(
+        self, anki_session, real_mw, addon_config, dialogs
+    ):
+        from copy_anywhere.logic.copy_fields import copy_fields
+
+        addon_config()
+        note = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"})
+        done: list[int] = []
+
+        copy_fields(
+            copy_definitions=[
+                within_note("d1"),
+                within_note("d2", field_to_field_defs=[field_to_field(into="Reading")]),
+            ],
+            note_ids=[note.id],
+            notify=True,
+            on_done=lambda: done.append(1),
+        )
+        anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
+
+        [post] = dialogs["posts"]
+        assert post["title"] == "Copied fields with 2 definitions"
+        assert " total time<br>" in post["body"]
+        assert post["timeout_ms"] == 7000
 
     def test_a_run_with_a_logged_message_opens_its_log_file_and_no_tooltip(
         self, anki_session, real_mw, addon_config, dialogs, operation_logs
@@ -462,6 +526,46 @@ class TestTheCollectionOpPath:
         text = written.read_text(encoding="utf-8")
         assert "Copying failed: " in text
         assert "a bug in a stage" in text
+
+
+class TestTheBrowsersRightClickMenu:
+    """The browser's "Copy anywhere" submenu, whose runs report in the notification stack.
+
+    A widget stands in for the Browser. The menu needs a QObject to parent its actions to
+    and `selected_notes()`; a real Browser would bring the editor's webview along with it.
+    """
+
+    def test_a_definition_run_from_the_submenu_posts_its_report(
+        self, anki_session, real_mw, addon_config, dialogs
+    ):
+        from aqt.qt import QMenu, QWidget
+
+        from copy_anywhere.hooks import browser_hooks
+
+        addon_config(copy_definitions=[within_note("d1")])
+        note = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"})
+
+        class StandIn(QWidget):
+            def selected_notes(self):
+                return [note.id]
+
+        browser = StandIn()
+        menu = QMenu()
+        browser_hooks.on_browser_will_show_context_menu(browser, menu)
+        [submenu] = [sub for sub in menu.findChildren(QMenu) if sub.title() == "Copy anywhere"]
+        [run] = [action for action in submenu.actions() if action.text() == "d1"]
+
+        run.trigger()
+        anki_session.qtbot.waitUntil(lambda: bool(dialogs["posts"]), timeout=WAIT)
+        # The op still has the collection until it is counted out, and the fixture is about
+        # to close it.
+        anki_session.qtbot.waitUntil(
+            lambda: real_mw._background_op_count == 0, timeout=WAIT
+        )
+
+        assert real_mw.col.get_note(note.id)["Meaning"] == "inu!"
+        assert [post["title"] for post in dialogs["posts"]] == ["Copied fields (d1)"]
+        assert dialogs["tooltips"] == []
 
 
 class TestTheSyncHooks:

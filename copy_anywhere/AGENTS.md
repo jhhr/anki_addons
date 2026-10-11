@@ -31,7 +31,7 @@ reset; see [docs/anki-patterns.md](../docs/anki-patterns.md)).
 | `logic/definition_schema.py` | format-2 types, stage-type constants, structural validation |
 | `logic/definition_migration.py` | the pure format-1 -> format-2 migrator, and stage-guid repair |
 | `logic/flow_analysis.py` | scopes, result types, effects, exports, call cycles: what the editor blocks a save on and what `effects` records |
-| `logic/copy_fields.py` | the operation: which notes each definition runs for, the undo entry, the sync tail |
+| `logic/copy_fields.py` | the operation: which notes each definition runs for, the undo entry, the sync tail, the report |
 | `logic/execution/` | the evaluator: `runner.py` one definition for one note, `evaluator.py` the structural stages, `actions.py` the leaf stages, `expressions.py` both value syntaxes, `context.py` the session, `commit.py` what happens to a run's changes |
 | `logic/copy_primitives.py` | interpolation, process chains, card actions, progress; older names are re-exported from `copy_fields` |
 | `logic/preview.py`, `logic/unsaved_note_search.py` | a run that writes nothing; judging a search against a note not yet in the collection |
@@ -86,6 +86,10 @@ Call chain for a bulk run:
 - The unfocus handler is a filter hook: return `changed or we_changed`. It runs definitions
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
+- Reports: a run started in the browser (the right-click submenu, the Edit menu dialog)
+  passes `copy_fields(notify=True)` and posts to the shared notification stack under
+  `NOTIFY_SOURCE`. A sync hands its text to the sync hook, which posts one keyed entry in
+  the `sync` group. The editor's unfocus run still shows a tooltip.
 - Return contract of a run: `True` is success **or a benign skip** (deck whitelist, unmet
   condition, `skip_block`); `False` aborts the bulk loop. An exception the evaluator did not
   raise itself still restores the trigger before it propagates.
@@ -140,9 +144,9 @@ in the root `testpaths`. Reuse, do not reinvent:
 The tests from before format 2 are characterization tests: they pin behaviour, including
 behaviour that looks odd, and now run through the migrator. A test that fails after your
 change is a behaviour change to justify, not a test to update. Not covered: the `Config`
-CRUD methods, `hooks/browser_hooks.py`, `utils/replace_custom_field_values.py`. None of the
-UI has been exercised in a real Anki window by the suite; the Qt tests use offscreen
-widgets.
+CRUD methods, `hooks/browser_hooks.py` beyond the right-click submenu's definition runs,
+`utils/replace_custom_field_values.py`. None of the UI has been exercised in a real Anki
+window by the suite; the Qt tests use offscreen widgets.
 
 ## Known rough edges
 
@@ -159,7 +163,7 @@ widgets.
 ## Shared code
 
 Declares `interpolate`, `ui`, `utils`, `anki`, `jp_text_processing`, `word_array`, `notify`
-(the sync report).
+(the reports of the sync and the browser's runs).
 `word_array` and `jp_text_processing` are partly there for the shared `execute_code`, which
 exposes `kana_highlight`, `decode_word_array` and `format_word_array` to code mode when they
 import. The interpolation engine and most widgets this addon uses are shared with

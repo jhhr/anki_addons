@@ -90,6 +90,7 @@ def on_browser_will_show_context_menu(browser: Browser, menu: QMenu):
                 copy_definitions=[copy_def],
                 note_ids=browser.selected_notes(),
                 parent=browser,
+                notify=True,
             )
 
         return run_copy_def

@@ -28,6 +28,7 @@ from ..logging_setup import (
     start_operation_log,
 )
 from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.notify import post
 from .copy_primitives import (
     CopyFailedException,
     ProgressUpdateDef,
@@ -71,6 +72,10 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+# What the shared notification stack calls this addon, in the sync report and the browser's
+# runs alike. Not just SOURCE: in this module a source is a note copied from.
+NOTIFY_SOURCE = "Copy Anywhere"
 
 
 def operation_log_name(copy_definitions: Sequence[AnyCopyDefinition]) -> str:
@@ -166,6 +171,18 @@ def make_copy_fields_undo_text(
     return undo_text
 
 
+def copy_fields_report_title(copy_definitions: Sequence[AnyCopyDefinition]) -> str:
+    """The title of a run's report, worded like its undo entry so the two read as one run.
+
+    Without the undo text's note count: that is how many notes were handed over, and a
+    definition skips the ones of other note types, so it can say more were copied into than
+    were. The report's lines say how many each definition processed.
+    """
+    if len(copy_definitions) == 1:
+        return f"Copied fields ({html.escape(copy_definitions[0]['definition_name'])})"
+    return f"Copied fields with {len(copy_definitions)} definitions"
+
+
 def copy_fields(
     copy_definitions: Sequence[AnyCopyDefinition],
     note_ids: Optional[Sequence[Union[int, NoteId]]] = None,
@@ -179,6 +196,7 @@ def copy_fields(
     update_sync_result: Optional[Callable[[str, int], None]] = None,
     on_done: Optional[Callable[[], None]] = None,
     progress_title: Optional[str] = None,
+    notify: bool = False,
 ):
     """
     Run many copy definitions at once using CollectionOp. Includes fancy progress updates
@@ -203,6 +221,8 @@ def copy_fields(
         result text and count
     :param on_done: Optional function to run when the operation is done
     :param progress_title: Optional title for the progress dialog
+    :param notify: Report the result in the shared notification stack instead of a tooltip,
+        as the browser's batch runs do. A sync reports through update_sync_result either way
     """
     start_time = time.time()
     is_sync = update_sync_result is not None
@@ -224,7 +244,7 @@ def copy_fields(
     def on_success(copy_results: CacheResults):
         mw.progress.finish()
         result = copy_results.get_result_text()
-        # Don't show a blank tooltip with just the time
+        # Don't report a blank result with just the time
         if result:
             main_time = (
                 f"{time.time() - start_time:.2f}s total time"
@@ -233,15 +253,20 @@ def copy_fields(
             )
             result_text = f"{main_time}{result}"
             count = copy_results.get_count()
+            # Longer when more ran, since there is more to read.
+            period = 5000 + len(copy_definitions) * 1000
             if update_sync_result is not None:
                 update_sync_result(result_text, count)
-            else:
-                tooltip(
-                    result_text,
-                    parent=parent,
-                    period=5000 + len(copy_definitions) * 1000,
-                    y_offset=100,
+            elif notify:
+                post(
+                    source=NOTIFY_SOURCE,
+                    title=copy_fields_report_title(copy_definitions),
+                    body=result_text,
+                    level="success",
+                    timeout_ms=period,
                 )
+            else:
+                tooltip(result_text, parent=parent, period=period, y_offset=100)
         finish_logging_and_show()
         if on_done is not None:
             on_done()
