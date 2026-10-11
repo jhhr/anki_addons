@@ -22,7 +22,7 @@ run_errors = load_ops_module("run_errors")
 arbiter = load_ops_module("furigana_arbiter", subdir="word_array")
 
 SENTENCE = "Sentence note"
-CONFIG = {
+CONFIG: dict = {
     SENTENCE: {
         "word_list_field": "Words",
         "sentence_field": "Sentence",
@@ -97,6 +97,9 @@ class Note:
 
     def __setitem__(self, field: str, value: str) -> None:
         self.fields[field] = value
+
+    def has_tag(self, tag: str) -> bool:
+        return tag in self.tags
 
     def add_tag(self, tag: str) -> None:
         if tag not in self.tags:
@@ -287,6 +290,37 @@ class ArbiterTest(OpHarness):
         self.assertEqual(op.arbiter_models({"furigana_models": [" a ", "", 3, "b"]}), ["a", "b"])
         self.assertEqual(op.arbiter_models({"furigana_models": "a"}), ["a"])
         self.assertEqual(op.arbiter_models({}), [])
+
+
+class NewNotesTest(unittest.TestCase):
+    """What "Run all ops for new notes" asks of a note."""
+
+    config: dict = {
+        SENTENCE: {**CONFIG[SENTENCE], "sentence_audio_field": "Audio"},
+        "transcribe_models": CONFIG["transcribe_models"],
+    }
+
+    def test_a_note_with_a_clip_and_a_sentence_but_no_furigana_yet(self):
+        def wants(**fields):
+            base = {"Sentence": LINE, "Audio": "[sound:clip.opus]"}
+            return op.wants_audio_furigana(self.config, Note({**base, **fields}))
+
+        self.assertTrue(wants())
+        self.assertFalse(wants(Furigana="他[ほか]の 人[ひと]は"))
+        self.assertFalse(wants(Audio=""))
+        self.assertFalse(wants(Sentence=" "))
+        # A type keeping no transcripts has its furigana from elsewhere
+        no_transcripts = {SENTENCE: {**self.config[SENTENCE], "sentence_transcription_field": ""}}
+        note = Note({"Sentence": LINE, "Audio": "[sound:clip.opus]"})
+        self.assertFalse(op.wants_audio_furigana(no_transcripts, note))
+
+    def test_furigana_awaiting_a_check_by_tag_or_by_a_word_still_marked(self):
+        checked = Note({"Furigana": "他[ほか]の 人[ひと]は？"})
+        tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.REVIEW_TAG])
+        marked = Note({"Furigana": "他[ほか？た]の"})
+        self.assertIsNone(op.unchecked_furigana(CONFIG, checked))
+        self.assertIn("furigana-review", op.unchecked_furigana(CONFIG, tagged))
+        self.assertIn('"？"', op.unchecked_furigana(CONFIG, marked))
 
 
 class ShowTest(unittest.TestCase):

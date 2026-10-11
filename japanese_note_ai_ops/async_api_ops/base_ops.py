@@ -2538,6 +2538,7 @@ async def bulk_notes_op(
     notes_to_remove: Optional[list[NoteId]] = None,
     on_end: Optional[Callable[..., None]] = None,
     is_sync_op: bool = False,
+    undo_label: Optional[str] = None,
 ) -> BulkOpResult:
     """
     Perform a simple async or sync bulk operation on a sequence of notes. Will run the operation
@@ -2561,6 +2562,9 @@ async def bulk_notes_op(
         on_end: An optional callback to run on completion of the bulk op. Should be running other
             side effects that do not edit or add notes as those should be handled through
             notes_to_add_dict and notes_to_update_dict.
+        undo_label: The undo entry's name, "<message> for <n> notes." by default. A phase of
+            another op's run gives that run's: the first phase's entry is the one the run's
+            writes are merged into, so its name is the one the Undo menu shows for the run.
     """
     if notes_to_remove is None:
         notes_to_remove = []
@@ -2568,7 +2572,7 @@ async def bulk_notes_op(
         notes_to_add_dict = {}
     if notes_to_update_dict is None:
         notes_to_update_dict = {}
-    pos = col.add_custom_undo_entry(f"{message} for {len(notes)} notes.")
+    pos = col.add_custom_undo_entry(undo_label or f"{message} for {len(notes)} notes.")
     if is_sync_op:
         return sync_bulk_notes_op(
             pos=pos,

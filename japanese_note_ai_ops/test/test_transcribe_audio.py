@@ -1,10 +1,11 @@
 """Transcribe sentence audio (async_api_ops/transcribe_audio.py): the transcription field's
 lines, which transcribers a note is asked for, what goes with each request, and the check that
-the local server is up before a run. The requests themselves, and their capture, are in
-test_capture_calls.py; the server in test_transcribe_server.py."""
+the local server is up before a run with a clip to send. The requests themselves, and their
+capture, are in test_capture_calls.py; the server in test_transcribe_server.py."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import tempfile
@@ -204,6 +205,46 @@ class ServerCheckTest(unittest.TestCase):
 
     def test_no_local_transcriber_needs_no_server(self):
         self.assertEqual(self.check(ConnectionError(), models=["gemini-x"]), (None, []))
+
+
+class BulkServerCheckTest(unittest.TestCase):
+    def run_bulk(self, notes):
+        """The bulk op with the server down: the notes it went on with, and what it reported."""
+        ran: list = []
+
+        async def bulk_notes_op(message, config, op, col, notes, *args, **kwargs):
+            ran.extend(note.id for note in notes)
+            return "ran"
+
+        col = mock.Mock()
+        col.media.dir.return_value = "media"
+        with mock.patch.object(op, "mw") as mw, mock.patch.multiple(
+            op,
+            bulk_notes_op=bulk_notes_op,
+            server_problem=mock.Mock(return_value="The server does not answer"),
+            report_error=mock.Mock(),
+        ):
+            mw.addonManager.getConfig.return_value = CONFIG
+            result = asyncio.run(op.bulk_transcribe_notes_op(col, notes, [], mock.Mock(), {}, {}))
+            return result, ran, op.report_error.call_args_list
+
+    def test_notes_transcribed_already_need_no_server(self):
+        both = "kana-anime-whisper: たのひとわ<br>ruby-mora: タノヒトワ"
+        result, ran, reported = self.run_bulk([Note({"Heard": both}, note_id=1)])
+        self.assertEqual((result, ran, reported), ("ran", [1], []))
+
+    def test_a_note_lacking_a_line_stops_the_run_when_the_server_is_down(self):
+        notes = [Note({"Heard": "kana-anime-whisper: たのひとわ"}, note_id=2)]
+        result, ran, reported = self.run_bulk(notes)
+        self.assertEqual((result, ran), (None, []))
+        self.assertEqual(reported[0].args[0], "The server does not answer")
+
+    def test_a_line_lacking_is_one_of_the_configs_transcribers(self):
+        self.assertTrue(op.lacks_transcript(CONFIG, Note({"Heard": ""})))
+        every = "x: a<br>ruby-mora: b<br>kana-anime-whisper: c"
+        self.assertFalse(op.lacks_transcript(CONFIG, Note({"Heard": every})))
+        # A field the note lacks is asked about, and the op says why it cannot be
+        self.assertTrue(op.lacks_transcript(CONFIG, Note({})))
 
 
 if __name__ == "__main__":

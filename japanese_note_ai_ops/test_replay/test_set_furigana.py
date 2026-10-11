@@ -1,7 +1,10 @@
 """Set furigana from audio (async_api_ops/set_furigana.py) in a real collection, with the real
 Sudachi and JMdict, run through its NotesRunSpec as a script runs it: the furigana written as
 the transcripts hear it, a name read from the show's other notes, a note left for review
-tagged, a note with furigana left alone, and the run one undo step.
+tagged, a note with furigana left alone, the run one undo step, and a word the arbiter's models
+agree on written. Then "Run all ops for new notes" (async_api_ops/new_note_all_ops.py) over
+such notes: their furigana set from audio before kanjify and word extraction read it, a note
+left for review given neither, all of it one undo step. The models are a responder's.
 
 The lines are made up for these tests. Skipped without the generator's resources
 (word_array/resources.py), as the word array tests are.
@@ -16,9 +19,11 @@ from typing import Any, Iterator
 import pytest
 from anki.notes import NoteId
 
+import replay
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import run_errors, set_furigana
-from japanese_note_ai_ops.word_array import resources
+from japanese_note_ai_ops.async_api_ops import base_ops, run_errors, set_furigana
+from japanese_note_ai_ops.async_api_ops.new_note_all_ops import new_note_all_ops_spec
+from japanese_note_ai_ops.word_array import judge, resources
 
 pytestmark = pytest.mark.skipif(
     not resources.is_ready(), reason="needs SudachiPy, a Sudachi dictionary and JMdict"
@@ -26,8 +31,9 @@ pytestmark = pytest.mark.skipif(
 
 PACKAGE = "japanese_note_ai_ops"
 SENTENCE = "Sentence note"
-FIELDS = ["Sentence", "Sentence furigana", "Heard", "Words"]
-CONFIG = {
+VOCAB = "Vocab note"
+FIELDS = ["Sentence", "Sentence furigana", "Heard", "Words", "Audio", "Kanjified"]
+CONFIG: dict[str, Any] = {
     SENTENCE: {
         "sentence_field": "Sentence",
         "furigana_sentence_field": "Sentence furigana",
@@ -37,24 +43,39 @@ CONFIG = {
     "transcribe_models": ["local-kana-anime-whisper", "local-ruby-mora"],
     "log_to_console": False,
 }
+# The two-type layout, so that a sentence note gets the sentence role's steps alone
+NEW_NOTES_CONFIG = {
+    **CONFIG,
+    SENTENCE: {
+        **CONFIG[SENTENCE],
+        "vocab_note_type": VOCAB,
+        "sentence_audio_field": "Audio",
+        "kanjified_sentence_field": "Kanjified",
+        "word_extraction_sentence_field": "Kanjified",
+    },
+    VOCAB: {"sentence_note_type": SENTENCE, "word_sort_field": "Word sort"},
+}
 
 
 @pytest.fixture
 def col(tmp_path: Path, monkeypatch) -> Iterator[Any]:
     stub = real_anki.install()
-    saved = (stub.col, dict(stub.addonManager.configs))
+    saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
     collection = real_anki.open_collection(tmp_path / "collection.anki2")
+    # "Run all ops for new notes" keeps its generated meanings in the profile's media folder
+    stub.pm.set_profile_folder(tmp_path / "profile")
     # Never the names file of the checkout's own user_files
     monkeypatch.setattr(set_furigana, "NAMES_FILE", str(tmp_path / "show_names.json"))
     try:
         real_anki.make_note_type(collection, SENTENCE, FIELDS)
+        real_anki.make_note_type(collection, VOCAB, ["Word sort"])
         stub.col = collection
         stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(CONFIG))
         stub.progress.set_cancel(False)
         yield collection
     finally:
         stub.progress.set_cancel(False)
-        stub.col, stub.addonManager.configs = saved
+        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
         collection.close()
 
 
@@ -73,19 +94,28 @@ def sentence(col: Any, text: str, *heard: str, furigana: str = "", tags: tuple =
     lines = "<br>".join(
         f"{name}: {kana}" for name, kana in zip(("kana-anime-whisper", "ruby-mora"), heard)
     )
+    fields = {"Sentence": text, "Sentence furigana": furigana, "Heard": lines}
     return real_anki.add_note(
         col,
         SENTENCE,
-        {"Sentence": text, "Sentence furigana": furigana, "Heard": lines, "Words": ""},
+        {**fields, "Audio": "[sound:clip.opus]"},
         deck_name="Sentences",
         tags=list(tags),
     )
 
 
-def run(col: Any, notes: list) -> Any:
-    spec = set_furigana.set_furigana_spec()
-    run_notes, result = spec.notes_run([NoteId(note.id) for note in notes])
-    run_notes(col)
+def run(col: Any, notes: list, spec: Any = None, answer: Any = None) -> Any:
+    """`spec`'s run over the notes, set furigana's by default, every model call answered by
+    `answer`."""
+    spec = spec or set_furigana.set_furigana_spec()
+    previous = base_ops.set_responder(answer)
+    try:
+        # The gate's learned costs stay out of the user's memory_estimates.json
+        with replay.memory_estimates({}):
+            run_notes, result = spec.notes_run([NoteId(note.id) for note in notes])
+            run_notes(col)
+    finally:
+        base_ops.set_responder(previous)
     return result
 
 
@@ -135,6 +165,66 @@ def test_a_name_from_the_names_file(col):
     run(col, [note])
 
     assert furigana(col, note) == "猫猫[まおまお]がいたのはどこなのかしら"
+
+
+def test_a_word_the_arbiters_models_agree_on_is_written(col):
+    asked: list = []
+
+    def answer(request: Any) -> Any:
+        assert request.kind == "furigana_arbiter.note"
+        asked.append(request.model)
+        return {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]}
+
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE]["furigana_models"] = ["first-model", "second-model"]
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    run(col, [note], answer=answer)
+
+    assert sorted(asked) == ["first-model", "second-model"]
+    assert furigana(col, note) == "他[た]の 人[ひと]はどこにいるの"
+    assert col.get_note(note.id).tags == []
+
+
+def test_new_notes_get_their_furigana_from_audio_before_kanjify_and_extraction(col, reported):
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    asked: list = []
+
+    def answer(request: Any) -> Any:
+        asked.append((request.kind, request.inputs.get("sentence")))
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    said = sentence(col, "（客）他の人はどこにいるの", "たのひとわどこにいるの", "タノヒトワドコニイルノ")
+    unsure = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+    typed = sentence(col, "他の人は", "たのひとわ", "たのひとわ", furigana="他[ほか]の 人[ひと]は")
+
+    run(col, [said, unsure, typed], spec=new_note_all_ops_spec(), answer=answer)
+
+    def field(note: Any, name: str) -> str:
+        return col.get_note(note.id)[name]
+
+    # Set from the audio, then kanjified and its words extracted
+    assert field(said, "Sentence furigana") == "他[た]の 人[ひと]はどこにいるの"
+    assert field(said, "Kanjified") == "他[た]の 人[ひと]はどこにいるの"
+    assert field(said, "Words").startswith("[")
+    # Left for a person: neither kanjified nor extracted, which is said once
+    assert field(unsure, "Sentence furigana") == "他[ほか？た]の 人[ひと]はどこにいるの"
+    assert (field(unsure, "Kanjified"), field(unsure, "Words")) == ("", "")
+    assert col.get_note(unsure.id).tags == [set_furigana.REVIEW_TAG]
+    assert [text for _, text in reported] == [set_furigana.FURIGANA_REVIEW_LEFT]
+    # Its furigana typed already: kept, and read as it is
+    assert field(typed, "Sentence furigana") == "他[ほか]の 人[ひと]は"
+    assert field(typed, "Kanjified") == "他[ほか]の 人[ひと]は"
+    kanjified = sorted(text for kind, text in asked if kind == "kanjify.sentence")
+    assert kanjified == sorted([field(said, "Sentence furigana"), "他[ほか]の 人[ひと]は"])
+    assert col.undo_status().undo == "Running new note all ops for 3 notes."
 
 
 def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):

@@ -245,6 +245,12 @@ alone too, tag or no tag.
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
 replaced. Empty the field to have it set again.
 
+"Run all ops for new notes" does both first, before kanjify and word extraction, which read the
+furigana, wherever a sentence note type has `sentence_transcription_field`: its notes with a
+clip and an empty furigana field are transcribed, which needs the server only when one of them
+still lacks a model's line, and their furigana is set. A note left for review gets no kanjify
+or word extraction in that run, and the run says so once per note.
+
 The show's names: a show's captions give a name its reading at the first mention in an episode
 (`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name
 most, wherever it is written, and takes the show to be the first level of a note's first

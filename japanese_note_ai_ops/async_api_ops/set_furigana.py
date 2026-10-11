@@ -48,13 +48,18 @@ from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..configuration import ADDON_USER_FILES_DIR, FURIGANA_REVIEW_TAG
+from ..configuration import (
+    ADDON_USER_FILES_DIR,
+    FURIGANA_DOUBT_LEFT,
+    FURIGANA_REVIEW_LEFT,
+    FURIGANA_REVIEW_TAG,
+)
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
 from ..note_roles import SENTENCE_ROLE, note_type_search
 from ..utils import get_field_config
 from ..word_array import furigana_arbiter, jmdict_index
-from ..word_array.audio_furigana import Furigana, Reading, audio_furigana
+from ..word_array.audio_furigana import Furigana, Reading, audio_furigana, has_doubt
 from ..word_array.captions import BaseFinder, ReadingBase, show_readings
 from . import collection_access
 from .base_ops import (
@@ -67,7 +72,7 @@ from .base_ops import (
 from .chain_types import ChainStep
 from .role_gate import notes_of_role
 from .run_errors import report_error
-from .transcribe_audio import label, parse_transcripts, transcribe_models
+from .transcribe_audio import audio_file, label, parse_transcripts, transcribe_models
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +217,42 @@ def settle_by_arbiter(
     return furigana_arbiter.settle(result, answers)
 
 
+def wants_audio_furigana(config: dict, note: Note) -> bool:
+    """Whether the note's furigana is to be set from its audio: its type keeps transcripts,
+    its furigana field is empty, and it has a sentence and a clip. "Run all ops for new notes"
+    asks, so that a note whose furigana was typed or set before, or one with no clip (added
+    by hand), is neither transcribed nor set."""
+    note_type = note.note_type()
+    block = config.get(note_type["name"]) if note_type else None
+    if not isinstance(block, dict) or not block.get("sentence_transcription_field"):
+        return False
+    furigana = block.get("furigana_sentence_field")
+    sentence = block.get("sentence_field")
+    audio = block.get("sentence_audio_field")
+    if not (isinstance(furigana, str) and isinstance(sentence, str) and isinstance(audio, str)):
+        return False
+    if not all(field in note for field in (furigana, sentence, audio)):
+        return False
+    return (
+        not note[furigana].strip()
+        and bool(note[sentence].strip())
+        and audio_file(note[audio]) is not None
+    )
+
+
+def unchecked_furigana(config: dict, note: Note) -> Optional[str]:
+    """Why a sentence note's furigana is not to be read yet, as kanjify and word extraction say
+    it when they leave the note alone: its review tag, or a word still marked for review."""
+    if note.has_tag(REVIEW_TAG):
+        return FURIGANA_REVIEW_LEFT
+    note_type = note.note_type()
+    block = config.get(note_type["name"]) if note_type else None
+    field = block.get("furigana_sentence_field") if isinstance(block, dict) else None
+    if field and field in note and has_doubt(note[field]):
+        return FURIGANA_DOUBT_LEFT
+    return None
+
+
 def set_furigana_in_note(
     config: dict,
     note: Note,
@@ -309,6 +350,8 @@ async def bulk_set_furigana_op(
     progress_updater: AsyncTaskProgressUpdater,
     notes_to_add_dict: dict[str, list[Note]] = {},
     notes_to_update_dict: dict[NoteId, Note] = {},
+    *,
+    undo_label: Optional[str] = None,
 ):
     config = mw.addonManager.getConfig(__name__)
     if not config:
@@ -335,6 +378,7 @@ async def bulk_set_furigana_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
+        undo_label=undo_label,
     )
 
 

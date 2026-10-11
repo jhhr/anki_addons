@@ -153,6 +153,19 @@ def transcribe_note(
     return True
 
 
+def lacks_transcript(config: dict, note: Note) -> bool:
+    """Whether a note's transcript field lacks the line of one of the config's transcribers,
+    so that a run asks for one. A note whose field cannot be read counts: `transcribe_note`
+    reports why."""
+    note_type = note.note_type()
+    block = config.get(note_type["name"]) if note_type else None
+    field = block.get("sentence_transcription_field") if isinstance(block, dict) else None
+    if not field or field not in note:
+        return True
+    heard = parse_transcripts(note[field])
+    return any(label(m) not in heard for m in transcribe_models(config))
+
+
 def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
     """Why the local transcription server cannot hear the clips with `models`, or None when it
     can or none of them is local: asked once before a run, so that a server not started fails
@@ -185,27 +198,34 @@ async def bulk_transcribe_notes_op(
     progress_updater: AsyncTaskProgressUpdater,
     notes_to_add_dict: dict[str, list[Note]] = {},
     notes_to_update_dict: dict[NoteId, Note] = {},
+    *,
+    undo_label: Optional[str] = None,
 ):
     config = mw.addonManager.getConfig(__name__)
     if not config:
         report_error("Missing addon configuration")
         return None
-    problem = server_problem(config, transcribe_models(config))
-    if problem:
-        report_error(problem)
-        return None
+    notes = notes_of_role(config, notes, SENTENCE_ROLE)
+    # Only a run that has a clip to send needs the server: one over notes transcribed already
+    # (a rerun, or "Run all ops for new notes" again) must not fail for want of it
+    if any(lacks_transcript(config, note) for note in notes):
+        problem = server_problem(config, transcribe_models(config))
+        if problem:
+            report_error(problem)
+            return None
     op = partial(transcribe_note, media=Path(col.media.dir()))
     return await bulk_notes_op(
         "Transcribing sentence audio",
         config,
         op,
         col,
-        notes_of_role(config, notes, SENTENCE_ROLE),
+        notes,
         edited_nids,
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
         is_sync_op=True,
+        undo_label=undo_label,
     )
 
 
