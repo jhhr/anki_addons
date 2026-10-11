@@ -496,19 +496,25 @@ def _describe_blocks(result: BuryRunResult) -> str:
     return f"{parts} ({result.rule_runs} rule runs)"
 
 
-def describe_result(result: BuryRunResult) -> str:
-    if result.error:
-        return f"Could not disperse: {result.error}"
-    if result.cancelled:
-        return "Cancelled; nothing was buried"
-    if result.session_cards < 2:
-        return f"{result.deck_name}: nothing due to disperse"
+def describe_result(result: BuryRunResult) -> tuple[str, str]:
+    """What the run did to the deck, in one line, and the detail behind it.
 
-    lines = [
+    The line is all the notification shows until it is opened, so it has to
+    say on its own what happened; the detail is how the session was read and
+    what else the run reached.
+    """
+    if result.error:
+        return f"Could not disperse: {result.error}", ""
+    if result.cancelled:
+        return "Cancelled; nothing was buried", ""
+    if result.session_cards < 2:
+        return f"{result.deck_name}: nothing due to disperse", ""
+
+    headline = (
         f"{result.deck_name}: buried {result.buried} of {result.session_cards}"
         f" card{'' if result.session_cards == 1 else 's'} in today's session"
-    ]
-    lines.append(_describe_blocks(result))
+    )
+    lines = [_describe_blocks(result)]
     if result.limited:
         lines.append(
             f"{result.pool_size} cards are due; the daily limit stops at {result.session_cards},"
@@ -532,4 +538,20 @@ def describe_result(result: BuryRunResult) -> str:
 
     if result.rule_errors:
         lines.append(describe_rule_errors(result.rule_errors))
-    return "<br>".join(lines)
+    return headline, "<br>".join(lines)
+
+
+def result_level(result: BuryRunResult) -> str:
+    """How the notification is marked: whether the run did what it was asked.
+
+    A rule that raised is only in the detail, which stays shut until the user
+    opens it, so the mark is what tells them it is worth opening. A cancelled
+    run is not marked, as describe_result leaves its rule errors out.
+    """
+    if result.error:
+        return "error"
+    if result.cancelled or result.session_cards < 2:
+        return "info"
+    if result.rule_errors:
+        return "warning"
+    return "success"

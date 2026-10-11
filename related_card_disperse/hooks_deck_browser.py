@@ -1,21 +1,44 @@
 from __future__ import annotations
 
 from anki.decks import DeckId
-from aqt import mw
 from aqt.gui_hooks import deck_browser_will_show_options_menu
 from aqt.qt import QAction, QMenu, qconnect
-from aqt.utils import tooltip
 
-from .bury import BuryRunResult, describe_result, run_deck_bury_disperse_in_background
+from .bury import (
+    BuryRunResult,
+    describe_result,
+    result_level,
+    run_deck_bury_disperse_in_background,
+)
 from .configuration import Config
+from .shared.notify import post
 
 MENU_LABEL = "Disperse due cards"
+SOURCE = "Related Card Disperse"
+RESULT_TIMEOUT_MS = 10000
 
 
-def _show_result(result: BuryRunResult) -> None:
-    # As in the browser run: a tooltip raised while the progress dialog is still
-    # tearing down gets closed along with it.
-    mw.progress.single_shot(100, lambda: tooltip(describe_result(result), period=10000))
+def _result_key(deck_id: DeckId) -> str:
+    """One entry per deck.
+
+    A rerun reports on the session as it is now, so it replaces what the last
+    run said rather than stacking beside it.
+    """
+    return f"deck:{deck_id}"
+
+
+def _show_result(deck_id: DeckId, result: BuryRunResult) -> None:
+    # Posted straight away: the notify host holds its redraw until the progress
+    # dialog has gone, which a tooltip raised from here had to be delayed for.
+    title, body = describe_result(result)
+    post(
+        source=SOURCE,
+        title=title,
+        body=body,
+        level=result_level(result),
+        timeout_ms=RESULT_TIMEOUT_MS,
+        key=_result_key(deck_id),
+    )
 
 
 def run_disperse_on_deck(deck_id: DeckId) -> None:
@@ -35,10 +58,18 @@ def run_disperse_on_deck(deck_id: DeckId) -> None:
     config = Config()
     config.load()
     if not config.has_any_rules():
-        tooltip("No rules configured")
+        post(
+            source=SOURCE,
+            title="No rules configured",
+            level="warning",
+            key=_result_key(deck_id),
+        )
         return
     run_deck_bury_disperse_in_background(
-        deck_id, config, _show_result, across_decks=config.disperse_across_decks
+        deck_id,
+        config,
+        lambda result: _show_result(deck_id, result),
+        across_decks=config.disperse_across_decks,
     )
 
 

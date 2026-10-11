@@ -24,7 +24,7 @@ read the one on the function you are changing.
 | `core.py` | **the Anki-free half.** `anki` only under `TYPE_CHECKING`. Id normalising, `split_quoted_names` / `join_quoted_names`, `CARD_TYPE_SEPARATOR`, `reviewed_card_variables`, `cap_card_ids`, `remaining_note_cards`, `group_overlapping_sets`, `select_cards_to_bury`, `select_backlog_cards_to_bury`, `order_session_blocks`, rule-error aggregation |
 | `configuration.py` | `RelatedRule` / `ConfigData` TypedDicts, `migrate_data`, `Config`, derived-rule helpers (`derived_sibling_rule(s)`, `is_derived_rule`, `DERIVED_RULE_GUID_PREFIX`) |
 | `logic.py` | `get_applicable_rules`, `resolve_rule_candidates`, `build_disperse_plan`, `apply_disperse_plan`, `run_rule_for_reviewed_card`, the sync and browser runs, and the optimiser `maximize_due_gap` / `find_max_min_gap_and_arrangement` (binary search for the largest feasible minimum gap) |
-| `bury.py` | models today's review session (`_review_order_clause`, session order, `deck_limit_map`), `run_deck_bury_disperse` |
+| `bury.py` | models today's review session (`_review_order_clause`, session order, `deck_limit_map`), `run_deck_bury_disperse` and its report (`describe_result`, `result_level`) |
 | `hooks_review.py`, `hooks_browser.py`, `hooks_deck_browser.py`, `sync_hook.py` | the four triggers |
 | `ui.py` | `RelatedCardDisperseDialog(ScrollableQDialog)`, `RuleEntry` |
 
@@ -52,8 +52,9 @@ cap; the anchor card is exempt from the cap) → `build_disperse_plan` →
 - Threading: sync, browser and deck runs use `mw.taskman.run_in_background` with
   `mw.progress`, cancellation, and `mw.reset()` when done; not `CollectionOp`. The review
   hook is synchronous on the main thread, so it must stay cheap. The sync result is a
-  `notify.post` in the `sync` group; the notify host waits out the progress dialog itself.
-  The browser run calls `browser.table.reset()`.
+  `notify.post` in the `sync` group, and the deck run's an ungrouped one keyed to its
+  deck, so a rerun replaces it; the notify host waits out the progress dialog itself. The
+  browser run calls `browser.table.reset()` and still reports in a `tooltip`.
 - Loop guards: `processed_rule_card_pairs` prevents re-running a (rule, card) pair;
   `remaining_note_cards` always drops the anchor. The sync run resolves candidates uncapped,
   groups overlapping sets when `dedupe_sync_groups` is on, then caps per group. Rule errors
@@ -86,12 +87,14 @@ default sibling dispersal. A new key goes into the TypedDict, `migrate_data` and
 ## Tests
 
 `related_card_disperse/test` is in the root `testpaths`: `python -m pytest -q
-related_card_disperse/test`. Five files cover `core.py`, the bury selection functions, the
+related_card_disperse/test`. Six files cover `core.py`, the bury selection functions, the
 browser run's planning (`plan_note_rule_runs`, with a monkeypatched `logic.mw.col`), derived
-rules (including that they never reach the config), and rules. They import as
-`from related_card_disperse.core import ...`. Not covered: the `bury.py` SQL, `ui.py`, and
-the date optimiser against a real collection. New pure logic gets a test; for collection
-behaviour use `anki_shared.testing.real_anki` as `copy_anywhere/test/conftest.py` does.
+rules (including that they never reach the config), rules, and the deck run's report
+(`describe_result`, `result_level`, and what the deck gear posts, with `post` replaced by
+a recorder). They import as `from related_card_disperse.core import ...`. Not covered:
+the `bury.py` SQL, `ui.py`, and the date optimiser against a real collection. New pure
+logic gets a test; for collection behaviour use `anki_shared.testing.real_anki` as
+`copy_anywhere/test/conftest.py` does.
 
 ## Shared code
 
