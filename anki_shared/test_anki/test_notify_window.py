@@ -22,7 +22,7 @@ from aqt.qt import QApplication, QEvent, QMouseEvent, QPoint, QPointF, Qt, QWidg
 from aqt.theme import Theme, theme_manager
 
 from anki_shared.notify.card import ACCENTS, ToastCard
-from anki_shared.notify.host import MIN_WIDTH, ToastHost
+from anki_shared.notify.host import MAX_HEIGHT_FRACTION, MIN_WIDTH, ToastHost
 from anki_shared.notify.spec import STICKY, make_spec
 from anki_shared.testing import running_anki
 
@@ -283,7 +283,8 @@ def test_the_cursor_shows_where_a_press_would_resize(host, qtbot):
     width, height = window.width(), window.height()
     # The band is the window's own: a widget over it would take the hover and the
     # press, and the window would never see them.
-    for at in (QPoint(2, height // 2), QPoint(width - 2, height // 2), QPoint(width // 2, height - 2)):
+    bands = (QPoint(2, height // 2), QPoint(width - 2, height // 2), QPoint(width // 2, height - 2))
+    for at in bands:
         assert window.childAt(at) is None
     assert hover(window, QPoint(2, height // 2)) == Qt.CursorShape.SizeHorCursor
     assert hover(window, QPoint(width // 2, height - 2)) == Qt.CursorShape.SizeVerCursor
@@ -528,6 +529,51 @@ def test_expanding_a_pinned_card_grows_the_window_to_fit(host, qtbot):
     assert scrollbar is not None and not scrollbar.isVisible(), "nothing is cut off"
     card.disclosure.click()
     qtbot.waitUntil(lambda: window.height() == collapsed, timeout=WAIT)
+
+
+def test_a_scrollbar_shown_in_passing_does_not_stay(host, qtbot):
+    # Opening a card outgrows the window until it refits, and a scrollbar shows
+    # meanwhile. It narrows the cards, a title that fitted on one line wraps onto
+    # two, and Qt asks whether the scrollbar is still needed at that narrower
+    # width: it was, so it stayed, the window fitted the cards for the width they
+    # no longer had, and the last one was cut off. A sync's reports are enough.
+    window = host.window
+    host.post(make_spec(source="Copy Anywhere", title="Copied fields for local and remote changes",
+                        body="<b>Local changes:</b><br>12 notes", group="sync", timeout_ms=STICKY))
+    opened = host.post(make_spec(source="Related Card Disperse", title="Dispersed related cards",
+                                 body="Japanese::Vocabulary: 4 cards moved<br>"
+                                 "Japanese::Kanji: 2 cards moved<br>Spanish: 1 card moved",
+                                 group="sync", timeout_ms=STICKY))
+    host.post(make_spec(source="Addon Config Sync", title="Loaded config for 2 add-on(s)",
+                        body="Two add-ons", group="sync", timeout_ms=STICKY,
+                        actions=[("Open config manager…", lambda: None)]))
+    last = host.post(make_spec(source="Custom Schedule Helper", level="error",
+                               title="Rescheduling failed for 2 cards", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == 4, timeout=WAIT)
+    card = window._cards[opened]
+    card.pin_button.click()
+    qtbot.wait(150)
+    card.disclosure.click()
+    qtbot.wait(300)
+    scrollbar = window._scroll.verticalScrollBar()
+    assert scrollbar is not None and not scrollbar.isVisible()
+    assert fits(window, window._cards[last])
+
+
+def test_a_window_at_its_cap_scrolls(host, qtbot):
+    window = host.window
+    handles = [
+        host.post(make_spec(source=f"A{i}", title="done", timeout_ms=STICKY,
+                            body="<br>".join(f"line {n}" for n in range(12))))
+        for i in range(4)
+    ]
+    qtbot.waitUntil(lambda: len(window._cards) == 4, timeout=WAIT)
+    for handle in handles:
+        window._cards[handle].disclosure.click()
+    cap = int(window.screen().availableGeometry().height() * MAX_HEIGHT_FRACTION)
+    qtbot.waitUntil(lambda: window.height() == cap, timeout=WAIT)
+    scrollbar = window._scroll.verticalScrollBar()
+    qtbot.waitUntil(lambda: scrollbar is not None and scrollbar.isVisible(), timeout=WAIT)
 
 
 def test_the_header_drags_the_window(host, qtbot):

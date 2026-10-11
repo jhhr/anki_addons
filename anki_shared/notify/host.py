@@ -464,6 +464,7 @@ class ToastWindow(QWidget):
     def _apply_size(self) -> None:
         """Grow to fit the cards, unless the user has taken over the sizing."""
         if not self._auto_size:
+            self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             return
         # The cards wrap their text, so their height depends on the width they
         # get. sizeHint() answers for a narrower default and was taller, which
@@ -481,8 +482,21 @@ class ToastWindow(QWidget):
             margins.top() + self._header.sizeHint().height() + content + margins.bottom() + 2
         )
         screen = self.screen()
+        capped = False
         if screen is not None:
-            wanted = min(wanted, int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION))
+            cap = int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION)
+            capped = wanted > cap
+            wanted = min(wanted, cap)
+        # A window that fits its cards has no use for a scrollbar, and one shown
+        # in passing -- while a card that opened outgrows the window before it
+        # refits -- narrows the cards, wraps their text further, and is still
+        # needed by the time Qt asks again, at that narrower width. The window
+        # then fitted the cards for a width they no longer had, and the last one
+        # was cut off. Only a window at its cap, or sized by the user, scrolls.
+        policy = Qt.ScrollBarPolicy
+        self._scroll.setVerticalScrollBarPolicy(
+            policy.ScrollBarAsNeeded if capped else policy.ScrollBarAlwaysOff
+        )
         before = self.geometry().bottomRight()
         self.resize(self.width(), max(wanted, MIN_HEIGHT))
         if self._placed is not None:
