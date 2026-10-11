@@ -52,7 +52,7 @@ SENTENCE_OPS = [
     ("find_proper_nouns", "async_api_ops", "bulk_find_proper_nouns_op", "bulk_notes_op"),
     ("kanjify_sentence", "async_api_ops", "bulk_kanjify_notes_op", "bulk_notes_op"),
     ("translate_field", "async_api_ops", "bulk_translate_notes_op", "bulk_notes_op"),
-    ("set_furigana", "sync_local_ops", "bulk_set_furigana_op", "bulk_notes_op"),
+    ("set_furigana", "async_api_ops", "bulk_set_furigana_op", "bulk_notes_op"),
     (
         "match_words_to_notes",
         "async_api_ops",

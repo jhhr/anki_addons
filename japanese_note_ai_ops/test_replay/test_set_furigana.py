@@ -1,4 +1,4 @@
-"""Set furigana from audio (sync_local_ops/set_furigana.py) in a real collection, with the real
+"""Set furigana from audio (async_api_ops/set_furigana.py) in a real collection, with the real
 Sudachi and JMdict, run through its NotesRunSpec as a script runs it: the furigana written as
 the transcripts hear it, a name read from the show's other notes, a note left for review
 tagged, a note with furigana left alone, and the run one undo step.
@@ -17,8 +17,7 @@ import pytest
 from anki.notes import NoteId
 
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import run_errors
-from japanese_note_ai_ops.sync_local_ops import set_furigana
+from japanese_note_ai_ops.async_api_ops import run_errors, set_furigana
 from japanese_note_ai_ops.word_array import resources
 
 pytestmark = pytest.mark.skipif(

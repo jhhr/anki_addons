@@ -5,11 +5,16 @@ and, once "Transcribe sentence audio" has run, what the models heard in
 `sentence_transcription_field`. This op writes the sentence with its furigana into
 `furigana_sentence_field` (`word_array/audio_furigana.py`): each kanji word read as the
 captions read it, else as a transcript hears it where that is Sudachi's draft, a reading
-JMdict has for the spelling or the show's for a name. A word the transcripts do not settle is
-written with the readings to choose between, 方[ほう？かた] (`audio_furigana.doubt_furigana`),
-and the note is tagged `furigana-review`: kanjify and word extraction leave it alone until a
-person has fixed each such word and taken the tag off. Speaker labels and sound descriptions
-are not said, so the furigana leaves them out.
+JMdict has for the spelling or the show's for a name. A word the transcripts do not settle
+goes to the config's `furigana_models`, when it names any: the arbiter
+(`word_array/furigana_arbiter.py`). Each model, asked once a note given the line, its
+translation, the transcripts and what each heard at the word, answers a reading for it, and the
+reading is written where every model is sure of it and a transcript heard it there. A word
+still unsettled is written with the readings to choose between,
+方[ほう？かた] (`audio_furigana.doubt_furigana`), and the note is tagged `furigana-review`:
+kanjify and word extraction leave it alone until a person has fixed each such word and taken
+the tag off. Speaker labels and sound descriptions are not said, so the furigana leaves them
+out.
 
 Only a note whose furigana field is empty is written, so furigana a person typed or fixed is
 never replaced: empty the field to have it set again. A note needs a transcript from each of
@@ -32,6 +37,7 @@ import json
 import logging
 import os
 import re
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -42,25 +48,26 @@ from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..async_api_ops import collection_access
-from ..async_api_ops.base_ops import (
-    AsyncTaskProgressUpdater,
-    NotesRunSpec,
-    bulk_notes_op,
-    selected_notes_op,
-)
-from ..async_api_ops.chain_types import ChainStep
-from ..async_api_ops.role_gate import notes_of_role
-from ..async_api_ops.run_errors import report_error
-from ..async_api_ops.transcribe_audio import label, parse_transcripts, transcribe_models
 from ..configuration import ADDON_USER_FILES_DIR, FURIGANA_REVIEW_TAG
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
 from ..note_roles import SENTENCE_ROLE, note_type_search
 from ..utils import get_field_config
-from ..word_array import jmdict_index
-from ..word_array.audio_furigana import audio_furigana
+from ..word_array import furigana_arbiter, jmdict_index
+from ..word_array.audio_furigana import Furigana, Reading, audio_furigana
 from ..word_array.captions import BaseFinder, ReadingBase, show_readings
+from . import collection_access
+from .base_ops import (
+    AsyncTaskProgressUpdater,
+    NotesRunSpec,
+    bulk_notes_op,
+    get_response,
+    selected_notes_op,
+)
+from .chain_types import ChainStep
+from .role_gate import notes_of_role
+from .run_errors import report_error
+from .transcribe_audio import label, parse_transcripts, transcribe_models
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +75,7 @@ REVIEW_TAG = FURIGANA_REVIEW_TAG
 NAMES_FILE = os.path.join(ADDON_USER_FILES_DIR, "show_names.json")
 # Of the transcripts, how many must hear a reading for it to be written
 QUORUM = 1
+ARBITER_KIND = "furigana_arbiter.note"
 # The characters Anki's search syntax gives a meaning inside a quoted `tag:` search
 _TAG_SEARCH_SPECIAL = re.compile(r'[\\"*_]')
 
@@ -133,7 +141,8 @@ class Show:
 
 class Shows:
     """The shows of a run's notes, each read from its captions when a note of it first comes:
-    its names, and which kanji of a run an inline reading of its captions is for."""
+    its names, and which kanji of a run an inline reading of its captions is for. Notes run on
+    several threads, and a show is read once: the others wait for it."""
 
     def __init__(
         self,
@@ -145,15 +154,17 @@ class Shows:
         self.dictionary = dictionary
         self.user_names = user_names
         self._read: dict[tuple[str, str, str], Show] = {}
+        self._lock = threading.Lock()
 
     def get(self, show: Optional[str], note_type_name: str, field: str, caption: str) -> Show:
         if show is None:
             return self._make([caption], {})
         key = (show, note_type_name, field)
-        if key not in self._read:
-            texts = self.captions_of(show, note_type_name, field) or [caption]
-            self._read[key] = self._make(texts, self.user_names.get(show, {}))
-        return self._read[key]
+        with self._lock:
+            if key not in self._read:
+                texts = self.captions_of(show, note_type_name, field) or [caption]
+                self._read[key] = self._make(texts, self.user_names.get(show, {}))
+            return self._read[key]
 
     def _make(self, texts: Iterable[str], user_names: Mapping[str, str]) -> Show:
         texts = list(texts)
@@ -161,6 +172,44 @@ class Shows:
         names, words = show_readings(texts, base)
         names.update(user_names)
         return Show(names, words - set(user_names), base)
+
+
+def arbiter_models(config: dict) -> list[str]:
+    """The models that settle the words the audio did not, all of them agreeing; none for a
+    config without `furigana_models`. One model may be named without a list."""
+    models = config.get("furigana_models")
+    if isinstance(models, str):
+        models = [models]
+    if not isinstance(models, list):
+        return []
+    return [m.strip() for m in models if isinstance(m, str) and m.strip()]
+
+
+def settle_by_arbiter(
+    models: Sequence[str],
+    result: Furigana,
+    caption: str,
+    translation: str,
+    transcripts: Sequence[tuple[str, str]],
+) -> list[Reading]:
+    """Asks each of `models` about the words `result` leaves in review and writes those they
+    all settle alike (`furigana_arbiter.settle`); the words it wrote. A failed call settles
+    none, since every model has to agree, and the provider has reported it."""
+    inputs = furigana_arbiter.review_inputs(caption, translation, transcripts, result)
+    prompt = furigana_arbiter.review_prompt(**inputs)
+    answers = []
+    for model in models:
+        response = get_response(
+            model,
+            prompt,
+            response_schema=furigana_arbiter.RESPONSE_SCHEMA,
+            kind=ARBITER_KIND,
+            inputs=inputs,
+        )
+        if response is None:
+            return []
+        answers.append(furigana_arbiter.answers_from_response(response, len(result.review)))
+    return furigana_arbiter.settle(result, answers)
 
 
 def set_furigana_in_note(
@@ -172,9 +221,11 @@ def set_furigana_in_note(
     shows: Shows,
     tokenize: Callable[[str], Sequence],
     dictionary: Dictionary,
+    arbiters: Sequence[str] = (),
 ) -> bool:
-    """Writes the note's furigana from its transcripts, if its furigana field is empty, and
-    tags it for review when a word is left unsettled."""
+    """Writes the note's furigana from its transcripts, if its furigana field is empty, with
+    the words they leave unsettled put to the `arbiters`' models, when there are any, and tags
+    it for review when a word is still unsettled."""
     note_type = note.note_type()
     if not note_type:
         logger.error(f"note_type() call failed for note {note.id}")
@@ -209,9 +260,10 @@ def set_furigana_in_note(
         )
         return False
     show = shows.get(show_of(note), note_type["name"], sentence_field, caption)
+    transcripts = [(label(m), heard[label(m)]) for m in models]
     result = audio_furigana(
         caption,
-        [heard[label(m)] for m in models],
+        [text for _, text in transcripts],
         tokenize,
         show.names,
         dictionary,
@@ -219,6 +271,23 @@ def set_furigana_in_note(
         show_words=show.words,
         quorum=QUORUM,
     )
+    if result.review and arbiters:
+        # The translation is context only: a note type without one is asked all the same
+        translation_field = config.get(note_type["name"], {}).get("translated_sentence_field")
+        translation = note[translation_field] if translation_field in note else ""
+        settled = settle_by_arbiter(
+            arbiters,
+            result,
+            caption,
+            furigana_arbiter.translation_text(translation),
+            transcripts,
+        )
+        if settled:
+            logger.info(
+                "Note %s: settled by the arbiter: %s",
+                note.id,
+                ", ".join(f"{r.surface} {r.written}" for r in settled),
+            )
     note[furigana_field] = result.text
     if result.review:
         note.add_tag(REVIEW_TAG)
@@ -248,8 +317,14 @@ async def bulk_set_furigana_op(
     dictionary = jmdict_index.spelling_readings
     shows = Shows(show_captions, dictionary, read_names_file(NAMES_FILE))
     op = partial(
-        set_furigana_in_note, shows=shows, tokenize=sudachi_morphemes, dictionary=dictionary
+        set_furigana_in_note,
+        shows=shows,
+        tokenize=sudachi_morphemes,
+        dictionary=dictionary,
+        arbiters=arbiter_models(config),
     )
+    # Not a sync op: the arbiter's calls wait on a provider, and Sudachi, which the notes
+    # share, takes them one at a time (generator.TOKENIZER_LOCK)
     return await bulk_notes_op(
         "Setting furigana from audio",
         config,
@@ -260,7 +335,6 @@ async def bulk_set_furigana_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
-        is_sync_op=True,
     )
 
 

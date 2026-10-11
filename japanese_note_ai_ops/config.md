@@ -55,6 +55,8 @@ Define which model to use for each task
 - `proper_nouns_model` (falls back to `extract_words_model`), so also the model "Extract words"
   uses
 - `match_words_model`
+- `furigana_models`: a list, every model of which has to agree; see "setting furigana from
+  audio" below
 
 ### temperature
 
@@ -220,14 +222,25 @@ said and are left out. Run "Transcribe sentence audio" first: a note needs a lin
 the `transcribe_models`, and one of them hearing a reading is enough to write it.
 
 A word the lines do not settle (they hear two readings, or one nothing has for the word), or
-every word of a sentence whose clip is far from its text, is written with the readings to
-choose between in its brackets, joined by `？`: Sudachi's reading, then what the lines heard
-there, ` 方[ほう？かた]`. A word with nothing else heard has its one reading and a `？`,
-` 薬[くすり？]`, and one Sudachi cannot read has the `？` alone. The note is tagged
-`furigana-review`. Kanjify and word extraction leave such a note alone: listen to the clip,
-leave each marked word with the reading said (` 方[かた]`), and take the tag off. A sentence
-whose furigana still holds a `？` is left alone too, tag or no tag. In the eval about one card
-in five of an ordinary episode had a word to check.
+every word of a sentence whose clip is far from its text, goes to the language models of
+`furigana_models`, if it names any. Each is asked once per note, with the sentence, the
+translation in `translated_sentence_field` when the type has one, the lines and what each heard
+at the word, and the reading is written where every model is sure of the same one and a line
+heard it there. A word still unsettled is written with the readings to choose between in its
+brackets, joined by `？`: Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
+A word with nothing else heard has its one reading and a `？`, ` 薬[くすり？]`, and one Sudachi
+cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify and word
+extraction leave such a note alone: listen to the clip, leave each marked word with the reading
+said (` 方[かた]`), and take the tag off. A sentence whose furigana still holds a `？` is left
+alone too, tag or no tag.
+
+- `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
+  review; a reading is written only where all of them give it. On the eval's 400 cards the
+  audio left 360 words in review on 155 cards. `["terminal-claude-haiku-5-5",
+  "terminal-claude-sonnet-5-5"]` settled 165 of them, leaving 107 cards to check, and got none
+  of the 66 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 73, Sonnet
+  on 3 of 74, Opus on 1 of 80. A model names a provider as the `*_model` keys do; other models
+  than these were not measured.
 
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
 replaced. Empty the field to have it set again.

@@ -45,6 +45,7 @@ from .async_api_ops.match_words_to_notes import (
     match_words_to_notes_from_selected,
 )
 from .async_api_ops.new_note_all_ops import new_note_all_ops_selected_notes
+from .async_api_ops.set_furigana import set_furigana_selected_notes
 from .async_api_ops.transcribe_audio import transcribe_selected_notes
 from .async_api_ops.translate_field import translate_selected_notes
 from .async_api_ops.word_matching_judge import word_matching_judge_from_selected_notes
@@ -56,7 +57,6 @@ from .sync_local_ops.find_missing_matched_note_ids import (
 )
 from .sync_local_ops.migrate_to_sentence_notes import migrate_to_sentence_notes_from_selected
 from .sync_local_ops.refresh_example_sentences import refresh_example_sentences_from_selected
-from .sync_local_ops.set_furigana import set_furigana_selected_notes
 from .sync_local_ops.tag_notes_matched_status import tag_notes_matched_status_from_selected
 from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED
 

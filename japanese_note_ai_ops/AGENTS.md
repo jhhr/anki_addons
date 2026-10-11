@@ -51,9 +51,9 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
 | `async_api_ops/role_gate.py` | `notes_of_role(config, notes, role)`: the notes an op of one role may run on, the rest left out with one `run_errors` report per note type; `notes_passing` for any other refusal. anki- and aqt-free |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3250 lines |
+| `async_api_ops/set_furigana.py` | "Set furigana from audio": an empty `furigana_sentence_field` written from the caption and the transcripts (`word_array/audio_furigana.py`), with the show's names (the captions' katakana readings over the show's notes, `captions.show_readings`, and `user_files/show_names.json`; the show is the first level of the first hierarchical tag) and JMdict's readings (`jmdict_index.spelling_readings`). The words the audio leaves in review go to the config's `furigana_models`, one call a note and model (kind `furigana_arbiter.note`), and a reading every model gives, heard at the word, is written (`word_array/furigana_arbiter.py`). A word still unsettled is written with the readings to choose between, `方[ほう？かた]` (`audio_furigana.doubt_furigana`), and its note tagged `furigana-review` (`configuration.FURIGANA_REVIEW_TAG`); kanjify and word extraction skip a note with the tag or with such a word (`audio_furigana.has_doubt`). Notes run on the pool's threads, sharing the show's names and Sudachi's lock |
 | `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
-| `sync_local_ops/set_furigana.py` | "Set furigana from audio": an empty `furigana_sentence_field` written from the caption and the transcripts (`word_array/audio_furigana.py`), with the show's names (the captions' katakana readings over the show's notes, `captions.show_readings`, and `user_files/show_names.json`; the show is the first level of the first hierarchical tag) and JMdict's readings (`jmdict_index.spelling_readings`); a word left unsettled is written with the readings to choose between, `方[ほう？かた]` (`audio_furigana.doubt_furigana`), and its note tagged `furigana-review` (`configuration.FURIGANA_REVIEW_TAG`); kanjify and word extraction skip a note with the tag or with such a word (`audio_furigana.has_doubt`) |
 | `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing` |
 | `sync_local_ops/sentence_migration.py`, `migrate_to_sentence_notes.py` | "Move sentences to sentence notes", single-use (see "Sentence and vocab note types"): the pure planner (`plan_migration`, `preflight_error`, the report's `CASES`; anki- and aqt-free) and the op that reads every vocab and sentence note in one SQL pass each, writes the report to `user_files/sentence_migration_<timestamp>.txt` and applies the plan (`SentenceMigration`, `migrate_spec()`) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
@@ -622,7 +622,7 @@ subagents instead (`agent_items.py` takes and saves items, the types in the repo
 what such a session follows), writing the same result files.
 
 The **furigana audio eval** (`furigana_audio*.py`, overview in `furigana_audio.py`'s docstring)
-is for "Set furigana from audio" (`sync_local_ops/set_furigana.py`): it measures which
+is for "Set furigana from audio" (`async_api_ops/set_furigana.py`): it measures which
 transcriber or reading check gets the reading the speaker used. Its corpus is a subs2srs export
 of one show in `evals/furigana_audio/` of the test data checkout, not notes: the picking reads
 the TSV, and the picked cards' clips are copied there from the subs2srs output on the machine
@@ -651,6 +651,11 @@ localhost and writes `labels.jsonl`, which the scorer then takes for the known r
 page also takes the show's names (`names.jsonl`: one reading for a surface wherever it is
 written) and corrections of caption lines that are not what the clip says (`fixes.jsonl`);
 the selection's `--reword` and the scorer read both, so the queue is built again after either.
+`furigana_audio_arbiter.py` asks the arbiter's models (`word_array/furigana_arbiter.py`) about
+the words the rule leaves in review, through the op's own `get_response` (a `terminal-` model
+runs `claude -p`, so it runs in a cloud session too), caches the answers in the eval's
+`arbiter_results.jsonl` and scores each model, and the models together as the op asks them,
+against the labels.
 
 ## Tests and types
 
@@ -696,7 +701,9 @@ the selection's `--reword` and the scorer read both, so the queue is built again
 - Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py`,
   `test_word_array_reading_check.py` and `test_word_array_audio_furigana.py` (the caption
   cleaning, the word units, the check and the furigana written from them, on a stand-in
-  tokenizer), `test_set_furigana.py` (which notes the op writes, the review tag, the show and
+  tokenizer), `test_word_array_furigana_arbiter.py` (the arbiter's inputs, answers and the
+  checks on what it writes), `test_set_furigana.py` (which notes the op writes, the arbiter's
+  calls, the review tag, the show and
   its names), the gate in `test_kanjify_sentence.py` and `test_extract_words.py`,
   `test_transcribe_audio.py` (the transcription field, which transcribers
   a note is asked for, the server check before a run), `test_capture_calls.py`'s

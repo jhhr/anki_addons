@@ -23,6 +23,7 @@
   "claude_cli_path": "",
   "transcribe_models": ["local-kana-anime-whisper", "local-ruby-mora"],
   "transcribe_url": "http://127.0.0.1:8792",
+  "furigana_models": [],
   "mdx_filenames": [],
   "mdx_pick_dictionary": "all",
   "kanji_sentence_fine_tuning_data_query": "",

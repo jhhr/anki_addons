@@ -120,7 +120,7 @@ ENTRY_MODULES = {
     ("translate_field", "async_api_ops"): (["translate_selected_notes"], False),
     ("make_kanji_story", "async_api_ops"): (["make_stories_for_selected_notes"], False),
     ("transcribe_audio", "async_api_ops"): (["transcribe_selected_notes"], False),
-    ("set_furigana", "sync_local_ops"): (["set_furigana_selected_notes"], True),
+    ("set_furigana", "async_api_ops"): (["set_furigana_selected_notes"], True),
     ("kanjify_sentence", "async_api_ops"): (["kanjify_selected_notes"], False),
     ("extract_words", "async_api_ops"): (
         [

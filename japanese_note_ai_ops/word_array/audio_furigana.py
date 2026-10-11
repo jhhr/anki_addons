@@ -95,6 +95,8 @@ class Reading:
     # ways its edges hold a neighbour's morae (小鈴 heard ウシャオリン and オシャオリ), and
     # offered whole such stretches made the furigana a jumble
     offered: list[str] = field(default_factory=list)
+    # The readings the word may be written with besides its draft (`licensed_readings`)
+    known: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -195,6 +197,7 @@ def audio_furigana(
             why = "review" if written is None else "draft" if written == w.sudachi else "correction"
         heard = stretches.get(i, [])
         reading = Reading(w.line, w.start, w.end, w.surface, w.sudachi, written, why, heard)
+        reading.known = licensed[i]
         if why == "review":
             reading.offered = offered_readings(options[i], hearings[i], heard)
         readings.append(reading)

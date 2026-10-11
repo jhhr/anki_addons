@@ -1,6 +1,8 @@
-"""Set furigana from audio (sync_local_ops/set_furigana.py): which notes are written, the
-furigana and review tag written, the show a note is of and the names read from its captions
-and the names file. How a caption becomes furigana is test_word_array_audio_furigana.py's.
+"""Set furigana from audio (async_api_ops/set_furigana.py): which notes are written, the
+furigana and review tag written, the arbiter's models asked about the words left in review, the
+show a note is of and the names read from its captions and the names file. How a caption becomes
+furigana is test_word_array_audio_furigana.py's, how the arbiter's answers are read
+test_word_array_furigana_arbiter.py's.
 
 Nothing here tokenizes with Sudachi: a stand-in segments the few lines the tests use the way
 Sudachi does. The transcripts are written as the kana models write them (ひとわ)."""
@@ -11,11 +13,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from addon_modules import load_ops_module
 
-op = load_ops_module("set_furigana", subdir="sync_local_ops")
+op = load_ops_module("set_furigana")
 run_errors = load_ops_module("run_errors")
+arbiter = load_ops_module("furigana_arbiter", subdir="word_array")
 
 SENTENCE = "Sentence note"
 CONFIG = {
@@ -112,7 +116,7 @@ NAME_LINE = "猫猫がいたのはどこなのかしら"
 NAME_HEARD = heard("まおまおがいたのわどこなのかしら", "まおまおがいたのわどこなのかしら")
 
 
-class OpTest(unittest.TestCase):
+class OpHarness(unittest.TestCase):
     def setUp(self):
         self.reports: list[str] = []
         deliver = run_errors._deliver
@@ -130,17 +134,26 @@ class OpTest(unittest.TestCase):
     def shows(self):
         return op.Shows(self.captions_of, dictionary, self.user_names)
 
-    def run_op(self, *notes, shows=None):
+    def run_op(self, *notes, shows=None, config=CONFIG, arbiters=()):
         shows = shows or self.shows()
         updated: dict = {}
         changed = [
             op.set_furigana_in_note(
-                CONFIG, note, {}, updated, shows=shows, tokenize=tokenize, dictionary=dictionary
+                config,
+                note,
+                {},
+                updated,
+                shows=shows,
+                tokenize=tokenize,
+                dictionary=dictionary,
+                arbiters=arbiters,
             )
             for note in notes
         ]
         return changed, updated
 
+
+class OpTest(OpHarness):
     def test_furigana_as_the_clip_says_it_and_no_review(self):
         note = Note({"Sentence": "（白鈴）" + LINE, "Heard": heard("たのひとわどこにいるの", "そのひとわどこにいるの")})
         changed, updated = self.run_op(note)
@@ -215,6 +228,65 @@ class OpTest(unittest.TestCase):
         self.run_op(*notes)
         self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
         self.assertEqual(notes[2]["Furigana"], "猫猫[まおまお]")
+
+
+def answer(reading, sure=True):
+    return {"words": [{"n": 1, "why": "", "reading": reading, "sure": sure}]}
+
+
+class ArbiterTest(OpHarness):
+    MODELS = ["first-model", "second-model"]
+    # 他 heard two ways: the audio leaves it to the arbiter
+    TWO_WAYS = heard("ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    def ask(self, note, answers, config=CONFIG):
+        """The op with each model answering as `answers` says; the calls made."""
+        calls: list = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append((model, prompt, kwargs))
+            return answers.get(model)
+
+        with mock.patch.object(op, "get_response", get_response):
+            self.run_op(note, config=config, arbiters=self.MODELS)
+        return calls
+
+    def test_a_reading_every_model_gives_is_written(self):
+        config = {SENTENCE: {**CONFIG[SENTENCE], "translated_sentence_field": "English"}}
+        fields = {"Sentence": LINE, "Heard": self.TWO_WAYS, "English": "Where are the<br>others?"}
+        note = Note(fields, tags=[op.REVIEW_TAG])
+        calls = self.ask(note, {m: answer("タ") for m in self.MODELS}, config)
+        self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
+        self.assertEqual(note.tags, [])
+        self.assertEqual([model for model, _, _ in calls], self.MODELS)
+        for _, prompt, kwargs in calls:
+            self.assertEqual(kwargs["kind"], "furigana_arbiter.note")
+            self.assertEqual(kwargs["response_schema"], arbiter.RESPONSE_SCHEMA)
+            self.assertEqual(arbiter.review_prompt(**kwargs["inputs"]), prompt)
+        inputs = calls[0][2]["inputs"]
+        self.assertEqual(inputs["translation"], "Where are the\nothers?")
+        self.assertEqual([w["context"] for w in inputs["words"]], ["［他］の人はどこにいるの"])
+
+    def test_models_that_differ_leave_the_word_in_review(self):
+        note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
+        self.ask(note, {"first-model": answer("た"), "second-model": answer("ほか")})
+        self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
+        self.assertEqual(note.tags, [op.REVIEW_TAG])
+
+    def test_a_failed_call_settles_nothing_and_asks_no_further(self):
+        note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
+        calls = self.ask(note, {"second-model": answer("た")})
+        self.assertEqual([model for model, _, _ in calls], ["first-model"])
+        self.assertEqual(note.tags, [op.REVIEW_TAG])
+
+    def test_no_word_in_review_asks_nothing(self):
+        said = heard("ほかのひとわどこにいるの", "ほかのひとわどこにいるの")
+        self.assertEqual(self.ask(Note({"Sentence": LINE, "Heard": said}), {}), [])
+
+    def test_the_models_of_the_config(self):
+        self.assertEqual(op.arbiter_models({"furigana_models": [" a ", "", 3, "b"]}), ["a", "b"])
+        self.assertEqual(op.arbiter_models({"furigana_models": "a"}), ["a"])
+        self.assertEqual(op.arbiter_models({}), [])
 
 
 class ShowTest(unittest.TestCase):
