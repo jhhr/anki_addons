@@ -5,10 +5,17 @@ the whole trick: adding or removing a card reflows the rest automatically, so
 there is no y-offset arithmetic to get wrong, nothing to recompute when an
 entry is dismissed, and no way for two addons' messages to overlap.
 
-The window is a native Qt.Tool frame parented to mw, so the window manager
-handles moving, resizing and stacking, and it is deliberately focus-inert:
-Anki sends review keystrokes to the reviewer webview, and a notification that
-took focus would eat answers.
+The window is a frameless Qt.Tool window parented to mw, so the window manager
+still stacks it with Anki, and it is deliberately focus-inert: Anki sends
+review keystrokes to the reviewer webview, and a notification that took focus
+would eat answers.
+
+Only its header is drawn solid: a grip to drag the window by, and dismiss-all.
+Below that it fades, down and out to the sides, so that the cards, drawn as
+Anki's own tooltip, read as tooltips floating on their own rather than as the
+contents of a panel. A native frame cannot fade, which is why there is none:
+the header hands a drag to the window system with startSystemMove(), as a
+title bar would, and the window sizes itself to its cards.
 
 Reconciliation runs one way only. Callers mutate the Stack, then the widgets
 are rebuilt to match Stack.visible(). There is no change-event protocol, so
@@ -26,20 +33,39 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from aqt.qt import (
+    QColor,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
     QPoint,
+    QPointF,
+    QRectF,
     QScrollArea,
     Qt,
     QVBoxLayout,
     QWidget,
 )
 
-from .card import ToastCard
+from .card import ToastCard, tool_button
 from .policy import Stack
 
 WIDTH = 380
 MARGIN = 12
+
+# The header is drawn nearly solid. The backdrop below it starts at the second
+# alpha just under the header and fades to the third by the bottom...
+HEADER_ALPHA = 240
+BACKDROP_TOP_ALPHA = 150
+BACKDROP_BOTTOM_ALPHA = 18
+# ...and out to the sides, over this share of the width at each, down to this
+# share of its alpha at the very edge.
+SIDE_FADE = 0.12
+SIDE_ALPHA = 0.2
+CORNER_RADIUS = 6.0
+GRIP_WIDTH = 22
 
 # Never take more than this share of the screen height; the rest scrolls.
 MAX_HEIGHT_FRACTION = 0.6
@@ -69,6 +95,99 @@ class ToastHost:
         return self.window.dismiss_entry(handle)
 
 
+def _theme_colour(name: str, alpha: int = 255) -> QColor:
+    """One of Anki's theme colours (aqt.colors) as it is in the current mode."""
+    from aqt import colors
+    from aqt.theme import theme_manager
+
+    colour = QColor(theme_manager.var(getattr(colors, name)))
+    colour.setAlpha(alpha)
+    return colour
+
+
+class _Header(QWidget):
+    """The top of the window, and the only part of it drawn solid.
+
+    It is what the window is moved by, having no title bar: a press anywhere
+    on it that is not on the dismiss-all button hands the drag to the window
+    system, as a title bar would, and where the platform cannot take it the
+    drag is followed by hand.
+    """
+
+    def __init__(self, window: "ToastWindow") -> None:
+        super().__init__(window)
+        self._toast_window = window
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self._drag_from: Optional[QPoint] = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(GRIP_WIDTH, 2, 4, 2)
+        layout.setSpacing(4)
+        self.title = QLabel("Notifications")
+        self.title.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        layout.addWidget(self.title, 1)
+        # Closing the window is what clears it: closeEvent takes every entry
+        # down, queued ones included.
+        self.dismiss_all = tool_button("✕", "Dismiss all", window.close)
+        layout.addWidget(self.dismiss_all)
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        subtle = _theme_colour("FG_SUBTLE").name()
+        self.setStyleSheet(
+            f"QLabel {{ color: {subtle}; background: transparent; }}"
+            f" QToolButton {{ color: {subtle}; background: transparent;"
+            f" border: none; padding: 0px 4px; }}"
+            f" QToolButton:hover {{ color: {_theme_colour('FG').name()}; }}"
+        )
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Rounded at the top only: the corners below the bottom edge are clipped.
+        outline = QPainterPath()
+        outline.addRoundedRect(
+            QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, CORNER_RADIUS),
+            CORNER_RADIUS,
+            CORNER_RADIUS,
+        )
+        painter.setClipRect(self.rect())
+        painter.fillPath(outline, _theme_colour("CANVAS_ELEVATED", HEADER_ALPHA))
+        painter.setPen(_theme_colour("BORDER"))
+        painter.drawPath(outline)
+        # The grip: two columns of three dots.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(_theme_colour("FG_FAINT"))
+        middle = self.height() / 2
+        for column in (0, 1):
+            for row in (-1, 0, 1):
+                painter.drawEllipse(QPointF(9 + column * 5, middle + row * 5), 1.4, 1.4)
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        event.accept()
+        native = self._toast_window.windowHandle()
+        if native is not None and native.startSystemMove():
+            return
+        self._drag_from = event.globalPosition().toPoint() - self._toast_window.pos()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_from is None or not event.buttons() & Qt.MouseButton.LeftButton:
+            super().mouseMoveEvent(event)
+            return
+        event.accept()
+        self._toast_window.move(event.globalPosition().toPoint() - self._drag_from)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_from = None
+        super().mouseReleaseEvent(event)
+
+
 class ToastWindow(QWidget):
     # Anki closes a window that says this as the profile closes. Any other still
     # up is reported as one that "should have been closed" and stays on screen
@@ -82,16 +201,18 @@ class ToastWindow(QWidget):
         if mw is None:
             raise RuntimeError("no main window to host notifications")
 
-        super().__init__(mw, Qt.WindowType.Tool)
+        super().__init__(mw, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Anki notifications")
         # show() must not activate the window, and nothing in it may take the
         # keyboard focus away from the reviewer.
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # What paintEvent does not draw is see-through: the backdrop fades to it.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self._stack = Stack()
         self._cards: Dict[str, ToastCard] = {}
-        self._headers: List[QLabel] = []
+        self._group_labels: List[QLabel] = []
         self._reconcile_pending = False
         self._applying_size = False
         self._auto_size = True
@@ -103,6 +224,10 @@ class ToastWindow(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._header = _Header(self)
+        outer.addWidget(self._header)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
@@ -114,12 +239,22 @@ class ToastWindow(QWidget):
         # Kept rather than read back with self._scroll.widget(), which Qt types
         # as Optional although this widget is set once and never replaced.
         self._container = QWidget()
+        self._container.setObjectName("toastStack")
         self._container.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._cards_layout = QVBoxLayout(self._container)
-        self._cards_layout.setContentsMargins(8, 8, 8, 8)
-        self._cards_layout.setSpacing(6)
+        self._cards_layout.setContentsMargins(10, 8, 10, 12)
+        self._cards_layout.setSpacing(8)
         self._cards_layout.addStretch(1)
         self._scroll.setWidget(self._container)
+        # The scroll area paints an opaque viewport and the container a styled
+        # background unless told not to, either of which would cover the fade.
+        viewport = self._scroll.viewport()
+        if viewport is not None:
+            viewport.setAutoFillBackground(False)
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: transparent; }"
+            " #toastStack { background: transparent; }"
+        )
 
         self.resize(WIDTH, 120)
 
@@ -232,9 +367,9 @@ class ToastWindow(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
-        for header in self._headers:
-            header.deleteLater()
-        self._headers = []
+        for label in self._group_labels:
+            label.deleteLater()
+        self._group_labels = []
 
         last_group = None
         for entry in entries:
@@ -242,9 +377,9 @@ class ToastWindow(QWidget):
             if group_id != last_group:
                 name = self._stack.group_name(entry)
                 if name:
-                    header = self._make_header(name)
-                    self._headers.append(header)
-                    self._cards_layout.addWidget(header)
+                    label = self._make_group_label(name)
+                    self._group_labels.append(label)
+                    self._cards_layout.addWidget(label)
                 last_group = group_id
             card = self._cards[entry["handle"]]
             card.setParent(self._container)
@@ -252,16 +387,14 @@ class ToastWindow(QWidget):
             self._cards_layout.addWidget(card)
         self._cards_layout.addStretch(1)
 
-    def _make_header(self, name: str) -> QLabel:
-        from aqt.theme import theme_manager
-
-        header = QLabel(name.upper())
-        header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        colour = "#9aa5ad" if theme_manager.night_mode else "#6b7680"
-        header.setStyleSheet(
-            f"color: {colour}; font-size: 10px; font-weight: bold; background: transparent;"
+    def _make_group_label(self, name: str) -> QLabel:
+        label = QLabel(name.upper())
+        label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        label.setStyleSheet(
+            f"color: {_theme_colour('FG_SUBTLE').name()}; font-size: 10px;"
+            " font-weight: bold; background: transparent;"
         )
-        return header
+        return label
 
     def _set_pinned(self, handle: str, pinned: bool) -> None:
         self._stack.set_pinned(handle, pinned)
@@ -273,7 +406,17 @@ class ToastWindow(QWidget):
         """Grow to fit the cards, unless the user has taken over the sizing."""
         if not self._auto_size:
             return
-        wanted = self._container.sizeHint().height() + 4
+        # The cards wrap their text, so their height depends on the width they
+        # get. sizeHint() answers for a narrower default and was taller, which
+        # left a band of empty backdrop under the last card.
+        self._container.ensurePolished()
+        layout = self._cards_layout
+        content = (
+            layout.totalHeightForWidth(self.width())
+            if layout.hasHeightForWidth()
+            else self._container.sizeHint().height()
+        )
+        wanted = self._header.sizeHint().height() + content + 2
         screen = self.screen()
         if screen is not None:
             wanted = min(wanted, int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION))
@@ -314,6 +457,31 @@ class ToastWindow(QWidget):
         )
         self._placed = self.geometry().bottomRight()
 
+    def paintEvent(self, event) -> None:
+        """The backdrop under the cards, fading down and out to the sides."""
+        top = self._header.geometry().bottom() + 1
+        body = QRectF(0, top, self.width(), self.height() - top)
+        if body.height() <= 0:
+            return
+        painter = QPainter(self)
+        painter.setClipRect(body)
+        down = QLinearGradient(body.topLeft(), body.bottomLeft())
+        down.setColorAt(0.0, _theme_colour("CANVAS_ELEVATED", BACKDROP_TOP_ALPHA))
+        down.setColorAt(1.0, _theme_colour("CANVAS_ELEVATED", BACKDROP_BOTTOM_ALPHA))
+        painter.fillRect(body, down)
+        # Then out to the sides: what was just drawn keeps the alpha of this mask,
+        # whole in the middle and SIDE_ALPHA of it at the edges.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        across = QLinearGradient(body.topLeft(), body.topRight())
+        edge = QColor(0, 0, 0, int(255 * SIDE_ALPHA))
+        whole = QColor(0, 0, 0, 255)
+        across.setColorAt(0.0, edge)
+        across.setColorAt(SIDE_FADE, whole)
+        across.setColorAt(1.0 - SIDE_FADE, whole)
+        across.setColorAt(1.0, edge)
+        painter.fillRect(body, across)
+        painter.end()
+
     def resizeEvent(self, event) -> None:
         # The user taking over the size arrives from the window system, which
         # Qt marks spontaneous. Its own resizes are not, and counting them was
@@ -342,8 +510,10 @@ class ToastWindow(QWidget):
 
     def _on_theme_did_change(self) -> None:
         try:
+            self._header.apply_theme()
             for card in self._cards.values():
                 card.apply_theme()
+            self.update()
             self._schedule_reconcile()
         except RuntimeError:
             pass

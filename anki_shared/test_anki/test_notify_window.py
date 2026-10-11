@@ -18,7 +18,7 @@ from typing import Any, Iterator
 import aqt.utils
 import pytest
 from aqt.gui_hooks import theme_did_change
-from aqt.qt import QPoint, Qt, QWidget
+from aqt.qt import QApplication, QEvent, QMouseEvent, QPoint, QPointF, Qt, QWidget
 from aqt.theme import Theme, theme_manager
 
 from anki_shared.notify.card import ACCENTS, ToastCard
@@ -96,19 +96,39 @@ def card_colours(card):
     )
 
 
-def test_the_window_never_takes_the_keyboard(host):
+def send_mouse(widget, kind, at, button, buttons):
+    event = QMouseEvent(
+        kind,
+        QPointF(at),
+        QPointF(widget.mapToGlobal(at)),
+        button,
+        buttons,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_the_window_never_takes_the_keyboard(host, qtbot):
     # Anki sends review keystrokes to the reviewer webview; a notification that
     # took the focus would eat answers.
     window = host.window
-    assert window.focusPolicy() == Qt.FocusPolicy.NoFocus
+    handle = host.post(make_spec(source="A", title="done", body="detail", timeout_ms=STICKY,
+                                 actions=[("Open", lambda: None)]))
+    qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
     assert window.windowFlags() & Qt.WindowType.Tool
     assert window.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    takes_focus = [
+        widget
+        for widget in [window, *window.findChildren(QWidget)]
+        if widget.focusPolicy() != Qt.FocusPolicy.NoFocus
+    ]
+    assert takes_focus == []
     # Qt owns a widget's namespace (update, close, show...); the contract every
     # copy calls by name keeps out of it.
     assert not isinstance(host, QWidget)
 
 
-def test_posts_stack_with_a_header_per_named_group(host, real_mw, qtbot):
+def test_posts_stack_with_a_label_per_named_group(host, real_mw, qtbot):
     window = host.window
     host.post(make_spec(source="Copy Anywhere", title="Copied fields", body="12 notes",
                         group="sync", key="sync", timeout_ms=STICKY))
@@ -117,7 +137,7 @@ def test_posts_stack_with_a_header_per_named_group(host, real_mw, qtbot):
     host.post(make_spec(source="Custom Schedule Helper", title="Rescheduled 30",
                         timeout_ms=STICKY))
     qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
-    assert [header.text() for header in window._headers] == ["SYNC"]
+    assert [label.text() for label in window._group_labels] == ["SYNC"]
     # Anchored inside the main window's bottom-right corner.
     assert window.geometry().right() <= real_mw.frameGeometry().right()
     assert window.geometry().bottom() <= real_mw.frameGeometry().bottom()
@@ -162,7 +182,7 @@ def test_overflow_queues_and_closing_clears_the_queue_too(host, qtbot):
     window.close()
     assert window._cards == {}
     assert window._stack.ordered() == []
-    assert window._headers == []
+    assert window._group_labels == []
 
 
 def test_the_window_keeps_fitting_its_cards_after_it_first_appears(host, qtbot):
@@ -345,6 +365,80 @@ def test_a_warning_or_an_error_is_marked_on_its_left_edge(host, qtbot):
     assert left == right, "a success is a plain tooltip"
     left, right = edges(failed)
     assert left == ACCENTS[False]["error"] != right
+
+
+def test_only_the_header_is_drawn_solid(host, qtbot):
+    # Below it the window fades, down and out to the sides, so the cards read as
+    # tooltips floating on their own rather than the contents of a panel.
+    window = host.window
+    handles = [
+        host.post(make_spec(source=f"A{i}", title="done", timeout_ms=STICKY)) for i in range(3)
+    ]
+    qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
+    image = window.grab().toImage()
+
+    def alpha(x, y):
+        return image.pixelColor(x, y).alpha()
+
+    middle = image.width() // 2
+    header = window._header.geometry()
+    solid = alpha(middle, header.center().y())
+    under_header = alpha(middle, header.bottom() + 3)
+    assert solid >= 230
+    assert 0 < under_header < solid
+    assert alpha(middle, image.height() - 2) < under_header, "fading towards the bottom"
+    assert alpha(1, header.bottom() + 3) < under_header, "and out to the sides"
+    card = window._cards[handles[0]]
+    centre = card.mapTo(window, card.rect().center())
+    assert alpha(centre.x(), centre.y()) == 255, "the cards themselves are solid"
+
+
+def test_the_window_ends_just_below_its_last_card(host, qtbot):
+    # Sized from the cards' sizeHint(), which wrapping text answers for a narrower
+    # width than they get, the window left a band of empty backdrop under them.
+    window = host.window
+    handles = [
+        host.post(make_spec(source=f"A{i}", title="Copied fields for local and remote changes",
+                            timeout_ms=STICKY))
+        for i in range(3)
+    ]
+    qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
+    last = window._cards[handles[-1]]
+    below = window.height() - last.mapTo(window, QPoint(0, last.height())).y()
+    assert below <= window._cards_layout.contentsMargins().bottom() + 4
+
+
+def test_the_header_drags_the_window(host, qtbot):
+    # With no title bar, the header is what moves the window. The window system
+    # takes the drag where it can; offscreen it cannot, so this is the drag
+    # followed by hand.
+    window = host.window
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    qtbot.waitUntil(window.isVisible, timeout=WAIT)
+    header = window._header
+    start = window.pos()
+    grip = QPoint(8, header.height() // 2)
+    drag = QPoint(-120, -80)
+    left = Qt.MouseButton.LeftButton
+    none = Qt.MouseButton.NoButton
+    send_mouse(header, QEvent.Type.MouseButtonPress, grip, left, left)
+    send_mouse(header, QEvent.Type.MouseMove, grip + drag, none, left)
+    send_mouse(header, QEvent.Type.MouseButtonRelease, grip + drag, left, none)
+    assert window.pos() == start + drag
+    corner = window.geometry().bottomRight()
+    host.post(make_spec(source="B", title="two", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == 2, timeout=WAIT)
+    assert window.geometry().bottomRight() == corner, "and it stays where it was dragged"
+
+
+def test_the_header_dismisses_everything(host, qtbot):
+    window = host.window
+    for i in range(6):
+        host.post(make_spec(source=f"A{i}", title="done", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == window._stack.max_visible, timeout=WAIT)
+    window._header.dismiss_all.click()
+    assert window._stack.ordered() == [], "queued ones included"
+    assert not window.isVisible()
 
 
 def test_an_action_runs_and_dismisses_its_card(host, qtbot):
