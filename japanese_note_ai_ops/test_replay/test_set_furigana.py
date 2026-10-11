@@ -105,8 +105,8 @@ def test_the_furigana_as_the_clip_says_it(col, reported):
     assert sorted(result.edited_nids) == sorted([said.id, unsure.id])
     assert furigana(col, said) == "他[た]の 人[ひと]はどこにいるの"
     assert col.get_note(said.id).tags == []
-    # The models heard it two ways: the draft is written and the note left for review
-    assert furigana(col, unsure) == "他[ほか]の 人[ひと]はどこにいるの"
+    # The models heard it two ways: both are offered and the note left for review
+    assert furigana(col, unsure) == "他[ほか？た]の 人[ひと]はどこにいるの"
     assert col.get_note(unsure.id).tags == [set_furigana.REVIEW_TAG]
     assert furigana(col, typed) == "他[ほか]の 人[ひと]は"
     assert reported == []

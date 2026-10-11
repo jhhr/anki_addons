@@ -151,7 +151,7 @@ class OpTest(unittest.TestCase):
     def test_a_word_left_unsettled_tags_the_note_for_review(self):
         note = Note({"Sentence": LINE, "Heard": heard("ほかのひとわどこにいるの", "たのひとわどこにいるの")})
         self.assertEqual(self.run_op(note)[0], [True])
-        self.assertEqual(note["Furigana"], "他[ほか]の 人[ひと]はどこにいるの")
+        self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
         self.assertEqual(note.tags, [op.REVIEW_TAG])
 
     def test_a_review_tag_goes_when_the_furigana_is_set_again_and_settled(self):

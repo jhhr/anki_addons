@@ -52,7 +52,7 @@ class FakeNote:
         self.fields[field] = value
 
 
-def run(note, updates, array=None, overwrite=False):
+def run(note, updates, array=None, overwrite=False, config=None):
     """The op with the generator and the proper noun call stubbed out."""
     with (
         mock.patch.object(
@@ -65,7 +65,9 @@ def run(note, updates, array=None, overwrite=False):
         ) as generate,
         mock.patch.object(extract_words, "add_proper_nouns", return_value=True) as proper_nouns,
     ):
-        changed = extract_words.extract_words_in_note({}, note, {}, updates, overwrite=overwrite)
+        changed = extract_words.extract_words_in_note(
+            config or {}, note, {}, updates, overwrite=overwrite
+        )
     return changed, generate, proper_nouns
 
 
@@ -130,6 +132,20 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         proper_nouns.assert_not_called()
         self.assertEqual((note["words"], updates), ("", {}))
         self.assertIn('tagged "furigana-review"', report.call_args.args[0])
+
+    def test_a_word_still_marked_for_review_keeps_the_note_alone_without_its_tag(self):
+        # In the extracted sentence, or in the furigana sentence it is kanjified from
+        config = {"Sentence": {"furigana_sentence_field": "furigana"}}
+        for fields in (
+            {"sentence": " 本[ほん？もと]を 読[よ]む。", "words": ""},
+            {"sentence": "本を読む。", "furigana": " 本[ほん？]を 読[よ]む。", "words": ""},
+        ):
+            note = FakeNote(fields)
+            with mock.patch.object(extract_words, "report_error") as report:
+                changed, generate, _ = run(note, {}, config=config)
+            self.assertFalse(changed)
+            generate.assert_not_called()
+            self.assertIn('"？"', report.call_args.args[0])
 
     def test_a_note_with_no_sentence_gets_nothing(self):
         note = FakeNote({"sentence": "", "words": ""})

@@ -72,6 +72,15 @@ class KanjifyInNoteTests(unittest.TestCase):
         model.assert_not_called()
         self.assertIn('tagged "furigana-review"', report.call_args.args[0])
 
+    def test_a_word_still_marked_for_review_keeps_the_note_alone_without_its_tag(self):
+        # The tag taken off before every word in doubt was fixed
+        note = FakeNote({"Furigana": "お 箸[はし？ばし]、一膳しかないの。", "Kanjified": ""})
+        changed, updates, model, report = self.kanjify_note(note)
+        self.assertFalse(changed)
+        self.assertEqual((note["Kanjified"], updates), ("", {}))
+        model.assert_not_called()
+        self.assertIn('"？"', report.call_args.args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

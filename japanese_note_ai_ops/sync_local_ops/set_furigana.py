@@ -5,10 +5,11 @@ and, once "Transcribe sentence audio" has run, what the models heard in
 `sentence_transcription_field`. This op writes the sentence with its furigana into
 `furigana_sentence_field` (`word_array/audio_furigana.py`): each kanji word read as the
 captions read it, else as a transcript hears it where that is Sudachi's draft, a reading
-JMdict has for the spelling or the show's for a name. A word the transcripts do not settle
-keeps its draft, and the note is tagged `furigana-review`: kanjify and word extraction leave
-it alone until a person has checked its furigana and taken the tag off. Speaker labels and
-sound descriptions are not said, so the furigana leaves them out.
+JMdict has for the spelling or the show's for a name. A word the transcripts do not settle is
+written with the readings to choose between, 方[ほう？かた] (`audio_furigana.doubt_furigana`),
+and the note is tagged `furigana-review`: kanjify and word extraction leave it alone until a
+person has fixed each such word and taken the tag off. Speaker labels and sound descriptions
+are not said, so the furigana leaves them out.
 
 Only a note whose furigana field is empty is written, so furigana a person typed or fixed is
 never replaced: empty the field to have it set again. A note needs a transcript from each of

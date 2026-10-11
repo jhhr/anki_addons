@@ -1,5 +1,6 @@
 """A sentence's furigana from its audio (word_array/audio_furigana.py): which reading each kanji
-word is written with, which go to review, and the furigana line written.
+word is written with, which go to review, and the furigana line written, a word in review with
+the readings to choose between.
 
 Nothing here tokenizes with Sudachi: a stand-in segments the few lines the tests use the way
 Sudachi does, so the suite runs without SudachiPy or the downloaded dictionaries. The
@@ -137,41 +138,48 @@ class WrittenTest(unittest.TestCase):
 
 
 class ReviewTest(unittest.TestCase):
-    def test_models_hearing_two_readings_leave_the_word_with_its_draft(self):
+    def test_models_hearing_two_readings_leave_the_word_with_both(self):
         result = furigana(LINE, "ほかのひとわどこにいるの", "たのひとわどこにいるの")
-        self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
+        self.assertEqual(result.text, "他[ほか？た]の 人[ひと]はどこにいるの")
         self.assertEqual(why(result), {"他": "review", "人": "draft"})
         self.assertEqual([r.surface for r in result.review], ["他"])
+        self.assertEqual(result.review[0].heard, ["ホカ", "タ"])
 
     def test_a_reading_nothing_licenses(self):
         heard = "そのひとわどこにいるの"
-        self.assertEqual(why(furigana(LINE, heard, heard)), {"他": "review", "人": "draft"})
+        result = furigana(LINE, heard, heard)
+        self.assertEqual(why(result), {"他": "review", "人": "draft"})
+        # Both heard it alike, so it is offered once
+        self.assertEqual(result.text, "他[ほか？そ]の 人[ひと]はどこにいるの")
 
     def test_no_correction_a_vowels_length_tells_from_another_licensed_reading(self):
         # 婆 drafted ばあ: JMdict reads it ばば and ばばあ, and the models drop a final long
         # vowel, so a clip heard as either is no evidence for it
-        for heard in ("ばばわどこにいるのかしら", "ばばあわどこにいるのかしら"):
+        for said, offered in (("ばば", "ばあ？ばば"), ("ばばあ", "ばあ？ばばあ")):
+            heard = said + "わどこにいるのかしら"
             result = furigana("婆はどこにいるのかしら", heard, heard)
             self.assertEqual(why(result), {"婆": "review"}, heard)
-            self.assertEqual(result.text, "婆[ばあ]はどこにいるのかしら")
+            self.assertEqual(result.text, f"婆[{offered}]はどこにいるのかしら")
 
     def test_a_transcript_far_from_the_caption_is_no_evidence_for_any_word(self):
         result = furigana("他の人は猫猫(マオマオ)", "ほかのひとわまおまお", "まったくちがうせりふだ")
         self.assertTrue(result.mismatched)
         self.assertEqual(why(result), {"他": "mismatch", "人": "mismatch", "猫猫": "caption"})
-        self.assertEqual(result.text, "他[ほか]の 人[ひと]は 猫猫[まおまお]")
+        # Each word offers its draft alone: what the alignment puts at a word of a mismatched
+        # line may be another line's speech
+        self.assertEqual(result.text, "他[ほか？]の 人[ひと？]は 猫猫[まおまお]")
 
     def test_no_transcripts_or_overlapping_captions_are_a_mismatch(self):
         self.assertTrue(furigana(LINE).mismatched)
         heard = "ほかのひとわどこにいるの"
         result = furigana("{\\an8}" + LINE, heard, heard)
         self.assertTrue(result.mismatched)
-        self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
+        self.assertEqual(result.text, "他[ほか？]の 人[ひと？]はどこにいるの")
 
-    def test_a_draft_sudachi_could_not_read_gets_no_furigana(self):
+    def test_a_draft_sudachi_could_not_read_is_offered_no_reading(self):
         result = furigana("響迂はどこにいるのかしら")
         self.assertEqual(why(result), {"響迂": "mismatch"})
-        self.assertEqual(result.text, "響迂はどこにいるのかしら")
+        self.assertEqual(result.text, "響迂[？]はどこにいるのかしら")
 
     def test_a_spelling_the_captions_read_in_hiragana_somewhere_is_no_name(self):
         # The show's list reads 薬師 as a name, but the captions read it in hiragana elsewhere:
@@ -183,7 +191,25 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(result.text, "薬師[くすし]ならどこにいるのかしら")
         result = furigana(line, heard, names=names, show_words={"薬師"})
         self.assertEqual(why(result), {"薬師": "review"})
-        self.assertEqual(result.text, "薬師[やくし]ならどこにいるのかしら")
+        self.assertEqual(result.text, "薬師[やくし？くすし]ならどこにいるのかしら")
+
+
+class DoubtTest(unittest.TestCase):
+    def test_choices_split_as_the_draft_where_each_leaves_the_same_kana(self):
+        self.assertEqual(af.doubt_furigana("開か", ["ひらか", "あか"]), " 開[ひら？あ]か")
+        self.assertEqual(af.doubt_furigana("お茶", ["おちゃ"]), "お 茶[ちゃ？]")
+
+    def test_else_one_group_over_the_whole_word(self):
+        self.assertEqual(
+            af.doubt_furigana("泣き明かし", ["なきあかし", "なきかし"]),
+            " 泣き明かし[なきあかし？なきかし]",
+        )
+        self.assertEqual(af.doubt_furigana("響迂", []), " 響迂[？]")
+
+    def test_a_doubt_is_a_question_mark_inside_furigana_only(self):
+        self.assertTrue(af.has_doubt("他[ほか？た]の 人[ひと]は"))
+        self.assertTrue(af.has_doubt("響迂[？]は"))
+        self.assertFalse(af.has_doubt("他[ほか]の 人[ひと]は？ どこ？"))
 
 
 class LicensedTest(unittest.TestCase):

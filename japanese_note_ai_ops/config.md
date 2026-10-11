@@ -220,10 +220,14 @@ said and are left out. Run "Transcribe sentence audio" first: a note needs a lin
 the `transcribe_models`, and one of them hearing a reading is enough to write it.
 
 A word the lines do not settle (they hear two readings, or one nothing has for the word), or
-every word of a sentence whose clip is far from its text, keeps Sudachi's reading, or none
-where Sudachi has none, and the note is tagged `furigana-review`. Kanjify and word extraction
-leave such a note alone: check its furigana against the clip, fix it, and take the tag off. In
-the eval about one card in five of an ordinary episode had a word to check.
+every word of a sentence whose clip is far from its text, is written with the readings to
+choose between in its brackets, joined by `？`: Sudachi's reading, then what the lines heard
+there, ` 方[ほう？かた]`. A word with nothing else heard has its one reading and a `？`,
+` 薬[くすり？]`, and one Sudachi cannot read has the `？` alone. The note is tagged
+`furigana-review`. Kanjify and word extraction leave such a note alone: listen to the clip,
+leave each marked word with the reading said (` 方[かた]`), and take the tag off. A sentence
+whose furigana still holds a `？` is left alone too, tag or no tag. In the eval about one card
+in five of an ordinary episode had a word to check.
 
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
 replaced. Empty the field to have it set again.

@@ -49,6 +49,11 @@ MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
 # not settle. Kanjify and word extraction read the furigana, so they leave the note alone
 # until a person has checked it and taken the tag off
 FURIGANA_REVIEW_TAG = "furigana-review"
+FURIGANA_REVIEW_LEFT = f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked'
+# ...and while a word of the furigana still offers readings to choose between, 方[ほう？かた]
+# (word_array/audio_furigana.py), tag or no tag: a tag taken off before every such word was
+# fixed would let one through
+FURIGANA_DOUBT_LEFT = 'Left alone: a word of its furigana is still marked "？" for review'
 
 
 class EnAndJPSentence(TypedDict):

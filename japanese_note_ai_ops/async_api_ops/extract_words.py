@@ -44,12 +44,13 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
-from ..configuration import FURIGANA_REVIEW_TAG
+from ..configuration import FURIGANA_DOUBT_LEFT, FURIGANA_REVIEW_LEFT, FURIGANA_REVIEW_TAG
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import merge, names, resources
+from ..word_array.audio_furigana import has_doubt
 from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
 from .chain_types import ChainStep
 from .base_ops import (
@@ -86,7 +87,7 @@ def extract_words_in_note(
         return False
     if note.has_tag(FURIGANA_REVIEW_TAG):
         # The generator takes a word's reading from the note's furigana
-        report_error(f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked')
+        report_error(FURIGANA_REVIEW_LEFT)
         return False
     try:
         sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)
@@ -96,6 +97,11 @@ def extract_words_in_note(
         return False
     if sentence_field not in note or word_list_field not in note:
         logger.error(f"{log_prefix}The note is missing the sentence or the word list field")
+        return False
+    # The furigana sentence too, which the extracted sentence is often kanjified from
+    furigana_field = config.get(note_type["name"], {}).get("furigana_sentence_field")
+    if any(has_doubt(note[f]) for f in (sentence_field, furigana_field) if f and f in note):
+        report_error(FURIGANA_DOUBT_LEFT)
         return False
 
     current = note[word_list_field].strip()
