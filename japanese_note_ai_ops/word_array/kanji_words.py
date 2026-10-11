@@ -77,12 +77,14 @@ def kanji_words(
     """The line's kanji words: one per kanji morpheme, the morphemes an inline reading or a
     name of `names` spans merged into one word, and so are those of a number (`number_spans`).
     A span the tokenizer cut across takes in the whole of each morpheme it touches, so the word
-    may run past it (玉葉|妃 for 玉葉). An inline reading covers its kanji only, 噛(か)みつい, so
-    the word's caption takes in the kana around them as written (かみつい); a word with other
-    kanji around them gets none. `read` gives the reading of a number with digits, which
-    Sudachi reads digit by digit, and of one it cut into a numeral and another word (三|十分,
-    じゅうぶん); without it the morphemes' readings are joined. Last, a kanji run Sudachi cut
-    where it should not have (`split_runs`) is one word."""
+    may run past it (玉葉|妃 for 玉葉), and spans touching one morpheme are one word, read as
+    their readings in a row (徳妃(とくひ)里樹(リーシュ), cut 徳|妃里|樹, is とくひりーしゅ). An
+    inline reading covers its kanji only, 噛(か)みつい, so the word's caption takes in the kana
+    around them as written (かみつい); a word with other kanji around them gets none. `read`
+    gives the reading of a number with digits, which Sudachi reads digit by digit, and of one
+    it cut into a numeral and another word (三|十分, じゅうぶん); without it the morphemes'
+    readings are joined. Last, a kanji run Sudachi cut where it should not have
+    (`split_runs`) is one word."""
     spans: list[tuple[int, int, Optional[str], bool]] = []  # start, end, caption, is_name
     for r in readings:
         spans.append((r.start, r.end, r.reading, r.katakana))
@@ -98,32 +100,35 @@ def kanji_words(
                 spans.append((start, end, None, True))
                 taken[start:end] = [True] * (end - start)
             start = text.find(name, end)
-    words: list[Word] = []
-    used: set[int] = set()
-    for s, e, caption, is_name in sorted(spans):
+    # The spans by the morphemes they touch, [first, last]; spans touching one morpheme are
+    # one word, which their readings read together (徳妃(とくひ)里樹(リーシュ), cut 徳|妃里|樹)
+    groups: list[tuple[int, int, list[tuple[int, int, Optional[str], bool]]]] = []
+    for span in sorted(spans):
+        s, e = span[0], span[1]
         inside = [i for i, m in enumerate(morphemes) if m.end() > s and m.begin() < e]
         if not inside:
             continue
-        lo, hi = morphemes[inside[0]].begin(), morphemes[inside[-1]].end()
-        if caption is not None and (lo < s or e < hi):
-            around = text[lo:s] + text[e:hi]
-            caption = (
-                None
-                if KANJI_RE.search(around)
-                else to_hiragana(text[lo:s]) + caption + to_hiragana(text[e:hi])
-            )
+        if groups and inside[0] <= groups[-1][1]:
+            first, last, members = groups[-1]
+            groups[-1] = (first, max(last, inside[-1]), members + [span])
+        else:
+            groups.append((inside[0], inside[-1], [span]))
+    words: list[Word] = []
+    used: set[int] = set()
+    for first, last, members in groups:
+        lo, hi = morphemes[first].begin(), morphemes[last].end()
         words.append(
             Word(
                 line_no,
                 lo,
                 hi,
                 text[lo:hi],
-                "".join(to_hiragana(morphemes[i].reading_form()) for i in inside),
-                caption,
-                ["name"] if is_name else [],
+                "".join(to_hiragana(m.reading_form()) for m in morphemes[first : last + 1]),
+                joined_caption(text, lo, hi, members),
+                ["name"] if any(is_name for *_, is_name in members) else [],
             )
         )
-        used.update(inside)
+        used.update(range(first, last + 1))
     for i, j in number_spans(morphemes):
         if used.intersection(range(i, j)):
             continue
@@ -151,6 +156,24 @@ def kanji_words(
         words.append(word)
     words.sort(key=lambda w: w.start)
     return words
+
+
+def joined_caption(
+    text: str, lo: int, hi: int, spans: Sequence[tuple[int, int, Optional[str], bool]]
+) -> Optional[str]:
+    """The captions' reading of the word text[lo:hi]: its spans' readings in order, with the
+    kana around and between them as written; none where a span has no reading (a name of the
+    list) or a kanji is outside the spans."""
+    pieces: list[str] = []
+    pos = lo
+    for s, e, caption, _ in spans:
+        if caption is None or KANJI_RE.search(text[pos:s]):
+            return None
+        pieces += [to_hiragana(text[pos:s]), caption]
+        pos = e
+    if KANJI_RE.search(text[pos:hi]):
+        return None
+    return "".join(pieces) + to_hiragana(text[pos:hi])
 
 
 def is_proper_noun(m) -> bool:

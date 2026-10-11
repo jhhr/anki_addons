@@ -140,6 +140,20 @@ class KanjiWordsTest(unittest.TestCase):
             [(w.surface, w.caption, w.kinds) for w in words], [("猫猫", "まおまお", ["name"])]
         )
 
+    def test_readings_of_kanji_the_tokenizer_cut_across_are_one_words(self):
+        # A title and a name, each read by the captions, which the tokenizer cut 春|妃夏|樹:
+        # two words would share 妃夏
+        LEXICON.update({"春": ("ハル", PROPER), "妃夏": ("ヒナツ", PROPER), "樹": ("キ", NOUN)})
+        try:
+            words = self.words("春妃(しゅんひ)夏樹(ナツキ)は")
+        finally:
+            for piece in ("春", "妃夏", "樹"):
+                del LEXICON[piece]
+        self.assertEqual(
+            [(w.surface, w.start, w.end, w.caption, w.kinds) for w in words],
+            [("春妃夏樹", 0, 4, "しゅんひなつき", ["name"])],
+        )
+
     def test_a_reading_of_a_words_kanji_takes_in_its_okurigana(self):
         LEXICON["噛みつい"] = ("カミツイ", NOUN)
         try:
