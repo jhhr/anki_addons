@@ -209,6 +209,36 @@ loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
 Notes are transcribed one after another, since the server hears one clip at a time: about
 seven seconds a clip on the CPU alone in the eval, less with the GPU (not measured yet).
 
+### setting furigana from audio
+
+"Set furigana from audio" writes a sentence note's furigana into `furigana_sentence_field`,
+reading each kanji word of `sentence_field` as the clip says it: the reading a model's line in
+`sentence_transcription_field` hears, where that is Sudachi's reading, one JMdict has for the
+word or the show's for a name. A reading the captions give themselves, `猫猫(マオマオ)`, is
+written as they give it. Speaker labels and sound descriptions, `（猫猫）` or `（足音）`, are not
+said and are left out. Run "Transcribe sentence audio" first: a note needs a line from each of
+the `transcribe_models`, and one of them hearing a reading is enough to write it.
+
+A word the lines do not settle (they hear two readings, or one nothing has for the word), or
+every word of a sentence whose clip is far from its text, keeps Sudachi's reading, or none
+where Sudachi has none, and the note is tagged `furigana-review`. Kanjify and word extraction
+leave such a note alone: check its furigana against the clip, fix it, and take the tag off. In
+the eval about one card in five of an ordinary episode had a word to check.
+
+Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
+replaced. Empty the field to have it set again.
+
+The show's names: a show's captions give a name its reading at the first mention in an episode
+(`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name
+most, wherever it is written, and takes the show to be the first level of a note's first
+hierarchical tag: name the tag `${deck_name}::${0:episode_num}` in subs2srs' export, for
+example. A name the captions never read goes in `user_files/show_names.json`, by show, and
+wins over the captions:
+
+```json
+{"my_show": {"響迂": "きょうう"}}
+```
+
 ## config fields per note type name
 
 Add the fields by note type like this. You can set multiple different note types. You can't set
@@ -250,6 +280,10 @@ You need to define
 - for transcribing sentence audio:
   1. `sentence_audio_field`
   2. `sentence_transcription_field`
+- for setting furigana from audio:
+  1. `sentence_field`
+  2. `furigana_sentence_field`
+  3. `sentence_transcription_field`
 - for generating kanji stories:
   1. `kanji_field`
   2. `story_field`

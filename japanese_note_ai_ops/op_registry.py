@@ -56,6 +56,7 @@ from .sync_local_ops.find_missing_matched_note_ids import (
 )
 from .sync_local_ops.migrate_to_sentence_notes import migrate_to_sentence_notes_from_selected
 from .sync_local_ops.refresh_example_sentences import refresh_example_sentences_from_selected
+from .sync_local_ops.set_furigana import set_furigana_selected_notes
 from .sync_local_ops.tag_notes_matched_status import tag_notes_matched_status_from_selected
 from .word_array.match_flags import JUDGE_NEW, REJUDGE_ALL, REJUDGE_MATCHED
 
@@ -109,6 +110,13 @@ OPS: tuple[OpSpec, ...] = (
         "Transcribe sentence audio",
         lambda nids, parent, chain: transcribe_selected_notes(nids, parent=parent, chain=chain),
         needs_generator=False,
+        group=GROUP_ASYNC,
+    ),
+    OpSpec(
+        "set_furigana",
+        "Set furigana from audio",
+        lambda nids, parent, chain: set_furigana_selected_notes(nids, parent=parent, chain=chain),
+        needs_generator=True,
         group=GROUP_ASYNC,
     ),
     OpSpec(

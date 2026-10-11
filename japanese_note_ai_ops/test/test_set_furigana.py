@@ -1,0 +1,263 @@
+"""Set furigana from audio (sync_local_ops/set_furigana.py): which notes are written, the
+furigana and review tag written, the show a note is of and the names read from its captions
+and the names file. How a caption becomes furigana is test_word_array_audio_furigana.py's.
+
+Nothing here tokenizes with Sudachi: a stand-in segments the few lines the tests use the way
+Sudachi does. The transcripts are written as the kana models write them (ひとわ)."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from addon_modules import load_ops_module
+
+op = load_ops_module("set_furigana", subdir="sync_local_ops")
+run_errors = load_ops_module("run_errors")
+
+SENTENCE = "Sentence note"
+CONFIG = {
+    SENTENCE: {
+        "word_list_field": "Words",
+        "sentence_field": "Sentence",
+        "furigana_sentence_field": "Furigana",
+        "sentence_transcription_field": "Heard",
+    },
+    "transcribe_models": ["local-kana-anime-whisper", "local-ruby-mora"],
+}
+
+NOUN = ("名詞", "普通名詞", "一般", "*", "*", "*")
+PARTICLE = ("助詞", "格助詞", "*", "*", "*", "*")
+LEXICON = {"他": ("ホカ", NOUN), "人": ("ヒト", NOUN), "猫": ("ネコ", NOUN)}
+DICTIONARY = {"他": {"ほか", "た"}, "人": {"ひと", "にん", "じん"}}
+
+
+class Morpheme:
+    def __init__(self, surface, reading, pos, begin):
+        self._surface, self._reading, self._pos, self._begin = surface, reading, pos, begin
+
+    def surface(self):
+        return self._surface
+
+    def reading_form(self):
+        return self._reading
+
+    def part_of_speech(self):
+        return self._pos
+
+    def begin(self):
+        return self._begin
+
+    def end(self):
+        return self._begin + len(self._surface)
+
+
+def tokenize(text):
+    """Longest match over LEXICON; any other character is a morpheme of its own, read as
+    itself and a particle (は read ワ)."""
+    out, i = [], 0
+    while i < len(text):
+        for n in range(len(text) - i, 0, -1):
+            piece = text[i : i + n]
+            if piece in LEXICON:
+                reading, pos = LEXICON[piece]
+                out.append(Morpheme(piece, reading, pos, i))
+                i += n
+                break
+        else:
+            out.append(Morpheme(text[i], text[i], PARTICLE, i))
+            i += 1
+    return out
+
+
+def dictionary(form):
+    return DICTIONARY.get(form, set())
+
+
+class Note:
+    def __init__(self, fields: dict[str, str], tags=(), note_id: int = 7) -> None:
+        self.id = note_id
+        self.fields = {"Sentence": "", "Furigana": "", "Heard": "", **fields}
+        self.tags = list(tags)
+
+    def note_type(self):
+        return {"name": SENTENCE}
+
+    def __contains__(self, field: str) -> bool:
+        return field in self.fields
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
+
+    def __setitem__(self, field: str, value: str) -> None:
+        self.fields[field] = value
+
+    def add_tag(self, tag: str) -> None:
+        if tag not in self.tags:
+            self.tags.append(tag)
+
+    def remove_tag(self, tag: str) -> None:
+        self.tags = [t for t in self.tags if t != tag]
+
+
+def heard(kana_anime_whisper: str, ruby_mora: str) -> str:
+    return f"kana-anime-whisper: {kana_anime_whisper}<br>ruby-mora: {ruby_mora}"
+
+
+LINE = "他の人はどこにいるの"
+# A line long enough that 猫猫 read ねこねこ in it still lines up with まおまお heard
+NAME_LINE = "猫猫がいたのはどこなのかしら"
+NAME_HEARD = heard("まおまおがいたのわどこなのかしら", "まおまおがいたのわどこなのかしら")
+
+
+class OpTest(unittest.TestCase):
+    def setUp(self):
+        self.reports: list[str] = []
+        deliver = run_errors._deliver
+        run_errors.deliver_with(lambda _title, text: self.reports.append(text))
+        self.addCleanup(run_errors.deliver_with, deliver)
+        # The captions of each show's notes, as the collection would give them
+        self.captions: dict[str, list[str]] = {}
+        self.asked: list[tuple] = []
+        self.user_names: dict = {}
+
+    def captions_of(self, show, note_type_name, field):
+        self.asked.append((show, note_type_name, field))
+        return self.captions.get(show, [])
+
+    def shows(self):
+        return op.Shows(self.captions_of, dictionary, self.user_names)
+
+    def run_op(self, *notes, shows=None):
+        shows = shows or self.shows()
+        updated: dict = {}
+        changed = [
+            op.set_furigana_in_note(
+                CONFIG, note, {}, updated, shows=shows, tokenize=tokenize, dictionary=dictionary
+            )
+            for note in notes
+        ]
+        return changed, updated
+
+    def test_furigana_as_the_clip_says_it_and_no_review(self):
+        note = Note({"Sentence": "（白鈴）" + LINE, "Heard": heard("たのひとわどこにいるの", "そのひとわどこにいるの")})
+        changed, updated = self.run_op(note)
+        self.assertEqual((changed, updated), ([True], {7: note}))
+        self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
+        self.assertEqual(note.tags, [])
+
+    def test_a_word_left_unsettled_tags_the_note_for_review(self):
+        note = Note({"Sentence": LINE, "Heard": heard("ほかのひとわどこにいるの", "たのひとわどこにいるの")})
+        self.assertEqual(self.run_op(note)[0], [True])
+        self.assertEqual(note["Furigana"], "他[ほか]の 人[ひと]はどこにいるの")
+        self.assertEqual(note.tags, [op.REVIEW_TAG])
+
+    def test_a_review_tag_goes_when_the_furigana_is_set_again_and_settled(self):
+        said = "ほかのひとわどこにいるの"
+        note = Note({"Sentence": LINE, "Heard": heard(said, said)}, tags=[op.REVIEW_TAG])
+        self.run_op(note)
+        self.assertEqual(note.tags, [])
+
+    def test_furigana_already_there_is_never_replaced(self):
+        said = "ほかのひとわどこにいるの"
+        note = Note({"Sentence": LINE, "Furigana": "他[た]の", "Heard": heard(said, said)})
+        self.assertEqual(self.run_op(note), ([False], {}))
+        self.assertEqual(note["Furigana"], "他[た]の")
+
+    def test_a_note_lacking_a_transcript_is_left_and_reported(self):
+        note = Note({"Sentence": LINE, "Heard": "kana-anime-whisper: ほかのひとわどこにいるの"})
+        self.assertEqual(self.run_op(note), ([False], {}))
+        self.assertEqual(note["Furigana"], "")
+        self.assertIn("No transcript from ruby-mora yet", self.reports[0])
+
+    def test_the_furigana_field_must_be_another_than_the_sentences(self):
+        config = {SENTENCE: {**CONFIG[SENTENCE], "furigana_sentence_field": "Sentence"}}
+        note = Note({"Sentence": LINE})
+        shows = self.shows()
+        changed = op.set_furigana_in_note(
+            config, note, {}, {}, shows=shows, tokenize=tokenize, dictionary=dictionary
+        )
+        self.assertFalse(changed)
+        self.assertIn("name another field", self.reports[0])
+
+    def test_a_type_without_a_field_configured_is_reported(self):
+        config = {SENTENCE: {"word_list_field": "Words"}}
+        changed = op.set_furigana_in_note(
+            config, Note({}), {}, {}, shows=self.shows(), tokenize=tokenize, dictionary=dictionary
+        )
+        self.assertFalse(changed)
+        self.assertIn("sentence_field", self.reports[0])
+
+    def test_a_name_the_shows_captions_read_elsewhere(self):
+        # The episode's first mention gave 猫猫 its reading; this one has none
+        self.captions["show"] = ["猫猫(マオマオ)", NAME_LINE]
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        self.run_op(note)
+        self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
+        self.assertEqual(note.tags, ["show::01"])
+        self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
+
+    def test_a_name_in_the_names_file_wins_over_the_captions(self):
+        self.captions["show"] = ["猫猫(ネコネコ)"]
+        self.user_names = {"show": {"猫猫": "まおまお"}}
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        self.run_op(note)
+        self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
+
+    def test_a_show_is_read_once_a_run_and_a_note_of_none_by_its_own_caption(self):
+        notes = [
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"]),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::02"]),
+            Note({"Sentence": "猫猫(マオマオ)", "Heard": heard("まおまお", "まおまお")}),
+        ]
+        self.run_op(*notes)
+        self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
+        self.assertEqual(notes[2]["Furigana"], "猫猫[まおまお]")
+
+
+class ShowTest(unittest.TestCase):
+    class Tagged:
+        def __init__(self, *tags):
+            self.tags = list(tags)
+
+    def test_the_first_level_of_the_first_hierarchical_tag(self):
+        self.assertEqual(op.show_of(self.Tagged("new", "kusuri::05", "a::b")), "kusuri")
+        self.assertIsNone(op.show_of(self.Tagged("new", "furigana-review")))
+
+    def test_the_shows_search_escapes_what_anki_reads_as_wildcards(self):
+        self.assertEqual(op.show_search("show"), '"tag:show::*"')
+        self.assertEqual(op.show_search('a_b*"c'), '"tag:a\\_b\\*\\"c::*"')
+
+
+class NamesFileTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "show_names.json"
+        self.reports: list[str] = []
+        deliver = run_errors._deliver
+        run_errors.deliver_with(lambda _title, text: self.reports.append(text))
+        self.addCleanup(run_errors.deliver_with, deliver)
+
+    def test_names_by_show_read_in_hiragana(self):
+        names = {"show": {"響迂": "キョウウ", "高順": "がおしゅん", "x": ""}, "other": "?"}
+        self.path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(
+            op.read_names_file(str(self.path)),
+            {"show": {"響迂": "きょうう", "高順": "がおしゅん"}},
+        )
+
+    def test_no_file_is_no_names(self):
+        self.assertEqual(op.read_names_file(str(self.path)), {})
+        self.assertEqual(self.reports, [])
+
+    def test_a_file_that_is_not_json_is_reported(self):
+        self.path.write_text("{", encoding="utf-8")
+        self.assertEqual(op.read_names_file(str(self.path)), {})
+        self.assertIn("could not be read", self.reports[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

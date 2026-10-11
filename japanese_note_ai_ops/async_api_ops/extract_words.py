@@ -44,6 +44,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
+from ..configuration import FURIGANA_REVIEW_TAG
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..note_roles import SENTENCE_ROLE
@@ -82,6 +83,10 @@ def extract_words_in_note(
     note_type = note.note_type()
     if not note_type:
         logger.error(f"{log_prefix}Missing note type")
+        return False
+    if note.has_tag(FURIGANA_REVIEW_TAG):
+        # The generator takes a word's reading from the note's furigana
+        report_error(f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked')
         return False
     try:
         sentence_field = get_field_config(config, "word_extraction_sentence_field", note_type)

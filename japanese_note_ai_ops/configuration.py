@@ -45,6 +45,10 @@ GeneratedMeaningsDictType = dict[str, list[GeneratedMeaningType]]
 NO_DICTIONARY_ENTRY_TAG = "2-no-dictionary-entry"
 MEANINGS_GENERATED_TAG = "2-meanings-generated-to-json"
 MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
+# "Set furigana from audio" tags a sentence note whose furigana holds a reading its audio did
+# not settle. Kanjify and word extraction read the furigana, so they leave the note alone
+# until a person has checked it and taken the tag off
+FURIGANA_REVIEW_TAG = "furigana-review"
 
 
 class EnAndJPSentence(TypedDict):

@@ -31,12 +31,16 @@ FIELDS = {
 
 
 class FakeNote:
-    def __init__(self, fields, note_id=1):
+    def __init__(self, fields, note_id=1, tags=()):
         self.id = note_id
         self.fields = fields
+        self.tags = list(tags)
 
     def note_type(self):
         return {"name": "Sentence"}
+
+    def has_tag(self, tag):
+        return tag in self.tags
 
     def __contains__(self, field):
         return field in self.fields
@@ -111,6 +115,21 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         proper_nouns.assert_not_called()
         self.assertEqual(note["words"], broken)
         self.assertEqual(updates, {})
+
+    def test_a_note_whose_furigana_awaits_review_is_left_alone(self):
+        # Set furigana from audio left a reading unsettled, which the generator would take as
+        # the word's reading
+        note = FakeNote({"sentence": "本を読む。", "words": ""}, tags=["furigana-review"])
+        updates: dict = {}
+
+        with mock.patch.object(extract_words, "report_error") as report:
+            changed, generate, proper_nouns = run(note, updates)
+
+        self.assertFalse(changed)
+        generate.assert_not_called()
+        proper_nouns.assert_not_called()
+        self.assertEqual((note["words"], updates), ("", {}))
+        self.assertIn('tagged "furigana-review"', report.call_args.args[0])
 
     def test_a_note_with_no_sentence_gets_nothing(self):
         note = FakeNote({"sentence": "", "words": ""})

@@ -18,6 +18,8 @@ from .base_ops import (
     AsyncTaskProgressUpdater,
 )
 from .role_gate import notes_of_role
+from .run_errors import report_error
+from ..configuration import FURIGANA_REVIEW_TAG
 from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config
 
@@ -232,6 +234,9 @@ def kanjify_sentence_in_note(
     model = note.note_type()
     if not model:
         logger.error("Missing note type for note %s", note.id)
+        return False
+    if note.has_tag(FURIGANA_REVIEW_TAG):
+        report_error(f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked')
         return False
     try:
         furigana_sentence_field = get_field_config(config, "furigana_sentence_field", model)

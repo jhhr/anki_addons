@@ -27,7 +27,7 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
 | `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
-| `op_registry.py` | `OPS`: the 24 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
+| `op_registry.py` | `OPS`: the 25 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
@@ -53,6 +53,7 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3250 lines |
 | `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
+| `sync_local_ops/set_furigana.py` | "Set furigana from audio": an empty `furigana_sentence_field` written from the caption and the transcripts (`word_array/audio_furigana.py`), with the show's names (the captions' katakana readings over the show's notes, `captions.show_readings`, and `user_files/show_names.json`; the show is the first level of the first hierarchical tag) and JMdict's readings (`jmdict_index.spelling_readings`); a note left with a word unsettled is tagged `furigana-review` (`configuration.FURIGANA_REVIEW_TAG`), which kanjify and word extraction skip |
 | `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing` |
 | `sync_local_ops/sentence_migration.py`, `migrate_to_sentence_notes.py` | "Move sentences to sentence notes", single-use (see "Sentence and vocab note types"): the pure planner (`plan_migration`, `preflight_error`, the report's `CASES`; anki- and aqt-free) and the op that reads every vocab and sentence note in one SQL pass each, writes the report to `user_files/sentence_migration_<timestamp>.txt` and applies the plan (`SentenceMigration`, `migrate_spec()`) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
@@ -621,7 +622,7 @@ subagents instead (`agent_items.py` takes and saves items, the types in the repo
 what such a session follows), writing the same result files.
 
 The **furigana audio eval** (`furigana_audio*.py`, overview in `furigana_audio.py`'s docstring)
-is for the planned op that sets a sentence's furigana from its audio clip: it measures which
+is for "Set furigana from audio" (`sync_local_ops/set_furigana.py`): it measures which
 transcriber or reading check gets the reading the speaker used. Its corpus is a subs2srs export
 of one show in `evals/furigana_audio/` of the test data checkout, not notes: the picking reads
 the TSV, and the picked cards' clips are copied there from the subs2srs output on the machine
@@ -695,7 +696,9 @@ the selection's `--reword` and the scorer read both, so the queue is built again
 - Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py`,
   `test_word_array_reading_check.py` and `test_word_array_audio_furigana.py` (the caption
   cleaning, the word units, the check and the furigana written from them, on a stand-in
-  tokenizer), `test_transcribe_audio.py` (the transcription field, which transcribers
+  tokenizer), `test_set_furigana.py` (which notes the op writes, the review tag, the show and
+  its names), the gate in `test_kanjify_sentence.py` and `test_extract_words.py`,
+  `test_transcribe_audio.py` (the transcription field, which transcribers
   a note is asked for, the server check before a run), `test_capture_calls.py`'s
   `TranscriptTests` (the request, its record without the audio, a replay answering it) and
   `test_transcribe_server.py` (the server's HTTP side, with stand-in models).

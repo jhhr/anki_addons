@@ -30,6 +30,7 @@ OP_LABELS = [
     "Translate sentence",
     "Generate kanji story",
     "Transcribe sentence audio",
+    "Set furigana from audio",
     "Kanjify sentence",
     "Extract words",
     "Extract words + Judge matchability",
@@ -55,7 +56,7 @@ OP_LABELS = [
 SEPARATOR = "---"
 
 # The whole "AI helper" submenu, separators included
-MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:19] + [SEPARATOR] + [
+MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:20] + [SEPARATOR] + [
     "Find missing matched note ids for selected notes",
     "Tag notes matched status",
     "Build name lexicon from selected notes",
@@ -71,6 +72,7 @@ STARTS = {
     "translate_sentence": ("translate_selected_notes", {}),
     "kanji_story": ("make_stories_for_selected_notes", {}),
     "transcribe_audio": ("transcribe_selected_notes", {}),
+    "set_furigana": ("set_furigana_selected_notes", {}),
     "kanjify_sentence": ("kanjify_selected_notes", {}),
     "extract_words": ("extract_words_from_selected_notes", {}),
     "extract_words_and_judge": ("extract_words_and_judge_from_selected_notes", {}),
@@ -118,6 +120,7 @@ ENTRY_MODULES = {
     ("translate_field", "async_api_ops"): (["translate_selected_notes"], False),
     ("make_kanji_story", "async_api_ops"): (["make_stories_for_selected_notes"], False),
     ("transcribe_audio", "async_api_ops"): (["transcribe_selected_notes"], False),
+    ("set_furigana", "sync_local_ops"): (["set_furigana_selected_notes"], True),
     ("kanjify_sentence", "async_api_ops"): (["kanjify_selected_notes"], False),
     ("extract_words", "async_api_ops"): (
         [
@@ -197,12 +200,13 @@ class RegistryTests(unittest.TestCase):
 
     def test_groups_split_where_the_menu_separator_was(self):
         groups = [spec.group for spec in op_registry.OPS]
-        self.assertEqual(groups, ["async"] * 19 + ["sync"] * 5)
+        self.assertEqual(groups, ["async"] * 20 + ["sync"] * 5)
 
     def test_needs_generator_exactly_for_the_ops_that_run_it(self):
         self.assertEqual(
             {spec.key for spec in op_registry.OPS if spec.needs_generator},
             {
+                "set_furigana",
                 "extract_words",
                 "extract_words_and_judge",
                 "regenerate_words",
