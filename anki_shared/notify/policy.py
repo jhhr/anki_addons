@@ -1,10 +1,11 @@
 """Bookkeeping for the toast stack: what is showing, what is waiting, what
 belongs together. Knows nothing about widgets, geometry or timers.
 
-Splitting this out is not tidiness for its own sake. conftest stubs aqt and
-anki with MagicMock, so anything importing Qt cannot be meaningfully tested;
-keeping the ordering, grouping, dedup and queueing rules here means the parts
-most likely to be subtly wrong are the parts under test.
+Splitting this out is not tidiness for its own sake. The widgets can only be
+tested against a running Anki, at about half a second a case and with every
+timing assertion a wait. Kept free of Qt, the ordering, grouping, dedup and
+queueing rules, the parts most likely to be subtly wrong, are tested directly
+and by the dozen in test/test_notify_stack.py.
 
 The host drives it in one direction only: mutate, then re-read visible() and
 reconcile the widgets against it. There is no change-event protocol to keep in

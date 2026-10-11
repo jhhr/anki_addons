@@ -65,9 +65,6 @@ def _show(spec: Dict[str, Any]) -> None:
     single_shot() workaround for this. mw.progress.single_shot refuses to fire
     under a progress window and retries shortly after, so doing it here once
     means no caller has to.
-
-    aqt is imported inside the function so the package stays importable without
-    a running Anki: the tests stub aqt, which has no importable aqt.utils.
     """
     import aqt
 

@@ -22,9 +22,9 @@ addon directories alphabetically and reverses them when ANKIREVADDONS is set,
 so load order is deterministic but arbitrary -- nothing here may depend on it.
 
 This module deliberately does not import aqt: the anchor object is passed in.
-That keeps the election unit-testable (conftest stubs aqt with a MagicMock,
-against which ``getattr(mw, KEY, None)`` would never return None) and lets the
-tests load this file twice to simulate the vendoring.
+That lets each test elect on an object of its own rather than on aqt.mw, which
+the whole suite shares and on which a registry would outlive the test, and lets
+the tests load this file twice to simulate the vendoring.
 """
 
 from __future__ import annotations
