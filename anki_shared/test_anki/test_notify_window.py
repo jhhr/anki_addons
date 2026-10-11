@@ -247,6 +247,30 @@ def test_nothing_is_drawn_while_a_progress_dialog_is_up(host, real_mw, qtbot):
     qtbot.waitUntil(lambda: len(window._cards) == 1, timeout=WAIT)
 
 
+def test_a_countdown_held_back_by_a_progress_dialog_does_not_end_a_repost(
+    host, real_mw, qtbot
+):
+    # Anki retries a timer that fires under a progress dialog from a single_shot of
+    # its own, out of reach of the card's stop_timer(). When the dialog closed, that
+    # retry ended the entry a repost had just replaced, and the new report with it.
+    window = host.window
+    handle = host.post(make_spec(source="A", title="first", key="k", timeout_ms=300))
+    qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
+    real_mw.progress.start()
+    try:
+        qtbot.wait(450)  # the countdown runs out under the dialog
+        host.post(make_spec(source="A", title="second", key="k", timeout_ms=300))
+    finally:
+        real_mw.progress.finish()
+    qtbot.wait(150)  # past the retry, which comes within 100ms of the dialog closing
+    assert handle in window._cards, "the repost has a countdown of its own"
+    qtbot.waitUntil(
+        lambda: handle in window._cards and "second" in window._cards[handle].summary.text(),
+        timeout=WAIT,
+    )
+    qtbot.waitUntil(lambda: handle not in window._cards, timeout=WAIT)
+
+
 def test_a_theme_change_restyles_the_cards(host, qtbot, monkeypatch):
     window = host.window
     handle = host.post(make_spec(source="A", title="failed", level="error", timeout_ms=STICKY))

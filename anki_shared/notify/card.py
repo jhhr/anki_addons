@@ -75,6 +75,10 @@ class ToastCard(QFrame):
         self._on_pin = on_pin
         self._timer: Optional[QTimer] = None
         self._timeout_ms: Optional[int] = None
+        # Bumped by every stop_timer(), and checked by a countdown before it acts.
+        # Anki retries a timer that fires under a progress dialog from a single_shot
+        # of its own, which stopping self._timer does not reach.
+        self._countdown = 0
         self.pinned = False
         # Tracked rather than read back off the widget: isVisible() is False
         # for every child while the host window is hidden or minimised, which
@@ -207,17 +211,19 @@ class ToastCard(QFrame):
         self.stop_timer()
         if self._timeout_ms is None or self.pinned:
             return
+        countdown = self._countdown
         # Parented to the card so the timer dies with it; single_shot would
-        # outlive the widget and fire into a deleted object.
+        # outlive the widget and fire into a deleted object. Anki's retry of it
+        # under a progress dialog is a single_shot regardless, hence _countdown.
         self._timer = mw.progress.timer(
             self._timeout_ms,
-            self._expire,
+            lambda: self._expire(countdown),
             repeat=False,
             requiresCollection=False,
             parent=self,
         )
 
-    def _expire(self) -> None:
+    def _expire(self, countdown: int) -> None:
         """Close, unless somebody is reading it.
 
         The hover check happens here rather than by stopping the timer on
@@ -226,7 +232,12 @@ class ToastCard(QFrame):
         stopping the timer there would strand it on screen forever. Re-arming
         on a hover instead is self-correcting -- a missed event costs one extra
         countdown, not the card's whole lifetime.
+
+        A countdown stopped since it started does nothing, and finds that out
+        before it touches the widget, which may be gone.
         """
+        if countdown != self._countdown:
+            return
         if self.pinned:
             return
         if self.underMouse():
@@ -235,6 +246,7 @@ class ToastCard(QFrame):
         self._on_dismiss(self.handle)
 
     def stop_timer(self) -> None:
+        self._countdown += 1
         if self._timer is not None:
             try:
                 self._timer.stop()

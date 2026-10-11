@@ -128,14 +128,27 @@ class ToastWindow(QWidget):
 
     def post_entry(self, spec: Dict[str, Any]) -> str:
         handle = self._stack.post(spec, self._now_ms())
+        self._stop_countdown(handle)
         self._schedule_reconcile()
         return handle
 
     def update_entry(self, handle: str, fields: Dict[str, Any]) -> bool:
         changed = self._stack.update(handle, fields)
         if changed:
+            self._stop_countdown(handle)
             self._schedule_reconcile()
         return changed
+
+    def _stop_countdown(self, handle: str) -> None:
+        """Stop the countdown of a card whose entry has just been replaced.
+
+        The redraw that re-arms it for the new content waits out a progress
+        dialog. The old countdown, held back by the same dialog, would otherwise
+        get to end the entry first, and the new content with it.
+        """
+        card = self._cards.get(handle)
+        if card is not None:
+            card.stop_timer()
 
     def dismiss_entry(self, handle: str) -> bool:
         removed = self._stack.dismiss(handle)
