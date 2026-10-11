@@ -56,6 +56,8 @@ collection was migrated on 2026-09-16.
 3. **Grouping** morphemes into words: a verb or adjective plus its inflection chain (助動詞,
    て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words, and so
    do the modal 助動詞 らしい, べき and まい (捌いとる + らしい, 帰る + べき); たい stays in the chain.
+   やがる, a 助動詞 to Sudachi, is read as the verb it is, so it stays out of the chain too:
+   出して + やがる (see Structure for やがる after a verb stem).
 4. **Furigana groups are never split between top-level words**, which repairs tokenizer cuts
    like 八紘|一宇 and 業|者.
 5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,
@@ -178,6 +180,13 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.
+
+A verb stem with やがる after it is one compound verb made of the two, though JMdict has none of
+them as a verb: 言いやがって is 言いやがる = 言う + やがる, as 言い出す is 言う + 出す, and so are
+寝返りやがった and 飼われやがって. JMdict's one such entry, the expression 言いやがって, gives way to
+it as an inflected expression does to its dictionary form. A longer match ending on the verb keeps
+it (手玉に取る + やがった), and after a て-form やがる is a word of its own (熟れて + やがる). Export:
+12 やがる, all part of the verb before them until then; 7 compound verbs, 5 words of their own.
 
 A furigana group cut by the tokenizer is one word when JMdict has the whole read that way
 (八紘一宇, 業者; its sub-words then follow the rules above); otherwise its pieces are the words

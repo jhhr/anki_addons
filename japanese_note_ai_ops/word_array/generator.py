@@ -148,7 +148,7 @@ def tokenize(natural: str) -> list[Morph]:
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
-    return _sou_naru(_split_number_counters(out))
+    return _sou_naru(_auxiliary_verbs(_split_number_counters(out)))
 
 
 def _reads_whole(morphs: list[Morph], n: int) -> bool:
@@ -195,6 +195,24 @@ def _sou_naru(morphs: list[Morph]) -> list[Morph]:
             verb = ("動詞", "非自立可能", "*", "*", "五段-ラ行", NARU_FORMS[b.surface])
             out[k + 1] = replace(b, pos=verb, lemma="なる", norm="成る")
     return out
+
+
+# Verbs Sudachi calls a 助動詞
+AUXILIARY_VERBS = {"やがる"}
+
+
+def _auxiliary_verbs(morphs: list[Morph]) -> list[Morph]:
+    """やがる is a 助動詞 to Sudachi like ます and た, so it went into the inflection of the verb
+    before it and was a word nowhere: 言いやがって came out as 言う. It is a verb (JMdict's v5r,
+    from 上がる) standing where しまう and おく do, so it is read as Sudachi reads those, a
+    非自立可能 verb: a word of its own after a て-form (出してやがる), and the second verb of a
+    compound after a verb stem (`_auxiliary_verb_candidates`)."""
+    return [
+        replace(m, pos=("動詞", "非自立可能") + m.pos[2:])
+        if m.pos[0] == "助動詞" and m.lemma in AUXILIARY_VERBS
+        else m
+        for m in morphs
+    ]
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
@@ -554,6 +572,7 @@ def build_name_lexicon(sentences: Iterable[str]) -> dict:
 INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
+TE_IRU_CONTRACTIONS = {"てる", "でる"}  # 助動詞 to Sudachi, a て-form in their 連用形 (言ってた)
 # Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
 SEPARATE_AUX = {"らしい", "べし", "まい", "如し"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
@@ -837,7 +856,33 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
                         spellings=tuple(k for ks, _, _ in hits for k in ks),
                     )
                 )
-    return cands + _stem_suffix_candidates(tm, words, cands)
+    return (
+        cands
+        + _stem_suffix_candidates(tm, words, cands)
+        + _auxiliary_verb_candidates(tm, words)
+    )
+
+
+def _auxiliary_verb_candidates(tm: TextMap, words: list[Word]) -> list[Candidate]:
+    """A verb's 連用形 and the やがる after it as one compound verb made of the two, as JMdict
+    has 言い出す of 言う and 出す: 言いやがって is 言いやがる. JMdict has no such verb, only the
+    expression 言いやがって, which this comes before as its dictionary form. A match that ends on
+    the verb and is longer keeps it, やがる a word after it (手玉に取る + やがった). After a
+    て-form it is no compound, nor where Sudachi reads that て as the 連用形 of てる
+    (言ってやがんだ)."""
+    out = []
+    for i, (a, b) in enumerate(zip(words, words[1:])):
+        last = a.morphs[-1]
+        if (
+            b.head.lemma in AUXILIARY_VERBS
+            and a.head.pos[0] == "動詞"
+            and len(last.pos) > 5
+            and last.pos[5].startswith("連用形")
+            and last.lemma not in TE_IRU_CONTRACTIONS
+        ):
+            form = tm.written_form(a.start, a.end) + dict_form(tm, b)
+            out.append(Candidate(i, i + 2, form, (), frozenset({"v5r"}), False, form, ()))
+    return out
 
 
 def _stem_suffix_candidates(
