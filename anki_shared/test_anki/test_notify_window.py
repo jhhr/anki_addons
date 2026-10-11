@@ -408,6 +408,26 @@ def test_the_window_ends_just_below_its_last_card(host, qtbot):
     assert below <= window._cards_layout.contentsMargins().bottom() + 4
 
 
+def test_expanding_a_pinned_card_grows_the_window_to_fit(host, qtbot):
+    # Only the pin that expanding sets refitted the window, so a card pinned first
+    # and expanded after was cut off at the window's edge behind a scrollbar.
+    window = host.window
+    host.post(make_spec(source="A", title="one", body="detail", timeout_ms=STICKY))
+    handle = host.post(make_spec(source="B", title="two", timeout_ms=STICKY,
+                                 body="<br>".join(f"line {i}" for i in range(6))))
+    qtbot.waitUntil(lambda: len(window._cards) == 2, timeout=WAIT)
+    card = window._cards[handle]
+    card.pin_button.click()
+    qtbot.wait(150)
+    collapsed = window.height()
+    card.disclosure.click()
+    qtbot.waitUntil(lambda: window.height() > collapsed, timeout=WAIT)
+    scrollbar = window._scroll.verticalScrollBar()
+    assert scrollbar is not None and not scrollbar.isVisible(), "nothing is cut off"
+    card.disclosure.click()
+    qtbot.waitUntil(lambda: window.height() == collapsed, timeout=WAIT)
+
+
 def test_the_header_drags_the_window(host, qtbot):
     # With no title bar, the header is what moves the window. The window system
     # takes the drag where it can; offscreen it cannot, so this is the drag

@@ -214,6 +214,7 @@ class ToastWindow(QWidget):
         self._cards: Dict[str, ToastCard] = {}
         self._group_labels: List[QLabel] = []
         self._reconcile_pending = False
+        self._fit_pending = False
         self._applying_size = False
         self._auto_size = True
         # Where _reposition last left the window's bottom-right corner, and how far
@@ -255,6 +256,8 @@ class ToastWindow(QWidget):
             "QScrollArea { background: transparent; }"
             " #toastStack { background: transparent; }"
         )
+        # Its layout asking for a new size is the window's cue to refit.
+        self._container.installEventFilter(self)
 
         self.resize(WIDTH, 120)
 
@@ -400,6 +403,35 @@ class ToastWindow(QWidget):
         self._stack.set_pinned(handle, pinned)
         self._schedule_reconcile()
 
+    def _schedule_fit(self) -> None:
+        """Fit the window to its cards soon, without rebuilding them.
+
+        Not through _schedule_reconcile: a rebuild takes the cards out of the
+        layout and puts them back, which asks for a new size, which would ask
+        for another rebuild.
+        """
+        if self._fit_pending or not self.isVisible():
+            return
+        self._fit_pending = True
+        from aqt import mw
+
+        mw.progress.timer(
+            COALESCE_MS,
+            self._run_fit,
+            repeat=False,
+            requiresCollection=False,
+            parent=self,
+        )
+
+    def _run_fit(self) -> None:
+        self._fit_pending = False
+        try:
+            if self.isVisible():
+                self._apply_size()
+                self._reposition()
+        except RuntimeError:
+            pass
+
     # -- geometry ----------------------------------------------------------
 
     def _apply_size(self) -> None:
@@ -495,6 +527,14 @@ class ToastWindow(QWidget):
     def eventFilter(self, obj, event) -> bool:
         from aqt.qt import QEvent
 
+        if obj is self._container:
+            # The cards need a different height: one opened or closed its
+            # details. Only a redraw used to refit the window, and opening a
+            # card redrew only as a side effect of pinning it, so a card pinned
+            # first and opened after was cut off at the window's edge.
+            if event.type() == QEvent.Type.LayoutRequest:
+                self._schedule_fit()
+            return False
         if event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
             if self.isVisible():
                 self._reposition()
