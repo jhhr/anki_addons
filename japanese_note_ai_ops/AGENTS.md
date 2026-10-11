@@ -560,7 +560,9 @@ what such a session follows), writing the same result files.
   per process).
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
-  `python -m pytest`.
+  `python -m pytest`. Most research scripts are tested in `test/` instead (`test_vocab_*.py`,
+  `test_kanjify_*.py`), and `vocab_morphology` in both, so a change under
+  `word_array/research/` runs both suites.
 - The root `mypy.ini` puts `test/` and `word_array/research/` on `mypy_path` for the
   bare-name imports; the local `mypy.ini` mirrors it for a run started here.
 
