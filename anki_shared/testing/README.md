@@ -129,8 +129,8 @@ in short:
   function attached would otherwise fire inside every other suite's `col.add_note()`.
 - `main_window(anki_session, packages)` — loads the profile, points the addon's modules at
   the real `mw`, silences the deck browser's webview redraws, keeps the profile from
-  starting an mpv audio player, and on exit waits for background ops and stops `mw`'s
-  repeating timers.
+  starting an mpv audio player, makes a page's `alert()` raise its text instead of opening
+  Anki's modal box, and on exit waits for background ops and stops `mw`'s repeating timers.
 - `addon_config(anki_session, package, base_config)` — a `write(**overrides)` that puts a
   real config.json/meta.json pair where the real `AddonManager` reads them.
 - `media_servers_waited_for()` — makes each main window's `mediaServer.getPort()` wait for
@@ -139,6 +139,11 @@ in short:
   its own server existed ("'MediaServer' object has no attribute 'server'"). You do not
   call this one: the repo plugin wraps every test that uses `anki_session` in it, because
   it has to be in place before `anki_session` builds the main window.
+
+A test that opens a dialog with a webview (Add Cards) waits until it has closed before it
+ends. `close()` only asks, the dialog closing in a callback of its page, and one left open
+has that page alive in the next test's Anki, where its requests to a server that is gone
+end in an `alert()`: before `main_window` refused those, a run sat in the box for an hour.
 
 `anki_shared/test_anki/` tests the harness itself, forcing each race it guards against to
 lose every time so that a fix that stops working fails there rather than as a flake.
