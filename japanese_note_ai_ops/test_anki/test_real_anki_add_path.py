@@ -23,7 +23,9 @@ import aqt.operations
 import pytest
 
 from anki_shared.testing import real_anki
+from anki_shared.word_array.field_text import decode_word_array, format_word_array
 from japanese_note_ai_ops.async_api_ops import base_ops, capture
+from japanese_note_ai_ops.async_api_ops.match_words_to_notes import update_fake_note_ids
 
 from .conftest import COPIED, FIELDS, NOTETYPE
 
@@ -97,6 +99,13 @@ def into_another_note(query: str) -> dict:
     )
 
 
+def own_id_into_the_id_field() -> dict:
+    """What a definition keeping a note's own id in that field for its card template does. On
+    add the note has no id yet, and `{{__Note_ID}}` is 0."""
+    into = FIELDS["new_note_id_field"]
+    return definition("own-id", field_to_field_defs=[field_to_field(into, "{{__Note_ID}}")])
+
+
 def one_new_note(word: str):
     """A bulk op that prepares one new note for the cleanup to add, as the match op does."""
 
@@ -134,9 +143,9 @@ def shown(monkeypatch):
     return seen
 
 
-def run(anki_session, mw, bulk_op, nids) -> None:
+def run(anki_session, mw, bulk_op, nids, new_notes_op=None) -> None:
     updater = base_ops.AsyncTaskProgressUpdater(title="Async AI op: Adding")
-    base_ops.selected_notes_op("Added one note", bulk_op, nids, mw, updater)
+    base_ops.selected_notes_op("Added one note", bulk_op, nids, mw, updater, new_notes_op)
     anki_session.qtbot.waitUntil(lambda: mw._background_op_count == 0, timeout=WAIT)
 
 
@@ -174,6 +183,38 @@ def test_the_add_hook_runs_in_the_add_phase_and_the_run_stays_one_undo_step(
     assert add["seconds"] > 0 and add["merge_seconds"] is not None
     [loop] = [p for p in events(store, "phase") if p["label"] == "cleanup: add_note loop"]
     assert loop["added"] == 1 and loop["add_seconds"] >= add["seconds"] - 1e-3
+
+
+def test_a_hook_writing_the_id_field_leaves_the_placeholder_to_be_resolved(
+    anki_session, real_mw, config, copy_anywhere_config, store, shown
+):
+    """The field is the one record of the new note's placeholder, and the resolving reads it
+    after the add. With the hook's 0 in it the resolving looked for nothing, and the sentence
+    stayed linked to a placeholder no note would ever hold."""
+    from copy_anywhere.hooks import note_hooks
+
+    config()
+    # A sentence linking the word to the note about to be added, as the cleanup saves it
+    # before the adding
+    array = format_word_array([["猫", "noun", "猫", "ねこ", [int(PLACEHOLDER), 4], []]])
+    sentence_fields = {FIELDS["word_sort_field"]: "店", FIELDS["word_list_field"]: array}
+    trigger = real_anki.add_note(real_mw.col, NOTETYPE, sentence_fields)
+    copy_anywhere_config(copy_definitions=[own_id_into_the_id_field()])
+    note_hooks.init_note_hooks()
+
+    run(anki_session, real_mw, one_new_note("猫"), [trigger.id], update_fake_note_ids)
+
+    assert shown["exceptions"] == []
+    [added_id] = [nid for nid in real_mw.col.find_notes(f'"note:{NOTETYPE}"') if nid != trigger.id]
+    linked = decode_word_array(real_mw.col.get_note(trigger.id)[FIELDS["word_list_field"]])
+    assert linked is not None and linked[0][4] == [added_id, 4]
+    # Left holding its own id, which is also what the definition is after
+    assert real_mw.col.get_note(added_id)[FIELDS["new_note_id_field"]] == str(added_id)
+    # The capture names the placeholder the note went in with, not what the hook wrote
+    [add] = events(store, "note.add")
+    assert add["placeholder"] == int(PLACEHOLDER)
+    assert events(store, "note.added") == [{"placeholder": int(PLACEHOLDER), "note_id": added_id}]
+    assert real_mw.col.undo_status().undo == UNDO_LABEL
 
 
 def test_a_hook_writing_another_note_under_its_own_undo_entry_is_seen_in_the_merge(

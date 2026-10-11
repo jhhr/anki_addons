@@ -220,6 +220,10 @@ def update_fake_note_ids(
     rather than emptied. That id is what the card and its popovers read to know which word
     of a sentence belongs to the note under review -- the reviewer has no other way to ask.
 
+    The field is also the only record of which placeholder a note replaces, and it is read
+    here, after the add. An add hook of another addon can write it in between;
+    `base_ops.placeholder_kept` is what hands the note over holding its placeholder regardless.
+
     paran: new_notes (Sequence[Note]): The notes added, each with its id. A note whose add
         failed is never given here (add_new_notes), so its placeholder stays where it is.
     paran: config (dict): The addon configuration.
