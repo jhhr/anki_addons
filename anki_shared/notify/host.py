@@ -70,6 +70,12 @@ class ToastHost:
 
 
 class ToastWindow(QWidget):
+    # Anki closes a window that says this as the profile closes. Any other still
+    # up is reported as one that "should have been closed" and stays on screen
+    # after the main window has gone. Its entries belong to the session that
+    # posted them, so closing is the right end for them.
+    silentlyClose = True
+
     def __init__(self) -> None:
         from aqt import mw
 

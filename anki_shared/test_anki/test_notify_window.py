@@ -55,12 +55,8 @@ def real_mw(anki_session, restore_stub_mw) -> Iterator[Any]:
 
 
 @pytest.fixture
-def host(real_mw) -> Iterator[ToastHost]:
-    host = ToastHost()
-    yield host
-    # Closed before the profile unloads, which reports any window still up as one
-    # that "should have been closed".
-    host.window.close()
+def host(real_mw) -> ToastHost:
+    return ToastHost()
 
 
 def test_the_window_never_takes_the_keyboard(host):
@@ -299,6 +295,22 @@ def test_an_action_runs_and_dismisses_its_card(host, qtbot):
     qtbot.waitUntil(lambda: handle not in window._cards, timeout=WAIT)
 
 
+def test_a_closing_profile_closes_the_window_with_it(anki_session, capsys):
+    # Anki closes a window marked silentlyClose as the profile closes, and reports
+    # any other still up as one that "should have been closed", leaving it there.
+    with running_anki.main_window(anki_session, ["anki_shared"]):
+        host = ToastHost()
+        host.post(make_spec(source="A", title="up as the profile closes", timeout_ms=STICKY))
+        anki_session.qtbot.waitUntil(host.window.isVisible, timeout=WAIT)
+    # Leaving the block unloads the profile.
+    assert not host.window.isVisible()
+    assert host.window._stack.ordered() == []
+    reported = [
+        line for line in capsys.readouterr().out.splitlines() if "should have been closed" in line
+    ]
+    assert not [line for line in reported if "ToastWindow" in line]
+
+
 def test_the_copies_two_addons_vendor_post_into_one_window(real_mw, qtbot):
     # The claim the package exists to make. Vendored, the package is a different
     # module object per addon, and they share nothing but mw.
@@ -315,12 +327,9 @@ def test_the_copies_two_addons_vendor_post_into_one_window(real_mw, qtbot):
         vendored.registry.register(real_mw, vendored.__name__, vendored._make_host)
     elected = first.registry.host(real_mw)
     assert elected is second.registry.host(real_mw), "each copy elected its own window"
-    try:
-        first.post(source="Copy Anywhere", title="from copy A", timeout_ms=STICKY)
-        second.post(source="Related Card Disperse", title="from copy B", timeout_ms=STICKY)
-        qtbot.waitUntil(lambda: len(elected.window._cards) == 2, timeout=WAIT)
-    finally:
-        elected.window.close()
+    first.post(source="Copy Anywhere", title="from copy A", timeout_ms=STICKY)
+    second.post(source="Related Card Disperse", title="from copy B", timeout_ms=STICKY)
+    qtbot.waitUntil(lambda: len(elected.window._cards) == 2, timeout=WAIT)
 
 
 def test_a_malformed_update_is_corrected_before_the_window_draws_it(real_mw, qtbot):
@@ -328,15 +337,11 @@ def test_a_malformed_update_is_corrected_before_the_window_draws_it(real_mw, qtb
     # timer: here pytest-qt would fail the test, in Anki the user got an error dialog.
     notify = importlib.import_module("anki_shared.notify")
     notify.registry.register(real_mw, notify.__name__, notify._make_host)
-    elected = notify.registry.host(real_mw)
-    window = elected.window
-    try:
-        handle = notify.post(source="A", title="to update", timeout_ms=STICKY)
-        qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
-        card = window._cards[handle]
-        assert notify.update(handle, actions=[("no callback",)], timeout_ms="soon", body=5)
-        qtbot.waitUntil(lambda: card.details.text() == "5", timeout=WAIT)
-        qtbot.wait(100)
-        assert card.actions_row.count() == 1, "only the stretch: no button for the action"
-    finally:
-        window.close()
+    window = notify.registry.host(real_mw).window
+    handle = notify.post(source="A", title="to update", timeout_ms=STICKY)
+    qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
+    card = window._cards[handle]
+    assert notify.update(handle, actions=[("no callback",)], timeout_ms="soon", body=5)
+    qtbot.waitUntil(lambda: card.details.text() == "5", timeout=WAIT)
+    qtbot.wait(100)
+    assert card.actions_row.count() == 1, "only the stretch: no button for the action"
