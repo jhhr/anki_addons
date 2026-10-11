@@ -34,6 +34,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from aqt.qt import (
+    QBrush,
     QColor,
     QFrame,
     QHBoxLayout,
@@ -42,6 +43,7 @@ from aqt.qt import (
     QMargins,
     QPainter,
     QPainterPath,
+    QPen,
     QPoint,
     QPointF,
     QRect,
@@ -67,6 +69,11 @@ BACKDROP_BOTTOM_ALPHA = 18
 # share of its alpha at the very edge.
 SIDE_FADE = 0.12
 SIDE_ALPHA = 0.2
+# The outline round the window: as strong as the header's along the header, then
+# fading down the sides to this alpha at the bottom, where it stays. Faded out
+# with the rest, a card cut off at the window's edge looked like a card that
+# simply ended there.
+OUTLINE_BOTTOM_ALPHA = 80
 CORNER_RADIUS = 6.0
 GRIP_WIDTH = 22
 
@@ -531,21 +538,19 @@ class ToastWindow(QWidget):
         self._placed = self.geometry().bottomRight()
 
     def paintEvent(self, event) -> None:
-        """The header, solid, and below it the backdrop, fading down and out."""
+        """The header, solid; below it the backdrop, fading; round it all, an outline."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         top = self._header.geometry().bottom() + 1
         # The header the full width of the window, resize bands included, and
         # rounded at the top only: the rounding below its bottom edge is clipped.
         header = QRectF(0, 0, self.width(), top)
-        outline = QPainterPath()
-        outline.addRoundedRect(
+        rounded = QPainterPath()
+        rounded.addRoundedRect(
             header.adjusted(0.5, 0.5, -0.5, CORNER_RADIUS), CORNER_RADIUS, CORNER_RADIUS
         )
         painter.setClipRect(header)
-        painter.fillPath(outline, _theme_colour("CANVAS_ELEVATED", HEADER_ALPHA))
-        painter.setPen(_theme_colour("BORDER"))
-        painter.drawPath(outline)
+        painter.fillPath(rounded, _theme_colour("CANVAS_ELEVATED", HEADER_ALPHA))
         # The grip: two columns of three dots, at the header's left.
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(_theme_colour("FG_FAINT"))
@@ -555,9 +560,25 @@ class ToastWindow(QWidget):
                 painter.drawEllipse(QPointF(9 + column * 5, middle + row * 5), 1.4, 1.4)
 
         body = QRectF(0, top, self.width(), self.height() - top)
-        if body.height() <= 0:
-            painter.end()
-            return
+        if body.height() > 0:
+            self._paint_backdrop(painter, body)
+        # FG_FAINT rather than Anki's BORDER: in night mode BORDER is darker than
+        # the canvas behind the window, and the outline all but disappeared.
+        painter.setClipping(False)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        fade = QLinearGradient(0, top, 0, self.height())
+        fade.setColorAt(0.0, _theme_colour("FG_FAINT"))
+        fade.setColorAt(1.0, _theme_colour("FG_FAINT", OUTLINE_BOTTOM_ALPHA))
+        outline = QPainterPath()
+        outline.addRoundedRect(
+            QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), CORNER_RADIUS, CORNER_RADIUS
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QBrush(fade), 1))
+        painter.drawPath(outline)
+        painter.end()
+
+    def _paint_backdrop(self, painter: QPainter, body: QRectF) -> None:
         painter.setClipRect(body)
         down = QLinearGradient(body.topLeft(), body.bottomLeft())
         down.setColorAt(0.0, _theme_colour("CANVAS_ELEVATED", BACKDROP_TOP_ALPHA))
@@ -574,7 +595,6 @@ class ToastWindow(QWidget):
         across.setColorAt(1.0 - SIDE_FADE, whole)
         across.setColorAt(1.0, edge)
         painter.fillRect(body, across)
-        painter.end()
 
     def _layout_margins(self) -> QMargins:
         layout = self.layout()

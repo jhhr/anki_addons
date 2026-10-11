@@ -498,6 +498,29 @@ def test_only_the_header_is_drawn_solid(host, qtbot):
     assert alpha(centre.x(), centre.y()) == 255, "the cards themselves are solid"
 
 
+def test_the_window_keeps_a_faint_outline_all_round(host, qtbot):
+    # With the sides and bottom faded to nothing, a card cut off at the window's
+    # edge looked like a card that simply ended. The outline stays, fainter.
+    window = host.window
+    for i in range(3):
+        host.post(make_spec(source=f"A{i}", title="done", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
+    image = window.grab().toImage()
+
+    def alpha(x, y):
+        return image.pixelColor(x, y).alpha()
+
+    def stands_out(edge, inside):
+        """How much more opaque the window's edge is than the backdrop inside it."""
+        return alpha(*edge) - alpha(*inside)
+
+    width, height = image.width(), image.height()
+    header = window._header.geometry()
+    assert stands_out((0, height - 20), (2, height - 20)) >= 30, "down the sides"
+    assert stands_out((width // 2, height - 1), (width // 2, height - 3)) >= 30, "and the bottom"
+    assert alpha(0, height - 20) < alpha(0, header.center().y()), "fainter than the header's"
+
+
 def test_the_window_ends_just_below_its_last_card(host, qtbot):
     # Sized from the cards' sizeHint(), which wrapping text answers for a narrower
     # width than they get, the window left a band of empty backdrop under them.
