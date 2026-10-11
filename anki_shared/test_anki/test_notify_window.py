@@ -15,12 +15,13 @@ window.
 import importlib
 from typing import Any, Iterator
 
+import aqt.utils
 import pytest
 from aqt.gui_hooks import theme_did_change
 from aqt.qt import QPoint, Qt, QWidget
-from aqt.theme import theme_manager
+from aqt.theme import Theme, theme_manager
 
-from anki_shared.notify.card import PALETTE, ToastCard
+from anki_shared.notify.card import ACCENTS, ToastCard
 from anki_shared.notify.host import ToastHost
 from anki_shared.notify.spec import STICKY, make_spec
 from anki_shared.testing import running_anki
@@ -57,6 +58,42 @@ def real_mw(anki_session, restore_stub_mw) -> Iterator[Any]:
 @pytest.fixture
 def host(real_mw) -> ToastHost:
     return ToastHost()
+
+
+@pytest.fixture
+def set_theme(real_mw, monkeypatch) -> Iterator[Any]:
+    """set_theme(night) switches this Anki's theme the way its preferences do.
+
+    Put back to light afterwards: the palette and theme_manager are the
+    process's, not the test's Anki's.
+    """
+
+    def set_theme(night: bool) -> None:
+        theme = Theme.DARK if night else Theme.LIGHT
+        monkeypatch.setattr(real_mw.pm, "theme", lambda: theme)
+        theme_manager.apply_style()
+
+    yield set_theme
+    set_theme(False)
+
+
+def tooltip_colours(real_mw):
+    """The frame and background of Anki's own tooltip, as it draws them now."""
+    aqt.utils.tooltip("for comparison", parent=real_mw, period=10000)
+    try:
+        image = aqt.utils._tooltipLabel.grab().toImage()
+        return image.pixelColor(0, 0).name(), image.pixelColor(image.width() // 2, 5).name()
+    finally:
+        aqt.utils.closeTooltip()
+
+
+def card_colours(card):
+    """A card's frame, taken at the top right clear of any accent, and background."""
+    image = card.grab().toImage()
+    return (
+        image.pixelColor(image.width() - 1, 0).name(),
+        image.pixelColor(image.width() // 2, 5).name(),
+    )
 
 
 def test_the_window_never_takes_the_keyboard(host):
@@ -267,16 +304,47 @@ def test_a_countdown_held_back_by_a_progress_dialog_does_not_end_a_repost(
     qtbot.waitUntil(lambda: handle not in window._cards, timeout=WAIT)
 
 
-def test_a_theme_change_restyles_the_cards(host, qtbot, monkeypatch):
+def test_a_card_is_drawn_as_ankis_tooltip(host, real_mw, qtbot):
+    # Next to the tooltips Anki still shows itself, a card styled as a widget of
+    # its own was jarring.
     window = host.window
-    handle = host.post(make_spec(source="A", title="failed", level="error", timeout_ms=STICKY))
+    handle = host.post(make_spec(source="A", title="done", level="success", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
+    assert card_colours(window._cards[handle]) == tooltip_colours(real_mw)
+
+
+def test_a_theme_change_redraws_the_cards_as_the_night_tooltip(
+    host, real_mw, qtbot, set_theme
+):
+    window = host.window
+    handle = host.post(make_spec(source="A", title="done", timeout_ms=STICKY))
     qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
     card = window._cards[handle]
-    night_background = PALETTE[True]["error"][0]
-    assert night_background not in card.styleSheet()
-    monkeypatch.setattr(theme_manager, "night_mode", True)
-    theme_did_change()
-    qtbot.waitUntil(lambda: night_background in card.styleSheet(), timeout=WAIT)
+    light = card_colours(card)
+    set_theme(night=True)
+    qtbot.waitUntil(lambda: card_colours(card) != light, timeout=WAIT)
+    assert card_colours(card) == tooltip_colours(real_mw)
+
+
+def test_a_warning_or_an_error_is_marked_on_its_left_edge(host, qtbot):
+    # Drawn as a tooltip, it must still not pass for an info or a success.
+    window = host.window
+    plain = host.post(make_spec(source="A", title="done", level="success", timeout_ms=STICKY))
+    failed = host.post(make_spec(source="B", title="failed", level="error", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == 2, timeout=WAIT)
+
+    def edges(handle):
+        image = window._cards[handle].grab().toImage()
+        middle = image.height() // 2
+        return (
+            image.pixelColor(1, middle).name(),
+            image.pixelColor(image.width() - 2, middle).name(),
+        )
+
+    left, right = edges(plain)
+    assert left == right, "a success is a plain tooltip"
+    left, right = edges(failed)
+    assert left == ACCENTS[False]["error"] != right
 
 
 def test_an_action_runs_and_dismisses_its_card(host, qtbot):

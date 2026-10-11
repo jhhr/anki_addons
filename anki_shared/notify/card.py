@@ -13,12 +13,15 @@ interaction.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from aqt.qt import (
+    QApplication,
+    QColor,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPalette,
     Qt,
     QTimer,
     QToolButton,
@@ -27,24 +30,41 @@ from aqt.qt import (
     qconnect,
 )
 
-# Background, text, border -- per level, per theme.
-PALETTE = {
-    False: {  # light
-        "info": ("#e7f1fb", "#1f4d7a", "#b8d4ee"),
-        "success": ("#e8f5e9", "#1b5e20", "#b5dcb8"),
-        "warning": ("#fff5e0", "#7a5200", "#f0d79a"),
-        "error": ("#fdecea", "#8a1c13", "#f2b9b3"),
-    },
-    True: {  # night
-        "info": ("#16252f", "#cfe4f5", "#274a63"),
-        "success": ("#17251a", "#cfead2", "#2c5233"),
-        "warning": ("#2b2415", "#f2e0b5", "#5c4a1f"),
-        "error": ("#2c1a18", "#f5cfcb", "#6b2f28"),
-    },
+# A card is drawn as Anki's own tooltip (aqt.utils.tooltip) with controls, so
+# that a notification looks like the thing it replaced rather than a widget of
+# its own. In light mode the tooltip sets these on its palette.
+TOOLTIP_LIGHT = ("#feffc4", "#000000")  # background; text and frame
+
+# The tooltip's frame, and the padding its table gives the text inside it.
+FRAME_WIDTH = 2
+PADDING = 14
+
+# Info and success are plain tooltips. A warning or an error must not pass for
+# one, so it carries a wider left edge in its own colour, and nothing else.
+ACCENTS = {
+    False: {"warning": "#b26a00", "error": "#c62828"},
+    True: {"warning": "#e8a33d", "error": "#ef6b6b"},
 }
+ACCENT_WIDTH = 6
 
 
-def _tool_button(text: str, tooltip: str, on_click: Callable[[], object]) -> QToolButton:
+def tooltip_colours(night: bool) -> Tuple[str, str]:
+    """Background, and text-and-frame colour, as Anki's tooltip has them.
+
+    In night mode the tooltip sets no colours and so takes the app palette's
+    window colours, which theme_manager.apply_style() has switched by the time
+    theme_did_change fires.
+    """
+    if not night:
+        return TOOLTIP_LIGHT
+    palette = QApplication.palette()
+    return (
+        palette.color(QPalette.ColorRole.Window).name(),
+        palette.color(QPalette.ColorRole.WindowText).name(),
+    )
+
+
+def tool_button(text: str, tooltip: str, on_click: Callable[[], object]) -> QToolButton:
     button = QToolButton()
     button.setText(text)
     button.setToolTip(tooltip)
@@ -89,7 +109,9 @@ class ToastCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 8, 8)
+        # The controls sit in the right-hand padding, so it is the one side kept
+        # narrower than the tooltip's.
+        outer.setContentsMargins(PADDING, PADDING - 2, 6, PADDING - 2)
         outer.setSpacing(4)
 
         header = QHBoxLayout()
@@ -101,9 +123,9 @@ class ToastCard(QFrame):
         self.summary.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         header.addWidget(self.summary, 1)
 
-        self.disclosure = _tool_button("▸", "Show details", self.toggle_details)
-        self.pin_button = _tool_button("○", "Keep this open", self.toggle_pin)
-        self.close_button = _tool_button("✕", "Dismiss", lambda: self._on_dismiss(self.handle))
+        self.disclosure = tool_button("▸", "Show details", self.toggle_details)
+        self.pin_button = tool_button("○", "Keep this open", self.toggle_pin)
+        self.close_button = tool_button("✕", "Dismiss", lambda: self._on_dismiss(self.handle))
         for button in (self.disclosure, self.pin_button, self.close_button):
             header.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(header)
@@ -146,7 +168,7 @@ class ToastCard(QFrame):
             if widget is not None:
                 widget.deleteLater()
         for label, callback in actions:
-            self.actions_row.addWidget(_tool_button(label, label, self._runner(callback)))
+            self.actions_row.addWidget(tool_button(label, label, self._runner(callback)))
         self.actions_row.addStretch(1)
 
     def _runner(self, callback: Callable[[], None]) -> Callable[[], None]:
@@ -163,15 +185,21 @@ class ToastCard(QFrame):
     def apply_theme(self) -> None:
         from aqt.theme import theme_manager
 
-        level = self.spec.get("level", "info")
         night = bool(theme_manager.night_mode)
-        background, foreground, border = PALETTE[night].get(level, PALETTE[night]["info"])
+        background, foreground = tooltip_colours(night)
+        accent = ACCENTS[night].get(self.spec.get("level", "info"))
+        edge = f" border-left: {ACCENT_WIDTH}px solid {accent};" if accent else ""
+        # The controls are quieter than the message, which is what a tooltip is.
+        quiet = QColor(foreground)
+        quiet.setAlpha(150)
+        quiet_css = f"rgba({quiet.red()}, {quiet.green()}, {quiet.blue()}, {quiet.alpha()})"
         self.setStyleSheet(
-            f"ToastCard {{ background: {background}; border: 1px solid {border};"
-            f" border-radius: 6px; }}"
+            f"ToastCard {{ background: {background};"
+            f" border: {FRAME_WIDTH}px solid {foreground};{edge} }}"
             f" QLabel {{ color: {foreground}; background: transparent; }}"
-            f" QToolButton {{ color: {foreground}; background: transparent;"
+            f" QToolButton {{ color: {quiet_css}; background: transparent;"
             f" border: none; padding: 1px 4px; }}"
+            f" QToolButton:hover {{ color: {foreground}; }}"
         )
 
     # -- controls ----------------------------------------------------------
