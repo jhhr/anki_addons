@@ -637,7 +637,9 @@ import them only when they run); `furigana_audio_score.py` scores the runs again
 give and the labels by ear, through the op's own check (`word_array/reading_check.py`: the
 morae, the alignment, what a word is heard as). With `--combine` it writes what the op's rule
 would (`reading_check.decide`): the draft where the models hear it, a reading JMdict has for
-the spelling or the show has for a name where they hear that instead, review otherwise. The
+the spelling or the show has for a name where they hear that instead, review otherwise.
+`word_array/audio_furigana.py` is that rule for one caption, its transcripts in and its
+furigana out; over the eval's cards it decides every word as `--combine` does. The
 check's limits on a correction (`CORRECT`, a stretch `fit` may not shrink for one, and none
 that only a vowel's length tells from another licensed reading) each came from readings the
 runs got wrong, so a change to the check shows in the eval's numbers. `furigana_audio_label.py` gets the labels
@@ -690,9 +692,10 @@ the selection's `--reword` and the scorer read both, so the queue is built again
   batch timer, and clears `capture._quiet_until` in `setUp` (capture's warnings are rate limited
   per process).
 
-- Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py` and
-  `test_word_array_reading_check.py` (the caption cleaning, the word units and the check, on a
-  stand-in tokenizer), `test_transcribe_audio.py` (the transcription field, which transcribers
+- Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py`,
+  `test_word_array_reading_check.py` and `test_word_array_audio_furigana.py` (the caption
+  cleaning, the word units, the check and the furigana written from them, on a stand-in
+  tokenizer), `test_transcribe_audio.py` (the transcription field, which transcribers
   a note is asked for, the server check before a run), `test_capture_calls.py`'s
   `TranscriptTests` (the request, its record without the audio, a replay answering it) and
   `test_transcribe_server.py` (the server's HTTP side, with stand-in models).
