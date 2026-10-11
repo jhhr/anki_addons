@@ -4,8 +4,9 @@ Read the root [AGENTS.md](../AGENTS.md) first.
 
 Syncs every addon's `meta.json` between devices by keeping a copy in the media folder as
 `collection.media/_<addon_id>_meta.json` and letting AnkiWeb's media sync carry it. The UI
-is one dialog: Tools → Manage Addon Configs. User-facing behaviour, the three sync modes and
-the conflict rule ("first device to sync wins") are in `README.md` and `config.md`.
+is one dialog, Tools → Manage Addon Configs, and in summary mode a notification after sync.
+User-facing behaviour, the three sync modes and the conflict rule ("first device to sync
+wins") are in `README.md` and `config.md`.
 
 ## Map
 

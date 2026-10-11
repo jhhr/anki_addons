@@ -1,7 +1,7 @@
 ## Addon options
 
 - `run_on_sync`: Configs are saved and read during syncing. Defaults to `true`.
-- `show_summary_on_sync`: When `run_on_sync` is enabled, open the config manager dialog after syncing.
+- `show_summary_on_sync`: When `run_on_sync` is enabled, show a notification after syncing that lists the add-ons whose config was updated, with a button that opens the config manager dialog.
 - `ask_on_sync`: Ask mode. When syncing downloads changed configs, open the config manager dialog (non-blocking) pre-filtered to changed/missing addons instead of overwriting addon configs automatically.
 - `addon_settings`: Per-addon settings map keyed by addon id. Currently supports `ignore`.
 

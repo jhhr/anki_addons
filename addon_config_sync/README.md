@@ -47,7 +47,7 @@ Set in the manager dialog (radio buttons):
 
 2. **Update configs on Sync, show summary**
    - Same behavior as mode 1.
-   - After sync, opens the manager dialog **only if at least one addon config was updated**.
+   - After sync, **if at least one addon config was updated**, shows a notification listing those add-ons, with an **Open config manager…** button that opens the manager dialog.
 
 3. **Ask about changes to configs**
    - Still saves local changes to media on sync.
