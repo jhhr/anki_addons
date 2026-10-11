@@ -22,7 +22,7 @@ from aqt.qt import QApplication, QEvent, QMouseEvent, QPoint, QPointF, Qt, QWidg
 from aqt.theme import Theme, theme_manager
 
 from anki_shared.notify.card import ACCENTS, ToastCard
-from anki_shared.notify.host import ToastHost
+from anki_shared.notify.host import MIN_WIDTH, ToastHost
 from anki_shared.notify.spec import STICKY, make_spec
 from anki_shared.testing import running_anki
 
@@ -94,6 +94,21 @@ def card_colours(card):
         image.pixelColor(image.width() - 1, 0).name(),
         image.pixelColor(image.width() // 2, 5).name(),
     )
+
+
+def gap_below(window, card):
+    """How far the window runs on below a card."""
+    return window.height() - card.mapTo(window, QPoint(0, card.height())).y()
+
+
+def fits(window, last_card):
+    """Whether the window ends just below its last card, which it shows whole.
+
+    A window too short for its cards scrolls them, and the last one runs on past
+    its bottom edge; one too tall leaves a band of backdrop under it.
+    """
+    room = window._layout_margins().bottom() + window._cards_layout.contentsMargins().bottom()
+    return 0 <= gap_below(window, last_card) <= room + 4
 
 
 def send_mouse(widget, kind, at, button, buttons):
@@ -201,16 +216,105 @@ def test_a_size_the_user_sets_sticks(host, qtbot):
     window = host.window
     host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
     qtbot.waitUntil(window.isVisible, timeout=WAIT)
-    chosen = window.height() + 7
-    # Through the native window, so the resize arrives spontaneous, as a drag's does.
-    native = window.windowHandle()
-    assert native is not None
-    native.resize(window.width(), chosen)
-    qtbot.waitUntil(lambda: window.height() == chosen, timeout=WAIT)
+    # The header's top rows are the window's top edge.
+    header = window._header
+    edge = QPoint(header.width() // 2, 2)
+    up = QPoint(0, -60)
+    left = Qt.MouseButton.LeftButton
+    none = Qt.MouseButton.NoButton
+    before = window.geometry()
+    send_mouse(header, QEvent.Type.MouseButtonPress, edge, left, left)
+    send_mouse(header, QEvent.Type.MouseMove, edge + up, none, left)
+    send_mouse(header, QEvent.Type.MouseButtonRelease, edge + up, left, none)
+    assert window.height() == before.height() + 60
+    assert window.geometry().bottomRight() == before.bottomRight(), "the top edge moved"
+    chosen = window.height()
     host.post(make_spec(source="B", title="two", timeout_ms=STICKY))
     host.post(make_spec(source="C", title="three", timeout_ms=STICKY))
     qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
+    qtbot.wait(150)
     assert window.height() == chosen
+
+
+def test_the_edges_resize_the_window(host, qtbot):
+    # With no frame, the window's edges are the band it keeps around its cards.
+    # The window system takes a resize where it can; offscreen it cannot, so
+    # this is the resize followed by hand.
+    window = host.window
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    qtbot.waitUntil(window.isVisible, timeout=WAIT)
+    left = Qt.MouseButton.LeftButton
+    none = Qt.MouseButton.NoButton
+
+    def drag(at, by):
+        send_mouse(window, QEvent.Type.MouseButtonPress, at, left, left)
+        send_mouse(window, QEvent.Type.MouseMove, at + by, none, left)
+        send_mouse(window, QEvent.Type.MouseButtonRelease, at + by, left, none)
+
+    before = window.geometry()
+    drag(QPoint(2, window.height() // 2), QPoint(-50, 0))
+    assert (window.geometry().left(), window.geometry().right()) == (
+        before.left() - 50,
+        before.right(),
+    )
+    before = window.geometry()
+    drag(QPoint(window.width() // 2, window.height() - 2), QPoint(0, 30))
+    assert (window.geometry().top(), window.geometry().bottom()) == (
+        before.top(),
+        before.bottom() + 30,
+    )
+    # Dragged in past the minimum from the left, it stops with the right edge
+    # where it was, not by moving it.
+    before = window.geometry()
+    drag(QPoint(2, window.height() // 2), QPoint(1000, 0))
+    assert (window.width(), window.geometry().right()) == (MIN_WIDTH, before.right())
+
+
+def test_the_cursor_shows_where_a_press_would_resize(host, qtbot):
+    window = host.window
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    qtbot.waitUntil(window.isVisible, timeout=WAIT)
+    none = Qt.MouseButton.NoButton
+
+    def hover(widget, at):
+        send_mouse(widget, QEvent.Type.MouseMove, at, none, none)
+        return widget.cursor().shape()
+
+    width, height = window.width(), window.height()
+    # The band is the window's own: a widget over it would take the hover and the
+    # press, and the window would never see them.
+    for at in (QPoint(2, height // 2), QPoint(width - 2, height // 2), QPoint(width // 2, height - 2)):
+        assert window.childAt(at) is None
+    assert hover(window, QPoint(2, height // 2)) == Qt.CursorShape.SizeHorCursor
+    assert hover(window, QPoint(width // 2, height - 2)) == Qt.CursorShape.SizeVerCursor
+    assert hover(window, QPoint(2, height - 2)) == Qt.CursorShape.SizeBDiagCursor
+    assert hover(window, QPoint(width - 2, height - 2)) == Qt.CursorShape.SizeFDiagCursor
+    # The cards' area has a cursor of its own, or crossing in from the band would
+    # carry the resize cursor over them.
+    assert window._scroll.cursor().shape() == Qt.CursorShape.ArrowCursor
+    header = window._header
+    assert hover(header, QPoint(header.width() // 2, 2)) == Qt.CursorShape.SizeVerCursor
+    middle = QPoint(header.width() // 2, header.height() - 3)
+    assert hover(header, middle) == Qt.CursorShape.SizeAllCursor
+
+
+def test_a_resize_by_the_window_system_does_not_stop_the_fitting(host, qtbot):
+    # A display's scaling resizes the window as it first appears. Taken for the
+    # user taking over the size, it left the window at its first height for good,
+    # and a card that grew later was cut off.
+    window = host.window
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    qtbot.waitUntil(window.isVisible, timeout=WAIT)
+    native = window.windowHandle()
+    assert native is not None
+    resized = window.height() + 7
+    native.resize(window.width(), resized)
+    qtbot.waitUntil(lambda: window.height() == resized, timeout=WAIT)
+    handles = [
+        host.post(make_spec(source=f"B{i}", title="more", timeout_ms=STICKY)) for i in range(2)
+    ]
+    qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
+    qtbot.waitUntil(lambda: fits(window, window._cards[handles[-1]]), timeout=WAIT)
 
 
 def test_a_window_the_user_moved_stays_where_they_put_it(host, real_mw, qtbot):
@@ -403,9 +507,7 @@ def test_the_window_ends_just_below_its_last_card(host, qtbot):
         for i in range(3)
     ]
     qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
-    last = window._cards[handles[-1]]
-    below = window.height() - last.mapTo(window, QPoint(0, last.height())).y()
-    assert below <= window._cards_layout.contentsMargins().bottom() + 4
+    assert fits(window, window._cards[handles[-1]])
 
 
 def test_expanding_a_pinned_card_grows_the_window_to_fit(host, qtbot):

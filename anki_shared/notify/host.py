@@ -13,9 +13,10 @@ would eat answers.
 Only its header is drawn solid: a grip to drag the window by, and dismiss-all.
 Below that it fades, down and out to the sides, so that the cards, drawn as
 Anki's own tooltip, read as tooltips floating on their own rather than as the
-contents of a panel. A native frame cannot fade, which is why there is none:
-the header hands a drag to the window system with startSystemMove(), as a
-title bar would, and the window sizes itself to its cards.
+contents of a panel. A native frame cannot fade, which is why there is none.
+What the frame did is done by hand instead: the header hands a drag to the
+window system with startSystemMove(), as a title bar would, and a press on the
+window's edge hands it a resize with startSystemResize().
 
 Reconciliation runs one way only. Callers mutate the Stack, then the widgets
 are rebuilt to match Stack.visible(). There is no change-event protocol, so
@@ -30,7 +31,7 @@ without colliding with Qt again.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aqt.qt import (
     QColor,
@@ -38,10 +39,12 @@ from aqt.qt import (
     QHBoxLayout,
     QLabel,
     QLinearGradient,
+    QMargins,
     QPainter,
     QPainterPath,
     QPoint,
     QPointF,
+    QRect,
     QRectF,
     QScrollArea,
     Qt,
@@ -66,6 +69,13 @@ SIDE_FADE = 0.12
 SIDE_ALPHA = 0.2
 CORNER_RADIUS = 6.0
 GRIP_WIDTH = 22
+
+# How far in from the window's edge a press resizes it. On the sides and at the
+# bottom the band is the window's own margin, so no card can cover it; at the
+# top it is the header's top rows.
+RESIZE_BAND = 6
+MIN_WIDTH = 260
+MIN_HEIGHT = 90
 
 # Never take more than this share of the screen height; the rest scrolls.
 MAX_HEIGHT_FRACTION = 0.6
@@ -105,13 +115,24 @@ def _theme_colour(name: str, alpha: int = 255) -> QColor:
     return colour
 
 
+def _resize_cursor(edges: Qt.Edge) -> Qt.CursorShape:
+    if edges in (Qt.Edge.LeftEdge | Qt.Edge.TopEdge, Qt.Edge.RightEdge | Qt.Edge.BottomEdge):
+        return Qt.CursorShape.SizeFDiagCursor
+    if edges in (Qt.Edge.RightEdge | Qt.Edge.TopEdge, Qt.Edge.LeftEdge | Qt.Edge.BottomEdge):
+        return Qt.CursorShape.SizeBDiagCursor
+    if edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge):
+        return Qt.CursorShape.SizeHorCursor
+    return Qt.CursorShape.SizeVerCursor
+
+
 class _Header(QWidget):
-    """The top of the window, and the only part of it drawn solid.
+    """The top of the window, which the window draws solid behind it.
 
     It is what the window is moved by, having no title bar: a press anywhere
     on it that is not on the dismiss-all button hands the drag to the window
     system, as a title bar would, and where the platform cannot take it the
-    drag is followed by hand.
+    drag is followed by hand. A press in its top rows resizes instead, as the
+    top edge of a frame would.
     """
 
     def __init__(self, window: "ToastWindow") -> None:
@@ -119,10 +140,14 @@ class _Header(QWidget):
         self._toast_window = window
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
+        # For the cursor to show which of drag and resize a press would do.
+        self.setMouseTracking(True)
         self._drag_from: Optional[QPoint] = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(GRIP_WIDTH, 2, 4, 2)
+        # The window keeps a resize band either side, so the grip it draws sits
+        # that much into the header.
+        layout.setContentsMargins(GRIP_WIDTH - RESIZE_BAND, 2, 4, 2)
         layout.setSpacing(4)
         self.title = QLabel("Notifications")
         self.title.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -143,48 +168,38 @@ class _Header(QWidget):
         )
         self.update()
 
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Rounded at the top only: the corners below the bottom edge are clipped.
-        outline = QPainterPath()
-        outline.addRoundedRect(
-            QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, CORNER_RADIUS),
-            CORNER_RADIUS,
-            CORNER_RADIUS,
-        )
-        painter.setClipRect(self.rect())
-        painter.fillPath(outline, _theme_colour("CANVAS_ELEVATED", HEADER_ALPHA))
-        painter.setPen(_theme_colour("BORDER"))
-        painter.drawPath(outline)
-        # The grip: two columns of three dots.
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_theme_colour("FG_FAINT"))
-        middle = self.height() / 2
-        for column in (0, 1):
-            for row in (-1, 0, 1):
-                painter.drawEllipse(QPointF(9 + column * 5, middle + row * 5), 1.4, 1.4)
-        painter.end()
-
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
         event.accept()
+        at = event.globalPosition().toPoint()
+        if event.position().y() < RESIZE_BAND:
+            self._toast_window.start_resize(Qt.Edge.TopEdge, at)
+            return
         native = self._toast_window.windowHandle()
         if native is not None and native.startSystemMove():
             return
-        self._drag_from = event.globalPosition().toPoint() - self._toast_window.pos()
+        self._drag_from = at - self._toast_window.pos()
 
     def mouseMoveEvent(self, event) -> None:
-        if self._drag_from is None or not event.buttons() & Qt.MouseButton.LeftButton:
-            super().mouseMoveEvent(event)
+        at = event.globalPosition().toPoint()
+        if self._toast_window.follow_resize(at):
+            event.accept()
             return
-        event.accept()
-        self._toast_window.move(event.globalPosition().toPoint() - self._drag_from)
+        if self._drag_from is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            event.accept()
+            self._toast_window.move(at - self._drag_from)
+            return
+        if event.position().y() < RESIZE_BAND:
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         self._drag_from = None
+        self._toast_window.end_resize()
         super().mouseReleaseEvent(event)
 
 
@@ -209,14 +224,20 @@ class ToastWindow(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # What paintEvent does not draw is see-through: the backdrop fades to it.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # For the cursor to show where a press would resize.
+        self.setMouseTracking(True)
+        self.setMinimumSize(MIN_WIDTH, MIN_HEIGHT)
 
         self._stack = Stack()
         self._cards: Dict[str, ToastCard] = {}
         self._group_labels: List[QLabel] = []
         self._reconcile_pending = False
         self._fit_pending = False
-        self._applying_size = False
+        # Until the user resizes the window, it fits its cards.
         self._auto_size = True
+        # The edges, the press and the geometry a resize the window system could
+        # not take started from, while it is followed by hand.
+        self._resizing: Optional[Tuple[Qt.Edge, QPoint, QRect]] = None
         # Where _reposition last left the window's bottom-right corner, and how far
         # the user has moved it from where it would otherwise sit. None until the
         # window has first been placed.
@@ -224,7 +245,9 @@ class ToastWindow(QWidget):
         self._offset = QPoint(0, 0)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        # The resize band down the sides and along the bottom is the window's
+        # own: nothing laid out there can take the press.
+        outer.setContentsMargins(RESIZE_BAND, 0, RESIZE_BAND, RESIZE_BAND)
         outer.setSpacing(0)
 
         self._header = _Header(self)
@@ -235,6 +258,9 @@ class ToastWindow(QWidget):
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Its own cursor, or it would show the window's resize cursor whenever
+        # the pointer crossed into it from the band.
+        self._scroll.setCursor(Qt.CursorShape.ArrowCursor)
         outer.addWidget(self._scroll)
 
         # Kept rather than read back with self._scroll.widget(), which Qt types
@@ -243,7 +269,8 @@ class ToastWindow(QWidget):
         self._container.setObjectName("toastStack")
         self._container.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._cards_layout = QVBoxLayout(self._container)
-        self._cards_layout.setContentsMargins(10, 8, 10, 12)
+        # With the resize band around them, the cards sit 10px in from the sides.
+        self._cards_layout.setContentsMargins(4, 8, 4, 6)
         self._cards_layout.setSpacing(8)
         self._cards_layout.addStretch(1)
         self._scroll.setWidget(self._container)
@@ -442,22 +469,22 @@ class ToastWindow(QWidget):
         # get. sizeHint() answers for a narrower default and was taller, which
         # left a band of empty backdrop under the last card.
         self._container.ensurePolished()
+        margins = self._layout_margins()
         layout = self._cards_layout
+        width = self.width() - margins.left() - margins.right()
         content = (
-            layout.totalHeightForWidth(self.width())
+            layout.totalHeightForWidth(width)
             if layout.hasHeightForWidth()
             else self._container.sizeHint().height()
         )
-        wanted = self._header.sizeHint().height() + content + 2
+        wanted = (
+            margins.top() + self._header.sizeHint().height() + content + margins.bottom() + 2
+        )
         screen = self.screen()
         if screen is not None:
             wanted = min(wanted, int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION))
         before = self.geometry().bottomRight()
-        self._applying_size = True
-        try:
-            self.resize(self.width(), max(wanted, 60))
-        finally:
-            self._applying_size = False
+        self.resize(self.width(), max(wanted, MIN_HEIGHT))
         if self._placed is not None:
             # Growing moves the bottom edge, which is not the user moving it.
             self._placed += self.geometry().bottomRight() - before
@@ -490,12 +517,33 @@ class ToastWindow(QWidget):
         self._placed = self.geometry().bottomRight()
 
     def paintEvent(self, event) -> None:
-        """The backdrop under the cards, fading down and out to the sides."""
+        """The header, solid, and below it the backdrop, fading down and out."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         top = self._header.geometry().bottom() + 1
+        # The header the full width of the window, resize bands included, and
+        # rounded at the top only: the rounding below its bottom edge is clipped.
+        header = QRectF(0, 0, self.width(), top)
+        outline = QPainterPath()
+        outline.addRoundedRect(
+            header.adjusted(0.5, 0.5, -0.5, CORNER_RADIUS), CORNER_RADIUS, CORNER_RADIUS
+        )
+        painter.setClipRect(header)
+        painter.fillPath(outline, _theme_colour("CANVAS_ELEVATED", HEADER_ALPHA))
+        painter.setPen(_theme_colour("BORDER"))
+        painter.drawPath(outline)
+        # The grip: two columns of three dots, at the header's left.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(_theme_colour("FG_FAINT"))
+        middle = self._header.geometry().center().y()
+        for column in (0, 1):
+            for row in (-1, 0, 1):
+                painter.drawEllipse(QPointF(9 + column * 5, middle + row * 5), 1.4, 1.4)
+
         body = QRectF(0, top, self.width(), self.height() - top)
         if body.height() <= 0:
+            painter.end()
             return
-        painter = QPainter(self)
         painter.setClipRect(body)
         down = QLinearGradient(body.topLeft(), body.bottomLeft())
         down.setColorAt(0.0, _theme_colour("CANVAS_ELEVATED", BACKDROP_TOP_ALPHA))
@@ -514,15 +562,84 @@ class ToastWindow(QWidget):
         painter.fillRect(body, across)
         painter.end()
 
-    def resizeEvent(self, event) -> None:
-        # The user taking over the size arrives from the window system, which
-        # Qt marks spontaneous. Its own resizes are not, and counting them was
-        # wrong: the pending one delivered while show() runs switched auto-sizing
-        # off the first time the window appeared. _applying_size still covers a
-        # platform answering our own resize() synchronously.
-        if event.spontaneous() and not self._applying_size:
-            self._auto_size = False
-        super().resizeEvent(event)
+    def _layout_margins(self) -> QMargins:
+        layout = self.layout()
+        assert layout is not None
+        return layout.contentsMargins()
+
+    # -- resizing ----------------------------------------------------------
+
+    def _edges_at(self, pos: QPoint) -> Qt.Edge:
+        """The edges a press at `pos`, in the window's coordinates, resizes."""
+        edges = Qt.Edge(0)
+        if pos.x() < RESIZE_BAND:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= self.width() - RESIZE_BAND:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() < RESIZE_BAND:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= self.height() - RESIZE_BAND:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    def start_resize(self, edges: Qt.Edge, at: QPoint) -> None:
+        """The user takes over the size: the window stops fitting its cards.
+
+        Only this gesture counts. The window used to give up fitting on any
+        resize the window system sent, which included the system's own -- the
+        one a display's scaling makes as the window first appears -- and a
+        window that had given up stayed at its first height, cutting off any
+        card that later grew.
+        """
+        self._auto_size = False
+        native = self.windowHandle()
+        if native is not None and native.startSystemResize(edges):
+            return
+        self._resizing = (edges, at, QRect(self.geometry()))
+
+    def follow_resize(self, at: QPoint) -> bool:
+        """Follow a resize by hand, where the window system could not take it."""
+        if self._resizing is None:
+            return False
+        edges, start, rect = self._resizing
+        moved = at - start
+        rect = QRect(rect)
+        if edges & Qt.Edge.LeftEdge:
+            rect.setLeft(min(rect.left() + moved.x(), rect.right() - MIN_WIDTH + 1))
+        if edges & Qt.Edge.RightEdge:
+            rect.setRight(max(rect.right() + moved.x(), rect.left() + MIN_WIDTH - 1))
+        if edges & Qt.Edge.TopEdge:
+            rect.setTop(min(rect.top() + moved.y(), rect.bottom() - MIN_HEIGHT + 1))
+        if edges & Qt.Edge.BottomEdge:
+            rect.setBottom(max(rect.bottom() + moved.y(), rect.top() + MIN_HEIGHT - 1))
+        self.setGeometry(rect)
+        return True
+
+    def end_resize(self) -> None:
+        self._resizing = None
+
+    def mousePressEvent(self, event) -> None:
+        edges = self._edges_at(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and edges:
+            event.accept()
+            self.start_resize(edges, event.globalPosition().toPoint())
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.follow_resize(event.globalPosition().toPoint()):
+            event.accept()
+            return
+        edges = self._edges_at(event.position().toPoint())
+        if edges:
+            self.setCursor(_resize_cursor(edges))
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self.end_resize()
+        super().mouseReleaseEvent(event)
 
     def eventFilter(self, obj, event) -> bool:
         from aqt.qt import QEvent
