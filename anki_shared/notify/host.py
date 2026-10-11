@@ -23,7 +23,7 @@ without colliding with Qt again.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from aqt.qt import (
     QFrame,
@@ -89,6 +89,11 @@ class ToastWindow(QWidget):
         self._reconcile_pending = False
         self._applying_size = False
         self._auto_size = True
+        # Where _reposition last left the window's bottom-right corner, and how far
+        # the user has moved it from where it would otherwise sit. None until the
+        # window has first been placed.
+        self._placed: Optional[QPoint] = None
+        self._offset = QPoint(0, 0)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -253,23 +258,42 @@ class ToastWindow(QWidget):
         screen = self.screen()
         if screen is not None:
             wanted = min(wanted, int(screen.availableGeometry().height() * MAX_HEIGHT_FRACTION))
+        before = self.geometry().bottomRight()
         self._applying_size = True
         try:
             self.resize(self.width(), max(wanted, 60))
         finally:
             self._applying_size = False
+        if self._placed is not None:
+            # Growing moves the bottom edge, which is not the user moving it.
+            self._placed += self.geometry().bottomRight() - before
 
     def _reposition(self) -> None:
-        """Anchor to the bottom-right of the main window."""
+        """Anchor to the bottom-right of the main window, where the user left it.
+
+        A corner that is not where this last left it was moved by someone else:
+        the user dragging the window, or the window manager placing it. Put back on
+        every post and every move of mw, a window dragged out of the way came
+        straight back. The move is kept instead, as an offset from mw's corner, so
+        the window still follows mw around.
+        """
         from aqt import mw
 
         if mw is None:
             return
+        if self._placed is not None:
+            here = self.geometry().bottomRight()
+            self._offset += here - self._placed
+            self._placed = here
         try:
             corner = mw.mapToGlobal(QPoint(mw.width(), mw.height()))
         except RuntimeError:
             return
-        self.move(corner.x() - self.width() - MARGIN, corner.y() - self.height() - MARGIN)
+        self.move(
+            corner.x() - self.width() - MARGIN + self._offset.x(),
+            corner.y() - self.height() - MARGIN + self._offset.y(),
+        )
+        self._placed = self.geometry().bottomRight()
 
     def resizeEvent(self, event) -> None:
         # The user taking over the size arrives from the window system, which

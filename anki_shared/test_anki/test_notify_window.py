@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 import pytest
 from aqt.gui_hooks import theme_did_change
-from aqt.qt import Qt, QWidget
+from aqt.qt import QPoint, Qt, QWidget
 from aqt.theme import theme_manager
 
 from anki_shared.notify.card import PALETTE, ToastCard
@@ -158,6 +158,30 @@ def test_a_size_the_user_sets_sticks(host, qtbot):
     host.post(make_spec(source="C", title="three", timeout_ms=STICKY))
     qtbot.waitUntil(lambda: len(window._cards) == 3, timeout=WAIT)
     assert window.height() == chosen
+
+
+def test_a_window_the_user_moved_stays_where_they_put_it(host, real_mw, qtbot):
+    # Put back in mw's corner on every post and every move of mw, a window dragged
+    # out of the way came straight back.
+    window = host.window
+    host.post(make_spec(source="A", title="one", timeout_ms=STICKY))
+    qtbot.waitUntil(window.isVisible, timeout=WAIT)
+    corner = window.geometry().bottomRight()
+    drag = QPoint(-150, -100)
+    # Through the native window, as the window system moves it for a drag.
+    native = window.windowHandle()
+    assert native is not None
+    native.setPosition(native.position() + drag)
+    qtbot.waitUntil(lambda: window.geometry().bottomRight() == corner + drag, timeout=WAIT)
+    host.post(make_spec(source="B", title="two", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(window._cards) == 2, timeout=WAIT)
+    assert window.geometry().bottomRight() == corner + drag, "the drag must stick"
+    # It still follows mw around, keeping the user's offset from its corner.
+    nudge = QPoint(30, 20)
+    real_mw.move(real_mw.pos() + nudge)
+    qtbot.waitUntil(
+        lambda: window.geometry().bottomRight() == corner + drag + nudge, timeout=WAIT
+    )
 
 
 def test_a_card_expires(host, qtbot):
