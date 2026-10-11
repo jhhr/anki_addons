@@ -18,7 +18,16 @@ from typing import Any, Iterator
 import aqt.utils
 import pytest
 from aqt.gui_hooks import theme_did_change
-from aqt.qt import QApplication, QEvent, QMouseEvent, QPoint, QPointF, Qt, QWidget
+from aqt.qt import (
+    QApplication,
+    QEvent,
+    QGuiApplication,
+    QMouseEvent,
+    QPoint,
+    QPointF,
+    Qt,
+    QWidget,
+)
 from aqt.theme import Theme, theme_manager
 
 from anki_shared.notify.card import ACCENTS, ToastCard
@@ -340,6 +349,51 @@ def test_a_window_the_user_moved_stays_where_they_put_it(host, real_mw, qtbot):
     qtbot.waitUntil(
         lambda: window.geometry().bottomRight() == corner + drag + nudge, timeout=WAIT
     )
+
+
+def raises_while(window, monkeypatch, state):
+    """The times the window is raised from here on, with Anki's application state as given.
+
+    The offscreen platform activates every window it shows, so the state is the
+    test's to set. It has no stacking order to look at either, so what is
+    checked is the request to raise.
+    """
+    raised: list[int] = []
+    monkeypatch.setattr(window, "raise_", lambda: raised.append(1))
+    monkeypatch.setattr(QGuiApplication, "applicationState", staticmethod(lambda: state))
+    return raised
+
+
+def test_news_raises_the_window_over_the_anki_window_in_front(host, qtbot, monkeypatch):
+    # Owned by mw, the window stayed under the Browser, a window of its own, and a
+    # batch run's report there landed behind the browser that ran it.
+    window = host.window
+    raised = raises_while(window, monkeypatch, Qt.ApplicationState.ApplicationActive)
+    handle = host.post(make_spec(source="A", title="first", key="k", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: raised == [1], timeout=WAIT)
+    host.post(make_spec(source="A", title="second", key="k", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: raised == [1, 1], timeout=WAIT)
+    host.update(handle, {"body": "more"})
+    qtbot.waitUntil(lambda: raised == [1, 1, 1], timeout=WAIT)
+    # What is not news leaves the stacking alone: the user may have put a window
+    # over this one on purpose.
+    other = host.post(make_spec(source="B", title="other", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: len(raised) == 4, timeout=WAIT)
+    window._cards[handle].pin_button.click()
+    host.dismiss(other)
+    qtbot.waitUntil(lambda: other not in window._cards, timeout=WAIT)
+    assert window._cards[handle].pinned is True
+    assert len(raised) == 4
+
+
+def test_a_post_while_another_program_is_in_use_raises_nothing(host, qtbot, monkeypatch):
+    # Raised then, it would come up over the windows of the program in use.
+    window = host.window
+    raised = raises_while(window, monkeypatch, Qt.ApplicationState.ApplicationInactive)
+    handle = host.post(make_spec(source="A", title="in the background", timeout_ms=STICKY))
+    qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
+    assert window.isVisible()
+    assert raised == []
 
 
 def test_a_card_expires(host, qtbot):

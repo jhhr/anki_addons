@@ -37,6 +37,7 @@ from aqt.qt import (
     QBrush,
     QColor,
     QFrame,
+    QGuiApplication,
     QHBoxLayout,
     QLabel,
     QLinearGradient,
@@ -376,6 +377,7 @@ class ToastWindow(QWidget):
                 stale.setParent(None)
                 stale.deleteLater()
 
+        news = False
         for entry in entries:
             handle = entry["handle"]
             card = self._cards.get(handle)
@@ -383,10 +385,12 @@ class ToastWindow(QWidget):
                 card = ToastCard(handle, entry["spec"], self.dismiss_entry, self._set_pinned)
                 self._cards[handle] = card
                 card.arm(self._stack.timeout_ms(entry))
+                news = True
             elif card.spec is not entry["spec"]:
                 # A keyed repost or an update replaced the spec object.
                 card.set_spec(entry["spec"])
                 card.arm(self._stack.timeout_ms(entry))
+                news = True
 
         self._relayout(entries)
 
@@ -397,6 +401,23 @@ class ToastWindow(QWidget):
         if not self.isVisible():
             self.show()
         self._reposition()
+        if news:
+            self._come_forward()
+
+    def _come_forward(self) -> None:
+        """Stack above whichever Anki window is in front.
+
+        Being owned by mw keeps the window above mw and nothing else. The
+        Browser is a top-level window of its own, and Qt shows a tool window
+        with SW_SHOWNOACTIVATE, which leaves it where it was in the stacking
+        order: a batch run's report could land underneath the browser that ran
+        it. Raising does not activate either; on Windows it is SetWindowPos
+        with SWP_NOACTIVATE. Only while Anki is the application in use, though,
+        or a post arriving while the user is in another program would come up
+        over that program's windows.
+        """
+        if QGuiApplication.applicationState() == Qt.ApplicationState.ApplicationActive:
+            self.raise_()
 
     def _relayout(self, entries: List[Dict[str, Any]]) -> None:
         """Put the cards back in display order, with a header per named group."""
