@@ -448,6 +448,51 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
+# --- 2d. adjectives from a verb's negation -------------------------------------------------
+
+# Adjectives Sudachi doesn't have and reads as a verb and its negation, by their reading: 下らない
+# "worthless" is no 下る, 詰まらない no 詰まる, and 思い掛ける and 居た堪れる are no verbs at all.
+# Hand-kept, as JMdict can't tell them from a plain negation: it lists 知らない and 足りない as
+# adjectives too. 済まない and いけない are left out, being as often the verb (只じゃ済まない,
+# 学校に行けない).
+LEXICAL_NEGATIVES = {"くだらない", "つまらない", "たまらない", "おもいがけない", "いたたまれない"}
+NEGATION_AUX = ("助動詞-ナイ", "助動詞-ヌ")
+
+
+def _lexical_negative(tm: TextMap, verb: Morph, neg: Morph) -> bool:
+    """Whether a verb and the negation after it are one of LEXICAL_NEGATIVES as JMdict has it.
+    Kanji the note writes must be the adjective's: 貯まらない is no 堪らない."""
+    if (
+        verb.pos[0] != "動詞"
+        or neg.pos[0] != "助動詞"
+        or len(neg.pos) < 6
+        or not neg.pos[4].startswith(NEGATION_AUX)
+        or neg.start != verb.end
+    ):
+        return False
+    reading = _furigana_reading(tm, verb.start, verb.end, [verb]) + "ない"
+    written = tm.written_form(verb.start, verb.end) + "ない"
+    return reading in LEXICAL_NEGATIVES and any(
+        reading in rebs and "adj-i" in ps and (written in kebs or not KANJI_RE.search(written))
+        for kebs, rebs, ps in jmdict.lookup(reading)
+    )
+
+
+def negative_adjectives(tm: TextMap, morphs: list[Morph]) -> list[Morph]:
+    """A verb before its negation as the stem of the adjective the two are, when that is one of
+    LEXICAL_NEGATIVES: くだら|ねー, 下ら|ぬ and くだら|なかっ|た are 下らない, which came out as
+    下る. The negation stays a morph of its own and attaches as it did to the verb, so the word
+    is still an inflected one whose dictionary form is its lemma, not what JMdict has for the
+    form as written (詰まらん)."""
+    out = list(morphs)
+    for k, (m, nxt) in enumerate(zip(morphs, morphs[1:])):
+        if _lexical_negative(tm, m, nxt):
+            lemma = m.surface + "ない"
+            pos = ("形容詞", "一般", "*", "*", "形容詞", m.pos[5])
+            out[k] = replace(m, pos=pos, lemma=lemma, norm=lemma, subs=[])
+    return out
+
+
 def reread_cut_groups(tm: TextMap) -> tuple[TextMap, list[Morph]]:
     """A furigana group goes to the tokenizer as its kanji, or inside <k> as its reading, and
     the tokenizer can cut either wrong; a group it cuts goes in the other way when that reads
@@ -1476,6 +1521,11 @@ def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str
         fits = usual or [k for k in usable if k != form]
     else:
         fits = [k for k in usable if _kanjifies(form, k)]
+    if kana in LEXICAL_NEGATIVES:
+        # The kanjify policy's spelling (KANJI-12): the verb's kanji and okurigana before a kana
+        # ない, where JMdict's first is 詰らない and its fullest the search-only 思い掛け無い
+        negated = [k for k in fits if k.endswith("ない")]
+        return sorted(negated, key=lambda k: (-len(_kanji_set(k)), -len(k)))[:1]
     widest = _widest_kanji_sets(fits)
     rare = [k for k in fits if "rK" in info.get(k, ())]
     if len(widest) > 1 and len(rare) < len(fits):
@@ -1988,7 +2038,8 @@ def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)
-    words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
+    morphs = merge_noun_verbs(negative_adjectives(tm, morphs))
+    words = merge_cut_groups(tm, to_words(morphs))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun

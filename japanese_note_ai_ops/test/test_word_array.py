@@ -383,6 +383,30 @@ class WordArrayTests(unittest.TestCase):
             ],
         )
 
+    def test_a_lexical_negative_adjective_is_not_its_verb(self):
+        # Sudachi has no 下らない: くだら + ねー was the verb 下る, in every form of the negation
+        for sentence, raw, form, reading in [
+            ("<k> 下[くだ]らねー 事[こと]</k> 言[い]う", " 下[くだ]らねー", "下らない", "くだらない"),
+            ("くだらなかった", "くだらなかった", "下らない", "くだらない"),
+            ("<k> 下[くだ]らぬ</k> 思念[しねん]", " 下[くだ]らぬ", "下らない", "くだらない"),
+            # JMdict's first spelling is 詰らない, and 詰まらん is an expression of its own there
+            ("<k> 詰[つま]らん</k>。", " 詰[つま]らん", "詰まらない", "つまらない"),
+            ("<k> 堪[たま]らなかった</k>。", " 堪[たま]らなかった", "堪らない", "たまらない"),
+            # 思い掛ける is no verb at all: its sub-words were 思う and がける
+            (" 思[おも]いがけない 事[こと]", " 思[おも]いがけない", "思い掛けない", "おもいがけない"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word, [raw, "adjective", form, reading, [], []])
+        # A plain negation stays the verb, and so does one written with another word's kanji
+        for sentence, form in [
+            (" 知[し]らない 人[ひと]", "知る"),
+            (" 金[かね]が 貯[た]まらない", "貯まる"),
+            (" 只[ただ]じゃ<k> 済[す]まない</k>", "済む"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "verb")
+
     def test_conjunction_and_pronoun_okurigana_is_no_sub_word(self):
         for sentence, form in [
             ("但[ただ]し、 注意[ちゅうい]", "但し"),

@@ -74,6 +74,14 @@ collection was migrated on 2026-09-16.
    An adjective's く- and な-forms are the adjective (大きく, <k>良く</k> as a 副詞, 大きな as a
    連体詞, 多く and 近く as nouns with a kanji), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
    lists 大きく and 早く as adverbs too, so it can't tell them apart.
+   A verb and its negation are the adjective JMdict has for the two when it is one of
+   `LEXICAL_NEGATIVES` (下らない, 詰まらない, 堪らない, 思い掛けない, 居た堪れない), in whatever form the
+   negation takes (くだらねー, 詰まらん, 下らぬ): Sudachi has none of them and read 下る and 詰まる.
+   Hand-kept for the same reason, JMdict listing 知らない and 足りない as adjectives too. Kanji the
+   note writes must be the adjective's (貯まらない stays 貯まる), and its one spelling is the kanjify
+   policy's (KANJI-12), the verb's okurigana before a kana ない: 詰まらない, not JMdict's first,
+   詰らない. 済まない and いけない stay the verb, being as often its plain negation (只じゃ済まない,
+   学校に行けない). Export: 22 words (詰まらない 10, 下らない 6, 思い掛けない 3, 堪らない 2, 居た堪れない 1).
    A word Sudachi calls a suffix that JMdict has with its reading only as a word of its own is
    labelled as JMdict has it: 家[うち] after 一日中 a noun, 等[など] a particle, 沿い a verb. Inside
    a compound only the verb stems are relabelled; 官 of 警察官 stays a suffix, though JMdict's 官
