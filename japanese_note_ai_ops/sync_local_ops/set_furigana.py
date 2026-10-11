@@ -42,7 +42,12 @@ from aqt import mw
 from aqt.browser import Browser
 
 from ..async_api_ops import collection_access
-from ..async_api_ops.base_ops import AsyncTaskProgressUpdater, bulk_notes_op, selected_notes_op
+from ..async_api_ops.base_ops import (
+    AsyncTaskProgressUpdater,
+    NotesRunSpec,
+    bulk_notes_op,
+    selected_notes_op,
+)
 from ..async_api_ops.chain_types import ChainStep
 from ..async_api_ops.role_gate import notes_of_role
 from ..async_api_ops.run_errors import report_error
@@ -258,6 +263,15 @@ async def bulk_set_furigana_op(
     )
 
 
+def set_furigana_spec() -> NotesRunSpec:
+    """The op's run, as the menu starts it and as a script does (`NotesRunSpec`)."""
+    return NotesRunSpec(
+        done_text="Set furigana from audio",
+        title="Setting furigana from audio",
+        bulk_op=bulk_set_furigana_op,
+    )
+
+
 def set_furigana_selected_notes(
     nids: Sequence[NoteId], parent: Browser, chain: Optional[ChainStep] = None
 ):
@@ -265,10 +279,14 @@ def set_furigana_selected_notes(
     touched."""
 
     def run():
-        progress_updater = AsyncTaskProgressUpdater(title="Setting furigana from audio")
-        done_text = "Set furigana from audio"
+        spec = set_furigana_spec()
         selected_notes_op(
-            done_text, bulk_set_furigana_op, nids, parent, progress_updater, chain=chain
+            spec.done_text,
+            spec.bulk_op,
+            nids,
+            parent,
+            AsyncTaskProgressUpdater(title=spec.title),
+            chain=chain,
         )
 
     with_generator_resources(parent, run, chain=chain)

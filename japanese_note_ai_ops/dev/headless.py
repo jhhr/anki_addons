@@ -432,5 +432,10 @@ def op_specs() -> dict[str, Callable[[], NotesRunSpec]]:
     """The ops a script can run, by their op_registry key: those with a NotesRunSpec."""
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.sync_local_ops.migrate_to_sentence_notes import migrate_spec
+    from japanese_note_ai_ops.sync_local_ops.set_furigana import set_furigana_spec
 
-    return {"match_words": match_words_spec, "migrate_to_sentence_notes": migrate_spec}
+    return {
+        "match_words": match_words_spec,
+        "migrate_to_sentence_notes": migrate_spec,
+        "set_furigana": set_furigana_spec,
+    }
