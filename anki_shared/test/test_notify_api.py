@@ -200,3 +200,19 @@ class TestFallbackHandles:
     def test_dismissing_an_unknown_handle_is_false(self, anchor, shown):
         assert notify.dismiss("fb:999") is False
         assert notify.update("fb:999", title="x") is False
+
+    def test_only_the_latest_entries_are_kept(self, anchor, shown):
+        # Kept for the session, every post that fell back stayed until Anki restarted.
+        handles = [notify.post(source="A", title=str(i)) for i in range(fallback.RECENT_LIMIT + 5)]
+        assert len(fallback._recent) == fallback.RECENT_LIMIT
+        assert notify.update(handles[0], title="x") is False, "long gone from the screen"
+        assert notify.update(handles[-1], title="x") is True
+
+    def test_an_update_keeps_its_entry_as_the_newest(self, anchor, shown):
+        # The update shows its tooltip again, so it is the one on screen.
+        first = notify.post(source="A", title="first")
+        for i in range(fallback.RECENT_LIMIT - 1):
+            notify.post(source="B", title=str(i))
+        notify.update(first, title="shown again")
+        notify.post(source="C", title="one more")
+        assert notify.update(first, title="still reachable") is True

@@ -6,8 +6,8 @@ that may turn a sync summary into a traceback, so every path out of post()
 ends here: Anki's own tooltip, which is exactly the behaviour this package
 replaces. Worse than a stack, but never worse than today.
 
-The one thing kept over plain tooltip() calls is a small cache of what was
-posted, so that an update() against a fallback handle can re-render the merged
+The one thing kept over plain tooltip() calls is a small cache of the latest
+entries, so that an update() against a fallback handle can re-render the merged
 entry rather than showing a fragment of it.
 """
 
@@ -29,6 +29,14 @@ STICKY_PERIOD_MS = 30000
 # Anki's tooltip sits 100px up by default; lifting it clears the answer buttons.
 Y_OFFSET = 200
 
+# How many entries update() and dismiss() can still reach. Anki shows one
+# tooltip at a time, so an entry this many posts old is long gone from the
+# screen. Unbounded, every post that ever fell back stayed here until Anki
+# restarted.
+RECENT_LIMIT = 16
+
+# Oldest first. An update moves its entry to the end, since it shows the
+# tooltip again.
 _recent: Dict[str, Dict[str, Any]] = {}
 _counter = 0
 
@@ -81,11 +89,18 @@ def _show(spec: Dict[str, Any]) -> None:
     aqt.mw.progress.single_shot(10, render_now, requires_collection=False)
 
 
+def _remember(handle: str, spec: Dict[str, Any]) -> None:
+    _recent.pop(handle, None)
+    _recent[handle] = spec
+    while len(_recent) > RECENT_LIMIT:
+        del _recent[next(iter(_recent))]
+
+
 def post(spec: Dict[str, Any]) -> str:
     global _counter
     _counter += 1
     handle = f"{PREFIX}{_counter}"
-    _recent[handle] = spec
+    _remember(handle, spec)
     _show(spec)
     return handle
 
@@ -95,7 +110,7 @@ def update(handle: str, fields: Dict[str, Any]) -> bool:
     if spec is None:
         return False
     merged = merge_spec(spec, fields)
-    _recent[handle] = merged
+    _remember(handle, merged)
     _show(merged)
     return True
 
