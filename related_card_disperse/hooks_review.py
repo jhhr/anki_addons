@@ -3,10 +3,11 @@ from __future__ import annotations
 from anki.cards import Card, CardId
 from aqt import mw
 from aqt.gui_hooks import reviewer_did_answer_card
-from aqt.utils import tooltip
 
 from .configuration import Config
 from .logic import (
+    NOTIFY_SOURCE,
+    RuleOutcome,
     StatsCache,
     card_type_name_for,
     describe_buried_decks,
@@ -14,6 +15,7 @@ from .logic import (
     merge_buried_by_deck,
     run_rule_for_reviewed_card,
 )
+from .shared.notify import post
 
 
 def _home_deck_name(card: Card) -> str:
@@ -64,25 +66,42 @@ def run_related_disperse_on_review(_reviewer, card: Card, _ease) -> None:
 
     # A rule reaches wherever its query points, so answering one card can bury
     # related cards sitting in decks the user is not studying. That deck is just
-    # quietly shorter tomorrow unless the tooltip names it, so it gets its own
+    # quietly shorter tomorrow unless the report names it, so it gets its own
     # line -- under both report styles, since it is news either way.
     buried_by_deck: dict[str, int] = {}
     for outcome in reportable:
         merge_buried_by_deck(buried_by_deck, outcome.buried_by_deck)
     elsewhere = describe_buried_decks(buried_by_deck, current_deck=_home_deck_name(card))
+    post_review_report(outcomes, reportable, elsewhere, not config.hide_review_details)
 
-    if config.hide_review_details:
-        total = sum(o.updated for o in reportable)
-        runs = len(outcomes)
-        lines = [
-            f"Dispersed {total} card{'' if total == 1 else 's'}"
-            f" ({runs} rule run{'' if runs == 1 else 's'})"
-        ]
-    else:
-        lines = [o.message for o in reportable]
+
+def post_review_report(
+    outcomes: list[RuleOutcome], reportable: list[RuleOutcome], elsewhere: str, details: bool
+) -> None:
+    """Report an answer's dispersal: how many cards in the title, the rest behind it.
+
+    The title is the line the compact style always showed, so both styles say at a
+    glance what the answer did; the detailed one adds each rule's line below it.
+    """
+    total = sum(o.updated for o in reportable)
+    runs = len(outcomes)
+    lines = [o.message for o in reportable] if details else []
     if elsewhere:
         lines.append(elsewhere)
-    tooltip("<br><br>".join(lines), period=7000)
+    post(
+        source=NOTIFY_SOURCE,
+        title=(
+            f"Dispersed {total} card{'' if total == 1 else 's'}"
+            f" ({runs} rule run{'' if runs == 1 else 's'})"
+        ),
+        body="<br><br>".join(lines),
+        level="success" if total else "info",
+        timeout_ms=7000,
+        # One entry, each answer's report replacing the last, as the tooltip was. Kept
+        # apart, a session's worth would queue behind the cards on show and go on
+        # coming up long after the session ended.
+        key="review",
+    )
 
 
 def init_review_hook() -> None:

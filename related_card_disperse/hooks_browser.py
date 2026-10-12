@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from anki.cards import CardId
 from anki.notes import NoteId
-from aqt import mw
 from aqt.browser import Browser
 from aqt.gui_hooks import browser_will_show_context_menu
 from aqt.qt import QAction, QMenu, qconnect
-from aqt.utils import tooltip
 
 from .configuration import Config
-from .logic import BrowserRunResult, describe_buried_decks, run_browser_disperse_in_background
+from .logic import (
+    NOTIFY_SOURCE,
+    BrowserRunResult,
+    describe_buried_decks,
+    run_browser_disperse_in_background,
+)
+from .shared.notify import post
 
 MENU_LABEL = "Disperse related cards"
 
@@ -28,20 +32,19 @@ def _summary(result: BrowserRunResult, notes_mode: bool) -> str:
 
 
 def _show_result(result: BrowserRunResult, browser: Browser, notes_mode: bool) -> None:
-    lines = [_summary(result, notes_mode)]
-    # A selection says which cards to disperse, never which decks may be
-    # touched: the rules decide that, and the buried ones drop out of a session
-    # the user did not ask about. Name those decks.
-    elsewhere = describe_buried_decks(result.buried_by_deck)
-    if elsewhere:
-        lines.append(elsewhere)
     # The table's due column is stale now that due dates have moved under it.
     browser.table.reset()
-    # Showing the tooltip right as the op finishes gets it closed again by the
-    # progress dialog still tearing down, so let that settle first.
-    mw.progress.single_shot(
-        100,
-        lambda: tooltip("<br><br>".join(lines), parent=browser, period=10000),
+    # Posted straight away: the notify host holds its redraw until the progress
+    # dialog has gone, which a tooltip raised from here had to be delayed for.
+    post(
+        source=NOTIFY_SOURCE,
+        title=_summary(result, notes_mode),
+        # A selection says which cards to disperse, never which decks may be
+        # touched: the rules decide that, and the buried ones drop out of a
+        # session the user did not ask about. Name those decks.
+        body=describe_buried_decks(result.buried_by_deck),
+        level="info" if result.cancelled else "success",
+        timeout_ms=10000,
     )
 
 
@@ -63,7 +66,7 @@ def run_disperse_on_browser_selection(browser: Browser) -> None:
     else:
         card_ids = list(browser.selected_cards())
     if not note_ids and not card_ids:
-        tooltip("No cards selected", parent=browser)
+        post(source=NOTIFY_SOURCE, title="No cards selected", level="warning")
         return
 
     run_browser_disperse_in_background(

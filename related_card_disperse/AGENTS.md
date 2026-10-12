@@ -51,10 +51,14 @@ cap; the anchor card is exempt from the cap) → `build_disperse_plan` →
   sync and browser runs use `add_custom_undo_entry` + per-card `merge_undo_entries`.
 - Threading: sync, browser and deck runs use `mw.taskman.run_in_background` with
   `mw.progress`, cancellation, and `mw.reset()` when done; not `CollectionOp`. The review
-  hook is synchronous on the main thread, so it must stay cheap. The sync result is a
-  `notify.post` in the `sync` group, and the deck run's an ungrouped one keyed to its
-  deck, so a rerun replaces it; the notify host waits out the progress dialog itself. The
-  browser run calls `browser.table.reset()` and still reports in a `tooltip`.
+  hook is synchronous on the main thread, so it must stay cheap. The browser run calls
+  `browser.table.reset()`.
+- Every report is a `notify.post` under `logic.NOTIFY_SOURCE`, never a tooltip, which
+  would replace whatever another addon had just shown for the same answer or sync. The
+  sync's is in the `sync` group; the deck run's is keyed to its deck, so a rerun replaces
+  it; an answer's is keyed `review`, so each replaces the last instead of a session's
+  worth queueing up; the browser run's stands alone. The notify host waits out the
+  progress dialog itself.
 - Loop guards: `processed_rule_card_pairs` prevents re-running a (rule, card) pair;
   `remaining_note_cards` always drops the anchor. The sync run resolves candidates uncapped,
   groups overlapping sets when `dedupe_sync_groups` is on, then caps per group. Rule errors
@@ -89,11 +93,12 @@ default sibling dispersal. A new key goes into the TypedDict, `migrate_data` and
 `related_card_disperse/test` is in the root `testpaths`: `python -m pytest -q
 related_card_disperse/test`. Six files cover `core.py`, the bury selection functions, the
 browser run's planning (`plan_note_rule_runs`, with a monkeypatched `logic.mw.col`), derived
-rules (including that they never reach the config), rules, and the deck run's report
-(`describe_result`, `result_level`, and what the deck gear posts, with `post` replaced by
-a recorder). They import as `from related_card_disperse.core import ...`. Not covered:
-the `bury.py` SQL, `ui.py`, and the date optimiser against a real collection. New pure
-logic gets a test; for collection behaviour use `anki_shared.testing.real_anki` as
+rules (including that they never reach the config), rules, and the reports of every run
+but the sync (`describe_result`, `result_level`, and what the deck gear, the browser run
+and an answer post, with `post` replaced by a recorder). They import as
+`from related_card_disperse.core import ...`. Not covered: the `bury.py` SQL, `ui.py`,
+and the date optimiser against a real collection. New pure logic gets a test; for
+collection behaviour use `anki_shared.testing.real_anki` as
 `copy_anywhere/test/conftest.py` does.
 
 ## Shared code

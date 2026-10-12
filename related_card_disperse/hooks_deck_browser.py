@@ -11,10 +11,10 @@ from .bury import (
     run_deck_bury_disperse_in_background,
 )
 from .configuration import Config
+from .logic import NOTIFY_SOURCE
 from .shared.notify import post
 
 MENU_LABEL = "Disperse due cards"
-SOURCE = "Related Card Disperse"
 RESULT_TIMEOUT_MS = 10000
 
 
@@ -32,7 +32,7 @@ def _show_result(deck_id: DeckId, result: BuryRunResult) -> None:
     # dialog has gone, which a tooltip raised from here had to be delayed for.
     title, body = describe_result(result)
     post(
-        source=SOURCE,
+        source=NOTIFY_SOURCE,
         title=title,
         body=body,
         level=result_level(result),
@@ -59,7 +59,7 @@ def run_disperse_on_deck(deck_id: DeckId) -> None:
     config.load()
     if not config.has_any_rules():
         post(
-            source=SOURCE,
+            source=NOTIFY_SOURCE,
             title="No rules configured",
             level="warning",
             key=_result_key(deck_id),

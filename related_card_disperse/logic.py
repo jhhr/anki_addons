@@ -34,6 +34,10 @@ from .shared.interpolate.execute_code import ReadOnlyCard, ReadOnlyNote, execute
 from .shared.interpolate.interpolate_fields import interpolate_from_text
 from .shared.scheduling.due_dates import due_to_date, get_fuzz_range
 
+# What the shared notification stack calls this addon. Every run reports there rather than in
+# a tooltip, which would replace whatever another addon had just shown.
+NOTIFY_SOURCE = "Related Card Disperse"
+
 
 @dataclass
 class QueryResolution:
@@ -378,7 +382,7 @@ def describe_buried_decks(buried_by_deck: dict[str, int], current_deck: str = ""
     A rule follows its query wherever it points, so a dispersal can take cards
     out of today in decks the user is not looking at. That is invisible until
     they open one of those decks and find it short, which is exactly the thing a
-    tooltip should say out loud.
+    report should say out loud.
 
     ``current_deck`` is the deck the run was started from, and is left out: its
     count is already inside the surrounding "dispersed N cards" total, and
