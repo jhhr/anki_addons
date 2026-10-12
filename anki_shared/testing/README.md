@@ -54,6 +54,19 @@ python -m pytest -q copy_anywhere/test_anki      # the running-Anki suite alone
 python -m pytest -q path/to/test_file.py::TestClass::test_name
 ```
 
+Tests named `test_x11_*` need input that goes through a real window system, which the
+offscreen platform the suites run on does not have; there they skip. Run them under a
+virtual X server:
+
+```bash
+xvfb-run -a env QT_QPA_PLATFORM=xcb python -m pytest -q anki_shared/test_anki -k x11
+```
+
+Qt's X11 plugin also needs `libxcb-cursor0` and the other xcb utility libraries (on Ubuntu,
+`libxcb-cursor0 libxcb-icccm4 libxcb-util1 libxcb-image0 libxcb-keysyms1
+libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0`), and names any that is missing when
+it cannot start.
+
 A fresh clone does not need `python build.py link` first. Addon code imports shared code
 through `<addon>/shared/`, which only exists once `build.py` has materialised it, so where
 it is missing the root conftest registers `<addon>.shared` over `anki_shared/` itself.

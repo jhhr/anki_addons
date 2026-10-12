@@ -224,10 +224,18 @@ class ToastWindow(QWidget):
         if mw is None:
             raise RuntimeError("no main window to host notifications")
 
-        super().__init__(mw, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        # Neither show() nor a click may activate the window, and nothing in it may
+        # take the keyboard focus away from the reviewer. Qt activates a window on
+        # a press unless it does not accept focus -- on Windows in answering
+        # WM_MOUSEACTIVATE, on X11 by asking for it -- so pinning or opening a card
+        # took the keyboard, and the answer keys went to this window instead.
+        super().__init__(
+            mw,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
         self.setWindowTitle("Anki notifications")
-        # show() must not activate the window, and nothing in it may take the
-        # keyboard focus away from the reviewer.
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # What paintEvent does not draw is see-through: the backdrop fades to it.

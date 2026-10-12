@@ -12,6 +12,7 @@ only comes in at the end, where the copies two addons vendor have to find one
 window.
 """
 
+import ctypes
 import importlib
 from typing import Any, Iterator
 
@@ -23,6 +24,7 @@ from aqt.qt import (
     QEvent,
     QGuiApplication,
     QMouseEvent,
+    QObject,
     QPoint,
     QPointF,
     Qt,
@@ -141,6 +143,9 @@ def test_the_window_never_takes_the_keyboard(host, qtbot):
     qtbot.waitUntil(lambda: handle in window._cards, timeout=WAIT)
     assert window.windowFlags() & Qt.WindowType.Tool
     assert window.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    # What keeps a click from activating it; the x11 test below shows the difference
+    # it makes, where a press can activate a window at all.
+    assert window.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus
     takes_focus = [
         widget
         for widget in [window, *window.findChildren(QWidget)]
@@ -150,6 +155,124 @@ def test_the_window_never_takes_the_keyboard(host, qtbot):
     # Qt owns a widget's namespace (update, close, show...); the contract every
     # copy calls by name keeps out of it.
     assert not isinstance(host, QWidget)
+
+
+class XTest:
+    """Input through the X server's XTEST extension, delivered as a real mouse's would be.
+
+    Events handed to Qt directly would skip what is under test: on a press, Qt's X11
+    plugin activates the window pressed on unless it has WindowDoesNotAcceptFocus
+    (QXcbWindow::handleButtonPressEvent), the rule its Windows plugin applies in answering
+    WM_MOUSEACTIVATE. The offscreen platform the suite runs on activates nothing on a press.
+    """
+
+    KEY_1 = 0x31  # XK_1, the Again key
+
+    def __init__(self) -> None:
+        self._x11 = ctypes.CDLL("libX11.so.6")
+        self._xtst = ctypes.CDLL("libXtst.so.6")
+        self._x11.XOpenDisplay.restype = ctypes.c_void_p
+        self._x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        self._x11.XFlush.argtypes = [ctypes.c_void_p]
+        self._x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self._x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self._x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+        self._xtst.XTestFakeMotionEvent.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong
+        ]
+        self._xtst.XTestFakeButtonEvent.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong
+        ]
+        self._xtst.XTestFakeKeyEvent.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong
+        ]
+        self._display = self._x11.XOpenDisplay(None)
+        if not self._display:
+            raise OSError("no X display")
+
+    def click(self, at: QPoint) -> None:
+        self._xtst.XTestFakeMotionEvent(self._display, -1, at.x(), at.y(), 0)
+        self._xtst.XTestFakeButtonEvent(self._display, 1, True, 0)
+        self._xtst.XTestFakeButtonEvent(self._display, 1, False, 0)
+        self._x11.XFlush(self._display)
+
+    def key(self, keysym: int) -> None:
+        code = self._x11.XKeysymToKeycode(self._display, keysym)
+        self._xtst.XTestFakeKeyEvent(self._display, code, True, 0)
+        self._xtst.XTestFakeKeyEvent(self._display, code, False, 0)
+        self._x11.XFlush(self._display)
+
+    def close(self) -> None:
+        self._x11.XCloseDisplay(self._display)
+
+
+@pytest.fixture
+def xtest(real_mw) -> Iterator[XTest]:
+    """Real X input, on Qt's X11 platform; skips anywhere else.
+
+    Run the tests that use it under a virtual X server:
+
+        xvfb-run -a env QT_QPA_PLATFORM=xcb python -m pytest \\
+            anki_shared/test_anki/test_notify_window.py -k x11
+
+    Qt's xcb plugin needs libxcb-cursor0 and the other xcb utility libraries, which a stock
+    image may not have; it says which on start.
+    """
+    if QGuiApplication.platformName() != "xcb":
+        pytest.skip("needs Qt's X11 platform: QT_QPA_PLATFORM=xcb under xvfb-run")
+    try:
+        xtest = XTest()
+    except OSError as error:
+        pytest.skip(f"no X input: {error}")
+    yield xtest
+    xtest.close()
+
+
+def test_x11_a_click_on_a_card_leaves_the_keyboard_with_the_main_window(
+    host, real_mw, qtbot, xtest
+):
+    # Shown without activating, the window still took the activation from the first
+    # click on it: the main window lost the keyboard, and the answer keys went nowhere
+    # until the user clicked back into Anki.
+    real_mw.show()
+    real_mw.activateWindow()
+    qtbot.waitUntil(lambda: QApplication.activeWindow() is real_mw, timeout=WAIT)
+    window = host.window
+    handle = host.post(make_spec(source="A", title="click me", timeout_ms=STICKY))
+    qtbot.waitUntil(
+        lambda: handle in window._cards
+        and window.windowHandle() is not None
+        and window.windowHandle().isExposed(),
+        timeout=WAIT,
+    )
+    assert QApplication.activeWindow() is real_mw, "showing the window must not take it"
+
+    card = window._cards[handle]
+    pin = card.pin_button
+    xtest.click(pin.mapToGlobal(pin.rect().center()))
+    qtbot.waitUntil(lambda: card.pinned, timeout=WAIT)  # the click landed on the pin
+
+    received: list[QWidget] = []
+
+    class Keys(QObject):
+        def eventFilter(self, obj, event) -> bool:
+            if event.type() == QEvent.Type.KeyPress and isinstance(obj, QWidget):
+                top = obj.window()
+                if top is not None:
+                    received.append(top)
+            return False
+
+    keys = Keys()
+    app = QApplication.instance()
+    assert app is not None
+    app.installEventFilter(keys)
+    try:
+        xtest.key(XTest.KEY_1)
+        qtbot.waitUntil(lambda: bool(received), timeout=WAIT)
+    finally:
+        app.removeEventFilter(keys)
+    assert received[0] is real_mw, "the key went to the notification window"
+    assert QApplication.activeWindow() is real_mw
 
 
 def test_posts_stack_with_a_label_per_named_group(host, real_mw, qtbot):
