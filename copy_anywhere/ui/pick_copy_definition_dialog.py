@@ -697,5 +697,4 @@ def show_copy_dialog(browser):
             copy_definitions=checked_copy_definitions,
             note_ids_per_definition=checked_copy_definition_note_ids,
             parent=browser,
-            notify=True,
         )

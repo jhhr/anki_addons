@@ -97,11 +97,11 @@ def run_copy_fields(monkeypatch):
 
     monkeypatch.setattr(copy_fields_module, "CollectionOp", InlineCollectionOp)
     # `on_success` hands the finished file to the desktop; a test is interested in the path,
-    # not in whether Windows can open a .log. Its tooltip is a real Qt window needing a real
-    # main window, which is exactly what this suite does not have.
+    # not in whether Windows can open a .log. Its report goes to a notification window that
+    # needs a real main window, which is exactly what this suite does not have.
     opened: list[str] = []
     monkeypatch.setattr(copy_fields_module, "open_log_file", opened.append)
-    monkeypatch.setattr(copy_fields_module, "tooltip", lambda text, **kwargs: None)
+    monkeypatch.setattr(copy_fields_module, "post", lambda **kwargs: None)
 
     def run(**kwargs):
         return copy_fields(**kwargs)

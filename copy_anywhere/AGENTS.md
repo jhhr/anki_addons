@@ -86,10 +86,10 @@ Call chain for a bulk run:
 - The unfocus handler is a filter hook: return `changed or we_changed`. It runs definitions
   that reach other notes through `copy_fields(trigger_notes=[note])` because the editor's
   note can be ahead of the database, and reloads editors with `loadNoteKeepingFocus`.
-- Reports: a run started in the browser (the right-click submenu, the Edit menu dialog)
-  passes `copy_fields(notify=True)` and posts to the shared notification stack under
-  `NOTIFY_SOURCE`. A sync hands its text to the sync hook, which posts one keyed entry in
-  the `sync` group. The editor's unfocus run still shows a tooltip.
+- Reports go to the shared notification stack, under `NOTIFY_SOURCE`, not to tooltips: a
+  tooltip replaces whatever another addon showed just before it. A `copy_fields` run posts
+  its own unless it is a sync, which hands its text to the sync hook to post as one keyed
+  entry in the `sync` group; the CustomData resets post theirs.
 - Return contract of a run: `True` is success **or a benign skip** (deck whitelist, unmet
   condition, `skip_block`); `False` aborts the bulk loop. An exception the evaluator did not
   raise itself still restores the trigger before it propagates.
@@ -144,9 +144,9 @@ in the root `testpaths`. Reuse, do not reinvent:
 The tests from before format 2 are characterization tests: they pin behaviour, including
 behaviour that looks odd, and now run through the migrator. A test that fails after your
 change is a behaviour change to justify, not a test to update. Not covered: the `Config`
-CRUD methods, `hooks/browser_hooks.py` beyond the right-click submenu's definition runs,
-`utils/replace_custom_field_values.py`. None of the UI has been exercised in a real Anki
-window by the suite; the Qt tests use offscreen widgets.
+CRUD methods, and `hooks/browser_hooks.py` beyond the right-click submenu's definition
+runs. None of the UI has been exercised in a real Anki window by the suite; the Qt tests
+use offscreen widgets.
 
 ## Known rough edges
 
@@ -163,7 +163,7 @@ window by the suite; the Qt tests use offscreen widgets.
 ## Shared code
 
 Declares `interpolate`, `ui`, `utils`, `anki`, `jp_text_processing`, `word_array`, `notify`
-(the reports of the sync and the browser's runs).
+(every run's report).
 `word_array` and `jp_text_processing` are partly there for the shared `execute_code`, which
 exposes `kana_highlight`, `decode_word_array` and `format_word_array` to code mode when they
 import. The interpolation engine and most widgets this addon uses are shared with

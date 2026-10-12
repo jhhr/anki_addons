@@ -12,8 +12,8 @@ whatever `run_in_background` returns -- `None` in a real Anki. `run_in_backgroun
 `mw` has, so the seam is the `CollectionOp` name in the module: `run_copy_fields` swaps in a
 stand-in that keeps the `op` closure, runs it inline as `op(mw.col)`, and returns its
 `CacheResults` straight out of `copy_fields`. The `success` / `failure` callbacks are
-recorded but deliberately not called -- `on_success` builds a `tooltip`, which needs a real
-main window -- so an exception raised inside `op` reaches the test directly instead of going
+recorded but deliberately not called -- `on_success` posts a report, whose window needs a
+real main window -- so an exception raised inside `op` reaches the test directly instead of going
 through `on_failure`. That also leaves the run's log file open, which the `conftest` fixture
 closes again; `test_operation_logging.py` is where the callbacks are driven too.
 
@@ -886,8 +886,8 @@ class TestSyncTail:
             copy_definitions=[definition], update_sync_result=lambda text, count: None
         )
 
-        # An empty result text is what stops `on_success` showing a tooltip after every
-        # sync that had nothing to do.
+        # An empty result text is what stops `on_success` reporting after every sync that
+        # had nothing to do.
         assert results.get_result_text() == ""
         assert results.get_count() == 0
 

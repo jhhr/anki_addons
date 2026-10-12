@@ -5,9 +5,21 @@ from anki.utils import ids2str
 from aqt import mw
 from aqt.operations import CollectionOp
 from aqt.qt import QWidget
-from aqt.utils import tooltip
 
+from ..logic.copy_fields import NOTIFY_SOURCE
 from ..shared.anki.write_custom_data import write_custom_data
+from ..shared.notify import post
+
+
+def _report_reset(edited_cids: Sequence[CardId]) -> None:
+    # A card with two of the reset keys is edited once per key, and counted once.
+    cards = len(set(edited_cids))
+    post(
+        source=NOTIFY_SOURCE,
+        title=f"Reset customData on {cards} card{'' if cards == 1 else 's'}",
+        level="success" if cards else "info",
+        timeout_ms=5000,
+    )
 
 
 def replace_custom_field_values(
@@ -23,10 +35,8 @@ def replace_custom_field_values(
     Reset values of custom_data fields for cards that have them
     """
     edited_cids: list[CardId] = []
-    card_count = 0
 
     def update_op(col, edited_cids=None):
-        nonlocal card_count
         if edited_cids is None:
             edited_cids = []
         card_ids_query = ""
@@ -44,7 +54,6 @@ def replace_custom_field_values(
                 AND json_extract(data, '$.cd') IS NOT NULL
                 {card_ids_query}
                 """)
-            card_count += len(card_ids_to_update)
             cards_to_update = [Card(col=mw.col, id=cid) for cid in card_ids_to_update]
             for card in cards_to_update:
                 edited_cids.append(card.id)
@@ -63,7 +72,6 @@ def replace_custom_field_values(
                 {'== ' + repr(prev_value) if prev_value is not None else 'IS NOT NULL'}
                 {card_ids_query}
                 """)
-            card_count += len(card_ids_to_update)
             cards_to_update = [Card(col=mw.col, id=cid) for cid in card_ids_to_update]
             for card in cards_to_update:
                 edited_cids.append(card.id)
@@ -76,12 +84,6 @@ def replace_custom_field_values(
             parent=parent,
             op=lambda col: update_op(col, edited_cids),
         )
-        .success(
-            lambda out: tooltip(
-                f"Reset customData for in {len(edited_cids)}/{card_count} selected notes.",
-                parent=parent,
-                period=5000,
-            )
-        )
+        .success(lambda out: _report_reset(edited_cids))
         .run_in_background()
     )

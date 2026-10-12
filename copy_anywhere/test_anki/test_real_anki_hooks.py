@@ -13,8 +13,8 @@ four things here:
 * **`copy_fields()` above the `op`.** The stub suite drives the `op` closure inline and
   deliberately never calls `on_success` / `on_failure`, because both build Qt widgets. Here
   the real `CollectionOp` runs on a real background thread and both callbacks fire, so the
-  tooltip or the report posted in its place, the operation's log file and the progress
-  title are observable, and so is the browser's right-click menu that starts a run.
+  report the run posts, the operation's log file and the progress title are observable,
+  and so are the browser's right-click menu that starts a run and the CustomData resets.
 
 * **The sync hooks**, which are `gui_hooks` and so do not exist outside a running Anki.
 
@@ -29,12 +29,10 @@ Two facts worth knowing before reading the assertions:
    what `flagged_note()` does, and without it every sync assertion here would pass
    vacuously with an empty result.
 
-2. **`tooltip`, `open_log_file` and the two `post`s, `copy_fields`' and the sync hook's,
-   are replaced with recorders.** The first is a real Qt window with a real timer, the
-   second hands a path to the desktop's file associations, and the posts elect a
-   notification window shared with other addons; what is under test is whether they are
-   reached, with what text and which file, not whether Qt can draw a toast or Windows can
-   open a .log.
+2. **`open_log_file` and every `post` are replaced with recorders.** The first hands a
+   path to the desktop's file associations, and a post elects a notification window
+   shared with other addons; what is under test is whether they are reached, with what
+   text and which file, not whether Qt can draw a toast or Windows can open a .log.
 """
 
 import sys
@@ -135,13 +133,8 @@ def dialogs(monkeypatch):
     """Records what `on_success` / `on_failure` show the user, instead of showing it."""
     from copy_anywhere.logic import copy_fields as copy_fields_module
 
-    recorded: dict[str, list] = {"tooltips": [], "posts": [], "logs": []}
-    monkeypatch.setattr(
-        copy_fields_module,
-        "tooltip",
-        lambda text, **kwargs: recorded["tooltips"].append((text, kwargs)),
-    )
-    # A run asked to notify, as the browser's runs are, posts one kwargs dict instead.
+    recorded: dict[str, list] = {"posts": [], "logs": []}
+    # A run that is not a sync posts its report, one kwargs dict per post.
     monkeypatch.setattr(
         copy_fields_module, "post", lambda **kwargs: recorded["posts"].append(kwargs)
     )
@@ -164,6 +157,16 @@ def sync_posts(monkeypatch):
 
     recorded: list[dict] = []
     monkeypatch.setattr(sync_hook, "post", lambda **kwargs: recorded.append(kwargs))
+    return recorded
+
+
+@pytest.fixture
+def reset_posts(monkeypatch):
+    """What `replace_custom_field_values` posts, one kwargs dict per post."""
+    from copy_anywhere.utils import replace_custom_field_values as resets
+
+    recorded: list[dict] = []
+    monkeypatch.setattr(resets, "post", lambda **kwargs: recorded.append(kwargs))
     return recorded
 
 
@@ -338,40 +341,12 @@ class TestTheCollectionOpPath:
         # The dialog itself closes on a later turn of the event loop, not inside `finish()`.
         anki_session.qtbot.waitUntil(lambda: real_mw.progress.busy() == 0, timeout=WAIT)
 
-    def test_a_run_that_copied_something_reports_it_as_a_tooltip(
+    def test_a_run_that_copied_something_posts_its_report(
         self, anki_session, real_mw, addon_config, dialogs
     ):
-        from copy_anywhere.logic.copy_fields import copy_fields
-
-        addon_config()
-        note = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"})
-        done: list[int] = []
-
-        copy_fields(
-            copy_definitions=[within_note()],
-            note_ids=[note.id],
-            on_done=lambda: done.append(1),
-        )
-        anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
-
-        assert real_mw.col.get_note(note.id)["Meaning"] == "inu!"
-        (text, kwargs) = dialogs["tooltips"][0]
-        # One definition gets "Finished in " rather than a total time -- the branch reads
-        # `len(copy_definitions) > 1`, so the single-definition text ends up with a dangling
-        # "Finished in " and no duration at all.
-        assert text.startswith("Finished in <br>")
-        assert "1 destinations" in text
-        # `parent` is whatever the caller passed, and every hook-side caller passes nothing,
-        # so the tooltip is parented on `aqt.mw.app.activeWindow()` by `aqt.utils.tooltip`.
-        assert kwargs == {"parent": None, "period": 6000, "y_offset": 100}
-        # Nothing was logged at the default `error` level, so `delay=True` meant no file was
-        # ever created and there is nothing to open.
-        assert dialogs["logs"] == []
-        assert dialogs["posts"] == []
-
-    def test_a_run_asked_to_notify_posts_its_report_instead_of_a_tooltip(
-        self, anki_session, real_mw, addon_config, dialogs
-    ):
+        # Every run that is not a sync posts: from the browser, and from the editor when a
+        # field is left. As a tooltip, the editor's report replaced, or was replaced by,
+        # whatever another addon showed for the same unfocus.
         from copy_anywhere.logic.copy_fields import copy_fields
 
         addon_config()
@@ -381,27 +356,30 @@ class TestTheCollectionOpPath:
         copy_fields(
             copy_definitions=[within_note("a<b")],
             note_ids=[note.id],
-            notify=True,
             on_done=lambda: done.append(1),
         )
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
 
         assert real_mw.col.get_note(note.id)["Meaning"] == "inu!"
-        assert dialogs["tooltips"] == []
         [post] = dialogs["posts"]
         assert post["source"] == "Copy Anywhere"
         # Worded as the undo entry is, "Copy fields (a<b)", and escaped: a card's title is
         # rich text, and the name is the user's.
         assert post["title"] == "Copied fields (a&lt;b)"
-        # The tooltip's text, unchanged: the dangling "Finished in " included.
+        # One definition gets "Finished in " rather than a total time -- the branch reads
+        # `len(copy_definitions) > 1`, so the single-definition text ends up with a dangling
+        # "Finished in " and no duration at all.
         assert post["body"].startswith("Finished in <br>")
         assert "1 destinations" in post["body"]
         assert post["level"] == "success"
         assert post["timeout_ms"] == 6000
         # Neither grouped with a sync's reports nor keyed: every run is a report of its own.
         assert "group" not in post and "key" not in post
+        # Nothing was logged at the default `error` level, so `delay=True` meant no file was
+        # ever created and there is nothing to open.
+        assert dialogs["logs"] == []
 
-    def test_a_notifying_run_of_several_definitions_is_titled_by_their_count(
+    def test_a_run_of_several_definitions_is_titled_by_their_count(
         self, anki_session, real_mw, addon_config, dialogs
     ):
         from copy_anywhere.logic.copy_fields import copy_fields
@@ -416,7 +394,6 @@ class TestTheCollectionOpPath:
                 within_note("d2", field_to_field_defs=[field_to_field(into="Reading")]),
             ],
             note_ids=[note.id],
-            notify=True,
             on_done=lambda: done.append(1),
         )
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
@@ -426,7 +403,7 @@ class TestTheCollectionOpPath:
         assert " total time<br>" in post["body"]
         assert post["timeout_ms"] == 7000
 
-    def test_a_run_with_a_logged_message_opens_its_log_file_and_no_tooltip(
+    def test_a_run_with_a_logged_message_opens_its_log_file_and_posts_nothing(
         self, anki_session, real_mw, addon_config, dialogs, operation_logs
     ):
         from copy_anywhere.logic.copy_fields import copy_fields
@@ -450,7 +427,7 @@ class TestTheCollectionOpPath:
         # Opening it is driven by "was anything logged", not by "did anything fail", and the
         # default log level is `error` -- so a run that logs one error shows the file even
         # though the copy itself was skipped quietly.
-        assert dialogs["tooltips"] == []
+        assert dialogs["posts"] == []
 
     def test_a_sync_run_reports_through_update_sync_result_and_opens_nothing(
         self, anki_session, real_mw, addon_config, dialogs, operation_logs
@@ -469,12 +446,12 @@ class TestTheCollectionOpPath:
         )
         anki_session.qtbot.waitUntil(lambda: bool(done), timeout=WAIT)
 
-        # `is_sync` is "was an update_sync_result given", and it redirects the result away
-        # from the tooltip and opens nothing even when there is something to show -- a sync
-        # is not a moment to put windows in front of the user. The log is still written, for
-        # whoever goes looking afterwards.
+        # `is_sync` is "was an update_sync_result given", and it hands the result to that
+        # instead of posting it, and opens nothing even when there is something to show -- a
+        # sync is not a moment to put windows in front of the user. The log is still written,
+        # for whoever goes looking afterwards.
         assert [count for _, count in results] == [1]
-        assert dialogs["tooltips"] == []
+        assert dialogs["posts"] == []
         assert dialogs["logs"] == []
 
     def test_on_failure_finishes_the_progress_and_re_raises_into_ankis_error_handler(
@@ -565,7 +542,55 @@ class TestTheBrowsersRightClickMenu:
 
         assert real_mw.col.get_note(note.id)["Meaning"] == "inu!"
         assert [post["title"] for post in dialogs["posts"]] == ["Copied fields (d1)"]
-        assert dialogs["tooltips"] == []
+
+
+class TestTheCustomDataResets:
+    """`replace_custom_field_values`, which the browser's CustomData submenu runs."""
+
+    def reset(self, anki_session, real_mw, posts, card_ids, keys) -> dict:
+        from aqt.qt import QWidget
+
+        from copy_anywhere.utils.replace_custom_field_values import replace_custom_field_values
+
+        parent = QWidget()
+        replace_custom_field_values(parent=parent, reset_field_key_values=keys, card_ids=card_ids)
+        anki_session.qtbot.waitUntil(lambda: bool(posts), timeout=WAIT)
+        anki_session.qtbot.waitUntil(
+            lambda: real_mw._background_op_count == 0, timeout=WAIT
+        )
+        [post] = posts
+        return post
+
+    def test_resetting_all_of_it_posts_how_many_cards_it_changed(
+        self, anki_session, real_mw, reset_posts
+    ):
+        notes = [flagged_note(real_mw, word) for word in ("kitsune", "tanuki")]
+        flagged = [card.id for note in notes for card in note.cards()]
+        plain = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"}).cards()[0].id
+
+        post = self.reset(anki_session, real_mw, reset_posts, flagged + [plain], "all")
+
+        assert all(real_mw.col.get_card(card_id).custom_data == "" for card_id in flagged)
+        assert post["source"] == "Copy Anywhere"
+        # Cards, not the "selected notes" the tooltip named, and only the ones that had any.
+        assert post["title"] == f"Reset customData on {len(flagged)} cards"
+        assert post["level"] == "success"
+
+    def test_a_card_reset_on_two_keys_is_counted_once(self, anki_session, real_mw, reset_posts):
+        card = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"}).cards()[0]
+        real_anki.set_custom_data(real_mw.col, card.id, '{"fc":0,"e":1}')
+
+        keys = [("fc", None, None, None), ("e", None, None, None)]
+        post = self.reset(anki_session, real_mw, reset_posts, [card.id], keys)
+
+        assert post["title"] == "Reset customData on 1 card"
+
+    def test_nothing_to_reset_is_not_marked_a_success(self, anki_session, real_mw, reset_posts):
+        card = real_anki.add_note(real_mw.col, VOCAB, {"Word": "inu"}).cards()[0]
+
+        post = self.reset(anki_session, real_mw, reset_posts, [card.id], "all")
+
+        assert (post["title"], post["level"]) == ("Reset customData on 0 cards", "info")
 
 
 class TestTheSyncHooks:

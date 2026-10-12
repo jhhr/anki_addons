@@ -2,7 +2,7 @@
 
 This is the layer above `copy_for_single_trigger_note`: it turns a definition's
 `copy_into_note_types` into a set of note-type ids, runs one SQL query to decide which notes
-the definition applies to, walks them, and assembles the result text the tooltip shows.
+the definition applies to, walks them, and assembles the result text its report shows.
 
 Two things here are load-bearing and stated nowhere:
 
@@ -852,7 +852,7 @@ class TestResultText:
 
     def test_a_run_that_did_nothing_measurable_still_reports_and_counts(self, col):
         # Every counter is zero, so the text is just the timing and the name -- and the count
-        # still goes up, which is what makes `copy_fields` show a tooltip for it.
+        # still goes up, which is what makes `copy_fields` post a report for it.
         real_anki.add_note(col, VOCAB, {"Word": "neko", "Meaning": "cat"})
         definition = d.within_note(field_to_field_defs=[])
 

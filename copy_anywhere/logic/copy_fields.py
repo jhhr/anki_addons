@@ -10,7 +10,6 @@ from anki.utils import ids2str
 from aqt import mw
 from aqt.operations import CollectionOp
 from aqt.qt import QDesktopServices, QUrl
-from aqt.utils import tooltip
 
 from ..configuration import (
     AnyCopyDefinition,
@@ -73,8 +72,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# What the shared notification stack calls this addon, in the sync report and the browser's
-# runs alike. Not just SOURCE: in this module a source is a note copied from.
+# What the shared notification stack calls this addon, in every report it posts there. Not
+# just SOURCE: in this module a source is a note copied from.
 NOTIFY_SOURCE = "Copy Anywhere"
 
 
@@ -196,10 +195,11 @@ def copy_fields(
     update_sync_result: Optional[Callable[[str, int], None]] = None,
     on_done: Optional[Callable[[], None]] = None,
     progress_title: Optional[str] = None,
-    notify: bool = False,
 ):
     """
-    Run many copy definitions at once using CollectionOp. Includes fancy progress updates
+    Run many copy definitions at once using CollectionOp. Includes fancy progress updates.
+    A sync hands its report to update_sync_result; any other run posts it to the shared
+    notification stack, where it does not replace another addon's report as a tooltip would.
     :param copy_definitions: The definitions of what to copy
     :param note_ids: The note ids to copy into, if None, all notes of the note type are copied into
     :param note_ids_per_definition: An alternate of note_ids, a list of note ids to copy into for
@@ -221,8 +221,6 @@ def copy_fields(
         result text and count
     :param on_done: Optional function to run when the operation is done
     :param progress_title: Optional title for the progress dialog
-    :param notify: Report the result in the shared notification stack instead of a tooltip,
-        as the browser's batch runs do. A sync reports through update_sync_result either way
     """
     start_time = time.time()
     is_sync = update_sync_result is not None
@@ -257,7 +255,7 @@ def copy_fields(
             period = 5000 + len(copy_definitions) * 1000
             if update_sync_result is not None:
                 update_sync_result(result_text, count)
-            elif notify:
+            else:
                 post(
                     source=NOTIFY_SOURCE,
                     title=copy_fields_report_title(copy_definitions),
@@ -265,8 +263,6 @@ def copy_fields(
                     level="success",
                     timeout_ms=period,
                 )
-            else:
-                tooltip(result_text, parent=parent, period=period, y_offset=100)
         finish_logging_and_show()
         if on_done is not None:
             on_done()
