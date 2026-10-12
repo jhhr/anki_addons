@@ -1800,11 +1800,16 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         return "くる"  # irregular stem: き/こ would otherwise pick きたる by prefix
     candidates = [to_hiragana(r) for r in w.jm_readings]
     candidates += [to_hiragana(r) for r in jmdict.readings(lemma)]
+    known = list(candidates)
     candidates.append(_sudachi_reading(lemma))
     if furi in candidates:
         return furi
     # The candidate agreeing longest with the furigana stem wins; ties keep JMdict order
-    return max(candidates, key=lambda r: _common_prefix(r, furi))
+    best = max(candidates, key=lambda r: _common_prefix(r, furi))
+    # Less the compound's rendaku, as for an uninflected word above. Sudachi reads some words
+    # alone the way they sound ending a compound (込む ごむ, 深い ぶかい), which then agreed with
+    # the voiced stem (意気込[いきご]んで) over JMdict's こむ
+    return unvoiced(best) if best not in known and unvoiced(best) in known else best
 
 
 POS_MAP = [

@@ -114,7 +114,8 @@ sub-word's Sudachi and JMdict readings, the second allowed to be voiced by renda
 (`土産物[みやげもの]`). A sub-word never comes out as bare kanji: when the readings don't add
 up, the word simply keeps no sub-words, which is what stops a jukujikun word being split inside
 (今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
-has the plain reading (閏日 -> 日[び] -> ひ).
+has the plain reading (閏日 -> 日[び] -> ひ), an inflected one's too: 意気込[いきご]んで -> 込む
+こむ, where Sudachi's own reading of 込む, ごむ, agreed with the voiced stem (深い ぶかい likewise).
 
 A word's reading drops the gemination before the word after it too (`ungeminated`). The っ its
 reading ends in, the note's furigana or Sudachi's, stands in for the reading's last kana or was

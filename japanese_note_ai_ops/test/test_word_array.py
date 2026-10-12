@@ -670,6 +670,16 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(self.examples[20][0])
         self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])
 
+    def test_an_inflected_sub_word_drops_the_compounds_rendaku_too(self):
+        # Sudachi reads 込む alone as ごむ, the way it sounds ending a compound, and that agreed
+        # with the voiced stem over JMdict's こむ
+        for sentence in ("尻込[しりご]み<k> 為[す]る</k>", "意気込[いきご]んでいた"):
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), "込む")[3], "こむ")
+        # A reading only Sudachi has stays when JMdict has no plain one for it: 蹲む is つくなむ
+        word = find_word(self.generator.generate("<k> 蹲[しゃが]んで</k>います"), "蹲む")
+        self.assertEqual(word[3], "しゃがむ")
+
     def test_a_reading_drops_the_gemination_before_the_word_after_it(self):
         # The っ a word's furigana ends in is the next word's doing, as rendaku is the word
         # before's: 坊 of 坊ちゃん is JMdict's ぼう (the first that fits, not ぼん), a number its
