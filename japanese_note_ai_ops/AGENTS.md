@@ -510,7 +510,7 @@ edited there: `split_compound_tag.py`. A note tagged `vocab::split-compound-word
 is a note about a compound. After a sync, for each such note whose word the list lacks,
 `sweep` adds the word (the note's `word_kanjified_field`, and the dict_form of every array
 element linked to the note, which is what the generator looks a compound up by) and tags the
-notes whose array still has the word whole `sentence:regenerate` (hardcoded): regenerating is
+notes whose array still has the word whole `sentence::regenerate` (hardcoded): regenerating is
 the user's to start, and nothing here takes that tag off again. What holds it together:
 
 - **The tag stays, and only an unlisted word is acted on.** The tag is what restores a word

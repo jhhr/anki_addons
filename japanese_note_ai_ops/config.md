@@ -260,9 +260,9 @@ so that the matching is not offered the common words inside it. The exceptions a
     hardcoded), on any device. After a sync, once its media sync has stopped, every note with
     the tag whose word is not on this device's list has it added: the word in the note's
     `word_kanjified_field`, and the form the word arrays linked to the note show it by. The notes
-    whose word array still has the word whole are tagged `sentence:regenerate` (hardcoded too),
+    whose word array still has the word whole are tagged `sentence::regenerate` (hardcoded too),
     in one undo step, and a tooltip says what was listed. Regenerating those notes is yours to
-    start, and so is taking `sentence:regenerate` off them afterwards.
+    start, and so is taking `sentence::regenerate` off them afterwards.
   - The tag stays on the note, and that is what puts the word back should this device's list
     lose it (see Addon Config Sync below): the same check runs after every media sync. A word
     put back that way, before Anki is next restarted, goes back without a tooltip and without

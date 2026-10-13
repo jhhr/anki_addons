@@ -237,7 +237,7 @@ class ListCompoundsTests(unittest.TestCase):
 
         listing, col = self.run_listing(compounds, {"毛羽立つ": [11, 12]})
 
-        self.assertEqual(col.bulk_adds, [([11, 12], "sentence:regenerate")])
+        self.assertEqual(col.bulk_adds, [([11, 12], "sentence::regenerate")])
         self.assertEqual(col.undo, [("entry", tag.UNDO_LABEL), ("merge", 7)])
         self.assertEqual(listing.changes, "merged changes")
         self.assertEqual((listing.forms, listing.tagged), ({"毛羽立つ": ["毛羽立つ"]}, 2))
@@ -250,7 +250,7 @@ class ListCompoundsTests(unittest.TestCase):
 
         listing, col = self.run_listing(compounds, {"毛羽立つ": [11, 12], "心地良い": [12, 13]})
 
-        self.assertEqual(col.bulk_adds, [([11, 12, 13], "sentence:regenerate")])
+        self.assertEqual(col.bulk_adds, [([11, 12, 13], "sentence::regenerate")])
         self.assertEqual(listing.forms, {"毛羽立つ": ["毛羽立つ"], "心地良い": ["心地良い"]})
         self.assertEqual(len(col.undo), 2)
 
@@ -267,7 +267,9 @@ class ListCompoundsTests(unittest.TestCase):
         self.assertEqual(len([search for search in col.searches if whole in search]), 1)
 
     def test_the_search_is_over_the_compounds_note_type_and_its_array_field(self):
-        _listing, col = self.run_listing([tag.Compound(1, "毛羽立つ", "Japanese vocab", "list")], {})
+        _listing, col = self.run_listing(
+            [tag.Compound(1, "毛羽立つ", "Japanese vocab", "list")], {}
+        )
 
         for search in col.searches:
             self.assertTrue(search.startswith('"note:Japanese vocab" "list:re:'), search)
@@ -289,7 +291,9 @@ class ListCompoundsTests(unittest.TestCase):
             11, {"words": match_flags.format_word_array([element("心地良い", [2, 4])])}
         )
         col = FakeCollection([linked])
-        col.find_notes = lambda search: [11] if match_flags.word_array_link_regex(2) in search else []
+        col.find_notes = lambda search: (
+            [11] if match_flags.word_array_link_regex(2) in search else []
+        )
 
         listing = tag.list_compounds(col, compounds)
 
@@ -378,10 +382,10 @@ class SummaryTests(unittest.TestCase):
     def test_it_says_what_was_listed_and_how_many_notes_were_tagged(self):
         self.assertEqual(
             tag.summary(["毛羽立つ", "心地良い"], 3),
-            "Compounds to split: 毛羽立つ, 心地良い listed. 3 notes tagged sentence:regenerate.",
+            "Compounds to split: 毛羽立つ, 心地良い listed. 3 notes tagged sentence::regenerate.",
         )
         self.assertEqual(tag.summary(["毛羽立つ"], 0), "Compounds to split: 毛羽立つ listed.")
-        self.assertEqual(tag.summary([], 1), "1 note tagged sentence:regenerate.")
+        self.assertEqual(tag.summary([], 1), "1 note tagged sentence::regenerate.")
 
 
 class FakeMainWindow:
@@ -575,7 +579,7 @@ class SweepTests(unittest.TestCase):
         window.addonManager.writeConfig.assert_not_called()
         self.assertEqual(tag._listed_this_session, {})
         # The notes were tagged all the same, and said so; the next sweep lists the word
-        self.assertEqual(self.tooltips, ["1 note tagged sentence:regenerate."])
+        self.assertEqual(self.tooltips, ["1 note tagged sentence::regenerate."])
 
     def test_a_word_put_back_beside_a_new_one_leaves_the_new_one_its_full_sweep(self):
         col = self.whole_in(11)
@@ -588,7 +592,7 @@ class SweepTests(unittest.TestCase):
         window = self.sweep(col, CONFIG)
 
         self.assertEqual(len(FakeCollectionOp.started), 2)
-        self.assertEqual(col.bulk_adds[-1], ([21], "sentence:regenerate"))
+        self.assertEqual(col.bulk_adds[-1], ([21], "sentence::regenerate"))
         writes = window.addonManager.writeConfig.call_args_list
         # (The stand-in config is never changed by a write, so each starts from no list)
         self.assertEqual(

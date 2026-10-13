@@ -40,7 +40,14 @@ def compound_element(
         [" 毛羽[けば]", "noun", "毛羽", "けば", [], []],
         ["立[た]ち", "verb", "立つ", "たつ", [], []],
     ]
-    return [" 毛羽[けば]立[た]ち", "verb", form, "けばだつ", match_data or [], subs if split else []]
+    return [
+        " 毛羽[けば]立[た]ち",
+        "verb",
+        form,
+        "けばだつ",
+        match_data or [],
+        subs if split else [],
+    ]
 
 
 def add(mw: Any, word: str, array: Optional[list] = None, tags: Optional[list[str]] = None) -> Any:
@@ -95,7 +102,14 @@ def test_a_tagged_notes_word_is_listed_and_the_notes_that_have_it_whole_are_tagg
     as_a_sub_word = add(
         real_mw,
         "糸",
-        [["毛羽立ちと", "expression", "毛羽立ちと", "けばだちと", [], [compound_element(), ["と"]]]],
+        [[
+            "毛羽立ちと",
+            "expression",
+            "毛羽立ちと",
+            "けばだちと",
+            [],
+            [compound_element(), ["と"]],
+        ]],
     )
     split_already = add(real_mw, "紙", [compound_element([compound.id, 4], split=True)])
     another_word = add(real_mw, "目", [["目立[めだ]った", "verb", "目立つ", "めだつ", [], []]])
@@ -109,7 +123,7 @@ def test_a_tagged_notes_word_is_listed_and_the_notes_that_have_it_whole_are_tagg
     assert to_regenerate(real_mw) == {linked.id, not_linked.id, as_a_sub_word.id}
     assert not {split_already.id, another_word.id} & to_regenerate(real_mw)
     assert swept.tooltips == [
-        "Compounds to split: 毛羽立つ listed. 3 notes tagged sentence:regenerate."
+        "Compounds to split: 毛羽立つ listed. 3 notes tagged sentence::regenerate."
     ]
     # The tag stays: it is what puts the word back should the list lose it
     assert real_mw.col.get_note(compound.id).has_tag(tag.SPLIT_COMPOUND_TAG)
