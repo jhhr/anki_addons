@@ -3,8 +3,9 @@ proper nouns by a language model.
 
 Two steps for one note, one API call, through `bulk_notes_op` as before:
 
-1. `word_array.generator.generate` on the context-stripped sentence with the name lexicon, no
-   API call and one Sudachi tokenizer at a time (`find_proper_nouns.generate_word_array`).
+1. `word_array.generator.generate` on the context-stripped sentence with the name lexicon and
+   the compounds the config lists to split (`split_compound_words`), no API call and one Sudachi
+   tokenizer at a time (`find_proper_nouns.generate_word_array`).
 2. the proper noun call (`find_proper_nouns.add_proper_nouns`), so that a name neither Sudachi
    nor the lexicon knows still comes out as one `proper noun` word.
 
@@ -47,7 +48,7 @@ from aqt.utils import showWarning
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
-from ..word_array import merge, names, resources
+from ..word_array import generator, merge, names, resources
 from ..word_array.match_flags import JUDGE_NEW, format_word_array, read_word_array
 from .chain_types import ChainStep
 from .base_ops import (
@@ -113,7 +114,9 @@ def extract_words_in_note(
         return False
 
     try:
-        arr = generate_word_array(sentence, name_lexicon)
+        # The compounds to split are read off the config for each note, unlike the lexicon, which
+        # is a file: it costs nothing, and no caller of the op can leave them out
+        arr = generate_word_array(sentence, name_lexicon, generator.split_compounds_of(config))
     except Exception as e:
         logger.error(f"{log_prefix}Could not generate a word array: {e}")
         print_error_traceback(e, logger)

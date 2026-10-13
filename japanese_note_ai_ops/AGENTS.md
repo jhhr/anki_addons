@@ -490,6 +490,17 @@ single-element arrays; concatenating the top-level `raw_text` values gives back 
 without `<b>` tags. `match_data` has five states (`match_flags.MatchState`): `[]`,
 `["dontmatch"]`, `["match"]`, `[id]`, `[id, quality]`. Details: `word_array/README.md`.
 
+Every sub-word is one more word the judge and the match op are asked about, so none is added by
+a general rule that both pieces are dictionary words. A verb or adjective Sudachi has as one
+unit (目立つ, 名付ける, 面白い) has no sub-words unless the user lists it in config
+`split_compound_words`, which they edit in Anki: `generator.split_compounds_of(config)` reads it
+and `generate(sentence, names, split_compounds)` takes it; the generator has no list of its own,
+and `extract_words` passes the run's. The analysis never reads the sentence's own `<b>`: it is
+left from when a note's word was marked by hand, and the card marks it from the array now. A
+rule splitting every such compound, a split where the `<b>` ended, a set kept in the code and a
+tag on the sentence's note, which split every compound of that sentence, were each tried and
+taken back (README, "Sub-words of one word").
+
 The codec (`decode_word_array`, `format_word_array`) lives in
 `anki_shared/word_array/field_text.py` because `copy_anywhere` reads the field too;
 `word_array/match_flags.py` re-exports it. A format change is a data migration across two

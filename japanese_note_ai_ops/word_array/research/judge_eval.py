@@ -73,7 +73,7 @@ def build(args) -> int:
     old_word_lists, match_flags = load("research.old_word_lists"), load("match_flags")
     invalid: Counter[str] = Counter()
     corpus = corpora.read_export(corpora.CORPORA["checked"], invalid)
-    lexicon = corpora.export_name_lexicon()
+    lexicon, split = corpora.export_name_lexicon(), corpora.split_compounds()
     hand_by_sentence: dict[str, list[dict]] = {}
     for hand_label in hand_labels.read_labels():
         hand_by_sentence.setdefault(hand_label["sentence"], []).append(hand_label)
@@ -100,12 +100,12 @@ def build(args) -> int:
         if not sentence.strip():
             invalid["no sentence once the context is stripped"] += 1
             continue
-        arr = corpora.generator.generate(sentence, lexicon)
+        arr = corpora.generator.generate(sentence, lexicon, split)
         add_row(sentence, arr, label_array(word_lists, arr, old_word_lists, match_flags))
     checked_rows = len(rows)
     # Sentences judged by hand outside the checked export expect only what was judged
     for sentence in list(hand_by_sentence):
-        arr = corpora.generator.generate(sentence, lexicon)
+        arr = corpora.generator.generate(sentence, lexicon, split)
         add_row(sentence, arr, [None] * len(list(match_flags.iter_words(arr))))
     if hand:
         print(

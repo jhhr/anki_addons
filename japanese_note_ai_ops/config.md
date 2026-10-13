@@ -243,6 +243,34 @@ You need to define
   10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
       into the "Default" deck
 
+## word arrays
+
+"Extract words" builds a sentence's word array by rules. A verb or adjective its tokenizer has as
+one word comes out as one word with no sub-words, however it is built (目立つ, 名付ける, 面白い),
+so that the matching is not offered the common words inside it. The exceptions are yours to list:
+
+- `split_compound_words`: Default is `[]`, so no compound splits until you list one. The
+  compound verbs and adjectives that are split into their two words all the same, wherever they
+  occur: with `"毛羽立つ"` listed, 毛羽立ち gets the sub-words 毛羽 and 立つ. It is for a compound
+  one of whose words you have a note for, or want one for, when that word is found nowhere else
+  in the sentence.
+  - List a compound by its dictionary form as a word array shows it, the third value of its
+    row: `[" 毛羽[けば]立[た]ち", "verb", "毛羽立つ", ...]` is listed as `"毛羽立つ"`.
+  - It splits only into two dictionary words read the way the sentence reads them, the second
+    one the verb or adjective the compound ends on, which the sentence must spell with its kanji
+    (心地良い splits, 心地よい does not). Where that fails the compound stays whole and the list
+    changes nothing (気付く: 気 alone is no word here). A noun on the list changes nothing
+    either: nouns are split by the rules.
+  - Read when a run starts, so an edit needs no restart. It only reaches a note that gets its
+    array made: a note that has one keeps it until "Regenerate words over the current array" is
+    run on it, which leaves every other word of the array as it was. The two sub-words come out
+    unjudged, so "Judge words matchability" and "Match extracted words to notes" follow.
+  - Like the rest of this config the list is kept per device. The Addon Config Sync add-on
+    carries it to your other devices with the media sync.
+  - In a development checkout, `word_array/research/words_inside_words.py` lists the notes
+    whose own word their sentence has only inside such a compound, each with the form to list
+    it by and whether it would split.
+
 ## test data exports
 
 Tools > "AI ops: generate test data" runs the browser-menu export, on the notes an Anki

@@ -48,7 +48,7 @@ class FakeNote:
         self.fields[field] = value
 
 
-def run(note, updates, array=None, overwrite=False):
+def run(note, updates, array=None, overwrite=False, config=None):
     """The op with the generator and the proper noun call stubbed out."""
     with (
         mock.patch.object(
@@ -61,7 +61,9 @@ def run(note, updates, array=None, overwrite=False):
         ) as generate,
         mock.patch.object(extract_words, "add_proper_nouns", return_value=True) as proper_nouns,
     ):
-        changed = extract_words.extract_words_in_note({}, note, {}, updates, overwrite=overwrite)
+        changed = extract_words.extract_words_in_note(
+            config or {}, note, {}, updates, overwrite=overwrite
+        )
     return changed, generate, proper_nouns
 
 
@@ -85,6 +87,28 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         _changed, generate, _proper_nouns = run(note, {})
 
         self.assertEqual(generate.call_args.args[0], "本を読む。")
+
+    def test_the_compounds_the_config_lists_are_the_ones_the_generator_splits(self):
+        # The list is the user's, edited in Anki: the generator has none of its own, and an
+        # extraction and a regeneration both go by the config of the run
+        config = {"split_compound_words": ["毛羽立つ", "心地良い"]}
+        for overwrite, held in ((False, ""), (True, '[["本"]]')):
+            with self.subTest(overwrite=overwrite):
+                note = FakeNote({"sentence": "本を読む。", "words": held})
+
+                _changed, generate, _proper_nouns = run(
+                    note, {}, array=[["本"]], overwrite=overwrite, config=config
+                )
+
+                self.assertEqual(generate.call_args.args[2], {"毛羽立つ", "心地良い"})
+
+    def test_a_config_that_lists_no_compounds_splits_none(self):
+        # A meta.json older than the key, or a fixture's config: nothing is split by default
+        note = FakeNote({"sentence": "本を読む。", "words": ""})
+
+        _changed, generate, _proper_nouns = run(note, {})
+
+        self.assertEqual(generate.call_args.args[2], frozenset())
 
     def test_a_note_that_already_holds_an_array_is_skipped(self):
         note = FakeNote({"sentence": "本を読む。", "words": '[["本"]]'})
@@ -222,6 +246,35 @@ class RegenerateWordsTests(unittest.TestCase):
 
         self.assertFalse(changed)
         generate.assert_not_called()
+
+
+class SplitCompoundsConfigTests(unittest.TestCase):
+    """`split_compound_words` as the generator reads it off a config, which is typed by hand in
+    Anki's config editor."""
+
+    def listed(self, value):
+        return extract_words.generator.split_compounds_of({"split_compound_words": value})
+
+    def test_a_list_of_words_is_those_words(self):
+        self.assertEqual(self.listed(["毛羽立つ", "仲睦まじい"]), {"毛羽立つ", "仲睦まじい"})
+        self.assertEqual(self.listed([" 毛羽立つ ", "", "毛羽立つ"]), {"毛羽立つ"})
+
+    def test_words_typed_into_one_string_count_too(self):
+        self.assertEqual(self.listed("毛羽立つ"), {"毛羽立つ"})
+        for typed in ("毛羽立つ, 仲睦まじい", "毛羽立つ、仲睦まじい", "毛羽立つ　仲睦まじい"):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.listed(typed), {"毛羽立つ", "仲睦まじい"})
+        self.assertEqual(
+            self.listed(["毛羽立つ,仲睦まじい", "心地良い"]), {"毛羽立つ", "仲睦まじい", "心地良い"}
+        )
+
+    def test_a_value_that_holds_no_words_lists_none(self):
+        for value in (None, [], "", 5, True, {"毛羽立つ": True}, [5, None, ["毛羽立つ"]]):
+            with self.subTest(value=value):
+                self.assertEqual(self.listed(value), frozenset())
+        self.assertEqual(extract_words.generator.split_compounds_of({}), frozenset())
+        # What is no word is left out, and the words beside it still count
+        self.assertEqual(self.listed(["毛羽立つ", 5, None]), {"毛羽立つ"})
 
 
 class ExtractWordsPhasesTests(unittest.TestCase):
