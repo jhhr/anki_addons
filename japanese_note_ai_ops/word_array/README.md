@@ -210,7 +210,9 @@ split as the rule above has it.
 The list is the user's and lives in the add-on's config, `split_compound_words`
 (`generator.split_compounds_of(config)`; shipped empty), so that a compound is added in Anki's
 config editor and reaches the other devices with whatever syncs the config, with no change to
-the code. The generator has no list of its own: without the
+the code. It is added from any device by tagging the note about it `vocab::split-compound-word`,
+which the add-on reads after a sync (`split_compound_tag.py`, outside this package: the
+generator knows no tag and no note). The generator has no list of its own: without the
 argument no such compound splits, which is what the research scripts measuring its rules run.
 The op passes the list of the run's config for every note, and `hand_judge` and `judge_eval`,
 whose arrays hold the words the judge is asked about, pass this machine's

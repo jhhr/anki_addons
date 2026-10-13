@@ -96,6 +96,13 @@ depends on `'d'` staying in its filter so that it does not undo a dispersal.
   load; add a migration step instead of reading the old shape in place.
 - `addon_config_sync` copies other addons' `meta.json` between devices. A config value that
   is only valid on one machine (an absolute path) will travel.
+- In its default mode it copies the media folder's copy back over `meta.json` whenever a
+  media sync ends and the two differ, and it refreshes that copy only at `sync_will_start`.
+  So a config an addon writes by itself is undone when it is written during a sync, and also
+  after one if a media sync ends before the next collection sync starts; Anki starts a media
+  sync every 15 minutes by default. Write it once a media sync has stopped, from one of
+  Anki's timers so that it follows the other handlers of that hook call, and keep what was
+  written re-derivable. `japanese_note_ai_ops/split_compound_tag.py` does both.
 
 ## Compatibility
 

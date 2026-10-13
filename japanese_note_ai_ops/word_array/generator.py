@@ -1146,6 +1146,21 @@ def split_compounds_of(config: dict) -> frozenset[str]:
     )
 
 
+def split_compounds_with(config: dict, forms: Iterable[str]) -> Optional[list]:
+    """What a config's `SPLIT_COMPOUNDS_KEY` is to hold for it to list `forms` too, or None when
+    it lists them all as it is (`split_compounds_of`). For whatever adds to the list without a
+    person typing (the add-on's `split_compound_tag`): what the list holds stays as it was
+    typed, and the forms it lacks follow, each once and in the order given."""
+    listed = split_compounds_of(config)
+    new = list(dict.fromkeys(form for form in forms if form and form not in listed))
+    if not new:
+        return None
+    held = config.get(SPLIT_COMPOUNDS_KEY)
+    if isinstance(held, str):
+        held = [held] if held.strip() else []
+    return (list(held) if isinstance(held, (list, tuple)) else []) + new
+
+
 def unvoiced(kana: str) -> str:
     """Undo rendaku on the first kana: ぞら -> そら, ごなし -> こなし."""
     return unicodedata.normalize("NFD", kana[:1])[:1] + kana[1:] if kana else kana

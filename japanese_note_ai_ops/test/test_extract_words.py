@@ -276,6 +276,36 @@ class SplitCompoundsConfigTests(unittest.TestCase):
         # What is no word is left out, and the words beside it still count
         self.assertEqual(self.listed(["毛羽立つ", 5, None]), {"毛羽立つ"})
 
+    def with_added(self, value, forms):
+        return extract_words.generator.split_compounds_with({"split_compound_words": value}, forms)
+
+    def test_adding_to_the_list_keeps_what_was_typed_and_appends_what_it_lacks(self):
+        # For the sync sweep (split_compound_tag), which writes the list without a person typing
+        self.assertEqual(self.with_added(["毛羽立つ"], ["心地良い"]), ["毛羽立つ", "心地良い"])
+        self.assertEqual(
+            self.with_added(["毛羽立つ"], ["心地良い", "毛羽立つ", "", "心地良い", "仲睦まじい"]),
+            ["毛羽立つ", "心地良い", "仲睦まじい"],
+        )
+        # Words typed into one string are found in it, and it stays as it was typed
+        self.assertEqual(
+            self.with_added("毛羽立つ, 仲睦まじい", ["仲睦まじい", "心地良い"]),
+            ["毛羽立つ, 仲睦まじい", "心地良い"],
+        )
+        self.assertEqual(self.with_added([" 毛羽立つ ", 5], ["心地良い"]), [" 毛羽立つ ", 5, "心地良い"])
+
+    def test_adding_to_a_config_with_no_list_makes_one(self):
+        for value in (None, [], "", 5, {"毛羽立つ": True}):
+            with self.subTest(value=value):
+                self.assertEqual(self.with_added(value, ["毛羽立つ"]), ["毛羽立つ"])
+        with_added = extract_words.generator.split_compounds_with
+        self.assertEqual(with_added({}, ["毛羽立つ"]), ["毛羽立つ"])
+
+    def test_nothing_is_written_when_the_list_has_them_all(self):
+        self.assertIsNone(self.with_added(["毛羽立つ", "心地良い"], ["心地良い"]))
+        self.assertIsNone(self.with_added("毛羽立つ 心地良い", ["心地良い", "毛羽立つ"]))
+        self.assertIsNone(self.with_added(["毛羽立つ"], []))
+        self.assertIsNone(self.with_added([], [""]))
+
 
 class ExtractWordsPhasesTests(unittest.TestCase):
     def test_the_lexicon_is_loaded_once_for_a_run(self):

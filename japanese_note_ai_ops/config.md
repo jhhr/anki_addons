@@ -256,6 +256,20 @@ so that the matching is not offered the common words inside it. The exceptions a
   in the sentence.
   - List a compound by its dictionary form as a word array shows it, the third value of its
     row: `[" 毛羽[けば]立[た]ち", "verb", "毛羽立つ", ...]` is listed as `"毛羽立つ"`.
+  - Or tag the note that is about the compound `vocab::split-compound-word` (the name is
+    hardcoded), on any device. After a sync, once its media sync has stopped, every note with
+    the tag whose word is not on this device's list has it added: the word in the note's
+    `word_kanjified_field`, and the form the word arrays linked to the note show it by. The notes
+    whose word array still has the word whole are tagged `sentence:regenerate` (hardcoded too),
+    in one undo step, and a tooltip says what was listed. Regenerating those notes is yours to
+    start, and so is taking `sentence:regenerate` off them afterwards.
+  - The tag stays on the note, and that is what puts the word back should this device's list
+    lose it (see Addon Config Sync below): the same check runs after every media sync. A word
+    put back that way, before Anki is next restarted, goes back without a tooltip and without
+    its notes being tagged a second time. To stop splitting a word, take it off the list and
+    the tag off its note. A note tagged for a word that is already listed is left alone, so
+    its sentences are not tagged again each time; to have them tagged, take the word off the
+    list first, or search for them yourself.
   - It splits only into two dictionary words read the way the sentence reads them, the second
     one the verb or adjective the compound ends on, which the sentence must spell with its kanji
     (心地良い splits, 心地よい does not). Where that fails the compound stays whole and the list
@@ -266,7 +280,13 @@ so that the matching is not offered the common words inside it. The exceptions a
     run on it, which leaves every other word of the array as it was. The two sub-words come out
     unjudged, so "Judge words matchability" and "Match extracted words to notes" follow.
   - Like the rest of this config the list is kept per device. The Addon Config Sync add-on
-    carries it to your other devices with the media sync.
+    carries it to your other devices with the media sync. In its default mode it also replaces
+    this device's config with the copy in the media folder whenever a media sync ends and the
+    two differ, and that copy is only refreshed when a collection sync starts: a word added to
+    the list, by hand or by the tag, is gone again if a media sync ends before the next
+    collection sync has started, and Anki runs a media sync every 15 minutes by default. A
+    tagged note's word is put back right after that media sync; one typed in by hand is not, so
+    sync once after typing one in.
   - In a development checkout, `word_array/research/words_inside_words.py` lists the notes
     whose own word their sentence has only inside such a compound, each with the form to list
     it by and whether it would split.
