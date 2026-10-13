@@ -14,12 +14,14 @@ of the three ways they can differ occurs in the kana readings this add-on looks 
 workload cannot tell anyone if a rewrite gets it wrong; only these can.
 """
 
+import contextlib
 import json
 import sqlite3
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
+from typing import Iterator
 
 import addon_modules
 
@@ -106,6 +108,23 @@ class MDXDictionaryTestCase(unittest.TestCase):
         finally:
             conn.close()
 
+    @contextlib.contextmanager
+    def connections_opened(self) -> Iterator[list]:
+        """Every connection `sqlite3.connect` hands out inside the block, in order."""
+        opened: list = []
+        real_connect = sqlite3.connect
+
+        def tracking_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        sqlite3.connect = tracking_connect
+        try:
+            yield opened
+        finally:
+            sqlite3.connect = real_connect
+
 
 class LookupIndexesTests(MDXDictionaryTestCase):
     """The keyword bound as a parameter instead of formatted into the SQL.
@@ -117,7 +136,16 @@ class LookupIndexesTests(MDXDictionaryTestCase):
     def shipped(self, keyword, ignorecase):
         from mdict_query import IndexBuilder  # noqa: E402  (needs lib/ on sys.path first)
 
-        return IndexBuilder.lookup_indexes(self.db_path, keyword, ignorecase)
+        # The shipped function leaves its connection open (`with sqlite3.connect(...)` commits,
+        # it does not close), and from Python 3.11 only the cycle collector frees a connection.
+        # Until it runs Windows holds the file open and tearDown cannot remove the directory,
+        # so the connection is closed here, whether the query came back or raised.
+        with self.connections_opened() as opened:
+            try:
+                return IndexBuilder.lookup_indexes(self.db_path, keyword, ignorecase)
+            finally:
+                for conn in opened:
+                    conn.close()
 
     def test_the_same_rows_come_back_as_the_shipped_query(self):
         for keyword, ignorecase in [
@@ -177,19 +205,8 @@ class ConnectionTests(MDXDictionaryTestCase):
     """
 
     def connections_opened_by(self, read) -> list:
-        opened = []
-        real_connect = sqlite3.connect
-
-        def tracking_connect(*args, **kwargs):
-            conn = real_connect(*args, **kwargs)
-            opened.append(conn)
-            return conn
-
-        sqlite3.connect = tracking_connect
-        try:
+        with self.connections_opened() as opened:
             read()
-        finally:
-            sqlite3.connect = real_connect
         return opened
 
     def test_no_read_leaves_its_connection_open(self):
