@@ -405,13 +405,18 @@ class WordArrayWholeWordRegexTests(unittest.TestCase):
 
     def test_finds_it_as_a_sub_word_and_between_other_words(self):
         other = word("表面", form="表面", reading="ひょうめん", subs=[word("表"), word("面")])
-        parent = word("毛羽立ちと", "expression", "毛羽立ちと", "けばだちと", subs=[self.compound()])
+        parent = word(
+            "毛羽立ちと", "expression", "毛羽立ちと", "けばだちと", subs=[self.compound()]
+        )
         self.assertTrue(self.found([other, parent, ["。"]]))
 
     def test_a_word_that_has_its_sub_words_is_not_found(self):
         split = self.compound(
             match_data=[1790025944461, 4],
-            subs=[word(" 毛羽[けば]", form="毛羽", reading="けば"), word("立[た]ち", "verb", "立つ")],
+            subs=[
+                word(" 毛羽[けば]", form="毛羽", reading="けば"),
+                word("立[た]ち", "verb", "立つ"),
+            ],
         )
         self.assertFalse(self.found([split]))
         # ...though a sub-word of it with none of its own is, by its own form

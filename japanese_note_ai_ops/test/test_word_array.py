@@ -338,7 +338,10 @@ class WordArrayTests(unittest.TestCase):
             (
                 "心地[ここち]良[よ]い 音楽[おんがく]",
                 "心地良い",
-                [("心地[ここち]", "noun", "心地", "ここち"), ("良[よ]い", "adjective", "良い", "よい")],
+                [
+                    ("心地[ここち]", "noun", "心地", "ここち"),
+                    ("良[よ]い", "adjective", "良い", "よい"),
+                ],
             ),
         ]
         listed = frozenset(form for _, form, _ in cases)
@@ -401,7 +404,10 @@ class WordArrayTests(unittest.TestCase):
             (
                 "心細[こころぼそ]かった",
                 "心細い",
-                [("心[こころ]", "noun", "心", "こころ"), ("細[ぼそ]かった", "adjective", "細い", "ほそい")],
+                [
+                    ("心[こころ]", "noun", "心", "こころ"),
+                    ("細[ぼそ]かった", "adjective", "細い", "ほそい"),
+                ],
             ),
             (
                 "毛深[けぶか]そうだ",  # the adjective's bare stem
@@ -423,7 +429,11 @@ class WordArrayTests(unittest.TestCase):
         # Kanjified from kana, the verb is still found by its kanji: 傷つく, 目ざせる
         cases = [
             # ...and is the end of 傷付く, not JMdict's expression 付いている "to be lucky"
-            ("傷[きず]<k> 付[つ]いている</k>", "傷付く", (" 付[つ]いている", "verb", "付く", "つく")),
+            (
+                "傷[きず]<k> 付[つ]いている</k>",
+                "傷付く",
+                (" 付[つ]いている", "verb", "付く", "つく"),
+            ),
             # a potential form goes back to its verb with the compound
             ("目[め]<k> 指[ざ]せる</k>", "目指す", (" 指[ざ]せる", "verb", "指す", "さす")),
         ]

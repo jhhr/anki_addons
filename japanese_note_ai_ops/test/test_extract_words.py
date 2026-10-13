@@ -415,7 +415,9 @@ class SplitCompoundsConfigTests(unittest.TestCase):
             self.with_added("毛羽立つ, 仲睦まじい", ["仲睦まじい", "心地良い"]),
             ["毛羽立つ, 仲睦まじい", "心地良い"],
         )
-        self.assertEqual(self.with_added([" 毛羽立つ ", 5], ["心地良い"]), [" 毛羽立つ ", 5, "心地良い"])
+        self.assertEqual(
+            self.with_added([" 毛羽立つ ", 5], ["心地良い"]), [" 毛羽立つ ", 5, "心地良い"]
+        )
 
     def test_adding_to_a_config_with_no_list_makes_one(self):
         for value in (None, [], "", 5, {"毛羽立つ": True}):
