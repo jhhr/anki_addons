@@ -45,6 +45,10 @@ GeneratedMeaningsDictType = dict[str, list[GeneratedMeaningType]]
 NO_DICTIONARY_ENTRY_TAG = "2-no-dictionary-entry"
 MEANINGS_GENERATED_TAG = "2-meanings-generated-to-json"
 MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
+# On a note whose word array is to be generated again. Set by hand, or by split_compound_tag's
+# sweep on the notes that a compound newly listed to split has not reached; taken off by
+# extract_words once it has generated the note's array.
+REGENERATE_TAG = "sentence::regenerate"
 
 
 class EnAndJPSentence(TypedDict):

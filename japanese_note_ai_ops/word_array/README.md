@@ -358,7 +358,10 @@ that is not a readable array is left alone either way.
 The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
 is what follows it and then "Match extracted words to notes". A regeneration that changes
 nothing writes nothing, except that it tidies a field Anki's editor has turned into `<br>` and
-`&nbsp;` - which is the state hand-correcting a note leaves it in.
+`&nbsp;` - which is the state hand-correcting a note leaves it in - and that it takes the tag
+`sentence::regenerate` off a note that has it. The tag marks the notes still to regenerate, set
+by hand or by the add-on on the notes a compound newly listed to split has not reached; either
+op removes it from a note whose array it has generated, and leaves it on one it skipped.
 
 The judge cannot be a step inside that op: `bulk_nested_notes_op` fixes every note's task count
 before it starts, and the words only exist once the array has been generated. So it is a phase of

@@ -12,6 +12,7 @@ note with the tag whose word its list lacks:
 - every note whose word array still has that word whole is tagged `sentence::regenerate`. The
   list only reaches an array when the array is made again, and making it again is the user's to
   start: the two sub-words come out unjudged, and judging and matching them costs calls.
+  `extract_words` takes the tag off a note once it has generated its array.
 
 Both tag names are hardcoded.
 
@@ -42,6 +43,7 @@ from aqt.operations import CollectionOp
 from aqt.utils import tooltip
 
 from .call_logging import start_call_log
+from .configuration import REGENERATE_TAG
 from .word_array import generator
 from .word_array.match_flags import (
     iter_words,
@@ -55,7 +57,6 @@ from .word_array.match_flags import (
 logger = logging.getLogger(__name__)
 
 SPLIT_COMPOUND_TAG = "vocab::split-compound-word"
-REGENERATE_TAG = "sentence::regenerate"
 WORD_FIELD_KEY = "word_kanjified_field"
 WORD_LIST_FIELD_KEY = "word_list_field"
 UNDO_LABEL = "Tag sentences to regenerate"

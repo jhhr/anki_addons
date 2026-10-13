@@ -31,6 +31,12 @@ The words a regeneration brings in are unjudged like any others, so "Judge words
 is what follows it, and then "Match extracted words to notes" for the ones it judged worth a
 note.
 
+`sentence::regenerate` (`configuration.REGENERATE_TAG`, hardcoded) marks a note whose array is
+still to be generated again: by hand, or by `split_compound_tag` for a compound newly listed to
+split. Once this op has generated a tagged note's array, by either path, the tag comes off,
+also when the array came out as it was, so a search for the tag finds the notes still to do.
+A note the op left alone keeps it.
+
 The only model is `proper_nouns_model`, falling back to `extract_words_model`.
 """
 
@@ -45,6 +51,7 @@ from aqt import mw
 from aqt.browser import Browser
 from aqt.utils import showWarning
 
+from ..configuration import REGENERATE_TAG
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
 from ..utils import get_field_config, print_error_traceback
@@ -75,8 +82,9 @@ def extract_words_in_note(
 ) -> bool:
     """Generate the word array for one note's sentence and write it into the word list field.
     With `overwrite`, an array the note already holds is regenerated and merged rather than
-    left alone. False when the note has nothing to extract, the generator could not run, or
-    the regeneration changed nothing."""
+    left alone. A note whose array was generated loses REGENERATE_TAG. False when the note has
+    nothing to extract, the generator could not run, or the regeneration changed neither the
+    array nor the note's tags."""
     log_prefix = f"Extract words--nid:{note.id}--"
     note_type = note.note_type()
     if not note_type:
@@ -140,7 +148,13 @@ def extract_words_in_note(
             logger.warning(f"{log_prefix}The link to note {note_id} is gone with its word")
 
     text = format_word_array(arr)
-    if existing is not None and text == current:
+    # The array is now what the sentence and the config's list make it, which is all the tag
+    # asked for, whether or not that changed a word of it: a note tagged for a compound that
+    # has no two words to split into comes out as it went in, and is done with all the same
+    untagged = note.has_tag(REGENERATE_TAG)
+    if untagged:
+        note.remove_tag(REGENERATE_TAG)
+    if existing is not None and text == current and not untagged:
         logger.debug(f"{log_prefix}Regenerating changed nothing")
         return False
 
