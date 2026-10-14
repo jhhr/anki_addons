@@ -26,9 +26,11 @@ from ..configuration import (
     AnyCopyDefinition,
     Config,
     CopyDefinition,
-    definition_deck_names,
-    definition_note_type_names,
+    definition_deck_refs,
+    definition_note_type_refs,
 )
+from ..logic.object_refs import deck_display_name, note_type_display_name
+from ..logic.query_terms import CollectionNames
 from ..logic.definition_migration import MigrationError, migrate_definition_v1_to_v2
 from ..logic.definition_schema import CopyDefinitionV2, is_format_2
 from .discard import discard_widget
@@ -151,10 +153,12 @@ class DragHandle(QLabel):
 class DefinitionRow(QWidget):
     """A widget that represents a single definition row with drag and drop support"""
 
-    def __init__(self, parent_dialog, definition, index):
+    def __init__(self, parent_dialog, definition, index, collection_names=None):
         super().__init__()
         self.parent_dialog = parent_dialog
         self.definition = definition
+        #: The dialog's one `query_terms.CollectionNames`, shared by every row's search scan.
+        self.collection_names = collection_names
         self.definition_guid = definition["guid"]
         self.index = index
 
@@ -180,6 +184,14 @@ class DefinitionRow(QWidget):
         self.checkbox.setSizePolicy(QSizePolicyFixed, QSizePolicyFixed)
         self.layout.addWidget(self.checkbox)
 
+        self.broken_marker = QLabel("", self)
+        self.layout.addWidget(self.broken_marker)
+        self.stale_marker = QLabel("", self)
+        self.layout.addWidget(self.stale_marker)
+        self.search_marker = QLabel("", self)
+        self.layout.addWidget(self.search_marker)
+        self.refresh(definition)
+
         # Add stretch to push buttons to the right
         self.layout.addStretch()
 
@@ -202,6 +214,134 @@ class DefinitionRow(QWidget):
         self.remove_button.clicked.connect(
             lambda: parent_dialog.remove_definition_by_guid(self.definition_guid)
         )
+
+    def refresh(self, definition) -> None:
+        """Show this row as `definition` deserves: its name, its three markers, its checkbox.
+
+        Called when the row is built and again when the definition is saved from this
+        picker, because a save can fix a definition or leave it wanting, and the row has to
+        say which without the dialog being reopened. The picker holds the Browser's window
+        modal, so no note type can be renamed while it is open: the user's own edit is the
+        only thing that changes a row's answer here.
+        """
+        self.definition = definition
+        self.checkbox.setText(definition.get("definition_name", ""))
+        self._mark_if_broken()
+        self._mark_if_stale()
+        self._mark_stale_search_terms()
+
+    def _mark_if_broken(self) -> None:
+        """Mark, and refuse to select, a definition the reconcile pass left a blocking
+        warning on for a renamed or deleted name (`logic/rename_warnings.py`). A warning
+        that does not block is shown by the information icon instead.
+
+        Such a definition is not run (`copy_fields.refused_for_rename`) until every blocking
+        warning is gone -- the old name replaced and saved, or dismissed in the editor: a
+        run would only log the same message. So the checkbox is unticked and disabled rather
+        than offered, and both it and the icon beside it say why -- a disabled checkbox
+        still shows its tooltip. Edit, Duplicate and Delete stay, since the editor is the
+        way out.
+        """
+        from ..logic.rename_warnings import blocking_messages, blocking_tooltip
+
+        messages = blocking_messages(self.definition)
+        if not messages:
+            self.broken_marker.setText("")
+            self.broken_marker.setToolTip("")
+            self.checkbox.setToolTip("")
+            self.checkbox.setEnabled(True)
+            return
+        explanation = blocking_tooltip(messages)
+        self.checkbox.setChecked(False)
+        self.checkbox.setEnabled(False)
+        self.checkbox.setToolTip(explanation)
+        self.broken_marker.setText("<span style='color: #c0392b'>&#10006;</span>")
+        self.broken_marker.setToolTip(explanation)
+
+    def _mark_if_stale(self) -> None:
+        """Mark a definition that names something this collection cannot resolve.
+
+        The pass reports into an operation log the user has to have turned the level up to
+        read (`logic/rename_reconcile.py`); this list is where they would notice it
+        without looking. Only what cannot be resolved at all is marked -- a name the pass
+        refreshed or a rename it followed is not a problem any more.
+
+        Asked of the collection as the row is drawn, never taken from a pass: a pass's
+        report is gone by the next pass and with the process, which is how a deleted field
+        once lost its marker after any later note type edit. Nothing here needs it. A
+        deleted note type, deck or card-action card type leaves a reference that resolves
+        to nothing, which is the question asked here; a deleted field or template marks the
+        definitions that spell it (`_mark_if_broken`). And a definition the user has just
+        fixed in the editor, or one an import has just made stale, is answered as it is now.
+
+        Cleared when nothing is stale, since a refresh after a save can find it fixed.
+        """
+        from ..logic.rename_reconcile import StaleName, unresolved_references
+
+        stale: list[StaleName] = []
+        if mw is not None and mw.col is not None:
+            stale = unresolved_references(self.definition, mw.col)
+        if not stale:
+            self.stale_marker.setText("")
+            self.stale_marker.setToolTip("")
+            return
+        self.stale_marker.setText("<span style='color: #b8860b'>&#9888;</span>")
+        # Not escaped: a tooltip is rich text only when its first line looks like markup
+        # (`Qt.mightBeRichText`), and this one's first line is fixed, so a name holding `<`
+        # or `&` shows as it is. Escaping it would show the entity instead.
+        self.stale_marker.setToolTip(
+            "This definition names something this collection does not have:\n"
+            + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
+        )
+
+    def _mark_stale_search_terms(self) -> None:
+        """Mark a definition that still runs but may not do what the user meant.
+
+        Two things share this icon. A search naming something this collection does not
+        have: the same scan the query stage's own note under its search runs
+        (`query_terms.stale_search_terms`), so a definition list is where a stale search is
+        found without opening every definition. A search is Anki's grammar and is never
+        rewritten on its own, a name in it may be one the user has not made yet, and the
+        definition still runs -- the term just matches nothing. Asked of the collection as
+        the row is drawn, like the unresolved references.
+
+        And the rename warnings that do not block (`logic/rename_warnings.py`): a card type
+        or field name in a search, a sort field, another binding's token -- names not
+        unique across note types, so the pass cannot tell whether the rename meant them.
+        The definition runs as it is; the list says so here rather than only in the editor,
+        where the warning sits at its location. Only the messages are shown, as stored: a
+        row has no room for where, and the editor's banner says it.
+        """
+        from ..logic.rename_reconcile import stale_terms_in_searches
+        from ..logic.rename_warnings import non_blocking_messages
+
+        stale = []
+        if mw is not None and mw.col is not None:
+            stale = stale_terms_in_searches(self.definition, mw.col, self.collection_names)
+        # One line per message: the same rename spelled in two places is one thing to fix.
+        warned = list(dict.fromkeys(non_blocking_messages(self.definition)))
+        if not stale and not warned:
+            self.search_marker.setText("")
+            self.search_marker.setToolTip("")
+            return
+        self.search_marker.setText("<span style='color: #2471a3'>&#9432;</span>")
+        # Plain text, like the tooltip above: whichever part comes first opens with a fixed
+        # line, and Qt guesses rich text from the first line only.
+        parts: list[str] = []
+        if stale:
+            parts.append(
+                "A search in this definition names something this collection does not have:\n"
+                + "\n".join(f"{item.kind} '{item.name}'" for item in stale)
+                + "\nThe definition still runs, but that part of the search matches nothing."
+                " A search is left alone when something is renamed, so check it by hand."
+            )
+        if warned:
+            parts.append(
+                "Renamed or deleted in Anki (the definition still runs):\n"
+                + "\n".join(warned)
+                + "\nOpen the definition to replace the old name or dismiss the warning."
+            )
+        self.search_marker.setToolTip("\n".join(parts))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasText():
@@ -284,6 +424,12 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         self.checkboxes: list[QCheckBox] = []
         self.definition_note_ids: list[Sequence[Union[int, NoteId]]] = []
         self.note_source = note_source
+        # One set of name lists for every row's search scan, for as long as the dialog is
+        # open: it holds the Browser's window modal, so no note type can change meanwhile
+        # (`DefinitionRow.refresh`). Read lazily: definitions that search nothing read none.
+        self.collection_names: Optional[CollectionNames] = (
+            CollectionNames(mw.col) if mw is not None and mw.col is not None else None
+        )
 
         # GUID-based definition UI tracking
         self.definition_ui_components: dict[str, dict] = (
@@ -375,7 +521,9 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         definition_guid = definition["guid"]
 
         # Create a definition row widget
-        definition_row = DefinitionRow(self, definition, index)
+        definition_row = DefinitionRow(
+            self, definition, index, collection_names=self.collection_names
+        )
 
         # Add to checkboxes list and connect events
         self.checkboxes.append(definition_row.checkbox)
@@ -590,15 +738,12 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
                 # Update local list
                 self.copy_definitions[index] = copy_definition
 
-                # Update UI component text if GUID exists in tracking
-                if old_guid and old_guid in self.definition_ui_components:
-                    ui_components = self.definition_ui_components[old_guid]
-                    checkbox = ui_components["checkbox"]
-                    checkbox.setText(copy_definition["definition_name"])
-
             # Always reload configuration to ensure we have the latest definitions
             config.load()
             self.copy_definitions = config.copy_definitions
+
+            if index is not None:
+                self._refresh_row(copy_definition["guid"])
 
             # Update card counts without rebuilding UI
             self.update_card_counts_for_all_cards()
@@ -606,6 +751,25 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
         else:
             # "Cancel" was pressed
             return -1
+
+    def _refresh_row(self, definition_guid: str) -> None:
+        """Show the saved definition in its existing row, markers and all.
+
+        The one the save stored, taken from the reloaded list: the save brings the stored
+        copy up to date (`Config._save_definitions` rederives `effects`, for one), and the
+        dict the editor handed back is not guaranteed to be that copy.
+        """
+        row = self.definition_ui_components.get(definition_guid, {}).get("widget")
+        saved = next(
+            (
+                definition
+                for definition in self.copy_definitions
+                if definition.get("guid") == definition_guid
+            ),
+            None,
+        )
+        if row is not None and saved is not None:
+            row.refresh(saved)
 
     def update_card_counts_for_all_cards(self):
         """
@@ -621,10 +785,28 @@ class PickCopyDefinitionDialog(ScrollableQDialog):
             if checkbox.isChecked():
                 nothing_checked = False
                 checked_definition = self.copy_definitions[index]
-                deck_names = definition_deck_names(checked_definition)
+                # By live name, because the run resolves a reference by its id: a note type
+                # renamed since this definition was written is still the one it applies to,
+                # and counting by the stored name would call it "nothing to do". A reference
+                # that resolves to nothing keeps its stored name, which matches nothing.
+                deck_names = [
+                    name
+                    for name in (
+                        deck_display_name(ref, mw.col)
+                        for ref in definition_deck_refs(checked_definition)
+                    )
+                    if name
+                ]
                 decks_query = make_query_string("deck", deck_names) if deck_names else ""
 
-                note_type_names_list = definition_note_type_names(checked_definition)
+                note_type_names_list = [
+                    name
+                    for name in (
+                        note_type_display_name(ref, mw.col)
+                        for ref in definition_note_type_refs(checked_definition)
+                    )
+                    if name
+                ]
                 note_type_query = (
                     make_query_string("note", note_type_names_list)
                     if note_type_names_list

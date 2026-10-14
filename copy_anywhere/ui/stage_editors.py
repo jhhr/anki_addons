@@ -11,7 +11,9 @@ is. What is new here is only the arrangement: a stage names the note it reads an
 it writes, so every editor starts with the binding it acts on.
 """
 
-from typing import Callable, Literal, Optional, Sequence, cast
+import html
+from functools import partial
+from typing import Any, Callable, Literal, Optional, Sequence, cast
 
 from anki.models import NotetypeDict
 from aqt import mw
@@ -63,6 +65,9 @@ from ..logic.definition_schema import (
     WRITE_IF_POLICIES,
     value_expression,
 )
+from ..logic.query_terms import CollectionNames, stale_search_terms
+from ..logic.rename_locations import field_write_key, stage_key
+from ..logic.rename_scan import READ_AS_OTHER_SLOT, READ_AS_TRIGGER_SLOT, still_spelled
 from ..shared.ui.grouped_combo_box import GroupedComboBox
 from ..shared.ui.multi_combo_box import MultiComboBox
 from ..shared.ui.required_combobox import RequiredCombobox
@@ -76,8 +81,10 @@ from .code_notices import (
     SELECT_NOTE_CODE_NOTICE,
 )
 from .stage_edit_state import StageEditState
+from .rename_indicator import LiveLocation, RenameIndicator, select_name
+from .stage_document import StageDocument, new_guid
 from .stage_editor_context import NoteTypesFor, StageEditorContext
-from .stage_triggers_editor import quoted_items, selected_names
+from .stage_triggers_editor import quoted_items, select_names, selected_names
 from .tag_editor import TagEditor
 from .value_expression_editor import ValueExpressionEditor
 
@@ -144,10 +151,14 @@ class StageEditorEnvironment:
         note_types_for: NoteTypesFor,
         definitions: Optional[Sequence[CopyDefinitionV2]] = None,
         own_guid: str = "",
+        document: Optional[StageDocument] = None,
     ) -> None:
         self.note_types_for = note_types_for
         self.definitions = list(definitions or [])
         self.own_guid = own_guid
+        #: The document being edited, whose rename warnings the editors' parts show. None
+        #: where an editor is built on its own, which then shows none.
+        self.document = document
 
     def definition(self, guid: str) -> Optional[CopyDefinitionV2]:
         for definition in self.definitions:
@@ -171,6 +182,76 @@ class StageEditorEnvironment:
 # --------------------------------------------------------------------------------------
 # Small shared controls
 # --------------------------------------------------------------------------------------
+
+
+def _expression_key(key: Callable[[str, str], str], guid: str, location: str, side: str) -> str:
+    """The key of one side (`text`, `code`) of the expression at `location` in an object."""
+    return key(guid, f"{location}.{side}")
+
+
+def rename_indicator(
+    parent: QWidget,
+    environment: StageEditorEnvironment,
+    locations: Callable[[], Sequence[LiveLocation]],
+) -> Optional[RenameIndicator]:
+    """A rename indicator over `locations`, or None for an editor built outside the dialog."""
+    if environment.document is None:
+        return None
+    return RenameIndicator(parent, environment.document, locations)
+
+
+def warned_field_name(
+    environment: StageEditorEnvironment, key: Optional[str]
+) -> Callable[[str], bool]:
+    """Whether a rename warning filed at `key` is about a field of the name asked.
+
+    What a field picker asks before it drops a name its note types do not have: a field
+    renamed in Anki is exactly such a name, and blanking it hid the warning about it and
+    saved the part without it (`fill_field_combo`).
+    """
+    document = environment.document
+
+    def warned(name: str) -> bool:
+        if document is None or key is None:
+            return False
+        return any(
+            still_spelled(READ_AS_OTHER_SLOT, name, entry)
+            for entry in document.rename_marks_at(key)
+        )
+
+    return warned
+
+
+def trigger_field_names(environment: StageEditorEnvironment) -> list[str]:
+    """The fields of every trigger note type, each name once, in note type order."""
+    offered: list[str] = []
+    assert mw is not None and mw.col is not None
+    for model in note_types_of("trigger", environment.note_types_for):
+        for name in mw.col.models.field_names(model):
+            if name not in offered:
+                offered.append(name)
+    return offered
+
+
+def fill_unfocus_fields(
+    box: MultiComboBox, stored: Sequence[str], environment: StageEditorEnvironment
+) -> None:
+    """Offer the trigger note's fields in a migrated unfocus gate, with `stored` chosen.
+
+    A `MultiComboBox` can only offer what is in it, so a stored name the trigger note
+    type no longer has would be dropped on the way through. It is added as its own item
+    instead, the way the trigger editor keeps a whitelisted deck it cannot offer.
+    """
+    chosen = [name for name in stored if name]
+    offered = trigger_field_names(environment)
+    offered += [name for name in chosen if name not in offered]
+    # Quoted item texts, as every other name box in this editor holds them: that is the
+    # form `selected_names` reads back, and a field name can contain a comma.
+    box.blockSignals(True)
+    box.clear()
+    box.addItems(quoted_items(offered))
+    box.setCurrentText(", ".join(quoted_items(chosen)))
+    box.blockSignals(False)
 
 
 def binding_combo(
@@ -221,16 +302,29 @@ def note_types_of(binding: str, note_types_for: NoteTypesFor) -> list[NotetypeDi
 
 
 def field_combo(
-    parent: QWidget, binding: str, note_types_for: NoteTypesFor, current: str
+    parent: QWidget,
+    binding: str,
+    note_types_for: NoteTypesFor,
+    current: str,
+    keep: Optional[Callable[[str], bool]] = None,
 ) -> GroupedComboBox:
     """A field picker for whichever note types the target binding may hold."""
     combo = GroupedComboBox(parent, placeholder_text="Select a field", is_required=True)
-    fill_field_combo(combo, binding, note_types_for, current)
+    fill_field_combo(combo, binding, note_types_for, current, keep)
     return combo
 
 
+#: The group a field picker lists a name under that none of its note types has, kept only
+#: while a rename warning is about it.
+RENAMED_FIELD_GROUP = "Renamed or deleted in Anki"
+
+
 def fill_field_combo(
-    combo: GroupedComboBox, binding: str, note_types_for: NoteTypesFor, current: str
+    combo: GroupedComboBox,
+    binding: str,
+    note_types_for: NoteTypesFor,
+    current: str,
+    keep: Optional[Callable[[str], bool]] = None,
 ) -> None:
     """(Re)list the fields on offer, keeping the current choice if it is still one of them.
 
@@ -257,6 +351,13 @@ def fill_field_combo(
         # A name no longer on offer is dropped rather than kept: unlike a deck whitelist,
         # this one is checked against the note at run time, so keeping it would preserve a
         # write that cannot work. Blanking it makes the analyser ask for a field instead.
+        # Except while a rename warning is about it (`keep`): then the name is the thing the
+        # warning points at, and blanking it hid the warning, took away what Replace acts on,
+        # and saved the part without its field and without the warning that explained why.
+        if current and current not in offered and keep is not None and keep(current):
+            combo.addGroup(RENAMED_FIELD_GROUP)
+            combo.addItemToGroup(RENAMED_FIELD_GROUP, current)
+            offered.append(current)
         combo.setCurrentText(current if current in offered else "")
     finally:
         combo.blockSignals(False)
@@ -325,14 +426,146 @@ class StageEditor(QWidget):
         #: editor whose shape depends on a choice can hide a row whole rather than leaving a
         #: caption over nothing.
         self.row_labels: dict[str, QLabel] = {}
+        #: The migrated unfocus gate's controls, when the stage has one (`add_gate_rows`).
+        self.gate_fields: Optional[MultiComboBox] = None
+        self.gate_fields_indicator: Optional[RenameIndicator] = None
+        self.gate_write_if_field: Optional[QComboBox] = None
+        self.gate_write_if_indicator: Optional[RenameIndicator] = None
 
     # -- helpers for subclasses ----------------------------------------------------------
 
-    def expression_editor(self, expression, label: str, **kwargs) -> ValueExpressionEditor:
-        editor = ValueExpressionEditor(self, expression, self.context, self.state, label, **kwargs)
+    def expression_editor(
+        self,
+        expression,
+        label: str,
+        location: Optional[str] = None,
+        text_is_search: bool = False,
+        **kwargs,
+    ) -> ValueExpressionEditor:
+        """`location` is the key the expression is stored under in the stage (`query`,
+        `value` ...), which its rename warnings are filed under with the stage's guid."""
+        guid = self.stage.get("guid")
+        rename_key: Optional[Callable[[str], str]] = None
+        if location and isinstance(guid, str) and guid:
+            rename_key = partial(_expression_key, stage_key, guid, location)
+        editor = ValueExpressionEditor(
+            self,
+            expression,
+            self.context,
+            self.state,
+            label,
+            rename_document=self.environment.document,
+            rename_key=rename_key,
+            text_is_search=text_is_search,
+            **kwargs,
+        )
         editor.changed.connect(self.changed)
         self._expression_editors.append(editor)
         return editor
+
+    def stage_location(self, path: str) -> Optional[str]:
+        """The location key of `path` in this stage, or None for a stage with no guid."""
+        guid = self.stage.get("guid")
+        return stage_key(guid, path) if isinstance(guid, str) and guid else None
+
+    def slot_indicator(
+        self, path: str, read_as: str, combo: QComboBox
+    ) -> Optional[RenameIndicator]:
+        """An indicator for a picker holding one name at `path` in this stage, following it."""
+        key = self.stage_location(path)
+        if key is None:
+            return None
+        indicator = rename_indicator(
+            self,
+            self.environment,
+            lambda: [
+                LiveLocation(
+                    key,
+                    read_as,
+                    combo.currentText() or None,
+                    lambda new: select_name(combo, new),
+                )
+            ],
+        )
+        if indicator is not None:
+            combo.currentTextChanged.connect(indicator.refresh)
+        return indicator
+
+    def add_gate_rows(self) -> None:
+        """Rows for the unfocus gate a migrated stage carries, when it carries one.
+
+        The migrator copies a format-1 write's gate onto the stages that feed it (which
+        editor fields start it, and the field whose being filled skips it), and the run
+        still honours both. A rename leaves its warnings on them like on any other slot, so
+        they need a part to be shown and replaced in: without one the only way out of a
+        blocking warning there was Dismiss.
+        """
+        if "unfocus_trigger_fields" in self.stage:
+            box = MultiComboBox(
+                self, placeholder_text="No fields (this stage never runs on unfocus)"
+            )
+            self.gate_fields = box
+            fill_unfocus_fields(
+                box, self.stage.get("unfocus_trigger_fields") or [], self.environment
+            )
+            box.currentTextChanged.connect(self.notify)
+            indicator = self._gate_indicator(
+                "unfocus_trigger_fields",
+                lambda: selected_names(box),
+                lambda names: select_names(box, names),
+            )
+            if indicator is not None:
+                box.currentTextChanged.connect(indicator.refresh)
+            self.gate_fields_indicator = indicator
+            self.add_row("Only when leaving", self._with_indicator(box, indicator))
+        if "write_if_field" in self.stage:
+            combo = QComboBox(self)
+            self.gate_write_if_field = combo
+            self._fill_gate_write_if_field()
+            combo.currentTextChanged.connect(self.notify)
+            indicator = self.slot_indicator("write_if_field", READ_AS_TRIGGER_SLOT, combo)
+            self.gate_write_if_indicator = indicator
+            self.add_row("Skipped when filled", self._with_indicator(combo, indicator))
+
+    def _gate_indicator(
+        self, path: str, value: Callable[[], Any], replace: Callable[[Any], None]
+    ) -> Optional[RenameIndicator]:
+        key = self.stage_location(path)
+        if key is None:
+            return None
+        return rename_indicator(
+            self,
+            self.environment,
+            lambda: [LiveLocation(key, READ_AS_TRIGGER_SLOT, value(), replace)],
+        )
+
+    def _with_indicator(self, widget: QWidget, indicator: Optional[RenameIndicator]) -> QWidget:
+        if indicator is None:
+            return widget
+        holder = QWidget(self)
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(widget, 1)
+        row.addWidget(indicator)
+        return holder
+
+    def _fill_gate_write_if_field(self) -> None:
+        """The trigger note's fields, keeping the one stored even when no note type has it:
+        a renamed name is what its warning points at, and Replace swaps it for the new one."""
+        combo = self.gate_write_if_field
+        if combo is None:
+            return
+        current = combo.currentText() or str(self.stage.get("write_if_field") or "")
+        offered = trigger_field_names(self.environment)
+        # An empty name too: a combo that cannot find its text shows its first item, and
+        # the next apply would store that.
+        if current not in offered:
+            offered.append(current)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(offered)
+        combo.setCurrentText(current)
+        combo.blockSignals(False)
 
     def add_row(self, label, widget) -> QLabel:
         made = QLabel(label, self) if isinstance(label, str) else label
@@ -350,6 +583,10 @@ class StageEditor(QWidget):
         """Write every control back into the stage dict."""
         for editor in self._expression_editors:
             editor.apply()
+        if self.gate_fields is not None:
+            self.stage["unfocus_trigger_fields"] = selected_names(self.gate_fields)
+        if self.gate_write_if_field is not None:
+            self.stage["write_if_field"] = self.gate_write_if_field.currentText()
 
     def set_context(self, context: StageEditorContext) -> None:
         self.context = context
@@ -362,6 +599,11 @@ class StageEditor(QWidget):
         self.state.set_selected_models(list(self.environment.note_types_for("trigger") or []))
         for editor in self._expression_editors:
             editor.set_context(context)
+        if self.gate_fields is not None:
+            fill_unfocus_fields(
+                self.gate_fields, selected_names(self.gate_fields), self.environment
+            )
+        self._fill_gate_write_if_field()
 
 
 # --------------------------------------------------------------------------------------
@@ -378,6 +620,7 @@ class VariableStageEditor(StageEditor):
         self.value = self.expression_editor(
             stage.setdefault("value", value_expression()),
             "Its value",
+            location="value",
             description="Anything in scope above this stage can be referenced here.",
             process_names=ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,
         )
@@ -393,6 +636,10 @@ class QueryStageEditor(StageEditor):
 
     def __init__(self, parent, stage, context, environment):
         super().__init__(parent, stage, context, environment)
+        # The name lists the stale-term note is checked against, read on the first keystroke
+        # that needs them and kept: while the definition editor is open no note type can
+        # be edited, so they cannot go out of date under it.
+        self._collection_names: Optional[CollectionNames] = None
         self.is_cards = stage.get("type") == STAGE_CARD_QUERY
         what = "cards" if self.is_cards else "notes"
         self.result = name_edit(self, stage.get("result", ""), f"A name for the {what}")
@@ -402,6 +649,8 @@ class QueryStageEditor(StageEditor):
         self.query = self.expression_editor(
             stage.setdefault("query", value_expression()),
             "Search",
+            location="query",
+            text_is_search=True,
             description=(
                 "An ordinary Anki search. It runs against the collection as saved:"
                 " edits earlier stages made are not searchable, though their values can be"
@@ -410,6 +659,16 @@ class QueryStageEditor(StageEditor):
             process_names=ALL_FIELD_TO_VARIABLE_PROCESS_NAMES,
         )
         self.form.addRow(self.query)
+
+        # What the search names that the collection does not have. A warning rather than a
+        # problem: a query may deliberately name a deck that does not exist yet, and unlike
+        # a field slot or a `{{trigger....}}` token the text of a search is never rewritten
+        # when something is renamed (`logic/query_terms.py`), so saying so is all there is.
+        self.stale_terms_label = QLabel("", self)
+        self.stale_terms_label.setWordWrap(True)
+        self.form.addRow(self.stale_terms_label)
+        self.query.changed.connect(self._refresh_stale_terms)
+        self._refresh_stale_terms()
 
         selection = stage.setdefault("selection", {})
         self.strategy = labelled_combo(
@@ -431,7 +690,11 @@ class QueryStageEditor(StageEditor):
         self.add_row("Take", self._wrap(selection_row))
 
         self.sort_field = field_combo(
-            self, "", environment.note_types_for, selection.get("sort_field") or ""
+            self,
+            "",
+            environment.note_types_for,
+            selection.get("sort_field") or "",
+            warned_field_name(environment, self.stage_location("selection.sort_field")),
         )
         self.sort_field.setPlaceholderText("Do not sort")
         self.sort_order = labelled_combo(
@@ -454,6 +717,11 @@ class QueryStageEditor(StageEditor):
         sort_row.addWidget(self.sort_field)
         sort_row.addWidget(self.sort_order)
         sort_row.addWidget(self.sort_numeric)
+        self.sort_field_indicator = self.slot_indicator(
+            "selection.sort_field", READ_AS_OTHER_SLOT, self.sort_field
+        )
+        if self.sort_field_indicator is not None:
+            sort_row.addWidget(self.sort_field_indicator)
         sort_row.addStretch()
         self.add_row("Then sort by", self._wrap(sort_row))
 
@@ -485,6 +753,27 @@ class QueryStageEditor(StageEditor):
         self.if_empty.currentIndexChanged.connect(self.notify)
         self.add_row("If nothing matches", self.if_empty)
         self._on_strategy_changed()
+
+    def _refresh_stale_terms(self, *_args) -> None:
+        if mw is None or mw.col is None:
+            return
+        # A search built by code is not text to read; what it ends up naming is only known
+        # when the stage runs.
+        text = "" if self.query.is_code_mode() else self.query.text_layout.get_text()
+        if self._collection_names is None:
+            self._collection_names = CollectionNames(mw.col)
+        stale = stale_search_terms(text, mw.col, self._collection_names)
+        self.stale_terms_label.setVisible(bool(stale))
+        if not stale:
+            self.stale_terms_label.setText("")
+            return
+        # Escaped: the label is rich text for its colour, and a term is whatever the user
+        # typed -- `deck:a<b` or `note:"Q&A"` would otherwise lose text or read as a tag.
+        self.stale_terms_label.setText(
+            "<span style='color: #b8860b'>Not in this collection:</span> "
+            + ", ".join(html.escape(term.as_text(), quote=False) for term in stale)
+            + ". A search is left alone when something is renamed, so check it by hand."
+        )
 
     def _wrap(self, layout) -> QWidget:
         container = QWidget(self)
@@ -533,11 +822,21 @@ class FieldWriteRow(QFrame):
         self.owner = parent
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
+        # Each of this write's parts shows its own rename warnings, filed under the write's
+        # guid; a write with none (only a definition the startup repair never reached) has
+        # nowhere a warning could be filed.
+        write_guid = field_write.get("guid")
+        self.write_guid = write_guid if isinstance(write_guid, str) and write_guid else None
+        self._keep_field = warned_field_name(
+            parent.environment,
+            field_write_key(self.write_guid, "field") if self.write_guid else None,
+        )
         self.field = field_combo(
             self,
             (parent.stage.get("target") or {}).get("binding", "trigger"),
             parent.environment.note_types_for,
             field_write.get("field", ""),
+            self._keep_field,
         )
         self.field.currentTextChanged.connect(self.changed)
         self.write_if = labelled_combo(
@@ -548,6 +847,15 @@ class FieldWriteRow(QFrame):
         remove.clicked.connect(lambda: self.removed.emit(self))
         header.addWidget(QLabel("Write", self))
         header.addWidget(self.field)
+        self.field_indicator = self._slot_indicator(
+            "field",
+            self._target_read_as,
+            lambda: self.field.currentText() or None,
+            lambda new: select_name(self.field, new),
+        )
+        if self.field_indicator is not None:
+            self.field.currentTextChanged.connect(self.field_indicator.refresh)
+            header.addWidget(self.field_indicator)
         header.addWidget(self.write_if)
         header.addStretch()
         header.addWidget(remove)
@@ -560,6 +868,12 @@ class FieldWriteRow(QFrame):
             parent.state,
             label="to",
             process_names=ALL_FIELD_TO_FIELD_PROCESS_NAMES,
+            rename_document=parent.environment.document,
+            rename_key=(
+                partial(_expression_key, field_write_key, self.write_guid, "value")
+                if self.write_guid
+                else None
+            ),
         )
         self.value.changed.connect(self.changed)
         layout.addWidget(self.value)
@@ -571,6 +885,7 @@ class FieldWriteRow(QFrame):
         # not this one, so the definition ran and every migrated write in it was skipped --
         # silently, because the tags and card actions beside them are not gated.
         self.unfocus_fields: Optional[MultiComboBox] = None
+        self.unfocus_indicator: Optional[RenameIndicator] = None
         if "unfocus_trigger_fields" in field_write:
             self.unfocus_fields = MultiComboBox(
                 self, placeholder_text="No fields (this write never runs on unfocus)"
@@ -580,36 +895,48 @@ class FieldWriteRow(QFrame):
             watched = QHBoxLayout()
             watched.addWidget(QLabel("only when leaving", self))
             watched.addWidget(self.unfocus_fields)
+            unfocus_fields = self.unfocus_fields
+            self.unfocus_indicator = self._slot_indicator(
+                "unfocus_trigger_fields",
+                lambda: READ_AS_TRIGGER_SLOT,
+                lambda: selected_names(unfocus_fields),
+                lambda names: select_names(unfocus_fields, names),
+            )
+            if self.unfocus_indicator is not None:
+                unfocus_fields.currentTextChanged.connect(self.unfocus_indicator.refresh)
+                watched.addWidget(self.unfocus_indicator)
             watched.addStretch()
             layout.addLayout(watched)
 
-    def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
-        """Offer the trigger note's fields: these name editor fields, not the write's target.
+    def _target_read_as(self) -> str:
+        """How the pass reads the target: a field of the trigger note, or of a queried one."""
+        target = self.owner.target.currentText()
+        return READ_AS_TRIGGER_SLOT if target == "trigger" else READ_AS_OTHER_SLOT
 
-        A `MultiComboBox` can only offer what is in it, so a stored name the trigger note
-        type no longer has would be dropped on the way through. It is added as its own item
-        instead, the way the trigger editor keeps a whitelisted deck it cannot offer.
-        """
-        box = self.unfocus_fields
-        if box is None:
-            return
-        stored = [name for name in self.field_write.get("unfocus_trigger_fields") or [] if name]
-        offered: list[str] = []
-        assert mw is not None and mw.col is not None
-        for model in note_types_of("trigger", self.owner.environment.note_types_for):
-            for name in mw.col.models.field_names(model):
-                if name not in offered:
-                    offered.append(name)
-        for name in stored:
-            if name not in offered:
-                offered.append(name)
-        # Quoted item texts, as every other name box in this editor holds them: that is the
-        # form `selected_names` reads back, and a field name can contain a comma.
-        box.blockSignals(True)
-        box.clear()
-        box.addItems(quoted_items(offered))
-        box.setCurrentText(", ".join(quoted_items(stored)))
-        box.blockSignals(False)
+    def _slot_indicator(
+        self,
+        path: str,
+        read_as: Callable[[], str],
+        value: Callable[[], object],
+        replace: Callable[[Any], None],
+    ) -> Optional[RenameIndicator]:
+        if self.write_guid is None:
+            return None
+        key = field_write_key(self.write_guid, path)
+        return rename_indicator(
+            self,
+            self.owner.environment,
+            lambda: [LiveLocation(key, read_as(), value(), replace)],
+        )
+
+    def _fill_unfocus_fields(self, context: StageEditorContext) -> None:
+        """Offer the trigger note's fields: these name editor fields, not the write's target."""
+        if self.unfocus_fields is not None:
+            fill_unfocus_fields(
+                self.unfocus_fields,
+                self.field_write.get("unfocus_trigger_fields") or [],
+                self.owner.environment,
+            )
 
     def apply(self) -> FieldWrite:
         self.field_write["field"] = self.field.currentText()
@@ -629,6 +956,7 @@ class FieldWriteRow(QFrame):
             (self.owner.stage.get("target") or {}).get("binding", "trigger"),
             self.owner.environment.note_types_for,
             self.field.currentText(),
+            self._keep_field,
         )
         self._fill_unfocus_fields(context)
 
@@ -675,6 +1003,7 @@ class EditNoteStageEditor(StageEditor):
             self,
             self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
+            rename_document=environment.document,
         )
         self.card_actions.initialize_ui_state()
         self.card_actions.changed.connect(self.changed)
@@ -697,7 +1026,14 @@ class EditNoteStageEditor(StageEditor):
         return row
 
     def _on_add_field(self) -> None:
-        field_write: FieldWrite = {"field": "", "value": value_expression(), "write_if": "always"}
+        # A guid from the start, as a stage has: a rename warning about this write's text
+        # is filed under it (`rename_locations.field_write_key`).
+        field_write: FieldWrite = {
+            "guid": new_guid(),
+            "field": "",
+            "value": value_expression(),
+            "write_if": "always",
+        }
         self.stage.setdefault("fields", []).append(field_write)
         self._add_field_row(field_write)
         self.changed.emit()
@@ -751,6 +1087,7 @@ class EditCardStageEditor(StageEditor):
             self.state,
             {"card_actions": stage.setdefault("card_actions", [])},  # type: ignore[arg-type]
             single_card_mode=True,
+            rename_document=environment.document,
         )
         self.card_actions.initialize_ui_state()
         self.card_actions.changed.connect(self.changed)
@@ -788,6 +1125,7 @@ class SelectStageEditor(StageEditor):
         self.index = self.expression_editor(
             stage.setdefault("index", value_expression(text="0")),
             "Which one",
+            location="index",
             description=(
                 f"A number: 0 is the first {what}, 1 the second, -1 the last. As code,"
                 f" return the number, or None to select no {what}; the list is `{items}`."
@@ -822,6 +1160,7 @@ class ReadFileStageEditor(StageEditor):
         self.filename = self.expression_editor(
             stage.setdefault("filename", value_expression()),
             "File in the media folder",
+            location="filename",
             description=(
                 "Path separators and '..' are refused; the file must be UTF-8."
                 f" {MEDIA_PREFIX_NOTE}"
@@ -847,6 +1186,7 @@ class WriteFileStageEditor(StageEditor):
         self.filename = self.expression_editor(
             stage.setdefault("filename", value_expression()),
             "File in the media folder",
+            location="filename",
             description=(
                 "Leave this empty only if the content is code that returns its own"
                 f" (filename, content) pairs. {MEDIA_PREFIX_NOTE}"
@@ -858,6 +1198,7 @@ class WriteFileStageEditor(StageEditor):
         self.content = self.expression_editor(
             stage.setdefault("content", value_expression()),
             "Its whole contents",
+            location="content",
             description=(
                 "A write replaces the file. To append, read it into a variable first and"
                 " build the new contents from that."
@@ -913,7 +1254,7 @@ class StoreStageEditor(StageEditor):
         self.target.currentTextChanged.connect(self.notify)
         self.add_row("Append to", self.target)
         self.value = self.expression_editor(
-            stage.setdefault("value", value_expression()), "The value to append"
+            stage.setdefault("value", value_expression()), "The value to append", location="value"
         )
         self.form.addRow(self.value)
 
@@ -1018,6 +1359,7 @@ class ReduceStageEditor(StageEditor):
         self.initial = self.expression_editor(
             stage.setdefault("initial", value_expression()),
             "Starting from",
+            location="initial",
             is_required=False,
             allow_process_chain=False,
         )
@@ -1033,6 +1375,7 @@ class ReduceStageEditor(StageEditor):
         self.value = self.expression_editor(
             stage.setdefault("value", value_expression(mode="code")),
             "The next running value",
+            location="value",
             description=(
                 "Runs once per item and returns the next running value. It cannot change"
                 " any note: a fold that has to write is a loop with a Store in it."
@@ -1106,6 +1449,8 @@ class ConditionStageEditor(StageEditor):
         self.predicate = self.expression_editor(
             stage.setdefault("predicate", value_expression(mode="code")),
             "Run the first branch when",
+            location="predicate",
+            text_is_search=is_search,
             description=(
                 "Code returning true or false, or text that counts as true when it is not"
                 " empty."
@@ -1121,6 +1466,9 @@ class ConditionStageEditor(StageEditor):
         # A search is text run through `find_notes`; there is no code form of it, and an
         # expression has no note to be matched against.
         self.predicate.set_code_allowed(not is_search)
+        # A search is read for its terms as well as its references, as the pass reads a
+        # note query predicate.
+        self.predicate.set_text_is_search(is_search)
         self.predicate.set_label(
             "An Anki search the note has to match" if is_search else "Run the first branch when"
         )
@@ -1314,6 +1662,8 @@ def make_stage_editor(
     factory = STAGE_EDITOR_CLASSES.get(stage.get("type", ""))
     if factory is None:
         return None
-    return factory(parent, stage, context, environment)
+    editor = factory(parent, stage, context, environment)
+    editor.add_gate_rows()
+    return editor
 
 

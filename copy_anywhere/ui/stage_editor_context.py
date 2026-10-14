@@ -241,16 +241,99 @@ def scope_options_dict(
 
 
 def selected_note_types(definition: CopyDefinitionV2) -> list[NotetypeDict]:
-    """The note types a definition's trigger can be, from its trigger settings."""
+    """The note types a definition's trigger can be, from its trigger settings.
+
+    By reference, so a note type the user renamed in Anki is still the one the definition
+    means; a reference that resolves to nothing contributes no note type, as a stale name
+    did before.
+    """
     from aqt import mw
+
+    from ..configuration import definition_note_type_refs
+    from ..logic.object_refs import resolve_note_type
 
     assert mw is not None and mw.col is not None
     models = []
-    for name in (definition.get("triggers", {}) or {}).get("note_types", []) or []:
-        model = mw.col.models.by_name(name)
+    for ref in definition_note_type_refs(definition):
+        model = resolve_note_type(ref, mw.col)
         if model is not None:
             models.append(model)
     return models
+
+
+def unresolved_reference_warnings(definition: CopyDefinitionV2) -> list[str]:
+    """What a definition names that this collection does not have, as editor warnings.
+
+    A reference resolves by id and then by name (`logic/object_refs.py`), so one that
+    answers to neither names nothing here. That is not a reason to refuse the save: at run
+    time such a reference fails quietly and harmlessly -- a trigger note type matches no
+    note (`note_hooks.definition_triggers_on`), a whitelist deck matches no deck
+    (`copy_fields.note_passes_deck_whitelist`), a card action's card type reaches no card
+    and is skipped -- and it may be a note type the user has not made yet, or one a sync
+    will bring. The picker marks such a definition too (⚠). So the editor says, one
+    sentence per name, what the run will do about it, and saves.
+    """
+    from aqt import mw
+
+    from ..logic.object_refs import normalize_ref, resolve_deck_id
+    from ..logic.rename_reconcile import KIND_CARD_TYPE, KIND_DECK, unresolved_references
+
+    if mw is None or mw.col is None:
+        return []
+    col = mw.col
+    triggers = definition.get("triggers")
+    stored = triggers.get("deck_names") if isinstance(triggers, dict) else None
+    deck_refs = [normalize_ref(value) for value in stored or []]
+    # A whitelist is a union: a deck that resolves to nothing only takes itself out of it,
+    # unless it takes every deck out, and then the whitelist, still not empty, lets no
+    # note through (`note_passes_deck_whitelist`).
+    whitelist_resolves = any(resolve_deck_id(ref, col) is not None for ref in deck_refs)
+    warnings: list[str] = []
+    for stale in unresolved_references(definition, col):
+        missing = f"{stale.kind.capitalize()} '{stale.name}' is not in this collection"
+        if stale.kind == KIND_DECK:
+            if whitelist_resolves:
+                warnings.append(
+                    f"{missing}, so the deck whitelist matches no deck for it until it is."
+                )
+            elif len(deck_refs) == 1:
+                warnings.append(
+                    f"{missing}, and it is the only deck the whitelist names, so no note"
+                    " passes the whitelist until it is."
+                )
+            else:
+                warnings.append(
+                    f"{missing}, and no other deck the whitelist names is either, so no note"
+                    " passes the whitelist until one is."
+                )
+        elif stale.kind == KIND_CARD_TYPE:
+            warnings.append(f"{missing}, so its card action is skipped until it is.")
+        else:
+            warnings.append(
+                f"{missing}, so nothing triggers this definition on it until it is."
+            )
+    # Two references can carry the same name that resolves to nothing; one sentence says it.
+    return list(dict.fromkeys(warnings))
+
+
+def trigger_name_blockers(definition: CopyDefinitionV2) -> list[str]:
+    """Each field or card type a definition on several note types spells for its trigger
+    that some of them lack, as save blockers.
+
+    Unlike a reference that resolves to nothing, this one fails loudly and half-way: the
+    definition fails on the notes of the note type lacking the name and writes into the
+    others' as if nothing were wrong. The analyser checks a `{{trigger.X}}` against the
+    fields any trigger note type has, which is all it can know from a list of names, so the
+    name some of them lack is refused here
+    (`rename_reconcile.trigger_names_not_on_every_note_type`).
+    """
+    from aqt import mw
+
+    from ..logic.rename_reconcile import trigger_names_not_on_every_note_type
+
+    if mw is None or mw.col is None:
+        return []
+    return trigger_names_not_on_every_note_type(definition, mw.col)
 
 
 def known_fields_for(definition: CopyDefinitionV2) -> dict[str, set[str]]:

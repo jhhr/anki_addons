@@ -3,8 +3,8 @@
   "format_version": 2,
   "definition_name": "Collect meanings from related notes",
   "triggers": {
-    "note_types": ["CA Vocab"],
-    "deck_names": ["JP vocab"],
+    "note_types": [{ "id": null, "name": "CA Vocab" }],
+    "deck_names": [{ "id": null, "name": "JP vocab" }],
     "include_subdecks": true,
     "on_sync": false,
     "on_add": false,

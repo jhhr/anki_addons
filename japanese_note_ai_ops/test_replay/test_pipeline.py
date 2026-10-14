@@ -459,6 +459,79 @@ def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
     assert replay.replay(fixture).differences(fixture.expected) == []
 
 
+def written_on_add(note_types: list) -> dict:
+    """A CopyAnywhere add definition that writes one field of the note being added."""
+    from copy_anywhere.logic.definition_schema import CopyDefinitionV2
+    from copy_anywhere.logic.flow_analysis import compute_effects
+
+    value = {"mode": "text", "text": "written on add", "code": "", "process_chain": []}
+    definition = {
+        "guid": "written-on-add",
+        "format_version": 2,
+        "definition_name": "written on add",
+        "triggers": {
+            "note_types": note_types, "deck_names": [], "include_subdecks": False,
+            "on_sync": False, "on_add": True, "on_review": False,
+            "on_unfocus": {"edit_fields": [], "add_fields": []},
+        },
+        "stages": [
+            {"guid": "write", "type": "edit_note", "name": "edit_note", "enabled": True,
+             "target": {"binding": "trigger"},
+             "fields": [{"field": "sentence_audio", "value": value, "write_if": "always"}],
+             "tags": {"add": [], "remove": []}, "card_actions": [],
+             "read_semantics": "stage_snapshot"},
+        ],
+        "exports": [],
+    }
+    definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
+    return definition
+
+
+def test_an_export_renames_copy_anywhere_s_references_and_leaves_out_its_snapshot(tmp_path):
+    # Since its config 0.5.0 CopyAnywhere stores a trigger note type or deck as a reference,
+    # the id the user's collection gives it beside its name, and its rename pass keeps the
+    # collection's path and every note type and deck name in it. The export took a reference
+    # for a name and raised, and would have copied the snapshot as it was
+    from copy_anywhere.logic.rename_reconcile import SNAPSHOT_KEY
+
+    note_config = {
+        **FIELDS,
+        "word_field": FIELDS["word_kanjified_field"],
+        "translated_sentence_field": FIELDS.get("translated_sentence_field", "sentence"),
+        "insert_deck": "Default",
+    }
+    config = {**CONFIG, NOTETYPE: note_config}
+    store, run_id, _ = capture_run(tmp_path, build_box_to_create, config, generated)
+    definition = written_on_add(
+        [{"id": 1700000000001, "name": NOTETYPE}, {"id": 1700000000002, "name": "Private type"}]
+    )
+    # The run's notes are in the Default deck, which is 1 in every collection: a replay's has
+    # an empty one of its own beside the corpus's copy of the run's, which the add goes into
+    definition["triggers"]["deck_names"] = [{"id": 1, "name": "Default"}]
+    snapshot = {
+        "collection": "C:/Users/someone/AppData/Roaming/Anki2/Private profile/collection.anki2",
+        "note_types": {"1700000000002": {"name": "Private type"}},
+        "decks": {"1": "Default", "1700000000003": "Private deck"},
+    }
+
+    fixture = replay.export_fixture(
+        store, run_id, copy_anywhere={"copy_definitions": [definition], SNAPSHOT_KEY: snapshot}
+    )
+
+    assert "Private" not in json.dumps(fixture.corpus, ensure_ascii=False)
+    assert SNAPSHOT_KEY not in fixture.corpus["copy_anywhere"]
+    [kept] = fixture.corpus["copy_anywhere"]["copy_definitions"]
+    assert kept["triggers"]["note_types"] == [{"id": None, "name": NOTETYPE}]
+    assert fixture.corpus["decks"] == ["Deck 1"]
+    assert kept["triggers"]["deck_names"] == [{"id": None, "name": "Deck 1"}]
+    # CopyAnywhere's add hook reads them as it reads its own, and the deck by the corpus's
+    # name: with the id kept, it was the replay's own Default and the definition never ran
+    with_hooks = replay.replay(fixture, copy_anywhere=True)
+    assert with_hooks.misses == [] and with_hooks.new_notes == 1
+    [box] = [n for n in with_hooks.notes if n["note"] == "new-1"]
+    assert box["fields"]["sentence_audio"] == "written on add"
+
+
 def test_a_replay_logs_beside_the_addons_own_logs_and_leaves_nothing_attached(
     captured, tmp_path, monkeypatch
 ):

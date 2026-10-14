@@ -46,6 +46,7 @@ from anki_shared.testing import real_anki
 from note_types import KANJI, VOCAB
 from copy_anywhere.hooks import note_hooks
 from copy_anywhere.hooks.note_hooks import run_copy_fields_on_review
+from copy_anywhere.logic.rename_warnings import BLOCKING_ADVICE
 
 ADDON_TAG = "copy_anywhere"
 
@@ -601,6 +602,112 @@ class TestTheSyncFlag:
         assert hook_logger.has_error("exceeds 100 bytes")
         assert col.get_note(note.id)["Note"] == "neko"
         assert "fc" not in custom_data(col, reviewed.id)
+
+
+def marked(name="marked", message='Field "Word" is no longer here', **triggers):
+    """A staged on-review definition over CA Vocab that a rename's mark refuses.
+
+    The mark is set by hand: the hook reads it as stored, and whichever rename produced it is
+    the pass's business, pinned in `test_rename_reconcile.py`.
+    """
+    definition = d.staged(
+        name,
+        stages=[d.edit_note("trigger", fields=[d.write("Note", d.text("marked ran"))])],
+        on_review=True,
+        **triggers,
+    )
+    d.warned(definition, d.rename_warning(message, old="Word"))
+    return definition
+
+
+class TestADefinitionARenameMarkedIsRefused:
+    """A marked definition is filtered out before it is run, and the card keeps its `fc`.
+
+    Flagging the card done would tell the sync sweep the note is handled while the refused
+    definition has not done its work on it; left as the scheduler set it, the card waits
+    until the mark is gone.
+    """
+
+    def test_it_is_not_handed_to_a_run_and_the_others_are(
+        self, col, set_definitions, ran, hook_logger
+    ):
+        note, reviewed = review(col)
+        set_definitions(marked(), within(field="Freq"))
+
+        run_copy_fields_on_review(reviewed)
+
+        assert ran.names() == ["within"]
+        assert (col.get_note(note.id)["Note"], col.get_note(note.id)["Freq"]) == ("", "neko")
+        assert hook_logger.errors == [
+            "Error in copy fields: 'marked' was not run: Field \"Word\" is no longer here."
+            f" {BLOCKING_ADVICE}"
+        ]
+
+    def test_a_refused_definition_on_review_and_sync_leaves_fc_as_it_was(
+        self, col, set_definitions
+    ):
+        # The finding: this used to end with `fc == 1`, so the sync run never offered the
+        # note to the definition again, even after it was fixed.
+        note = vocab_note(col)
+        real_anki.set_custom_data(col, note.cards()[0].id, json.dumps({"fc": 0, "s": 3}))
+        _, reviewed = review(col, note)
+        set_definitions(marked(on_sync=True))
+
+        run_copy_fields_on_review(reviewed)
+
+        assert custom_data(col, reviewed.id) == {"fc": 0, "s": 3}
+
+    def test_the_others_still_run_and_undo_with_the_answer_but_fc_is_not_written(
+        self, col, set_definitions
+    ):
+        note = vocab_note(col)
+        real_anki.set_custom_data(col, note.cards()[0].id, json.dumps({"fc": 0}))
+        _, reviewed = review(col, note)
+        set_definitions(within(), marked())
+        before = col.undo_status().last_step
+
+        run_copy_fields_on_review(reviewed)
+
+        assert col.get_note(note.id)["Note"] == "neko"
+        assert custom_data(col, reviewed.id) == {"fc": 0}
+        after = col.undo_status()
+        assert (after.undo, after.last_step) == (ANSWER_CARD, before)
+        col.undo()
+        restored = col.get_card(reviewed.id)
+        assert (restored.queue, restored.reps) == (0, 0)
+        assert col.get_note(note.id)["Note"] == ""
+
+    def test_a_marked_definition_for_another_note_type_does_not_hold_fc(
+        self, col, set_definitions
+    ):
+        _, reviewed = review(col)
+        set_definitions(within(), marked(note_types=[KANJI]))
+
+        run_copy_fields_on_review(reviewed)
+
+        assert custom_data(col, reviewed.id) == {"fc": 1}
+
+    def test_it_is_logged_once_a_session_and_again_when_the_mark_changes(
+        self, col, set_definitions, hook_logger
+    ):
+        # Each review opens its own operation log, so a line per review would be a new file
+        # per review, and the log cap would soon hold nothing else.
+        note, reviewed = review(col)
+        definition = marked()
+        set_definitions(definition, within())
+
+        run_copy_fields_on_review(reviewed)
+        run_copy_fields_on_review(reviewed)
+        assert len(hook_logger.errors) == 1
+
+        d.warned(definition, d.rename_warning("Something else now", old="Word"))
+        run_copy_fields_on_review(reviewed)
+        run_copy_fields_on_review(reviewed)
+
+        assert len(hook_logger.errors) == 2
+        assert hook_logger.has_error("'marked' was not run: Something else now.")
+        # Refused silently is still refused.
+        assert col.get_note(note.id)["Note"] == "neko"
 
 
 # Undo merging ------------------------------------------------------------------------------

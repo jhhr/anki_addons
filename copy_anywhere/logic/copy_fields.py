@@ -17,7 +17,8 @@ from ..configuration import (
     Config,
     # The trigger accessors live with the config because the hooks and the picker read the
     # same settings, and they must read them the same way whichever format is stored.
-    definition_note_type_names,
+    definition_deck_refs,
+    definition_note_type_refs,
     definition_note_types_label,
     definition_trigger_flag,
 )
@@ -35,7 +36,7 @@ from .copy_primitives import (
     apply_card_action_to_card,
     apply_card_actions_by_template,
     apply_process_chain,
-    card_actions_by_template_name,
+    card_actions_by_template,
     get_field_values_from_notes,
     get_variable_values_for_note,
     int_sort_by_field_value,
@@ -47,6 +48,8 @@ from .definition_schema import STAGE_CALL_DEFINITION, CopyDefinitionV2, is_forma
 from .execution.commit import write_queued_files
 from .execution.context import ExecutionSession, QueuedFiles
 from .execution.runner import as_format_2, run_definition_for_trigger_note
+from .object_refs import resolve_deck_id, resolve_note_type
+from .rename_warnings import blocking_explanation, blocking_messages, blocks_run
 
 # Re-exported: these moved out into `copy_primitives` when the executor was split, and
 # everything that has always imported them from here keeps working.
@@ -58,7 +61,7 @@ __all__ = [
     "apply_card_action_to_card",
     "apply_card_actions_by_template",
     "apply_process_chain",
-    "card_actions_by_template_name",
+    "card_actions_by_template",
     "copy_fields",
     "copy_fields_in_background",
     "copy_for_single_trigger_note",
@@ -346,9 +349,15 @@ def copy_fields(
             # all: the cards a card action edited were saved above, still carrying the `fc` of
             # 0 or -1 that made them wait, so they are found alongside the ones nothing
             # touched. A card with no `fc`, or one at 1, was never waiting and is left alone.
-            rest_cards = [
-                mw.col.get_card(cid) for cid in mw.col.find_cards("prop:cdn:fc=-1 OR prop:cdn:fc=0")
-            ]
+            # Except the cards of a note type a refused definition triggers on: it has not
+            # run on them, and at 1 they would never be offered to it again once it is fixed.
+            # Read from the marks, which nothing in this run changes, rather than from what
+            # each run returned, since a False there also means an ordinary failure.
+            waiting = "(prop:cdn:fc=-1 OR prop:cdn:fc=0)" + "".join(
+                f" -mid:{note_type_id}"
+                for note_type_id in sorted(note_type_ids_held_for_rename(copy_definitions))
+            )
+            rest_cards = [mw.col.get_card(cid) for cid in mw.col.find_cards(waiting)]
             for card in rest_cards:
                 write_custom_data(card, key="fc", value=1)
             mw.col.update_cards(rest_cards)
@@ -456,9 +465,16 @@ def copy_fields_in_background(
         )
         return results
 
-    note_type_names = definition_note_type_names(copy_definition)
+    # By reference: a note type the user renamed since the definition was written keeps
+    # its id, and the stored name is the old one until the reconcile pass refreshes it.
     note_type_ids = list(
-        filter(None, [mw.col.models.id_for_name(name) for name in note_type_names])
+        filter(
+            None,
+            [
+                (resolve_note_type(ref, mw.col) or {}).get("id")
+                for ref in definition_note_type_refs(copy_definition)
+            ],
+        )
     )
 
     copy_on_review = definition_trigger_flag(copy_definition, "on_review", "copy_on_review")
@@ -586,7 +602,7 @@ def copy_fields_in_background(
 
 
 def note_passes_deck_whitelist(
-    deck_names: list,
+    deck_refs: list,
     include_subdecks: bool,
     trigger_note: Note,
     deck_id: Optional[int] = None,
@@ -595,13 +611,15 @@ def note_passes_deck_whitelist(
 
     Trigger filtering stays outside the stage interpreter (§8): which notes a definition
     considers is decided by its triggers, and only then does the program run.
+
+    The whitelist is a list of deck references, resolved by id first so that a renamed deck
+    still whitelists the same notes; a reference resolving to nothing matches no deck, as a
+    stale name did before.
     """
-    if not deck_names:
+    if not deck_refs:
         return True
 
-    unique_whitelist_dids: set = {
-        mw.col.decks.id_for_name(target_deck_name) for target_deck_name in deck_names
-    }
+    unique_whitelist_dids: set = {resolve_deck_id(ref, mw.col) for ref in deck_refs}
     if include_subdecks:
         parent_dids = set()
         for did in unique_whitelist_dids:
@@ -633,6 +651,67 @@ def note_passes_deck_whitelist(
         )
         return False
     return True
+
+
+# What the note hooks have already said about each refused definition this session: its
+# guid, and the messages it was refused for. A hook fires on every add, answer and unfocus,
+# and each one opens its own operation log, so one line per event would be one new file per
+# event, and the log cap would soon hold nothing but the same refusal.
+_refusals_logged: dict[str, frozenset[str]] = {}
+
+
+def refused_for_rename(copy_definition: AnyCopyDefinition, once_per_session: bool = False) -> bool:
+    """Whether a rename's mark refuses this definition a run, logging why if it does.
+
+    Every run path asks this one question and answers it in the same words, so the log reads
+    alike whichever path met the mark. The mark is read through `blocking_messages`,
+    which knows every entry shape; a format-1 definition is never marked and passes.
+
+    :param once_per_session: the per-note hooks' mode. The error is logged the first time
+        this session a definition is refused, and again only when its messages change,
+        which is when the user has something new to read.
+    """
+    messages = blocking_messages(copy_definition)
+    key = str(copy_definition.get("guid") or copy_definition.get("definition_name") or "")
+    if not messages:
+        # Forgotten once it runs again, so a mark that comes back is reported again.
+        if once_per_session:
+            _refusals_logged.pop(key, None)
+        return False
+    if once_per_session:
+        refused_for = frozenset(messages)
+        if _refusals_logged.get(key) == refused_for:
+            return True
+        _refusals_logged[key] = refused_for
+    for message in messages:
+        logger.error(
+            "Error in copy fields: '%s' was not run: %s",
+            copy_definition.get("definition_name", ""),
+            blocking_explanation([message]),
+        )
+    return True
+
+
+def forget_logged_refusals() -> None:
+    """Start the hooks' record of logged refusals afresh; for tests, which share the module."""
+    _refusals_logged.clear()
+
+
+def note_type_ids_held_for_rename(copy_definitions: Sequence[AnyCopyDefinition]) -> set[int]:
+    """The ids of the note types that refused definitions among these trigger on.
+
+    A sync run's tail marks every waiting card as handled. A refused definition has not
+    handled its cards, so they must keep waiting for the run that follows the fix.
+    """
+    held: set[int] = set()
+    for copy_definition in copy_definitions:
+        if not blocks_run(copy_definition):
+            continue
+        for ref in definition_note_type_refs(copy_definition):
+            note_type = resolve_note_type(ref, mw.col)
+            if note_type:
+                held.add(int(note_type["id"]))
+    return held
 
 
 def copy_for_single_trigger_note(
@@ -688,13 +767,23 @@ def copy_for_single_trigger_note(
         logger.error(str(error))
         return False
 
+    # A rename or deletion left this definition spelling a name that no longer means what it
+    # did (`rename_warnings.py`), so whatever it wrote would go wrong somewhere.
+    # A failure rather than a benign skip: the error is what opens the log that tells the
+    # user to fix it, and False stops a bulk run after one line instead of one per note.
+    # Before the deck whitelist, so a run over notes the whitelist skips still says so.
+    # The note hooks refuse before they get here; this is the backstop for the bulk, sync
+    # and call paths, which always log, as they are user-started or rare.
+    if refused_for_rename(staged_definition):
+        return False
+
     # `or {}` rather than a default: the key can be present and null in a hand-edited or
     # half-written config, and every other reader of `triggers` in the addon already spells
     # it this way. Without it the next line raises out of the `CollectionOp`, which Anki
     # shows as an error dialog and which stops the bulk run over every remaining note.
     triggers = staged_definition.get("triggers") or {}
     if not note_passes_deck_whitelist(
-        deck_names=triggers.get("deck_names") or [],
+        deck_refs=definition_deck_refs(staged_definition),
         include_subdecks=bool(triggers.get("include_subdecks", False)),
         trigger_note=trigger_note,
         deck_id=deck_id,

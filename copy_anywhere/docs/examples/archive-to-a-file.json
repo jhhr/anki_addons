@@ -3,7 +3,7 @@
   "format_version": 2,
   "definition_name": "Archive a note to a file",
   "triggers": {
-    "note_types": ["CA Vocab"],
+    "note_types": [{ "id": null, "name": "CA Vocab" }],
     "deck_names": [],
     "include_subdecks": false,
     "on_sync": false,
@@ -51,7 +51,11 @@
       "card_actions": [
         {
           "guid": "archive-recognition",
-          "card_type_name": "CA Vocab<::>Recognition",
+          "card_type": {
+            "note_type_id": null,
+            "template_id": null,
+            "name": "CA Vocab<::>Recognition"
+          },
           "set_flag": 2
         }
       ],

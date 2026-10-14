@@ -553,9 +553,15 @@ def _renamed_copy_anywhere(
 
     A definition that may run others keeps every definition, since which it runs is in its
     stages; their trigger note types and decks are renamed all the same. What a definition's
-    stages say is kept as it is: its code and searches are what it runs."""
+    stages say is kept as it is: its code and searches are what it runs.
+
+    The name snapshot of CopyAnywhere's rename pass is left out: it holds the path of the user's
+    collection and every note type and deck name in it, and a replay runs only the add hook,
+    which never reads it."""
     from copy_anywhere.configuration import definition_note_type_names, definition_runs_on_add
     from copy_anywhere.logic.definition_schema import is_format_2, read_effects
+    from copy_anywhere.logic.object_refs import normalize_ref
+    from copy_anywhere.logic.rename_reconcile import SNAPSHOT_KEY
 
     definitions = list(config.get(COPY_DEFINITIONS_KEY) or [])
     added_types = set(run_types)
@@ -576,13 +582,33 @@ def _renamed_copy_anywhere(
             )
         definition = copy.deepcopy(definition)
         triggers = definition.setdefault("triggers", {})
-        triggers["note_types"] = [
-            type_names[name] for name in triggers.get("note_types") or [] if name in type_names
+        note_types = [
+            (stored, normalize_ref(stored)["name"]) for stored in triggers.get("note_types") or []
         ]
-        triggers["deck_names"] = [decks(name) for name in triggers.get("deck_names") or []]
+        triggers["note_types"] = [
+            _renamed_ref(stored, type_names[name])
+            for stored, name in note_types
+            if name in type_names
+        ]
+        triggers["deck_names"] = [
+            _renamed_ref(stored, decks(normalize_ref(stored)["name"]))
+            for stored in triggers.get("deck_names") or []
+        ]
         _rename_change_deck(definition.get("stages"), decks)
         renamed.append(definition)
-    return {**config, COPY_DEFINITIONS_KEY: renamed}
+    kept = {key: value for key, value in config.items() if key != SNAPSHOT_KEY}
+    return {**kept, COPY_DEFINITIONS_KEY: renamed}
+
+
+def _renamed_ref(stored: Any, name: str) -> Any:
+    """A trigger note type or deck under the fixture's name, in the shape it was stored in.
+
+    CopyAnywhere stores a bare name, or since its config 0.5.0 a reference holding the id the
+    object has in the user's collection beside it, and resolves the id first
+    (copy_anywhere/logic/object_refs.py). That id is not the replay collection's: it names
+    nothing there, or the wrong deck, since the Default deck is 1 in every collection. A null
+    id resolves by the fixture's name, as the shipped example definitions' references do."""
+    return {"id": None, "name": name} if isinstance(stored, dict) else name
 
 
 def _rename_change_deck(value: Any, decks: _DeckNames) -> None:

@@ -41,6 +41,7 @@ from anki_shared.testing import real_anki
 from note_types import KANJI, SENTENCE, VOCAB
 from copy_anywhere.logic import copy_fields as copy_fields_module
 from copy_anywhere.logic.copy_fields import copy_fields, make_copy_fields_undo_text
+from copy_anywhere.logic.rename_warnings import BLOCKING_ADVICE, WARNINGS_KEY
 
 
 @pytest.fixture
@@ -890,6 +891,80 @@ class TestSyncTail:
         # sync that had nothing to do.
         assert results.get_result_text() == ""
         assert results.get_count() == 0
+
+
+class TestARefusedDefinitionInASyncRun:
+    """A definition a rename's mark refuses has not handled its cards, so they keep waiting."""
+
+    @staticmethod
+    def marked(message='Field "Kanji" is no longer here'):
+        definition = d.staged(
+            "marked",
+            note_types=[KANJI],
+            stages=[
+                d.edit_note("trigger", fields=[d.write("Keyword", d.text("{{trigger.Kanji}}"))])
+            ],
+            on_sync=True,
+            on_review=True,
+        )
+        d.warned(definition, d.rename_warning(message, old="Kanji"))
+        return definition
+
+    @pytest.fixture
+    def waiting(self, col):
+        """Kanji cards waiting at 0 and -1, and a Vocab card no refused definition is for."""
+        kanji = real_anki.add_note(col, KANJI, {"Kanji": "neko", "Keyword": ""})
+        reviewed = real_anki.add_note(col, KANJI, {"Kanji": "inu", "Keyword": ""})
+        vocab = real_anki.add_note(col, VOCAB, {"Word": "tori", "Meaning": "bird"})
+        flag(col, kanji, 0)
+        flag(col, reviewed, -1)
+        flag(col, vocab, 0)
+        return kanji, reviewed, vocab
+
+    def sync(self, run_copy_fields, *definitions):
+        run_copy_fields(
+            copy_definitions=list(definitions), update_sync_result=lambda text, count: None
+        )
+
+    def test_its_note_types_cards_keep_their_fc_and_the_rest_are_handled(
+        self, col, run_copy_fields, waiting
+    ):
+        kanji, reviewed, vocab = waiting
+        whole = write_into_note("whole", copy_on_sync=True, copy_on_review=True)
+
+        self.sync(run_copy_fields, self.marked(), whole)
+
+        assert col.get_note(kanji.id)["Keyword"] == ""
+        assert custom_data(col, kanji.cards()[0].id) == {"fc": 0}
+        assert custom_data(col, reviewed.cards()[0].id) == {"fc": -1}
+        assert col.get_note(vocab.id)["Note"] == "tori"
+        assert all(custom_data(col, card.id) == {"fc": 1} for card in vocab.cards())
+
+    def test_it_is_logged_on_every_sync_that_meets_it(
+        self, col, run_copy_fields, waiting, logger
+    ):
+        # Unlike the per-note hooks, a sync run always logs a refusal: it is rare, and its
+        # log is how the user hears that these cards are still waiting.
+        self.sync(run_copy_fields, self.marked())
+        self.sync(run_copy_fields, self.marked())
+
+        assert logger.errors == [
+            "Error in copy fields: 'marked' was not run: Field \"Kanji\" is no longer here."
+            f" {BLOCKING_ADVICE}"
+        ] * 2
+
+    def test_once_the_mark_is_gone_the_next_sync_runs_it_and_flags_the_cards(
+        self, col, run_copy_fields, waiting
+    ):
+        kanji, _, _ = waiting
+        definition = self.marked()
+        self.sync(run_copy_fields, definition)
+
+        del definition[WARNINGS_KEY]
+        self.sync(run_copy_fields, definition)
+
+        assert col.get_note(kanji.id)["Keyword"] == "neko"
+        assert list(col.find_cards("prop:cdn:fc=-1 OR prop:cdn:fc=0")) == []
 
 
 class TestCancellation:

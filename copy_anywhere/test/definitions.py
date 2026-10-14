@@ -79,6 +79,25 @@ def card_action(note_type_name: str, card_type_name: str, **extra: Any) -> dict:
     }
 
 
+def card_action_ref(model: Any, template: Any, **extra: Any) -> dict:
+    """A card action that carries the ids of a live note type and template, as the editor
+    writes one. `card_action` above is the pre-0.5.0 spelling, which is still read."""
+    action = card_action(model["name"], template["name"], **extra)
+    del action["card_type_name"]
+    action["card_type"] = {
+        "note_type_id": model["id"],
+        "template_id": template["id"],
+        "name": f"{model['name']}{CARD_TYPE_SEPARATOR}{template['name']}",
+    }
+    return action
+
+
+def object_ref(name: str, object_id: Optional[int] = None) -> dict:
+    """The stored form of a note type or deck reference: the id, which may be null, and
+    the name last seen with it."""
+    return {"id": object_id, "name": name}
+
+
 def regex_process(regex: str, replacement: str, **extra: Any) -> dict:
     return {
         "guid": f"rx-{regex}-{replacement}",
@@ -419,7 +438,7 @@ def staged(
     from copy_anywhere.logic.definition_schema import CopyDefinitionV2
     from copy_anywhere.logic.flow_analysis import compute_effects
 
-    triggers = {
+    triggers: dict[str, Any] = {
         "note_types": note_types if note_types is not None else [VOCAB],
         "deck_names": [],
         "include_subdecks": False,
@@ -429,6 +448,12 @@ def staged(
         "on_unfocus": {"edit_fields": [], "add_fields": []},
     }
     triggers.update(trigger_extra)
+    # Names in, references out: a definition stores an id beside the name for every object
+    # Anki gives one, and a test naming a note type or a deck should not have to say so.
+    for key in ("note_types", "deck_names"):
+        triggers[key] = [
+            object_ref(value) if isinstance(value, str) else value for value in triggers[key]
+        ]
     definition = {
         "guid": guid or f"def-{definition_name}",
         "format_version": 2,
@@ -439,4 +464,31 @@ def staged(
     }
     # Built as a plain dict like every other builder here, so a test can add or break any key.
     definition["effects"] = compute_effects(cast(CopyDefinitionV2, definition))
+    return definition
+
+
+def rename_warning(
+    message: str,
+    old: str = "Word",
+    new: Optional[str] = None,
+    blocks_run: bool = True,
+    kind: str = "field",
+    object_id: int = 1,
+    note_type_id: Optional[int] = 1,
+) -> dict:
+    """One entry of a definition's `rename_warnings`, blocking unless told otherwise."""
+    return {
+        "kind": kind,
+        "object_id": object_id,
+        "note_type_id": note_type_id,
+        "old": old,
+        "new": new,
+        "blocks_run": blocks_run,
+        "message": message,
+    }
+
+
+def warned(definition: dict, *entries: dict, location: str = "definition") -> dict:
+    """The definition with exactly these warnings, all under one location, replacing any."""
+    definition["rename_warnings"] = {location: list(entries)}
     return definition
