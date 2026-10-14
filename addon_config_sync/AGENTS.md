@@ -71,10 +71,12 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   change to the conflict rule. The dialog's two buttons refuse only a file that is no JSON
   object: they are the user's decision, and in ask mode the only way to settle a held-back
   file.
-  - **Not covered: an add-on that writes its config when Anki loads it**, as copy_anywhere
-    does on every start. Loaded with a new install's file, or after Anki has read a broken
-    one as empty, it writes its defaults as a config before any sync starts, and that file
-    is sent like any change. A new install is covered when Anki is closed with its sync
+  - **Not covered: an add-on that writes its config when Anki loads it**, as released
+    copy_anywhere (config version 0.2.0) does on every start; copy_anywhere now writes only
+    what its migration changed, and nothing into a meta.json without a config. Loaded with
+    a new install's file, or after Anki has read a broken one as empty, such an add-on
+    writes its defaults as a config before any sync starts, and that file is sent like any
+    change. A new install is covered when Anki is closed with its sync
     after installing (it asks to restart), not when the add-on was copied in with Anki
     closed, auto-sync on open and close is off, or Anki quit before its sync finished.
   - **What it costs, accepted by the author:** deleting a `config` by hand, or installing

@@ -120,6 +120,13 @@ class StubAddonManager:
         self.configs[tag] = data
         self.written.append((tag, data))
 
+    def addonMeta(self, tag: str) -> dict:
+        """The addon's meta.json as aqt reads it, which holds a config only once one has been
+        stored: `getConfig` answers with the defaults when there is none. Here a config is
+        stored once it is in `configs`, which `getConfig` itself puts an empty one into."""
+        tag = self.addonFromModule(tag)
+        return {"config": self.configs[tag]} if tag in self.configs else {}
+
     def setConfigUpdatedAction(self, module: str, action) -> None:
         pass
 
