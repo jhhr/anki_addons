@@ -146,6 +146,50 @@ class TaggedCompoundsTests(unittest.TestCase):
         self.assertEqual(tag.tagged_compounds(tagged(compound_note()), config), [])
 
 
+TWO_TYPE = {
+    "Sentences": {"vocab_note_type": "Vocab", "word_list_field": "array"},
+    "Vocab": {"sentence_note_type": "Sentences", "word_kanjified_field": "word", "word_sort_field": "s"},
+}
+
+
+class TwoTypeTests(unittest.TestCase):
+    """In the two-type layout (note_roles) the tag is on a vocab note, whose type's settings name
+    no word_list_field: the arrays linking it, searched and tagged, are its sentence type's. The
+    vocab note keeps a field of the old array's name ("words" here) until the user deletes it,
+    and that is never searched."""
+
+    def test_a_tagged_vocab_note_is_a_compound_of_its_sentence_types_arrays(self):
+        [compound] = tag.tagged_compounds(tagged(compound_note()), TWO_TYPE)
+
+        self.assertEqual(compound, tag.Compound(COMPOUND, "毛羽立つ", "Sentences", "array"))
+
+    def test_the_sentence_notes_are_searched_and_tagged(self):
+        [compound] = tag.tagged_compounds(tagged(compound_note()), TWO_TYPE)
+        linked = [element("毛羽立ち", [COMPOUND])]
+        sentences = [
+            FakeNote(5, {"array": match_flags.format_word_array(linked)}, notetype="Sentences"),
+            FakeNote(6, {"array": match_flags.format_word_array(linked)}, notetype="Sentences"),
+        ]
+        col = FakeCollection(sentences, {'"note:Sentences" "array:re:': [5, 6]})
+
+        listing = tag.list_compounds(col, [compound])
+
+        self.assertEqual(listing.forms, {"毛羽立つ": ["毛羽立つ", "毛羽立ち"]})
+        self.assertEqual(col.bulk_adds, [([5, 6], tag.REGENERATE_TAG)])
+        self.assertTrue(col.searches)
+        for search in col.searches:
+            self.assertTrue(search.startswith('"note:Sentences" "array:re:'), search)
+
+    def test_a_layout_whose_types_do_not_name_each_other_passes_the_note_over(self):
+        broken = {
+            "Sentences": {"word_list_field": "array"},
+            "Vocab": dict(TWO_TYPE["Vocab"]),
+        }
+
+        with self.assertLogs(tag.logger, "WARNING"):
+            self.assertEqual(tag.tagged_compounds(tagged(compound_note()), broken), [])
+
+
 class NotListedTests(unittest.TestCase):
     def compounds(self):
         return [

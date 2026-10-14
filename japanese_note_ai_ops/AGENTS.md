@@ -604,7 +604,10 @@ element linked to the note, which is what the generator looks a compound up by) 
 notes whose array still has the word whole `sentence::regenerate` (hardcoded,
 `configuration.REGENERATE_TAG`): regenerating is the user's to start, and `extract_words` takes
 the tag off a note once it has generated its array, by "Extract words" or "Regenerate words",
-changed or not; a note it left alone or failed on keeps it. What holds it together:
+changed or not; a note it left alone or failed on keeps it. The arrays are the tagged note's
+sentence type's (`note_roles.sentence_type_of`): in the two-type layout the tag is on a vocab
+note, and the notes searched and tagged are sentence notes, never the vocab notes' old array
+field. What holds it together:
 
 - **The tag stays, and only an unlisted word is acted on.** The tag is what restores a word
   the list loses, so it is never consumed; passing over a listed word is what keeps the notes

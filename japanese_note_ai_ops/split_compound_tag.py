@@ -16,6 +16,10 @@ note with the tag whose word its list lacks:
 
 Both tag names are hardcoded.
 
+The word arrays are the tagged note's sentence type's (note_roles): its own type in the one-type
+layout, where the note holds an array itself; in the two-type layout the tag is on a vocab note,
+which holds none, and the arrays searched and tagged are the sentence notes'.
+
 The tag stays on the note. A note whose word the list has is passed over, so a sweep with nothing
 new costs a tag search and one read per tagged note. It is not taken off once the word is
 listed because the list is not safe where it is: a config is one file per device, and Addon
@@ -46,6 +50,7 @@ from aqt.utils import tooltip
 
 from .call_logging import start_call_log
 from .configuration import REGENERATE_TAG
+from .note_roles import LayoutError, note_type_search, sentence_type_of
 from .word_array import generator
 from .word_array.match_flags import (
     iter_words,
@@ -71,7 +76,9 @@ class Compound(NamedTuple):
 
     note_id: int
     word: str  # its word field, without furigana or tags
-    notetype: str  # its note type's name
+    # The note type whose word arrays link it: its own in the one-type layout, its sentence type
+    # in the two-type one
+    notetype: str
     list_field: str  # that note type's word array field
 
 
@@ -96,7 +103,8 @@ _listed_this_session: dict[str, list[str]] = {}
 
 def tagged_compounds(col: Collection, config: dict) -> list[Compound]:
     """The notes tagged SPLIT_COMPOUND_TAG that have a word to list: of a note type the config
-    names a word field and a word array field for, with something in the first."""
+    names a word field for, with something in it, and whose sentence type it names a word array
+    field for."""
     compounds = []
     for note_id in col.find_notes(f'"tag:{SPLIT_COMPOUND_TAG}"'):
         note = col.get_note(note_id)
@@ -109,12 +117,23 @@ def tagged_compounds(col: Collection, config: dict) -> list[Compound]:
         if not isinstance(fields, dict):
             logger.warning("nid:%s is tagged, but its note type has no fields configured", note_id)
             continue
-        word_field, list_field = fields.get(WORD_FIELD_KEY), fields.get(WORD_LIST_FIELD_KEY)
+        word_field = fields.get(WORD_FIELD_KEY)
         word = plain_text(note[word_field]) if word_field and word_field in note else ""
+        # A two-type vocab note's own settings name no word_list_field: its arrays are on the
+        # sentence notes, and so is the field the vocab notes keep from before the move
+        try:
+            arrays_type = sentence_type_of(config, name)
+        except LayoutError as e:
+            logger.warning("nid:%s is tagged, but %s", note_id, e)
+            continue
+        arrays_fields = config.get(arrays_type)
+        list_field = (
+            arrays_fields.get(WORD_LIST_FIELD_KEY) if isinstance(arrays_fields, dict) else None
+        )
         if not word or not list_field:
             logger.warning("nid:%s is tagged, but has no word or no word array field", note_id)
             continue
-        compounds.append(Compound(note_id, word, name, list_field))
+        compounds.append(Compound(note_id, word, arrays_type, list_field))
     return compounds
 
 
@@ -124,7 +143,7 @@ def not_listed(compounds: Sequence[Compound], config: dict) -> list[Compound]:
 
 
 def _array_search(compound: Compound, regex: str) -> str:
-    return f'"note:{compound.notetype}" "{compound.list_field}:re:{regex}"'
+    return f'{note_type_search(compound.notetype)} "{compound.list_field}:re:{regex}"'
 
 
 def compound_forms(col: Collection, compound: Compound) -> list[str]:
