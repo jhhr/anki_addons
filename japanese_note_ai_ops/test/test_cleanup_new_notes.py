@@ -1622,16 +1622,20 @@ class SiblingMarkersTests(NewNoteHarness):
 
 
 class FinalMessageTests(unittest.TestCase):
+    """The report a run from the menu posts: what it did in the title, the new notes below."""
+
     def setUp(self):
-        self.shown: list = []
-        saved = base_ops.tooltip
-        base_ops.tooltip = lambda message, **_: self.shown.append(message)
-        self.addCleanup(setattr, base_ops, "tooltip", saved)
+        self.posts: list = []
+        saved = base_ops.post
+        base_ops.post = lambda **fields: self.posts.append(fields)
+        self.addCleanup(setattr, base_ops, "post", saved)
 
     def succeed(self, added: int, failed: int = 0, not_added: int = 0) -> str:
         counts = base_ops.NewNotesCounts(added, failed, not_added)
         base_ops.on_bulk_success(None, "Matched words", [1], [], [1, 2], None, new_notes=counts)
-        return self.shown[-1]
+        post = self.posts[-1]
+        self.assertEqual(post["title"], "Matched words in 1/2 selected notes.")
+        return post["body"]
 
     def test_the_new_notes_added_are_counted(self):
         self.assertIn("Added 3 new notes.", self.succeed(3))

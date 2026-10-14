@@ -103,7 +103,7 @@ every op has finished. The run itself is `notes_run(...)`, which returns the fun
 for the success handler; `selected_notes_op` adds only the UI: the `run_errors` start, the
 dialog's controls and title, the end message. A script runs the same run by calling that
 function on its own thread with a collection it opened and a stand-in `mw`
-(`anki_shared/testing/real_anki.py`): no `CollectionOp`, no dialog, no `tooltip`.
+(`anki_shared/testing/real_anki.py`): no `CollectionOp`, no dialog, no report.
 
 ### Chains: the multi-op dialog
 
@@ -146,7 +146,7 @@ one.
   since a failed step stops the chain, so the summary is where the user reads it: it names the
   step and carries `StepOutcome.error` (message only, escaped), and the traceback is listed
   from it (below).
-- No tooltip per step. One summary at the end: `showInfo`, or `showWarning` when stopped
+- No report per step. One summary at the end: `showInfo`, or `showWarning` when stopped
   early, naming the step, why, and the steps that did not run. When the pane showed errors
   during the chain, `show_run_end` instead: a warning with the same text, the error count and
   a "Show errors" button.
@@ -443,7 +443,7 @@ cheap no-op and nothing is recorded.
   above). A chain's dialog gets greyed buttons before its first step
   (`install_idle_run_controls`), and each step's `start_run_controls` brings them back
   after the step before left them greyed.
-- **A run without a chain behaves as before the chain existed**: its tooltip or stop warning
+- **A run without a chain behaves as before the chain existed**: its report or stop warning
   (or `show_run_end` when its pane showed errors), and no `.failure` handler, so aqt shows an
   exception itself. Only with a chain is one set,
   and `failed_step_outcome` then shows the error, in the chain dialog's pane.
@@ -532,7 +532,7 @@ changed or not; a note it left alone or failed on keeps it. What holds it togeth
   from starting under a progress dialog, and drops it when the profile has closed.
 - **A word put back is put back quietly.** `_listed_this_session` holds what this session's
   sweeps listed; a word in it that is off the list again is written back with no
-  `CollectionOp`, no tagging and no tooltip, or a long session would tag and announce every
+  `CollectionOp`, no tagging and no report, or a long session would tag and announce every
   15 minutes. It is module state: a test clears it (the unit tests) or replaces it (the
   running-Anki fixture). This and the sweep after every media sync are there for the
   copying back, which the current Addon Config Sync does far less of than an older one; the
@@ -651,7 +651,12 @@ current). `config.md` lists outdated models, and `log_to_console` is `true` in
 
 ## Shared code
 
-Declares `jp_text_processing`, `ui`, `utils`, `word_array`. Uses `utils.vendor_path` and
+Declares `jp_text_processing`, `notify`, `ui`, `utils`, `word_array`. Every report goes to
+the shared notification stack through `notify.post`, under `configuration.NOTIFY_SOURCE`:
+a run's end message from the menu (title its first line, body the rest), the browser's
+kanjify export, and the compound sweep's, in the `sync` group; a tooltip would replace
+whatever another add-on had just shown. A stopped run still ends in `showWarning`, and a
+chain in its own summary. Uses `utils.vendor_path` and
 `utils.vendor_rebuild_ui`, `word_array.field_text`, `ui.note_source_buttons` (the multi-op
 dialog), and from the submodule `kana_highlight`,
 `make_furigana_from_reading`, `check_word_reading_type`, `main_types` and `all_kanji_data`

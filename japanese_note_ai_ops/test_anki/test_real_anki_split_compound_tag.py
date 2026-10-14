@@ -69,7 +69,7 @@ def to_regenerate(mw: Any) -> set:
 @pytest.fixture
 def swept(monkeypatch):
     """How many sweeps have run and what they told the user; no log file is opened."""
-    seen = SimpleNamespace(count=0, tooltips=[])
+    seen = SimpleNamespace(count=0, reports=[])
     sweep = tag.sweep
 
     def counted() -> None:
@@ -77,7 +77,7 @@ def swept(monkeypatch):
         seen.count += 1
 
     monkeypatch.setattr(tag, "sweep", counted)
-    monkeypatch.setattr(tag, "tooltip", lambda text, **kwargs: seen.tooltips.append(text))
+    monkeypatch.setattr(tag, "post", lambda **fields: seen.reports.append(fields["title"]))
     monkeypatch.setattr(tag, "start_call_log", lambda name: None)
     # A test is one session of Anki's: what an earlier one listed is not remembered
     monkeypatch.setattr(tag, "_listed_this_session", {})
@@ -122,7 +122,7 @@ def test_a_tagged_notes_word_is_listed_and_the_notes_that_have_it_whole_are_tagg
     # word, so the next regeneration splits it in each of them
     assert to_regenerate(real_mw) == {linked.id, not_linked.id, as_a_sub_word.id}
     assert not {split_already.id, another_word.id} & to_regenerate(real_mw)
-    assert swept.tooltips == [
+    assert swept.reports == [
         "Compounds to split: 毛羽立つ listed. 3 notes tagged sentence::regenerate."
     ]
     # The tag stays: it is what puts the word back should the list lose it
@@ -150,7 +150,7 @@ def test_a_word_the_list_has_is_passed_over(anki_session, real_mw, config, swept
     # compound has no two words to split into took the tag off for good
     assert to_regenerate(real_mw) == set()
     assert listed(real_mw) == ["毛羽立つ"]
-    assert swept.tooltips == []
+    assert swept.reports == []
     assert real_mw.col.undo_status().undo == undo_before
 
 
@@ -184,7 +184,7 @@ def test_a_word_that_fell_off_the_list_goes_back_on_after_the_media_sync_that_to
     # Back on the list, with nothing said and no note tagged a second time
     assert listed(real_mw) == ["毛羽立つ"]
     assert to_regenerate(real_mw) == set()
-    assert len(swept.tooltips) == 1
+    assert len(swept.reports) == 1
 
     # After a restart of Anki the same is a listing like the first: the note that still has
     # the word whole is tagged again
@@ -195,7 +195,7 @@ def test_a_word_that_fell_off_the_list_goes_back_on_after_the_media_sync_that_to
 
     assert listed(real_mw) == ["毛羽立つ"]
     assert to_regenerate(real_mw) == {left_whole.id}
-    assert len(swept.tooltips) == 2
+    assert len(swept.reports) == 2
 
 
 def test_the_form_an_array_shows_the_word_by_is_listed_with_the_notes_own(
@@ -232,7 +232,7 @@ def test_a_child_of_the_tag_or_a_note_type_with_no_word_field_lists_nothing(
 
     assert listed(real_mw) is None
     assert to_regenerate(real_mw) == set()
-    assert swept.tooltips == []
+    assert swept.reports == []
 
 
 def test_the_list_is_written_after_the_media_sync_and_after_that_calls_other_handlers(
@@ -280,7 +280,7 @@ def test_only_the_list_is_added_to_the_users_own_config(anki_session, real_mw, s
         merged = real_mw.addonManager.getConfig(PACKAGE)
         assert merged["proper_nouns_model"] == "the shipped default"
         # No array has the word, so no note is tagged and there is nothing to undo
-        assert swept.tooltips == ["Compounds to split: 毛羽立つ listed."]
+        assert swept.reports == ["Compounds to split: 毛羽立つ listed."]
         assert real_mw.col.undo_status().undo != tag.UNDO_LABEL
 
 

@@ -22,7 +22,7 @@ listed because the list is not safe where it is: a config is one file per device
 Config Sync replaces that file whole, with another device's or with the copy it last sent out
 (`on_media_sync_did_start_or_stop`). A word that falls off the list that way goes back on at
 the next sweep for as long as its note is tagged, and within one session of Anki without a
-second tooltip or a second tagging of its notes (`_listed_this_session`). Taking a word off for
+second report or a second tagging of its notes (`_listed_this_session`). Taking a word off for
 good therefore means untagging its note too.
 
 Addon Config Sync has since stopped copying its last copy back over a config that only this
@@ -42,10 +42,10 @@ from typing import NamedTuple, Optional, Sequence
 from anki.collection import Collection, OpChanges
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp
-from aqt.utils import tooltip
 
 from .call_logging import start_call_log
-from .configuration import REGENERATE_TAG
+from .configuration import NOTIFY_SOURCE, REGENERATE_TAG
+from .shared.notify import post
 from .word_array import generator
 from .word_array.match_flags import (
     iter_words,
@@ -63,7 +63,7 @@ WORD_FIELD_KEY = "word_kanjified_field"
 WORD_LIST_FIELD_KEY = "word_list_field"
 UNDO_LABEL = "Tag sentences to regenerate"
 SWEEP_DELAY_MS = 100
-TOOLTIP_MS = 6000
+REPORT_MS = 6000
 
 
 class Compound(NamedTuple):
@@ -219,7 +219,15 @@ def _on_listed(listing: Listing) -> None:
     if added is not None:
         _listed_this_session.update(listing.forms)
     if added or listing.tagged:
-        tooltip(summary(added or [], listing.tagged), parent=mw, period=TOOLTIP_MS)
+        post(
+            source=NOTIFY_SOURCE,
+            title=summary(added or [], listing.tagged),
+            level="success",
+            timeout_ms=REPORT_MS,
+            # A sweep runs as a sync or a media sync ends: beside the other add-ons' results
+            # of that sync, where a tooltip replaced one of them or was replaced.
+            group="sync",
+        )
 
 
 def sweep() -> None:

@@ -5,7 +5,7 @@ hangs the chain and one that calls it twice runs a step twice. These drive the r
 `selected_notes_op` through a stand-in `CollectionOp` that runs the op on the test's thread
 and then calls the success or failure handler the way aqt does, and check that `on_done` is
 called once, after the progress is finished, with the status the run earned - and that a run
-from the menu, with no chain, still ends in its tooltip.
+from the menu, with no chain, still ends in its report.
 """
 
 import types
@@ -112,8 +112,8 @@ class ChainStepTest(unittest.TestCase):
             mock.patch.object(base_ops, "start_run_controls", lambda: None),
             mock.patch.object(
                 base_ops,
-                "tooltip",
-                lambda message, **_: self.events.append(("tooltip", message)),
+                "post",
+                lambda **fields: self.events.append(("report", fields["title"])),
             ),
             mock.patch.object(
                 base_ops,
@@ -186,7 +186,7 @@ class ChainStepTest(unittest.TestCase):
         # After the progress is finished, and nothing shown by the step itself
         self.assertIn("finish", self.events[: self.events.index("done")])
         self.assertEqual(
-            [e for e in self.events if isinstance(e, tuple) and e[0] in ("tooltip", "warning")],
+            [e for e in self.events if isinstance(e, tuple) and e[0] in ("report", "warning")],
             [],
         )
         return outcome
@@ -367,12 +367,12 @@ class ChainStepTest(unittest.TestCase):
 
     # --- No chain ----------------------------------------------------------------------
 
-    def test_without_a_chain_the_run_ends_in_its_tooltip(self):
+    def test_without_a_chain_the_run_ends_in_its_report(self):
         op = self.run_step(self.edits_one, chain=False)
 
         self.assertIsNone(op.on_failure)
         self.assertEqual(self.outcomes, [])
-        self.assertIn(("tooltip", "Did the thing in 1/2 selected notes."), self.events)
+        self.assertIn(("report", "Did the thing in 1/2 selected notes."), self.events)
         self.assertTrue(all(not title.startswith("Step") for title in self.titles()))
 
     def test_without_a_chain_the_title_is_drawn_once_the_dialog_exists(self):

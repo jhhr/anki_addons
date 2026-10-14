@@ -5,8 +5,10 @@ from typing import Any, Callable, Sequence
 
 from anki.notes import NoteId
 from aqt import mw
-from aqt.utils import showInfo, tooltip
+from aqt.utils import showInfo
 
+from ..configuration import NOTIFY_SOURCE
+from ..shared.notify import post
 from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
@@ -45,16 +47,26 @@ def build_kanjify_rows(notes: Sequence[tuple[NoteId, str, str]]) -> tuple[list[s
     return _build_sentence_rows(notes, "kanjified")
 
 
-def _run_with_config(write: Callable[[dict, Sequence[NoteId]], str], nids: Sequence[NoteId]):
+def _run_with_config(
+    write: Callable[[dict, Sequence[NoteId]], str], nids: Sequence[NoteId], title: str
+):
     config = mw.addonManager.getConfig(__name__)
     if not config:
         logger.error("Make test data: missing addon configuration.")
         return
-    tooltip(write(config, nids), period=10000)
+    # The writer's message, with its counts and the file's path, is the detail: it is also
+    # one paragraph of the Tools menu's summary of every export.
+    post(
+        source=NOTIFY_SOURCE,
+        title=title,
+        body=write(config, nids),
+        level="success",
+        timeout_ms=10000,
+    )
 
 
 def make_kanjify_sentence_data(nids: Sequence[NoteId], parent: Any = None) -> None:
-    _run_with_config(_write_kanjify_sentence_data, nids)
+    _run_with_config(_write_kanjify_sentence_data, nids, "Exported kanjify test data")
 
 
 def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:

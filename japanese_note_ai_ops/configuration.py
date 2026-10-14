@@ -50,6 +50,10 @@ MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
 # extract_words once it has generated the note's array.
 REGENERATE_TAG = "sentence::regenerate"
 
+# What the shared notification stack calls this add-on. Its reports go there, not to a
+# tooltip, which would replace whatever another add-on had just shown.
+NOTIFY_SOURCE = "Japanese Note AI Ops"
+
 
 class EnAndJPSentence(TypedDict):
     jp_sentence: str

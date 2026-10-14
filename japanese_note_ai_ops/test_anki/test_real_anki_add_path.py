@@ -133,10 +133,10 @@ def store(tmp_path):
 
 @pytest.fixture
 def shown(monkeypatch):
-    """What the run's end would show: its tooltip, and an exception aqt would put in a box."""
-    seen: dict[str, list] = {"tooltips": [], "exceptions": []}
-    monkeypatch.setattr(base_ops, "tooltip", lambda *a, **k: seen["tooltips"].append(a))
-    monkeypatch.setattr(base_ops, "showWarning", lambda *a, **k: seen["tooltips"].append(a))
+    """What the run's end would show: its report, and an exception aqt would put in a box."""
+    seen: dict[str, list] = {"reports": [], "exceptions": []}
+    monkeypatch.setattr(base_ops, "post", lambda **k: seen["reports"].append(k))
+    monkeypatch.setattr(base_ops, "showWarning", lambda *a, **k: seen["reports"].append(a))
     monkeypatch.setattr(
         aqt.operations, "show_exception", lambda **k: seen["exceptions"].append(k["exception"])
     )

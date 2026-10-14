@@ -324,14 +324,14 @@ class BaseOpsReportTests(CatchReports):
 
 
 class MenuRunEndTests(CatchReports):
-    """A run from the menu: its end message lists its errors; with none it is a tooltip."""
+    """A run from the menu: its end message lists its errors; with none it is a report."""
 
     def setUp(self):
         super().setUp()
-        self.tooltips: list = []
+        self.posts: list = []
         self.ends: list = []
         for name, fake in (
-            ("tooltip", lambda message, **_: self.tooltips.append(message)),
+            ("post", lambda **fields: self.posts.append(fields)),
             ("show_run_end", lambda text, parent, errors: self.ends.append((text, errors))),
             ("showWarning", lambda *a, **k: self.fail("the errors' box is the warning")),
         ):
@@ -345,7 +345,7 @@ class MenuRunEndTests(CatchReports):
     def test_a_run_without_errors_ends_as_before(self):
         run_errors.start_run()
         self.succeed()
-        self.assertEqual(len(self.tooltips), 1)
+        self.assertEqual(len(self.posts), 1)
         self.assertEqual(self.ends, [])
 
     def test_a_run_with_errors_lists_them_at_the_end(self):
@@ -355,7 +355,7 @@ class MenuRunEndTests(CatchReports):
 
         self.succeed()
 
-        self.assertEqual(self.tooltips, [])
+        self.assertEqual(self.posts, [])
         [(text, errors)] = self.ends
         self.assertIn("Made meanings", text)
         self.assertIn("Note 2\n\nValueError: boom\n\nTraceback", errors.as_text())
@@ -366,7 +366,7 @@ class MenuRunEndTests(CatchReports):
         self.succeed()
         run_errors.start_run()
         self.succeed()
-        self.assertEqual((len(self.ends), len(self.tooltips)), (1, 1))
+        self.assertEqual((len(self.ends), len(self.posts)), (1, 1))
 
     def test_a_chain_step_leaves_them_for_the_chain(self):
         run_errors.start_run()

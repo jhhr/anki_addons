@@ -472,19 +472,22 @@ class FakeCollectionOp:
 class SweepTests(unittest.TestCase):
     def setUp(self):
         FakeCollectionOp.started = []
-        self.tooltips: list = []
+        self.posts: list = []
         self.logs: list = []
         # What the module remembers of a session of Anki's, which a test is the whole of
         tag._listed_this_session.clear()
         self.addCleanup(tag._listed_this_session.clear)
         for name, value in (
             ("CollectionOp", FakeCollectionOp),
-            ("tooltip", lambda text, **kwargs: self.tooltips.append(text)),
+            ("post", lambda **fields: self.posts.append(fields)),
             ("start_call_log", self.logs.append),
         ):
             patcher = mock.patch.object(tag, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def titles(self) -> list:
+        return [post["title"] for post in self.posts]
 
     def sweep(self, col, config):
         window = FakeMainWindow(col, config)
@@ -501,7 +504,9 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(len(FakeCollectionOp.started), 1)
         written = window.addonManager.writeConfig.call_args.args[1]
         self.assertEqual(written["split_compound_words"], ["毛羽立つ"])
-        self.assertEqual(self.tooltips, ["Compounds to split: 毛羽立つ listed."])
+        self.assertEqual(self.titles(), ["Compounds to split: 毛羽立つ listed."])
+        # It runs as a sync ends, so it reports among that sync's results
+        self.assertEqual(self.posts[0]["group"], "sync")
         self.assertEqual(self.logs, ["split_compound_tag"])
 
     def test_a_sync_with_nothing_new_starts_no_operation_and_opens_no_log(self):
@@ -518,7 +523,7 @@ class SweepTests(unittest.TestCase):
 
                 self.assertEqual(FakeCollectionOp.started, [])
                 window.addonManager.writeConfig.assert_not_called()
-                self.assertEqual((self.tooltips, self.logs), ([], []))
+                self.assertEqual((self.posts, self.logs), ([], []))
 
     def whole_in(self, *note_ids):
         """A collection with the tagged compound's note and these notes having 毛羽立つ whole."""
@@ -532,7 +537,7 @@ class SweepTests(unittest.TestCase):
         col = self.whole_in(11, 12)
         self.sweep(col, CONFIG)
         self.assertEqual((len(FakeCollectionOp.started), len(col.bulk_adds)), (1, 1))
-        self.assertEqual(len(self.tooltips), 1)
+        self.assertEqual(len(self.posts), 1)
 
         window = self.sweep(col, CONFIG)
 
@@ -541,7 +546,7 @@ class SweepTests(unittest.TestCase):
         # ...and nothing else: no operation, so no notes tagged a second time, though both
         # still have the word whole, and nothing said or logged again
         self.assertEqual((len(FakeCollectionOp.started), len(col.bulk_adds)), (1, 1))
-        self.assertEqual((len(self.tooltips), self.logs), (1, ["split_compound_tag"]))
+        self.assertEqual((len(self.posts), self.logs), (1, ["split_compound_tag"]))
 
     def test_every_form_listed_for_the_word_is_put_back(self):
         linked = FakeNote(
@@ -567,7 +572,7 @@ class SweepTests(unittest.TestCase):
         self.sweep(col, CONFIG)
 
         self.assertEqual((len(FakeCollectionOp.started), len(col.bulk_adds)), (2, 2))
-        self.assertEqual(len(self.tooltips), 2)
+        self.assertEqual(len(self.posts), 2)
 
     def test_a_list_that_could_not_be_written_is_not_remembered_as_listed(self):
         col = self.whole_in(11)
@@ -579,7 +584,7 @@ class SweepTests(unittest.TestCase):
         window.addonManager.writeConfig.assert_not_called()
         self.assertEqual(tag._listed_this_session, {})
         # The notes were tagged all the same, and said so; the next sweep lists the word
-        self.assertEqual(self.tooltips, ["1 note tagged sentence::regenerate."])
+        self.assertEqual(self.titles(), ["1 note tagged sentence::regenerate."])
 
     def test_a_word_put_back_beside_a_new_one_leaves_the_new_one_its_full_sweep(self):
         col = self.whole_in(11)

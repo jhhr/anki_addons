@@ -261,17 +261,18 @@ so that the matching is not offered the common words inside it. The exceptions a
     the tag whose word is not on this device's list has it added: the word in the note's
     `word_kanjified_field`, and the form the word arrays linked to the note show it by. The notes
     whose word array still has the word whole are tagged `sentence::regenerate` (hardcoded too),
-    in one undo step, and a tooltip says what was listed. Regenerating those notes is yours to
-    start: "Regenerate words over the current array" takes `sentence::regenerate` off every
-    note it regenerates, also one whose array came out unchanged, so a search for the tag shows
-    what is left to do. You can set that tag by hand as well, on any note to regenerate.
+    in one undo step, and a notification says what was listed, among the other add-ons' sync
+    results. Regenerating those notes is yours to start: "Regenerate words over the current
+    array" takes `sentence::regenerate` off every note it regenerates, also one whose array
+    came out unchanged, so a search for the tag shows what is left to do. You can set that
+    tag by hand as well, on any note to regenerate.
   - The tag stays on the note, and that is what puts the word back should this device's list
     lose it (see Addon Config Sync below): the same check runs after every media sync. A word
-    put back that way, before Anki is next restarted, goes back without a tooltip and without
-    its notes being tagged a second time. To stop splitting a word, take it off the list and
-    the tag off its note. A note tagged for a word that is already listed is left alone, so
-    its sentences are not tagged again each time; to have them tagged, take the word off the
-    list first, or search for them yourself.
+    put back that way, before Anki is next restarted, goes back without a notification and
+    without its notes being tagged a second time. To stop splitting a word, take it off the
+    list and the tag off its note. A note tagged for a word that is already listed is left
+    alone, so its sentences are not tagged again each time; to have them tagged, take the word
+    off the list first, or search for them yourself.
   - It splits only into two dictionary words read the way the sentence reads them, the second
     one the verb or adjective the compound ends on, which the sentence must spell with its kanji
     (心地良い splits, 心地よい does not). Where that fails the compound stays whole and the list

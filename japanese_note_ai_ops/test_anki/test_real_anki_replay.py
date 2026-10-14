@@ -59,7 +59,7 @@ def test_a_fixture_replays_in_a_running_anki(
     if WITH_COPY_ANYWHERE and definitions is None:
         pytest.fail(f"{directory.name} holds no CopyAnywhere definitions (export --copy-anywhere)")
     exceptions: list[BaseException] = []
-    monkeypatch.setattr(base_ops, "tooltip", lambda *a, **k: None)
+    monkeypatch.setattr(base_ops, "post", lambda **k: None)
     monkeypatch.setattr(base_ops, "showWarning", lambda *a, **k: None)
     monkeypatch.setattr(
         aqt.operations, "show_exception", lambda **k: exceptions.append(k["exception"])

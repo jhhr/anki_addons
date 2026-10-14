@@ -16,7 +16,7 @@ from anki.decks import DeckId
 from aqt import mw
 from aqt.browser import Browser
 from aqt.operations import CollectionOp
-from aqt.utils import showWarning, tooltip
+from aqt.utils import showWarning
 from collections.abc import Container, Iterable, Iterator, Sequence
 
 from . import capture, capture_notes
@@ -74,6 +74,8 @@ from .run_errors import take_run as take_run_errors
 from .step_failure import failed_step_outcome
 
 from ..call_logging import bulk_op_logging, phase_log
+from ..configuration import NOTIFY_SOURCE
+from ..shared.notify import post
 from ..utils import get_field_config, print_error_traceback
 
 
@@ -2779,7 +2781,8 @@ def on_bulk_success(
 ):
     """End a run that returned: say how it went. aqt has finished the progress by now.
 
-    From the menu that is a tooltip, or a warning for a run that stopped itself or met errors
+    From the menu that is a report in the shared notification stack, or a warning for a run
+    that stopped itself or met errors
     (those the progress dialog's pane listed), which offers to list them. As a step of
     a chain nothing is shown - the chain sums its steps up once it is over - and the message
     goes to `chain.on_done` instead. Its status is `stopped` for a stop reason, else
@@ -2812,7 +2815,8 @@ def on_bulk_success(
         done_text, edited_nids, edited_other_nids, nids, extra_callback, new_notes
     )
     if stop_reason:
-        # A tooltip would be gone before the user looks: the rest of the notes were not done
+        # A report that times out would be gone before the user looks: the rest of the notes
+        # were not done
         message += f"<br><br><b>Stopped early.</b> {html.escape(stop_reason)}"
     if errors is not None:
         # Nor would it do for the errors: the pane that listed them is gone
@@ -2821,11 +2825,10 @@ def on_bulk_success(
     if stop_reason:
         showWarning(message, parent=parent, textFormat="rich")
         return
-    tooltip(
-        message,
-        parent=parent,
-        period=5000,
-    )
+    # The first line says what the run did; the rest, the other notes it edited and the new
+    # notes it added, is detail.
+    title, _, details = message.partition("<br>")
+    post(source=NOTIFY_SOURCE, title=title, body=details, level="success", timeout_ms=5000)
 
 
 def bulk_success_message(

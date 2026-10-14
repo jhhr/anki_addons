@@ -121,7 +121,7 @@ class CaptureRunTestCase(unittest.TestCase):
             ),
             mock.patch.object(base_ops, "CollectionOp", self.make_op),
             mock.patch.object(base_ops, "start_run_controls", lambda: None),
-            mock.patch.object(base_ops, "tooltip", lambda *_, **__: None),
+            mock.patch.object(base_ops, "post", lambda **_: None),
             mock.patch.object(base_ops, "showWarning", lambda *_, **__: None),
             mock.patch.object(base_ops, "ConcurrencyGate", lambda *_, **__: GateWithStatus()),
             mock.patch.object(base_ops, "size_pools_to_ceiling", lambda _: None),

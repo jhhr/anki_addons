@@ -1,7 +1,9 @@
 import json
+import types
 import unittest
+from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import load_ops_module, mw
 
 make_fine_tuning_data = load_ops_module("make_fine_tuning_data", subdir="sync_local_ops")
 
@@ -54,3 +56,37 @@ class RunTestDataExportsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExportFromTheBrowserTests(unittest.TestCase):
+    """The browser's "Export kanjify test data": the writer's message, posted under the
+    command's name."""
+
+    def setUp(self):
+        self.posts: list = []
+        self.config: object = {"kanji_sentence_fine_tuning_data_query": "deck:A"}
+        for target, name, value in (
+            (make_fine_tuning_data, "post", lambda **fields: self.posts.append(fields)),
+            (mw, "addonManager", types.SimpleNamespace(getConfig=lambda _: self.config)),
+        ):
+            patcher = mock.patch.object(target, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_export(self):
+        make_fine_tuning_data._run_with_config(
+            lambda config, nids: f"Wrote {len(nids)} rows", [1, 2], "Exported kanjify test data"
+        )
+
+    def test_the_writers_message_is_the_detail_under_the_commands_name(self):
+        self.run_export()
+        [post] = self.posts
+        self.assertEqual(
+            (post["title"], post["body"]), ("Exported kanjify test data", "Wrote 2 rows")
+        )
+        self.assertEqual((post["source"], post["level"]), ("Japanese Note AI Ops", "success"))
+
+    def test_without_a_config_nothing_is_written_or_posted(self):
+        self.config = None
+        self.run_export()
+        self.assertEqual(self.posts, [])
