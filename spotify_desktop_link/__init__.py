@@ -1,4 +1,4 @@
-"""
+r"""
 Open Spotify URI
 ================
 Handles `pycmd("spotify:...")` calls from card templates and opens the URI
