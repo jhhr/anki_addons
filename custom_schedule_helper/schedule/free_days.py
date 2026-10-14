@@ -1,8 +1,9 @@
 from ..configuration import Config
+from ..report import report_refused
 from .reschedule import reschedule
 from anki.utils import ids2str
 import re
-from aqt.utils import tooltip, getText, showWarning, askUser, showText
+from aqt.utils import getText, showWarning, askUser, showText
 from collections import OrderedDict
 from anki.stats_pb2 import CardStatsResponse
 from anki.cards import Card
@@ -18,10 +19,10 @@ def free_days(did):
     config = Config()
     config.load()
     if not config.load_balance:
-        tooltip("Please enable load balance first")
+        report_refused("Please enable load balance first", "free_days")
         return
     if len(config.free_days) == 0:
-        tooltip("Please select free days first")
+        report_refused("Please select free days first", "free_days")
         return
     today = mw.col.sched.today
     due_days = []

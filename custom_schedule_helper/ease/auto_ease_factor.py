@@ -23,6 +23,7 @@ from aqt import reviewer
 from aqt.utils import tooltip
 
 from ..configuration import Config
+from ..report import report_done
 from ..utils import col_db
 from ..shared.anki.write_custom_data import write_custom_data
 
@@ -342,7 +343,7 @@ def adjust_ease(
 
     def on_done(future):
         mw.progress.finish()
-        tooltip(f"{future.result()} in {time.time() - start_time:.2f} seconds")
+        report_done(future.result(), start_time, "ease")
 
     fut = mw.taskman.run_in_background(
         lambda: adjust_ease_factors_background(

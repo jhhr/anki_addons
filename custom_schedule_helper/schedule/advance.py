@@ -6,8 +6,9 @@ from anki.stats import (
 )
 from anki.utils import ids2str
 from aqt import mw
-from aqt.utils import tooltip, getText, showWarning
+from aqt.utils import getText, showWarning
 
+from ..report import report_done
 from ..utils import RepresentsInt
 from ..shared.anki.write_custom_data import write_custom_data
 from ..shared.scheduling.due_dates import (
@@ -93,6 +94,6 @@ def advance(did):
         mw.col.merge_undo_entries(undo_entry)
         cnt += 1
 
-    tooltip(f"""{cnt} cards advanced in {time.time() - start_time:.2f} seconds.""")
+    report_done(f"{cnt} cards advanced", start_time, "advance")
     mw.progress.finish()
     mw.reset()

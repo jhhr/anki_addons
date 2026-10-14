@@ -28,6 +28,7 @@ inert here; do not extend them. Sibling dispersal was removed from this addon;
 | `ease/fsrs_calculator.py`, `ease/fsrs_ops.py` | revlog replay through `py_fsrs`; `adjust_fsrs_revlog` |
 | `ease/export.py` | ease export/import; uses legacy Anki and Qt5-era APIs, likely broken on current Anki |
 | `sync_hook.py` | detects remotely reviewed cards via the shared `sync_hook_base`, then reschedules |
+| `report.py` | `report_done` / `report_refused`: what every command posts to the shared notification stack, keyed by the command |
 | `custom_scheduler.js` | the scheduler itself |
 | `py_fsrs/` | vendored, modified py-fsrs; see below |
 | `tools/sync_py_fsrs.sh` | pulls upstream py-fsrs changes into `py_fsrs/` |
@@ -138,7 +139,9 @@ Verified by reading, not by running. Do not build on them; fix them as their own
 ## Shared code
 
 Declares `anki` (`write_custom_data`, `sync_hook_base`), `scheduling` (`due_dates`, which
-was extracted from this addon's `utils.py`) and `notify` (the reschedule report). `related_card_disperse` uses the same three
-modules: a change to them is a change to both. The gear-menu helpers in `__init__.py` exist
-verbatim in `copy_anywhere`, and the config boilerplate in three addons; see
-[docs/shared-code.md](../docs/shared-code.md) before adding another copy of anything.
+was extracted from this addon's `utils.py`) and `notify` (every command's report, through
+`report.py`; only the stats tooltip of the disabled review hook is still a tooltip).
+`related_card_disperse` uses the same three modules: a change to them is a change to both.
+The gear-menu helpers in `__init__.py` exist verbatim in `copy_anywhere`, and the config
+boilerplate in three addons; see [docs/shared-code.md](../docs/shared-code.md) before
+adding another copy of anything.
