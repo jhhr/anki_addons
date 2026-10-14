@@ -336,6 +336,14 @@ class AnkiDevice:
         self.media_sync(server)
         return self.media_sync_stops()
 
+    def restarts_on(self, acs: ModuleType) -> None:
+        """Anki started again with another version of the add-on: what it remembered is
+        gone, the files stay."""
+        self.acs = acs
+        self.actions = sys.modules[f"{acs.__name__}.sync_actions"]
+        self.session = set()
+        self.updated = {}
+
     # What Anki does
 
     def anki_installs(self) -> None:
@@ -781,6 +789,37 @@ def test_the_dialog_shows_an_update_installed_here_as_no_change(make_device, ank
             b.media / f"_{FOLDER}_meta.json"
         )
     assert shown_status(b.acs) == "Up to date"
+
+
+def test_a_device_on_1_0_0_told_that_it_has_this_version_is_told_no_longer(make_device, addon):
+    """The first sync after Anki installs this version still runs 1.0.0, which sends this
+    add-on's meta.json whole, new `mod` and all. A device on 1.0.0 that reads it is told it
+    has this version, and its Anki never offers it. Once the updated device syncs on this
+    version, the copy loses its `mod`, and so does the meta.json of a device on 1.0.0 that
+    reads it; Anki then offers that device the update, as
+    test_without_a_record_anki_offers_the_addon_as_an_update_under_its_folder_name shows."""
+    server = Server()
+    a, b = make_device("a", "released"), make_device("b", "released")
+    own = addon.__name__
+    released = {"name": "Addon Config Sync", "mod": T1, "config": {"run_on_sync": True}}
+    for device in (a, b):
+        (device.addons / own).mkdir()
+        _write(device.addons / own / "meta.json", json.dumps(released).encode("utf-8"))
+        device.syncs(server)
+
+    # Anki installs this version on a, whose sync as it closes still runs 1.0.0
+    updated = json.dumps(dict(released, mod=T2)).encode("utf-8")
+    _write(a.addons / own / "meta.json", updated)
+    a.syncs(server)
+    b.syncs(server)
+    assert json.loads((b.addons / own / "meta.json").read_bytes())["mod"] == T2
+
+    a.restarts_on(addon)
+    a.syncs(server)
+    b.syncs(server)
+    assert "mod" not in json.loads((b.addons / own / "meta.json").read_bytes())
+    assert (a.addons / own / "meta.json").read_bytes() == updated
+    assert a.sync_starts() == [] and b.syncs(server) == []
 
 
 # What Anki does that the rule rests on

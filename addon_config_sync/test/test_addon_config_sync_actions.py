@@ -907,3 +907,38 @@ def test_the_update_a_device_on_an_older_version_sends_is_not_read(make_device, 
 
     assert result.loaded == []
     assert laptop.meta(ADDON) == dict(INSTALLED, config={"speed": 1})
+
+
+# The folder of this add-on itself, under the name the suite loads it by
+OWN = "addon_config_sync"
+
+
+@pytest.mark.parametrize("told, untold", [(200, True), (300, True), (100, False), (None, False)])
+def test_this_addons_own_copy_tells_no_device_on_1_0_0_that_it_has_this_version(
+    device, told, untold
+):
+    """The first sync after Anki installed this version ran 1.0.0, still in memory, which
+    sends this add-on's meta.json whole. A device on 1.0.0 that read the `mod` of this
+    version, or of a later one, would never be offered it; an older one has it offered."""
+    here = {"name": "Addon Config Sync", "mod": 200, "config": {"run_on_sync": True}}
+    copy = {key: value for key, value in here.items() if key != "mod"}
+    if told is not None:
+        copy["mod"] = told
+    device.install(OWN, here)
+    device.write_media(OWN, copy)
+
+    assert device.sync_starts().saved == ([OWN] if untold else [])
+    assert device.media_copy(OWN) == {
+        key: value for key, value in copy.items() if not (untold and key == "mod")
+    }
+    assert device.sync_starts().saved == []
+
+
+def test_an_install_of_this_addon_with_no_mod_of_its_own_leaves_its_copy_as_it_is(device):
+    """Copied in, as this repository's build does, it has no version to tell devices."""
+    device.install(OWN, {"config": {"run_on_sync": True}})
+    copy = {"name": "Addon Config Sync", "mod": 200, "config": {"run_on_sync": True}}
+    device.write_media(OWN, copy)
+
+    assert device.sync_starts().saved == []
+    assert device.media_copy(OWN) == copy

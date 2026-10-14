@@ -52,8 +52,13 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
     device that makes it, and such a device then reads that as its own.
   - **The first sync after Anki installs a new version** runs the code still in memory. On
     a device updating from 1.0.0 that sends this add-on's own `meta.json`, new record and
-    all, and a second device still on 1.0.0 is then told it has the new version, until a
-    later release or a reinstall.
+    all, and a second device still on 1.0.0 that reads it is told it has the new version,
+    which its Anki then never offers it. So the copy of this add-on's own `meta.json` loses
+    a `mod` that tells the version installed here or a later one, at the next sync start
+    of a device on this version, even where the settings are the same
+    (`_tells_this_version`); a device on 1.0.0 reads that whole, and Anki offers it the
+    update. Only a device on 1.0.0 reads a copy's record. An install with no `mod` of its
+    own, as this repository's build makes, takes nothing out.
 - **`read_configs_on_sync` leaves alone a config that only this device changed.** It runs
   after every media sync, and only a collection sync starting sends configs out, so in
   between a config can differ from its media copy because another device's copy came down,

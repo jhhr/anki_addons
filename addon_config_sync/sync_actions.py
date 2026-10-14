@@ -10,6 +10,7 @@ from aqt import mw
 from .matched_copies import MatchedCopies
 from .utils import (
     is_addon_disabled,
+    get_addon_module_name,
     get_existing_addons,
     get_configs_in_media,
     is_addon_ignored,
@@ -237,6 +238,26 @@ def _meta_json_bytes(meta: dict[str, Any]) -> bytes:
     return json.dumps(meta).encode("utf-8")
 
 
+def _tells_this_version(
+    addon_meta_json: Path, config: dict[str, Any], record: dict[str, Any]
+) -> bool:
+    """Whether this is the copy of this add-on's own meta.json, and its record tells devices
+    that they have the version installed here, or a later one.
+
+    Only a device on 1.0.0 reads a copy's record, and that device has no later version: the
+    first sync after Anki installs an update still runs the code of before, which on 1.0.0
+    sends this add-on's meta.json whole, new `mod` and all. A device on 1.0.0 that reads that
+    is told it has the update, and its Anki never offers it; without the `mod`, it is
+    offered. An install that records no `mod` of its own, such as one copied in, tells
+    nobody anything."""
+    if addon_meta_json.parent.name != get_addon_module_name():
+        return False
+    installed, told = config.get("mod"), record.get("mod")
+    if not isinstance(installed, (int, float)) or not isinstance(told, (int, float)):
+        return False
+    return 0 < installed <= told
+
+
 def send_settings(addon_meta_json: Path, media_meta_json: Path) -> bool:
     """Put this meta.json's settings into its media copy, unless the copy holds them already.
     Whether it wrote.
@@ -244,6 +265,8 @@ def send_settings(addon_meta_json: Path, media_meta_json: Path) -> bool:
     The copy keeps the record it has, and takes this file's only where it is missing or no
     JSON object. A device on a version before this one reads a copy whole, record and all,
     and so is told what the copy said before, never that it has what was installed here.
+    The copy of this add-on's own meta.json loses a `mod` that tells that, even where the
+    settings are the same (_tells_this_version).
 
     The old file is removed and a new one written, which is what makes Anki upload it: it
     looks for changed media files only when the media folder's modification time has
@@ -253,10 +276,14 @@ def send_settings(addon_meta_json: Path, media_meta_json: Path) -> bool:
     if config is None:
         return False
     media_copy = read_json_object(media_meta_json)
-    if media_copy is not None and _as_compared(media_copy) == _as_compared(config):
+    record = install_record(config if media_copy is None else media_copy)
+    untold = _tells_this_version(addon_meta_json, config, record)
+    if untold:
+        del record["mod"]
+    elif media_copy is not None and _as_compared(media_copy) == _as_compared(config):
         return False
     meta = synced_settings(config)
-    meta.update(install_record(config if media_copy is None else media_copy))
+    meta.update(record)
     if media_meta_json.is_file():
         os.remove(media_meta_json)
     media_meta_json.write_bytes(_meta_json_bytes(meta))
