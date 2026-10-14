@@ -63,6 +63,10 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
 - **Ask mode lists every difference, including this device's own.** It copies nothing by
   itself, so it has nothing to lose; the rule above applies only where `apply_to_addons` is
   true.
+- **It imports on Python 3.9**, which Anki ran on until 26.05 (2.1.50 made it the minimum;
+  25.07 began shipping 3.13 without raising that). Signatures here use `X | None`, a
+  TypeError at import before 3.10 unless the module has `from __future__ import
+  annotations`; `test/test_addon_config_sync_python39.py` checks every module for it.
 - **The handlers on Anki's sync hooks must not raise.** Anki takes a handler that raises
   off its hook and lets the exception through, which stops the sync it was called from.
   `matched_copies` swallows what reading and writing its file can raise for that reason;
