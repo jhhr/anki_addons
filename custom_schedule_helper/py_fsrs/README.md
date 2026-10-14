@@ -75,7 +75,8 @@ Without these the package cannot run inside an Anki addon at all.
    there. In `review_card`, `match card.state:` and the `match rating:` blocks inside it are
    if/elif chains: each `match` line became an `if True:`, and its `case` lines became `if`,
    `elif` and `else` at the indentation the cases had. Every branch body keeps upstream's
-   indentation, so the sync script can still apply upstream's changes inside them.
+   indentation, so the sync script can still apply upstream's changes inside them. A sync
+   that brings in a new `match` fails `anki_shared/test/test_python39.py` in the add-on repo.
 
 ### Algorithm
 

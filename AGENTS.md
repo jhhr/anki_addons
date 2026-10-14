@@ -141,9 +141,15 @@ coverage that does not exist.
 
 ## Code conventions
 
-- Target Python 3.10 syntax and stdlib for anything that ships: users' Anki can run 3.9+ and
-  the type checkers are pinned to 3.10. No `match`, no `typing.NotRequired`, no `tomllib`.
-  New modules use `from __future__ import annotations` with builtin generics.
+- Anything that ships runs on Python 3.9. Anki's own builds ran 3.9 from 2.1.50 until 25.07,
+  and one module 3.9 cannot import stops the whole addon loading. A module with `X | None` in
+  its annotations starts with `from __future__ import annotations`; a union evaluated at run
+  time (an alias, an `isinstance` argument) is `Optional`/`Union` or a tuple. No `match`, no
+  `zip(strict=...)`, no `typing.TypeAlias`, `Self` or `NotRequired` (import those from
+  `typing_extensions`, which Anki bundles), no `tomllib`. New modules use the `__future__`
+  import with builtin generics. mypy is pinned to 3.10, the lowest version mypy 2 checks
+  against, so it misses all of this; `anki_shared/test/test_python39.py` reads every shipped
+  module for it.
 - `python -m mypy .` from the root is clean except for a few old errors in
   `japanese_note_ai_ops` (`async_api_ops/`, `word_array/jmdict_index.py`), `build.py` and
   `custom_schedule_helper/py_fsrs` (an optional `torch` import). Add none; narrow Qt's

@@ -113,8 +113,9 @@ depends on `'d'` staying in its filter so that it does not undo a dispersal.
 
 ## Compatibility
 
-- Anki 25.09 ships CPython 3.13; pip-installed Ankis can be on 3.9 or 3.10. Shipped code
-  stays 3.10-compatible (see the root `AGENTS.md`).
+- Anki's own builds ship CPython 3.13 since 25.07 and shipped 3.9 from 2.1.50 to 25.02;
+  pip-installed Ankis can be on 3.9 or newer. Shipped code stays 3.9-compatible (see the root
+  `AGENTS.md`).
 - Guard version-specific API use explicitly, as `custom_schedule_helper` does with
   `int_version() >= 231001`, and say in a comment which Anki version the branch is for.
 - Filtered decks: a card's home deck is `odid` when non-zero and its real due is `odue`.

@@ -98,7 +98,8 @@ Do not hand-edit `py_fsrs/` to match upstream. Use `tools/sync_py_fsrs.sh`, whic
 applies the upstream diff and runs upstream's tests against the result; four failures are
 expected and listed in the README. Upstream uses `match`, which Python 3.9 cannot parse, and
 `__init__.py` imports `py_fsrs` as the addon loads; here those blocks are if/elif chains that
-keep upstream's indentation (structural change 4 in the README).
+keep upstream's indentation (structural change 4 in the README). A sync that brings a `match`
+back fails `anki_shared/test/test_python39.py`.
 
 ## Config
 

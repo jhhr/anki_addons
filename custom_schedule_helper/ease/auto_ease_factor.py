@@ -1,4 +1,6 @@
 # inspired by https://eshapard.github.io/
+from __future__ import annotations
+
 import math
 import time
 

@@ -49,7 +49,8 @@ are the only check there is.
 - **Logging** is `logging.getLogger(__name__)` with no stderr handler; stderr inside Anki is
   an error dialog. No logger objects threaded through call signatures; `utils/logger.py`
   records why that class was removed.
-- Python 3.10-compatible, mypy-clean. Newer modules use `from __future__ import annotations`.
+- Runs on Python 3.9 (root `AGENTS.md`), mypy-clean. A module with `X | None` in its
+  annotations has `from __future__ import annotations`.
 - One widget or one cohesive group of functions per file, the file named after it. A new
   module opens with a docstring saying what it is for, who uses it and why it is shared.
 
