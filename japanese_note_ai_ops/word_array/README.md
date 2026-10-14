@@ -122,7 +122,8 @@ sub-word's Sudachi and JMdict readings, the second allowed to be voiced by renda
 (`土産物[みやげもの]`). A sub-word never comes out as bare kanji: when the readings don't add
 up, the word simply keeps no sub-words, which is what stops a jukujikun word being split inside
 (今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
-has the plain reading (閏日 -> 日[び] -> ひ).
+has the plain reading (閏日 -> 日[び] -> ひ), an inflected one's too: 意気込[いきご]んで -> 込む
+こむ, where Sudachi's own reading of 込む, ごむ, agreed with the voiced stem (深い ぶかい likewise).
 
 A word's reading drops the gemination before the word after it too (`ungeminated`). The っ its
 reading ends in, the note's furigana or Sudachi's, stands in for the reading's last kana or was
@@ -193,6 +194,52 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
   adnominals are an old pronoun and particle grown into one word; JMdict still has the pronouns
   我[わ] and 其[そ], which alone are no words today. Export: 1033 adnominals split before, 988 of
   them 其の, 24 我が. `research/okurigana_decomp.py`.
+
+A verb or adjective Sudachi has as one unit is one word to learn however it is built, and has no
+sub-words: 目立つ, 名付ける, 裏切る, 心細い, 面白い. Sudachi splits most verb + verb compounds
+itself (思い|出す, 見|送る) but hardly any of these, and decomposing them by the rule above was
+tried and taken back: over the export it split 252 words (面白い as 面 + 白い 25 times) into
+common words no note is about, each one left for the judge to match. Nor do JMdict's frequency
+marks pick out the few worth splitting: 粟 and 藻 are marked, 値 and 際 are not.
+
+The exception is a compound the caller lists, `generate(sentence, split_compounds=...)`: one of
+its two words is a word some note is about, and inside the compound it was a word nowhere, so no
+piece of any array could be linked to that note (the note for 毛羽 has 毛羽立ち for its
+sentence). Such a compound splits wherever it occurs, into a word and the verb or adjective it
+ends on, which keeps the inflection: 毛羽 + 立ち (立つ). The first piece is a JMdict word as
+above, or an ichidan verb's stem, which is its verb and not JMdict's noun (見|付けた -> 見る +
+付ける, like Sudachi's 見 of 見送る). The second starts on a kanji and is what is left of the
+compound's dictionary form after the first, spelled with that kanji: kana there are okurigana or
+the する of a verb that is one word (対|為る). JMdict must have it as a verb or adjective like the
+compound, read as the note reads it or voiced by the compound. A listed compound these checks
+find no two words in stays whole (気付く, 心地よい with its よい in kana), and a listed noun is
+split as the rule above has it.
+
+The list is the user's and lives in the add-on's config, `split_compound_words`
+(`generator.split_compounds_of(config)`; shipped empty), so that a compound is added in Anki's
+config editor and reaches the other devices with whatever syncs the config, with no change to
+the code. It is added from any device by tagging the note about it `vocab::split-compound-word`,
+which the add-on reads after a sync (`split_compound_tag.py`, outside this package: the
+generator knows no tag and no note). The generator has no list of its own: without the
+argument no such compound splits, which is what the research scripts measuring its rules run.
+The op passes the list of the run's config for every note, and `hand_judge` and `judge_eval`,
+whose arrays hold the words the judge is asked about, pass this machine's
+(`corpora.split_compounds`). A compound is listed by the dictionary form its array element
+shows, so in its entry's one spelling whichever the note writes (もの凄い is listed, and split,
+as 物凄い); the note's own spelling counts too.
+
+What goes on it is decided from what the collection's notes are about:
+`research/words_inside_words.py` lists every note whose own word the analysis has only inside a
+one-unit word, and whether these checks find two words there. Over the collection (30,400 notes)
+that is 137 notes, 16 of them inside a verb or adjective; five of those compounds split: 毛羽立つ,
+仲睦まじい and 心地良い, which that collection lists, and 指差す and 狡賢い, left whole until
+someone wants 差す or 賢い found in them. The sentence's own `<b>` is not what decides, and the
+generator never reads it: it is left from when a note's word was marked by hand (the card marks
+it from the array now), a kanjified span cuts it short on many notes, and an array that followed
+it differed between two notes holding one sentence. That was tried and taken back as well. So
+was a set kept in the generator's code, which took a commit to extend, and so was a flag for the
+whole sentence, set by a tag on its note: it split every such compound of the sentence when one
+of them was meant, and the same compound stayed whole in the next sentence.
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.
@@ -280,10 +327,11 @@ JMdict labels 江戸時代, 警視庁 and names like ルーク, 根元 `n` too, 
 
 `async_api_ops/extract_words.py` ("Extract words") is what gives a note its array: `generate()`
 on the sentence with its `<i>` context stripped (`html_stripping.strip_context_sentences`, the
-way the old op took it) and the collection's name lexicon, then the proper noun call on the
-result. One `bulk_notes_op` request per note, one Sudachi tokenizer at a time
-(`find_proper_nouns.generate_word_array`), and the first run asks about the dictionary downloads
-before touching a note (`with_generator_resources`). The words come out unjudged, `[]`.
+way the old op took it), the collection's name lexicon and the compounds the config lists to
+split (`split_compound_words`), then the proper noun call on the result. One `bulk_notes_op`
+request per note, one Sudachi tokenizer at a time (`find_proper_nouns.generate_word_array`), and
+the first run asks about the dictionary downloads before touching a note
+(`with_generator_resources`). The words come out unjudged, `[]`.
 
 A note whose field already holds an array is skipped, so re-running over a selection is free; a
 note whose field does not parse as an array is skipped too, because generating over it would
@@ -318,7 +366,10 @@ that is not a readable array is left alone either way.
 The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
 is what follows it and then "Match extracted words to notes". A regeneration that changes
 nothing writes nothing, except that it tidies a field Anki's editor has turned into `<br>` and
-`&nbsp;` - which is the state hand-correcting a note leaves it in.
+`&nbsp;` - which is the state hand-correcting a note leaves it in - and that it takes the tag
+`sentence::regenerate` off a note that has it. The tag marks the notes still to regenerate, set
+by hand or by the add-on on the notes a compound newly listed to split has not reached; either
+op removes it from a note whose array it has generated, and leaves it on one it skipped.
 
 The judge cannot be a step inside that op: `bulk_nested_notes_op` fixes every note's task count
 before it starts, and the words only exist once the array has been generated. So it is a phase of
@@ -562,6 +613,7 @@ python word_array/research/validate.py          # reconstruction, sub-words, <b>
 python word_array/research/write_generated.py   # regenerate research/generated_examples.md
 python word_array/research/sub_readings.py      # parents whose sub-words' readings don't add up
 python word_array/research/okurigana_decomp.py  # what the okurigana rules split, and don't
+py -3.10 word_array/research/words_inside_words.py  # notes whose word is inside a one-unit word
 python word_array/research/name_lexicon.py      # what the name lexicon holds and misses
 python word_array/research/judge_eval.py build  # the judge's eval set, from the checked export
 python word_array/research/judge_eval.py run    # ask the judge (real requests) and score it

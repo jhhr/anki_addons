@@ -54,6 +54,10 @@ FURIGANA_REVIEW_LEFT = f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigan
 # (word_array/audio_furigana.py), tag or no tag: a tag taken off before every such word was
 # fixed would let one through
 FURIGANA_DOUBT_LEFT = 'Left alone: a word of its furigana is still marked "？" for review'
+# On a note whose word array is to be generated again. Set by hand, or by split_compound_tag's
+# sweep on the notes that a compound newly listed to split has not reached; taken off by
+# extract_words once it has generated the note's array.
+REGENERATE_TAG = "sentence::regenerate"
 
 
 class EnAndJPSentence(TypedDict):

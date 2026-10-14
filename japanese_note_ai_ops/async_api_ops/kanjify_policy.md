@@ -1,6 +1,6 @@
 # Kanjification policy
 
-Policy version: 0.20
+Policy version: 0.21
 
 The one written policy for kanjifying a furigana sentence: which kana words are rewritten in
 kanji, with which kanji, and how the result is written. The kanjify_sentence op's prompt holds
@@ -82,7 +82,8 @@ together with SOURCE and SPELL.
   common as えん, so ゆかり stays kana. A common spelling that is also another word's (未だ,
   止める, 側, 家) is kept: the furigana says which, and Sudachi, given one word alone, only
   guesses. So is a spelling a KANJI or SPLIT rule names, in any of the words it spells (見たい,
-  為る, 此方, 彼奴, 序で; 其方 for そなた too, 如何 for いかん too).
+  為る, 此方, 彼奴, 序で; 其方 for そなた too, 如何 for いかん too), and 然れど for されど
+  (KANJI-13), though it is rarely used and Sudachi reads it しかれど.
 
 ## SPLIT: the words whose kanji follow the sense
 
@@ -320,7 +321,10 @@ needs a split asks (a policy question); it never splits on its own.
 - KANJI-13 Also: なに / なん 何 (なんか / なんて as 何か when it means "something": なんか食べたい),
   いや 否, ああ 嗚呼 (the exclamation), また 又, 遣る (やる as a verb of its own), 君, 時, 方, 序で,
   御蔭 (おかげ, also 御蔭様で), 済む, 彼奴 / 此奴 / 其奴, 出来る, 振り, 貴方 (あなた), 尻餅を突く,
-  余 (よ, "I"); おじ(さん) as 小父 / 叔父 / 伯父 by meaning, 小父 when neither the sentence nor
+  余 (よ, "I"); the conjunction されど ("but, even so") as 然れど, its 然 read さ
+  (`<k> 然[さ]れど</k>`, not 然[され]ど): the user's exception to SPELL-4, beside its fuller
+  form されども, which SPELL-4 itself keeps as 然れども; おじ(さん) as 小父 / 叔父 / 伯父 by
+  meaning, 小父 when neither the sentence nor
   its translation gives a sign of a relative ("uncle", "aunt" there is one); おば(さん) as an
   aunt is 叔母 in every use, and 小母 (an unrelated woman) also when the sentence gives no sign
   of a relative, as おじ; ばあ is 婆 in every compound

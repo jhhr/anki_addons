@@ -27,9 +27,16 @@ Into the interpreter the tests run on, which is also the one to run `python -m m
 and to point your editor at, since all of them read `anki` and `aqt` out of it:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -r japanese_note_ai_ops/requirements.txt
 python -m pip install --no-deps -r requirements-dev-nodeps.txt
 ```
+
+`japanese_note_ai_ops/requirements.txt` is that addon's runtime packages (rapidfuzz, SudachiPy,
+psutil, requests), which it vendors into `lib/` for Anki and its modules import at the top.
+The root suite imports those modules (`japanese_note_ai_ops/test_anki/conftest.py` is the
+first to) with no vendored `lib/` on the path, so an interpreter without them stops at
+collection on `No module named 'rapidfuzz'`. One that has them for some other reason hides
+this; the cloud hook below installs the same file.
 
 The second step is `pytest-anki2` on its own. Its metadata pins `pytest-qt~=4.4.0`, and
 its `anki-XXXX` extras pin anki/aqt to a line's first release, so installing it normally

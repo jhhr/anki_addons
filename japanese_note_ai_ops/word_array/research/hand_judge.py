@@ -33,6 +33,7 @@ import sys
 import threading
 import webbrowser
 from collections import Counter
+from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import NamedTuple, Optional
 from urllib.parse import urlparse
@@ -696,10 +697,18 @@ def main() -> int:
         found = nids.setdefault(corpora.html_stripping.strip_context_sentences(raw), [])
         found.extend(nid for nid in ids if nid not in found)
         raws.update((nid, raw) for nid in ids)
-    # Names come out as extract_words makes them: whole, from the collection's lexicon
+    # Names come out as extract_words makes them: whole, from the collection's lexicon; and so
+    # do the compounds the config lists to split, whose two words are there to be judged
     lexicon = corpora.export_name_lexicon()
+    generate = partial(corpora.generator.generate, split_compounds=corpora.split_compounds())
     session = Session(
-        sentences, lexicon, hand_labels.Path(args.labels), args.per_word, nids=nids, raws=raws
+        sentences,
+        lexicon,
+        hand_labels.Path(args.labels),
+        args.per_word,
+        nids=nids,
+        raws=raws,
+        generate=generate,
     )
     print(f"{len(sentences)} sentences, {len(session.labels)} labels in {args.labels}")
     if not nids:

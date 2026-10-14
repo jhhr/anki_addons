@@ -30,6 +30,9 @@ FIELDS = {
 }
 
 
+REGENERATE = "sentence::regenerate"
+
+
 class FakeNote:
     def __init__(self, fields, note_id=1, tags=()):
         self.id = note_id
@@ -39,8 +42,12 @@ class FakeNote:
     def note_type(self):
         return {"name": "Sentence"}
 
+    # A tag is matched without case, as anki.notes.Note matches it
     def has_tag(self, tag):
-        return tag in self.tags
+        return tag.lower() in (held.lower() for held in self.tags)
+
+    def remove_tag(self, tag):
+        self.tags = [held for held in self.tags if held.lower() != tag.lower()]
 
     def __contains__(self, field):
         return field in self.fields
@@ -91,6 +98,28 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         _changed, generate, _proper_nouns = run(note, {})
 
         self.assertEqual(generate.call_args.args[0], "本を読む。")
+
+    def test_the_compounds_the_config_lists_are_the_ones_the_generator_splits(self):
+        # The list is the user's, edited in Anki: the generator has none of its own, and an
+        # extraction and a regeneration both go by the config of the run
+        config = {"split_compound_words": ["毛羽立つ", "心地良い"]}
+        for overwrite, held in ((False, ""), (True, '[["本"]]')):
+            with self.subTest(overwrite=overwrite):
+                note = FakeNote({"sentence": "本を読む。", "words": held})
+
+                _changed, generate, _proper_nouns = run(
+                    note, {}, array=[["本"]], overwrite=overwrite, config=config
+                )
+
+                self.assertEqual(generate.call_args.args[2], {"毛羽立つ", "心地良い"})
+
+    def test_a_config_that_lists_no_compounds_splits_none(self):
+        # A meta.json older than the key, or a fixture's config: nothing is split by default
+        note = FakeNote({"sentence": "本を読む。", "words": ""})
+
+        _changed, generate, _proper_nouns = run(note, {})
+
+        self.assertEqual(generate.call_args.args[2], frozenset())
 
     def test_a_note_that_already_holds_an_array_is_skipped(self):
         note = FakeNote({"sentence": "本を読む。", "words": '[["本"]]'})
@@ -257,6 +286,180 @@ class RegenerateWordsTests(unittest.TestCase):
 
         self.assertFalse(changed)
         generate.assert_not_called()
+
+
+class RegenerateTagTests(unittest.TestCase):
+    """`sentence::regenerate` marks the notes whose array is still to be generated again, so it
+    comes off a note whose array has been, and stays on one the op left alone."""
+
+    def word(self, text, match_data=None):
+        return [text, "noun", text, "よみ", match_data if match_data is not None else [], []]
+
+    def test_the_name_is_the_one_the_user_tags_by(self):
+        # Hardcoded, in the add-on's docs, and in searches the user has saved
+        self.assertEqual(extract_words.REGENERATE_TAG, REGENERATE)
+
+    def test_a_regenerated_note_loses_the_tag(self):
+        held = [self.word("A", ["match"]), self.word("B")]
+        note = FakeNote(
+            {"sentence": "AC", "words": extract_words.format_word_array(held)},
+            tags=["subs2srs", REGENERATE],
+        )
+        updates: dict = {}
+
+        changed, _generate, _proper_nouns = run(
+            note, updates, array=[self.word("A"), self.word("C")], overwrite=True
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(note.tags, ["subs2srs"])
+        self.assertEqual(updates, {note.id: note})
+
+    def test_a_regeneration_that_changes_no_word_still_takes_the_tag_off_and_saves_the_note(self):
+        # A compound listed to split that has no two words to split into: its note comes out
+        # as it went in, and is done with all the same
+        held = [self.word("A", ["match"])]
+        text = extract_words.format_word_array(held)
+        note = FakeNote({"sentence": "A", "words": text}, tags=[REGENERATE])
+        updates: dict = {}
+
+        changed, _generate, _proper_nouns = run(note, updates, array=held, overwrite=True)
+
+        self.assertTrue(changed)
+        self.assertEqual(note.tags, [])
+        self.assertEqual(note["words"], text)
+        self.assertEqual(updates, {note.id: note})
+
+    def test_a_first_array_takes_the_tag_off_too(self):
+        note = FakeNote({"sentence": "本を読む。", "words": ""}, tags=[REGENERATE, "other"])
+
+        changed, _generate, _proper_nouns = run(note, {}, array=[["本"]])
+
+        self.assertTrue(changed)
+        self.assertEqual(note.tags, ["other"])
+
+    def test_the_tag_comes_off_whatever_its_case(self):
+        note = FakeNote({"sentence": "本を読む。", "words": ""}, tags=["Sentence::Regenerate"])
+
+        run(note, {}, array=[["本"]])
+
+        self.assertEqual(note.tags, [])
+
+    def test_a_note_the_op_left_alone_keeps_the_tag(self):
+        array = extract_words.format_word_array([self.word("A")])
+        broken = '[["本", "noun", "本", "ほん", [1378555077520], []]'
+        cases = {
+            "an array, and no overwrite": ({"sentence": "A", "words": array}, False),
+            "a broken array": ({"sentence": "本を読む。", "words": broken}, True),
+            "no sentence": ({"sentence": "", "words": array}, True),
+        }
+        for name, (fields, overwrite) in cases.items():
+            with self.subTest(case=name):
+                note = FakeNote(fields, tags=[REGENERATE])
+                updates: dict = {}
+
+                changed, _generate, _proper_nouns = run(
+                    note, updates, array=[self.word("A")], overwrite=overwrite
+                )
+
+                self.assertFalse(changed)
+                self.assertEqual(note.tags, [REGENERATE])
+                self.assertEqual(updates, {})
+
+    def test_a_note_whose_array_could_not_be_generated_or_merged_keeps_the_tag(self):
+        text = extract_words.format_word_array([self.word("A")])
+        failures = {
+            "the generator fails": mock.patch.object(
+                extract_words, "generate_word_array", side_effect=RuntimeError("no dictionary")
+            ),
+            "the merge fails": mock.patch.object(
+                extract_words.merge, "merge_arrays", side_effect=ValueError("no such span")
+            ),
+        }
+        for name, failure in failures.items():
+            with self.subTest(case=name):
+                note = FakeNote({"sentence": "A", "words": text}, tags=[REGENERATE])
+                updates: dict = {}
+                with (
+                    mock.patch.object(
+                        extract_words,
+                        "get_field_config",
+                        side_effect=lambda _config, key, _note_type: FIELDS[key],
+                    ),
+                    mock.patch.object(
+                        extract_words, "generate_word_array", return_value=[self.word("B")]
+                    ),
+                    mock.patch.object(extract_words, "add_proper_nouns", return_value=True),
+                    failure,
+                ):
+                    changed = extract_words.extract_words_in_note(
+                        {}, note, {}, updates, overwrite=True
+                    )
+
+                self.assertFalse(changed)
+                self.assertEqual(note.tags, [REGENERATE])
+                self.assertEqual((note["words"], updates), (text, {}))
+
+
+class SplitCompoundsConfigTests(unittest.TestCase):
+    """`split_compound_words` as the generator reads it off a config, which is typed by hand in
+    Anki's config editor."""
+
+    def listed(self, value):
+        return extract_words.generator.split_compounds_of({"split_compound_words": value})
+
+    def test_a_list_of_words_is_those_words(self):
+        self.assertEqual(self.listed(["毛羽立つ", "仲睦まじい"]), {"毛羽立つ", "仲睦まじい"})
+        self.assertEqual(self.listed([" 毛羽立つ ", "", "毛羽立つ"]), {"毛羽立つ"})
+
+    def test_words_typed_into_one_string_count_too(self):
+        self.assertEqual(self.listed("毛羽立つ"), {"毛羽立つ"})
+        for typed in ("毛羽立つ, 仲睦まじい", "毛羽立つ、仲睦まじい", "毛羽立つ　仲睦まじい"):
+            with self.subTest(typed=typed):
+                self.assertEqual(self.listed(typed), {"毛羽立つ", "仲睦まじい"})
+        self.assertEqual(
+            self.listed(["毛羽立つ,仲睦まじい", "心地良い"]), {"毛羽立つ", "仲睦まじい", "心地良い"}
+        )
+
+    def test_a_value_that_holds_no_words_lists_none(self):
+        for value in (None, [], "", 5, True, {"毛羽立つ": True}, [5, None, ["毛羽立つ"]]):
+            with self.subTest(value=value):
+                self.assertEqual(self.listed(value), frozenset())
+        self.assertEqual(extract_words.generator.split_compounds_of({}), frozenset())
+        # What is no word is left out, and the words beside it still count
+        self.assertEqual(self.listed(["毛羽立つ", 5, None]), {"毛羽立つ"})
+
+    def with_added(self, value, forms):
+        return extract_words.generator.split_compounds_with({"split_compound_words": value}, forms)
+
+    def test_adding_to_the_list_keeps_what_was_typed_and_appends_what_it_lacks(self):
+        # For the sync sweep (split_compound_tag), which writes the list without a person typing
+        self.assertEqual(self.with_added(["毛羽立つ"], ["心地良い"]), ["毛羽立つ", "心地良い"])
+        self.assertEqual(
+            self.with_added(["毛羽立つ"], ["心地良い", "毛羽立つ", "", "心地良い", "仲睦まじい"]),
+            ["毛羽立つ", "心地良い", "仲睦まじい"],
+        )
+        # Words typed into one string are found in it, and it stays as it was typed
+        self.assertEqual(
+            self.with_added("毛羽立つ, 仲睦まじい", ["仲睦まじい", "心地良い"]),
+            ["毛羽立つ, 仲睦まじい", "心地良い"],
+        )
+        self.assertEqual(
+            self.with_added([" 毛羽立つ ", 5], ["心地良い"]), [" 毛羽立つ ", 5, "心地良い"]
+        )
+
+    def test_adding_to_a_config_with_no_list_makes_one(self):
+        for value in (None, [], "", 5, {"毛羽立つ": True}):
+            with self.subTest(value=value):
+                self.assertEqual(self.with_added(value, ["毛羽立つ"]), ["毛羽立つ"])
+        with_added = extract_words.generator.split_compounds_with
+        self.assertEqual(with_added({}, ["毛羽立つ"]), ["毛羽立つ"])
+
+    def test_nothing_is_written_when_the_list_has_them_all(self):
+        self.assertIsNone(self.with_added(["毛羽立つ", "心地良い"], ["心地良い"]))
+        self.assertIsNone(self.with_added("毛羽立つ 心地良い", ["心地良い", "毛羽立つ"]))
+        self.assertIsNone(self.with_added(["毛羽立つ"], []))
+        self.assertIsNone(self.with_added([], [""]))
 
 
 class ExtractWordsPhasesTests(unittest.TestCase):

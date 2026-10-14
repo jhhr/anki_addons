@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..py_fsrs.fsrs import Scheduler, Card, State, Rating
 
 from typing import NamedTuple, TypedDict

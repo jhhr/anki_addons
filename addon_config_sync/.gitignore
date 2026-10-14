@@ -1,5 +1,7 @@
 #Anki
 meta.json
+# What each media copy last matched on this device (matched_copies.py)
+user_files/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

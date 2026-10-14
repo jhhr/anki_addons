@@ -303,6 +303,12 @@ definition calls it.
 definition to stages, rewrites format 1's references into the current syntax, fills in each
 one's derived `effects`, and bumps the config version.
 
+It saves the config only when it changed something in it. A config that is already up to date
+is left as it is, and so is an addon with no config stored yet, a new install's: saving there
+would write the defaults, and a config sync such as Addon Config Sync would send them over the
+definitions on your other devices. A new version number alone is not saved either, since an
+older CopyAnywhere on another device writes its own back each time it starts.
+
 It is all or nothing. If any definition cannot be converted -- one naming no copy mode, say,
 which format 1 could not have run either -- nothing is converted, the version stays where it
 was, and the reason is printed. The next start tries again. That is deliberate: saving the
