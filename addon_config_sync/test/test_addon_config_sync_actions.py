@@ -51,6 +51,22 @@ def test_a_sync_start_replaces_a_changed_configs_copy_by_removing_it_first(devic
     assert removed == [device.media_path(ADDON)]
 
 
+def test_the_dialogs_save_replaces_the_copy_by_removing_it_first(device, monkeypatch):
+    """As a sync start does. Written over in place, the copy stayed out of the next media
+    sync, which looks for changed files only when the folder's modification time changed."""
+    device.install(ADDON, {"config": {"speed": 1}})
+    device.sync_starts()
+    removed = []
+    remove = os.remove
+    monkeypatch.setattr(os, "remove", lambda path: (removed.append(path), remove(path))[1])
+
+    device.set_config(ADDON, speed=22)
+    assert device.calls(sync_actions.save_addon_to_media, ADDON)
+
+    assert device.media_copy(ADDON) == {"config": {"speed": 22}}
+    assert removed == [device.media_path(ADDON)]
+
+
 def test_a_sync_start_leaves_a_copy_that_only_orders_its_keys_differently(device):
     """Anki writes a meta.json's keys in whatever order it holds them."""
     device.install(ADDON, {"name": "An add-on", "config": {"speed": 1}})

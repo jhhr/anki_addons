@@ -97,9 +97,12 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   off its hook and lets the exception through, which stops the sync it was called from.
   `matched_copies` swallows what reading and writing its file can raise for that reason;
   what it then does not hold only means copying as before.
-- To make Anki upload a changed media file, `save_configs_on_sync` **removes the old file and
-  copies the new one**; overwriting in place is not enough. It runs before media sync
-  starts so that the upload happens in the same sync.
+- To make Anki upload a changed media file, `replace_media_copy` **removes the old file and
+  copies the new one**, for a sync start and for the dialog's Save alike. Anki looks for
+  changed media files only when the media folder's modification time has changed (rslib's
+  `ChangeTracker`), and writing over a file in place leaves that as it was: what the dialog's
+  Save wrote in place was uploaded only once something else changed the folder. A sync start
+  runs before media sync starts so that the upload happens in the same sync.
 - A difference is only real if the files differ byte-wise **and** as JSON with keys sorted
   (`json_files_deep_equal`). Anki rewrites `meta.json` with different key order; without
   the second check every sync would report changes.

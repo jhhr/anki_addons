@@ -172,6 +172,16 @@ def mark_sync_cycle(updated_addon_ids: list[str]) -> None:
         UPDATED_STATE[addon_id] = True
 
 
+def replace_media_copy(addon_meta_json: Path, media_meta_json: Path) -> None:
+    """Copy a meta.json over its media copy so that Anki uploads it: the old file removed and
+    a new one written. Anki looks for changed media files only when the media folder's
+    modification time has changed (rslib's ChangeTracker), and writing over a file in place
+    leaves that as it was."""
+    if media_meta_json.is_file():
+        os.remove(media_meta_json)
+    shutil.copy(addon_meta_json, media_meta_json)
+
+
 def save_addon_to_media(addon_id: str) -> bool:
     anki_addons_path, media_path = get_paths()
     addon_meta_json = anki_addons_path / addon_id / "meta.json"
@@ -181,7 +191,7 @@ def save_addon_to_media(addon_id: str) -> bool:
     # file that is no JSON object is never worth copying.
     if read_json_object(addon_meta_json) is None:
         return False
-    shutil.copy(addon_meta_json, media_meta_json)
+    replace_media_copy(addon_meta_json, media_meta_json)
     record_match(addon_id, addon_meta_json, media_meta_json)
     return True
 
@@ -264,15 +274,11 @@ def save_configs_on_sync(
             # If the destination media file doesn't exist, or the meta.json file has changed,
             # copy the meta.json file to the media folder
             saved_addon = False
-            if not media_meta_json.is_file():
-                shutil.copy(addon_meta_json, media_meta_json)
-                saved_addon = True
-            elif not filecmp.cmp(
-                addon_meta_json, media_meta_json, False
-            ) and not json_files_deep_equal(addon_meta_json, media_meta_json):
-                # To trigger Anki to sync the file, remove the old one and copy the new one
-                os.remove(media_meta_json)
-                shutil.copy(addon_meta_json, media_meta_json)
+            if not media_meta_json.is_file() or (
+                not filecmp.cmp(addon_meta_json, media_meta_json, False)
+                and not json_files_deep_equal(addon_meta_json, media_meta_json)
+            ):
+                replace_media_copy(addon_meta_json, media_meta_json)
                 saved_addon = True
 
             # Copied just now or the same already: the media copy is this config. What the
