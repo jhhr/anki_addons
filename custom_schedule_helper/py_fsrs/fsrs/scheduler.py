@@ -289,7 +289,7 @@ class Scheduler:
             card, current_datetime=review_datetime
         )
 
-        # Vendored fork: initialisation is hoisted out of the `match` below. ease/fsrs_ops.py
+        # Vendored fork: initialisation is hoisted out of the state branches below. ease/fsrs_ops.py
         # replays Anki revlogs and forces card.state from each revlog row, so the first review
         # of a card can arrive already in the Review or Relearning state. Upstream only seeds
         # stability/difficulty inside the Learning branch, which would leave them None and trip
@@ -303,14 +303,19 @@ class Scheduler:
         if card.state in (State.Learning, State.Relearning) and card.step is None:
             card.step = 0
 
-        match card.state:
-            case State.Learning:
+        # Vendored fork: if/elif chains where upstream has `match card.state:` and, inside
+        # it, `match rating:`. Python 3.9, which Anki ran before 25.07, cannot parse `match`,
+        # and this module is imported when the add-on loads. Each `if True:` stands where a
+        # `match` line was, so every branch keeps upstream's indentation and
+        # tools/sync_py_fsrs.sh can still apply upstream's changes inside them.
+        if True:
+            if card.state == State.Learning:
                 assert card.step is not None
 
                 # update the card's stability and difficulty
                 #
                 # Vendored fork: note there is deliberately no `initial value` branch here.
-                # Initialisation happens above, before the match, and then falls through to
+                # Initialisation happens above, before the branches, and then falls through to
                 # the update below -- so a card's very first review is seeded with
                 # D0/S0 for the rating and then immediately advanced by _next_difficulty /
                 # _next_stability. Upstream instead makes initialisation exclusive (elif).
@@ -353,12 +358,12 @@ class Scheduler:
                     next_interval = timedelta(days=next_interval_days)
 
                 else:
-                    match rating:
-                        case Rating.Again:
+                    if True:
+                        if rating == Rating.Again:
                             card.step = 0
                             next_interval = self.learning_steps[card.step]
 
-                        case Rating.Hard:
+                        elif rating == Rating.Hard:
                             # card step stays the same
 
                             if card.step == 0 and len(self.learning_steps) == 1:
@@ -370,7 +375,7 @@ class Scheduler:
                             else:
                                 next_interval = self.learning_steps[card.step]
 
-                        case Rating.Good:
+                        elif rating == Rating.Good:
                             if card.step + 1 == len(
                                 self.learning_steps
                             ):  # the last step
@@ -386,7 +391,7 @@ class Scheduler:
                                 card.step += 1
                                 next_interval = self.learning_steps[card.step]
 
-                        case Rating.Easy:
+                        elif rating == Rating.Easy:
                             card.state = State.Review
                             card.step = None
 
@@ -395,10 +400,10 @@ class Scheduler:
                             )
                             next_interval = timedelta(days=next_interval_days)
 
-                        case _:
+                        else:
                             raise ValueError(f"Unknown rating: {rating}")
 
-            case State.Review:
+            elif card.state == State.Review:
                 assert card.stability is not None
                 assert card.difficulty is not None
 
@@ -422,8 +427,8 @@ class Scheduler:
                 )
 
                 # calculate the card's next interval
-                match rating:
-                    case Rating.Again:
+                if True:
+                    if rating == Rating.Again:
                         # if there are no relearning steps (they were left blank)
                         if len(self.relearning_steps) == 0:
                             next_interval_days = self._next_interval(
@@ -437,16 +442,16 @@ class Scheduler:
 
                             next_interval = self.relearning_steps[card.step]
 
-                    case Rating.Hard | Rating.Good | Rating.Easy:
+                    elif rating in (Rating.Hard, Rating.Good, Rating.Easy):
                         next_interval_days = self._next_interval(
                             stability=card.stability
                         )
                         next_interval = timedelta(days=next_interval_days)
 
-                    case _:
+                    else:
                         raise ValueError(f"Unknown rating: {rating}")
 
-            case State.Relearning:
+            elif card.state == State.Relearning:
                 assert card.stability is not None
                 assert card.difficulty is not None
                 assert card.step is not None
@@ -489,12 +494,12 @@ class Scheduler:
                     next_interval = timedelta(days=next_interval_days)
 
                 else:
-                    match rating:
-                        case Rating.Again:
+                    if True:
+                        if rating == Rating.Again:
                             card.step = 0
                             next_interval = self.relearning_steps[card.step]
 
-                        case Rating.Hard:
+                        elif rating == Rating.Hard:
                             # card step stays the same
 
                             if card.step == 0 and len(self.relearning_steps) == 1:
@@ -506,7 +511,7 @@ class Scheduler:
                             else:
                                 next_interval = self.relearning_steps[card.step]
 
-                        case Rating.Good:
+                        elif rating == Rating.Good:
                             if card.step + 1 == len(
                                 self.relearning_steps
                             ):  # the last step
@@ -522,7 +527,7 @@ class Scheduler:
                                 card.step += 1
                                 next_interval = self.relearning_steps[card.step]
 
-                        case Rating.Easy:
+                        elif rating == Rating.Easy:
                             card.state = State.Review
                             card.step = None
 
@@ -531,10 +536,10 @@ class Scheduler:
                             )
                             next_interval = timedelta(days=next_interval_days)
 
-                        case _:
+                        else:
                             raise ValueError(f"Unknown rating: {rating}")
 
-            case _:
+            else:
                 raise ValueError(f"Unknown card state: {card.state}")
 
         if self.enable_fuzzing and card.state == State.Review:
