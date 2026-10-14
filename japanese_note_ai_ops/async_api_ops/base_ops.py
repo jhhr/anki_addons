@@ -3034,6 +3034,45 @@ def _insert_deck_id(col: Collection, config: dict, note: Note) -> Optional[DeckI
     return insert_deck_id
 
 
+@contextmanager
+def placeholder_kept(config: dict, note: Note) -> Iterator[None]:
+    """Around one `col.add_note`: the note comes out holding the placeholder it went in with.
+
+    A new note's placeholder id is how the word arrays link it until the resolving has swapped
+    it for the note's own id, and the note's `new_note_id_field` (the match op's) is the only
+    record of which placeholder that is. `col.add_note` first runs every addon's
+    note_will_be_added hook on the note, and a hook can write that field: a CopyAnywhere
+    definition filling it with the note's id wrote "0", the id of a note not added yet. The
+    resolving, which reads the placeholder back off the note, took that for a note with nothing
+    to resolve, and every array linking the note kept its placeholder until the next match run
+    found no note holding it and asked about the word again. The capture's records of the add
+    read the same field.
+
+    Only the note in memory gets it back. The collection holds what the hook wrote until the
+    resolving saves the note with its own id in the field, which is where it leaves every
+    added note. A field holding no placeholder when the add starts is the hook's to write.
+    """
+    note_type = note.note_type()
+    model_config = config.get(note_type["name"]) if note_type else None
+    field = model_config.get("new_note_id_field") if isinstance(model_config, dict) else None
+    # A placeholder as the resolving tells one (update_fake_note_ids)
+    if not field or field not in note or not note[field].startswith("-"):
+        yield
+        return
+    placeholder = note[field]
+    try:
+        yield
+    finally:
+        # After a failed add too: its placeholder stays in the arrays, and names it in the
+        # capture
+        if note[field] != placeholder:
+            logger.debug(
+                f"An add hook wrote {note[field]!r} into {field} of a new note: its placeholder"
+                f" {placeholder} is put back for the resolving"
+            )
+            note[field] = placeholder
+
+
 def add_new_notes(
     col: Collection,
     notes_to_add: Sequence[Note],
@@ -3056,7 +3095,8 @@ def add_new_notes(
     and before each note; never inside one `add_note`, whose hooks run to the end. Once it is
     seen the rest is not added, and the notes are split three ways:
 
-    - added: `new_notes_op` resolves their placeholder ids, as in a finished run;
+    - added: `new_notes_op` resolves their placeholder ids, as in a finished run, each read
+      off its note, which holds it whatever the add's hooks wrote (`placeholder_kept`);
     - failed (attempted and raised, or no note type or deck): handed to neither op, so their
       placeholders stay in the arrays, a hint for debugging that lasts only until the next
       match run resets them (match_targets.resolve_placeholder_ids);
@@ -3161,7 +3201,8 @@ def add_new_notes(
                         add_started = time.perf_counter()
                         try:
                             logger.debug(f"Adding note {index} to deck {insert_deck_id}")
-                            col.add_note(note, insert_deck_id)
+                            with placeholder_kept(config, note):
+                                col.add_note(note, insert_deck_id)
                         except Exception as e:
                             logger.error(f"Error adding note {index}: {e}")
                             print_error_traceback(e, logger)
@@ -3240,7 +3281,9 @@ def add_new_notes(
             # exist must not be left linked to them. Nothing the op rewrote in memory is
             # saved: the arrays and the added notes' id fields keep the placeholders, and the
             # next match run over those sentences resolves each as a placeholder one note
-            # holds. Still a failed op, as it always was: the user has to see it.
+            # holds (or, where an add hook wrote the id field, as one no note holds: the word
+            # is matched again, placeholder_kept). Still a failed op, as it always was: the
+            # user has to see it.
             logger.error(f"Error resolving the new notes' ids: {e}")
             print_error_traceback(e, logger)
             resolving_error = e

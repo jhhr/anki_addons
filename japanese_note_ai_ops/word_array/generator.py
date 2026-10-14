@@ -154,7 +154,7 @@ def tokenize(natural: str) -> list[Morph]:
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
-    return _sou_naru(_split_number_counters(out))
+    return _sou_naru(_auxiliary_verbs(_split_number_counters(out)))
 
 
 def sudachi_morphemes(text: str) -> list:
@@ -208,6 +208,24 @@ def _sou_naru(morphs: list[Morph]) -> list[Morph]:
             verb = ("動詞", "非自立可能", "*", "*", "五段-ラ行", NARU_FORMS[b.surface])
             out[k + 1] = replace(b, pos=verb, lemma="なる", norm="成る")
     return out
+
+
+# Verbs Sudachi calls a 助動詞
+AUXILIARY_VERBS = {"やがる"}
+
+
+def _auxiliary_verbs(morphs: list[Morph]) -> list[Morph]:
+    """やがる is a 助動詞 to Sudachi like ます and た, so it went into the inflection of the verb
+    before it and was a word nowhere: 言いやがって came out as 言う. It is a verb (JMdict's v5r,
+    from 上がる) standing where しまう and おく do, so it is read as Sudachi reads those, a
+    非自立可能 verb: a word of its own after a て-form (出してやがる), and the second verb of a
+    compound after a verb stem (`_auxiliary_verb_candidates`)."""
+    return [
+        replace(m, pos=("動詞", "非自立可能") + m.pos[2:])
+        if m.pos[0] == "助動詞" and m.lemma in AUXILIARY_VERBS
+        else m
+        for m in morphs
+    ]
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
@@ -443,6 +461,51 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
+# --- 2d. adjectives from a verb's negation -------------------------------------------------
+
+# Adjectives Sudachi doesn't have and reads as a verb and its negation, by their reading: 下らない
+# "worthless" is no 下る, 詰まらない no 詰まる, and 思い掛ける and 居た堪れる are no verbs at all.
+# Hand-kept, as JMdict can't tell them from a plain negation: it lists 知らない and 足りない as
+# adjectives too. 済まない and いけない are left out, being as often the verb (只じゃ済まない,
+# 学校に行けない).
+LEXICAL_NEGATIVES = {"くだらない", "つまらない", "たまらない", "おもいがけない", "いたたまれない"}
+NEGATION_AUX = ("助動詞-ナイ", "助動詞-ヌ")
+
+
+def _lexical_negative(tm: TextMap, verb: Morph, neg: Morph) -> bool:
+    """Whether a verb and the negation after it are one of LEXICAL_NEGATIVES as JMdict has it.
+    Kanji the note writes must be the adjective's: 貯まらない is no 堪らない."""
+    if (
+        verb.pos[0] != "動詞"
+        or neg.pos[0] != "助動詞"
+        or len(neg.pos) < 6
+        or not neg.pos[4].startswith(NEGATION_AUX)
+        or neg.start != verb.end
+    ):
+        return False
+    reading = _furigana_reading(tm, verb.start, verb.end, [verb]) + "ない"
+    written = tm.written_form(verb.start, verb.end) + "ない"
+    return reading in LEXICAL_NEGATIVES and any(
+        reading in rebs and "adj-i" in ps and (written in kebs or not KANJI_RE.search(written))
+        for kebs, rebs, ps in jmdict.lookup(reading)
+    )
+
+
+def negative_adjectives(tm: TextMap, morphs: list[Morph]) -> list[Morph]:
+    """A verb before its negation as the stem of the adjective the two are, when that is one of
+    LEXICAL_NEGATIVES: くだら|ねー, 下ら|ぬ and くだら|なかっ|た are 下らない, which came out as
+    下る. The negation stays a morph of its own and attaches as it did to the verb, so the word
+    is still an inflected one whose dictionary form is its lemma, not what JMdict has for the
+    form as written (詰まらん)."""
+    out = list(morphs)
+    for k, (m, nxt) in enumerate(zip(morphs, morphs[1:])):
+        if _lexical_negative(tm, m, nxt):
+            lemma = m.surface + "ない"
+            pos = ("形容詞", "一般", "*", "*", "形容詞", m.pos[5])
+            out[k] = replace(m, pos=pos, lemma=lemma, norm=lemma, subs=[])
+    return out
+
+
 def reread_cut_groups(tm: TextMap) -> tuple[TextMap, list[Morph]]:
     """A furigana group goes to the tokenizer as its kanji, or inside <k> as its reading, and
     the tokenizer can cut either wrong; a group it cuts goes in the other way when that reads
@@ -567,6 +630,7 @@ def build_name_lexicon(sentences: Iterable[str]) -> dict:
 INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
+TE_IRU_CONTRACTIONS = {"てる", "でる"}  # 助動詞 to Sudachi, a て-form in their 連用形 (言ってた)
 # Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
 SEPARATE_AUX = {"らしい", "べし", "まい", "如し"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
@@ -850,7 +914,33 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
                         spellings=tuple(k for ks, _, _ in hits for k in ks),
                     )
                 )
-    return cands + _stem_suffix_candidates(tm, words, cands)
+    return (
+        cands
+        + _stem_suffix_candidates(tm, words, cands)
+        + _auxiliary_verb_candidates(tm, words)
+    )
+
+
+def _auxiliary_verb_candidates(tm: TextMap, words: list[Word]) -> list[Candidate]:
+    """A verb's 連用形 and the やがる after it as one compound verb made of the two, as JMdict
+    has 言い出す of 言う and 出す: 言いやがって is 言いやがる. JMdict has no such verb, only the
+    expression 言いやがって, which this comes before as its dictionary form. A match that ends on
+    the verb and is longer keeps it, やがる a word after it (手玉に取る + やがった). After a
+    て-form it is no compound, nor where Sudachi reads that て as the 連用形 of てる
+    (言ってやがんだ)."""
+    out = []
+    for i, (a, b) in enumerate(zip(words, words[1:])):
+        last = a.morphs[-1]
+        if (
+            b.head.lemma in AUXILIARY_VERBS
+            and a.head.pos[0] == "動詞"
+            and len(last.pos) > 5
+            and last.pos[5].startswith("連用形")
+            and last.lemma not in TE_IRU_CONTRACTIONS
+        ):
+            form = tm.written_form(a.start, a.end) + dict_form(tm, b)
+            out.append(Candidate(i, i + 2, form, (), frozenset({"v5r"}), False, form, ()))
+    return out
 
 
 def _stem_suffix_candidates(
@@ -1444,6 +1534,11 @@ def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str
         fits = usual or [k for k in usable if k != form]
     else:
         fits = [k for k in usable if _kanjifies(form, k)]
+    if kana in LEXICAL_NEGATIVES:
+        # The kanjify policy's spelling (KANJI-12): the verb's kanji and okurigana before a kana
+        # ない, where JMdict's first is 詰らない and its fullest the search-only 思い掛け無い
+        negated = [k for k in fits if k.endswith("ない")]
+        return sorted(negated, key=lambda k: (-len(_kanji_set(k)), -len(k)))[:1]
     widest = _widest_kanji_sets(fits)
     rare = [k for k in fits if "rK" in info.get(k, ())]
     if len(widest) > 1 and len(rare) < len(fits):
@@ -1956,7 +2051,8 @@ def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)
-    words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
+    morphs = merge_noun_verbs(negative_adjectives(tm, morphs))
+    words = merge_cut_groups(tm, to_words(morphs))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun

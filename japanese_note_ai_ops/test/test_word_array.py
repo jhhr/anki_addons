@@ -350,6 +350,63 @@ class WordArrayTests(unittest.TestCase):
                 word = find_word(self.generator.generate(sentence), form)
                 self.assertEqual((word[0], word[1]), (raw, "auxiliary"))
 
+    def test_yagaru_is_a_verb_and_makes_a_compound_with_the_stem_before_it(self):
+        # A 助動詞 to Sudachi, so it was part of the verb before it: 言う, and やがる no word
+        arr = self.generator.generate("<k> 下[くだ]らねー 事[こと]</k> 言[い]いやがって")
+        word = find_word(arr, "言いやがる")
+        self.assertEqual(word[:4], [" 言[い]いやがって", "verb", "言いやがる", "いいやがる"])
+        self.assertEqual(
+            [s[:4] for s in word[5]],
+            [[" 言[い]い", "verb", "言う", "いう"], ["やがって", "verb", "やがる", "やがる"]],
+        )
+        # The stem keeps its own sub-words, and やがる its form under kanji JMdict doesn't have
+        arr = self.generator.generate("もう 寝返[ねがえ]り<k> 遣[や]がった</k>。")
+        word = find_word(arr, "寝返りやがる")
+        self.assertEqual([s[2] for s in word[5] if len(s) > 1], ["寝返る", "やがる"])
+        self.assertEqual([s[2] for s in find_word(arr, "寝返る")[5]], ["寝る", "返る"])
+        # After a て-form it is a word of its own, also where Sudachi reads the て as てる's
+        for sentence, raw, verb_raw in [
+            ("随分[ずいぶん] 熟[こな]れてやがるな。", "やがる", " 熟[こな]れて"),
+            ("何[なに]を 言[い]ってやがんだ", "やが", " 言[い]って"),
+        ]:
+            with self.subTest(sentence=sentence):
+                top = [e[:3] for e in self.generator.generate(sentence) if len(e) > 1]
+                self.assertIn([raw, "verb", "やがる"], top)
+                self.assertIn(verb_raw, [e[0] for e in top])
+        # A longer match ending on the verb keeps it
+        arr = self.generator.generate(" 手玉[てだま]に 取[と]りやがった")
+        self.assertEqual(
+            [e[:3] for e in arr if len(e) > 1],
+            [
+                [" 手玉[てだま]に 取[と]り", "expression", "手玉に取る"],
+                ["やがった", "verb", "やがる"],
+            ],
+        )
+
+    def test_a_lexical_negative_adjective_is_not_its_verb(self):
+        # Sudachi has no 下らない: くだら + ねー was the verb 下る, in every form of the negation
+        for sentence, raw, form, reading in [
+            ("<k> 下[くだ]らねー 事[こと]</k> 言[い]う", " 下[くだ]らねー", "下らない", "くだらない"),
+            ("くだらなかった", "くだらなかった", "下らない", "くだらない"),
+            ("<k> 下[くだ]らぬ</k> 思念[しねん]", " 下[くだ]らぬ", "下らない", "くだらない"),
+            # JMdict's first spelling is 詰らない, and 詰まらん is an expression of its own there
+            ("<k> 詰[つま]らん</k>。", " 詰[つま]らん", "詰まらない", "つまらない"),
+            ("<k> 堪[たま]らなかった</k>。", " 堪[たま]らなかった", "堪らない", "たまらない"),
+            # 思い掛ける is no verb at all: its sub-words were 思う and がける
+            (" 思[おも]いがけない 事[こと]", " 思[おも]いがけない", "思い掛けない", "おもいがけない"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word, [raw, "adjective", form, reading, [], []])
+        # A plain negation stays the verb, and so does one written with another word's kanji
+        for sentence, form in [
+            (" 知[し]らない 人[ひと]", "知る"),
+            (" 金[かね]が 貯[た]まらない", "貯まる"),
+            (" 只[ただ]じゃ<k> 済[す]まない</k>", "済む"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "verb")
+
     def test_conjunction_and_pronoun_okurigana_is_no_sub_word(self):
         for sentence, form in [
             ("但[ただ]し、 注意[ちゅうい]", "但し"),

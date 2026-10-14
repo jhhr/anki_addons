@@ -273,6 +273,10 @@ def update_fake_note_ids(
     A new note is a vocab note; the arrays pointing at it are its sentence type's
     (_array_links), the same type in the one-type layout.
 
+    The field is also the only record of which placeholder a note replaces, and it is read
+    here, after the add. An add hook of another addon can write it in between;
+    `base_ops.placeholder_kept` is what hands the note over holding its placeholder regardless.
+
     paran: new_notes (Sequence[Note]): The notes added, each with its id. A note whose add
         failed is never given here (add_new_notes), so its placeholder stays where it is.
     paran: config (dict): The addon configuration.

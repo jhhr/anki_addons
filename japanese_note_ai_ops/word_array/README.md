@@ -64,6 +64,8 @@ reads it: every search over the array field names the sentence type.
 3. **Grouping** morphemes into words: a verb or adjective plus its inflection chain (助動詞,
    て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words, and so
    do the modal 助動詞 らしい, べき and まい (捌いとる + らしい, 帰る + べき); たい stays in the chain.
+   やがる, a 助動詞 to Sudachi, is read as the verb it is, so it stays out of the chain too:
+   出して + やがる (see Structure for やがる after a verb stem).
 4. **Furigana groups are never split between top-level words**, which repairs tokenizer cuts
    like 八紘|一宇 and 業|者.
 5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,
@@ -80,6 +82,14 @@ reads it: every search over the array field names the sentence type.
    An adjective's く- and な-forms are the adjective (大きく, <k>良く</k> as a 副詞, 大きな as a
    連体詞, 多く and 近く as nouns with a kanji), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
    lists 大きく and 早く as adverbs too, so it can't tell them apart.
+   A verb and its negation are the adjective JMdict has for the two when it is one of
+   `LEXICAL_NEGATIVES` (下らない, 詰まらない, 堪らない, 思い掛けない, 居た堪れない), in whatever form the
+   negation takes (くだらねー, 詰まらん, 下らぬ): Sudachi has none of them and read 下る and 詰まる.
+   Hand-kept for the same reason, JMdict listing 知らない and 足りない as adjectives too. Kanji the
+   note writes must be the adjective's (貯まらない stays 貯まる), and its one spelling is the kanjify
+   policy's (KANJI-12), the verb's okurigana before a kana ない: 詰まらない, not JMdict's first,
+   詰らない. 済まない and いけない stay the verb, being as often its plain negation (只じゃ済まない,
+   学校に行けない). Export: 22 words (詰まらない 10, 下らない 6, 思い掛けない 3, 堪らない 2, 居た堪れない 1).
    A word Sudachi calls a suffix that JMdict has with its reading only as a word of its own is
    labelled as JMdict has it: 家[うち] after 一日中 a noun, 等[など] a particle, 沿い a verb. Inside
    a compound only the verb stems are relabelled; 官 of 警察官 stays a suffix, though JMdict's 官
@@ -186,6 +196,13 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.
+
+A verb stem with やがる after it is one compound verb made of the two, though JMdict has none of
+them as a verb: 言いやがって is 言いやがる = 言う + やがる, as 言い出す is 言う + 出す, and so are
+寝返りやがった and 飼われやがって. JMdict's one such entry, the expression 言いやがって, gives way to
+it as an inflected expression does to its dictionary form. A longer match ending on the verb keeps
+it (手玉に取る + やがった), and after a て-form やがる is a word of its own (熟れて + やがる). Export:
+12 やがる, all part of the verb before them until then; 7 compound verbs, 5 words of their own.
 
 A furigana group cut by the tokenizer is one word when JMdict has the whole read that way
 (八紘一宇, 業者; its sub-words then follow the rules above); otherwise its pieces are the words

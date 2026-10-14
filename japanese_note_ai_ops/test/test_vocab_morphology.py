@@ -104,14 +104,22 @@ class TestFamiliesOfADamagedReading(unittest.TestCase):
         self.assertEqual(m.family("幾つか", "いくつ か", "幾つか", "いくつか"), m.WHITESPACE)
 
     def test_full_width_against_half_width(self):
-        self.assertEqual(m.family("ＩＴ", "あいてぃー", "IT", "it"), m.WIDTH)
+        # The note's reading is the damaged side. The other way round the element's own Latin
+        # text sits in its reading slot, which is no reading to compare the note's with.
+        self.assertEqual(m.family("ＩＴ", "it", "IT", "あいてぃー"), m.WIDTH)
+        self.assertEqual(m.family("ＩＴ", "あいてぃー", "IT", "it"), m.NOT_A_QUESTION)
 
 
 class TestNoFamily(unittest.TestCase):
-    def test_a_link_that_already_agrees_has_no_family(self):
+    def test_a_link_that_already_agrees_is_not_a_question(self):
         # Stripping spaces from two equal readings trivially matches, which once made this
         # look like stray whitespace and would have driven a repair of nothing.
-        self.assertIsNone(m.family("此れ", "これ", "此れ", "これ"))
+        self.assertEqual(m.family("此れ", "これ", "此れ", "これ"), m.NOT_A_QUESTION)
+
+    def test_the_same_reading_under_another_spelling_has_none(self):
+        # Not NOT_A_QUESTION: vocab_unlink holds that back before asking who owns the word
+        self.assertIsNone(m.family("良く", "よく", "浴", "よく"))
+        self.assertIsNone(m.family("つける", "つける", "付ける", "つける"))
 
     def test_two_unrelated_words_have_none(self):
         self.assertIsNone(m.family("犬", "いぬ", "猫", "ねこ"))

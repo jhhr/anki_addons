@@ -77,6 +77,23 @@ def test_not_a_question_is_not_none():
     assert m.family("DVD", "でぃーぶいでぃー", "DVD", "DVD", 0) is not None
 
 
+@pytest.mark.parametrize(
+    "note_form, link_form, reading",
+    [("良く", "浴", "よく"), ("つける", "付ける", "つける"), ("どうぞ", "如何ぞ", "どうぞ")],
+)
+def test_the_same_reading_under_another_spelling_is_not_waved_through(
+    note_form, link_form, reading
+):
+    """A link that reads like the note and spells otherwise is another word, or another spelling.
+
+    The first gate asked about the readings alone, and `vocab_unlink` holds a `NOT_A_QUESTION`
+    back before it asks whether another note owns the word: 付ける[つける] stayed linked to the
+    note つける beside a note 付ける. The addon's own suite (`test/test_vocab_unlink.py`) failed
+    on it from the day the gate went in; it is not part of the root run, so nothing showed.
+    """
+    assert m.family(note_form, reading, link_form, reading) is None
+
+
 # --- pairs that must keep their family ----------------------------------------------------
 
 

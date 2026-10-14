@@ -613,6 +613,14 @@ class TestARealEditor:
         dialog.editor.note = None
         aqt.dialogs.markClosed("AddCards")
         dialog.close()
+        # close() only asks: the dialog has its page save first and closes in the callback.
+        # Left at that, the profile unloaded before the callback and the dialog stayed open
+        # ("Window should have been closed"), its page alive in the next test's Anki, where
+        # its requests to a server that was gone ended in an alert() nothing could dismiss.
+        anki_session.qtbot.waitUntil(
+            lambda: note_hooks.editor_for_note_id[EditorMode.ADD_CARDS] is None,
+            timeout=WAIT,
+        )
 
     def test_closing_a_real_add_cards_dialog_drops_its_editor_from_the_registry(
         self, anki_session, real_mw, monkeypatch

@@ -99,9 +99,16 @@ def media_file_path(filename: str) -> Path:
 def media_file_exists(filename: str) -> bool:
     path = media_file_path(filename)
     try:
-        return path.exists()
+        # Not `path.exists()`: it answers False for a name Windows refuses (WinError 123, a
+        # name over 255 characters), as it does for a missing file. A read then took such a
+        # file for missing, and a write that checks for the file went on to fail at commit,
+        # after the note changes were kept.
+        path.stat()
+    except FileNotFoundError:
+        return False
     except OSError as error:
         raise _unusable(path.name, error) from error
+    return True
 
 
 def read_media_file(filename: str) -> Optional[str]:
