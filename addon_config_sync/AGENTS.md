@@ -51,7 +51,7 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   A first version went by the first of the four alone. Run beside the old code over the
   same histories, it left a second device worse off than before in each case the other
   three now exclude. Before widening what is left alone, do that again
-  (`test/conftest.py` has the pieces) and look at what the *other* device ends up with.
+  (`test/old_against_new.py`) and look at what the *other* device ends up with.
   `save_configs_on_sync` and the conflict rule are untouched: what is sent and when, and a
   downloaded copy winning over a change that was not sent yet.
 - **What a sync start sends is not vetted, and that is not new.** `save_configs_on_sync`
@@ -104,6 +104,12 @@ Both directories are in the root `testpaths`.
 - `test_anki/` runs the addon's own `__init__.py`, which nothing else imports, in a running
   Anki, and has Anki's add-on manager write the `meta.json` files `is_change_made_here` is
   written against: an install, an update, an add-on switched off and on.
+- `test/old_against_new.py` is not collected with the suite; run it by its path, with `-s`,
+  when the read step is to change. It runs the handlers from before matches were kept
+  beside today's over random histories of two devices, and fails on a sync start that
+  sends something else, an ask-mode read that lists something else, a copy the old code
+  would not have made, and a config left alone that was not this device's own change. Its
+  docstring says how to make it longer and how to see each check fail.
 
 The state file is beside the addon's code, so in a checkout that Anki is installed from it
 is that Anki's. Both conftests point it into the test's directory; a new test directory
