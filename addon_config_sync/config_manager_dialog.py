@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aqt import mw
+from aqt.addons import ANKIWEB_ID_RE, DownloadLogEntry, download_addons, show_log_to_user
 from aqt.qt import (
     Qt,
     QApplication,
@@ -680,6 +681,9 @@ class AddonConfigManagerDialog(QDialog):
         self.run_action_for_addons(addon_ids, action)
 
     def run_action_for_addons(self, addon_ids: list[str], action: str) -> None:
+        if action == "install":
+            self.install_addons(addon_ids)
+            return
         success = 0
         for addon_id in addon_ids:
             row = next((item for item in self.rows if item.addon_id == addon_id), None)
@@ -697,9 +701,6 @@ class AddonConfigManagerDialog(QDialog):
                     success += 1
             elif action == "remove_media":
                 if remove_addon_from_media(addon_id):
-                    success += 1
-            elif action == "install":
-                if (not row.installed) and self.install_addon(addon_id):
                     success += 1
 
         self.refresh_rows()
@@ -719,21 +720,34 @@ class AddonConfigManagerDialog(QDialog):
         write_main_config(self.config)
         self.refresh_rows()
 
-    def install_addon(self, addon_id: str) -> bool:
-        for method_name in ("installAddon", "install_addon", "downloadAndInstall"):
-            method = getattr(mw.addonManager, method_name, None)
-            if callable(method):
-                try:
-                    method(addon_id)
-                    return True
-                except Exception:
-                    continue
+    def install_addons(self, addon_ids: list[str]) -> None:
+        """Download from AnkiWeb, as Anki's Get Add-ons does, those of these add-ons that are
+        not installed here. The folder of an add-on from AnkiWeb is named by its AnkiWeb id;
+        one in a folder of any other name was installed from a file, which nothing here has.
+        Anki installs in the background and says when it is done, and the add-on runs once
+        Anki is restarted. Its config comes at the next sync, as for any new install, or
+        with Overwrite from local media before that."""
+        missing = [
+            row.addon_id for row in self.rows if row.addon_id in addon_ids and not row.installed
+        ]
+        from_ankiweb = [addon_id for addon_id in missing if ANKIWEB_ID_RE.match(addon_id)]
+        elsewhere = [addon_id for addon_id in missing if addon_id not in from_ankiweb]
+        if elsewhere:
+            showInfo(
+                "Not from AnkiWeb, so not installed from here: "
+                + ", ".join(elsewhere)
+                + ".\n\nInstall these the way they were installed on the device that has them.",
+                title="Install Addon",
+            )
+        if not from_ankiweb:
+            return
 
-        showInfo(
-            f"Could not auto-install addon {addon_id}.\n\nUse Tools -> Add-ons -> Get Add-ons...",
-            title="Install Addon",
-        )
-        return False
+        def after_downloading(log: list[DownloadLogEntry]) -> None:
+            self.refresh_rows()
+            show_log_to_user(self, log)
+
+        ids = [int(addon_id) for addon_id in from_ankiweb]
+        download_addons(self, mw.addonManager, ids, after_downloading)
 
     def show_diff_dialog(self, row: AddonRow) -> None:
         if not row.addon_meta_path.is_file() or not row.media_meta_path.is_file():

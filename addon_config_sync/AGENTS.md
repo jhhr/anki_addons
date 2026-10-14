@@ -14,7 +14,7 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
 | `__init__.py` | Tools action; `sync_will_start` → `sync_on_save`, `media_sync_did_start_or_stop` → `read_on_sync`. Hooks are always registered and read config when they fire, so a config edit needs no restart |
 | `sync_actions.py` | the file operations: `save_addon_to_media`, `overwrite_addon_from_media`, `remove_addon_from_media`, `save_configs_on_sync`, `read_configs_on_sync`; `send_settings`, `read_settings` and `same_settings`, which leave out what Anki records about the installed package (`INSTALL_KEYS`); and `is_change_made_here`, which says what a media sync stopping leaves alone; module state `UPDATED_STATE`, `OVERWRITTEN_THIS_SESSION`, `SUPPRESS_AUTO_SYNC_ACTIONS`, `SUPPRESS_SYNC_FINISH_CALLBACKS` |
 | `matched_copies.py` | per profile folder, the sha256 of each media copy as of the last time it and its add-on's `meta.json` were the same; state in `user_files/matched_copies.json`, never synced. Stdlib only |
-| `config_manager_dialog.py` | the manager dialog (about 850 lines): rows, status, diff view, filters, sorting, bulk actions, "Sync media only now" |
+| `config_manager_dialog.py` | the manager dialog (about 850 lines): rows, status, diff view, filters, sorting, bulk actions, installing a missing add-on from AnkiWeb through Anki's own `download_addons`, "Sync media only now" |
 | `utils.py` | `meta.json` readers, `json_files_deep_equal` (kept for `test/old_against_new.py`'s old handlers), `show_non_blocking_info`, `standard_icon`, this addon's own config access (`get_main_config`, `write_main_config`, ignore flags) |
 
 ## Invariants
@@ -198,7 +198,7 @@ must do the same before anything can call a handler.
 
 The dialog is tested only for the status its rows show and its diff
 (`test_real_anki_install_record.py`), which also runs the summary and ask modes' branches
-in `__init__.py` once each.
+in `__init__.py` once each, and for its Install button (`test_real_anki_install_button.py`).
 
 ## Shared code
 

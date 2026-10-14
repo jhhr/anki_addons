@@ -24,7 +24,7 @@ Each row supports:
 - Save to local media (addon → media)
 - Overwrite from local media (media → addon)
 - Remove from local media
-- Install add-on (when not installed)
+- Install add-on (when not installed): downloads it from AnkiWeb, as Tools → Add-ons → Get Add-ons does, and needs an Anki restart like any install. This works for add-ons installed from AnkiWeb, whose folder is named by their AnkiWeb id; one installed from a file has to be installed from that file. The new install gets its config at the next sync, or right away with Overwrite from local media.
 - Ignore toggle
 
 Top action buttons apply to selected rows (with shift-range select support).

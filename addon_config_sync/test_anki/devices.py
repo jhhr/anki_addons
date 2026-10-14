@@ -62,6 +62,8 @@ class FakeAnkiWeb:
 
     def __init__(self) -> None:
         self.branches: dict[int, list[dict[str, Any]]] = {}
+        # The add-on of each download asked for, in order
+        self.downloads: list[int] = []
 
     def publish(
         self,
@@ -72,8 +74,9 @@ class FakeAnkiWeb:
         min_version: int = 0,
         max_version: int = 0,
         code: str = "",
+        addon_id: int = ADDON_ID,
     ) -> None:
-        branches = self.branches.setdefault(ADDON_ID, [])
+        branches = self.branches.setdefault(addon_id, [])
         while len(branches) <= branch:
             branches.append({})
         branches[branch] = {
@@ -128,6 +131,7 @@ class FakeHttpClient:
     def get(self, url: str) -> SimpleNamespace:
         parsed = urlparse(url)
         addon_id = int(parsed.path.rsplit("/", 1)[-1])
+        self.ankiweb.downloads.append(addon_id)
         chosen = self.ankiweb.branch_for(addon_id, int(parse_qs(parsed.query)["p"][0]))
         if chosen is None:
             return SimpleNamespace(status_code=404)
@@ -487,6 +491,18 @@ class AnkiDevice:
         return fired
 
 
+def row_of(dialog: Any, addon_id: str) -> int:
+    """The row of the add-on's dialog that lists this add-on."""
+    for row in range(dialog.table.rowCount()):
+        if dialog.table.cellWidget(row, 0).findChild(QLabel).text().endswith(f"({addon_id})"):
+            return row
+    raise AssertionError(f"{addon_id} is not listed")
+
+
+def row_status(dialog: Any, addon_id: str) -> str:
+    return dialog.table.cellWidget(row_of(dialog, addon_id), 1).text()
+
+
 def shown_status(acs: ModuleType) -> str:
     """The status the add-on's dialog, opened by a sync, shows for the test's add-on. The
     dialog is closed after."""
@@ -494,9 +510,6 @@ def shown_status(acs: ModuleType) -> str:
     assert len(dialogs) == 1
     dialog = dialogs[0]
     try:
-        for row in range(dialog.table.rowCount()):
-            if dialog.table.cellWidget(row, 0).findChild(QLabel).text().endswith(f"({FOLDER})"):
-                return dialog.table.cellWidget(row, 1).text()
-        raise AssertionError("the add-on is not listed")
+        return row_status(dialog, FOLDER)
     finally:
         dialog.close()
