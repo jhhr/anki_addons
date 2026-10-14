@@ -83,6 +83,27 @@ def word_array_query_regex(word: str, reading: str, states: Iterable[MatchState]
     return rf',\s*\"{re.escape(word)}\",\s*\"{re.escape(reading)}\",\s*\[\s*({ends})'
 
 
+def word_array_link_regex(note_id: int) -> str:
+    """A regex finding, in a word array field's text, a word element whose `match_data` links
+    it to this note, rated or not, sub-words included. For a collection search like
+    `word_array_query_regex`'s, with its quotes escaped the same way.
+
+    Only a reading is followed by `match_data`, which is the one place an array holds a bare
+    number, and the id is matched whole, from the opening bracket to the comma or bracket
+    after it: no other note's id passes for this one."""
+    return rf'\",\s*\[\s*{int(note_id)}\s*(,\s*\d+\s*)?\]'
+
+
+def word_array_whole_word_regex(dict_form: str) -> str:
+    """A regex finding, in a word array field's text, a word element of this dict_form that has
+    no sub-words, whatever its reading and its state. For a collection search, as above.
+
+    An element's `match_data` and an empty `sub_words` are written on its own row, `[...], []`,
+    and `match_data` holds no bracket of its own, so an element with sub-words, whose row ends
+    on the bracket that opens them, is not found."""
+    return rf',\s*\"{re.escape(dict_form)}\",\s*\"[^\"]*\",\s*\[[^\]]*\],\s*\[\s*\]'
+
+
 def iter_words(arr: list, depth: int = 0) -> Iterator[tuple[int, list]]:
     """(depth, element) for every word element, sub-words after their parent."""
     for elem in arr:

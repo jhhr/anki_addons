@@ -70,6 +70,13 @@ Without these the package cannot run inside an Anki addon at all.
 2. **`py_fsrs/__init__.py` added.** Upstream has no file at this level. It is also why the
    directory is `py_fsrs` and not `py-fsrs` — a hyphen is not a legal Python identifier.
 3. **`DEFAULT_PARAMETERS` re-exported** from `fsrs/__init__.py`.
+4. **No `match` statements.** Upstream needs Python 3.10, and Anki ran 3.9 before 25.07. The
+   addon imports this package when it loads, so one `match` stops the whole addon loading
+   there. In `review_card`, `match card.state:` and the `match rating:` blocks inside it are
+   if/elif chains: each `match` line became an `if True:`, and its `case` lines became `if`,
+   `elif` and `else` at the indentation the cases had. Every branch body keeps upstream's
+   indentation, so the sync script can still apply upstream's changes inside them. A sync
+   that brings in a new `match` fails `anki_shared/test/test_python39.py` in the add-on repo.
 
 ### Algorithm
 
@@ -88,7 +95,8 @@ In `fsrs/scheduler.py`, each marked with a `Vendored fork:` comment at the site.
    `(*, difficulty, rating, retrievability)`. `review_card` computes retrievability once, up
    front, from the card as it stood before the review mutated it, and threads it into all five
    `_next_difficulty` call sites and the three `_next_stability` call sites.
-4. **Initialisation is hoisted out of the `match card.state`** block in `review_card`.
+4. **Initialisation is hoisted out of the state branches** (upstream's `match card.state`)
+   in `review_card`.
    `ease/fsrs_ops.py` forces `card.state` from each revlog row, so a card's *first* review can
    arrive already in the `Review` or `Relearning` state; upstream only seeds
    stability/difficulty inside the `Learning` branch, leaving them `None` and tripping the

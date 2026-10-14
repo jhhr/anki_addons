@@ -1076,15 +1076,20 @@ class TestFiles:
         assert note["Note"] == "first line"
         assert (media_dir / "_log.txt").read_text(encoding="utf-8") == "first line"
 
-    def test_read_modify_write_is_how_appending_is_spelled(self, col, note, media_dir, logger):
-        (media_dir / "_log.txt").write_text("a\n", encoding="utf-8")
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["LF", "CRLF"])
+    def test_read_modify_write_is_how_appending_is_spelled(
+        self, col, note, media_dir, logger, newline
+    ):
+        # As bytes: write_text() makes "\n" a "\r\n" on Windows, and this then held the file to
+        # a newline that never went in.
+        (media_dir / "_log.txt").write_bytes(b"a" + newline)
         definition = d.staged(stages=[
             d.read_file("current", "log.txt"),
             d.write_file("log.txt", d.text("{{current}}b\n")),
         ])
         assert run(definition, note)[0] is True, logger.errors
         # Byte-exact: the newline that went in is the newline that comes back.
-        assert (media_dir / "_log.txt").read_bytes() == b"a\nb\n"
+        assert (media_dir / "_log.txt").read_bytes() == b"a" + newline + b"b\n"
 
     def test_a_missing_file_reads_as_empty_by_default(self, col, note, media_dir):
         definition = d.staged(stages=[

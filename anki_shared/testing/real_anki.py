@@ -120,6 +120,13 @@ class StubAddonManager:
         self.configs[tag] = data
         self.written.append((tag, data))
 
+    def addonMeta(self, tag: str) -> dict:
+        """The addon's meta.json as aqt reads it, which holds a config only once one has been
+        stored: `getConfig` answers with the defaults when there is none. Here a config is
+        stored once it is in `configs`, which `getConfig` itself puts an empty one into."""
+        tag = self.addonFromModule(tag)
+        return {"config": self.configs[tag]} if tag in self.configs else {}
+
     def setConfigUpdatedAction(self, module: str, action) -> None:
         pass
 
@@ -171,6 +178,19 @@ class StubMainWindow:
 
     def reset(self) -> None:
         pass
+
+    def serverURL(self) -> str:
+        """An address no request has.
+
+        Not for addons: aqt's request interceptor asks whatever `mw` is on `aqt` for this,
+        about every request of a page that may call Anki's API, and Chromium still has such
+        requests under way after the real-Anki test that opened the page (an editor) has
+        ended and this stub is back. With no answer that was "'StubMainWindow' object has no
+        attribute 'serverURL'" out of the Qt event loop, reported as an error in that test's
+        teardown or in whichever test ran next, another addon's included. Answered so, the
+        request gets no API key and goes on to a server that is gone anyway.
+        """
+        return "http://127.0.0.1:0/"
 
 
 def install(configs: Optional[dict[str, dict]] = None) -> StubMainWindow:

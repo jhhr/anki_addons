@@ -116,6 +116,15 @@ or nothing, keeping the originals under `pre_stage_migration_copy_definitions`; 
 it rewrites references into the current syntax. Stage guids are repaired on every start.
 The spec's "The startup migration" section is the user-facing account.
 
+It writes the config only when a step changed it, and never when meta.json holds none (a new
+install's, or one Anki could not read): it runs before any sync, and Addon Config Sync sends
+a meta.json with a config over every device's copy, so written defaults replaced the user's
+definitions everywhere. A new version alone is not written either: every step is a no-op on
+what it migrated, and older copies of the addon write their own version back on every start.
+`Config.save` gives a config without a version `CONFIG_VERSION` when all its definitions are
+format 2, which is how a new install's first save records it. Nothing else may write the
+config while the addon loads.
+
 A change to the format-2 shape needs: the schema and its validation, `flow_analysis`, the
 evaluator, the stage editor and `stage_document`'s defaults and summary, a builder in
 `test/definitions.py`, and the spec. Old stored data needs a migration step. Definitions in

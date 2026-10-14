@@ -15,7 +15,13 @@ from typing import Any, Iterator
 
 import pytest
 from anki.hooks import note_will_be_added
-from aqt.gui_hooks import editor_did_load_note, editor_did_unfocus_field, reviewer_did_answer_card
+from aqt.gui_hooks import (
+    editor_did_load_note,
+    editor_did_unfocus_field,
+    media_sync_did_start_or_stop,
+    reviewer_did_answer_card,
+    sync_did_finish,
+)
 
 from anki_shared.testing import real_anki, running_anki
 from copy_anywhere import logging_setup
@@ -24,8 +30,16 @@ from japanese_note_ai_ops.async_api_ops.match_words_to_notes import MATCH_FIELD_
 PACKAGE = "japanese_note_ai_ops"
 COPY_ANYWHERE = "copy_anywhere"
 REBOUND_PACKAGES = [PACKAGE, COPY_ANYWHERE, "anki_shared"]
-# What CopyAnywhere's init_note_hooks() appends to; process-global, so put back after
-HOOKS = [note_will_be_added, editor_did_load_note, editor_did_unfocus_field, reviewer_did_answer_card]
+# What CopyAnywhere's init_note_hooks() and this addon's init_split_compound_tag() append to;
+# process-global, so put back after
+HOOKS = [
+    note_will_be_added,
+    editor_did_load_note,
+    editor_did_unfocus_field,
+    reviewer_did_answer_card,
+    sync_did_finish,
+    media_sync_did_start_or_stop,
+]
 
 # The note type the addon hardcodes, its match fields named after their config keys, and a
 # field for CopyAnywhere to fill

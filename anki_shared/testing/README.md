@@ -27,9 +27,16 @@ Into the interpreter the tests run on, which is also the one to run `python -m m
 and to point your editor at, since all of them read `anki` and `aqt` out of it:
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -r japanese_note_ai_ops/requirements.txt
 python -m pip install --no-deps -r requirements-dev-nodeps.txt
 ```
+
+`japanese_note_ai_ops/requirements.txt` is that addon's runtime packages (rapidfuzz, SudachiPy,
+psutil, requests), which it vendors into `lib/` for Anki and its modules import at the top.
+The root suite imports those modules (`japanese_note_ai_ops/test_anki/conftest.py` is the
+first to) with no vendored `lib/` on the path, so an interpreter without them stops at
+collection on `No module named 'rapidfuzz'`. One that has them for some other reason hides
+this; the cloud hook below installs the same file.
 
 The second step is `pytest-anki2` on its own. Its metadata pins `pytest-qt~=4.4.0`, and
 its `anki-XXXX` extras pin anki/aqt to a line's first release, so installing it normally
@@ -142,8 +149,8 @@ in short:
   function attached would otherwise fire inside every other suite's `col.add_note()`.
 - `main_window(anki_session, packages)` — loads the profile, points the addon's modules at
   the real `mw`, silences the deck browser's webview redraws, keeps the profile from
-  starting an mpv audio player, and on exit waits for background ops and stops `mw`'s
-  repeating timers.
+  starting an mpv audio player, makes a page's `alert()` raise its text instead of opening
+  Anki's modal box, and on exit waits for background ops and stops `mw`'s repeating timers.
 - `addon_config(anki_session, package, base_config)` — a `write(**overrides)` that puts a
   real config.json/meta.json pair where the real `AddonManager` reads them.
 - `media_servers_waited_for()` — makes each main window's `mediaServer.getPort()` wait for
@@ -152,6 +159,11 @@ in short:
   its own server existed ("'MediaServer' object has no attribute 'server'"). You do not
   call this one: the repo plugin wraps every test that uses `anki_session` in it, because
   it has to be in place before `anki_session` builds the main window.
+
+A test that opens a dialog with a webview (Add Cards) waits until it has closed before it
+ends. `close()` only asks, the dialog closing in a callback of its page, and one left open
+has that page alive in the next test's Anki, where its requests to a server that is gone
+end in an `alert()`: before `main_window` refused those, a run sat in the box for an hour.
 
 `anki_shared/test_anki/` tests the harness itself, forcing each race it guards against to
 lose every time so that a fix that stops working fails there rather than as a flake.

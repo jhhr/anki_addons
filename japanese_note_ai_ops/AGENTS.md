@@ -7,7 +7,9 @@ right-click submenu, from the browser's Edit > "Japanese AI ops..." dialog (seve
 row, see "Chains" below) and from a few automatic triggers: adding a "Japanese vocab note" runs
 `clean_meaning` and `extract_words`; unfocusing an empty story field on a "Kanji draw" note
 writes a story; unfocusing an empty translation field translates. Those two note type names
-are hardcoded in the hooks. Operations: clean/generate a meaning from MDX dictionary
+are hardcoded in the hooks. After a sync, the words of the notes tagged
+`vocab::split-compound-word` go on the config's list of compounds to split
+(`split_compound_tag.py`). Operations: clean/generate a meaning from MDX dictionary
 entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a **word
 array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
 judge which words deserve a note, match words to vocab notes or create them. Bulk runs are
@@ -19,11 +21,12 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | --- | --- |
 | `__init__.py` | strict order, see below |
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
-| `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
+| `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu, `split_compound_tag` for a sweep that has something to list; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
 | `op_registry.py` | `OPS`: the 21 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
+| `split_compound_tag.py` | the `vocab::split-compound-word` sweep (see "word_array"): `tagged_compounds`, `list_compounds` (the `CollectionOp`'s body), `add_to_list` (the config write), `sweep`, the two sync hook handlers, `init_split_compound_tag()` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
@@ -47,7 +50,7 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
 | `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs. **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
-| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl` |
+| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included, and that a hook writing `new_note_id_field` still leaves the new note's placeholder to be resolved; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl`; `test_real_anki_split_compound_tag.py` runs the `vocab::split-compound-word` sweep there: what Anki's searches find, the tags and their one undo step, the list in the config the real `AddonManager` reads, and that an older config copied back in the same hook call does not undo it. It calls the two handlers directly, because `media_sync_did_start_or_stop` still holds the handlers of main windows earlier tests closed |
 | `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds); `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
@@ -57,7 +60,8 @@ asynchronous, parallel, memory-aware, pausable and cancellable.
 2. `VENDOR_HEALTH = vendor_health(...)`.
 3. All operation imports inside one `try/except ImportError`, which sets `MISSING_PACKAGE`.
    **New operation imports go inside this block**, and so do `op_registry`, `ai_helper_menu`,
-   `multi_op_dialog` and `op_chain`, which import op modules.
+   `multi_op_dialog` and `op_chain`, which import op modules, and `split_compound_tag`, which
+   imports the generator.
 4. Hooks and menus are registered only when `MISSING_PACKAGE is None`.
 5. `install_rebuild_ui(...)`, unconditionally, so a broken install can still repair itself.
 
@@ -392,6 +396,15 @@ cheap no-op and nothing is recorded.
   markers preparing either of the last two put on other notes are the tidying's, below.
   Resolving and unlinking always run to the end; a resolving that raises fails the op after
   the unlinking.
+- **A new note's `new_note_id_field` is the only record of its placeholder, and it is read
+  after the add.** `col.add_note` runs every addon's `note_will_be_added` hook on the note
+  first, and a hook can write that field: a CopyAnywhere definition filling it with
+  `{{__Note_ID}}`, 0 on a note not added yet, left the resolving nothing to look for, and
+  every array kept its placeholder until the next match run reset the word and asked about it
+  again. `base_ops.placeholder_kept` wraps each add and puts the placeholder back in the note
+  in memory; the resolving then saves the note holding its own id. Anything new that needs a
+  note's placeholder after the add reads it off the note as handed on, never from the
+  collection, which holds what the hook wrote until then.
 - **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
   without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
@@ -481,6 +494,57 @@ single-element arrays; concatenating the top-level `raw_text` values gives back 
 without `<b>` tags. `match_data` has five states (`match_flags.MatchState`): `[]`,
 `["dontmatch"]`, `["match"]`, `[id]`, `[id, quality]`. Details: `word_array/README.md`.
 
+Every sub-word is one more word the judge and the match op are asked about, so none is added by
+a general rule that both pieces are dictionary words. A verb or adjective Sudachi has as one
+unit (目立つ, 名付ける, 面白い) has no sub-words unless the user lists it in config
+`split_compound_words`, which they edit in Anki: `generator.split_compounds_of(config)` reads it
+and `generate(sentence, names, split_compounds)` takes it; the generator has no list of its own,
+and `extract_words` passes the run's. The analysis never reads the sentence's own `<b>`: it is
+left from when a note's word was marked by hand, and the card marks it from the array now. A
+rule splitting every such compound, a split where the `<b>` ended, a set kept in the code and a
+tag on the sentence's note, which split every compound of that sentence, were each tried and
+taken back (README, "Sub-words of one word").
+
+The list is also fed by a tag, because a compound is met on a phone too and a config is not
+edited there: `split_compound_tag.py`. A note tagged `vocab::split-compound-word` (hardcoded)
+is a note about a compound. After a sync, for each such note whose word the list lacks,
+`sweep` adds the word (the note's `word_kanjified_field`, and the dict_form of every array
+element linked to the note, which is what the generator looks a compound up by) and tags the
+notes whose array still has the word whole `sentence::regenerate` (hardcoded,
+`configuration.REGENERATE_TAG`): regenerating is the user's to start, and `extract_words` takes
+the tag off a note once it has generated its array, by "Extract words" or "Regenerate words",
+changed or not; a note it left alone or failed on keeps it. What holds it together:
+
+- **The tag stays, and only an unlisted word is acted on.** The tag is what restores a word
+  the list loses, so it is never consumed; passing over a listed word is what keeps the notes
+  from being tagged again at every sweep, which matters for a compound the generator finds no
+  two words in. Anki's `tag:` search also finds a tag's children, hence the `has_tag` check.
+- **The sweep runs once a media sync has stopped, after every one, from one of Anki's
+  timers.** Addon Config Sync copies each add-on's `meta.json` out to the media folder at
+  `sync_will_start` and can copy it back at `media_sync_did_start_or_stop(False)`. A version
+  from before it kept a device's unsent changes (`addon_config_sync/matched_copies.py`) does
+  wherever the two differ, so a list written in between is undone, and so is one written
+  after the sync as soon as a media sync ends with no collection sync having started first
+  (Anki's periodic one, every 15 minutes by default). The current one does only for the
+  rest of an Anki session in which it has already replaced this add-on's config. Sweeping
+  after each media sync puts the word straight back either way. The timer puts the sweep
+  after the other handlers of that hook call, whatever order the add-ons loaded in, keeps it
+  from starting under a progress dialog, and drops it when the profile has closed.
+- **A word put back is put back quietly.** `_listed_this_session` holds what this session's
+  sweeps listed; a word in it that is off the list again is written back with no
+  `CollectionOp`, no tagging and no tooltip, or a long session would tag and announce every
+  15 minutes. It is module state: a test clears it (the unit tests) or replaces it (the
+  running-Anki fixture). This and the sweep after every media sync are there for the
+  copying back, which the current Addon Config Sync does far less of than an older one; the
+  tag staying also covers another device's config winning.
+- **Tags first, list second.** `list_compounds` tags in a `CollectionOp`, one undo step, and
+  `add_to_list` runs in its success handler: notes tagged with no word listed is repaired by
+  the next sweep, the reverse by nothing. `add_to_list` writes the user's own config with the
+  one key changed, not `getConfig`'s merge, which would turn every shipped default into the
+  user's setting.
+- The two searches over the array field are `match_flags.word_array_link_regex` and
+  `word_array_whole_word_regex`, beside `word_array_query_regex` and escaped like it.
+
 The codec (`decode_word_array`, `format_word_array`) lives in
 `anki_shared/word_array/field_text.py` because `copy_anywhere` reads the field too;
 `word_array/match_flags.py` re-exports it. A format change is a data migration across two
@@ -542,6 +606,10 @@ what such a session follows), writing the same result files.
   `CollectionOp`; `test_op_chain.py` runs `OpChain` with fake ops and hooks;
   `test_op_registry.py` pins the menu's labels, order and wiring. `__init__.py`'s Edit-menu
   hook has no test.
+- `test_split_compound_tag.py` covers the sweep's decisions over a stand-in collection that
+  answers a search with whatever the test hands it, so it says nothing about what a search
+  finds; that is `test_anki/test_real_anki_split_compound_tag.py`'s (root suite). The two
+  regexes are tested against `format_word_array`'s text in `test_word_array_flags.py`.
 - The suite's `aqt.qt` is a stub of empty classes. `test_multi_op_dialog.py` still runs real
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
@@ -560,7 +628,9 @@ what such a session follows), writing the same result files.
   per process).
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
-  `python -m pytest`.
+  `python -m pytest`. Most research scripts are tested in `test/` instead (`test_vocab_*.py`,
+  `test_kanjify_*.py`), and `vocab_morphology` in both, so a change under
+  `word_array/research/` runs both suites.
 - The root `mypy.ini` puts `test/` and `word_array/research/` on `mypy_path` for the
   bare-name imports; the local `mypy.ini` mirrors it for a run started here.
 

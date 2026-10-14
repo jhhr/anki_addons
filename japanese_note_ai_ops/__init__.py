@@ -54,6 +54,7 @@ try:
         write_meanings_dict_to_file,
     )
     from .sync_local_ops.make_fine_tuning_data import make_all_test_data  # noqa: E402
+    from .split_compound_tag import init_split_compound_tag  # noqa: E402
     # The ops the browser menu runs, by way of the registry, which imports every op module
     from .ai_helper_menu import add_ai_helper_actions  # noqa: E402
     from .multi_op_dialog import show_multi_op_dialog  # noqa: E402
@@ -274,6 +275,10 @@ if MISSING_PACKAGE is None:
     # The AI calls' record, user_files/capture.sqlite3, open while a profile is
     gui_hooks.profile_did_open.append(install_capture_store)
     gui_hooks.profile_will_close.append(shutdown_capture_store)
+
+    # After a sync: the words of the notes tagged to have their compound split go on the config's
+    # list, and the notes whose word array has them whole are tagged to be regenerated
+    init_split_compound_tag()
 else:
     logging.getLogger(__name__).warning(
         "loaded without its operations: %s could not be imported", MISSING_PACKAGE

@@ -491,10 +491,25 @@ def promote_definition_syntax(config: "Config") -> None:
     config.data["copy_definitions"] = definitions
 
 
+def _without_version(data: dict) -> dict:
+    return {key: value for key, value in data.items() if key != "version"}
+
+
 def migrate_config():
-    """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed."""
+    """Bring a stored config up to `CONFIG_VERSION`, running the migrations it has missed.
+
+    It writes only what a migration changed. This runs as Anki loads the addon, before any
+    sync, and Addon Config Sync sends a meta.json that has a config over the copy the user's
+    other devices read theirs from. Saving on every start put the defaults into a new
+    install's meta.json, and into one Anki could not read and so took as empty, and the next
+    sync replaced every device's definitions with none.
+    """
+    if "config" not in mw.addonManager.addonMeta(tag):
+        # Nothing stored, so `getConfig` answers with config.json, which needs no migration
+        return
     config = Config()
     config.load()
+    loaded = deepcopy(config.data)
     # What the config has actually been brought up to, which is not always what was asked
     # for: a migration that fails leaves this behind so the next start runs it again rather
     # than recording a version the stored data never reached.
@@ -517,8 +532,13 @@ def migrate_config():
         reached = "0.4.0"
     if compare_versions(reached, "0.3.0") >= 0:
         repair_stage_guids(config)
-    config.data["version"] = reached
-    config.save()
+    # A new version alone is not worth a write. Every step is a no-op on what it already
+    # migrated, and an older copy of this addon on another device writes its own version
+    # back on every start: answering each with ours would send the config to and fro
+    # between the devices for as long as both stay installed.
+    if _without_version(config.data) != _without_version(loaded):
+        config.data["version"] = reached
+        config.save()
 
 
 def repair_stage_guids(config: "Config") -> None:
@@ -738,6 +758,15 @@ class Config:
         self.data = load_config()
 
     def save(self):
+        # A config with no version would go through every migration again at the next start,
+        # from 0.1.0. That is what a new install's first save from here would store:
+        # `migrate_config` writes nothing into a meta.json without a config. The editors write
+        # format 2 alone, so only a format-1 definition a sync brought in since this start is
+        # older, and the next start still has to migrate that.
+        if "version" not in self.data and all(
+            is_format_2(definition) for definition in self.data.get("copy_definitions") or []
+        ):
+            self.data["version"] = CONFIG_VERSION
         save_config(self.data)
 
     @property

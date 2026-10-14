@@ -6,6 +6,8 @@ raw_text values gives back the sentence without <b> tags.
 
 Which words exist is decided by concrete rules only; whether a word is worth matching to a note
 is left to the word matching judge, so the rules err towards more parents and more sub-words.
+The one thing no rule decides is which compound verbs and adjectives split in two: that is a list
+the caller hands in (`split_compounds`), and none splits without it.
 
 Stages
   1. text_map: strip tags and furigana, revert <k> words to kana -> natural text
@@ -72,7 +74,8 @@ class Word:
     kind: str = "word"  # word | punct | merged | expression
     subs: list[Word] = field(default_factory=list)
     jm_pos: frozenset[str] = frozenset()
-    jm_form: str = ""  # dictionary form known up front: a JMdict match, or a furigana merge
+    # dictionary form known up front: a JMdict match, a furigana merge, the end of a compound
+    jm_form: str = ""
     jm_readings: tuple[str, ...] = ()
     # expression only: JMdict has it as written here, rather than with the last word deinflected
     surface_match: bool = False
@@ -148,7 +151,7 @@ def tokenize(natural: str) -> list[Morph]:
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
-    return _sou_naru(_split_number_counters(out))
+    return _sou_naru(_auxiliary_verbs(_split_number_counters(out)))
 
 
 def _reads_whole(morphs: list[Morph], n: int) -> bool:
@@ -195,6 +198,24 @@ def _sou_naru(morphs: list[Morph]) -> list[Morph]:
             verb = ("動詞", "非自立可能", "*", "*", "五段-ラ行", NARU_FORMS[b.surface])
             out[k + 1] = replace(b, pos=verb, lemma="なる", norm="成る")
     return out
+
+
+# Verbs Sudachi calls a 助動詞
+AUXILIARY_VERBS = {"やがる"}
+
+
+def _auxiliary_verbs(morphs: list[Morph]) -> list[Morph]:
+    """やがる is a 助動詞 to Sudachi like ます and た, so it went into the inflection of the verb
+    before it and was a word nowhere: 言いやがって came out as 言う. It is a verb (JMdict's v5r,
+    from 上がる) standing where しまう and おく do, so it is read as Sudachi reads those, a
+    非自立可能 verb: a word of its own after a て-form (出してやがる), and the second verb of a
+    compound after a verb stem (`_auxiliary_verb_candidates`)."""
+    return [
+        replace(m, pos=("動詞", "非自立可能") + m.pos[2:])
+        if m.pos[0] == "助動詞" and m.lemma in AUXILIARY_VERBS
+        else m
+        for m in morphs
+    ]
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
@@ -430,6 +451,51 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
+# --- 2d. adjectives from a verb's negation -------------------------------------------------
+
+# Adjectives Sudachi doesn't have and reads as a verb and its negation, by their reading: 下らない
+# "worthless" is no 下る, 詰まらない no 詰まる, and 思い掛ける and 居た堪れる are no verbs at all.
+# Hand-kept, as JMdict can't tell them from a plain negation: it lists 知らない and 足りない as
+# adjectives too. 済まない and いけない are left out, being as often the verb (只じゃ済まない,
+# 学校に行けない).
+LEXICAL_NEGATIVES = {"くだらない", "つまらない", "たまらない", "おもいがけない", "いたたまれない"}
+NEGATION_AUX = ("助動詞-ナイ", "助動詞-ヌ")
+
+
+def _lexical_negative(tm: TextMap, verb: Morph, neg: Morph) -> bool:
+    """Whether a verb and the negation after it are one of LEXICAL_NEGATIVES as JMdict has it.
+    Kanji the note writes must be the adjective's: 貯まらない is no 堪らない."""
+    if (
+        verb.pos[0] != "動詞"
+        or neg.pos[0] != "助動詞"
+        or len(neg.pos) < 6
+        or not neg.pos[4].startswith(NEGATION_AUX)
+        or neg.start != verb.end
+    ):
+        return False
+    reading = _furigana_reading(tm, verb.start, verb.end, [verb]) + "ない"
+    written = tm.written_form(verb.start, verb.end) + "ない"
+    return reading in LEXICAL_NEGATIVES and any(
+        reading in rebs and "adj-i" in ps and (written in kebs or not KANJI_RE.search(written))
+        for kebs, rebs, ps in jmdict.lookup(reading)
+    )
+
+
+def negative_adjectives(tm: TextMap, morphs: list[Morph]) -> list[Morph]:
+    """A verb before its negation as the stem of the adjective the two are, when that is one of
+    LEXICAL_NEGATIVES: くだら|ねー, 下ら|ぬ and くだら|なかっ|た are 下らない, which came out as
+    下る. The negation stays a morph of its own and attaches as it did to the verb, so the word
+    is still an inflected one whose dictionary form is its lemma, not what JMdict has for the
+    form as written (詰まらん)."""
+    out = list(morphs)
+    for k, (m, nxt) in enumerate(zip(morphs, morphs[1:])):
+        if _lexical_negative(tm, m, nxt):
+            lemma = m.surface + "ない"
+            pos = ("形容詞", "一般", "*", "*", "形容詞", m.pos[5])
+            out[k] = replace(m, pos=pos, lemma=lemma, norm=lemma, subs=[])
+    return out
+
+
 def reread_cut_groups(tm: TextMap) -> tuple[TextMap, list[Morph]]:
     """A furigana group goes to the tokenizer as its kanji, or inside <k> as its reading, and
     the tokenizer can cut either wrong; a group it cuts goes in the other way when that reads
@@ -456,12 +522,18 @@ def _kana_follows(tm: TextMap, i: int) -> bool:
     return nxt is not None and nxt.kind == "char" and bool(text_map.HIRAGANA_RE.match(nxt.natural))
 
 
+def _lemma_reading(surface: str, furi: str, lemma: str) -> str:
+    """How the note reads a lemma whose inflected `surface` it reads as `furi`: the stem as read
+    there with the lemma's own ending (立ち read だち -> だつ)."""
+    c = _common_prefix(surface, lemma)
+    return furi[: len(furi) - (len(surface) - c)] + lemma[c:]
+
+
 def _reads_as_furigana(tm: TextMap, m: Morph) -> bool:
     """Whether the note's furigana reads a morph as JMdict reads its lemma."""
     surface = tm.natural[m.start : m.end]
     furi = to_hiragana(tm.surface_reading(m.start, m.end))
-    c = _common_prefix(surface, m.lemma)
-    reading = furi[: len(furi) - (len(surface) - c)] + m.lemma[c:]
+    reading = _lemma_reading(surface, furi, m.lemma)
     known = {to_hiragana(r) for r in jmdict.readings(m.lemma)}
     return reading in known or reading in {voiced(r) for r in known}
 
@@ -554,6 +626,7 @@ def build_name_lexicon(sentences: Iterable[str]) -> dict:
 INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
+TE_IRU_CONTRACTIONS = {"てる", "でる"}  # 助動詞 to Sudachi, a て-form in their 連用形 (言ってた)
 # Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
 SEPARATE_AUX = {"らしい", "べし", "まい", "如し"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
@@ -837,7 +910,33 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
                         spellings=tuple(k for ks, _, _ in hits for k in ks),
                     )
                 )
-    return cands + _stem_suffix_candidates(tm, words, cands)
+    return (
+        cands
+        + _stem_suffix_candidates(tm, words, cands)
+        + _auxiliary_verb_candidates(tm, words)
+    )
+
+
+def _auxiliary_verb_candidates(tm: TextMap, words: list[Word]) -> list[Candidate]:
+    """A verb's 連用形 and the やがる after it as one compound verb made of the two, as JMdict
+    has 言い出す of 言う and 出す: 言いやがって is 言いやがる. JMdict has no such verb, only the
+    expression 言いやがって, which this comes before as its dictionary form. A match that ends on
+    the verb and is longer keeps it, やがる a word after it (手玉に取る + やがった). After a
+    て-form it is no compound, nor where Sudachi reads that て as the 連用形 of てる
+    (言ってやがんだ)."""
+    out = []
+    for i, (a, b) in enumerate(zip(words, words[1:])):
+        last = a.morphs[-1]
+        if (
+            b.head.lemma in AUXILIARY_VERBS
+            and a.head.pos[0] == "動詞"
+            and len(last.pos) > 5
+            and last.pos[5].startswith("連用形")
+            and last.lemma not in TE_IRU_CONTRACTIONS
+        ):
+            form = tm.written_form(a.start, a.end) + dict_form(tm, b)
+            out.append(Candidate(i, i + 2, form, (), frozenset({"v5r"}), False, form, ()))
+    return out
 
 
 def _stem_suffix_candidates(
@@ -1013,7 +1112,53 @@ PIECE_POS = {
 }
 FIRST_PIECE_POS = ("pref", "pn", "n", "adj-na", "adv", "prt")
 SECOND_PIECE_POS = ("prt", "suf", "n-suf", "ctr", "n", "pn", "adj-na", "adv")
-NOT_DECOMPOSED_POS = INFLECTING + FUNCTION_POS + ("補助記号", "空白")
+NOT_DECOMPOSED_POS = FUNCTION_POS + ("補助記号", "空白")
+# The add-on config's key for the compound verbs and adjectives to split (`split_compounds_of`)
+SPLIT_COMPOUNDS_KEY = "split_compound_words"
+LISTED_WORDS_SEPARATOR_RE = re.compile(r"[\s,、，]+")
+
+
+def split_compounds_of(config: dict) -> frozenset[str]:
+    """The verbs and adjectives Sudachi has as one unit that a config lists to split in two all
+    the same, by dictionary form: what `generate` takes as `split_compounds`.
+
+    One of the two is a word some note is about, and inside the compound it was a word nowhere
+    (毛羽 of 毛羽立つ). The list is the user's, kept in the add-on's config so that it is edited in
+    Anki, because nothing in the dictionaries tells these from 目立つ, 名付ける or 面白い, which are
+    one word to learn and whose parts only gave the judge common words to match: JMdict's
+    frequency marks don't (粟 and 藻 are marked, 値 and 際 are not). What goes on it is decided
+    from the notes whose own word the analysis has only inside such a compound, which
+    research/words_inside_words.py lists; the sentence's own <b> is never read.
+
+    A config is typed by hand, so words given as one string count too, apart by commas or
+    spaces; a value that holds no words lists none."""
+    listed = config.get(SPLIT_COMPOUNDS_KEY)
+    if isinstance(listed, str):
+        listed = [listed]
+    if not isinstance(listed, (list, tuple)):
+        return frozenset()
+    return frozenset(
+        form
+        for words in listed
+        if isinstance(words, str)
+        for form in LISTED_WORDS_SEPARATOR_RE.split(words)
+        if form
+    )
+
+
+def split_compounds_with(config: dict, forms: Iterable[str]) -> Optional[list]:
+    """What a config's `SPLIT_COMPOUNDS_KEY` is to hold for it to list `forms` too, or None when
+    it lists them all as it is (`split_compounds_of`). For whatever adds to the list without a
+    person typing (the add-on's `split_compound_tag`): what the list holds stays as it was
+    typed, and the forms it lacks follow, each once and in the order given."""
+    listed = split_compounds_of(config)
+    new = list(dict.fromkeys(form for form in forms if form and form not in listed))
+    if not new:
+        return None
+    held = config.get(SPLIT_COMPOUNDS_KEY)
+    if isinstance(held, str):
+        held = [held] if held.strip() else []
+    return (list(held) if isinstance(held, (list, tuple)) else []) + new
 
 
 def unvoiced(kana: str) -> str:
@@ -1082,12 +1227,73 @@ def _piece(tm: TextMap, start: int, end: int, second: bool) -> Optional[Word]:
     return Word([Morph(start, end, natural, PIECE_POS[code], natural, written, reading)])
 
 
-def decompose(tm: TextMap, w: Word) -> list[Word]:
+def _stem_piece(tm: TextMap, start: int, end: int) -> Optional[Word]:
+    """Natural span [start, end) as the ichidan verb it is the stem of, when JMdict has it + る
+    read so: the 見 a compound verb opens on is 見る (見|付ける), as Sudachi has the 見 of 見送る,
+    not JMdict's noun 見 "viewing". A godan stem is a noun to JMdict too (召し of 召し上がる), and
+    is listed as its verb like any sub-word noun (`_noun_form_verb`)."""
+    written = tm.written_form(start, end)
+    reading = to_hiragana(tm.surface_reading(start, end))
+    if not _verb_codes(written + "る", reading + "る") & {"v1", "v1-s"}:
+        return None
+    natural = tm.natural[start:end]
+    pos = ("動詞", "一般", "*", "*", "下一段", "連用形-一般")
+    return Word([Morph(start, end, natural, pos, natural + "る", written + "る", reading)])
+
+
+def _inflecting_piece(tm: TextMap, w: Word, split: int) -> Optional[Word]:
+    """The verb or adjective a compound one ends on, from natural index `split`, with the
+    inflection after it: 立つ of 毛羽立ち, 細い of 心細かった, 付く of 傷<k>付いて</k>. Its dictionary
+    form is what is left of the compound's after the first piece, so it must be spelled there
+    with the kanji the note starts it on: kana are the word's okurigana, or the する of a verb
+    that is one word (見|る, 対|<k>為る</k>, 話|<k>為</k>て misread as 話す). JMdict must have it as
+    a verb or adjective like the compound, read as the note reads it or voiced by the compound
+    (立[だ]ち)."""
+    head = w.head
+    whole, lead = dict_form(tm, w), tm.written_form(w.start, split)
+    written = tm.written_form(split, head.end)
+    form = whole[len(lead) :]
+    if not (KANJI_RE.match(written) and whole.startswith(lead) and form[:1] == written[:1]):
+        return None
+    furi = to_hiragana(tm.surface_reading(split, head.end))
+    reading = _lemma_reading(written, furi, form)
+    kind = "adj-i" if head.pos[0] == "形容詞" else "v"
+    codes = _jmdict_codes(form, reading) | _jmdict_codes(form, unvoiced(reading))
+    if not any(p.startswith(kind) and p not in NON_VERB_V_POS for p in codes):
+        return None
+    k = split - head.start
+    tail = replace(
+        head, start=split, surface=head.surface[k:], lemma=form, norm=form, reading=furi, subs=[]
+    )
+    # The form is known: read off its own text, 付いている of 傷付いている is JMdict's expression
+    return replace(w, morphs=[tail] + w.morphs[1:], subs=[], jm_form=form)
+
+
+def _listed(tm: TextMap, w: Word, forms: frozenset[str]) -> bool:
+    """Whether a list of dictionary forms names the word: by the form its array element shows
+    (`shown_form`), which is where a person reads it off to list it, or as the note spells it."""
+    if not forms:
+        return False
+    form = dict_form(tm, w)
+    return form in forms or shown_form(tm, w, dict_reading(tm, w))[0] in forms
+
+
+def decompose(tm: TextMap, w: Word, split_compounds: frozenset[str] = frozenset()) -> list[Word]:
     """Two JMdict words making up a word the tokenizer has as one unit: 耳元 -> 耳 + 元,
     頭ごなし -> 頭 + ごなし, 正に -> 正 + に. The split falls where the furigana's reading
     splits per kanji, and each piece must pass _piece. Lone on'yomi kanji are refused because
-    they are mostly bound morphemes: allowing them splits every on'yomi compound (最|近, 言|語)."""
-    if w.kind != "word" or w.subs or (len(w.morphs) > 1 and not w.jm_form):
+    they are mostly bound morphemes: allowing them splits every on'yomi compound (最|近, 言|語).
+
+    A verb or adjective Sudachi has as one unit is one word to learn however it is built, so
+    only those `split_compounds` lists split (`split_compounds_of`): into a word and the verb or
+    adjective the compound ends on, which keeps the inflection (毛羽立ち -> 毛羽 + 立ち, 立つ).
+    Splitting every such compound the same way (目|立つ, 名|付ける, 心|細い, 面|白い) only handed
+    the judge common words no note is about."""
+    inflecting = w.head.pos[0] in INFLECTING
+    # A verb's morphs after its first are its inflection; any other word of several morphs is a
+    # furigana merge, one unit only when JMdict has it
+    one_unit = not w.jm_form if inflecting else len(w.morphs) == 1 or bool(w.jm_form)
+    if w.kind != "word" or w.subs or not one_unit:
         return []
     if w.head.pos[0] in NOT_DECOMPOSED_POS or w.head.pos[:2] in (
         ("名詞", "固有名詞"),
@@ -1096,11 +1302,17 @@ def decompose(tm: TextMap, w: Word) -> list[Word]:
         return []
     if not KANJI_RE.search(tm.written_form(w.start, w.end)) or adjective_of(tm, w):
         return []  # an adjective form is no compound: not 大き + な
-    for split in range(w.start + 1, w.end):
+    if inflecting and not _listed(tm, w, split_compounds):
+        return []
+    for split in range(w.start + 1, w.head.end if inflecting else w.end):
         if not tm.can_split(split) or _okurigana_tail(tm, w, split):
             continue
-        first = _piece(tm, w.start, split, second=False)
-        second = first and _piece(tm, split, w.end, second=True)
+        if inflecting:
+            first = _stem_piece(tm, w.start, split) or _piece(tm, w.start, split, second=False)
+            second = first and _inflecting_piece(tm, w, split)
+        else:
+            first = _piece(tm, w.start, split, second=False)
+            second = first and _piece(tm, split, w.end, second=True)
         if first and second:
             return [first, second]
     return []
@@ -1136,12 +1348,12 @@ def _okurigana_tail(tm: TextMap, w: Word, split: int) -> bool:
     }
 
 
-def add_decompositions(tm: TextMap, words: list[Word]) -> None:
+def add_decompositions(tm: TextMap, words: list[Word], split_compounds: frozenset[str]) -> None:
     for w in words:
         if w.subs:
-            add_decompositions(tm, w.subs)
+            add_decompositions(tm, w.subs, split_compounds)
         else:
-            w.subs = decompose(tm, w)
+            w.subs = decompose(tm, w, split_compounds)
 
 
 # --- 6b. furigana for sub-words inside one group -------------------------------------------
@@ -1431,6 +1643,11 @@ def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str
         fits = usual or [k for k in usable if k != form]
     else:
         fits = [k for k in usable if _kanjifies(form, k)]
+    if kana in LEXICAL_NEGATIVES:
+        # The kanjify policy's spelling (KANJI-12): the verb's kanji and okurigana before a kana
+        # ない, where JMdict's first is 詰らない and its fullest the search-only 思い掛け無い
+        negated = [k for k in fits if k.endswith("ない")]
+        return sorted(negated, key=lambda k: (-len(_kanji_set(k)), -len(k)))[:1]
     widest = _widest_kanji_sets(fits)
     rare = [k for k in fits if "rK" in info.get(k, ())]
     if len(widest) > 1 and len(rare) < len(fits):
@@ -1486,6 +1703,12 @@ def jiru_form(form: str, reading: str) -> tuple[str, str]:
     if not entry_spellings(jiru, jiru_kana):
         return form, reading
     return jiru, jiru_kana
+
+
+def shown_form(tm: TextMap, w: Word, reading: str) -> tuple[str, str]:
+    """The dictionary form and reading a word's array element shows, from its `dict_reading`:
+    its entry's one spelling whichever the note writes, and じる for ずる."""
+    return jiru_form(canonical_form(dict_form(tm, w), reading), reading)
 
 
 def _dict_form(tm: TextMap, w: Word) -> str:
@@ -1705,11 +1928,16 @@ def dict_reading(tm: TextMap, w: Word) -> str:
         return "くる"  # irregular stem: き/こ would otherwise pick きたる by prefix
     candidates = [to_hiragana(r) for r in w.jm_readings]
     candidates += [to_hiragana(r) for r in jmdict.readings(lemma)]
+    known = list(candidates)
     candidates.append(_sudachi_reading(lemma))
     if furi in candidates:
         return furi
     # The candidate agreeing longest with the furigana stem wins; ties keep JMdict order
-    return max(candidates, key=lambda r: _common_prefix(r, furi))
+    best = max(candidates, key=lambda r: _common_prefix(r, furi))
+    # Less the compound's rendaku, as for an uninflected word above. Sudachi reads some words
+    # alone the way they sound ending a compound (込む ごむ, 深い ぶかい), which then agreed with
+    # the voiced stem (意気込[いきご]んで) over JMdict's こむ
+    return unvoiced(best) if best not in known and unvoiced(best) in known else best
 
 
 POS_MAP = [
@@ -1925,10 +2153,9 @@ def _emit(
             if colloquial:
                 form, reading, pos = colloquial
             else:
-                form, reading = dict_form(tm, w), dict_reading(tm, w)
+                reading = dict_reading(tm, w)
                 pos = pos_label(tm, w, prev, reading, nested)
-                form = canonical_form(form, reading)
-                form, reading = jiru_form(form, reading)
+                form, reading = shown_form(tm, w, reading)
             match_data = match_flags.default_match_data(pos, form, subs)
             out.append([raw_text, pos, form, reading, match_data, subs])
         cursor = re_ext
@@ -1937,23 +2164,31 @@ def _emit(
     return out
 
 
-def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
-    """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns."""
+def analyze(
+    sentence: str, names: Optional[dict] = None, split_compounds: frozenset[str] = frozenset()
+) -> Analysis:
+    """`names`: a name lexicon (`build_name_lexicon`); its names come out as proper nouns.
+    `split_compounds`: the compound verbs and adjectives that split in two, by dictionary form
+    (`split_compounds_of` a config); no other verb or adjective Sudachi has as one unit does."""
     tm, morphs = reread_cut_groups(text_map.build(sentence, reads_better_in_hiragana))
     morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)
-    words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
+    morphs = merge_noun_verbs(negative_adjectives(tm, morphs))
+    words = merge_cut_groups(tm, to_words(morphs))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun
     cands = jmdict_candidates(tm, words)
     final = nest(words, choose_matches(cands, words))
     split_group_readings(tm, final)
-    add_decompositions(tm, final)
+    add_decompositions(tm, final, split_compounds)
     return Analysis(tm, words, cands, final, _emit(tm, final, 0, len(tm.raw)))
 
 
-def generate(sentence: str, names: Optional[dict] = None) -> list[list]:
-    """The word array for a furigana sentence (html allowed, <b> tags dropped)."""
-    return analyze(sentence, names).array
+def generate(
+    sentence: str, names: Optional[dict] = None, split_compounds: frozenset[str] = frozenset()
+) -> list[list]:
+    """The word array for a furigana sentence (html allowed, <b> tags dropped); `names` and
+    `split_compounds` as for `analyze`."""
+    return analyze(sentence, names, split_compounds).array
