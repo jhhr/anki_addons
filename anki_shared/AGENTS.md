@@ -14,8 +14,9 @@ it. Do not edit it as part of a change to the other packages.
 Before changing a signature or behaviour, grep all addons for the name (exclude `*/shared/`,
 which is this directory again through junctions). Update every caller in the same commit.
 Then run the **whole** suite from the repo root, `python -m mypy .`, and
-`python build.py check`. `custom_schedule_helper` and the small addons have no tests, so for
-them the grep and a careful read are the only check there is.
+`python build.py check`. `custom_schedule_helper` has no tests, and of the small addons only
+`addon_config_sync` has, which uses nothing from here: for those the grep and a careful read
+are the only check there is.
 
 ## Constraints
 

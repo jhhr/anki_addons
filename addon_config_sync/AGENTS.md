@@ -46,9 +46,13 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
 
 ## Tests
 
-None, and the addon is not in the root `testpaths`. The file logic in `sync_actions.py` is
-testable with `tmp_path` and a stubbed `mw.pm` (`anki_shared.testing.real_anki` provides
-`.pm`); add such a test when changing it, and add the path to the root `pytest.ini`.
+`test/` is in the root `testpaths`. It runs `save_configs_on_sync` and
+`read_configs_on_sync` over folders made up per test, behind the stub `mw.pm`, and only
+looks at the files afterwards. Its conftest's `Device` is an add-ons folder with a profile's
+media folder, and its `Server` the other end of a media sync by Anki's rule (the server's
+change wins over one not sent), for the tests with two devices.
+
+The dialog, the three file functions behind its buttons and `__init__.py` have no tests.
 
 ## Shared code
 
