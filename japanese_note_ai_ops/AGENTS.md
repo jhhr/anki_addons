@@ -253,7 +253,9 @@ cheap no-op and nothing is recorded.
   the rest from the corpus), and a corpus's files are gzipped. `export_fixture.py
   --copy-anywhere` also puts the user's CopyAnywhere config into the corpus (only the definitions
   its add hook runs for the corpus's note types, their note types and decks renamed; a deck the
-  corpus lacks, there or in an `insert_deck`, gets a name no replay's deck has), and for a fixture
+  corpus lacks, there or in an `insert_deck`, gets a name no replay's deck has; a stored
+  reference gets a null id, since an id of the user's collection names nothing in a replay's,
+  or the replay's own Default deck; the rename pass's name snapshot is left out), and for a fixture
   writes expected_copy_anywhere.json from a replay with its add definitions on
   (`replay.copy_anywhere_on_add`); the capture run had none on, so that file is a regression
   baseline, not a capture. What those definitions read the capture never recorded, so
