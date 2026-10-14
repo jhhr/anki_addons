@@ -10,7 +10,7 @@ starts a real `AnkiQt` per test through its `anki_session` fixture.
 pytest-anki is written for a process that runs nothing else, and this repo runs these tests
 alongside several hundred stub-mode ones. The helpers here are what makes that safe; an
 addon's `test_anki/conftest.py` turns them into fixtures (`copy_anywhere/test_anki/conftest.py`
-is the worked example, and README.md has the template). Six things need handling:
+is the worked example, and README.md has the template). Eight things need handling:
 
 1. **Rebinding `mw`.** Addon modules do `from aqt import mw` at import time, so each one holds
    whichever object was on `aqt` when the root conftest imported it -- the stub. A running
@@ -50,6 +50,19 @@ is the worked example, and README.md has the template). Six things need handling
    that; `pytest_plugin` wraps every test that uses `anki_session` in it, so an addon's
    conftest does not have to.
 
+7. **Refusing a page's `alert()`.** Anki shows one as a modal message box, and in a headless
+   run nothing can click it. Anki's own pages alert when a request to the media server
+   fails, which a page left over from the test before does once its server is gone: a whole
+   run sat in that box for an hour. `main_window()` makes an alert raise its text instead,
+   which fails the test it happens in.
+
+8. **Closing what a test opened.** This one is the test's to do: a dialog with a webview
+   (Add Cards) has to be seen closed before the test ends, and `close()` only asks, the
+   dialog closing in a callback of its page. One left at that is still open when the
+   profile unloads ("Window should have been closed"), and its page is the one that alerts
+   in the next test. Even closed, the page has requests under way that outlive the session;
+   `real_anki.StubMainWindow.serverURL` is there for those.
+
 Two more pieces live elsewhere because they are process-wide rather than per-test:
 `real_anki.qt_offscreen()` keeps QtWebEngine off the GPU, and `pytest_plugin`'s shutdown
 guard stops the process crashing on the way out once a real Anki has run in it.
@@ -61,6 +74,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence
 
 import aqt
 import aqt.mediasrv
+import aqt.webview
 from aqt.qt import QTimer
 
 from . import real_anki
@@ -199,6 +213,12 @@ def main_window(
     setattr(main_window_class, "setup_sound", lambda self: None)
     setattr(main_window_class, "cleanup_sound", lambda self: None)
 
+    # A page's alert() is `showInfo`, whose message box then waits for a click that cannot
+    # come. Raised here, pytest-qt reports it against the test whose event loop it ran in.
+    page_class = aqt.webview.AnkiWebPage
+    original_alert = page_class.javaScriptAlert
+    setattr(page_class, "javaScriptAlert", _alert_raises)
+
     # aqt's own windows append to these and take themselves off only when they are closed: an
     # Add Cards dialog's note type chooser is on state_did_reset. A test that leaves one open
     # leaves it on the hook after its Anki is gone, and the next test's first CollectionOp,
@@ -222,6 +242,7 @@ def main_window(
         setattr(deck_browser_class, "_DeckBrowser__renderPage", original_render)
         setattr(main_window_class, "setup_sound", original_setup_sound)
         setattr(main_window_class, "cleanup_sound", original_cleanup_sound)
+        setattr(page_class, "javaScriptAlert", original_alert)
         # Anki keeps a repeating two-second timer on `mw` that re-applies the theme by
         # reading `aqt.mw.pm.theme()`. It can fire once more after this session is gone, by
         # which point `aqt.mw` is the stub again -- and `StubProfileManager` has no
@@ -230,6 +251,12 @@ def main_window(
             timer.stop()
         for hook, callbacks in dialog_hooks:
             hook._hooks[:] = callbacks
+
+
+def _alert_raises(self: Any, frame: Any, text: Any) -> None:
+    raise AssertionError(
+        f"a page called alert({text!r}), which Anki shows as a modal box: {self.url().toString()}"
+    )
 
 
 def _dialog_hooks() -> list[Any]:

@@ -255,17 +255,26 @@ def family(note_form: str, note_reading: str, link_form: str, link_reading: str,
     readings are hiragana. `depth` is the element's nesting in the array, 0 for a word the
     sentence holds on its own and 1 or more for a piece of a compound.
 
-    A link that already agrees with its note gets `NOT_A_QUESTION` rather than an explanation
-    for a difference that is not there, and so does one whose difference is not a disagreement
-    about the word: see the module docstring for why that is not the same answer as `None`.
+    A link that already agrees with its note, in spelling and in reading, gets `NOT_A_QUESTION`
+    rather than an explanation for a difference that is not there, and so does one whose
+    difference is not a disagreement about the word: see the module docstring for why that is
+    not the same answer as `None`.
     """
     # A kana spelling transliterates to exactly one reading, so which notation a long vowel is
     # written in is decidable there and worth repairing (コーラス reads こーらす, not こうらす).
     # For every other spelling neither notation is the right one, so the two are one reading.
     decidable = bool(KANA_ONLY.match(note_form or ""))
-    if same_reading(note_reading, link_reading, fold=not decidable):
+    same_spelling = bool(note_form) and (
+        unicodedata.normalize("NFKC", note_form) == unicodedata.normalize("NFKC", link_form)
+    )
+    if same_spelling and same_reading(note_reading, link_reading, fold=not decidable):
         # Identical readings reached WIDTH below whenever the spellings differed only by width,
         # which sent ＰＫ[ぴーけー] against PK[ぴーけー] to the repair as a reading to fix.
+        #
+        # Only where the spelling is the note's own, width aside. This asked about the readings
+        # alone at first, and 浴[よく] on the note 良く[よく] reads right and is another word:
+        # `vocab_unlink` holds a `NOT_A_QUESTION` back before it asks whether another note owns
+        # the word, so 付ける[つける] stayed linked to the note つける beside a note 付ける.
         return NOT_A_QUESTION
     if not_a_reading(link_form, link_reading):
         return NOT_A_QUESTION

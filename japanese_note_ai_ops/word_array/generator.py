@@ -33,6 +33,7 @@ from typing import Iterable, Optional
 from sudachipy import Dictionary, SplitMode
 
 from ..kana_conv import to_hiragana
+from ..shared.jp_text_processing.kanji.all_kanji_data import all_kanji_data
 from . import jmdict_index as jmdict
 from . import match_flags, numbers, resources, text_map
 from .names import build_lexicon, find_names, jmdict_word
@@ -147,7 +148,7 @@ def tokenize(natural: str) -> list[Morph]:
         if len(subs) > 1:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
-    return _sou_naru(_split_number_counters(out))
+    return _sou_naru(_auxiliary_verbs(_split_number_counters(out)))
 
 
 def _reads_whole(morphs: list[Morph], n: int) -> bool:
@@ -194,6 +195,24 @@ def _sou_naru(morphs: list[Morph]) -> list[Morph]:
             verb = ("動詞", "非自立可能", "*", "*", "五段-ラ行", NARU_FORMS[b.surface])
             out[k + 1] = replace(b, pos=verb, lemma="なる", norm="成る")
     return out
+
+
+# Verbs Sudachi calls a 助動詞
+AUXILIARY_VERBS = {"やがる"}
+
+
+def _auxiliary_verbs(morphs: list[Morph]) -> list[Morph]:
+    """やがる is a 助動詞 to Sudachi like ます and た, so it went into the inflection of the verb
+    before it and was a word nowhere: 言いやがって came out as 言う. It is a verb (JMdict's v5r,
+    from 上がる) standing where しまう and おく do, so it is read as Sudachi reads those, a
+    非自立可能 verb: a word of its own after a て-form (出してやがる), and the second verb of a
+    compound after a verb stem (`_auxiliary_verb_candidates`)."""
+    return [
+        replace(m, pos=("動詞", "非自立可能") + m.pos[2:])
+        if m.pos[0] == "助動詞" and m.lemma in AUXILIARY_VERBS
+        else m
+        for m in morphs
+    ]
 
 
 def _split_number_counters(morphs: list[Morph]) -> list[Morph]:
@@ -429,6 +448,51 @@ def _merge_unknown_verbs(morphs: list[Morph]) -> list[Morph]:
     return out
 
 
+# --- 2d. adjectives from a verb's negation -------------------------------------------------
+
+# Adjectives Sudachi doesn't have and reads as a verb and its negation, by their reading: 下らない
+# "worthless" is no 下る, 詰まらない no 詰まる, and 思い掛ける and 居た堪れる are no verbs at all.
+# Hand-kept, as JMdict can't tell them from a plain negation: it lists 知らない and 足りない as
+# adjectives too. 済まない and いけない are left out, being as often the verb (只じゃ済まない,
+# 学校に行けない).
+LEXICAL_NEGATIVES = {"くだらない", "つまらない", "たまらない", "おもいがけない", "いたたまれない"}
+NEGATION_AUX = ("助動詞-ナイ", "助動詞-ヌ")
+
+
+def _lexical_negative(tm: TextMap, verb: Morph, neg: Morph) -> bool:
+    """Whether a verb and the negation after it are one of LEXICAL_NEGATIVES as JMdict has it.
+    Kanji the note writes must be the adjective's: 貯まらない is no 堪らない."""
+    if (
+        verb.pos[0] != "動詞"
+        or neg.pos[0] != "助動詞"
+        or len(neg.pos) < 6
+        or not neg.pos[4].startswith(NEGATION_AUX)
+        or neg.start != verb.end
+    ):
+        return False
+    reading = _furigana_reading(tm, verb.start, verb.end, [verb]) + "ない"
+    written = tm.written_form(verb.start, verb.end) + "ない"
+    return reading in LEXICAL_NEGATIVES and any(
+        reading in rebs and "adj-i" in ps and (written in kebs or not KANJI_RE.search(written))
+        for kebs, rebs, ps in jmdict.lookup(reading)
+    )
+
+
+def negative_adjectives(tm: TextMap, morphs: list[Morph]) -> list[Morph]:
+    """A verb before its negation as the stem of the adjective the two are, when that is one of
+    LEXICAL_NEGATIVES: くだら|ねー, 下ら|ぬ and くだら|なかっ|た are 下らない, which came out as
+    下る. The negation stays a morph of its own and attaches as it did to the verb, so the word
+    is still an inflected one whose dictionary form is its lemma, not what JMdict has for the
+    form as written (詰まらん)."""
+    out = list(morphs)
+    for k, (m, nxt) in enumerate(zip(morphs, morphs[1:])):
+        if _lexical_negative(tm, m, nxt):
+            lemma = m.surface + "ない"
+            pos = ("形容詞", "一般", "*", "*", "形容詞", m.pos[5])
+            out[k] = replace(m, pos=pos, lemma=lemma, norm=lemma, subs=[])
+    return out
+
+
 def reread_cut_groups(tm: TextMap) -> tuple[TextMap, list[Morph]]:
     """A furigana group goes to the tokenizer as its kanji, or inside <k> as its reading, and
     the tokenizer can cut either wrong; a group it cuts goes in the other way when that reads
@@ -553,6 +617,7 @@ def build_name_lexicon(sentences: Iterable[str]) -> dict:
 INFLECTING = ("動詞", "形容詞")
 ATTACH_CONJ_PARTICLES = {"て", "で", "ば"}
 ATTACH_AUX_VERBS = {"いる", "居る"}  # しまう, やる, おく... stay separate words (gold ex. 19)
+TE_IRU_CONTRACTIONS = {"てる", "でる"}  # 助動詞 to Sudachi, a て-form in their 連用形 (言ってた)
 # Modal auxiliaries that leave the verb's form alone are words of their own: 捌いとる + らしい
 SEPARATE_AUX = {"らしい", "べし", "まい", "如し"}
 # Copula forms listed as particles (開豁に, 自由自在な, 気でいる)
@@ -836,7 +901,33 @@ def jmdict_candidates(tm: TextMap, words: list[Word], max_len: int = 8) -> list[
                         spellings=tuple(k for ks, _, _ in hits for k in ks),
                     )
                 )
-    return cands + _stem_suffix_candidates(tm, words, cands)
+    return (
+        cands
+        + _stem_suffix_candidates(tm, words, cands)
+        + _auxiliary_verb_candidates(tm, words)
+    )
+
+
+def _auxiliary_verb_candidates(tm: TextMap, words: list[Word]) -> list[Candidate]:
+    """A verb's 連用形 and the やがる after it as one compound verb made of the two, as JMdict
+    has 言い出す of 言う and 出す: 言いやがって is 言いやがる. JMdict has no such verb, only the
+    expression 言いやがって, which this comes before as its dictionary form. A match that ends on
+    the verb and is longer keeps it, やがる a word after it (手玉に取る + やがった). After a
+    て-form it is no compound, nor where Sudachi reads that て as the 連用形 of てる
+    (言ってやがんだ)."""
+    out = []
+    for i, (a, b) in enumerate(zip(words, words[1:])):
+        last = a.morphs[-1]
+        if (
+            b.head.lemma in AUXILIARY_VERBS
+            and a.head.pos[0] == "動詞"
+            and len(last.pos) > 5
+            and last.pos[5].startswith("連用形")
+            and last.lemma not in TE_IRU_CONTRACTIONS
+        ):
+            form = tm.written_form(a.start, a.end) + dict_form(tm, b)
+            out.append(Candidate(i, i + 2, form, (), frozenset({"v5r"}), False, form, ()))
+    return out
 
 
 def _stem_suffix_candidates(
@@ -1026,6 +1117,36 @@ def voiced(kana: str) -> str:
     return (first if len(first) == 1 else kana[:1]) + kana[1:]
 
 
+def ungeminated(kana: str, known: Iterable[str]) -> Optional[str]:
+    """Undo gemination before the word after it, against the readings the word is known by. The
+    っ stands in for the reading's last kana (坊 ぼっ -> ぼう, 一 いっ -> いち, 何処 どっ -> どこ; 十
+    じっ -> じゅう), or was put in after it (三[みっ]つ -> み). Never for ん, which a っ doesn't
+    replace: 四[よっ]つ is よ, not よん. The first known reading that fits, so their order decides
+    (いち before いつ); the reading itself when it is one of them (突[とっ], a prefix of its own);
+    None when it doesn't end in っ or none fits."""
+    stem = kana[:-1]
+    if not stem or kana[-1] != "っ":
+        return None
+    known = list(known)
+    if kana in known:
+        return kana
+    return next(
+        (
+            r
+            for r in known
+            if r in (stem, stem + "ゅう")
+            or (len(r) == len(kana) and r.startswith(stem) and r[-1] != "ん")
+        ),
+        None,
+    )
+
+
+def onyomi(kanji: str) -> list[str]:
+    """A kanji's on'yomi, from the data kana_highlight splits a group's reading per kanji by."""
+    listed = all_kanji_data.get(kanji, {"onyomi": "", "kunyomi": ""})["onyomi"]
+    return [to_hiragana(r.split("(")[0].strip()) for r in listed.split("、") if r.strip()]
+
+
 def _piece(tm: TextMap, start: int, end: int, second: bool) -> Optional[Word]:
     """Natural span [start, end) as a sub-word, if JMdict has it with the reading the note
     gives it (a second piece may be voiced by rendaku) and it isn't a lone on'yomi kanji."""
@@ -1149,8 +1270,9 @@ def _unread_subs_add_up(tm: TextMap, w: Word) -> bool:
     for i, s in enumerate(w.subs):
         readings = [_furigana_reading(tm, s.start, s.end, s.morphs)]
         own = len(s.morphs) == 1 and KANJI_RE.search(tm.surface_reading(s.start, s.end))
-        if number_value(tm, s) is not None:
-            readings.append(dict_reading(tm, s))  # Sudachi reads ３ as ３
+        value = number_value(tm, s)
+        if value is not None:
+            readings.append(_number_reading(tm, s, value))  # Sudachi reads ３ as ３
         if own:
             written = tm.written_form(s.start, s.end)
             readings += [_sudachi_reading(written)] + list(jmdict.readings(written))
@@ -1332,8 +1454,9 @@ def _has_unread_number(tm: TextMap, w: Word) -> bool:
 
 
 def _surface_reading(tm: TextMap, w: Word) -> str:
-    if number_value(tm, w) is not None:
-        return dict_reading(tm, w)
+    value = number_value(tm, w)
+    if value is not None:
+        return _number_reading(tm, w, value)
     if w.kind == "expression" and w.subs:
         return "".join(_surface_reading(tm, s) for s in w.subs)
     return _furigana_reading(tm, w.start, w.end, w.morphs)
@@ -1398,6 +1521,11 @@ def _entry_spellings(form: str, kana: str, kebs: tuple, rebs: tuple) -> list[str
         fits = usual or [k for k in usable if k != form]
     else:
         fits = [k for k in usable if _kanjifies(form, k)]
+    if kana in LEXICAL_NEGATIVES:
+        # The kanjify policy's spelling (KANJI-12): the verb's kanji and okurigana before a kana
+        # ない, where JMdict's first is 詰らない and its fullest the search-only 思い掛け無い
+        negated = [k for k in fits if k.endswith("ない")]
+        return sorted(negated, key=lambda k: (-len(_kanji_set(k)), -len(k)))[:1]
     widest = _widest_kanji_sets(fits)
     rare = [k for k in fits if "rK" in info.get(k, ())]
     if len(widest) > 1 and len(rare) < len(fits):
@@ -1609,16 +1737,25 @@ def _own_share(tm: TextMap, w: Word, furi: str) -> str:
     return furi
 
 
+def _number_reading(tm: TextMap, w: Word, value: int) -> str:
+    """How the text reads a number: the note's furigana (一[ひと]つ) where it reads the whole
+    number. Numbers mostly have none, or only on their units (１万[まん]２千[せん])."""
+    furi = to_hiragana(tm.surface_reading(w.start, w.end))
+    if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
+        return furi
+    return numbers.number_reading(value)
+
+
 def dict_reading(tm: TextMap, w: Word) -> str:
     head = w.head
     value = number_value(tm, w)
     if value is not None:
-        furi = to_hiragana(tm.surface_reading(w.start, w.end))
-        # The note's furigana (一[ひと]つ) where it reads the whole number; numbers mostly have
-        # none, or only on their units (１万[まん]２千[せん])
-        if tm.written_form(w.start, w.end) != furi and not UNREAD_RE.search(furi):
-            return furi
-        return numbers.number_reading(value)
+        furi = _number_reading(tm, w, value)
+        # Less the counter's gemination: 一[いっ] 回[かい] is いち, １００[ひゃっ] 件[けん] ひゃく,
+        # and 三[みっ]つ is JMdict's み
+        known = [numbers.number_reading(value)]
+        known += [to_hiragana(r) for r in jmdict.readings(numbers.numeral(value))]
+        return ungeminated(furi, known) or furi
     if w.kind == "expression":
         if w.surface_match:
             reading = _surface_reading(tm, w)
@@ -1643,14 +1780,19 @@ def dict_reading(tm: TextMap, w: Word) -> str:
     lemma = dict_form(tm, w)
     written = tm.written_form(w.start, w.end)
     if lemma == written:
-        # Uninflected: the note's furigana is the reading, less any rendaku from the compound
-        # the word was split out of (閏日 -> 日[び] -> ひ)
+        # Uninflected: the note's furigana is the reading, less what the words around it did to
+        # it: rendaku from the compound the word was split out of (閏日 -> 日[び] -> ひ), or
+        # gemination before the word after it (御坊ちゃん -> 坊[ぼっ] -> ぼう)
         if not KANJI_RE.search(tm.surface_reading(w.start, w.end)):
             furi = _own_share(tm, w, furi)
-        if KANJI_RE.search(written) and unvoiced(furi) != furi:
+        if KANJI_RE.search(written) and (unvoiced(furi) != furi or furi.endswith("っ")):
             known = [to_hiragana(r) for r in jmdict.readings(written)]
             if furi not in known and unvoiced(furi) in known:
                 return unvoiced(furi)
+            # A lone kanji JMdict has no word for, or none read so, is read by its on'yomi:
+            # 立[りっ] of 立候補 is りつ
+            kanji_readings = onyomi(written) if len(written) == 1 else []
+            return ungeminated(furi, known) or ungeminated(furi, kanji_readings) or furi
         return furi
     if head.lemma == "する" and lemma.endswith("れる"):
         return "される"
@@ -1896,7 +2038,8 @@ def analyze(sentence: str, names: Optional[dict] = None) -> Analysis:
     morphs = merge_dotted_names(morphs)
     if names:
         morphs = merge_names(tm, morphs, names)
-    words = merge_cut_groups(tm, to_words(merge_noun_verbs(morphs)))
+    morphs = merge_noun_verbs(negative_adjectives(tm, morphs))
+    words = merge_cut_groups(tm, to_words(morphs))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun

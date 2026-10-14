@@ -64,6 +64,8 @@ reads it: every search over the array field names the sentence type.
 3. **Grouping** morphemes into words: a verb or adjective plus its inflection chain (助動詞,
    て/で/ば, auxiliary いる). しまう, やる, おく and other auxiliaries stay separate words, and so
    do the modal 助動詞 らしい, べき and まい (捌いとる + らしい, 帰る + べき); たい stays in the chain.
+   やがる, a 助動詞 to Sudachi, is read as the verb it is, so it stays out of the chain too:
+   出して + やがる (see Structure for やがる after a verb stem).
 4. **Furigana groups are never split between top-level words**, which repairs tokenizer cuts
    like 八紘|一宇 and 業|者.
 5. **Multi-word candidates**: n-grams of words that are JMdict entries, looked up as written,
@@ -80,6 +82,14 @@ reads it: every search over the array field names the sentence type.
    An adjective's く- and な-forms are the adjective (大きく, <k>良く</k> as a 副詞, 大きな as a
    連体詞, 多く and 近く as nouns with a kanji), save the few adverbs of their own in `LEXICAL_KU_ADVERBS` (危うく, 全く): JMdict
    lists 大きく and 早く as adverbs too, so it can't tell them apart.
+   A verb and its negation are the adjective JMdict has for the two when it is one of
+   `LEXICAL_NEGATIVES` (下らない, 詰まらない, 堪らない, 思い掛けない, 居た堪れない), in whatever form the
+   negation takes (くだらねー, 詰まらん, 下らぬ): Sudachi has none of them and read 下る and 詰まる.
+   Hand-kept for the same reason, JMdict listing 知らない and 足りない as adjectives too. Kanji the
+   note writes must be the adjective's (貯まらない stays 貯まる), and its one spelling is the kanjify
+   policy's (KANJI-12), the verb's okurigana before a kana ない: 詰まらない, not JMdict's first,
+   詰らない. 済まない and いけない stay the verb, being as often its plain negation (只じゃ済まない,
+   学校に行けない). Export: 22 words (詰まらない 10, 下らない 6, 思い掛けない 3, 堪らない 2, 居た堪れない 1).
    A word Sudachi calls a suffix that JMdict has with its reading only as a word of its own is
    labelled as JMdict has it: 家[うち] after 一日中 a noun, 等[など] a particle, 沿い a verb. Inside
    a compound only the verb stems are relabelled; 官 of 警察官 stays a suffix, though JMdict's 官
@@ -113,6 +123,17 @@ sub-word's Sudachi and JMdict readings, the second allowed to be voiced by renda
 up, the word simply keeps no sub-words, which is what stops a jukujikun word being split inside
 (今日, 田舎者). A sub-word's reading drops the rendaku of the compound it came from when JMdict
 has the plain reading (閏日 -> 日[び] -> ひ).
+
+A word's reading drops the gemination before the word after it too (`ungeminated`). The っ its
+reading ends in, the note's furigana or Sudachi's, stands in for the reading's last kana or was
+put in after it, and the first reading JMdict has for the word that fits is the word's:
+坊[ぼっ]ちゃん -> 坊 ぼう, 絶不調 -> 絶 ぜつ, 何処[どっ]か -> 何処 どこ, 蹄鉄[ていてっ] 工 ->
+ていてつ, 根[ねっ]こ -> 根 ね. Never ん, which a っ doesn't replace (四[よっ]つ is よ, not よん). A
+number takes its own reading before JMdict's (一[いっ] 回 いち, １００[ひゃっ] 件 ひゃく, 十[じっ]
+じゅう; 三[みっ]つ み), and a lone kanji JMdict has no such word for its on'yomi (立[りっ] of
+立候補 りつ). The word it was split out of keeps the reading the text gives it (ぼっちゃん,
+いっかい). A reading JMdict lists stays (突[とっ], a prefix), and so does a word written with its
+っ (取っ of 取っ手, 真っ, 糞ッ). Export: 42 words re-read, 30 of them numbers.
 
 Where the note gives no furigana, Sudachi's reading is shared out the same way, since its short
 units don't always add up to the long unit: 無人島 comes as 無人[むじん] + 島[むじんとう], so 島
@@ -175,6 +196,13 @@ Runs of nouns that are neither a JMdict entry nor a Sudachi long unit stay separ
 
 An adjective stem with the na-adjective suffix after it is one na-adjective whether JMdict has it
 or not: 儚げ like 寂しげ (儚い + げ), so 忌々しげに is not 忌々し + げに.
+
+A verb stem with やがる after it is one compound verb made of the two, though JMdict has none of
+them as a verb: 言いやがって is 言いやがる = 言う + やがる, as 言い出す is 言う + 出す, and so are
+寝返りやがった and 飼われやがって. JMdict's one such entry, the expression 言いやがって, gives way to
+it as an inflected expression does to its dictionary form. A longer match ending on the verb keeps
+it (手玉に取る + やがった), and after a て-form やがる is a word of its own (熟れて + やがる). Export:
+12 やがる, all part of the verb before them until then; 7 compound verbs, 5 words of their own.
 
 A furigana group cut by the tokenizer is one word when JMdict has the whole read that way
 (八紘一宇, 業者; its sub-words then follow the rules above); otherwise its pieces are the words
@@ -309,16 +337,25 @@ words prompt" and the extract-words fine-tuning export.
 4. `[note_id]` - migrated with a note id: judged already, lacks `match_quality`.
 5. `[note_id, match_quality]` - fully matched.
 
-Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`, and so does a word
-built on one (二十八日, 十一時): numbers have been a steady source of junk notes. Everything
-else is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
+Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`: numbers have been
+a steady source of junk notes. Everything else, a word built on a number included (二十八日,
+十一時), is the word matching judge's call. The modes are `JUDGE_NEW` (state 1, the default),
 `REJUDGE_MATCHED` (4, 5) and `REJUDGE_ALL` (2-5); re-judging can take a link away.
 
 The judge (`judge.py`, op `async_api_ops/word_matching_judge.py`, one browser menu entry per
 mode: "Judge words matchability", "Re-judge matched words", "Re-judge matched/judged words", model
 `word_matching_judge_model`) asks about each word alone: its prompt has the rules for its group
 (`POS_RULES`, `rule_group()`: the part of speech's group, split further wherever the array tells
-cases apart - nouns into `noun-main` at the top level, `noun-phrase` inside a word made with a
+cases apart - a word made of exactly a number and a counter into `number-counter` under any part
+of speech and at any depth (三階 a noun, 一度 an adverb, 二つ an expression; `dontmatch` unless
+it is a native number word like 三つ or 一人 or means more than the count, like 一番; and a
+word with such a second meaning is matched as the plain count too, `BOTH_MEANINGS_RULE`, so
+that 一杯 the glass has a note beside 一杯 "full", but only the number that has the double
+meaning: 三番 and 二時 stay counts; the
+generator makes the two sub-words only where the furigana reads them apart, so a count it left
+whole, 九人[きゅうにん], stays in its own group, and `noun-main`, `noun-sub` and `adverb` carry
+the same test in short, `WHOLE_COUNT_RULE`), nouns
+into `noun-main` at the top level, `noun-phrase` inside a word made with a
 particle (本当に, 羽目を外す) and `noun-sub` inside any other word, either verb of a two-verb
 compound verb into `prefix-verb` / `suffix-verb`, affixes into `prefix`, `suffix` and `counter`,
 and expressions of verbs only into

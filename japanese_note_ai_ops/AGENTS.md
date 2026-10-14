@@ -60,7 +60,7 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
 | `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs, `sentence_migration_run.py` for the migration's practice run (every note of the vocab type, not `capture_run`'s notes holding an array; prints a summary naming the report). **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
-| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl` |
+| `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included, and that a hook writing `new_note_id_field` still leaves the new note's placeholder to be resolved; `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl` |
 | `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
@@ -419,6 +419,15 @@ cheap no-op and nothing is recorded.
   markers preparing either of the last two put on other notes are the tidying's, below.
   Resolving and unlinking always run to the end; a resolving that raises fails the op after
   the unlinking.
+- **A new note's `new_note_id_field` is the only record of its placeholder, and it is read
+  after the add.** `col.add_note` runs every addon's `note_will_be_added` hook on the note
+  first, and a hook can write that field: a CopyAnywhere definition filling it with
+  `{{__Note_ID}}`, 0 on a note not added yet, left the resolving nothing to look for, and
+  every array kept its placeholder until the next match run reset the word and asked about it
+  again. `base_ops.placeholder_kept` wraps each add and puts the placeholder back in the note
+  in memory; the resolving then saves the note holding its own id. Anything new that needs a
+  note's placeholder after the add reads it off the note as handed on, never from the
+  collection, which holds what the hook wrote until then.
 - **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
   without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
@@ -586,7 +595,8 @@ as `research.old_word_lists`, relative imports, excluded from mypy); `research/c
 the corpus loader the other scripts read their sentences through. Collection repair scripts talk to
 a running Anki over AnkiConnect, list changes by default, write only with `--apply`, undo
 with `--revert`, and log to `output/`. Never run one with `--apply` unless the user asked for
-that run. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
+that run. `number_counter_unlink.py` is the one that deletes notes: its `--revert` puts the
+arrays back and no note, so it keeps what each deleted note held in `output/`. The eval data is not in `output/`: the eval sets, the judge's hand labels, the
 pre-migration export and its hand-checked subset (`corpora.py`), `kanjify_sentence_data.jsonl`
 and the answer caches (`*_eval_results.jsonl`, `vocab_reading_judge_results.jsonl`) are hand
 work and paid answers found nowhere else, so they live in `japanese_note_ai_ops/evals/` of the
@@ -659,7 +669,9 @@ what such a session follows), writing the same result files.
   per process).
 
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
-  `python -m pytest`.
+  `python -m pytest`. Most research scripts are tested in `test/` instead (`test_vocab_*.py`,
+  `test_kanjify_*.py`), and `vocab_morphology` in both, so a change under
+  `word_array/research/` runs both suites.
 - The root `mypy.ini` puts `test/` and `word_array/research/` on `mypy_path` for the
   bare-name imports; the local `mypy.ini` mirrors it for a run started here.
 
@@ -683,7 +695,8 @@ current). `config.md` lists outdated models, and `log_to_console` is `true` in
 Declares `jp_text_processing`, `ui`, `utils`, `word_array`. Uses `utils.vendor_path` and
 `utils.vendor_rebuild_ui`, `word_array.field_text`, `ui.note_source_buttons` (the multi-op
 dialog), and from the submodule `kana_highlight`,
-`make_furigana_from_reading`, `check_word_reading_type`, `main_types`. It does not use the
+`make_furigana_from_reading`, `check_word_reading_type`, `main_types` and `all_kanji_data`
+(the generator reads a lone kanji's on'yomi from it). It does not use the
 shared `utils/logger.py`, and its config access is inline `getConfig(__name__)`. General
 Japanese text logic belongs in the `jp_text_processing` repo, kept free of anything specific
 to this addon. Before adding a generic helper, check

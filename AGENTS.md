@@ -133,8 +133,11 @@ see the README. Tests under `anki_shared/jp_text_processing` are run from that d
 with `python -B`.
 
 Before calling work done: `python -m pytest -q`, `python -m mypy .` and
-`python build.py check` for anything beyond a docs change. Not every addon has tests;
-say so in your report instead of implying coverage that does not exist.
+`python build.py check` for anything beyond a docs change, and for a change under
+`japanese_note_ai_ops` that addon's own suite too (`python -m pytest test` from its
+directory): the root run leaves it out, and four of its tests once failed unseen for three
+weeks that way. Not every addon has tests; say so in your report instead of implying
+coverage that does not exist.
 
 ## Code conventions
 
