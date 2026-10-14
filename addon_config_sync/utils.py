@@ -140,7 +140,11 @@ def ordered(obj: object) -> object:
 
 
 def json_files_deep_equal(file1: Path, file2: Path) -> bool:
-    """Compare two JSON files for deep equality, ignoring key order."""
+    """Compare two JSON files for deep equality, ignoring key order.
+
+    The add-on compares settings instead now (sync_actions.same_settings). This stays for
+    test/old_against_new.py, which runs the handlers of an older sync_actions.py on this
+    module, and they import it."""
     try:
         with open(file1, "r", encoding="utf-8") as f1, open(file2, "r", encoding="utf-8") as f2:
             obj1 = json.load(f1)
@@ -148,16 +152,6 @@ def json_files_deep_equal(file1: Path, file2: Path) -> bool:
             return ordered(obj1) == ordered(obj2)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False  # If we can't read the files, assume they are not equal
-
-
-def json_bytes_deep_equal(data1: bytes, data2: bytes) -> bool:
-    """`json_files_deep_equal` for what has already been read out of the two files."""
-    try:
-        obj1 = json.loads(data1.decode("utf-8"))
-        obj2 = json.loads(data2.decode("utf-8"))
-        return ordered(obj1) == ordered(obj2)
-    except (ValueError, RecursionError):
-        return False  # As for the files: what cannot be read is not equal
 
 
 def read_json_object(path: Path) -> dict[str, Any] | None:
@@ -169,6 +163,15 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def json_object(data: bytes) -> dict[str, Any] | None:
+    """`read_json_object` for what has already been read out of a file."""
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def get_addon_module_name() -> str:

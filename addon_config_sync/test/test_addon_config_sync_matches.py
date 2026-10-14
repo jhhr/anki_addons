@@ -8,7 +8,6 @@ as it did before there was one.
 
 from __future__ import annotations
 
-import filecmp
 import json
 import shutil
 from unittest import mock
@@ -237,14 +236,14 @@ def test_a_copy_replaced_while_a_sync_starts_is_not_held_as_a_match(device):
     sync stops, as it always was."""
     device.install(ADDON, {"config": {"speed": 1}})
     device.sync_starts()
-    compare = filecmp.cmp
+    send = sync_actions.send_settings
 
     def compare_and_then_a_download_lands(*args, **kwargs):
-        same = compare(*args, **kwargs)
+        sent = send(*args, **kwargs)
         device.write_media(ADDON, {"config": {"speed": 22}})
-        return same
+        return sent
 
-    with mock.patch.object(filecmp, "cmp", compare_and_then_a_download_lands):
+    with mock.patch.object(sync_actions, "send_settings", compare_and_then_a_download_lands):
         assert device.sync_starts().saved == []
 
     assert device.held() == {}

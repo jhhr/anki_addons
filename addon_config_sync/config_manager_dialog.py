@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 import difflib
-import filecmp
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,14 +36,15 @@ from .sync_actions import (
     get_paths,
     overwrite_addon_from_media,
     remove_addon_from_media,
+    same_settings,
     save_addon_to_media,
+    settings_as_read,
 )
 from .utils import (
     get_existing_addons,
     get_configs_in_media,
     get_main_config,
     is_addon_ignored,
-    json_files_deep_equal,
     set_addon_ignored,
     standard_icon,
     write_main_config,
@@ -317,9 +317,7 @@ class AddonConfigManagerDialog(QDialog):
             changed = False
 
             if installed and media_exists and addon_meta_path.is_file():
-                changed = not filecmp.cmp(
-                    addon_meta_path, media_meta_path, shallow=False
-                ) and not json_files_deep_equal(addon_meta_path, media_meta_path)
+                changed = not same_settings(addon_meta_path, media_meta_path)
 
             if changed and addon_id in UPDATED_STATE:
                 del UPDATED_STATE[addon_id]
@@ -762,7 +760,9 @@ class AddonConfigManagerDialog(QDialog):
         addon_time = self.format_mtime(row.addon_meta_path)
         media_time = self.format_mtime(row.media_meta_path)
         info_label = QLabel(
-            f"Addon file modified: {addon_time}<br>Media file modified: {media_time}"
+            f"Addon file modified: {addon_time}<br>Media file modified: {media_time}<br>"
+            "Not shown: what Anki records about the installed version, which each device"
+            " keeps for itself"
         )
         info_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(info_label)
@@ -783,6 +783,10 @@ class AddonConfigManagerDialog(QDialog):
         try:
             with open(path, "r", encoding="utf-8") as file_handle:
                 data = json.load(file_handle)
+            if isinstance(data, dict):
+                # What syncs and what the buttons copy, as Anki reads it: the record of the
+                # installed package stays as it is on either side
+                data = settings_as_read(data)
             text = json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False)
             return text.splitlines()
         except Exception:

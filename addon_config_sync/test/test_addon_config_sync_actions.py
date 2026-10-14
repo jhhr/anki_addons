@@ -1,18 +1,23 @@
 """What Addon Config Sync copies when a sync starts and when a media sync stops.
 
 Every test here goes through the two functions Anki's hooks reach and looks at the files
-afterwards, so none of them knows how the add-on decides. They are in four parts: what a
+afterwards, so none of them knows how the add-on decides. They are in five parts: what a
 sync start does, what a media sync stopping does with a difference it copies over, what it
-does with a config that only this device changed, and how a broken file or one without a
-config is kept from replacing a config either way. The last two parts are what used to lose
-configs.
+does with a config that only this device changed, how a broken file or one without a config
+is kept from replacing a config either way, and how what Anki records about the installed
+package stays on each device. The third and fourth parts are what used to lose configs; the
+fifth is what used to hide updates.
 """
 
 from __future__ import annotations
 
+import builtins
+import errno
+import io
 import json
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -141,22 +146,30 @@ def test_a_sync_start_makes_no_copy_of_a_meta_json_anki_cannot_read(device):
 
 
 @pytest.mark.parametrize(
-    "here, copy",
+    "here, copy, sent",
     [
-        ({"config": {"speed": 1}}, {"name": "An add-on"}),
-        ({"name": "An add-on", "disabled": True}, {"name": "An add-on"}),
-        ({"name": "An add-on"}, {"name": "An add-on", "disabled": True}),
+        (
+            {"config": {"speed": 1}},
+            {"name": "An add-on"},
+            {"config": {"speed": 1}, "name": "An add-on"},
+        ),
+        (
+            {"name": "An add-on", "disabled": True},
+            {"name": "An add-on"},
+            {"name": "An add-on", "disabled": True},
+        ),
+        ({"name": "An add-on"}, {"name": "An add-on", "disabled": True}, {"name": "An add-on"}),
     ],
 )
-def test_a_sync_start_still_sends_what_takes_no_config_away(device, here, copy):
+def test_a_sync_start_still_sends_what_takes_no_config_away(device, here, copy, sent):
     """A config over a copy without one, or a meta.json without a config over a copy that
-    has none either: as before."""
+    has none either: as before. The copy keeps its record of the package, here its name."""
     device.install(ADDON, here)
     device.write_media(ADDON, copy)
 
     result = device.sync_starts()
 
-    assert device.media_copy(ADDON) == here
+    assert device.media_copy(ADDON) == sent
     assert result.saved == [ADDON]
 
 
@@ -345,27 +358,9 @@ def test_a_config_an_addon_writes_back_after_a_download_was_applied_is_replaced_
     assert desktop.meta(ADDON) == {"config": {"speed": 22, "last_opened": 0}}
 
 
-def test_what_anki_records_of_an_update_is_read_back_like_any_other_difference(device):
-    """Anki installs an update over the folder and writes the meta.json back with the new
-    `mod`, and when it rewrites one it fills in `disabled` and `update_enabled`. Kept, the
-    new `mod` would go out with the next sync and tell the Anki of every other device that
-    it has the update."""
-    installed = {"name": "An add-on", "mod": 100, "config": {"speed": 1}}
-    device.install(ADDON, installed)
-    device.sync_starts()
-    device.write_meta(
-        ADDON,
-        dict(installed, mod=200, human_version="2.0", disabled=False, update_enabled=True),
-    )
-
-    result = device.media_sync_stops()
-
-    assert device.meta(ADDON) == installed
-    assert result.loaded == [ADDON]
-
-
 def test_an_addon_installed_again_gets_the_config_of_its_copy(device):
-    """A new install has no config of its own, and the copy still holds the old one."""
+    """A new install has no config of its own, and the copy still holds the old one. What
+    Anki recorded of the new install stays."""
     device.install(ADDON, {"name": "An add-on", "mod": 100, "config": {"speed": 1}})
     device.sync_starts()
     shutil.rmtree(device.addons / ADDON)
@@ -373,20 +368,22 @@ def test_an_addon_installed_again_gets_the_config_of_its_copy(device):
 
     result = device.media_sync_stops()
 
-    assert device.meta(ADDON) == {"name": "An add-on", "mod": 100, "config": {"speed": 1}}
+    assert device.meta(ADDON) == {"name": "An add-on", "mod": 200, "config": {"speed": 1}}
     assert result.loaded == [ADDON]
 
 
 def test_a_meta_json_anki_rebuilt_from_nothing_gets_the_config_of_its_copy(device):
     """Anki reads a meta.json it cannot parse as an empty one, and the next thing it writes
-    about the add-on, such as enabling it, is then the whole file."""
+    about the add-on, such as enabling it, is then the whole file. The record in it knows
+    no version, so Anki offers the add-on as an update until it is installed again; the
+    copy's record is of another install."""
     device.install(ADDON, {"name": "An add-on", "mod": 100, "config": {"speed": 1}})
     device.sync_starts()
     device.write_meta(ADDON, {"disabled": True, "mod": 0, "conflicts": [], "update_enabled": True})
 
     result = device.media_sync_stops()
 
-    assert device.meta(ADDON) == {"name": "An add-on", "mod": 100, "config": {"speed": 1}}
+    assert device.meta(ADDON) == {"config": {"speed": 1}, "mod": 0, "conflicts": []}
     assert result.loaded == [ADDON]
 
 
@@ -677,3 +674,236 @@ def test_a_copy_that_is_no_json_object_is_read_over_nothing(device, here, copy):
         assert not device.meta_path(ADDON).exists()
     else:
         assert device.meta_path(ADDON).read_text(encoding="utf-8") == here
+
+
+def test_a_copy_that_is_an_empty_list_is_replaced_by_an_empty_meta_json(device):
+    """Versions up to 1.0.0 took the two for the same file, as utils.ordered gives both as
+    [], and so left the copy as it was. Read whole by such a version, a copy that is no JSON
+    object stops Anki loading add-ons."""
+    device.install(ADDON)
+    device.write_text(device.meta_path(ADDON), "{}")
+    device.write_text(device.media_path(ADDON), "[]")
+
+    assert device.media_sync_stops(apply=False).loaded == [ADDON]
+    assert device.sync_starts().saved == [ADDON]
+    assert device.media_copy(ADDON) == {}
+
+
+def test_a_meta_json_that_is_an_empty_list_is_repaired_from_an_empty_copy(device):
+    """As above, the other way: Anki stops loading add-ons over such a meta.json."""
+    device.install(ADDON)
+    device.write_text(device.meta_path(ADDON), "[]")
+    device.write_text(device.media_path(ADDON), "{}")
+
+    assert device.media_sync_stops().loaded == [ADDON]
+    assert device.meta(ADDON) == {}
+
+
+@pytest.fixture
+def held_open(monkeypatch):
+    """Files that cannot be opened, as on Windows while another program holds them."""
+    held: list[Path] = []
+    real_open = io.open
+
+    def opening(file, *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)) and Path(file).resolve() in held:
+            raise PermissionError(errno.EACCES, "held open by another program", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(io, "open", opening)
+    monkeypatch.setattr(builtins, "open", opening)
+    return held
+
+
+@pytest.mark.parametrize("which", ["meta_path", "media_path"])
+def test_an_addon_whose_file_is_held_open_is_passed_over_until_the_next_sync(
+    device, held_open, which
+):
+    """Taken for a file that is missing or broken, the media copy would be written anew
+    over the record it keeps, or the meta.json read over and a change made here lost."""
+    device.install(ADDON, {"name": "An add-on", "mod": 200, "config": {"speed": 1}})
+    device.write_media(ADDON, {"name": "An add-on", "mod": 100, "config": {"speed": 1}})
+    device.sync_starts()
+    device.set_config(ADDON, speed=333)
+    files = (device.meta_path(ADDON), device.media_path(ADDON))
+    before = [path.read_bytes() for path in files]
+
+    held_open.append(getattr(device, which)(ADDON).resolve())
+    assert device.media_sync_stops().loaded == []
+    assert device.sync_starts().skipped == [ADDON]
+    held_open.clear()
+
+    assert [path.read_bytes() for path in files] == before
+    assert device.sync_starts().saved == [ADDON]
+    assert device.media_copy(ADDON) == {"name": "An add-on", "mod": 100, "config": {"speed": 333}}
+
+
+# What Anki records about the installed package stays on each device
+
+INSTALLED = {"name": "An add-on", "mod": 100, "human_version": "1.0"}
+UPDATED = {"name": "An add-on", "mod": 200, "human_version": "2.0"}
+
+
+def test_what_anki_records_of_an_update_stays_and_is_not_sent(device):
+    """Anki installs an update over the folder and writes the meta.json back with the new
+    `mod`, and when it rewrites one it fills in `disabled` and `update_enabled`. Read back
+    from the copy, the update just installed would be offered again; sent, every other
+    device's Anki would be told that it has the update."""
+    device.install(ADDON, dict(INSTALLED, config={"speed": 1}))
+    device.sync_starts()
+    updated = dict(UPDATED, config={"speed": 1}, disabled=False, update_enabled=True)
+    device.write_meta(ADDON, updated)
+
+    assert device.media_sync_stops().loaded == []
+    assert device.meta(ADDON) == updated
+    assert device.sync_starts().saved == []
+    assert device.media_copy(ADDON) == dict(INSTALLED, config={"speed": 1})
+
+
+def test_a_config_read_from_its_copy_keeps_the_record_of_this_devices_install(device):
+    device.install(ADDON, dict(UPDATED, config={"speed": 1}))
+    device.sync_starts()
+    device.write_media(ADDON, dict(INSTALLED, config={"speed": 22}))
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON) == dict(UPDATED, config={"speed": 22})
+    assert result.loaded == [ADDON]
+
+
+def test_a_config_sent_to_its_copy_leaves_the_copy_its_record(device):
+    """A device on an older version of this add-on reads the copy whole, and is so told the
+    version the copy had, never that it has the one installed here."""
+    device.install(ADDON, dict(UPDATED, config={"speed": 1}))
+    device.write_media(ADDON, dict(INSTALLED, config={"speed": 1}))
+    device.set_config(ADDON, speed=22)
+
+    assert device.sync_starts().saved == [ADDON]
+    assert device.media_copy(ADDON) == dict(INSTALLED, config={"speed": 22})
+
+
+@pytest.mark.parametrize("copy", [None, '{"config": {"spe', "[]"])
+def test_a_copy_made_anew_takes_the_record_of_the_device_that_makes_it(device, copy):
+    """There is no record to keep: the first copy of an add-on's config, or one that repairs
+    a copy that is no JSON object."""
+    device.install(ADDON, dict(UPDATED, config={"speed": 1}))
+    if copy is not None:
+        device.write_text(device.media_path(ADDON), copy)
+
+    assert device.sync_starts().saved == [ADDON]
+    assert device.media_copy(ADDON) == dict(UPDATED, config={"speed": 1})
+
+
+def test_a_difference_only_in_what_anki_records_is_neither_read_nor_listed(device):
+    here = dict(UPDATED, config={"speed": 1})
+    device.install(ADDON, here)
+    device.write_media(
+        ADDON, dict(INSTALLED, branch_index=1, min_point_version=231000, config={"speed": 1})
+    )
+
+    assert device.media_sync_stops(apply=False).loaded == []
+    assert device.media_sync_stops().loaded == []
+    assert device.meta(ADDON) == here
+
+
+def test_a_change_made_here_survives_a_media_sync_while_the_records_differ(device):
+    """A match is held for the same settings. Held only for files the same in everything, it
+    would never be made while the copy keeps another device's record, and a change made
+    here would be read over at every media sync stopping."""
+    device.install(ADDON, dict(UPDATED, config={"speed": 1}))
+    device.write_media(ADDON, dict(INSTALLED, config={"speed": 1}))
+    device.sync_starts()
+    device.set_config(ADDON, speed=333)
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON) == dict(UPDATED, config={"speed": 333})
+    assert result.loaded == []
+
+
+def test_a_meta_json_that_is_gone_gets_the_settings_of_its_copy_and_no_record(device):
+    """There is no record of this device's install to keep, and the copy's is of another
+    install: Anki names the add-on by its folder and offers it as an update until it is
+    installed again."""
+    device.install(ADDON)
+    device.write_media(ADDON, dict(INSTALLED, config={"speed": 22}, disabled=True))
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON) == {"config": {"speed": 22}, "disabled": True}
+    assert result.loaded == [ADDON]
+
+
+def test_the_dialogs_buttons_copy_the_settings_and_leave_each_side_its_record(device):
+    device.install(ADDON, dict(UPDATED, config={"speed": 1}))
+    device.write_media(ADDON, dict(INSTALLED, config={"speed": 22}))
+
+    assert device.calls(sync_actions.overwrite_addon_from_media, ADDON)
+    assert device.meta(ADDON) == dict(UPDATED, config={"speed": 22})
+
+    device.set_config(ADDON, speed=333)
+    assert device.calls(sync_actions.save_addon_to_media, ADDON)
+    assert device.media_copy(ADDON) == dict(INSTALLED, config={"speed": 333})
+
+
+def test_an_update_on_one_device_leaves_the_other_its_record(make_device, server):
+    """The other device's Anki goes on offering the update until it is installed there."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, dict(INSTALLED, config={"speed": 1}))
+        each.syncs(server)
+
+    desktop.write_meta(ADDON, dict(UPDATED, config={"speed": 22}))
+    desktop.syncs(server)
+    result = laptop.syncs(server)
+
+    assert result.loaded == [ADDON]
+    assert laptop.meta(ADDON) == dict(INSTALLED, config={"speed": 22})
+    assert desktop.meta(ADDON) == dict(UPDATED, config={"speed": 22})
+    assert json.loads(server.files[laptop.media_path(ADDON).name])["mod"] == 100
+
+
+def test_the_tick_in_ankis_list_of_updates_goes_to_the_other_device(make_device, server):
+    """`update_enabled` is the user's, though Anki writes it beside its record."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, dict(INSTALLED, config={"speed": 1}))
+        each.syncs(server)
+
+    desktop.write_meta(ADDON, dict(desktop.meta(ADDON), update_enabled=False))
+    desktop.syncs(server)
+
+    assert laptop.syncs(server).loaded == [ADDON]
+    assert laptop.meta(ADDON) == dict(INSTALLED, config={"speed": 1}, update_enabled=False)
+
+
+def test_the_range_one_anki_version_writes_stays_on_its_device(make_device, server):
+    """After every update check, Anki writes the range of Anki versions that AnkiWeb answered
+    for its own version, and it does not load an add-on outside that range."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, dict(INSTALLED, min_point_version=50, config={"speed": 1}))
+        each.syncs(server)
+
+    desktop.write_meta(ADDON, dict(desktop.meta(ADDON), min_point_version=231000))
+    assert desktop.sync_starts().saved == []
+    desktop.media_sync(server)
+    desktop.media_sync_stops()
+
+    assert laptop.syncs(server).loaded == []
+    assert laptop.meta(ADDON)["min_point_version"] == 50
+
+
+def test_the_update_a_device_on_an_older_version_sends_is_not_read(make_device, server):
+    """Such a device sends its whole meta.json when an update changed what Anki records."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, dict(INSTALLED, config={"speed": 1}))
+        each.syncs(server)
+
+    sent = dict(UPDATED, config={"speed": 1})
+    server.put(laptop.media_path(ADDON).name, json.dumps(sent).encode("utf-8"))
+    result = laptop.syncs_media_only(server)
+
+    assert result.loaded == []
+    assert laptop.meta(ADDON) == dict(INSTALLED, config={"speed": 1})

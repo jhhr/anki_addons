@@ -1,10 +1,10 @@
 """Addon Config Sync loaded in a running Anki: its handlers on Anki's hooks, the real profile
 manager, and the meta.json files Anki's own add-on manager writes.
 
-Which differences the add-on leaves alone when a media sync stops depends on what is in a
-meta.json after Anki has installed an add-on, updated it or switched it off
-(`sync_actions.is_change_made_here`). The tests in `addon_config_sync/test` write such files
-by hand; these have Anki write them.
+Which differences the add-on carries between devices, and which it leaves alone when a media
+sync stops, depends on what is in a meta.json after Anki has installed an add-on, updated it
+or switched it off (`sync_actions.same_settings`, `is_change_made_here`). The tests in
+`addon_config_sync/test` write such files by hand; these have Anki write them.
 
 The two sync handlers are called as the hooks call them, not through the hooks. In this
 process `media_sync_did_start_or_stop` also holds the handlers of main windows that earlier
@@ -91,28 +91,32 @@ def test_a_config_an_addon_writes_after_a_sync_started_survives_the_media_sync(
     assert manager.addonMeta(TINY) == {"config": {"speed": 22}}
 
 
-def test_what_an_update_by_anki_writes_is_read_back_as_before(real_mw, addon, manager, tmp_path):
+def test_what_an_update_by_anki_writes_stays_and_is_not_sent(real_mw, addon, manager, tmp_path):
     """Anki installs an update over the folder and writes the meta.json back with the new
-    version in it. That is no change made here: kept, it would go out with the next sync
-    and tell the other devices' Anki that they have the update."""
+    version in it. That is this device's: read back from the copy, Anki would offer the
+    update again; sent, the other devices' Anki would be told that they have it."""
     manager.install(_package(tmp_path, human_version="1.0", mod=1))
     manager.writeConfig(TINY, {"speed": 1})
     addon.sync_on_save()
     sent = manager.addonMeta(TINY)
 
     manager.install(_package(tmp_path, human_version="2.0", mod=22, min_point_version=45))
-    assert manager.addonMeta(TINY) == dict(sent, human_version="2.0", mod=22, min_point_version=45)
+    updated = manager.addonMeta(TINY)
+    assert updated == dict(sent, human_version="2.0", mod=22, min_point_version=45)
     addon.read_on_sync(False)
+    assert manager.addonMeta(TINY) == updated
+    assert addon.sync_loaded_addons == []
 
-    assert manager.addonMeta(TINY) == sent
-    assert addon.sync_loaded_addons == [TINY]
+    addon.sync_on_save()
+    assert addon.sync_saved_addons == []
+    assert json.loads(_media_copy(real_mw).read_text(encoding="utf-8")) == sent
 
 
-def test_what_anki_fills_in_when_it_rewrites_a_meta_json_is_read_back_as_before(
+def test_what_anki_fills_in_when_it_rewrites_a_meta_json_is_no_difference(
     real_mw, addon, manager, tmp_path
 ):
     """Switching an add-on off and on again leaves it as it was, in a file that now has
-    every key Anki knows."""
+    every key Anki knows: nothing for a sync to carry either way."""
     manager.install(_package(tmp_path, mod=1))
     manager.writeConfig(TINY, {"speed": 1})
     addon.sync_on_save()
@@ -120,11 +124,14 @@ def test_what_anki_fills_in_when_it_rewrites_a_meta_json_is_read_back_as_before(
 
     manager.toggleEnabled(TINY, enable=False)
     manager.toggleEnabled(TINY, enable=True)
-    assert set(manager.addonMeta(TINY)) > set(sent)
+    rewritten = manager.addonMeta(TINY)
+    assert set(rewritten) > set(sent)
     addon.read_on_sync(False)
+    assert manager.addonMeta(TINY) == rewritten
+    assert addon.sync_loaded_addons == []
 
-    assert manager.addonMeta(TINY) == sent
-    assert addon.sync_loaded_addons == [TINY]
+    addon.sync_on_save()
+    assert addon.sync_saved_addons == []
 
 
 def test_an_addon_switched_off_in_anki_stays_off(real_mw, addon, manager, tmp_path):
