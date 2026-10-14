@@ -40,10 +40,12 @@ def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:
         return generator.name_rest_word(word, rest_raw)
 
 
-def generate_word_array(sentence: str, name_lexicon: Optional[dict]) -> list:
+def generate_word_array(
+    sentence: str, name_lexicon: Optional[dict], split_compounds: frozenset[str] = frozenset()
+) -> list:
     """`generator.generate`, one call at a time, for the same reason as `_name_rest_word`."""
     with _generator_lock:
-        return generator.generate(sentence, name_lexicon)
+        return generator.generate(sentence, name_lexicon, split_compounds)
 
 
 def proper_nouns_model(config: dict) -> str:

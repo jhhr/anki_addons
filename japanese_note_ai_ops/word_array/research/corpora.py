@@ -10,7 +10,8 @@ list (see `old_word_lists.py`):
 `hand_judge`, `judge_eval`, `proper_nouns`, `proper_noun_eval`, `sub_readings`,
 `okurigana_decomp`, `name_lexicon`, `canonical_forms` and `unbalanced_tags` read their sentences
 through `CORPORA` and `read_export`, and the ones that generate arrays like the op does build
-the name lexicon with `export_name_lexicon`.
+the name lexicon with `export_name_lexicon`. `hand_judge` and `judge_eval`, whose arrays hold the
+words the judge is asked about, also split the compounds the config lists (`split_compounds`).
 """
 
 import json
@@ -18,6 +19,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import anki_connect
 from _bootstrap import eval_file, load, load_root
 
 generator = load("generator")
@@ -42,6 +44,12 @@ def name_lexicon(corpus: list[tuple[str, dict]]) -> dict:
 def export_name_lexicon() -> dict:
     """The name lexicon of the export, the collection's sentences."""
     return name_lexicon(read_export(CORPORA["export"], Counter()))
+
+
+def split_compounds() -> frozenset[str]:
+    """The compounds the add-on's config lists to split, which the op hands the generator beside
+    the name lexicon: this machine's list, the shipped one where it has none of its own."""
+    return generator.split_compounds_of(anki_connect.load_config())
 
 
 def read_export(path: Path, invalid: Counter) -> list[tuple[str, dict]]:

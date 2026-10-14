@@ -784,6 +784,24 @@ def cmd_vendor(addons: list[Addon]) -> None:
         vendor_addon(addon, uv)
 
 
+def package_entries(addon: Addon) -> list[tuple[Path, str]]:
+    """(absolute_path, arcname) for every file `dist` packages. The test that every shipped
+    module loads on Python 3.9 reads its list from here too."""
+    entries: list[tuple[Path, str]] = []
+    # the addon's own files, minus shared/ (added explicitly below)
+    for abs_path, arc in walk_files(addon.path, addon):
+        if arc == "shared" or arc.startswith("shared/"):
+            continue
+        entries.append((abs_path, arc))
+    # declared shared packages, copied for real regardless of link state
+    for pkg in addon.shared:
+        src = SHARED_ROOT / pkg
+        if not src.is_dir():
+            sys.exit(f"{addon.path.name}: declared shared package '{pkg}' missing")
+        entries.extend(walk_files(src, addon, prefix=Path("shared") / pkg))
+    return entries
+
+
 def cmd_dist(addons: list[Addon]) -> None:
     DIST_DIR.mkdir(exist_ok=True)
     for addon in addons:
@@ -797,19 +815,7 @@ def cmd_dist(addons: list[Addon]) -> None:
             if key in addon.meta:
                 manifest[key] = addon.meta[key]
 
-        entries: list[tuple[Path, str]] = []
-        # the addon's own files, minus shared/ (added explicitly below)
-        for abs_path, arc in walk_files(addon.path, addon):
-            if arc == "shared" or arc.startswith("shared/"):
-                continue
-            entries.append((abs_path, arc))
-        # declared shared packages, copied for real regardless of link state
-        for pkg in addon.shared:
-            src = SHARED_ROOT / pkg
-            if not src.is_dir():
-                sys.exit(f"{addon.path.name}: declared shared package '{pkg}' missing")
-            entries.extend(walk_files(src, addon, prefix=Path("shared") / pkg))
-
+        entries = package_entries(addon)
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             for abs_path, arc in sorted(entries, key=lambda e: e[1]):
                 z.write(abs_path, arc)
