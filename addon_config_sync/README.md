@@ -43,6 +43,7 @@ Set in the manager dialog (radio buttons):
 1. **Update configs on Sync** (default)
    - During normal sync, changed local addon configs are saved to media before media sync.
    - Downloaded media config changes are applied automatically to installed addons after media sync.
+   - A config you changed on this device stays as you left it until a normal sync has sent it, also through the media syncs Anki runs by itself in between. It used to be replaced by the last synced copy when such a media sync ended. That still happens when a newer copy of that add-on's config was downloaded, and for an add-on whose config a sync has already updated since Anki was started: the add-on may still be working from the older config, so restart Anki before changing it.
    - Ignored addons are skipped.
 
 2. **Update configs on Sync, show summary**
@@ -63,6 +64,7 @@ The manager includes **Sync media only now**, which triggers Anki sync for media
 
 - Some add-ons may require an Anki restart after config overwrite.
 - The first device to upload a conflicting media config generally wins on subsequent device syncs.
+- To tell a config changed on this device from one another device sent, the add-on keeps a small file, `user_files/matched_copies.json`, in its own folder. It is not synced and holds no configs, only a checksum per add-on and profile. Without it the add-on treats every difference as a downloaded change, as older versions always did, until the next sync has written it again.
 
 ## Links
 

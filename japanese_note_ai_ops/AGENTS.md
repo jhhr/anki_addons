@@ -521,19 +521,22 @@ changed or not; a note it left alone or failed on keeps it. What holds it togeth
   two words in. Anki's `tag:` search also finds a tag's children, hence the `has_tag` check.
 - **The sweep runs once a media sync has stopped, after every one, from one of Anki's
   timers.** Addon Config Sync copies each add-on's `meta.json` out to the media folder at
-  `sync_will_start` and back at `media_sync_did_start_or_stop(False)` wherever the two differ,
-  so a list written in between is undone, and so is one written after the sync as soon as a
-  media sync ends with no collection sync having started first (Anki's periodic one, every 15
-  minutes by default). Sweeping after each puts the word straight back. The timer puts the
-  sweep after the other handlers of that hook call, whatever order the add-ons loaded in,
-  keeps it from starting under a progress dialog, and drops it when the profile has closed.
+  `sync_will_start` and can copy it back at `media_sync_did_start_or_stop(False)`. A version
+  from before it kept a device's unsent changes (`addon_config_sync/matched_copies.py`) does
+  wherever the two differ, so a list written in between is undone, and so is one written
+  after the sync as soon as a media sync ends with no collection sync having started first
+  (Anki's periodic one, every 15 minutes by default). The current one does only for the
+  rest of an Anki session in which it has already replaced this add-on's config. Sweeping
+  after each media sync puts the word straight back either way. The timer puts the sweep
+  after the other handlers of that hook call, whatever order the add-ons loaded in, keeps it
+  from starting under a progress dialog, and drops it when the profile has closed.
 - **A word put back is put back quietly.** `_listed_this_session` holds what this session's
   sweeps listed; a word in it that is off the list again is written back with no
   `CollectionOp`, no tagging and no tooltip, or a long session would tag and announce every
   15 minutes. It is module state: a test clears it (the unit tests) or replaces it (the
-  running-Anki fixture). With the copying back fixed in `addon_config_sync` this and the
-  sweep after every media sync could go; the tag staying would still cover another device's
-  config winning.
+  running-Anki fixture). This and the sweep after every media sync are there for the
+  copying back, which the current Addon Config Sync does far less of than an older one; the
+  tag staying also covers another device's config winning.
 - **Tags first, list second.** `list_compounds` tags in a `CollectionOp`, one undo step, and
   `add_to_list` runs in its success handler: notes tagged with no word listed is repaired by
   the next sweep, the reverse by nothing. `add_to_list` writes the user's own config with the

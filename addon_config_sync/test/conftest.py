@@ -2,12 +2,15 @@
 
 The add-on's two sync handlers come down to `save_configs_on_sync` and `read_configs_on_sync`
 copying files between an add-ons folder and a profile's media folder. A `Device` here is one
-such pair of folders, and its methods call those functions with the arguments Anki's hooks
-give them. A `Server` is the other end of a media sync, as far as these files go, for the
-tests that need two devices.
+such pair of folders, with the file the add-on keeps its matches in and what it remembers
+for as long as Anki runs, and its methods call those functions with the arguments Anki's
+hooks give them. A `Server` is the other end of a media sync, as far as these files go, for
+the tests that need two devices.
 
-Nothing of the machine's own Anki is read or written: the stub `mw.pm` answers with the
-test's folders.
+Nothing of the machine's own Anki is read or written. The stub `mw.pm` answers with the
+test's folders, and the matches file, which the add-on keeps beside its own code and so in
+this checkout, is pointed into them as well: for every test, whether or not it uses a
+`Device`.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from unittest import mock
 
 import pytest
 
-from addon_config_sync import sync_actions
+from addon_config_sync import matched_copies, sync_actions
 
 
 class Saved(NamedTuple):
@@ -56,12 +59,16 @@ class Server:
 
 
 class Device:
-    """An add-ons folder and a profile's media folder."""
+    """An add-ons folder, a profile's media folder, the add-on's matches file, and an Anki
+    running on them."""
 
     def __init__(self, root: Path, profile: str = "User 1") -> None:
         self.root = root
         self.addons = root / "addons21"
         self.addons.mkdir(parents=True)
+        self.matches = root / "matched_copies.json"
+        # sync_actions.OVERWRITTEN_THIS_SESSION, as this device's Anki has it
+        self.session: set[str] = set()
         self.open_profile(profile)
         # What the media sync of this device last saw: the server's counter, and each file
         self.seen_usn = 0
@@ -110,7 +117,7 @@ class Device:
 
     @contextmanager
     def active(self) -> Iterator[None]:
-        """This device as the one `mw.pm` answers for."""
+        """This device as the one `mw.pm`, the matches file and the session belong to."""
         pm = sync_actions.mw.pm
         with ExitStack() as stack:
             for name, value in (
@@ -118,6 +125,12 @@ class Device:
                 ("profileFolder", lambda: str(self.media.parent)),
             ):
                 stack.enter_context(mock.patch.object(pm, name, value, create=True))
+            stack.enter_context(
+                mock.patch.object(matched_copies, "state_file", lambda: self.matches)
+            )
+            stack.enter_context(
+                mock.patch.object(sync_actions, "OVERWRITTEN_THIS_SESSION", self.session)
+            )
             yield
 
     def sync_starts(self, ignored: Sequence[str] = ()) -> Saved:
@@ -147,6 +160,21 @@ class Device:
                 apply_to_addons=apply,
             )
         return Read(sorted(loaded), sorted(disabled), sorted(missing), len(finished))
+
+    def calls(self, function: Callable[..., Any], *args: Any) -> Any:
+        """Any other function of `sync_actions`, as this device: the three behind the manager
+        dialog's buttons."""
+        with self.active():
+            return function(*args)
+
+    def restarts(self) -> None:
+        """Anki is closed and started again: the files stay, what it remembered does not."""
+        self.session = set()
+
+    def held(self) -> dict[str, str]:
+        """What the matches file holds for the open profile, by add-on id."""
+        state = json.loads(self.matches.read_text(encoding="utf-8"))
+        return state["profiles"].get(str(self.media.parent), {})
 
     # A media sync, and the two kinds of sync Anki runs
 
@@ -193,6 +221,15 @@ def module_state() -> Iterator[None]:
     sync_actions.UPDATED_STATE.clear()
     yield
     sync_actions.UPDATED_STATE.clear()
+
+
+@pytest.fixture(autouse=True)
+def nothing_of_this_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Autouse: no test may reach the checkout's own `user_files/`, which is the matches
+    file of the Anki this checkout is installed in, nor find the session of a test before
+    it. Both are a `Device`'s own while it is active."""
+    monkeypatch.setattr(matched_copies, "state_file", lambda: tmp_path / "no_device.json")
+    monkeypatch.setattr(sync_actions, "OVERWRITTEN_THIS_SESSION", set())
 
 
 @pytest.fixture

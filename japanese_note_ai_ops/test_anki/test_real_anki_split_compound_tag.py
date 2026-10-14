@@ -251,7 +251,7 @@ def test_the_list_is_written_after_the_media_sync_and_after_that_calls_other_han
     assert swept.count == 0 and listed(real_mw) is None and to_regenerate(real_mw) == set()
 
     # The media sync stops. Addon Config Sync is another handler of that hook call, here
-    # running after ours, and copies the config back from the media folder
+    # running after ours, and an older one copies the config back from the media folder
     monkeypatch.setattr(real_mw.media_syncer, "_syncing", False)
     tag.on_media_sync_did_start_or_stop(False)
     real_mw.addonManager.writeAddonMeta(PACKAGE, saved_at_sync_start)

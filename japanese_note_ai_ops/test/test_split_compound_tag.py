@@ -434,9 +434,9 @@ class WhenTheSweepRunsTests(unittest.TestCase):
         self.assertEqual(self.mw.timers, [(tag.SWEEP_DELAY_MS, tag.sweep, True)])
 
     def test_a_media_sync_no_collection_sync_started_is_swept_after_as_well(self):
-        # Anki's periodic one brings no tags, but Addon Config Sync copies the configs back
-        # after it all the same, and a word listed since the last collection sync began is
-        # off the list again
+        # Anki's periodic one brings no tags, but an older Addon Config Sync copies the configs
+        # back after it all the same, and a word listed since the last collection sync began
+        # is off the list again
         tag.on_media_sync_did_start_or_stop(True)
         tag.on_media_sync_did_start_or_stop(False)
 

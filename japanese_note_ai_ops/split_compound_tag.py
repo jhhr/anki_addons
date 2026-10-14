@@ -25,9 +25,11 @@ the next sweep for as long as its note is tagged, and within one session of Anki
 second tooltip or a second tagging of its notes (`_listed_this_session`). Taking a word off for
 good therefore means untagging its note too.
 
-Fixing that copying back in Addon Config Sync would make the sweep after every media sync and
-the session's memory unnecessary; the tag staying would still cover another device's config
-winning over this one's.
+Addon Config Sync has since stopped copying its last copy back over a config that only this
+device changed, except for the rest of an Anki session in which it has already replaced this
+add-on's config; a version from before that does it after every media sync. The sweep after
+every media sync and the session's memory are for both. The tag staying also covers another
+device's config winning over this one's.
 """
 
 from __future__ import annotations
@@ -258,9 +260,9 @@ def on_sync_did_finish() -> None:
     """The collection sync is over, so the tags other devices set are here. The media sync it
     started is mostly still running, and then the sweep is `on_media_sync_did_start_or_stop`'s:
     Addon Config Sync copies every add-on's config out to the media folder when a sync starts
-    and back from it when the media sync stops, wherever the two differ, so a list written in
-    between is replaced by the one from before the sync. Here only when no media sync follows
-    (the sync failed, or left nothing to wait for)."""
+    and can copy it back when the media sync stops, an older version wherever the two differ,
+    so a list written in between may be replaced by the one from before the sync. Here only
+    when no media sync follows (the sync failed, or left nothing to wait for)."""
     if not mw.media_syncer.is_syncing():
         _sweep_later()
 

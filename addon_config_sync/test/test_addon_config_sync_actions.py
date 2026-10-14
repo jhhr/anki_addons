@@ -3,8 +3,8 @@
 Every test here goes through the two functions Anki's hooks reach and looks at the files
 afterwards, so none of them knows how the add-on decides. They are in three parts: what a
 sync start does, what a media sync stopping does with a difference it copies over, and what
-it does with a config that only this device changed: it copies that over too, and the
-change is lost.
+it does with a config that only this device changed. The last part is the one that used to
+lose the change.
 """
 
 from __future__ import annotations
@@ -367,25 +367,25 @@ def test_an_addon_that_was_ignored_is_read_from_its_copy_once_it_no_longer_is(de
     assert result.loaded == [ADDON]
 
 
-# A media sync stops: a config only this device changed is copied over too, and lost
+# A media sync stops: a config only this device changed is left alone
 
 
-def test_a_config_changed_after_the_sync_started_is_gone_when_its_media_sync_stops(device):
+def test_a_config_changed_after_the_sync_started_survives_its_media_sync_stopping(device):
     """An add-on that writes its config once the collection sync has finished, or the user
-    saving one while a long media sync still runs. Nothing was downloaded."""
+    saving one while a long media sync still runs."""
     device.install(ADDON, {"config": {"speed": 1}})
     device.sync_starts()
     device.set_config(ADDON, speed=333)
 
     result = device.media_sync_stops()
 
-    assert device.meta(ADDON) == {"config": {"speed": 1}}
-    assert result.loaded == [ADDON]
+    assert device.meta(ADDON) == {"config": {"speed": 333}}
+    assert result.loaded == []
     assert result.finished == 1
-    assert sync_actions.UPDATED_STATE == {ADDON: True}
+    assert sync_actions.UPDATED_STATE == {}
 
 
-def test_a_config_changed_here_is_gone_at_the_next_media_sync_and_never_sent(make_device, server):
+def test_a_config_changed_here_survives_media_syncs_until_a_sync_sends_it(make_device, server):
     """Anki syncs media by itself every 15 minutes, with no `sync_will_start` before it."""
     desktop, laptop = make_device("desktop"), make_device("laptop")
     for each in (desktop, laptop):
@@ -393,16 +393,17 @@ def test_a_config_changed_here_is_gone_at_the_next_media_sync_and_never_sent(mak
         each.syncs(server)
 
     laptop.set_config(ADDON, speed=333)
-    assert laptop.syncs_media_only(server).loaded == [ADDON]
-    assert laptop.meta(ADDON) == {"config": {"speed": 1}}
+    for _ in range(3):
+        assert laptop.syncs_media_only(server).loaded == []
+        assert laptop.meta(ADDON) == {"config": {"speed": 333}}
     laptop.syncs(server)
     desktop.syncs(server)
 
-    assert laptop.meta(ADDON) == {"config": {"speed": 1}}
-    assert desktop.meta(ADDON) == {"config": {"speed": 1}}
+    assert laptop.meta(ADDON) == {"config": {"speed": 333}}
+    assert desktop.meta(ADDON) == {"config": {"speed": 333}}
 
 
-def test_a_download_for_one_addon_takes_another_addons_unsent_change_with_it(make_device, server):
+def test_a_download_for_one_addon_leaves_another_addons_unsent_change_alone(make_device, server):
     desktop, laptop = make_device("desktop"), make_device("laptop")
     for each in (desktop, laptop):
         each.install(ADDON, {"config": {"speed": 1}})
@@ -414,6 +415,85 @@ def test_a_download_for_one_addon_takes_another_addons_unsent_change_with_it(mak
     laptop.set_config(ADDON, speed=333)
     result = laptop.syncs_media_only(server)
 
-    assert result.loaded == [ADDON, OTHER]
+    assert result.loaded == [OTHER]
     assert laptop.meta(OTHER) == {"config": {"colour": "blue"}}
-    assert laptop.meta(ADDON) == {"config": {"speed": 1}}
+    assert laptop.meta(ADDON) == {"config": {"speed": 333}}
+
+
+def test_a_newer_download_still_wins_over_a_change_that_survived_media_syncs(make_device, server):
+    """Keeping an unsent change is not keeping it for good: the conflict rule is unchanged."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, {"config": {"speed": 1}})
+        each.syncs(server)
+
+    laptop.set_config(ADDON, speed=333)
+    laptop.syncs_media_only(server)
+    assert laptop.meta(ADDON) == {"config": {"speed": 333}}
+    desktop.set_config(ADDON, speed=22)
+    desktop.syncs(server)
+    result = laptop.syncs_media_only(server)
+
+    assert result.loaded == [ADDON]
+    assert laptop.meta(ADDON) == {"config": {"speed": 22}}
+
+
+def test_once_anki_was_restarted_a_change_is_kept_for_an_addon_that_had_a_download(
+    make_device, server
+):
+    """Restarted, the add-on holds the config that was downloaded, and what is written
+    after that is a change like any other."""
+    desktop, laptop = make_device("desktop"), make_device("laptop")
+    for each in (desktop, laptop):
+        each.install(ADDON, {"config": {"speed": 1}})
+        each.syncs(server)
+    desktop.set_config(ADDON, speed=22)
+    desktop.syncs(server)
+    laptop.syncs(server)
+
+    laptop.restarts()
+    laptop.set_config(ADDON, colour="blue")
+    assert laptop.syncs_media_only(server).loaded == []
+    laptop.syncs(server)
+    desktop.syncs(server)
+
+    assert desktop.meta(ADDON) == {"config": {"speed": 22, "colour": "blue"}}
+
+
+def test_a_config_changed_along_with_what_anki_records_of_an_update_is_kept(device):
+    device.install(ADDON, {"name": "An add-on", "mod": 100, "config": {"speed": 1}})
+    device.sync_starts()
+    changed = {"name": "An add-on", "mod": 200, "config": {"speed": 333}}
+    device.write_meta(ADDON, changed)
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON) == changed
+    assert result.loaded == []
+
+
+@pytest.mark.parametrize("key, value", [("disabled", True), ("update_enabled", False)])
+def test_an_addon_disabled_or_kept_from_updating_here_stays_so(device, key, value):
+    """The two things in a meta.json besides the config that are the user's to set."""
+    device.install(ADDON, {"name": "An add-on", "mod": 100})
+    device.sync_starts()
+    device.write_meta(ADDON, {"name": "An add-on", "mod": 100, key: value})
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON)[key] is value
+    assert result.loaded == []
+
+
+def test_a_config_is_kept_over_a_copy_that_cannot_be_read(device):
+    """Sent out broken at the last sync start and repaired here since: the copy would break
+    it again."""
+    device.install(ADDON)
+    device.meta_path(ADDON).write_text('{"config": {"spe', encoding="utf-8")
+    device.sync_starts()
+    device.write_meta(ADDON, {"config": {"speed": 1}})
+
+    result = device.media_sync_stops()
+
+    assert device.meta(ADDON) == {"config": {"speed": 1}}
+    assert result.loaded == []

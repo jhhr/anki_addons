@@ -96,13 +96,20 @@ depends on `'d'` staying in its filter so that it does not undo a dispersal.
   load; add a migration step instead of reading the old shape in place.
 - `addon_config_sync` copies other addons' `meta.json` between devices. A config value that
   is only valid on one machine (an absolute path) will travel.
-- In its default mode it copies the media folder's copy back over `meta.json` whenever a
-  media sync ends and the two differ, and it refreshes that copy only at `sync_will_start`.
-  So a config an addon writes by itself is undone when it is written during a sync, and also
-  after one if a media sync ends before the next collection sync starts; Anki starts a media
-  sync every 15 minutes by default. Write it once a media sync has stopped, from one of
-  Anki's timers so that it follows the other handlers of that hook call, and keep what was
-  written re-derivable. `japanese_note_ai_ops/split_compound_tag.py` does both.
+- It sends a config out only at `sync_will_start`, and in its default mode reads the media
+  folder's copy back over `meta.json` whenever a media sync ends. A config an addon writes
+  by itself in between is kept where nothing was downloaded over the media copy
+  (`addon_config_sync/matched_copies.py`), but not for the rest of an Anki session in which
+  a media copy was already copied over that addon's config: the addon might be writing back
+  one it read before that. Versions from before matches were kept copied back wherever the
+  two files differed, which undid a config written during a sync, and one written after it
+  as soon as a media sync ended before the next collection sync started; Anki starts a
+  media sync every 15 minutes by default. So an addon that writes its own config still
+  does it once a media sync has stopped, from one of Anki's timers so that it follows the
+  other handlers of that hook call, and keeps what it wrote re-derivable.
+  `japanese_note_ai_ops/split_compound_tag.py` does both. Read the config from
+  `mw.addonManager` when it is needed rather than keeping it from import: a kept one is
+  stale as soon as a sync has replaced the file.
 
 ## Compatibility
 

@@ -148,6 +148,27 @@ def json_files_deep_equal(file1: Path, file2: Path) -> bool:
         return False  # If we can't read the files, assume they are not equal
 
 
+def json_bytes_deep_equal(data1: bytes, data2: bytes) -> bool:
+    """`json_files_deep_equal` for what has already been read out of the two files."""
+    try:
+        obj1 = json.loads(data1.decode("utf-8"))
+        obj2 = json.loads(data2.decode("utf-8"))
+        return ordered(obj1) == ordered(obj2)
+    except (ValueError, RecursionError):
+        return False  # As for the files: what cannot be read is not equal
+
+
+def read_json_object(path: Path) -> dict[str, Any] | None:
+    """The JSON object the file holds, which is all Anki reads a meta.json as; None for a
+    file that is missing, cut short or holds something else."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def get_addon_module_name() -> str:
     package_name = __package__ or __name__
     return package_name.split(".")[0]

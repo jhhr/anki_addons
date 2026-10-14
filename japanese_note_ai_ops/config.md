@@ -282,13 +282,15 @@ so that the matching is not offered the common words inside it. The exceptions a
     run on it, which leaves every other word of the array as it was. The two sub-words come out
     unjudged, so "Judge words matchability" and "Match extracted words to notes" follow.
   - Like the rest of this config the list is kept per device. The Addon Config Sync add-on
-    carries it to your other devices with the media sync. In its default mode it also replaces
-    this device's config with the copy in the media folder whenever a media sync ends and the
-    two differ, and that copy is only refreshed when a collection sync starts: a word added to
-    the list, by hand or by the tag, is gone again if a media sync ends before the next
-    collection sync has started, and Anki runs a media sync every 15 minutes by default. A
-    tagged note's word is put back right after that media sync; one typed in by hand is not, so
-    sync once after typing one in.
+    carries it to your other devices with the media sync. In its default mode it can also
+    replace this device's config with the copy in the media folder when a media sync ends, and
+    that copy is only refreshed when a collection sync starts. A version of it from before it
+    kept a device's unsent changes does so whenever the two differ; the current one only once
+    a sync has already updated this add-on's config since Anki was started. When it does, a
+    word added to the list, by hand or by the tag, is gone again if a media sync ends before
+    the next collection sync has started, and Anki runs a media sync every 15 minutes by
+    default. A tagged note's word is put back right after that media sync; one typed in by
+    hand is not, so sync once after typing one in.
   - In a development checkout, `word_array/research/words_inside_words.py` lists the notes
     whose own word their sentence has only inside such a compound, each with the form to list
     it by and whether it would split.
