@@ -142,15 +142,20 @@ def test_an_addon_switched_off_in_anki_stays_off(real_mw, addon, manager, tmp_pa
 def test_an_addon_anki_installs_again_gets_the_config_of_its_copy(
     real_mw, addon, manager, tmp_path
 ):
-    """As it always did: the copy in the media folder is the config a new install of the
-    add-on is given, and Anki's own new install is one without a config."""
+    """The sync Anki runs as it closes to restart after the install: its start holds the
+    new install's file back, which Anki writes without a config, and its media sync's end
+    reads the copy over it."""
     manager.install(_package(tmp_path, mod=1))
     manager.writeConfig(TINY, {"speed": 1})
     addon.sync_on_save()
+    stored = _media_copy(real_mw).read_bytes()
 
     shutil.rmtree(manager.addonsFolder(TINY))
     manager.install(_package(tmp_path, mod=22))
     assert "config" not in manager.addonMeta(TINY)
+    addon.sync_on_save()
+    assert TINY in addon.sync_skipped_addons
+    assert _media_copy(real_mw).read_bytes() == stored
     addon.read_on_sync(False)
 
     assert manager.addonMeta(TINY)["config"] == {"speed": 1}

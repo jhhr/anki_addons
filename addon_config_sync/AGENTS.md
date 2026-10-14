@@ -25,12 +25,13 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   look and an explicit note to the user. The addon is published and its sync logic is meant
   to be stable: a change there is a bug fix, or it changes nothing a user could have set
   their devices up around.
-- **`read_configs_on_sync` leaves alone a config that only this device changed, and nothing
-  else.** It runs after every media sync, and only a collection sync starting sends configs
-  out, so in between a config can differ from its media copy because another device's copy
-  came down, or because the config changed here and has not gone out. The second used to be
-  copied over like the first, and the change was lost. A difference is left alone when all
-  four of these hold; any other is copied over, as all of them used to be.
+- **`read_configs_on_sync` leaves alone a config that only this device changed.** It runs
+  after every media sync, and only a collection sync starting sends configs out, so in
+  between a config can differ from its media copy because another device's copy came down,
+  or because the config changed here and has not gone out. The second used to be copied
+  over like the first, and the change was lost. Such a difference is left alone when all
+  four of these hold; any other is copied over, as all of them used to be, unless the copy
+  is unfit to read (the next point).
   - **Nothing was downloaded over the media copy.** It is byte for byte what it was when
     the two files last matched (`matched_copies.py`). With no match held it reads as
     changed: a first sync, a state file that is missing or malformed, another profile's
@@ -52,14 +53,36 @@ the conflict rule ("first device to sync wins") are in `README.md` and `config.m
   same histories, it left a second device worse off than before in each case the other
   three now exclude. Before widening what is left alone, do that again
   (`test/old_against_new.py`) and look at what the *other* device ends up with.
-  `save_configs_on_sync` and the conflict rule are untouched: what is sent and when, and a
-  downloaded copy winning over a change that was not sent yet.
-- **What a sync start sends is not vetted, and that is not new.** `save_configs_on_sync`
-  sends whatever `meta.json` holds wherever it differs from the copy: a new install's file
-  over the copy of the config it had, a file cut short by a crash, an update's `mod`. Each
-  reaches the other devices unless a media sync happens to end first and reads the copy
-  back. `test_a_sync_start_sends_a_new_installs_config_over_the_copy_of_the_old_one` pins
-  the first. Changing any of it changes what is sent: see the first invariant.
+  The conflict rule is untouched by it: a downloaded copy wins over a change not sent yet.
+- **A sync replaces no config with a broken file or with one without a config**
+  (`fit_to_send`, `fit_to_read`). A sync start holds back a `meta.json` that is no JSON
+  object, or has no `config` where the copy has one (a file cut short by a crash, a new
+  install of the add-on, a file Anki rebuilt from nothing after failing to read one), lists
+  it as skipped and leaves the copy alone. Outside ask mode the media sync's end then reads
+  the copy over it, the whole file: a new install gets the config set up on another
+  device, and also that device's `disabled`, `update_enabled` and version, so Anki may
+  offer the version just installed as an update. In ask mode it stays listed at every sync
+  until the user settles it in the dialog. A media sync stopping never copies a copy that
+  is no JSON object (a valid one that is not an object, such as `[]`, stops Anki loading
+  add-ons), nor one without a `config` over a `meta.json` that has one; the next sync start
+  sends that `meta.json` in its place. Older versions send new installs' and broken files,
+  and any device sends a file without a config where the copy had none. So a copy without
+  a config never wins over a config, whichever device synced first, which is the one
+  change to the conflict rule. The dialog's two buttons refuse only a file that is no JSON
+  object: they are the user's decision, and in ask mode the only way to settle a held-back
+  file.
+  - **Not covered: an add-on that writes its config when Anki loads it**, as copy_anywhere
+    does on every start. Loaded with a new install's file, or after Anki has read a broken
+    one as empty, it writes its defaults as a config before any sync starts, and that file
+    is sent like any change. A new install is covered when Anki is closed with its sync
+    after installing (it asks to restart), not when the add-on was copied in with Anki
+    closed, auto-sync on open and close is off, or Anki quit before its sync finished.
+  - **What it costs, accepted by the author:** deleting a `config` by hand, or installing
+    the add-on again, no longer resets it on every device; setting it back to the defaults
+    in its config dialog does.
+  - A device on an older version in ask mode never reads what this one sends in place of
+    its file, and sends the file again at its every sync start, until its user settles it.
+  Everything else a sync start sends, it sends as before, an update's `mod` included.
 - **Ask mode lists every difference, including this device's own.** It copies nothing by
   itself, so it has nothing to lose; the rule above applies only where `apply_to_addons` is
   true.
@@ -102,18 +125,20 @@ Both directories are in the root `testpaths`.
   is an add-ons folder with a profile's media folder and an Anki session, and its `Server`
   the other end of a media sync by Anki's rule (the server's change wins over one not
   sent), for the tests with two devices. `test_addon_config_sync_actions.py` only looks at
-  files. Its first two parts are what did not change when matches came in: they were
-  written against the code from before and pass there too. Its third part is what did.
-  `test_addon_config_sync_matches.py` is about the state file.
+  files. Its first two parts are what a sync start and a media sync stopping do with an
+  ordinary difference, as they always have; the sync start's tests of holding back are the
+  exception. Its third part is a config only this device changed, and its fourth a broken
+  file or one without a config. `test_addon_config_sync_matches.py` is about the state file.
 - `test_anki/` runs the addon's own `__init__.py`, which nothing else imports, in a running
   Anki, and has Anki's add-on manager write the `meta.json` files `is_change_made_here` is
   written against: an install, an update, an add-on switched off and on.
 - `test/old_against_new.py` is not collected with the suite; run it by its path, with `-s`,
-  when the read step is to change. It runs the handlers from before matches were kept
-  beside today's over random histories of two devices, and fails on a sync start that
-  sends something else, an ask-mode read that lists something else, a copy the old code
-  would not have made, and a config left alone that was not this device's own change. Its
-  docstring says how to make it longer and how to see each check fail.
+  when what a sync start sends or a media sync reads is to change. It runs the handlers
+  from before matches were kept beside today's over random histories of two devices. It
+  fails on a sync start that sends something else, an ask-mode read that lists something
+  else, a copy the old code would not have made, a config left alone that was not this
+  device's own change, and a broken file or one without a config sent or read over a
+  config. Its docstring says how to make it longer and how to see each check fail.
 
 The state file is beside the addon's code, so in a checkout that Anki is installed from it
 is that Anki's. Both conftests point it into the test's directory; a new test directory

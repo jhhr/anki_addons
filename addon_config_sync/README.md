@@ -64,6 +64,7 @@ The manager includes **Sync media only now**, which triggers Anki sync for media
 
 - Some add-ons may require an Anki restart after config overwrite.
 - The first device to upload a conflicting media config generally wins on subsequent device syncs.
+- A sync never replaces a config with a broken file or with one that has no config, in either direction. An add-on newly installed on a device is not uploaded at its first sync; it gets the file stored in the media folder instead. A config file Anki cannot read, such as one cut short by a crash, is not uploaded either, and is repaired from the stored copy. This does not help with add-ons that write their config as soon as Anki loads them; see "New installs and broken files" in the config documentation for when it applies. To reset an add-on's config on all devices, set it back to its defaults in its config dialog and sync: deleting its config by hand or reinstalling it no longer resets it.
 - To tell a config changed on this device from one another device sent, the add-on keeps a small file, `user_files/matched_copies.json`, in its own folder. It is not synced and holds no configs, only a checksum per add-on and profile. Without it the add-on treats every difference as a downloaded change, as older versions always did, until the next sync has written it again.
 
 ## Links

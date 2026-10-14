@@ -9,31 +9,43 @@ it decides by, is about to change, from the repo root:
 That is 150 histories of 60 steps, about two minutes. ACS_HISTORIES (first:last) and
 ACS_STEPS in the environment make it another run: 0:600 and 80 took eleven minutes.
 
-Until `matched_copies.py`, a media sync stopping copied every media copy over a meta.json
-that differed from it. That is the reference: whatever the add-on leaves alone today, it
-must copy nothing the old code did not, send what the old code sent, and list in ask mode
+Until `matched_copies.py`, a sync start sent every meta.json that differed from its media
+copy, and a media sync stopping copied every media copy over a meta.json that differed from
+it. That is the reference. Whatever the add-on holds back or leaves alone today, it must
+send nothing the old code did not, copy nothing the old code did not, and list in ask mode
 what the old code listed. Each history is two devices with two profiles each and two
 add-ons, doing at random what users and Anki do: configs edited, add-ons updated, switched
-off, installed again, files cut short, syncs, media syncs with none before them, restarts.
-Before every call of a handler the device's folders are copied and the old handler is run
-on the copy, so both start from the same files. Checked at each call:
+off, installed again, files cut short, syncs, media syncs with none before them, restarts,
+and devices on an older version sending a new install's file or a broken one. Before every
+call of a handler the device's folders are copied and the old handler is run on the copy,
+so both start from the same files. Checked at each call:
 
-  SAVE    a sync start leaves the same media copies and fills the same lists as the old code
+  SAVE    a sync start sends what the old code sends and fills the same lists, except that
+          it holds back a meta.json that is no JSON object, or has no config where the copy
+          has one. It always holds those back, leaves their copy as it was, and lists them
+          as skipped.
   ASK     in ask mode a media sync stopping fills the same lists and changes no file
   SUBSET  what the new code copies when a media sync stops, the old code copies too, to the
-          same bytes
-  SKIP    a copy the old code makes and the new one does not is one of a config that only
-          this device changed, as an oracle that does not read the add-on's state has it:
-          the pair matched at some sync, the media copy is still those bytes, no media copy
-          was copied over that config since Anki started, the meta.json is a JSON object
-          with a config if the copy has one, and the two differ in more than what Anki
-          records of an install
+          same bytes, and never a copy that is no JSON object, nor one without a config over
+          a meta.json that has one
+  SKIP    a copy the old code makes and the new one does not, as an oracle that does not
+          read the add-on's state has it, is either unfit to read (above) or of a config
+          that only this device changed: the pair matched at some sync, the media copy is
+          still those bytes, no media copy was copied over that config since Anki started,
+          the meta.json is a JSON object with a config if the copy has one, and the two
+          differ in more than what Anki records of an install
+  DIALOG  Save and Overwrite copy no file that is no JSON object
+
+The oracle restates the rule, so what it can show is that the code keeps to the rule, not
+that the rule is right: what each device ends up with across a history is not judged.
+Devices on an older version are modelled only as the files they send, never as a device
+that also reads them.
 
 The oracle is the rule of `read_configs_on_sync` written a second time, from what happened
 and not from what the add-on kept. A change to the rule is a change to `Oracle`, made first
-and on purpose. `ACS_BREAK=session` (or `install`, `config`, `object`, `bytes`, `ask`, `save`)
-switches one part of the add-on's rule off in memory for a run, to see the check for it
-fail; do that after touching either.
+and on purpose. `ACS_BREAK=session` (or `install`, `config`, `object`, `bytes`, `ask`, `save`,
+`held`, `refused`, `dialog`) switches one part of the add-on's rule off in memory for a
+run, to see the check for it fail; do that after touching either.
 
 The old handlers are `sync_actions.py` as of BEFORE_MATCHES, loaded beside today's modules,
 so they run on today's `utils.py`: they ask it only for helpers that have not changed since.
@@ -187,6 +199,18 @@ class Oracle:
                 return "skipped though only what Anki records of the install differs"
         return ""
 
+    @staticmethod
+    def unfit_to_send(meta: Path, media: Path) -> bool:
+        config, copy = as_object(meta), as_object(media)
+        return config is None or (copy is not None and "config" in copy and "config" not in config)
+
+    @staticmethod
+    def unfit_to_read(meta: Path, media: Path) -> bool:
+        config, copy = as_object(meta), as_object(media)
+        if copy is None:
+            return True
+        return config is not None and "config" in config and "config" not in copy
+
 
 class Machine:
     """One of the suite's devices, with a media-sync memory per profile and its oracle."""
@@ -268,18 +292,44 @@ class History:
 
     def sync_start(self, machine: Machine) -> None:
         ignored = set(machine.ignored)
+        before = {addon: read(machine.media(addon)) for addon in ADDONS}
+        unfit = {
+            addon
+            for addon in ADDONS
+            if addon not in ignored
+            and machine.meta(addon).is_file()
+            and Oracle.unfit_to_send(machine.meta(addon), machine.media(addon))
+        }
         lists: tuple[list[str], list[str], list[str]] = ([], [], [])
         old_addons, old_media = self.old_call(
             machine, self.old.save_configs_on_sync, *lists, ignored_addons=set(ignored)
         )
         result = machine.device.sync_starts(ignored=sorted(ignored))
+        old_saved, old_disabled, old_skipped = (sorted(each) for each in lists)
         self.stats["sync starts"] += 1
         self.stats["configs sent"] += len(result.saved)
-        if tuple(sorted(each) for each in lists) != tuple(result):
-            raise Violation("SAVE: other lists than the old code")
+        held = set(old_saved) - set(result.saved)
+        self.stats["held back by the new code where the old one sent"] += len(held)
+        if set(result.saved) - set(old_saved):
+            raise Violation("SAVE: sent what the old code does not")
+        if set(result.saved) & unfit:
+            raise Violation("SAVE: sent a meta.json that is broken or takes a config away")
+        if not held <= unfit:
+            raise Violation("SAVE: held back a meta.json that takes no config away")
+        if set(result.skipped) - set(old_skipped) - unfit:
+            raise Violation("SAVE: skipped what the old code does not and is fit to send")
+        if set(result.disabled) != set(old_disabled) - held:
+            raise Violation("SAVE: another disabled list than the old code")
+        for addon in unfit:
+            if read(machine.media(addon)) != before[addon]:
+                raise Violation("SAVE: wrote over the copy of a meta.json it holds back")
+            if addon not in result.skipped:
+                raise Violation("SAVE: held back a meta.json without listing it as skipped")
         for addon in ADDONS:
-            if read(machine.media(addon)) != read(old_media / machine.media(addon).name):
-                raise Violation("SAVE: another media copy than the old code")
+            ours = read(machine.media(addon))
+            if ours != read(old_media / machine.media(addon).name):
+                if addon not in held or ours != before[addon]:
+                    raise Violation("SAVE: another media copy than the old code")
             if read(machine.meta(addon)) != read(old_addons / addon / "meta.json"):
                 raise Violation("SAVE: touched a meta.json")
         machine.seen_by_a_handler(ignored)
@@ -296,6 +346,10 @@ class History:
                 machine.media(addon),
                 overwritten_before,
             )
+            for addon in ADDONS
+        }
+        refused = {
+            addon: Oracle.unfit_to_read(machine.meta(addon), machine.media(addon))
             for addon in ADDONS
         }
         old_lists: tuple[list[str], list[str], list[str]] = ([], [], [])
@@ -329,9 +383,13 @@ class History:
                 if addon in result.loaded:
                     if after[addon] != old_after[addon]:
                         raise Violation("SUBSET: copied to other bytes than the old code")
+                    if refused[addon]:
+                        raise Violation("SUBSET: copied a media copy that is unfit to read")
                     machine.oracle.overwritten.add(addon)
                 elif after[addon] != before[addon]:
                     raise Violation("READ: changed a meta.json it does not list")
+                elif addon in old_loaded and refused[addon]:
+                    self.stats["not read by the new code, as the copy is unfit to read"] += 1
                 elif addon in old_loaded and against[addon]:
                     raise Violation(f"SKIP: {against[addon]}")
         machine.seen_by_a_handler(ignored)
@@ -343,8 +401,17 @@ class History:
             "remove": new.remove_addon_from_media,
         }[action]
         before = read(machine.meta(addon))
+        media_before = read(machine.media(addon))
+        unfit = (action == "save" and as_object(machine.meta(addon)) is None) or (
+            action == "overwrite" and as_object(machine.media(addon)) is None
+        )
         machine.device.calls(function, addon)
         filecmp.clear_cache()
+        if unfit and (read(machine.meta(addon)), read(machine.media(addon))) != (
+            before,
+            media_before,
+        ):
+            raise Violation(f"DIALOG: {action} copied a file that is no JSON object")
         if machine.meta(addon).is_file() and read(machine.meta(addon)) != before:
             machine.oracle.overwritten.add(addon)
         if action == "remove":
@@ -383,6 +450,9 @@ class History:
             "meta.json deleted": 2,
             "rebuilt from nothing": 3,
             "copy dropped in": 3,
+            "an older device sends a new install's file": 2,
+            "an older device sends a file cut short": 1,
+            "an older device sends a file that is no object": 1,
             "state file deleted": 1,
             "state file broken": 1,
             "ignore or not": 3,
@@ -429,6 +499,14 @@ class History:
             write(
                 meta_path, json.dumps({"disabled": rng.random() < 0.5, "mod": 0, "conflicts": []})
             )
+        elif kind == "an older device sends a new install's file":
+            name = machine.media(addon).name
+            self.servers[machine.profile].put(name, json.dumps({"name": addon}).encode("utf-8"))
+        elif kind == "an older device sends a file cut short":
+            name = machine.media(addon).name
+            self.servers[machine.profile].put(name, b'{"name": "' + addon.encode("utf-8"))
+        elif kind == "an older device sends a file that is no object":
+            self.servers[machine.profile].put(machine.media(addon).name, b"[]")
         elif kind == "copy dropped in":
             write(machine.media(addon), json.dumps({"name": addon, "config": {"v": self.value()}}))
         elif kind == "state file deleted" and machine.device.matches.exists():
@@ -494,6 +572,31 @@ def broken_on_purpose(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
             return read_configs(*args, **kwargs)
 
         monkeypatch.setattr(new, "read_configs_on_sync", copying)
+    elif part == "held":
+        monkeypatch.setattr(new, "fit_to_send", lambda meta, media: True)
+    elif part == "refused":
+        monkeypatch.setattr(new, "fit_to_read", lambda meta, media: True)
+    elif part == "dialog":
+        # Both buttons as they were before they refused anything
+
+        def save_anything(addon_id: str) -> bool:
+            addons, media = new.get_paths()
+            meta = addons / addon_id / "meta.json"
+            if not meta.is_file():
+                return False
+            shutil.copy(meta, media / f"_{addon_id}_meta.json")
+            return True
+
+        def overwrite_with_anything(addon_id: str) -> bool:
+            addons, media = new.get_paths()
+            copy = media / f"_{addon_id}_meta.json"
+            if not copy.is_file() or not (addons / addon_id).is_dir():
+                return False
+            shutil.copy(copy, addons / addon_id / "meta.json")
+            return True
+
+        monkeypatch.setattr(new, "save_addon_to_media", save_anything)
+        monkeypatch.setattr(new, "overwrite_addon_from_media", overwrite_with_anything)
     elif part == "save":
         monkeypatch.setattr(new, "json_files_deep_equal", lambda a, b: True)
     elif part:

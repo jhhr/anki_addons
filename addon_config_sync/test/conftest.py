@@ -101,6 +101,10 @@ class Device:
         """A media copy as a download leaves one: the file replaced, nothing else told."""
         _write(self.media_path(addon_id), json.dumps(meta))
 
+    def write_text(self, path: Path, text: str) -> None:
+        """Any of the files, with what JSON cannot hold: a file cut short, say."""
+        _write(path, text)
+
     def meta(self, addon_id: str) -> Any:
         return json.loads(self.meta_path(addon_id).read_text(encoding="utf-8"))
 

@@ -99,6 +99,40 @@ def _users_part(meta: dict[str, Any]) -> dict[str, Any]:
     return part
 
 
+def fit_to_send(addon_meta_json: Path, media_meta_json: Path) -> bool:
+    """Whether a sync start may send this meta.json out over its media copy.
+
+    Not one Anki cannot read, as a crash can leave it: sent, it would replace the config on
+    every other device too. And not one without a `config` over a copy that has one: a new
+    install of the add-on, so far as the add-on has not written a config of its own since
+    Anki loaded it, or a file Anki rebuilt from nothing after failing to read one. The copy
+    holds the config the user set up, on another device or here before, and a new install
+    is meant to get it, not to wipe it everywhere. Held back, the copy stays as it is, and
+    a media sync stopping reads it over this file, the whole of it, outside ask mode."""
+    config = read_json_object(addon_meta_json)
+    if config is None:
+        return False
+    media_copy = read_json_object(media_meta_json)
+    return media_copy is None or "config" not in media_copy or "config" in config
+
+
+def fit_to_read(addon_meta_json: Path, media_meta_json: Path) -> bool:
+    """Whether a media copy may be copied over this meta.json: fit_to_send the other way.
+
+    Never one that is no JSON object. Anki reads one cut short as no config, and a valid
+    one that is not an object, such as `[]`, stops it loading add-ons at all. And not one
+    without a `config` over a meta.json that has one: a device on an older version of this
+    add-on sends new installs' files, and any device sends a file without a config where
+    the copy it replaces had none. A meta.json kept here goes out with the next sync start
+    in place of the copy, and so repairs it for the devices that read it."""
+    media_copy = read_json_object(media_meta_json)
+    if media_copy is None:
+        return False
+    config = read_json_object(addon_meta_json)
+    # A missing or broken meta.json has nothing to lose, and the copy can repair it
+    return config is None or "config" in media_copy or "config" not in config
+
+
 def is_change_made_here(addon_meta_json: Path, media_meta_json: Path) -> bool:
     """Whether a meta.json that differs from its media copy holds a change of the user's or
     of the add-on's: what there is to lose by copying the media copy over it, when nothing
@@ -110,7 +144,8 @@ def is_change_made_here(addon_meta_json: Path, media_meta_json: Path) -> bool:
         return False
     media_copy = read_json_object(media_meta_json)
     if media_copy is None:
-        # It is the copy that is broken, and this file that would repair it
+        # It is the copy that is broken, and this file that would repair it. Not reached
+        # from read_configs_on_sync, which has left such a copy alone by fit_to_read.
         return True
     if "config" in media_copy and "config" not in config:
         # A new install of the add-on, or a file Anki rebuilt from nothing after it failed
@@ -141,7 +176,10 @@ def save_addon_to_media(addon_id: str) -> bool:
     anki_addons_path, media_path = get_paths()
     addon_meta_json = anki_addons_path / addon_id / "meta.json"
     media_meta_json = media_path / f"_{addon_id}_meta.json"
-    if not addon_meta_json.is_file():
+    # The dialog's buttons are the user's own decision, made with the diff in front of them:
+    # unlike a sync they may put a file without a config over one with a config. Only a
+    # file that is no JSON object is never worth copying.
+    if read_json_object(addon_meta_json) is None:
         return False
     shutil.copy(addon_meta_json, media_meta_json)
     record_match(addon_id, addon_meta_json, media_meta_json)
@@ -153,6 +191,9 @@ def overwrite_addon_from_media(addon_id: str) -> bool:
     media_meta_json = media_path / f"_{addon_id}_meta.json"
     addon_meta_json = anki_addons_path / addon_id / "meta.json"
     if not media_meta_json.is_file() or not addon_meta_json.parent.is_dir():
+        return False
+    if read_json_object(media_meta_json) is None:
+        # As in save_addon_to_media
         return False
     shutil.copy(media_meta_json, addon_meta_json)
     mark_addon_updated(addon_id)
@@ -187,7 +228,7 @@ def save_configs_on_sync(
 ):
     """
     Saves the configs from the addon folder to the media folder, if they have changed or
-    don't exist in the media folder yet.
+    don't exist in the media folder yet, and if they are fit to send (fit_to_send).
 
     The file actions done here are what will trigger Anki to upload the files to AnkiWeb.
     This is run before media sync starts, so the changes will be immediately uploaded.
@@ -216,7 +257,10 @@ def save_configs_on_sync(
         addon_meta_json = addon_dir / "meta.json"
         media_meta_json = media_path / f"_{addon_dir.name}_meta.json"
 
-        if addon_meta_json.is_file():
+        if addon_meta_json.is_file() and not fit_to_send(addon_meta_json, media_meta_json):
+            # Broken, or without the config the copy has: held back (fit_to_send)
+            skipped_addons.append(addon_dir.name)
+        elif addon_meta_json.is_file():
             # If the destination media file doesn't exist, or the meta.json file has changed,
             # copy the meta.json file to the media folder
             saved_addon = False
@@ -264,11 +308,12 @@ def read_configs_on_sync(
     Changes made in AnkiWeb will have been downloaded to the media folder,
     and those are then copied to the addon folder.
 
-    A config that differs from its media copy is left as it is when the difference is a
-    change made on this device that is waiting for the next save_configs_on_sync to send
-    it. That takes all of: nothing was downloaded over the media copy since the two last
-    matched, no media copy was copied over this add-on's config since Anki started, and
-    is_change_made_here. Every other difference is copied over, as all of them used to be.
+    A config that differs from its media copy is left as it is when the copy is not fit to
+    read over it (fit_to_read), or when the difference is a change made on this device that
+    is waiting for the next save_configs_on_sync to send it. That takes all of: nothing was
+    downloaded over the media copy since the two last matched, no media copy was copied over
+    this add-on's config since Anki started, and is_change_made_here. Every other difference
+    is copied over, as all of them used to be.
     Asking instead of copying (apply_to_addons=False) lists every difference, as before:
     it loses nothing, and what it shows is the user's to judge.
 
@@ -305,8 +350,11 @@ def read_configs_on_sync(
                     and not json_files_deep_equal(media_meta_json, addon_meta_json)
                 )
             ):
-                # ...unless it is the config that changed, on this device, and the copy
-                # would undo that
+                # ...unless the copy is no JSON object, or has no config where this has one
+                if apply_to_addons and not fit_to_read(addon_meta_json, media_meta_json):
+                    continue
+                # ...or it is the config that changed, on this device, and the copy would
+                # undo that
                 if (
                     apply_to_addons
                     and addon_id not in OVERWRITTEN_THIS_SESSION
