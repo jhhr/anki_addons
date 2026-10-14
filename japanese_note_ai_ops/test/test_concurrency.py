@@ -1494,6 +1494,59 @@ class GateAdaptationTests(GateTestCase):
         self.assertEqual(gate.limit, conc.MIN_CONCURRENCY)
 
 
+class GateStatsTests(GateTestCase):
+    """What the gate did over a run, as a benchmark reads it: its moves, the time at each limit,
+    its ceiling changes and the collection's share, counted where the moves are logged."""
+
+    def make_counted_gate(self, **kwargs):
+        gate = self.make_gate(**kwargs)
+        # make_gate sets the limit behind the accounting's back; the run starts here
+        gate._dwell_limit = gate.limit
+        return gate
+
+    async def test_each_move_is_counted_and_each_limit_charged_the_time_it_held(self):
+        gate = self.make_counted_gate(limit=16, max_limit=256)
+        gate.in_flight = gate.limit
+        self.clock.advance(3.0)
+        await gate._adapt_once()
+        raised_to = gate.limit
+        self.clock.advance(5.0)
+        self.memory.available = 100 * MB
+        await gate._adapt_once()
+        halved_to = gate.limit
+        self.clock.advance(1.0)
+
+        stats = gate.stats()
+
+        self.assertEqual((stats["raised"], stats["halved"], stats["latched"]), (1, 1, 0))
+        self.assertEqual(
+            stats["dwell_seconds"], {"16": 3.0, str(raised_to): 5.0, str(halved_to): 1.0}
+        )
+        self.assertEqual(stats["seconds"], 9.0)
+        self.assertEqual(stats["limit"], halved_to)
+
+    async def test_a_ceiling_change_is_listed_with_when_it_came(self):
+        gate = self.make_counted_gate(limit=16, max_limit=256)
+        self.clock.advance(2.5)
+
+        gate._set_max_limit(100, "per-task memory now 3 MB")
+
+        self.assertEqual(
+            gate.stats()["ceiling_changes"], [{"at": 2.5, "from": 256, "to": 100}]
+        )
+
+    async def test_the_collection_share_is_the_run_s_whatever_the_windows_did(self):
+        conc.collection_pressure.record(5.0)  # before the run: not its
+        gate = self.make_counted_gate(limit=16, max_limit=256)
+        self.clock.advance(4.0)
+        conc.collection_pressure.record(1.0)
+        conc.collection_pressure.sample()  # a tick consumes the window, not the totals
+
+        stats = gate.stats()
+
+        self.assertEqual((stats["collection_share"], stats["collection_turns"]), (0.25, 1))
+
+
 class GateMemoryPressureTests(GateTestCase):
     """Backing off from memory, telling the memory the limit owns from the memory it does not.
 

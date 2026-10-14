@@ -353,5 +353,84 @@ class WordArrayQueryRegexTests(unittest.TestCase):
                 self.assertNotIn('"', regex.replace('\\"', ""))
 
 
+class WordArrayLinkRegexTests(unittest.TestCase):
+    """The elements linked to one note, found in the field text as it is written."""
+
+    NOTE = 1790025944461
+
+    def found(self, arr, note_id=NOTE):
+        regex = match_flags.word_array_link_regex(note_id)
+        return re.search(regex, match_flags.format_word_array(arr)) is not None
+
+    def test_finds_an_element_linked_to_the_note_rated_or_not_sub_words_too(self):
+        self.assertTrue(self.found([word("本", match_data=[self.NOTE])]))
+        self.assertTrue(self.found([word("本", match_data=[self.NOTE, 4])]))
+        self.assertTrue(self.found([word("本屋", subs=[word("本", match_data=[self.NOTE, 0])])]))
+        # A new note's placeholder id is negative until the note is added
+        self.assertTrue(self.found([word("本", match_data=[-1234567])], note_id=-1234567))
+
+    def test_no_other_notes_id_passes_for_it(self):
+        for other in ([179002594446], [17900259444612], [5, self.NOTE], [-self.NOTE]):
+            with self.subTest(match_data=other):
+                self.assertFalse(self.found([word("本", match_data=other)]))
+        for data in ([], ["match"], ["dontmatch"]):
+            with self.subTest(match_data=data):
+                self.assertFalse(self.found([word("本", match_data=data)]))
+
+    def test_a_number_in_a_text_is_no_link(self):
+        number = str(self.NOTE)
+        self.assertFalse(self.found([word(number, form=number, reading=number), [number]]))
+
+    def test_every_quote_is_escaped_for_ankis_search_parser(self):
+        regex = match_flags.word_array_link_regex(self.NOTE)
+        self.assertNotIn('"', regex.replace('\\"', ""))
+
+
+class WordArrayWholeWordRegexTests(unittest.TestCase):
+    """The elements of one dictionary form that have no sub-words: the ones a compound newly
+    listed to split has not reached yet."""
+
+    def found(self, arr, form="毛羽立つ"):
+        regex = match_flags.word_array_whole_word_regex(form)
+        return re.search(regex, match_flags.format_word_array(arr)) is not None
+
+    def compound(self, match_data=None, subs=None, reading="けばだつ"):
+        return word(" 毛羽[けば]立[た]ち", "verb", "毛羽立つ", reading, match_data, subs)
+
+    def test_finds_the_word_whole_in_any_state_and_with_any_reading(self):
+        for data in ([], ["match"], ["dontmatch"], [1790025944461], [1790025944461, 4]):
+            with self.subTest(match_data=data):
+                self.assertTrue(self.found([self.compound(match_data=data)]))
+        self.assertTrue(self.found([self.compound(reading="けばたつ")]))
+
+    def test_finds_it_as_a_sub_word_and_between_other_words(self):
+        other = word("表面", form="表面", reading="ひょうめん", subs=[word("表"), word("面")])
+        parent = word(
+            "毛羽立ちと", "expression", "毛羽立ちと", "けばだちと", subs=[self.compound()]
+        )
+        self.assertTrue(self.found([other, parent, ["。"]]))
+
+    def test_a_word_that_has_its_sub_words_is_not_found(self):
+        split = self.compound(
+            match_data=[1790025944461, 4],
+            subs=[
+                word(" 毛羽[けば]", form="毛羽", reading="けば"),
+                word("立[た]ち", "verb", "立つ"),
+            ],
+        )
+        self.assertFalse(self.found([split]))
+        # ...though a sub-word of it with none of its own is, by its own form
+        self.assertTrue(self.found([split], form="毛羽"))
+
+    def test_another_word_is_not_found(self):
+        self.assertFalse(self.found([word("目立った", "verb", "目立つ", "めだつ")]))
+        # The raw text and the reading are not the dictionary form
+        self.assertFalse(self.found([word("毛羽立つ", "verb", "別", "毛羽立つ")]))
+
+    def test_every_quote_is_escaped_for_ankis_search_parser(self):
+        regex = match_flags.word_array_whole_word_regex("毛羽立つ")
+        self.assertNotIn('"', regex.replace('\\"', ""))
+
+
 if __name__ == "__main__":
     unittest.main()

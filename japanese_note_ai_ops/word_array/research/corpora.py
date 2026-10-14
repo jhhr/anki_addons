@@ -1,16 +1,17 @@
 """The sentence corpora the research scripts read, each sentence with its old extract_words word
 list (see `old_word_lists.py`):
 
-- `export`: `output/extract_words_migration_data.jsonl`, every sentence of the collection with
+- `export`: `evals/extract_words_migration_data.jsonl`, every sentence of the collection with
   its raw word list field, as the since-removed `make_extract_words_migration_data` wrote it
   before the migration - `{"sentence", "word_list", "nids"}` per row, `nids` every note with the
   sentence. A field that is not valid JSON is counted and skipped.
-- `checked`: `output/extract_words_migration_data_checked.jsonl`, a hand-checked subset of that.
+- `checked`: `evals/extract_words_migration_data_checked.jsonl`, a hand-checked subset of that.
 
 `hand_judge`, `judge_eval`, `proper_nouns`, `proper_noun_eval`, `sub_readings`,
 `okurigana_decomp`, `name_lexicon`, `canonical_forms` and `unbalanced_tags` read their sentences
 through `CORPORA` and `read_export`, and the ones that generate arrays like the op does build
-the name lexicon with `export_name_lexicon`.
+the name lexicon with `export_name_lexicon`. `hand_judge` and `judge_eval`, whose arrays hold the
+words the judge is asked about, also split the compounds the config lists (`split_compounds`).
 """
 
 import json
@@ -18,14 +19,15 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from _bootstrap import ADDON_ROOT, load, load_root
+import anki_connect
+from _bootstrap import eval_file, load, load_root
 
 generator = load("generator")
 html_stripping = load_root("html_stripping")
 
 CORPORA = {
-    "export": ADDON_ROOT / "output" / "extract_words_migration_data.jsonl",
-    "checked": ADDON_ROOT / "output" / "extract_words_migration_data_checked.jsonl",
+    "export": eval_file("extract_words_migration_data.jsonl"),
+    "checked": eval_file("extract_words_migration_data_checked.jsonl"),
 }
 
 
@@ -42,6 +44,12 @@ def name_lexicon(corpus: list[tuple[str, dict]]) -> dict:
 def export_name_lexicon() -> dict:
     """The name lexicon of the export, the collection's sentences."""
     return name_lexicon(read_export(CORPORA["export"], Counter()))
+
+
+def split_compounds() -> frozenset[str]:
+    """The compounds the add-on's config lists to split, which the op hands the generator beside
+    the name lexicon: this machine's list, the shipped one where it has none of its own."""
+    return generator.split_compounds_of(anki_connect.load_config())
 
 
 def read_export(path: Path, invalid: Counter) -> list[tuple[str, dict]]:

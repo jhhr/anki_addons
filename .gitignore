@@ -24,4 +24,8 @@ build/
 # This device's build.py preferences: the addons21 folder name each addon is linked under,
 # which is whatever this device's Anki already knows it by.
 build.local.json
+
+# A checkout of the private test data repo: replay fixtures and benchmark corpora made from a
+# real collection, which hold its note text (japanese_note_ai_ops/dev/replay.py, test_data_dir)
+/test_data/
 pyrightconfig.json

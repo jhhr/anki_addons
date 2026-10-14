@@ -465,26 +465,45 @@ class MenuTests(unittest.TestCase):
         )
         self.addCleanup(stop_menu_only)
         every = {**mocks, **menu_only}
+        # Every action opens a log file named by its key before it runs, so the files of one op
+        # can be picked out of the log folder
+        opened: list = []
+
+        def start_call_log(key):
+            opened.append(key)
+            self.assertEqual([n for n, m in every.items() if m.called], [])
+
+        log_patch = mock.patch.object(ai_helper_menu, "start_call_log", start_call_log)
+        log_patch.start()
+        self.addCleanup(log_patch.stop)
         actions = {item.label: item for item in menu.items if item != SEPARATOR}
         for spec in op_registry.OPS:
             name, variant = STARTS[spec.key]
             with self.subTest(op=spec.key):
                 for m in every.values():
                     m.reset_mock()
+                opened.clear()
                 # Triggered with no arguments, as PyQt calls a slot that takes none
                 actions[spec.label].triggered.slot()
                 every[name].assert_called_once_with(NIDS, parent=PARENT, chain=None, **variant)
                 self.assertEqual([n for n, m in every.items() if m.called], [name])
-        for label, name in (
-            ("Build name lexicon from selected notes", "build_name_lexicon_from_selected"),
-            ("Export kanjify test data", "make_kanjify_sentence_data"),
+                self.assertEqual(opened, [spec.key])
+        for label, name, key in (
+            (
+                "Build name lexicon from selected notes",
+                "build_name_lexicon_from_selected",
+                "build_name_lexicon",
+            ),
+            ("Export kanjify test data", "make_kanjify_sentence_data", "export_kanjify_data"),
         ):
             with self.subTest(action=label):
                 for m in every.values():
                     m.reset_mock()
+                opened.clear()
                 actions[label].triggered.slot()
                 every[name].assert_called_once_with(NIDS, parent=PARENT)
                 self.assertEqual([n for n, m in every.items() if m.called], [name])
+                self.assertEqual(opened, [key])
 
     def test_first_action_opens_the_dialog_over_the_browser(self):
         menu = self.build_menu()

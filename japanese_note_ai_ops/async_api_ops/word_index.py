@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Iterable, NamedTuple, Optional, Sequence, cast
 
 from aqt import mw
 
+from . import capture_notes
 from .collection_access import run_on_collection, run_on_collection_async
 
 if TYPE_CHECKING:
@@ -193,7 +194,7 @@ class WordIndex:
             found.update(self.by_normal.get(index_key(value), ()))
         if only_note_id is not None:
             found &= {only_note_id}
-        return sorted(note_id for note_id in found if not self.is_excluded(note_id))
+        return _found(sorted(note_id for note_id in found if not self.is_excluded(note_id)))
 
     def marker_note_ids(self, word: str, marker_regex: str) -> "list[NoteId]":
         """The notes whose sort field is `word` plus nothing but reading/meaning markers."""
@@ -208,8 +209,10 @@ class WordIndex:
             # it could match a sort field whose base is something else entirely. Rare enough
             # to be worth paying a pass over the index for rather than getting wrong.
             candidates = self.sort_of.keys()
-        return sorted(
-            note_id for note_id in candidates if pattern.search(self.sort_of.get(note_id, ""))
+        return _found(
+            sorted(
+                note_id for note_id in candidates if pattern.search(self.sort_of.get(note_id, ""))
+            )
         )
 
     def covers(self, kanjified: str, normal: str, reading: str, sort: str) -> bool:
@@ -283,7 +286,15 @@ class WordIndex:
             if GROUP_EXCLUDED_RE.search(sort_value):
                 continue
             matching.append(note_id)
-        return sorted(matching)
+        return _found(sorted(matching))
+
+
+def _found(note_ids: "list[NoteId]") -> "list[NoteId]":
+    """A lookup's answer, noted for a run that records its notes: the index answers from rows
+    of the notes table, which records no note, so the notes it names are fetched for the
+    capture later (capture_notes.fetch_unread)."""
+    capture_notes.found(note_ids)
+    return note_ids
 
 
 def _read_notes(
@@ -368,7 +379,11 @@ def sort_base_note_ids(sort_field: str, bases: "Iterable[str]") -> "dict[str, li
         f"word_index: notes by {sort_field}", lambda: _read_notes(fields, containing)
     )
     by_sort_base = WordIndex.from_rows(fields, ords_by_mid, rows).by_sort_base
-    return {key: list(by_sort_base[key]) for key in wanted if key in by_sort_base}
+    by_base = {key: list(by_sort_base[key]) for key in wanted if key in by_sort_base}
+    # Found from rows of the notes table, which records no note: noted for a run that records
+    # its notes, whose marker tidying fetches them (base_ops.tidy_markers)
+    capture_notes.found(note_id for note_ids in by_base.values() for note_id in note_ids)
+    return by_base
 
 
 # The most words sort_base_note_ids has SQLite look for, two parameters each

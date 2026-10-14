@@ -38,10 +38,12 @@ def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:
         return generator.name_rest_word(word, rest_raw)
 
 
-def generate_word_array(sentence: str, name_lexicon: Optional[dict]) -> list:
+def generate_word_array(
+    sentence: str, name_lexicon: Optional[dict], split_compounds: frozenset[str] = frozenset()
+) -> list:
     """`generator.generate`, one call at a time, for the same reason as `_name_rest_word`."""
     with _generator_lock:
-        return generator.generate(sentence, name_lexicon)
+        return generator.generate(sentence, name_lexicon, split_compounds)
 
 
 def proper_nouns_model(config: dict) -> str:
@@ -52,10 +54,13 @@ def add_proper_nouns(config: dict, arr: list, log_prefix: str) -> list[str]:
     """Ask the model for the sentence's proper nouns and fix `arr` in place, returning the
     names that are one proper noun word now and were not before. Empty when the call failed
     or named nothing the array did not already have."""
+    sentence = proper_noun_llm.sentence_of(arr)
     response = get_response(
         proper_nouns_model(config),
-        proper_noun_llm.prompt(arr),
+        proper_noun_llm.sentence_prompt(sentence),
         response_schema=proper_noun_llm.RESPONSE_SCHEMA,
+        kind="proper_nouns.sentence",
+        inputs={"sentence": sentence},
     )
     if response is None:
         logger.error(f"{log_prefix}No response from the model")

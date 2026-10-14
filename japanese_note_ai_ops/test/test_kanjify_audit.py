@@ -90,10 +90,16 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(after, "<b>猫</b>を<k> 此[こ]の</k> 所[ところ]")
 
     def test_row_fix_moves_a_helper_into_the_kanjified_verb_before_it(self):
+        label = "電話[でんわ]<k> 為[し]て</k><k> 呉[く]れた</k>。"
+        after, fixes = self.audit.row_fix(label, self.audit.analyze_row(0, label), {})
+        self.assertEqual(after, "電話[でんわ]<k> 為[し]てくれた</k>。")
+        self.assertEqual([f["class"] for f in fixes], ["て-helper"])
+
+    def test_row_fix_leaves_kudasai_kanjified_after_te(self):
+        # the policy kanjifies てください (KANJI-15): 下さる is no helper to un-kanjify
         label = "電話[でんわ]<k> 為[し]て</k><k> 下[くだ]さい</k>。"
         after, fixes = self.audit.row_fix(label, self.audit.analyze_row(0, label), {})
-        self.assertEqual(after, "電話[でんわ]<k> 為[し]てください</k>。")
-        self.assertEqual([f["class"] for f in fixes], ["て-helper"])
+        self.assertEqual((after, fixes), (label, []))
 
 
 if __name__ == "__main__":

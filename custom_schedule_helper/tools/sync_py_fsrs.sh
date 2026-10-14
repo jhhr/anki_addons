@@ -137,7 +137,8 @@ Next steps:
        - imports are still relative (upstream writes them absolute)
        - get_card_retrievability still returns 1 for an unreviewed card, and fractional days
        - _next_difficulty still takes retrievability, at every call site
-       - review_card still hoists initialisation out of the state match, and falls through
+       - review_card still hoists initialisation out of the state branches, and falls through
        - the card.step None guard survived
+       - no match statement came back: Python 3.9 cannot parse one (structural change 4)
   2. Update the "Vendored version" and "Last synced" rows in py_fsrs/README.md to $TARGET.
 EOF

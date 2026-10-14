@@ -21,12 +21,12 @@ What the cache changes, and what it does not:
   out for notes nobody has touched. Callers that deliberately want a pristine copy of an
   already-edited note - `get_other_meaning_notes` under `allow_reupdate_existing` - do not go
   through here, so their semantics are unchanged.
-- **Tag edits that skip `notes_to_update_dict` now persist within the run.** `clean_meaning`
-  adds `updated_jp_meaning`, and sometimes `MEANING_MAPPED_TAG`, before it checks whether the
-  meanings actually changed, and only registers the note if they did. Against a fresh copy per
-  fetch those tags were discarded; against a cached object a later `needs_meaning_mapping` sees
-  them and skips a re-map whose outcome could not differ. Nothing is written to the collection
-  either way, because writing is what `notes_to_update_dict` decides.
+- **Tag edits that skip `notes_to_update_dict` now persist within the run.** A tag put on a
+  note that is not then registered (`clean_meaning` used to add `updated_jp_meaning`, and
+  sometimes `MEANING_MAPPED_TAG`, and register the note only if its meanings changed) was
+  discarded with a fresh copy per fetch; on a cached object a later reader such as
+  `needs_meaning_mapping` sees it. Nothing is written to the collection either way, because
+  writing is what `notes_to_update_dict` decides.
 
 Bounded by the run rather than by a size cap. A whole run's distinct notes are a subset of one
 notetype's notes, which the word index already holds the fields of, so the ceiling is a known

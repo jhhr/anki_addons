@@ -2,9 +2,13 @@
 
 Two things decide that, and until now only one of them was written down.
 
-The first is the *destination*: one file per call, created by the UI hook that starts the
-call. That is right for a single-note op - a story generated on field unfocus, a translation -
-where the call is the unit of work and its log is the record of it.
+The first is the *destination*: one file per call, created where the call starts and named
+after what it runs - the op's key when an op is chosen from the menu or started as a step of a
+chain, the op a field unfocus runs, `add_note` for a note added by hand. That is right for a
+single-note op - a story generated on field unfocus, a translation - where the call is the unit
+of work and its log is the record of it, and it is what lets one op's files be picked out of
+the folder: they all used to be named `add_note`, after the context menu hook that happened to
+open them.
 
 The second is *granularity*, and per-call was quietly the wrong answer for a bulk run. The
 note-adding phase of `match_words_to_notes` is synchronous and follows the async plan phase,
@@ -33,6 +37,7 @@ from typing import Iterator, Optional
 
 from aqt import mw
 
+from .async_api_ops import capture
 from .async_api_ops.diagnostics import WORKER_THREAD_PREFIX
 
 ADDON_MODULE = __name__.split(".")[0]
@@ -41,6 +46,16 @@ logger = logging.getLogger(__name__)
 
 # Marks the handlers this addon attaches, so they can be found and closed again
 _ADDON_HANDLER_FLAG = "_simple_anki_ai_prompts_handler"
+
+# The name the last start_call_log gave its file, which a phase's file is named after too. Set on
+# the main thread when an op starts and read on the op thread when its phase begins; one op runs
+# at a time, since Anki's progress dialog owns the UI for the length of one
+_log_name: Optional[str] = None
+
+# The ids in brackets are the capture store's run, note and call (`r12 n1712345678901 c4567`,
+# or `-`), set on every record by the CaptureContextFilter each handler carries: they are what
+# joins a line of the log to the rows it was written for
+LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [%(capture_ids)s] %(message)s"
 
 
 # How long to keep waiting for a run's threads before closing its log file anyway. Long enough
@@ -128,6 +143,17 @@ def close_previous_log_handlers(logger_instance: logging.Logger) -> None:
             _close_handler_when_idle(handler)
 
 
+def logs_dir() -> str:
+    """The directory the call log files are written to.
+
+    Under user_files because that is the only directory Anki carries across an addon update;
+    everything else is sent to the trash and re-extracted, which took every log with it exactly
+    when a user was being asked for one. A function, as CopyAnywhere's is, so a replay can send
+    its logs elsewhere (dev/replay.py `replay_logs`).
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_files", "logs")
+
+
 def create_call_log_handler(function_name: str) -> logging.Handler:
     """Create a new file handler for a specific function call"""
     config = mw.addonManager.getConfig(ADDON_MODULE) or {}
@@ -146,38 +172,66 @@ def create_call_log_handler(function_name: str) -> logging.Handler:
         # Create console handler
         handler: logging.Handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(log_level)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
+        _add_capture_ids(handler)
         setattr(handler, _ADDON_HANDLER_FLAG, True)
         return handler
 
-    # Create logs directory. Under user_files because that is the only directory Anki carries
-    # across an addon update; everything else is sent to the trash and re-extracted, which
-    # took every log with it exactly when a user was being asked for one.
-    addon_dir = os.path.dirname(os.path.abspath(__file__))
-    logs_dir = os.path.join(addon_dir, "user_files", "logs")
-    os.makedirs(logs_dir, exist_ok=True)
+    directory = logs_dir()
+    os.makedirs(directory, exist_ok=True)
 
     # Create unique log file
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"{function_name}_{timestamp}.log")
+    log_file = os.path.join(directory, f"{function_name}_{timestamp}.log")
 
     # Create handler. delay=True so the file isn't opened (or created) until something is
     # actually logged - building the context menu shouldn't leave an empty log file behind.
     handler = logging.FileHandler(log_file, encoding="utf-8", delay=True)
     handler.setLevel(log_level)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
+    _add_capture_ids(handler)
     setattr(handler, _ADDON_HANDLER_FLAG, True)
 
     return handler
 
 
+def _add_capture_ids(handler: logging.Handler) -> None:
+    """The format with the capture ids, and the filter that sets them. On the handler, not the
+    addon logger: a logger's filters never see the records of the loggers under it, which is
+    every module's. The format needs the filter, or a record fails to format."""
+    handler.addFilter(capture.CaptureContextFilter())
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+
+def current_log_path() -> Optional[str]:
+    """The file the addon's records go to now: the first of its own handlers that writes to
+    one. None when they go to the console, or nowhere yet.
+
+    The capture store asks at each run's start and records it with the run, so a run's row
+    names the log whose lines carry its ids. Only reads: a FileHandler made with delay=True
+    has its path before its file exists.
+    """
+    for handler in list(addon_logger().handlers):
+        if getattr(handler, _ADDON_HANDLER_FLAG, False):
+            path = getattr(handler, "baseFilename", None)
+            if path:
+                return str(path)
+    return None
+
+
 def start_call_log(function_name: str) -> None:
-    """Give this call its own log file, replacing whatever the previous one left attached."""
-    handler = create_call_log_handler(function_name)
+    """Give this call its own log file, `<function_name>_<timestamp>.log`, replacing whatever
+    the previous one left attached.
+
+    A file that cannot be made leaves the previous handler in place: the log is diagnostics, and
+    this runs right before an op starts, which must not fail for want of one. The name is this
+    op's either way, so a phase it opens a file for is named after it, not the op before.
+    """
+    global _log_name
+    _log_name = function_name
+    try:
+        handler = create_call_log_handler(function_name)
+    except Exception as e:
+        logger.warning("Could not open a log file for %r (%s); logging on", function_name, e)
+        return
     if not handler:
         return
     logger_instance = addon_logger()
@@ -201,8 +255,8 @@ def in_bulk_op() -> bool:
 def bulk_op_logging() -> Iterator[None]:
     """Mark this thread as running a bulk op, for as long as the block lasts.
 
-    Installs nothing: the run's log file is the one the UI hook that started it attached. This
-    only says that a run owns it, so `in_bulk_op` can answer.
+    Installs nothing: the run's log file is the one `start_call_log` opened when its op was
+    started. This only says that a run owns it, so `in_bulk_op` can answer.
     """
     _bulk_state.depth = getattr(_bulk_state, "depth", 0) + 1
     try:
@@ -211,9 +265,17 @@ def bulk_op_logging() -> Iterator[None]:
         _bulk_state.depth = max(0, getattr(_bulk_state, "depth", 1) - 1)
 
 
+def phase_log_name(phase: str) -> str:
+    """The name of a phase's file: after the run's own (`match_words_add_note_phase`), so that a
+    phase's file sorts and filters with the op it belongs to."""
+    return f"{_log_name}_{phase}" if _log_name else phase
+
+
 @contextmanager
 def phase_log(function_name: str) -> Iterator[None]:
     """Send one phase of a run to its own log file, and put the run's own file back after.
+
+    The file is named by `phase_log_name`: the run's own name, then `function_name`.
 
     The run's handlers are detached rather than closed, and re-attached when the block ends, so
     the phases either side of this one stay in one file and the phase table stays readable in
@@ -225,7 +287,9 @@ def phase_log(function_name: str) -> Iterator[None]:
     """
     logger_instance = addon_logger()
     try:
-        handler: Optional[logging.Handler] = create_call_log_handler(function_name)
+        handler: Optional[logging.Handler] = create_call_log_handler(
+            phase_log_name(function_name)
+        )
     except Exception as e:
         logger.warning(
             "Could not open a log file for phase %r (%s); logging on", function_name, e

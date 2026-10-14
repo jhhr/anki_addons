@@ -71,9 +71,13 @@ one mypy and your editor use. Two steps, because `pytest-anki2` has to go in wit
 declared dependencies:
 
 ```
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-dev.txt -r japanese_note_ai_ops/requirements.txt
 python -m pip install --no-deps -r requirements-dev-nodeps.txt
 ```
+
+The second file in the first step is the packages `japanese_note_ai_ops` vendors for Anki. The
+root suite imports that addon's modules without its vendored `lib/` on the path, so they have
+to be installed as well, or the run stops at collection on `No module named 'rapidfuzz'`.
 
 No `build.py link` is needed first; the root `conftest.py` stands in for a missing
 `<addon>/shared/`. How the suites work, and how an addon adds tests of its own, is in

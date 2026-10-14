@@ -67,7 +67,7 @@ import tracemalloc
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 try:
     import psutil  # type: ignore
@@ -196,6 +196,10 @@ class CollectionPressure:
         self._held = 0.0
         self._turns = 0
         self._since = time.perf_counter()
+        # Never reset: what a run's gate reports as the run's collection time (`totals`) is
+        # the difference across the run, whatever the windows did meanwhile
+        self._total_held = 0.0
+        self._total_turns = 0
 
     def reset(self) -> None:
         """Start a fresh window. Called when a run begins adapting."""
@@ -209,6 +213,13 @@ class CollectionPressure:
         with self._lock:
             self._held += held_seconds
             self._turns += 1
+            self._total_held += held_seconds
+            self._total_turns += 1
+
+    def totals(self) -> tuple[float, int]:
+        """(seconds held, turns) since the process started."""
+        with self._lock:
+            return self._total_held, self._total_turns
 
     def sample(self) -> Optional[tuple[float, float]]:
         """(utilisation, mean seconds per turn) since the last sample, None if nothing ran.
@@ -1159,6 +1170,19 @@ class ConcurrencyGate:
         self._adapt_task: Optional[asyncio.Task] = None
         self._aborted = False
 
+        # What the run did with its limit, for `stats`: counted where each move is logged, the
+        # time spent at each limit, and the collection's share across the run. Otherwise these
+        # are only DEBUG lines, and a benchmark cannot compare DEBUG lines across commits
+        # perf_counter, as CollectionPressure times: monotonic resolves to 15.6ms on Windows,
+        # and a limit can hold for less
+        self._started = time.perf_counter()
+        self.moves = {"raised": 0, "halved": 0, "held_under_pressure": 0, "latched": 0}
+        self.ceiling_changes: list[tuple[float, int, int]] = []
+        self._dwell: dict[int, float] = {}
+        self._dwell_limit = self.limit
+        self._dwell_since = self._started
+        self._collection_at_start = collection_pressure.totals()
+
         logger.debug(
             "ConcurrencyGate(%r): limit=%d max=%d adaptive=%s per_task=%s (%s)"
             " total_mem=%s avail_mem=%s reserve=%s hard_cap=%s",
@@ -1307,6 +1331,49 @@ class ConcurrencyGate:
         self.estimator.stop()
         self.estimator.persist()
 
+    def _account_dwell(self) -> None:
+        """Charge the time since the last move to the limit that held through it."""
+        now = time.perf_counter()
+        self._dwell[self._dwell_limit] = (
+            self._dwell.get(self._dwell_limit, 0.0) + now - self._dwell_since
+        )
+        self._dwell_since = now
+
+    def _move_limit(self, new_limit: int) -> None:
+        """Every move of the limit the gate makes itself, so `stats` knows how long each held."""
+        self._account_dwell()
+        self.limit = new_limit
+        self._dwell_limit = new_limit
+
+    def stats(self) -> dict[str, Any]:
+        """What the gate did over the run, as data: how often it raised, halved, held under
+        pressure and latched on a busy collection; each ceiling change (seconds into the run,
+        from, to); the seconds spent at each limit; the collection's share of the run and its
+        turns. For a benchmark to compare across commits what the logs only narrate."""
+        self._account_dwell()
+        elapsed = time.perf_counter() - self._started
+        held, turns = collection_pressure.totals()
+        held -= self._collection_at_start[0]
+        turns -= self._collection_at_start[1]
+        return {
+            "seconds": round(elapsed, 3),
+            "limit": self.limit,
+            "max_limit": self.max_limit,
+            "adaptive": self.adaptive,
+            **self.moves,
+            "ceiling_changes": [
+                {"at": round(at, 3), "from": old, "to": new}
+                for at, old, new in self.ceiling_changes
+            ],
+            "dwell_seconds": {
+                str(limit): round(seconds, 3) for limit, seconds in sorted(self._dwell.items())
+            },
+            "collection_share": round(held / elapsed, 4) if elapsed > 0 else None,
+            "collection_turns": turns,
+            "collection_seconds_per_turn": round(held / turns, 5) if turns else None,
+            "per_task_estimate": int(self.estimator.estimate),
+        }
+
     def note_live_tasks(self, count: float) -> None:
         """Called by the drivers with how many of the op's API tasks are alive right now.
 
@@ -1379,10 +1446,11 @@ class ConcurrencyGate:
             new_max,
         )
         previous_max = self.max_limit
+        self.ceiling_changes.append((time.perf_counter() - self._started, previous_max, new_max))
         self.max_limit = new_max
         self._ceiling_from_budget = new_max
         if self.limit > self.max_limit:
-            self.limit = self.max_limit
+            self._move_limit(self.max_limit)
         if self.on_ceiling_changed and new_max > previous_max:
             # Only upward. Resizing the pool drops every session and with it every idle
             # keep-alive connection, so the next wave of requests each pay a fresh TCP and TLS
@@ -1490,6 +1558,7 @@ class ConcurrencyGate:
                 # 86 seconds, past a collection that had been saturated for 80% of the run.
                 # Vetoing four ticks in five caps nothing while the fifth compounds.
                 if self.collection_ceiling != self.limit:
+                    self.moves["latched"] += 1
                     logger.debug(
                         "Collection busy %.0f%% of the last window (%.2fs per turn), holding"
                         " concurrency at %d rather than growing towards %d",
@@ -1523,7 +1592,8 @@ class ConcurrencyGate:
             if self.limit >= ceiling:
                 return
             previous = self.limit
-            self.limit = min(ceiling, self.limit + max(1, int(self.limit * GROWTH_RATE)))
+            self.moves["raised"] += 1
+            self._move_limit(min(ceiling, self.limit + max(1, int(self.limit * GROWTH_RATE))))
             self._wake_waiters(self.limit - self.in_flight)
             logger.debug(
                 "Memory comfortable (avail=%s), raising concurrency %d -> %d (ceiling %d)",
@@ -1568,6 +1638,7 @@ class ConcurrencyGate:
                 # Once per episode: the reason does not change from tick to tick, and this is
                 # the stretch that can last for tens of minutes.
                 self._pressure_held = True
+                self.moves["held_under_pressure"] += 1
                 logger.debug(
                     "Memory pressure persists (avail=%s rss=%s) but %s; holding concurrency"
                     " at %d rather than cutting again",
@@ -1593,7 +1664,8 @@ class ConcurrencyGate:
             )
             # Tasks already running keep their slot; the lower limit takes effect as they
             # finish and waiting tasks stay blocked until enough have drained.
-            self.limit = new_limit
+            self.moves["halved"] += 1
+            self._move_limit(new_limit)
         # Recovery starts from where the cut left the run, not from the limit that tripped the
         # machine: latching at the latter lets geometric growth put the run straight back onto
         # it in three ticks, which is the sawtooth with a smaller amplitude rather than no

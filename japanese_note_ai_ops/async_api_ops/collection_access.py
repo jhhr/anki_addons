@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence, T
 
 from aqt import mw
 
+from . import capture, capture_notes
 from .api_client import Run, current_run, run_is_cancelled
 from .concurrency import collection_pressure
 
@@ -274,21 +275,44 @@ async def run_on_collection_async(what: str, fn: "Callable[[], T]") -> T:
     return await future
 
 
+def _recording() -> bool:
+    """Whether what this thread reads is the run's state before it wrote anything: every read
+    but the cleanup's, which comes after its writes. Recorded on the calling thread, which has
+    the run's capture context; the worker that runs the read has none."""
+    return capture.notes_on() and not getattr(_exempt, "on", False)
+
+
+def _found(query: str, note_ids: "Sequence[NoteId]") -> "Sequence[NoteId]":
+    if _recording():
+        capture.event("search", {"query": query, "count": len(note_ids)})
+        capture_notes.found(note_ids)
+    return note_ids
+
+
+def _fetched(notes: "list[Note]") -> "list[Note]":
+    if _recording():
+        capture_notes.fetched(notes)
+    return notes
+
+
 def find_notes(query: str) -> "Sequence[NoteId]":
     """mw.col.find_notes, serialised and abandonable."""
-    return run_on_collection(f"find_notes: {query}", lambda: mw.col.find_notes(query))
+    return _found(
+        query, run_on_collection(f"find_notes: {query}", lambda: mw.col.find_notes(query))
+    )
 
 
 async def find_notes_async(query: str) -> "Sequence[NoteId]":
     """find_notes for a caller on the event loop."""
-    return await run_on_collection_async(
-        f"find_notes: {query}", lambda: mw.col.find_notes(query)
+    return _found(
+        query,
+        await run_on_collection_async(f"find_notes: {query}", lambda: mw.col.find_notes(query)),
     )
 
 
 def get_note(note_id: "NoteId") -> "Note":
     """mw.col.get_note, serialised and abandonable."""
-    return run_on_collection("get_note", lambda: mw.col.get_note(note_id))
+    return _fetched([run_on_collection("get_note", lambda: mw.col.get_note(note_id))])[0]
 
 
 def _fetch_notes(ids: "list[NoteId]", run: "Optional[Run]", exempt: bool) -> "list[Note]":
@@ -314,8 +338,8 @@ def get_notes(note_ids: "Iterable[NoteId]") -> "list[Note]":
     if not ids:
         return []
     run, exempt = current_run(), bool(getattr(_exempt, "on", False))
-    return run_on_collection(
-        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
+    return _fetched(
+        run_on_collection(f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt))
     )
 
 
@@ -325,6 +349,8 @@ async def get_notes_async(note_ids: "Iterable[NoteId]") -> "list[Note]":
     if not ids:
         return []
     run, exempt = current_run(), bool(getattr(_exempt, "on", False))
-    return await run_on_collection_async(
-        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
+    return _fetched(
+        await run_on_collection_async(
+            f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
+        )
     )

@@ -192,6 +192,31 @@ as `cards`.
 
 </details>
 
+### Rearranging stages
+
+**↑** and **↓** move a stage within its own block. Everything else is in the row's **⋮**
+menu, for that stage alone, or in the bar above the stages, for every stage you have checked:
+
+- **Wrap in** puts the stages inside a new *Condition*, *Loop Over Notes* or *Loop Over
+  Cards*, where they stood: they become its *Then*, or its body. Only stages that sit next to
+  each other in one block can be wrapped together.
+- **Move out** takes them out of the condition or loop they are in, to just above or just
+  below it.
+- **Move into** puts them in another block. They land as close as they can to where they
+  were: at the top of a block below them, at the bottom of one above. A condition's
+  *Otherwise* counts as below its *Then*.
+- **Remove this condition, keep its stages**, on a condition's own **⋮** (or *this loop*, on
+  a loop's), undoes a wrap. A condition's *Then* is followed by its *Otherwise*, and both now
+  run every time. If the condition was off, its stages stay off.
+- **Turn on**, **Turn off** and **Delete** act on every checked stage, and **✕** unchecks
+  them all.
+
+Checking a condition or loop takes everything inside it along. Closing one unchecks the
+stages inside it, so the bar never acts on a stage you cannot see. A name produced inside a
+branch or a loop is gone when that block ends, so wrapping a stage whose result is read
+further down marks those readers in red, and the definition cannot be saved until you move
+them in too or take the stage back out.
+
 ### Values
 
 Everywhere a definition computes something — a field's new content, a search, a filename, a

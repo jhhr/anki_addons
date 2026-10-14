@@ -19,7 +19,7 @@ Fix rows go to `output/kanjify_rekanjify_fixes.jsonl` in `kanjify_fix.py --fixes
 with the survey's grammar fixes (`kanjify_survey_fixes.jsonl`): a sentence in both is one row,
 the grammar fixes applied first, so this file alone is applied. Every row's `after` passes
 `kanjify_note.edit_problem` (reads the same, `<k>` tags pair up). Answers are cached with the
-kanjify eval's (`output/kanjify_eval_results.jsonl`, by model and prompt).
+kanjify eval's (`evals/kanjify_eval_results.jsonl`, by model and prompt).
 
     py -3.10 word_array/research/kanjify_rekanjify.py [--model M] [-n COUNT] [--workers 16]
         [--cached-only]
@@ -37,7 +37,7 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from typing import NamedTuple, Optional
 
-from _bootstrap import ADDON_ROOT
+from _bootstrap import ADDON_ROOT, eval_file
 
 import kanjify_audit as audit
 import kanjify_eval
@@ -46,7 +46,7 @@ import kanjify_note
 import note_edits
 
 OUTPUT = ADDON_ROOT / "output"
-EXPORT = OUTPUT / "extract_words_migration_data.jsonl"
+EXPORT = eval_file("extract_words_migration_data.jsonl")
 TASKS = OUTPUT / "kanjify_survey_tasks.jsonl"
 GRAMMAR = OUTPUT / "kanjify_survey_fixes.jsonl"
 FIXES = OUTPUT / "kanjify_rekanjify_fixes.jsonl"

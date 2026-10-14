@@ -96,11 +96,26 @@ depends on `'d'` staying in its filter so that it does not undo a dispersal.
   load; add a migration step instead of reading the old shape in place.
 - `addon_config_sync` copies other addons' `meta.json` between devices. A config value that
   is only valid on one machine (an absolute path) will travel.
+- It sends a config out only at `sync_will_start`, and in its default mode reads the media
+  folder's copy back over `meta.json` whenever a media sync ends. A config an addon writes
+  by itself in between is kept where nothing was downloaded over the media copy
+  (`addon_config_sync/matched_copies.py`), but not for the rest of an Anki session in which
+  a media copy was already copied over that addon's config: the addon might be writing back
+  one it read before that. Versions from before matches were kept copied back wherever the
+  two files differed, which undid a config written during a sync, and one written after it
+  as soon as a media sync ended before the next collection sync started; Anki starts a
+  media sync every 15 minutes by default. So an addon that writes its own config still
+  does it once a media sync has stopped, from one of Anki's timers so that it follows the
+  other handlers of that hook call, and keeps what it wrote re-derivable.
+  `japanese_note_ai_ops/split_compound_tag.py` does both. Read the config from
+  `mw.addonManager` when it is needed rather than keeping it from import: a kept one is
+  stale as soon as a sync has replaced the file.
 
 ## Compatibility
 
-- Anki 25.09 ships CPython 3.13; pip-installed Ankis can be on 3.9 or 3.10. Shipped code
-  stays 3.10-compatible (see the root `AGENTS.md`).
+- Anki's own builds ship CPython 3.13 since 25.07 and shipped 3.9 from 2.1.50 to 25.02;
+  pip-installed Ankis can be on 3.9 or newer. Shipped code stays 3.9-compatible (see the root
+  `AGENTS.md`).
 - Guard version-specific API use explicitly, as `custom_schedule_helper` does with
   `int_version() >= 231001`, and say in a comment which Anki version the branch is for.
 - Filtered decks: a card's home deck is `odid` when non-zero and its real due is `odue`.

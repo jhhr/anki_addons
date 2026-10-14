@@ -106,8 +106,71 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(groups["様に"], "expression")
         self.assertEqual(groups["大きな顔"], "expression")
 
+    def test_a_number_and_its_counter_are_one_group_under_any_part_of_speech(self):
+        """三階 is a noun, 一度 an adverb and 二つ an expression to JMdict, and the noun rules
+        told the judge to match a number plus a counter."""
+
+        def counted(text, pos="noun"):
+            subs = [word(f"{text}の数", "number"), word(f"{text}の助数詞", "counter")]
+            return word(text, pos, subs=subs)
+
+        arr = [
+            counted("三階"),
+            counted("一度", "adverb"),
+            counted("二つ", "expression"),
+            word("もう一回", "expression", subs=[word("もう", "adverb"), counted("一回")]),
+            word("何度も", "expression", subs=[counted("何度"), word("も", "particle")]),
+        ]
+        groups = {a.elem[2]: a.group for a in judge.plan_judgements(arr).asks}
+        for text in ("三階", "一度", "二つ", "一回", "何度"):
+            with self.subTest(word=text):
+                self.assertEqual(groups[text], judge.NUMBER_COUNTER_GROUP)
+                # Its two words are still judged as what they are, and can keep their notes
+                self.assertEqual(groups[f"{text}の数"], "noun-sub")
+                self.assertEqual(groups[f"{text}の助数詞"], "counter")
+        self.assertEqual(groups["もう一回"], "expression")
+        self.assertEqual(groups["何度も"], "expression")
+
+    def test_a_count_with_no_sub_words_is_judged_in_its_own_group_under_the_same_rule(self):
+        """九[きゅう] 人[にん] comes out as a number and a counter, 九人[きゅうにん] whole: the
+        same count, so every group a whole one lands in carries the rule in short."""
+        arr = [
+            word("九人"),
+            word("三人目", subs=[word("三人"), word("目", "suffix")]),
+            word("一杯", "adverb"),
+        ]
+        groups = {a.elem[2]: a.group for a in judge.plan_judgements(arr).asks}
+        self.assertEqual(
+            (groups["九人"], groups["三人"], groups["一杯"]), ("noun-main", "noun-sub", "adverb")
+        )
+        for group in ("noun-main", "noun-sub", "adverb"):
+            with self.subTest(group=group):
+                self.assertIn(judge.WHOLE_COUNT_RULE, judge.POS_RULES[group])
+
+    def test_a_count_with_a_second_meaning_is_kept_in_either_shape(self):
+        """一杯 as one glass comes out split (１杯) or whole (一杯[いっぱい]) like any count,
+        and neither set of rules may turn it down, or half the word has no note."""
+        self.assertIn(judge.BOTH_MEANINGS_RULE, judge.POS_RULES[judge.NUMBER_COUNTER_GROUP])
+        self.assertIn(judge.BOTH_MEANINGS_RULE, judge.WHOLE_COUNT_RULE)
+        # and no rule still tells such a word's count from its meaning by the sentence
+        for group, rules in judge.POS_RULES.items():
+            with self.subTest(group=group):
+                self.assertNotIn("are only a count, dontmatch", rules)
+
+    def test_a_word_with_more_than_a_number_and_a_counter_keeps_its_own_group(self):
+        arr = [
+            word("第三者", subs=[word("第", "prefix"), word("三", "number"), word("者", "counter")]),
+            word("十円玉", subs=[word("十", "number"), word("円", "counter"), word("玉")]),
+            word("日本一", subs=[word("日本", "proper noun"), word("一", "number")]),
+            word("二塁打", subs=[word("二", "number"), word("塁打")]),
+        ]
+        groups = {a.elem[2]: a.group for a in judge.plan_judgements(arr).asks}
+        for text in ("第三者", "十円玉", "日本一", "二塁打"):
+            with self.subTest(word=text):
+                self.assertEqual(groups[text], "noun-main")
+
     def test_every_group_has_rules(self):
-        groups = set(judge.POS_GROUPS.values()) | {judge.OTHER_GROUP}
+        groups = set(judge.POS_GROUPS.values()) | {judge.OTHER_GROUP, judge.NUMBER_COUNTER_GROUP}
         for group, split in judge.SPLIT_GROUPS.items():
             groups = (groups - {group}) | set(split)
         for group in groups:

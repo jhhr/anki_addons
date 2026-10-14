@@ -10,10 +10,11 @@ from a shell.
 """
 
 import importlib
+import json
 import re
 import unittest
 
-from addon_modules import PACKAGE, load_addon_module, load_ops_module
+from addon_modules import ADDON_ROOT, PACKAGE, load_addon_module, load_ops_module
 
 resources = load_ops_module("resources", subdir="word_array")
 
@@ -306,6 +307,169 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate(self.examples[10][0])
         self.assertEqual(find_word(arr, "最近")[5], [])
 
+    def generate_splitting(self, sentence, *compounds):
+        """The array with these compounds listed to split, as the op lists the config's."""
+        return self.generator.generate(sentence, split_compounds=frozenset(compounds))
+
+    def test_the_shipped_config_lists_no_compound(self):
+        # The key is there for the config editor to show, and whose words go on it is each
+        # user's own: a device with no list of its own splits no compound
+        config = json.loads((ADDON_ROOT / "config.json").read_text(encoding="utf-8"))
+        self.assertEqual(config[self.generator.SPLIT_COMPOUNDS_KEY], [])
+        self.assertEqual(self.generator.split_compounds_of(config), frozenset())
+
+    def test_a_listed_compound_verb_or_adjective_splits_into_its_two_words(self):
+        # Sudachi has each as one unit in every split mode, so the word a note is about (毛羽,
+        # 睦まじい, 心地) was a word nowhere in an array, and nothing could be linked to the note
+        cases = [
+            (
+                "表面[ひょうめん]の 毛羽[けば]立[た]ちと",
+                "毛羽立つ",
+                [(" 毛羽[けば]", "noun", "毛羽", "けば"), ("立[た]ち", "verb", "立つ", "たつ")],
+            ),
+            (
+                "仲[なか] 睦[むつ]まじい 夫婦[ふうふ]",
+                "仲睦まじい",
+                [
+                    ("仲[なか]", "noun", "仲", "なか"),
+                    (" 睦[むつ]まじい", "adjective", "睦まじい", "むつまじい"),
+                ],
+            ),
+            (
+                "心地[ここち]良[よ]い 音楽[おんがく]",
+                "心地良い",
+                [
+                    ("心地[ここち]", "noun", "心地", "ここち"),
+                    ("良[よ]い", "adjective", "良い", "よい"),
+                ],
+            ),
+        ]
+        listed = frozenset(form for _, form, _ in cases)
+        for sentence, form, subs in cases:
+            with self.subTest(sentence=sentence):
+                # The generator has no list of its own: unlisted, each is one word
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
+                word = find_word(self.generator.generate(sentence, split_compounds=listed), form)
+                self.assertEqual([tuple(s[:4]) for s in word[5]], subs)
+
+    def test_a_compound_verb_or_adjective_that_is_not_listed_stays_whole(self):
+        # However it is built it is one word to learn: its parts are common words no note is
+        # about, which the judge was left to match
+        for sentence, form in [
+            ("目立[めだ]った", "目立つ"),
+            ("名付[なづ]けられた", "名付ける"),
+            ("裏切[うらぎ]った", "裏切る"),
+            ("心細[こころぼそ]かった", "心細い"),
+            ("面白[おもしろ]い", "面白い"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
+                # ...whatever else is listed
+                arr = self.generate_splitting(sentence, "毛羽立つ", "仲睦まじい", "心地良い")
+                self.assertEqual(find_word(arr, form)[5], [])
+
+    def test_a_compound_is_listed_by_the_form_the_array_shows(self):
+        # ...which is where a person reads it off to list it, and one word's one spelling there
+        # whichever the note writes: もの凄い is 物凄い in the array
+        sentence = "もの凄[すご]い 音[おと]"
+        self.assertEqual(find_word(self.generator.generate(sentence), "物凄い")[5], [])
+        for listed in ("物凄い", "もの凄い"):
+            with self.subTest(listed=listed):
+                word = find_word(self.generate_splitting(sentence, listed), "物凄い")
+                self.assertEqual([s[2] for s in word[5]], ["もの", "凄い"])
+
+    def test_the_sentences_own_bold_is_not_read(self):
+        # The <b> is left from when a note's word was marked by hand. Two notes holding one
+        # sentence mark different words in it and must still get one array: no <b> makes a
+        # compound split, and none keeps a listed one whole.
+        plain = "表面[ひょうめん]の 毛羽[けば]立[た]ちが 目[め]立[だ]った"
+        unlisted = self.generator.generate(plain)
+        listed = self.generate_splitting(plain, "毛羽立つ")
+        self.assertEqual(find_word(unlisted, "毛羽立つ")[5], [])
+        self.assertEqual(len(find_word(listed, "毛羽立つ")[5]), 2)
+        self.assertEqual(find_word(listed, "目立つ")[5], [])
+        for marked in (
+            "表面[ひょうめん]の<b> 毛羽[けば]</b>立[た]ちが 目[め]立[だ]った",
+            "表面[ひょうめん]の 毛羽[けば]<b>立[た]ち</b>が 目[め]立[だ]った",
+            "表面[ひょうめん]の<b> 毛羽[けば]立[た]ち</b>が 目[め]立[だ]った",
+            "表面[ひょうめん]の 毛羽[けば]立[た]ちが<b> 目[め]</b>立[だ]った",
+        ):
+            with self.subTest(sentence=marked):
+                self.assertEqual(self.generator.generate(marked), unlisted)
+                self.assertEqual(self.generate_splitting(marked, "毛羽立つ"), listed)
+
+    def test_the_verb_or_adjective_a_compound_ends_on_keeps_its_inflection(self):
+        # ...and reads as JMdict reads it, less the compound's rendaku
+        cases = [
+            (
+                "心細[こころぼそ]かった",
+                "心細い",
+                [
+                    ("心[こころ]", "noun", "心", "こころ"),
+                    ("細[ぼそ]かった", "adjective", "細い", "ほそい"),
+                ],
+            ),
+            (
+                "毛深[けぶか]そうだ",  # the adjective's bare stem
+                "毛深い",
+                [("毛[け]", "noun", "毛", "け"), ("深[ぶか]", "adjective", "深い", "ふかい")],
+            ),
+            (
+                "名付[なづ]けられた",
+                "名付ける",
+                [("名[な]", "noun", "名", "な"), ("付[づ]けられた", "verb", "付ける", "つける")],
+            ),
+        ]
+        for sentence, form, subs in cases:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generate_splitting(sentence, form), form)
+                self.assertEqual([tuple(s[:4]) for s in word[5]], subs)
+
+    def test_the_verb_a_compound_ends_on_is_spelled_and_read_as_the_note_has_it(self):
+        # Kanjified from kana, the verb is still found by its kanji: 傷つく, 目ざせる
+        cases = [
+            # ...and is the end of 傷付く, not JMdict's expression 付いている "to be lucky"
+            (
+                "傷[きず]<k> 付[つ]いている</k>",
+                "傷付く",
+                (" 付[つ]いている", "verb", "付く", "つく"),
+            ),
+            # a potential form goes back to its verb with the compound
+            ("目[め]<k> 指[ざ]せる</k>", "目指す", (" 指[ざ]せる", "verb", "指す", "さす")),
+        ]
+        for sentence, form, verb in cases:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generate_splitting(sentence, form), form)
+                subs = [s for s in word[5] if len(s) > 1]  # less the <k> tags between them
+                self.assertEqual(tuple(subs[1][:4]), verb)
+
+    def test_an_ichidan_stem_opening_a_compound_is_its_verb(self):
+        # JMdict has a noun 見 read み, but the 見 of 見付ける is 見る, as Sudachi has the 見 of 見送る
+        for sentence, form, second in [
+            ("見[み] 付[つ]けた", "見付ける", "付ける"),
+            ("見苦[みぐる]しい", "見苦しい", "苦しい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generate_splitting(sentence, form), form)
+                self.assertEqual([(s[1], s[2]) for s in word[5]][0], ("verb", "見る"))
+                self.assertEqual(word[5][1][2], second)
+
+    def test_a_listed_compound_splits_only_into_two_words(self):
+        # Listing a compound says it should split; both sides must still be words, read as the
+        # note reads them, or it stays whole
+        for sentence, form in [
+            ("気付[きづ]いた", "気付く"),  # 気 is a lone on'yomi kanji, as in 最近
+            ("出来[でき]た", "出来る"),  # no 来る is read きる
+            ("手伝[てつだ]った", "手伝う"),  # nor 伝う つだう
+            ("素晴[すば]らしい 景色[けしき]", "素晴らしい"),  # 晴らしい is no adjective
+            ("詰[つ]まらない 話[はなし]", "詰まらない"),  # kana after the kanji are okurigana
+            ("対[たい]<k> 為[す]る</k>", "対する"),
+            # 話 + して, which Sudachi reads as 話す: the 為 is no verb spelled す
+            ("話[はなし]<k> 為[し]</k>て", "話す"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generate_splitting(sentence, form), form)[5], [])
+
     def test_okurigana_is_no_sub_word(self):
         # JMdict has らか, か and く as words, but they are the okurigana here
         for sentence, form in [
@@ -350,6 +514,63 @@ class WordArrayTests(unittest.TestCase):
                 word = find_word(self.generator.generate(sentence), form)
                 self.assertEqual((word[0], word[1]), (raw, "auxiliary"))
 
+    def test_yagaru_is_a_verb_and_makes_a_compound_with_the_stem_before_it(self):
+        # A 助動詞 to Sudachi, so it was part of the verb before it: 言う, and やがる no word
+        arr = self.generator.generate("<k> 下[くだ]らねー 事[こと]</k> 言[い]いやがって")
+        word = find_word(arr, "言いやがる")
+        self.assertEqual(word[:4], [" 言[い]いやがって", "verb", "言いやがる", "いいやがる"])
+        self.assertEqual(
+            [s[:4] for s in word[5]],
+            [[" 言[い]い", "verb", "言う", "いう"], ["やがって", "verb", "やがる", "やがる"]],
+        )
+        # The stem keeps its own sub-words, and やがる its form under kanji JMdict doesn't have
+        arr = self.generator.generate("もう 寝返[ねがえ]り<k> 遣[や]がった</k>。")
+        word = find_word(arr, "寝返りやがる")
+        self.assertEqual([s[2] for s in word[5] if len(s) > 1], ["寝返る", "やがる"])
+        self.assertEqual([s[2] for s in find_word(arr, "寝返る")[5]], ["寝る", "返る"])
+        # After a て-form it is a word of its own, also where Sudachi reads the て as てる's
+        for sentence, raw, verb_raw in [
+            ("随分[ずいぶん] 熟[こな]れてやがるな。", "やがる", " 熟[こな]れて"),
+            ("何[なに]を 言[い]ってやがんだ", "やが", " 言[い]って"),
+        ]:
+            with self.subTest(sentence=sentence):
+                top = [e[:3] for e in self.generator.generate(sentence) if len(e) > 1]
+                self.assertIn([raw, "verb", "やがる"], top)
+                self.assertIn(verb_raw, [e[0] for e in top])
+        # A longer match ending on the verb keeps it
+        arr = self.generator.generate(" 手玉[てだま]に 取[と]りやがった")
+        self.assertEqual(
+            [e[:3] for e in arr if len(e) > 1],
+            [
+                [" 手玉[てだま]に 取[と]り", "expression", "手玉に取る"],
+                ["やがった", "verb", "やがる"],
+            ],
+        )
+
+    def test_a_lexical_negative_adjective_is_not_its_verb(self):
+        # Sudachi has no 下らない: くだら + ねー was the verb 下る, in every form of the negation
+        for sentence, raw, form, reading in [
+            ("<k> 下[くだ]らねー 事[こと]</k> 言[い]う", " 下[くだ]らねー", "下らない", "くだらない"),
+            ("くだらなかった", "くだらなかった", "下らない", "くだらない"),
+            ("<k> 下[くだ]らぬ</k> 思念[しねん]", " 下[くだ]らぬ", "下らない", "くだらない"),
+            # JMdict's first spelling is 詰らない, and 詰まらん is an expression of its own there
+            ("<k> 詰[つま]らん</k>。", " 詰[つま]らん", "詰まらない", "つまらない"),
+            ("<k> 堪[たま]らなかった</k>。", " 堪[たま]らなかった", "堪らない", "たまらない"),
+            # 思い掛ける is no verb at all: its sub-words were 思う and がける
+            (" 思[おも]いがけない 事[こと]", " 思[おも]いがけない", "思い掛けない", "おもいがけない"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word, [raw, "adjective", form, reading, [], []])
+        # A plain negation stays the verb, and so does one written with another word's kanji
+        for sentence, form in [
+            (" 知[し]らない 人[ひと]", "知る"),
+            (" 金[かね]が 貯[た]まらない", "貯まる"),
+            (" 只[ただ]じゃ<k> 済[す]まない</k>", "済む"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[1], "verb")
+
     def test_conjunction_and_pronoun_okurigana_is_no_sub_word(self):
         for sentence, form in [
             ("但[ただ]し、 注意[ちゅうい]", "但し"),
@@ -362,6 +583,21 @@ class WordArrayTests(unittest.TestCase):
                 self.assertEqual(find_word(self.generator.generate(sentence), form)[5], [])
         arr = self.generator.generate("私[わたし]たちは 話[はな]した")
         self.assertEqual([s[2] for s in find_word(arr, "私達")[5]], ["私", "達"])
+
+    def test_adnominal_okurigana_is_no_sub_word(self):
+        # JMdict has the old pronouns 我[わ] and 其[そ], and が, の and る as particles and a
+        # suffix, but 我が, 其の and 如何なる are one adnominal each
+        for sentence, form in [
+            ("我[わ]が 道[みち]を 行[い]く", "我が"),
+            ("<k> 其[そ]の</k> 人[ひと]に 会[あ]った", "其の"),
+            ("如何[いか]なる 神[かみ]の 前[まえ]", "如何なる"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual((word[1], word[5]), ("adjectival", []))
+        # inside a JMdict match the adnominal is a sub-word, still whole
+        word = find_word(self.generator.generate("我[わ]が 子[こ]を 愛[あい]する"), "我が")
+        self.assertEqual(word[5], [])
 
     def test_a_conjunction_opening_a_clause_is_one_word(self):
         # function words only (つー + か, で + も), which elsewhere are no word of their own
@@ -497,6 +733,24 @@ class WordArrayTests(unittest.TestCase):
                 self.assertNotIn("auxiliary", [s[1] for s in word[5] if len(s) > 1], arr)
                 self.assertNotIn("particle", [s[1] for s in word[5] if len(s) > 1], arr)
 
+    def test_k_reading_the_tokenizer_cuts_inside_goes_in_as_kanji(self):
+        # あんこの is あん + この, あいつも あい + つも, よその よ + その: the group's tail read
+        # into the particle after it
+        for sentence, raw, pos, form in [
+            ("<k> 餡子[あんこ]</k>の 入[はい]った 菓子[かし]", " 餡子[あんこ]", "noun", "餡子"),
+            ("<k> 彼奴[あいつ]</k>も<k> 到頭[とうとう]</k>くたばった", " 彼奴[あいつ]", "pronoun", "彼奴"),
+            ("見[み]ない 顔[かお]だな<k> 余所[よそ]</k>の 禿[かむろ]か", " 余所[よそ]", "noun", "余所"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                words = [w for w in arr if len(w) > 1]
+                i = next(i for i, w in enumerate(words) if w[2] == form)
+                self.assertEqual(words[i][:3], [raw, pos, form], arr)
+                self.assertEqual(words[i + 1][1], "particle", arr)
+        # Kanji that would not read as the furigana says stay kana: 故 of 故[だか]ら is no だか
+        arr = self.generator.generate("<k> 故[だか]ら</k> 時間[じかん]が 無[な]い")
+        self.assertEqual(find_word(arr, "故"), [], arr)
+
     def test_tsutsu_aru_is_a_word_after_the_verb(self):
         for sentence, verb, raw, form in [
             ("日本は変わりつつある。", "変わる", "つつある", "つつある"),
@@ -534,6 +788,26 @@ class WordArrayTests(unittest.TestCase):
         arr = self.generator.generate("明日[あした]は 晴[は]れです。")
         self.assertEqual(find_word(arr, "晴れ")[1], "noun")
 
+    def test_kanji_the_tokenizer_cuts_off_their_okurigana_go_in_as_their_reading(self):
+        # Sudachi reads 刳 as a noun and い as a particle, 珍 as a noun and し as 為る
+        for sentence, raw, pos, form in [
+            ("刳[えぐ]い 話[はなし]だ。", "刳[えぐ]い", "adjective", "刳い"),
+            ("へ、 山田[やまだ]？ 着信[ちゃくしん] 珍[めずら]し…もしもし？", " 珍[めずら]し", "adjective", "珍しい"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                word = find_word(arr, form)
+                self.assertEqual((word[0], word[1], word[5]), (raw, pos, []), arr)
+        # Only for a verb or adjective JMdict spells with those kanji: 子[こ]が is no こぐ, and
+        # ３[み]つ no みつ, though JMdict spells the numeral 三つ ３つ
+        for sentence, form in [
+            ("<k> 其[そ]</k>の 子[こ]が 言[い]っている", "子"),
+            ("５[いつ]つ 星[ぼし] 乃至[ないし]は ３[み]つ 星[ぼし]", "三"),
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertTrue(find_word(arr, form), arr)
+
     def test_a_noun_verb_sudachi_lacks_is_one_verb(self):
         # Sudachi has 裏目 + っ (記号) + た; JMdict has 裏目る
         arr = self.generator.generate("完全[かんぜん]に<b> 裏目[うらめ]った</b>なあ。")
@@ -559,6 +833,68 @@ class WordArrayTests(unittest.TestCase):
     def test_sub_word_readings_drop_the_compounds_rendaku(self):
         arr = self.generator.generate(self.examples[20][0])
         self.assertEqual([s[3] for s in find_word(arr, "大空")[5]], ["おお", "そら"])
+
+    def test_an_inflected_sub_word_drops_the_compounds_rendaku_too(self):
+        # Sudachi reads 込む alone as ごむ, the way it sounds ending a compound, and that agreed
+        # with the voiced stem over JMdict's こむ
+        for sentence in ("尻込[しりご]み<k> 為[す]る</k>", "意気込[いきご]んでいた"):
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), "込む")[3], "こむ")
+        # A reading only Sudachi has stays when JMdict has no plain one for it: 蹲む is つくなむ
+        word = find_word(self.generator.generate("<k> 蹲[しゃが]んで</k>います"), "蹲む")
+        self.assertEqual(word[3], "しゃがむ")
+
+    def test_a_reading_drops_the_gemination_before_the_word_after_it(self):
+        # The っ a word's furigana ends in is the next word's doing, as rendaku is the word
+        # before's: 坊 of 坊ちゃん is JMdict's ぼう (the first that fits, not ぼん), a number its
+        # own reading or JMdict's (三 is み), and 立, no JMdict word, its on'yomi. The word they
+        # were split out of keeps the reading the text gives it.
+        cases = [
+            ("<k> 御[お]</k> 坊[ぼっ]ちゃんじゃないか", ("坊", "ぼう"), ("坊ちゃん", "ぼっちゃん")),
+            ("<k> 只[たった]</k> 一回[いっかい]のライブ", ("一", "いち"), ("一回", "いっかい")),
+            ("１[いっ]<k> 箇[か]</k> 月[げつ]です。", ("一", "いち"), ("一箇月", "いっかげつ")),
+            ("コップを 三[みっ]つ 買[か]いました。", ("三", "み"), ("三つ", "みっつ")),
+            (" 十[じっ] 回[かい] 見[み]た", ("十", "じゅう"), ("十回", "じっかい")),
+            ("市長[しちょう]に 立候補[りっこうほ]した。", ("立", "りつ"), ("立候補", "りっこうほ")),
+            ("絶不調だ", ("絶", "ぜつ"), ("絶不調", "ぜっふちょう")),  # Sudachi's ぜっ
+            ("何処[どっ]かに 行[い]った", ("何処", "どこ"), ("何処か", "どっか")),
+        ]
+        for sentence, word, parent in cases:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(find_word(arr, word[0])[3], word[1])
+                self.assertEqual(find_word(arr, parent[0])[3], parent[1])
+        # A word of its own before the next is no different
+        for sentence, form, reading in [
+            ("１００[ひゃっ] 件[けん]もライン<k> 為[し]てくる</k>", "百", "ひゃく"),
+            ("村[むら]の 蹄鉄[ていてっ]</b>工[こう]だ。", "蹄鉄", "ていてつ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[3], reading)
+
+    def test_a_small_tsu_that_is_the_words_own_stays(self):
+        # JMdict has 突 read とっ, a prefix; 取っ and 糞ッ are written with theirs
+        for sentence, form, reading in [
+            ("突拍子[とっぴょうし]も 無[な]い", "突", "とっ"),
+            ("引[ひ]き 出[だ]しの 取[と]っ 手[て]", "取っ", "とっ"),
+            ("「<k> 糞[くそ]ッ</k>」と 言[い]った", "糞ッ", "くそっ"),
+        ]:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(find_word(self.generator.generate(sentence), form)[3], reading)
+
+    def test_ungeminated_takes_the_first_known_reading_that_fits(self):
+        ungeminated = self.generator.ungeminated
+        self.assertEqual(ungeminated("ぼっ", ["ぼう", "ぼん"]), "ぼう")
+        self.assertEqual(ungeminated("いっ", ["いち", "ひと", "いつ"]), "いち")
+        self.assertEqual(ungeminated("じっ", ["じゅう", "とお"]), "じゅう")
+        self.assertEqual(ungeminated("みっ", ["さん", "み"]), "み")
+        self.assertEqual(ungeminated("どっ", ["どこ", "いずこ"]), "どこ")
+        self.assertEqual(ungeminated("とっ", ["とつ", "とっ"]), "とっ")
+        # A っ never stands in for ん: 四[よっ]つ is よ
+        self.assertEqual(ungeminated("よっ", ["よん", "し", "よ"]), "よ")
+        self.assertIsNone(ungeminated("よっ", ["よん", "し"]))
+        self.assertIsNone(ungeminated("ぼう", ["ぼう"]))
+        self.assertIsNone(ungeminated("っ", ["か"]))
 
     def test_a_jukujikun_group_splits_between_words_by_their_own_readings(self):
         # かわせそうば has no per-kanji split, but 為替 and 相場 read it between them, so each

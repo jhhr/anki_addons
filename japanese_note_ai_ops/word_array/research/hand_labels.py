@@ -14,9 +14,9 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
-from _bootstrap import ADDON_ROOT
+from _bootstrap import eval_file
 
-HAND_LABELS = ADDON_ROOT / "output" / "word_matching_judge_hand_labels.jsonl"
+HAND_LABELS = eval_file("word_matching_judge_hand_labels.jsonl")
 
 
 class Placed(NamedTuple):

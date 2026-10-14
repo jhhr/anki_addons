@@ -10,7 +10,9 @@
     "word_array"
   ],
   "exclude": [
-    "word_array/research"
+    "word_array/research",
+    "dev",
+    "test_replay"
   ],
   "vendor_keep": [
     "mdict_query"

@@ -11,7 +11,7 @@ through the op's own request code, and every model is scored on
   (the classes of `proper_nouns.py`), and what the fix did: names changed, names not on word
   boundaries, note ids a merge would drop.
 
-Responses are cached by model and prompt in `output/proper_noun_eval_results.jsonl`, so a rerun
+Responses are cached by model and prompt in `evals/proper_noun_eval_results.jsonl`, so a rerun
 only pays for new prompts; a report per model goes to `output/proper_noun_eval_report_<model>.txt`.
 
     py -3.10 word_array/research/proper_noun_eval.py [--model M ...] [-n 300] [--workers 8]
@@ -28,10 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import proper_nouns as survey
-from _bootstrap import ADDON_ROOT
+from _bootstrap import ADDON_ROOT, eval_file
 from corpora import CORPORA, read_export
 
-RESULTS = ADDON_ROOT / "output" / "proper_noun_eval_results.jsonl"
+RESULTS = eval_file("proper_noun_eval_results.jsonl")
 MODELS = [
     "gemini-3.1-flash-lite",
     "gemini-3.5-flash-lite",

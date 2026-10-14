@@ -17,6 +17,7 @@ from note_types import DEFAULT_CONFIG
 from copy_anywhere.configuration import (
     CONFIG_VERSION,
     PRE_STAGE_MIGRATION_KEY,
+    Config,
     migrate_config,
 )
 from copy_anywhere.logic.definition_migration import (
@@ -680,7 +681,7 @@ class TestWhenSomethingCannotBeMigrated:
 
         migrate_config()
 
-        assert stored(stub_mw)["version"] != CONFIG_VERSION
+        assert stored(stub_mw).get("version") != CONFIG_VERSION
 
     def test_nothing_is_backed_up_when_nothing_was_converted(self, config, stub_mw, broken):
         config["copy_definitions"] = [broken]
@@ -690,12 +691,13 @@ class TestWhenSomethingCannotBeMigrated:
         assert PRE_STAGE_MIGRATION_KEY not in stored(stub_mw)
 
     def test_the_guid_half_of_the_migration_is_still_recorded(self, config, stub_mw, broken):
+        del broken["guid"]
         config["copy_definitions"] = [broken]
         config["version"] = "0.1.0"
 
         migrate_config()
 
-        # The guids were written and saved, so the version has to say so; only the staged
+        # The guid was written and saved, so the version has to say so; only the staged
         # step is left for the next start.
         assert stored(stub_mw)["version"] == "0.2.0"
         assert stored(stub_mw)["copy_definitions"][0]["guid"]
@@ -712,12 +714,73 @@ class TestWhenSomethingCannotBeMigrated:
         assert "could not" in reported
 
 
+@pytest.fixture
+def writes(stub_mw):
+    """What is written to the addon's config from here on. `stub_mw` lasts the session."""
+    stub_mw.addonManager.written.clear()
+    return stub_mw.addonManager.written
+
+
 class TestAnEmptyConfig:
-    def test_a_config_with_no_definitions_still_reaches_the_latest_version(
-        self, config, stub_mw
-    ):
+    def test_a_config_with_no_definitions_is_not_written_at_start(self, config, stub_mw, writes):
         migrate_config()
 
+        # It would gain only a version, and every step has nothing to do on it next time too
+        assert writes == []
+        assert stored(stub_mw) is config
+        assert PRE_STAGE_MIGRATION_KEY not in config
+
+    def test_its_first_save_records_the_latest_version(self, config, stub_mw, writes):
+        migrate_config()
+        editor = Config()
+        editor.load()
+        editor.add_definition(d.staged(stages=[d.variable("M", d.text("x"))]))
+
+        # Without it the next start would migrate a format-2 definition from 0.1.0
         assert stored(stub_mw)["version"] == CONFIG_VERSION
-        assert stored(stub_mw)["copy_definitions"] == []
-        assert PRE_STAGE_MIGRATION_KEY not in stored(stub_mw)
+        after_save = copy.deepcopy(stored(stub_mw))
+        writes.clear()
+        migrate_config()
+        assert writes == []
+        assert stored(stub_mw) == after_save
+
+
+class TestWhatAStartWrites:
+    """Addon Config Sync sends a meta.json that has a config over the copy the user's other
+    devices read theirs from, and this runs before any sync. What it writes goes there."""
+
+    def test_a_new_install_has_no_config_written(self, stub_mw, writes):
+        # Anki writes no config into a new install's meta.json, and reads one it cannot parse
+        # as having none: `getConfig` then answers with config.json. Written back, those
+        # defaults would replace the definitions the copy holds.
+        stub_mw.addonManager.configs.pop("copy_anywhere", None)
+
+        migrate_config()
+
+        assert writes == []
+        assert "copy_anywhere" not in stub_mw.addonManager.configs
+
+    def test_a_config_already_migrated_is_not_written_again(self, config, stub_mw, writes):
+        config["copy_definitions"] = [d.within_note()]
+        migrate_config()
+        assert len(writes) == 1
+        writes.clear()
+
+        migrate_config()
+
+        assert writes == []
+
+    def test_the_version_an_older_copy_writes_back_is_not_answered(self, config, stub_mw, writes):
+        config["copy_definitions"] = [d.within_note(definition_name="w")]
+        migrate_config()
+        # What 0.2.0 does with the config on every start: it migrates nothing it does not
+        # know and writes its own version over this one, definitions untouched
+        stored(stub_mw)["version"] = "0.2.0"
+        before = copy.deepcopy(stored(stub_mw))
+        writes.clear()
+
+        migrate_config()
+
+        # Answered, the config would go back and forth between two devices for good
+        assert writes == []
+        assert stored(stub_mw) == before

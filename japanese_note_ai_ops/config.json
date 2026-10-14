@@ -13,6 +13,7 @@
   "proper_nouns_model": "gpt-5.6-luna",
   "match_words_model": "gemini-3.5-flash-lite",
   "replace_existing_matched_words": false,
+  "split_compound_words": [],
   "max_concurrent_requests": 0,
   "memory_limit": 0,
   "max_request_retries": 5,
@@ -26,5 +27,8 @@
   "kanji_sentence_fine_tuning_data_query": "",
   "multi_op_dialog_shortcut": "",
   "log_level": "ERROR",
-  "log_to_console": true
+  "log_to_console": true,
+  "capture_calls": true,
+  "capture_keep_days": 90,
+  "capture_notes": false
 }

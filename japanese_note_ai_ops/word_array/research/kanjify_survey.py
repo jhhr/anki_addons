@@ -1,5 +1,5 @@
 """Collection-wide kanjification survey (task 22): the kanjify audit's word classes over every
-note sentence in the migration export (`output/extract_words_migration_data.jsonl`, the
+note sentence in the migration export (`evals/extract_words_migration_data.jsonl`, the
 `sentence-kanjified-furigana` field of the whole collection), not just the checked rows.
 
   policy     grammar uses kanjified that the kanjify policy (task 20) wants kana, counted per
@@ -25,9 +25,9 @@ import argparse
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
-from _bootstrap import ADDON_ROOT, load, load_root
+from _bootstrap import ADDON_ROOT, eval_file, load, load_root
 
 import kanjify_audit as audit
 
@@ -36,7 +36,7 @@ jmdict = load("jmdict_index")
 html_stripping = load_root("html_stripping")
 
 OUTPUT = ADDON_ROOT / "output"
-EXPORT = OUTPUT / "extract_words_migration_data.jsonl"
+EXPORT = eval_file("extract_words_migration_data.jsonl")
 CONTENT_POS = {
     "名詞", "代名詞", "動詞", "形容詞", "形状詞", "副詞", "連体詞", "接続詞", "感動詞", "接頭辞",
     "接尾辞",
@@ -118,18 +118,12 @@ def policy_breakdown(toks: list[audit.Tok]) -> dict[tuple[str, str], Counter]:
     return out
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--rows", type=Path, default=EXPORT)
-    parser.add_argument("-n", type=int, default=0, help="stop after COUNT rows")
-    parser.add_argument("--min-uses", type=int, default=3, help="never-kanjified words shown")
-    parser.add_argument("--out", type=Path, default=OUTPUT / "kanjify_survey_report.txt")
-    parser.add_argument("--fixes", type=Path, default=OUTPUT / "kanjify_survey_fixes.jsonl")
-    parser.add_argument("--tasks", type=Path, default=OUTPUT / "kanjify_survey_tasks.jsonl")
-    args = parser.parse_args()
-    rows = read_rows(args.rows)[: args.n or None]
-
-    flat, fixes, failed = [], [], 0
+def analyze(rows: list[tuple[list[int], str]]) -> tuple[list[audit.Tok], list[dict], int]:
+    """Every row's tokens (`<i>` context stripped, `Tok.row` its index), the policy fix rows,
+    and how many rows failed to tokenize."""
+    flat: list[audit.Tok] = []
+    fixes: list[dict] = []
+    failed = 0
     for i, (nids, raw) in enumerate(rows):
         text = html_stripping.strip_context_sentences(raw) if "<i>" in raw else raw
         try:
@@ -148,18 +142,99 @@ def main() -> int:
         flat.extend(toks)
         if i % 2000 == 0:
             print(f"{i} rows")
+    return flat, fixes, failed
+
+
+def choice_finder() -> Callable[[audit.Tok], list[list[str]]]:
+    """`kanji_choices` of a kana token's word, cached per (kana, pos)."""
+    cache: dict[tuple[str, str], list[list[str]]] = {}
+
+    def choices(t: audit.Tok) -> list[list[str]]:
+        key = (kana_of(t), t.morph.pos[0])
+        if key not in cache:
+            cache[key] = kanji_choices(*key, jmdict.lookup, jmdict.spellings)
+        return cache[key]
+
+    return choices
+
+
+Key = tuple[str, str]  # audit.word_key: (Sudachi normalized form, pos)
+
+
+class Classes(NamedTuple):
+    """The survey's word classes, policy-kana uses left out of every one."""
+
+    kanjified: dict[Key, list[audit.Tok]]  # uses the label kanjified (with kanji)
+    kana: dict[Key, list[audit.Tok]]
+    kanji: Counter  # uses already in kanji in the source
+    left: list[Key]  # kanjified in some rows, kana in others, most kana uses first
+    rares: list[Key]  # the same, kanjified too rarely to be more than a slip or a miscut
+    meaning: list[tuple[Key, Counter, list[audit.Tok]]]  # several kanji: (word, kanji, uses)
+    never_one: list[Key]  # never kanjified, one JMdict kanji choice
+    never_several: list[Key]  # never kanjified, meaning-dependent choices
+
+
+def word_classes(
+    flat: list[audit.Tok], choices: Callable[[audit.Tok], list[list[str]]], min_uses: int = 3
+) -> Classes:
+    kanjified: dict[Key, list[audit.Tok]] = defaultdict(list)
+    kana: dict[Key, list[audit.Tok]] = defaultdict(list)
+    kanji: Counter = Counter()
+    for t in flat:
+        if t.policy:
+            continue
+        if t.kind == "kanjified" and t.kanji:  # kana inside <k> isn't this word kanjified
+            kanjified[audit.word_key(t)].append(t)
+        elif t.kind == "kana":
+            kana[audit.word_key(t)].append(t)
+        elif t.kind == "kanji":
+            kanji[audit.word_key(t)] += 1
+
+    def rare(k) -> bool:
+        """Kanjified once, or in under 2% of its uses: mostly Sudachi cutting a kanjified
+        sentence differently (の, た), sometimes a one-off slip (カメラ -> 写真機)."""
+        return len(kanjified[k]) < max(2, 0.02 * len(kana[k]))
+
+    both = [k for k in kanjified if k in kana]
+    rares = sorted((k for k in both if rare(k)), key=lambda k: -len(kana[k]))
+    left = sorted((k for k in both if not rare(k)), key=lambda k: -len(kana[k]))
+    meaning = []
+    for key, ts in kanjified.items():
+        spelled = Counter(t.kanji for t in ts)
+        if len(spelled) > 1:
+            meaning.append((key, spelled, ts))
+    meaning.sort(key=lambda m: -sum(m[1].values()))
+    never = [
+        k
+        for k, ts in kana.items()
+        if k not in kanjified
+        and k[1] in CONTENT_POS
+        and len(ts) >= min_uses
+        and choices(ts[0])
+        and not generator.KATAKANA_RE.search(ts[0].morph.surface)
+    ]
+    one = sorted((k for k in never if not meaning_tag(choices(kana[k][0]))),
+                 key=lambda k: -len(kana[k]))  # fmt: skip
+    several = sorted((k for k in never if k not in one), key=lambda k: -len(kana[k]))
+    return Classes(kanjified, kana, kanji, left, rares, meaning, one, several)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rows", type=Path, default=EXPORT)
+    parser.add_argument("-n", type=int, default=0, help="stop after COUNT rows")
+    parser.add_argument("--min-uses", type=int, default=3, help="never-kanjified words shown")
+    parser.add_argument("--out", type=Path, default=OUTPUT / "kanjify_survey_report.txt")
+    parser.add_argument("--fixes", type=Path, default=OUTPUT / "kanjify_survey_fixes.jsonl")
+    parser.add_argument("--tasks", type=Path, default=OUTPUT / "kanjify_survey_tasks.jsonl")
+    args = parser.parse_args()
+    rows = read_rows(args.rows)[: args.n or None]
+    flat, fixes, failed = analyze(rows)
 
     def where(t: audit.Tok) -> str:
         return f"[{t.row}] nid {','.join(map(str, rows[t.row][0])) or '-'}  {t.context}"
 
-    choices_cache: dict[tuple[str, str], list[list[str]]] = {}
-
-    def choices(t: audit.Tok) -> list[list[str]]:
-        key = (kana_of(t), t.morph.pos[0])
-        if key not in choices_cache:
-            choices_cache[key] = kanji_choices(*key, jmdict.lookup, jmdict.spellings)
-        return choices_cache[key]
-
+    choices = choice_finder()
     summary = [f"{len(rows)} rows from {args.rows} ({failed} failed)"]
     lines = []
 
@@ -187,31 +262,15 @@ def main() -> int:
                 :3
             ]
 
-    # per word, policy uses aside
-    kanjified, kana = defaultdict(list), defaultdict(list)
-    kanji: Counter = Counter()
-    for t in flat:
-        if t.policy:
-            continue
-        if t.kind == "kanjified" and t.kanji:  # kana inside <k> isn't this word kanjified
-            kanjified[audit.word_key(t)].append(t)
-        elif t.kind == "kana":
-            kana[audit.word_key(t)].append(t)
-        elif t.kind == "kanji":
-            kanji[audit.word_key(t)] += 1
+    classes = word_classes(flat, choices, args.min_uses)
+    kanjified, kana, kanji = classes.kanjified, classes.kana, classes.kanji
+    left, rares, meaning = classes.left, classes.rares, classes.meaning
+    one, several = classes.never_one, classes.never_several
 
     def kana_note(ts: list[audit.Tok]) -> str:
         cs = choices(ts[0])
         return f"  JMdict {' | '.join('/'.join(c) for c in cs) or '-'}  {meaning_tag(cs)}".rstrip()
 
-    def rare(k) -> bool:
-        """Kanjified once, or in under 2% of its uses: mostly Sudachi cutting a kanjified
-        sentence differently (の, た), sometimes a one-off slip (カメラ -> 写真機)."""
-        return len(kanjified[k]) < max(2, 0.02 * len(kana[k]))
-
-    both = [k for k in kanjified if k in kana]
-    rares = sorted((k for k in both if rare(k)), key=lambda k: -len(kana[k]))
-    left = sorted((k for k in both if not rare(k)), key=lambda k: -len(kana[k]))
     left_meaning = [k for k in left if meaning_tag(choices(kana[k][0]))]
     summary.append(
         f"left-kana: {len(left)} words, {sum(len(kana[k]) for k in left)} kana uses "
@@ -238,12 +297,6 @@ def main() -> int:
             + ", ".join(f"{t.kanji} {where(t)}" for t in kanjified[key][:2])
         )
 
-    meaning = []
-    for key, ts in kanjified.items():
-        spelled = Counter(t.kanji for t in ts)
-        if len(spelled) > 1:
-            meaning.append((key, spelled, ts))
-    meaning.sort(key=lambda m: -sum(m[1].values()))
     summary.append(f"meaning: {len(meaning)} words kanjified with different kanji")
     lines += ["", f"== meaning: {len(meaning)} words kanjified with different kanji"]
     for key, spelled, ts in meaning:
@@ -253,18 +306,6 @@ def main() -> int:
         for s in spelled:
             lines += [f"      {s}  {where(t)}" for t in ts if t.kanji == s][:2]
 
-    never = [
-        k
-        for k, ts in kana.items()
-        if k not in kanjified
-        and k[1] in CONTENT_POS
-        and len(ts) >= args.min_uses
-        and choices(ts[0])
-        and not generator.KATAKANA_RE.search(ts[0].morph.surface)
-    ]
-    one = sorted((k for k in never if not meaning_tag(choices(kana[k][0]))),
-                 key=lambda k: -len(kana[k]))  # fmt: skip
-    several = sorted((k for k in never if k not in one), key=lambda k: -len(kana[k]))
     summary.append(
         f"never kanjified (>= {args.min_uses} uses, JMdict kanji): {len(one)} one choice "
         f"({sum(len(kana[k]) for k in one)} uses), {len(several)} meaning-dependent "

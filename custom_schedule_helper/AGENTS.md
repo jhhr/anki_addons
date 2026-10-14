@@ -90,14 +90,16 @@ cross-addon meaning are in [docs/anki-patterns.md](../docs/anki-patterns.md). He
 A trimmed, locally modified copy of `open-spaced-repetition/py-fsrs` v6.3.2, as ordinary
 tracked files. `py_fsrs/README.md` is the authoritative record. `optimizer.py` is omitted
 (torch). There are six algorithm changes in `fsrs/scheduler.py`, each marked with a
-`Vendored fork:` comment; the hoisted initialisation that falls through the state `match`
+`Vendored fork:` comment; the hoisted initialisation that falls through the state branches
 is described as load-bearing, and `ease/fsrs_ops.py` depends on it by forcing card state
 from the revlog type. It relies on the `typing_extensions` Anki bundles.
 
 Do not hand-edit `py_fsrs/` to match upstream. Use `tools/sync_py_fsrs.sh`, which 3-way
 applies the upstream diff and runs upstream's tests against the result; four failures are
-expected and listed in the README. `py_fsrs` uses `match`, so it is the one place in the
-repo that already needs Python 3.10+.
+expected and listed in the README. Upstream uses `match`, which Python 3.9 cannot parse, and
+`__init__.py` imports `py_fsrs` as the addon loads; here those blocks are if/elif chains that
+keep upstream's indentation (structural change 4 in the README). A sync that brings a `match`
+back fails `anki_shared/test/test_python39.py`.
 
 ## Config
 

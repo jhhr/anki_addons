@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Optional
 
@@ -24,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 KANJI_STORY_DEFAULT_TEMPERATURE = 0.8
+KANJI_STORY_RETURN_FIELD = "new_story"
 
 
-def get_component_words_section(components: list[str], components_dict: dict[str, str]) -> str:
+def get_component_words_section(components: list[str], components_dict: Mapping[str, str]) -> str:
     component_words = ", ".join(
         [components_dict.get(component, component) for component in components]
     )
@@ -36,34 +37,12 @@ def get_component_words_section(components: list[str], components_dict: dict[str
     )
 
 
-def get_kanji_story_from_model(
-    config: dict[str, str],
-    kanji: str,
-    components: str,
-    current_story: str,
+def kanji_story_prompt(
+    kanji: str, components: str, current_story: str, component_words: Mapping[str, str]
 ) -> str:
-    media_path = Path(mw.pm.profileFolder(), "collection.media")
-    # Get stored dict of words used for component in the kanji_story_component_words.log file
-    with open(Path(media_path, KANJI_STORY_COMPONENT_WORDS_LOG), "r", encoding="utf-8") as f:
-        try:
-            component_words_dict = json.loads(f.read())
-        except json.JSONDecodeError as e:
-            print(f"Error reading component words dict: {e}")
-            component_words_dict = {}
-
-    return_field = "new_story"
-    response_schema = {
-        "type": "object",
-        "properties": {
-            return_field: {"type": "string"},
-        },
-        "required": [return_field],
-        "additionalProperties": False,
-    }
-
     prompt = (
         f"kanji: {kanji}"
-        f"\n{get_component_words_section(components.split(','), component_words_dict)}"
+        f"\n{get_component_words_section(components.split(','), component_words)}"
     )
     if current_story:
         prompt += f"\ncurrent_story_in_japanese: {current_story}"
@@ -103,57 +82,123 @@ def get_kanji_story_from_model(
         "\n"
         "\nExamples of stories for other kanji:"
         "\n  kanji: 裾"
-        f"\n{get_component_words_section(['衤', '居'], component_words_dict)}"
+        f"\n{get_component_words_section(['衤', '居'], component_words)}"
         "\n  story: <i>ころも</i> の なか に <i>いる</i> と、 ぬけた <b>すそ</b> が ひろがる。"
         "\n"
         "\n  kanji: 熱"
-        f"\n{get_component_words_section(['廾', '灬'], component_words_dict)}"
+        f"\n{get_component_words_section(['廾', '灬'], component_words)}"
         "\n  story: <i>どろだんご</i> が <i>れっか</i>したら、たかい <b>ねつ</b> が できる"
         "\n"
         "\n  kanji: 柳"
-        f"\n{get_component_words_section(['木', '卯'], component_words_dict)}"
+        f"\n{get_component_words_section(['木', '卯'], component_words)}"
         "\n  story: <i>き</i> が <i>うさぎの みみ</i> の ように しなやか、<b>やなぎ</b>"
         "\n"
         "\n  kanji: 捩"
-        f"\n{get_component_words_section(['扌', '戻'], component_words_dict)}"
+        f"\n{get_component_words_section(['扌', '戻'], component_words)}"
         "\n  story: <i>て</i> が <i>もどせない</i>、そんなに <b>よじっている</b>。"
         "\n"
         "\n  kanji: 移"
-        f"\n{get_component_words_section(['禾', '多'], component_words_dict)}"
+        f"\n{get_component_words_section(['禾', '多'], component_words)}"
         "\n  story: <i>のぎ</i> が <i>おおくて</i>、それ を くら に <b>うつして</b>みましょう。"
         "\n"
         "\n  kanji: 侶"
-        f"\n{get_component_words_section(['亻', '呂'], component_words_dict)}"
+        f"\n{get_component_words_section(['亻', '呂'], component_words)}"
         "\n  story: <i>ひと</i> の <i>せぼね</i> は あばらぼね の はん<b>りょ</b> だ。"
         "\n"
         "\n  kanji: 宮"
-        f"\n{get_component_words_section(['宀', '呂'], component_words_dict)}"
+        f"\n{get_component_words_section(['宀', '呂'], component_words)}"
         "\n  story: <i>したぎ かんむり</i> の したに <i>せぼね</i> の ような はしら が きゅうでんの"
         " いりぐちに たった"
         "\n"
         "\n  kanji: 蹴"
-        f"\n{get_component_words_section(['足', '就'], component_words_dict)}"
+        f"\n{get_component_words_section(['足', '就'], component_words)}"
         "\n  story: <i>あし</i> の <i>しゅうしょく</i> は もの を <b>ける</b> こと。"
         "\n"
         "\n  kanji: 諭"
-        f"\n{get_component_words_section(['言', '俞'], component_words_dict)}"
+        f"\n{get_component_words_section(['言', '俞'], component_words)}"
         "\n  story: <i>いいたい</i> こと を <i>いやしの こぶね</i> を こぎ ながら つたえる と、"
         "せんちょう が しずに してくれと <b>さとした</b>"
         "\n"
         "\n kanji: 嘘"
-        f"\n{get_component_words_section(['口', '虚'], component_words_dict)}"
+        f"\n{get_component_words_section(['口', '虚'], component_words)}"
         "\n  story: <i>くち</i> から でる <i>むなしい</i> <b>うそ</b>..."
         "\n"
         "\n kanji: 勇"
-        f"\n{get_component_words_section(['マ', '男'], component_words_dict)}"
+        f"\n{get_component_words_section(['マ', '男'], component_words)}"
         "\n  story: <i>ま！</i> <i>おとこらしい！</i> <b>いさましい</b> <b>ゆう</b>き を もっている ね"
         "\n"
         "\n kanji: 鯉"
-        f"\n{get_component_words_section(['魚', '里'], component_words_dict)}"
+        f"\n{get_component_words_section(['魚', '里'], component_words)}"
         "\n  story: <i>さかな</i>, <i>さと</i> の いけ で はっしゃぐ、<b>こい</b> だ。"
         "\n"
-        f'\nReturn the new story in a JSON string as the value of the key "{return_field}".'
+        "\nReturn the new story in a JSON string as the value of the key"
+        f' "{KANJI_STORY_RETURN_FIELD}".'
     )
+    return prompt
+
+
+class _LookedUpWords(Mapping[str, str]):
+    """The component words file, keeping the words a prompt looked up in it."""
+
+    def __init__(self, words: Mapping[str, str]):
+        self.words = words
+        self.looked_up: dict[str, str] = {}
+
+    def __getitem__(self, component: str) -> str:
+        word = self.words[component]
+        self.looked_up[component] = word
+        return word
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.words)
+
+    def __len__(self) -> int:
+        return len(self.words)
+
+
+def kanji_story_inputs(
+    kanji: str, components: str, current_story: str, component_words: Mapping[str, str]
+) -> dict:
+    """`kanji_story_prompt`'s arguments, with only the words the prompt shows: the note's
+    components' and the examples'. The file holds a word for every component ever used, and
+    all of it would make every call's inputs change with any one of them."""
+    looked_up = _LookedUpWords(component_words)
+    kanji_story_prompt(kanji, components, current_story, looked_up)
+    return {
+        "kanji": kanji,
+        "components": components,
+        "current_story": current_story,
+        "component_words": looked_up.looked_up,
+    }
+
+
+def get_kanji_story_from_model(
+    config: dict[str, str],
+    kanji: str,
+    components: str,
+    current_story: str,
+) -> str:
+    media_path = Path(mw.pm.profileFolder(), "collection.media")
+    # Get stored dict of words used for component in the kanji_story_component_words.log file
+    with open(Path(media_path, KANJI_STORY_COMPONENT_WORDS_LOG), "r", encoding="utf-8") as f:
+        try:
+            component_words_dict = json.loads(f.read())
+        except json.JSONDecodeError as e:
+            print(f"Error reading component words dict: {e}")
+            component_words_dict = {}
+
+    return_field = KANJI_STORY_RETURN_FIELD
+    response_schema = {
+        "type": "object",
+        "properties": {
+            return_field: {"type": "string"},
+        },
+        "required": [return_field],
+        "additionalProperties": False,
+    }
+
+    inputs = kanji_story_inputs(kanji, components, current_story, component_words_dict)
+    prompt = kanji_story_prompt(**inputs)
     model = config.get("kanji_story_model", "")
     config_temp = config.get("kanji_story_temperature", None)
     if config_temp is not None:
@@ -174,6 +219,8 @@ def get_kanji_story_from_model(
         prompt,
         response_schema=response_schema,
         temperature=temperature,
+        kind="kanji_story.kanji",
+        inputs=inputs,
     )
     if result is None:
         # Return original story unchanged if the cleaning failed

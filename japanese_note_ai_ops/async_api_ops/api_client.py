@@ -21,6 +21,17 @@ from typing import Any, Callable, NamedTuple, Optional
 import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 
+# Each send is an attempt of the AI call it belongs to, which capture counts. Loaded from its
+# file alone, outside the package (test/addon_modules.load_addon_module, which keeps this module
+# testable on its own), there is no package to import capture from and no call to count for.
+if __package__:
+    from .capture import note_attempt
+else:
+
+    def note_attempt() -> None:
+        return None
+
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_RETRIES = 5
@@ -975,6 +986,7 @@ def post_with_retry(
         try:
             _count_request(1)
             try:
+                note_attempt()
                 response = session.post(url, headers=headers, json=json_body, timeout=timeout)
             finally:
                 _count_request(-1)
