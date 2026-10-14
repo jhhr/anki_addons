@@ -37,17 +37,6 @@ def _package(tmp_path: Path, **manifest) -> str:
     return str(path)
 
 
-@pytest.fixture
-def manager(real_mw, monkeypatch):
-    """The add-on manager, installing over a folder without Anki's way of clearing it first,
-    which moves the folder to the system's trash: no place for a test's."""
-    manager = real_mw.addonManager
-    monkeypatch.setattr(
-        manager, "deleteAddon", lambda module: shutil.rmtree(manager.addonsFolder(module))
-    )
-    return manager
-
-
 def test_the_addon_loads_and_puts_its_handlers_on_ankis_hooks(real_mw, addon):
     assert gui_hooks.sync_will_start._hooks[-1] is addon.sync_on_save
     assert gui_hooks.media_sync_did_start_or_stop._hooks[-1] is addon.read_on_sync

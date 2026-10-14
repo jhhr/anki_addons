@@ -177,11 +177,12 @@ Both directories are in the root `testpaths`.
   `test_addon_config_sync_matches.py` is about the state file.
 - `test_anki/` runs the addon's own `__init__.py`, which nothing else imports, in a running
   Anki, and has Anki's add-on manager write the `meta.json` files the add-on compares: an
-  install, an update, an add-on switched off and on. `test_real_anki_install_record.py`
-  follows Anki's record of an install to a second device through Anki's own download,
-  install, update check, add-on loading and sync wiring, with only AnkiWeb and the media
-  transfer faked; the second device can run the released add-on (from git) or another Anki
-  version. It also pins what of Anki's own behaviour the record rule rests on.
+  install, an update, an add-on switched off and on. `devices.py` makes the running Anki
+  into devices with folders of their own, which use Anki's own download, install, update
+  check, add-on loading and sync wiring, with only AnkiWeb (`FakeAnkiWeb`) and the media
+  transfer faked; a device can run the released add-on (from git) or be another Anki
+  version. `test_real_anki_install_record.py` follows Anki's record of an install to a
+  second device with them, and pins what of Anki's own behaviour the record rule rests on.
 - `test/old_against_new.py` is not collected with the suite; run it by its path, with `-s`,
   when what a sync start sends or a media sync reads is to change. It runs the handlers
   from before matches were kept beside today's over random histories of two devices. It
