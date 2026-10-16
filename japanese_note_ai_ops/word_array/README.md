@@ -335,7 +335,7 @@ the first run asks about the dictionary downloads before touching a note
 
 A note whose field already holds an array is skipped, so re-running over a selection is free; a
 note whose field does not parse as an array is skipped too, because generating over it would
-throw away the note ids of its matched words - a broken array is for a person to repair.
+throw away the link IDs of its matched words - a broken array is for a person to repair.
 
 ### Regenerating over an array
 
@@ -360,7 +360,7 @@ Within a changed region `match_data` is carried over by dictionary form and read
 dictionary form alone, which is what recognises the word the old array misread (小枝 read
 しょうえだ). Each step carries only where exactly one old and one new element of the region
 still holds the key; two candidates is what the migration decided not to guess at either, and
-the op logs the note id of every link it could not carry. The second guard still stands: a field
+the op logs the link ID of every link it could not carry. The second guard still stands: a field
 that is not a readable array is left alone either way.
 
 The words a regeneration brings in are unjudged like any others, so "Judge words matchability"
@@ -385,8 +385,13 @@ words prompt" and the extract-words fine-tuning export.
 1. `[]` - unjudged: new from the generator, or migrated without a note id.
 2. `["dontmatch"]` - judged not worth a note.
 3. `["match"]` - judged worth a note, not matched yet.
-4. `[note_id]` - migrated with a note id: judged already, lacks `match_quality`.
-5. `[note_id, match_quality]` - fully matched.
+4. `[link_id]` - migrated with a note id: judged already, lacks `match_quality`.
+5. `[link_id, match_quality]` - fully matched.
+
+`link_id` is the **link ID** of the vocab note the word is linked to (`../link_ids.py`,
+`../config.md` "link IDs"): the number in the note's link ID field, else its note id, which is
+what every link written before link IDs holds. A note the match op makes holds a 16-digit one
+from the moment it is made, so the array links it by that before it is added.
 
 Numbers other than 一-九, 十, 二十 and the multipliers start out `dontmatch`: numbers have been
 a steady source of junk notes. Everything else, a word built on a number included (二十八日,
@@ -415,8 +420,8 @@ from the array's own raw texts, so the note's sentence isn't needed), and the wo
 or made of, and returns `{"reason", "decision"}`. Particles and the copula are judged `dontmatch`
 without a request. A note's requests run in parallel through `bulk_nested_notes_op`; the array is
 saved when all are done, a word whose request failed left as it was. A field still holding an old
-word list is skipped, and unlinked note ids are logged. It replaced a v1 judge that asked about a
-whole sentence's words in one prompt.
+word list is skipped, and the link IDs it unlinks are logged. It replaced a v1 judge that asked
+about a whole sentence's words in one prompt.
 
 `research/judge_eval.py` scores the judge against the hand-checked export, whose old lists count
 as its ground truth: a word an old entry fits is `match`, one none fits `dontmatch`, particles and
@@ -465,11 +470,13 @@ array's part of speech label mapped to the one the word notes use. `states_to_ma
 states a run takes: `["match"]`, plus the linked states 4 and 5 with
 `replace_existing_matched_words`; the single-word rematch entries take their mode's states
 (unprocessed 3, processed 4 and 5, both), and find their notes with `word_array_query_regex`.
-Before gathering, `resolve_placeholder_ids()` swaps a new note's negative placeholder id an
-earlier run left behind for the id of the note holding it in `new_note_id_field` (the field is
-left set, other notes may still hold the placeholder); one no note holds goes back to `["match"]`.
+Before gathering, `resolve_placeholder_ids()` swaps a legacy negative placeholder, the id a run
+from before link IDs linked a new note by until it was added, for the link ID of the note
+holding it in `new_note_id_field`: its note id, since such a field holds no link ID (the field
+is left as it is, other arrays may still hold the placeholder; "Fill link IDs" writes it). One
+no note holds goes back to `["match"]`, one several notes hold is left.
 The main prompt asks for a `match_quality` (1-5) with every match or new meaning, and a target is
-saved `[note_id, match_quality]`, or `[note_id]` when the response gave no valid one
+saved `[link_id, match_quality]`, or `[link_id]` when the response gave no valid one
 (`parse_match_quality()`). The prompt shows the target's sentence in plain text with the very
 occurrence in `<b>` (`highlighted_sentence()`, without the field's `<i>` context), and each
 existing meaning's example sentence with that note's word in `<b>` when the note holds an array
@@ -478,11 +485,11 @@ whose field holds no array has its sentence shown as it is. In the two-type layo
 is built the same way from the note's example sentence note, and is empty when it names none,
 that note is gone or it holds no array (no `<b>` is stored to show). A note whose own field is
 not a readable array is tagged `invalid_word_list_json` and left alone
-(`decode_word_array_field()`). Every run also rates the `[note_id]` words (`states_to_rate()`: unless the
+(`decode_word_array_field()`). Every run also rates the `[link_id]` words (`states_to_rate()`: unless the
 run matches them again) with a secondary prompt given only the linked note's meaning and the
 `<b>` sentence (`rating_prompt()`, `RATING_INSTRUCTIONS`, same 1-5 scale as the main prompt);
-`save_ratings()` makes them `[note_id, match_quality]`. A note with no meaning yet, or not found,
-stays `[note_id]`.
+`save_ratings()` makes them `[link_id, match_quality]`. A note with no meaning yet, or not found,
+stays `[link_id]`.
 
 clean_meaning's sentences (`clean_meaning.get_sentences_for_note`, the word note's own and those
 of the notes linking to it) go through `example_sentence()` too: a note holding an array gives
