@@ -13,6 +13,7 @@ from .collection_access import (
     find_notes as col_find_notes,
     get_notes as col_get_notes,
 )
+from .link_lookup import find_note_id
 from .note_cache import NoteCache
 from .role_gate import notes_of_role
 from .sentence_cache import SentenceCache
@@ -40,7 +41,14 @@ from .make_all_meanings import (
     make_meaning_dict_key,
 )
 
-from ..note_roles import VOCAB_ROLE, example_id_field, note_type_search, sentence_type_of
+from ..link_ids import field_search, note_link_id, parse_link_id
+from ..note_roles import (
+    VOCAB_ROLE,
+    example_id_field,
+    link_id_field,
+    note_type_search,
+    sentence_type_of,
+)
 from ..utils import get_field_config
 from ..html_stripping import strip_html
 from ..word_array import match_targets
@@ -60,10 +68,12 @@ def _field_value(config: dict[str, str], note: Note, field_key: str) -> str:
     return note[field] if field in note else ""
 
 
-def _example_sentence_id(
+def _example_sentence_link_id(
     config: dict[str, str], note: Note, vocab_type_name: str
-) -> Optional[NoteId]:
-    """The id of a two-type vocab note's example sentence note, None when it names none.
+) -> Optional[int]:
+    """The link ID a two-type vocab note's example id field names its example sentence note by
+    (link_ids.py), None when it names none. Not a note id: it is the sentence note's own ID
+    field's value whenever that holds one.
 
     Logged rather than raised: a vocab note without an example still has the sentences that
     link it, and its meaning is cleaned from those.
@@ -77,17 +87,13 @@ def _example_sentence_id(
         )
         return None
     value = note[id_field].strip()
-    try:
-        example_id = int(value)
-    except ValueError:
-        example_id = 0
-    if example_id <= 0:
+    example_link_id = parse_link_id(value)
+    if example_link_id is None:
         logger.warning(
             f"Note {note.id} names no example sentence note ({id_field}: {value!r}): its"
             " sentences are without its own"
         )
-        return None
-    return NoteId(example_id)
+    return example_link_id
 
 
 def get_sentences_for_note(
@@ -120,6 +126,11 @@ def get_sentences_for_note(
     the vocab notes keep their old sentence fields, under the same names, until the user
     deletes them.
 
+    Links are by link ID (link_ids.py): the arrays are searched for this note's, and the
+    example id names the example sentence note by that note's, which is looked up; the note
+    found is left out of the others by its note id. Either ID is a note id only while the
+    note's own link ID field holds none.
+
     A sentence from a note whose word list field holds a word array has this note's word in
     `<b>`: the occurrence linked to this note, else the first of its word
     (`match_targets.example_sentence`), so a sentence using the word twice says which one the
@@ -141,6 +152,8 @@ def get_sentences_for_note(
         config, note, "word_field"
     )
     reading = _field_value(config, note, "word_reading_field")
+    # None for a note not added yet that holds no ID: no array links it
+    word_link_id = note_link_id(note, link_id_field(config, note_type["name"]))
 
     def make_en_and_jp_sentence(onote: Note) -> EnAndJPSentence:
         return EnAndJPSentence(
@@ -149,7 +162,7 @@ def get_sentences_for_note(
                 onote[word_list_field] if word_list_field in onote else "",
                 word,
                 reading,
-                note.id,
+                word_link_id,
             ),
             en_sentence=strip_html(onote[translated_sentence_field]),
         )
@@ -177,12 +190,27 @@ def get_sentences_for_note(
             return []
         return [make_en_and_jp_sentence(example)]
 
+    def example_note_id(example_link_id: int) -> Optional[NoteId]:
+        # The sentence note holding the link ID, by its own ID field (else its note id): the
+        # value taken for a note id would find another note, or none, once sentence notes hold
+        # IDs of their own. One lookup through collection_access, as on a run's worker threads
+        note_id = find_note_id(config, sentence_type, example_link_id)
+        if note_id is None:
+            logger.warning(
+                f"Note {note.id}'s example sentence note {example_link_id} is gone or is not a"
+                f' "{sentence_type}" note: its sentences are without its own'
+            )
+        return note_id
+
     # The note the own sentence is read off, which the others leave out. A note not added yet
     # has no others, so its example is not looked up when its sentence is not wanted either.
     own_note_id: Optional[NoteId] = note.id
     if two_type:
         wanted = note.id != 0 or (own_sentence is None and not exclude_self)
-        own_note_id = _example_sentence_id(config, note, note_type["name"]) if wanted else None
+        example_link_id = (
+            _example_sentence_link_id(config, note, note_type["name"]) if wanted else None
+        )
+        own_note_id = example_note_id(example_link_id) if example_link_id is not None else None
     if own_sentence is not None:
         cur_note_sentences = [own_sentence]
     elif not two_type:
@@ -191,20 +219,21 @@ def get_sentences_for_note(
         cur_note_sentences = []
     else:
         cur_note_sentences = read_example_sentence(own_note_id)
-    if note.id == 0:
-        # New note, can't search for others using its ID
+    if note.id == 0 or word_link_id is None:
+        # New note, nothing links it yet: even one holding an ID is not in any array saved
         if exclude_self:
             return []
         return cur_note_sentences
 
+    links_to_note = field_search(word_list_field, f"*{word_link_id}*")
     if two_type:
         # Only the sentence type's notes: a vocab note keeps its old word list field, under
         # the same name, until the user deletes it, and nothing keeps the array there current
-        query = note_type_search(sentence_type) + f' "{word_list_field}:*{note.id}*"'
+        query = f"{note_type_search(sentence_type)} {links_to_note}"
         if own_note_id is not None:
             query += f" -nid:{own_note_id}"
     else:
-        query = f'"{word_list_field}:*{note.id}*" -nid:{note.id}'
+        query = f"{links_to_note} -nid:{note.id}"
 
     def scan_for_other_sentences() -> list[EnAndJPSentence]:
         logger.debug(f"Getting sentences for note {note.id} with query: {query}")

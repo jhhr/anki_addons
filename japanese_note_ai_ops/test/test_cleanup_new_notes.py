@@ -1364,6 +1364,42 @@ class TwoTypeLayoutCleanupTests(unittest.TestCase):
         self.assertEqual(kept["english_meaning_field"], "book, volume")
         self.assertEqual(array_match_data(kept), [[1674931277302]])
 
+    def test_saved_duplicates_are_referred_to_by_their_link_ids(self):
+        """A saved note is linked by its link ID (link_ids.py): the generated ID its field
+        holds, else its note id, whatever else the field holds. A "0" there (CopyAnywhere's
+        `{{__Note_ID}}` written while the note had no id yet) was taken for the kept note's
+        reference, and every array linking the duplicate was pointed at 0."""
+        generated = 1160697660039337
+        kept = FakeNote(
+            {
+                "new_note_id_field": "0",
+                "word_sort_field": "hon(m1)",
+                "english_meaning_field": "book",
+                "meaning_field": "本",
+            },
+            1674931277301,
+        )
+        duplicate = FakeNote(
+            {
+                "new_note_id_field": str(generated),
+                "word_sort_field": "hon(m2)",
+                "english_meaning_field": "book, volume",
+                "meaning_field": "書物",
+            },
+            1674931277302,
+        )
+        # Linked by the duplicate's ID, and by its note id, which is no link to it
+        linking = sentence_note(2, w("本", [generated, 4]), w("本", [1674931277302]))
+        search = two_type_search(linking)
+
+        with search.patched():
+            notes, updated = mwtn.deduplicate_notes_list([kept, duplicate], TWO_TYPE_CONFIG)
+
+        self.assertEqual(notes, [kept])
+        self.assertEqual(search.queries, [f'"note:Sentence" "s_array:*{generated}*"'])
+        self.assertEqual(sorted(updated), [2, 1674931277301])
+        self.assertEqual(array_match_data(updated[2]), [[1674931277301, 4], [1674931277302]])
+
     def test_through_a_cancelled_adding_the_sentence_notes_are_resolved_and_unlinked(self):
         added, left_out = (FakeNote({"new_note_id_field": p}) for p in ("-1111111", "-2222222"))
         linking = sentence_note(2, w("様", [-1111111]), w("本", [-2222222, 3]))

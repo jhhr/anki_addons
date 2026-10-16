@@ -108,6 +108,9 @@ class RatingTests(CacheTestCase):
             part_of_speech="verb",
         )
         fields = {key: key for key in mwtn.MATCH_FIELD_KEYS}
+        # The run's index of the vocab type, read before the note was deleted: the link still
+        # names it, and the fetch finds it gone
+        index = mwtn.LinkIndex.from_rows([(linked_id, "")])
         with mock.patch.object(mwtn, "get_response", get_response):
             return asyncio.run(
                 mwtn.rate_linked_word(
@@ -119,6 +122,7 @@ class RatingTests(CacheTestCase):
                     note_cache=self.cache,
                     cancel_state=None,
                     log_prefix="",
+                    link_index=index,
                 )
             )
 

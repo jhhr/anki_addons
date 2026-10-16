@@ -22,10 +22,11 @@ from addon_modules import load_ops_module
 
 sc = load_addon_module("sentence_cache")
 cm = load_ops_module("clean_meaning")
-# The modules clean_meaning itself imported: the run's note cache reads through the one, and
-# the other raises the layout errors
+# The modules clean_meaning itself imported: the run's note cache reads through the one, the
+# second raises the layout errors and names the link ID fields, the third holds the link rules
 note_cache_module = sys.modules[cm.NoteCache.__module__]
 note_roles = sys.modules[cm.sentence_type_of.__module__]
+link_ids = sys.modules[cm.note_link_id.__module__]
 
 
 class SentenceCacheTests(unittest.TestCase):
@@ -328,6 +329,47 @@ class HighlightedSentenceTests(GetSentencesForNoteTests):
         self.assertEqual(self.sentences(note)[0]["jp_sentence"], "猫と猫")
 
 
+# Generated link IDs (link_ids.py), held in a note's ID field and by the links to it: the vocab
+# note's, and its example sentence note's
+WORD_LINK_ID = 1160697660039337
+SENTENCE_LINK_ID = 1841288010442579
+
+
+class OneTypeLinkIdTests(unittest.TestCase):
+    """A one-type note whose new_note_id_field holds a generated ID: the arrays link it by that,
+    so they are searched for it and its word marked where they hold it. Its note id is no link
+    to it then."""
+
+    def setUp(self):
+        self.searches: list[str] = []
+        self.notes = {2: array_note(2, cat_array([WORD_LINK_ID, 4], [1, 3]), "cat and cat")}
+
+        def find_notes(query):
+            self.searches.append(query)
+            return [2]
+
+        def get_notes(note_ids):
+            return [self.notes[note_id] for note_id in note_ids if note_id in self.notes]
+
+        for patch in (
+            mock.patch.object(cm, "col_find_notes", find_notes),
+            mock.patch.object(cm, "col_get_notes", get_notes),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_the_arrays_are_searched_for_the_notes_link_id_and_marked_where_they_hold_it(self):
+        config = {"Vocab": {**WORD_CONFIG["Vocab"], "new_note_id_field": "id"}}
+        note = array_note(1, cat_array([1], [WORD_LINK_ID]), "this")
+        note.fields["id"] = str(WORD_LINK_ID)
+
+        sentences = cm.get_sentences_for_note(config, note)
+
+        self.assertEqual([s["jp_sentence"] for s in sentences], ["猫と<b>猫</b>", "<b>猫</b>と猫"])
+        # Left out by its note id, which is what the search answers with
+        self.assertEqual(self.searches, [f'"sentence-vocab-list:*{WORD_LINK_ID}*" -nid:1'])
+
+
 SENTENCE, VOCAB = "Sentence", "Vocab"
 
 # The two blocks name different fields for one key, and the vocab notes keep old sentence
@@ -409,6 +451,7 @@ class TwoTypeCollection:
         self.notes = {note.id: note for note in notes}
         self.searches: list[str] = []
         self.fetches: list[list[int]] = []
+        self.lookups: list[int] = []
 
     def find_notes(self, query):
         self.searches.append(query)
@@ -430,6 +473,18 @@ class TwoTypeCollection:
         if missing:
             raise NotFound(missing)
         return [self.notes[nid] for nid in ids]
+
+    def find_note_id(self, config, note_type_name, held, col=None):
+        """link_lookup.find_note_id: the note of the type holding the link ID, by the type's
+        link ID field, else its note id; the oldest when several do."""
+        self.lookups.append(held)
+        field = note_roles.link_id_field(config, note_type_name)
+        rows = [
+            (nid, note[field] if field and field in note else "")
+            for nid, note in self.notes.items()
+            if note.type_name == note_type_name
+        ]
+        return link_ids.LinkIndex.from_rows(rows).note_id(held)
 
 
 # The vocab note's example links it at the second 猫, the other sentence note at the first
@@ -455,6 +510,7 @@ class TwoTypeSentencesTests(unittest.TestCase):
         for patch in (
             mock.patch.object(cm, "col_find_notes", self.col.find_notes),
             mock.patch.object(cm, "col_get_notes", self.col.get_notes),
+            mock.patch.object(cm, "find_note_id", self.col.find_note_id),
             mock.patch.object(cm, "NotFoundError", NotFound),
         ):
             patch.start()
@@ -491,7 +547,10 @@ class TwoTypeSentencesTests(unittest.TestCase):
             sentences = self.sentences(self.vocab)
         self.assertIn("99", "\n".join(logs.output))
         self.assertEqual(sentences, [EXAMPLE_SENTENCE, OTHER_SENTENCE])
-        self.assertEqual(self.col.searches, ['"note:Sentence" "s-array:*10*" -nid:99'])
+        # No sentence note holds the link ID, so there is no note to leave out (it was left
+        # out by the ID as a note id before link IDs, which named no note either)
+        self.assertEqual(self.col.searches, ['"note:Sentence" "s-array:*10*"'])
+        self.assertEqual(self.col.lookups, [99])
 
     def test_the_example_is_read_through_the_run_note_cache(self):
         note_cache = cm.NoteCache()
@@ -506,11 +565,12 @@ class TwoTypeSentencesTests(unittest.TestCase):
                     ),
                     both,
                 )
-            # Gone: the cache's fetch raises as the collection's does
+            # Gone: the lookup finds no note holding its link ID, so nothing is fetched (the
+            # cache's fetch of it raised as the collection's does, before link IDs)
             self.vocab.fields["v-example-id"] = "99"
             with self.assertLogs(cm.logger, "WARNING"):
                 self.assertEqual(self.sentences(self.vocab, note_cache=note_cache), both)
-        self.assertEqual(self.col.fetches, [[20], [21], [99]])
+        self.assertEqual(self.col.fetches, [[20], [21]])
 
     def test_a_new_note_reads_its_example_and_searches_nothing(self):
         # Not added, so nothing links it: its word is marked where it first occurs
@@ -544,6 +604,46 @@ class TwoTypeSentencesTests(unittest.TestCase):
         self.assertNotIsInstance(raised.exception, KeyError)
         self.assertIn("translated_sentence_field", str(raised.exception))
         self.assertIn(SENTENCE, str(raised.exception))
+
+    def notes_holding_ids(self) -> tuple[dict, TypedNote]:
+        """Both types name an ID field (link_ids.py) and the notes hold generated IDs: the
+        vocab note's links hold its ID, its example id field the example's. A sentence note
+        still linking the vocab note's note id links nothing."""
+        config = copy.deepcopy(TWO_TYPE_CONFIG)
+        config[SENTENCE]["sentence_id_field"] = "s-id"
+        config[VOCAB]["new_note_id_field"] = "v-id"
+        vocab = vocab_note(30, example_id=SENTENCE_LINK_ID)
+        vocab.fields["v-id"] = str(WORD_LINK_ID)
+        example = sentence_note(40, cat_array([5], [WORD_LINK_ID]), "cat and cat")
+        example.fields["s-id"] = str(SENTENCE_LINK_ID)
+        other = sentence_note(41, cat_array([WORD_LINK_ID], ["match"]), "the other cat")
+        stale = sentence_note(42, cat_array([30], ["match"]), "a link by note id")
+        self.col.notes.update({note.id: note for note in (vocab, example, other, stale)})
+        return config, vocab
+
+    def test_links_are_by_the_link_ids_the_notes_hold(self):
+        config, vocab = self.notes_holding_ids()
+
+        sentences = self.sentences(vocab, config=config)
+
+        self.assertEqual(sentences, [EXAMPLE_SENTENCE, OTHER_SENTENCE])
+        self.assertEqual(self.col.lookups, [SENTENCE_LINK_ID])
+        # The example found by its ID is left out by its note id
+        self.assertEqual(
+            self.col.searches, [f'"note:Sentence" "s-array:*{WORD_LINK_ID}*" -nid:40']
+        )
+
+    def test_the_note_id_of_a_sentence_note_holding_an_id_names_no_example(self):
+        config, vocab = self.notes_holding_ids()
+        vocab.fields["v-example-id"] = "40"
+
+        with self.assertLogs(cm.logger, "WARNING") as logs:
+            sentences = self.sentences(vocab, config=config)
+
+        self.assertIn("40", "\n".join(logs.output))
+        # Its example is then one of the sentence notes linking it, like the others
+        self.assertEqual(sentences, [EXAMPLE_SENTENCE, OTHER_SENTENCE])
+        self.assertEqual(self.col.searches, [f'"note:Sentence" "s-array:*{WORD_LINK_ID}*"'])
 
     def test_a_broken_layout_is_a_layout_error(self):
         config = copy.deepcopy(TWO_TYPE_CONFIG)

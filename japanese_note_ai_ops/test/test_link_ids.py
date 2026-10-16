@@ -82,6 +82,48 @@ class LinkIdTests(unittest.TestCase):
                 link_ids.link_id(value, 0)
 
 
+class Note:
+    """A note in hand: its id and its fields."""
+
+    def __init__(self, note_id: int, fields: dict) -> None:
+        self.id = note_id
+        self.fields = fields
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.fields
+
+    def __getitem__(self, key: str) -> str:
+        return self.fields[key]
+
+
+class NoteLinkIdTests(unittest.TestCase):
+    """The link ID of a note in hand, read off the field its type names (or none)."""
+
+    def test_the_fields_id_wins_over_the_note_id(self):
+        note = Note(NOTE_ID, {"Word ID": "1160697660039337"})
+        self.assertEqual(link_ids.note_link_id(note, "Word ID"), 1160697660039337)
+
+    def test_no_id_in_the_field_or_no_field_gives_the_note_id(self):
+        for fields, field in [
+            ({"Word ID": ""}, "Word ID"),
+            ({"Word ID": "0"}, "Word ID"),
+            ({"Word ID": "-1234567"}, "Word ID"),
+            ({}, "Word ID"),
+            ({"Word ID": "1160697660039337"}, None),
+        ]:
+            with self.subTest(fields=fields, field=field):
+                self.assertEqual(link_ids.note_link_id(Note(NOTE_ID, fields), field), NOTE_ID)
+
+    def test_a_note_not_added_yet_has_one_only_when_its_field_holds_one(self):
+        pending = Note(0, {"Word ID": "1160697660039337"})
+        self.assertEqual(link_ids.note_link_id(pending, "Word ID"), 1160697660039337)
+        # Nothing can link these yet: an answer rather than link_id's raise
+        for value in ["", "-1234567"]:
+            with self.subTest(value):
+                self.assertIsNone(link_ids.note_link_id(Note(0, {"Word ID": value}), "Word ID"))
+        self.assertIsNone(link_ids.note_link_id(Note(0, {}), None))
+
+
 class NewLinkIdTests(unittest.TestCase):
     KEY = "vocab|1700000000000|[3]|word|reading"
 

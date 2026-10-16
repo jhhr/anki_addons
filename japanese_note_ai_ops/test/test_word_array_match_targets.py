@@ -166,6 +166,19 @@ class HighlightedSentenceTests(unittest.TestCase):
         self.assertEqual(example("field", text, "棚", "たな", 333), "field")
         self.assertEqual(example("field", '{"nouns": []}', "本", "ほん", 111), "field")
 
+    def test_an_example_sentence_marks_the_occurrence_holding_the_notes_link_id(self):
+        example = match_targets.example_sentence
+        generated = 1160697660039337
+        # The note's note id 111 is no link to it once its field holds an ID: the array holds that
+        arr = [word("本", [111], reading="ほん"), word("と"), word("本", [generated, 4]), ["。"]]
+        text = json.dumps(arr, ensure_ascii=False)
+        self.assertEqual(example("field", text, "本", "ほん", generated), "本と<b>本</b>。")
+        # A note nothing can link yet has no occurrence of its own; an unlinked element's id is
+        # None as well, and is not taken for it
+        unlinked_first = [word("棚"), word("と"), word("本", [111], reading="ほん")]
+        text = json.dumps(unlinked_first, ensure_ascii=False)
+        self.assertEqual(example("field", text, "本", "ほん", None), "棚と<b>本</b>")
+
 
 class WordPathTests(unittest.TestCase):
     def test_the_path_indexes_down_to_the_very_element(self):
@@ -306,6 +319,21 @@ class FakeNote:
 class WordIndexCache:
     async def get(self, _):
         return None
+
+
+class LinkIndexCache:
+    """The run's link indexes (link_lookup.LinkIndexCache) over `notes`, as the real one reads
+    a type's notes: each holds what its new_note_id_field holds as its link ID, else its note
+    id. Built with the LinkIndex the module under test resolves link IDs with."""
+
+    def __init__(self, mwtn, *notes):
+        self.mwtn = mwtn
+        self.rows = [(note.id, note.fields.get("new_note_id_field", "")) for note in notes]
+        self.asked = []
+
+    async def get(self, config, note_type_name):
+        self.asked.append(note_type_name)
+        return self.mwtn.LinkIndex.from_rows(self.rows)
 
 
 class MatchWordsToNotesArrayTests(unittest.TestCase):
@@ -523,7 +551,10 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             return process
 
         updates, edited_nids = {}, []
-        plan = self.plan(note, arr, Progress(), updates, edited_nids, note_cache=Cache())
+        links = LinkIndexCache(self.mwtn, *meanings.values())
+        plan = self.plan(
+            note, arr, Progress(), updates, edited_nids, note_cache=Cache(), link_index_cache=links
+        )
         # 本, 棚 and 箱 rated; 様 already has its quality
         self.assertEqual(plan.task_count, 3)
 
@@ -547,6 +578,74 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         saved = json.loads(note["word_list_field"])
         self.assertEqual([w[4] for w in saved], [[111, 4], ["dontmatch"], [222], [333, 5], [444]])
         self.assertEqual(edited_nids, [1])
+
+    def test_a_linked_word_is_rated_against_the_note_holding_its_link_id(self):
+        generated, other_generated = 1160697660039337, 1841288010442579
+        # 333 holds the generated ID 本 is linked by; 222 holds another, so the 222 棚 holds is
+        # no link to it (an index answers so, a fetch by note id would not)
+        holder = FakeNote(
+            {
+                "meaning_field": "書物",
+                "english_meaning_field": "book",
+                "new_note_id_field": str(generated),
+            },
+            333,
+        )
+        moved = FakeNote(
+            {
+                "meaning_field": "物を載せる板",
+                "english_meaning_field": "shelf",
+                "new_note_id_field": str(other_generated),
+            },
+            222,
+        )
+        arr = [word("本", [generated], reading="ほん"), word("と"), word("棚", [222])]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        fetched = []
+
+        class Cache:
+            async def get_notes(self, ids):
+                fetched.extend(ids)
+                return {i: n for i, n in ((333, holder), (222, moved)) if i in ids}
+
+        prompts = []
+
+        def get_response(model, prompt, **kwargs):
+            prompts.append((prompt, kwargs["context"]))
+            return {"match_quality": 4}
+
+        def inner_bulk_op(config, op, **_):
+            async def process(**op_args):
+                return await op(config, **op_args)
+
+            return process
+
+        links = LinkIndexCache(self.mwtn, holder, moved)
+        plan = self.plan(
+            note, arr, Progress(), {}, [], note_cache=Cache(), link_index_cache=links
+        )
+        self.assertEqual(plan.task_count, 2)
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "get_response", get_response),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        # The vocab type's index, and only its holder fetched
+        self.assertEqual(set(links.asked), {"Word"})
+        self.assertEqual(fetched, [333])
+        [(prompt, context)] = prompts
+        self.assertIn("書物", prompt)
+        # The capture context names the note rated, by its note id
+        self.assertEqual(context["note_id"], 333)
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[generated, 4], [], [222]])
 
     def test_words_matched_again_are_not_rated_too(self):
         arr = [word("本", ["match"]), word("様", [111])]
@@ -907,6 +1006,9 @@ class CancelledMatchRunTests(unittest.TestCase):
             mock.patch.object(self.mwtn, "load_meanings_dict_from_file", dict),
             mock.patch.object(self.mwtn, "mw", fake_mw),
             mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
+            mock.patch.object(
+                self.mwtn, "LinkIndexCache", lambda: LinkIndexCache(self.mwtn, linked)
+            ),
             mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
             mock.patch.object(self.mwtn, "get_response", lambda *a, **k: {"match_quality": 4}),
         ):

@@ -40,6 +40,11 @@ base_ops = load_ops_module("base_ops")
 
 MODEL = "model"
 NOTE_ID = 1
+# Generated link IDs (link_ids.py) a note holds in its ID field, which its links then hold:
+# 本(m1)'s, and the two sentence notes'
+BOOK_NOTE_ID = 1160697660039337
+READING_SENTENCE_ID = 1841288010442579
+COUNTRY_SENTENCE_ID = 1573922400126006
 
 # One word with two notes and a generated meaning neither note has: the prompt lists the notes'
 # meanings by their (mN), then the generated one, which has no example sentence
@@ -227,6 +232,21 @@ class WordIndexCache:
         return None
 
 
+class LinkIndexes:
+    """The run's link indexes (link_lookup.LinkIndexCache), each read off `rows(type name)`,
+    the (note id, link ID field value) of every note of the type, as the real one reads the
+    collection; through the real LinkIndex the module under test resolves link IDs with."""
+
+    def __init__(self, mwtn: types.ModuleType, rows) -> None:
+        self.mwtn = mwtn
+        self.rows = rows
+        self.asked: list[str] = []
+
+    async def get(self, config: dict, note_type_name: str) -> Any:
+        self.asked.append(note_type_name)
+        return self.mwtn.LinkIndex.from_rows(self.rows(note_type_name))
+
+
 def passthrough_inner_bulk_op(config, op, **_):
     """make_inner_bulk_op without its gate and progress: the op in the note's own task."""
 
@@ -327,6 +347,10 @@ class MatchHarness(unittest.TestCase):
                 sentence_cache=None,
                 limit_words_and_readings=None,
                 log_prefix="",
+                # The vocab notes' link IDs: 借りた is linked to the note holding 222
+                link_index_cache=LinkIndexes(
+                    self.mwtn, lambda name: [(linked.id, "")] if name == "Word" else []
+                ),
             )
             self.assertEqual(plan.task_count, 2)
             tasks: list[asyncio.Task] = []
@@ -388,6 +412,38 @@ class MatchCallTests(MatchHarness):
     def assert_plain_json(self, value: Any) -> None:
         """Plain JSON comes back from a round trip unchanged: no tuple, no object."""
         self.assertEqual(json.loads(json.dumps(value)), value)
+
+
+class LinkIdExampleTests(MatchHarness):
+    """A listed note's example sentence in the one-type layout is made from its own array, its
+    word marked where the array holds the note's link ID (link_ids.py): the generated ID its
+    new_note_id_field holds, never its note id then."""
+
+    async def find_notes(self, word: str, **_) -> list:
+        notes = book_notes()
+        # 本(m1), listed first
+        book = notes[1]
+        book.fields["new_note_id_field"] = str(BOOK_NOTE_ID)
+        book.fields["word_list_field"] = sentence_array(
+            ("本", "本", "ほん", [book.id]),
+            ("の", "の", "の", ["dontmatch"]),
+            ("本", "本", "ほん", [BOOK_NOTE_ID, 4]),
+        )
+        return notes if word == "本" else []
+
+    def test_the_occurrence_holding_the_notes_link_id_is_marked(self):
+        listed: list[dict[str, Any]] = []
+
+        def get_response(model, prompt, **kwargs):
+            if kwargs["kind"] == "match.meanings":
+                listed.extend(kwargs["inputs"]["meanings"])
+            return answer(model, prompt, **kwargs)
+
+        self.match_book(get_response)
+
+        self.assertEqual(listed[0]["example_sentence"], "本の<b>本</b>")
+        # The other note holds no ID: its own sentence, its array empty
+        self.assertEqual(listed[1]["example_sentence"], "農は国の<b>本</b>である。")
 
 
 def matched(meaning_number: int) -> dict:
@@ -643,6 +699,19 @@ class TwoTypeExampleSentenceTests(MatchHarness):
         self.config = two_type_config(self.mwtn)
         self.found = two_type_book_notes()
         self.cache = SentenceNoteCache(reading_sentence(101), country_sentence(102))
+        # The sentence notes the run's index of the sentence type holds: those in the
+        # collection, with the ID their s_id field holds if any, and these, deleted since it
+        # was read
+        self.deleted_since: list[int] = []
+        self.indexes = LinkIndexes(
+            self.mwtn,
+            lambda name: [
+                *((nid, note.fields.get("s_id", "")) for nid, note in self.cache.notes.items()),
+                *((nid, "") for nid in self.deleted_since),
+            ]
+            if name == "Sentence"
+            else [],
+        )
 
     async def find_notes(self, word: str, **_) -> list:
         return self.found if word == "本" else []
@@ -682,6 +751,7 @@ class TwoTypeExampleSentenceTests(MatchHarness):
                     word_note_index=None,
                     note_cache=self.cache,
                     sentence_cache=None,
+                    link_index_cache=self.indexes,
                     cancel_state=None,
                 ),
             )
@@ -744,8 +814,42 @@ class TwoTypeExampleSentenceTests(MatchHarness):
                 # The note with (m2), listed second; the generated meaning has none either
                 self.assertEqual(examples, ["<b>本</b>を読むのが好きだ。", "", ""])
 
+    def test_an_example_sentence_note_is_found_by_the_link_id_it_holds(self):
+        # The sentence notes hold IDs of their own (link_ids.py): a vocab note names its example
+        # by that, and the note id of one holding an ID names no note
+        self.config["Sentence"]["sentence_id_field"] = "s_id"
+        self.cache.notes[201].fields["s_id"] = str(READING_SENTENCE_ID)
+        self.cache.notes[202].fields["s_id"] = str(COUNTRY_SENTENCE_ID)
+        self.found = two_type_book_notes((str(COUNTRY_SENTENCE_ID), "201"))
+
+        examples = self.listed_examples()
+
+        # 本(m1) names 201 by its note id; 本(m2) names 202 by its ID
+        self.assertEqual(examples, ["", "農は国の<b>本</b>である。", ""])
+        self.assertEqual(self.cache.fetches, [[202]])
+        self.assertEqual(self.indexes.asked, ["Sentence"])
+
+    def test_the_occurrence_holding_the_vocab_notes_link_id_is_marked(self):
+        twice = sentence_note(
+            201,
+            sentence_array(
+                ("本", "本", "ほん", [101]),
+                ("の", "の", "の", ["dontmatch"]),
+                ("本", "本", "ほん", [BOOK_NOTE_ID, 4]),
+            ),
+        )
+        self.cache.notes[201] = twice
+        # 本(m1) holds a generated ID: the 101 the array holds first is no link to it
+        [_, book] = self.found
+        book.fields["new_note_id_field"] = str(BOOK_NOTE_ID)
+
+        examples = self.listed_examples()
+
+        self.assertEqual(examples[0], "本の<b>本</b>")
+
     def test_a_gone_example_costs_only_its_own_note(self):
         self.found = two_type_book_notes(("99", "201"))
+        self.deleted_since.append(99)
 
         examples = self.listed_examples()
 

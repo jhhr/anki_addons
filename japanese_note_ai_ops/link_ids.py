@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Container, Iterable
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol
 
 # Card scripts parse the arrays as JSON, and a JavaScript number is exact only below 2**53: a
 # larger value would name another number there
@@ -69,6 +69,31 @@ def link_id(value: str, note_id: int) -> int:
             f" {value!r}"
         )
     return note_id
+
+
+class NoteInHand(Protocol):
+    """What `note_link_id` reads of a note: an Anki note, or a test's stand-in for one."""
+
+    @property
+    def id(self) -> int: ...
+
+    def __contains__(self, key: str, /) -> bool: ...
+
+    def __getitem__(self, key: str, /) -> str: ...
+
+
+def note_link_id(note: NoteInHand, field: Optional[str]) -> Optional[int]:
+    """The link ID of a note in hand, `field` being its type's link ID field
+    (note_roles.link_id_field, None for a type that names none): `link_id` of what the field
+    holds and the note's id.
+
+    None for a note not added yet whose field holds no ID, where `link_id` raises: nothing can
+    link such a note, and the readers that meet one (the match op's pending notes, a note being
+    added by hand) look for no link to it."""
+    value = note[field] if field and field in note else ""
+    if note.id <= 0 and parse_link_id(value) is None:
+        return None
+    return link_id(value, note.id)
 
 
 # A bound on the rehashing, for a `taken` that would hold every candidate: a raise beats a

@@ -276,19 +276,23 @@ def word_path(arr: list, elem: list) -> Optional[list[int]]:
 
 
 def example_sentence(
-    sentence_field: str, word_list_field: str, word: str, reading: str, note_id: int
+    sentence_field: str, word_list_field: str, word: str, reading: str, link_id: Optional[int]
 ) -> str:
     """A word note's example sentence for the matching prompt, its word in `<b>`. When the note's
     word list field holds a word array the sentence is built from it, marking the occurrence
     linked to the note itself, else the first one of the word and reading, else the first of the
-    word. Otherwise, or when the word isn't in the array, the sentence field as it is."""
+    word. Otherwise, or when the word isn't in the array, the sentence field as it is.
+
+    `link_id` is the note's link ID (link_ids.py), which is what an array links it by: its note
+    id only while its link ID field holds none. None for a note nothing can link yet, one not
+    added whose field holds no ID; an unlinked element's id is None too, and must not pass."""
     arr = match_flags.decode_word_array(word_list_field)
     if not arr:
         return sentence_field
     try:
         words = list(match_flags.iter_highlighted(arr))
         fits = (
-            lambda e: match_flags.matched_note_id(e) == note_id,
+            lambda e: link_id is not None and match_flags.matched_note_id(e) == link_id,
             lambda e: e[2] == word and e[3] == reading,
             lambda e: e[2] == word,
         )
