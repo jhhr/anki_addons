@@ -8,7 +8,17 @@ exactly the answers the run was given, and do it again the same.
 
 The new-note path needs the meaning-making prompts' answers, which a script cannot make up
 convincingly; the fixtures of real capture runs (test_replay.py) cover it. One scripted new note
-is here, for what its failed add leaves behind: a placeholder the fixture must name by a symbol.
+is here, whose add fails: its word goes back to be matched, which the fixture must hold as it
+is.
+
+The same in the two-type layout (at the end): a sentence note of a type of its own, whose words
+link vocab notes of another, and a new word whose note is made with no dictionary to look it up
+in, so the one meaning generated for it is all it needs. The new note must be a vocab note with
+its example's translation, audio and id, and the fixture must name both types as its corpus
+does, a vocab type the run recorded no note of included.
+
+Last, the symbols a fixture names new notes by, over notes made up as a capture run before link
+IDs and a replay since leave them: the same symbol for what the word arrays link a note by.
 """
 
 from __future__ import annotations
@@ -19,18 +29,22 @@ import sqlite3
 import tempfile
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Optional, cast
+from typing import Any, Mapping, Optional, cast
 
 import pytest
 
 import replay
 from anki_shared.testing import real_anki
+from anki_shared.word_array.field_text import read_word_array
 from japanese_note_ai_ops.async_api_ops import base_ops, capture, run_errors
 from japanese_note_ai_ops.async_api_ops.match_words_to_notes import (
     MATCH_FIELD_KEYS,
+    SENTENCE_MATCH_FIELD_KEYS,
     match_words_spec,
 )
 from japanese_note_ai_ops.configuration import MEANING_MAPPED_TAG, MEANINGS_DICT_FILE
+from japanese_note_ai_ops.link_ids import DuplicateLinkIdsError
+from japanese_note_ai_ops.sync_local_ops.sentence_migration import COPY_TAGS_KEY, MOVE_TAGS_KEY
 
 NOTETYPE = "Japanese vocab note"
 FIELDS = {key: key.removesuffix("_field") for key in MATCH_FIELD_KEYS}
@@ -62,14 +76,20 @@ def scripted(request: Any) -> Any:
 
 
 def capture_run(
-    tmp_path: Path, build: Any, config: dict, responder: Any
+    tmp_path: Path,
+    build: Any,
+    config: dict,
+    responder: Any,
+    notetypes: Optional[Mapping[str, list[str]]] = None,
 ) -> tuple[Path, int, dict]:
     """A capture run of the match op over the sentence note `build(col)` makes, answered by
-    `responder`: its store, its run id, and the ids `build` names."""
+    `responder`: its store, its run id, and the ids `build` names. The collection, at
+    tmp_path / "collection.anki2", has the `notetypes` (name -> fields), else NOTETYPE."""
     stub = real_anki.install()
     saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
     col = real_anki.open_collection(tmp_path / "collection.anki2")
-    real_anki.make_note_type(col, NOTETYPE, list(FIELDS.values()))
+    for name, fields in (notetypes or {NOTETYPE: list(FIELDS.values())}).items():
+        real_anki.make_note_type(col, name, fields)
     store = tmp_path / "capture.sqlite3"
     try:
         sentence_id, ids = build(col)
@@ -294,6 +314,37 @@ def test_background_notes_change_nothing_the_run_does(captured):
     assert result.differences(fixture.expected) == []
 
 
+# A link ID as the match op generates one (link_ids.new_link_id), held by 本's note
+BOOK_LINK_ID = 4_000_000_000_000_001
+
+
+def build_book_holding_a_link_id_and_buy(col: Any) -> tuple[int, dict]:
+    """`build_book_and_buy` with 本's note holding the link ID it was made with, as a note the
+    match op made does: the run links it by that."""
+    sentence_id, ids = build_book_and_buy(col)
+    book = col.get_note(ids["book"])
+    book[FIELDS["new_note_id_field"]] = str(BOOK_LINK_ID)
+    col.update_note(book)
+    return sentence_id, ids
+
+
+def test_a_background_note_holds_no_link_id_of_the_corpus(tmp_path):
+    # Copied as it was, 本's link ID would be held by its copies too, and the match op refuses
+    # to run while two notes hold one ID
+    store, run_id, _ = capture_run(tmp_path, build_book_holding_a_link_id_and_buy, CONFIG, scripted)
+    fixture = replay.export_fixture(store, run_id)
+    [sentence] = [n for n in fixture.expected["notes"] if n["fields"]["word_sort"] == "店"]
+    assert json.loads(sentence["fields"]["word_list"])[0][4] == [BOOK_LINK_ID, 4]
+
+    notes = replay.background_notes(fixture.corpus, 6)
+
+    held = [note["fields"]["new_note_id"] for note in notes if note["fields"]["new_note_id"]]
+    # Each copy of 本's note an ID of its own, of the same shape
+    assert len(held) == len(set(held)) == 2 and all(len(value) == 16 for value in held)
+    assert str(BOOK_LINK_ID) not in json.dumps([note["fields"] for note in notes])
+    assert replay.replay(fixture, background=60).differences(fixture.expected) == []
+
+
 def test_a_note_added_past_the_background_notes_is_the_run_s(captured, tmp_path):
     # A note added in a millisecond whose id a note already has gets max(id) + 1 from Anki,
     # which with background notes in the collection is past them, and a note added from 2033
@@ -387,9 +438,10 @@ def test_a_corpus_that_fails_to_build_leaves_no_directory(tmp_path, monkeypatch)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
-    # The new note's deck is missing, so its add fails and the sentence keeps its placeholder,
-    # a random number every run: a fixture holding it could never replay
+def test_a_failed_add_s_word_is_matched_again_and_replays(tmp_path):
+    # The new note's deck is missing, so its add fails. The sentence kept its placeholder once,
+    # a random number every run, named in the fixture by a symbol; its link ID is taken out of
+    # the array now, as a cancel's notes' are, and the word goes back to be matched (SPEC D18)
     # word_field and translated_sentence_field are the meaning cleaning's, which a new note needs
     note_config = {
         **FIELDS,
@@ -403,9 +455,8 @@ def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
     fixture = replay.export_fixture(store, run_id)
 
     [sentence] = [n for n in fixture.expected["notes"] if n["fields"]["word_sort"] == "店"]
-    # In place of the number, as a new note's placeholder:new-N is
-    assert "[placeholder:failed-1]" in sentence["fields"]["word_list"]
-    assert not replay.PLACEHOLDER_RE.search(sentence["fields"]["word_list"])
+    assert read_word_array(sentence["fields"]["word_list"])[0][0][4] == ["match"]
+    assert "placeholder" not in sentence["fields"]["word_list"]
     assert fixture.expected["new_notes"] == 0
     for _ in range(2):
         result = replay.replay(fixture)
@@ -457,6 +508,151 @@ def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
     assert kept["stages"][0]["card_actions"][0]["change_deck"] == "Unseen deck 2"
     assert "Unseen deck 1" not in fixture.corpus["decks"]
     assert replay.replay(fixture).differences(fixture.expected) == []
+
+
+def test_a_run_refuses_before_any_request_while_two_vocab_notes_hold_one_link_id(tmp_path):
+    """本's vocab note copied by hand (Anki's Create Copy copies the ID field): the copy holds
+    the original's link ID, and a word linked to that ID names the original, whichever was
+    meant. The run refuses before its first request, naming both notes and "Fill link IDs",
+    and leaves the collection as it was."""
+    held = 4000000000000001
+    asked: list = []
+
+    def answering(request: Any) -> Any:
+        asked.append(request.kind)
+        return scripted(request)
+
+    stub = real_anki.install()
+    saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
+    col = real_anki.open_collection(tmp_path / "collection.anki2")
+    real_anki.make_note_type(col, NOTETYPE, list(FIELDS.values()))
+    try:
+        sentence_id, ids = build_book_and_buy(col)
+        book = col.get_note(ids["book"])
+        book[FIELDS["new_note_id_field"]] = str(held)
+        col.update_note(book)
+        copy = real_anki.add_note(col, NOTETYPE, dict(book.items()), tags=[MEANING_MAPPED_TAG])
+        before = {nid: col.get_note(nid).fields for nid in col.find_notes("")}
+        stub.col = col
+        stub.addonManager.configs[PACKAGE] = dict(CONFIG)
+        stub.pm.set_profile_folder(tmp_path / "profile")
+        base_ops.set_responder(answering)
+        run, _ = match_words_spec().notes_run([sentence_id])
+
+        with pytest.raises(DuplicateLinkIdsError) as raised:
+            run(col)
+
+        assert asked == []
+        assert {nid: col.get_note(nid).fields for nid in col.find_notes("")} == before
+    finally:
+        base_ops.set_responder(None)
+        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
+        col.close()
+    message = str(raised.value)
+    assert f"{held} by notes {book.id}, {copy.id}" in message
+    assert 'Run "Fill link IDs" on these notes first' in message
+
+
+SENTENCES, WORDS = "My sentences", "My words"
+
+
+def two_type_blocks(words: str = WORDS) -> dict:
+    """A two-type layout's blocks, the sentence block with the user's tag lists."""
+    return {
+        SENTENCES: {"vocab_note_type": words, "word_list_field": "Words",
+                    MOVE_TAGS_KEY: ["moved-tag"], COPY_TAGS_KEY: ["copied-tag"]},
+        words: {"sentence_note_type": SENTENCES, "word_sort_field": "Sort",
+                "example_sentence_id_field": "Example id"},
+    }
+
+
+def renamed_config(config: dict, type_names: dict, recorded: list) -> dict:
+    return replay._renamed_config(config, type_names, replay._DeckNames({}), recorded)
+
+
+def test_a_two_type_layout_s_blocks_name_each_other_by_the_fixture_s_names():
+    config = {**two_type_blocks(), "Unseen type": {"word_list_field": "x"}, "log_level": "INFO"}
+
+    renamed = renamed_config(
+        config, {SENTENCES: "Note type 1", WORDS: "Note type 2"}, [SENTENCES, WORDS]
+    )
+
+    assert renamed["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert renamed["Note type 2"]["sentence_note_type"] == "Note type 1"
+    assert set(renamed) == {"Note type 1", "Note type 2", "log_level"}
+
+
+@pytest.mark.parametrize("recorded", [SENTENCES, WORDS])
+def test_a_partner_the_run_recorded_no_note_of_is_kept_under_a_name_of_its_own(recorded):
+    # A run over sentence notes that read and added no vocab note recorded nothing of their
+    # vocab type: its block was dropped, and the replay's layout check refused every sentence
+    # note
+    unrecorded = WORDS if recorded == SENTENCES else SENTENCES
+    # A carried type has a name in the corpus already, which the new one must not take
+    type_names = {recorded: "Note type 1", "Carried type": "Note type 2"}
+
+    renamed = renamed_config(two_type_blocks(), type_names, [recorded])
+
+    names = {recorded: "Note type 1", unrecorded: "Note type 3"}
+    assert set(renamed) == set(names.values())
+    assert renamed[names[SENTENCES]]["vocab_note_type"] == names[WORDS]
+    assert renamed[names[WORDS]]["sentence_note_type"] == names[SENTENCES]
+
+
+def test_a_partner_keeps_the_name_the_corpus_gives_it_and_a_hardcoded_one_its_own():
+    carried = renamed_config(
+        two_type_blocks(), {SENTENCES: "Note type 1", WORDS: "Note type 2"}, [SENTENCES]
+    )
+    hardcoded = renamed_config(
+        two_type_blocks(NOTETYPE), {SENTENCES: "Note type 1"}, [SENTENCES]
+    )
+
+    assert carried["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert hardcoded["Note type 1"]["vocab_note_type"] == NOTETYPE
+    assert hardcoded[NOTETYPE]["sentence_note_type"] == "Note type 1"
+
+
+def test_a_layout_the_user_got_wrong_is_kept_whole():
+    # The vocab type names another sentence type than the one naming it: the run's layout check
+    # failed, and the replay's must fail the same way
+    config = {**two_type_blocks(), "Other sentences": {"vocab_note_type": WORDS}}
+    config[WORDS] = {**config[WORDS], "sentence_note_type": "Other sentences"}
+
+    renamed = renamed_config(config, {SENTENCES: "Note type 1"}, [SENTENCES])
+
+    assert renamed["Note type 1"]["vocab_note_type"] == "Note type 2"
+    assert renamed["Note type 2"]["sentence_note_type"] == "Note type 3"
+    assert renamed["Note type 3"]["vocab_note_type"] == "Note type 2"
+
+
+def test_the_user_s_tag_lists_leave_every_block():
+    # Read by the migration alone, and the tags in them are the user's
+    config = {
+        **two_type_blocks(),
+        NOTETYPE: {**FIELDS, MOVE_TAGS_KEY: ["moved-tag"], COPY_TAGS_KEY: ["copied-tag"]},
+    }
+    type_names = {SENTENCES: "Note type 1", WORDS: "Note type 2", NOTETYPE: NOTETYPE}
+
+    renamed = renamed_config(config, type_names, list(type_names))
+
+    assert replay.PRIVATE_BLOCK_KEYS == {MOVE_TAGS_KEY, COPY_TAGS_KEY}
+    assert "-tag" not in json.dumps(renamed)
+    assert renamed[NOTETYPE] == FIELDS
+
+
+def test_a_stand_in_note_type_has_the_fields_its_block_names():
+    config = {
+        "Note type 1": {"word_list_field": "Words"},
+        "Note type 2": {"sentence_note_type": "Note type 1", "word_kanjified_field": "Word",
+                        "word_field": "Word", "word_sort_field": "Sort", "insert_deck": "Deck 1"},
+        "log_level": "INFO",
+    }
+
+    stand_ins = replay._stand_in_notetypes(config, ["Note type 1"])
+
+    assert stand_ins == [
+        {"name": "Note type 2", "fields": ["Word", "Sort"], "sort_field": 1, "templates": []}
+    ]
 
 
 def test_a_replay_logs_beside_the_addons_own_logs_and_leaves_nothing_attached(
@@ -641,3 +837,406 @@ def test_a_run_a_replay_cannot_reproduce_is_refused(tmp_path, end, ops, refusal)
 
     with pytest.raises(replay.CaptureGap, match=refusal):
         replay.export_fixture(store, run_id)
+
+
+# --- the two-type layout (SPEC 6 P8) ---------------------------------------------------------
+#
+# The sentence type holds the sentence and its word array, in fields of names of its own. The
+# vocab type, under the name the addon hardcodes as the user's is, holds the words, a copy of
+# their example sentence's translation and audio, and its id, and no field named like the
+# sentence type's array: a new note made in the wrong type, or an array written into a vocab
+# note, raises.
+
+SENTENCE_TYPE = "Sentence note"
+SENTENCE_FIELDS = {
+    "sentence_field": "Sentence",
+    "furigana_sentence_field": "Sentence furigana",
+    "kanjified_sentence_field": "Sentence kanjified",
+    "translated_sentence_field": "Sentence translation",
+    "sentence_audio_field": "Sentence audio",
+    "word_list_field": "Words",
+}
+VOCAB_FIELDS = {
+    **{key: name for key, name in FIELDS.items() if key not in SENTENCE_MATCH_FIELD_KEYS},
+    "translated_sentence_field": "example_translation",
+    "sentence_audio_field": "example_audio",
+    "example_sentence_id_field": "example_sentence_id",
+}
+TWO_TYPE_NOTETYPES = {
+    SENTENCE_TYPE: list(SENTENCE_FIELDS.values()),
+    NOTETYPE: list(VOCAB_FIELDS.values()),
+}
+TWO_TYPE_CONFIG = {
+    **CONFIG,
+    SENTENCE_TYPE: {
+        **SENTENCE_FIELDS,
+        "vocab_note_type": NOTETYPE,
+        MOVE_TAGS_KEY: ["private-moved-tag"],
+        COPY_TAGS_KEY: ["private-copied-tag"],
+    },
+    NOTETYPE: {
+        **VOCAB_FIELDS,
+        "sentence_note_type": SENTENCE_TYPE,
+        # The meaning cleaning's, which a new note needs
+        "word_field": VOCAB_FIELDS["word_kanjified_field"],
+        "insert_deck": "Default",
+    },
+}
+
+
+def add_sentence_note(
+    col: Any, text: str, furigana: str, translation: str, audio: str, array: list
+) -> Any:
+    fields = SENTENCE_FIELDS
+    return real_anki.add_note(
+        col,
+        SENTENCE_TYPE,
+        {fields["sentence_field"]: text, fields["furigana_sentence_field"]: furigana,
+         fields["kanjified_sentence_field"]: text, fields["translated_sentence_field"]: translation,
+         fields["sentence_audio_field"]: audio,
+         fields["word_list_field"]: json.dumps(array, ensure_ascii=False)},
+    )
+
+
+def build_box_book_and_buy(col: Any) -> tuple[int, dict]:
+    """A sentence note with three words: 箱, which has no vocab note, so the run makes one; 本,
+    to match against its one vocab note, whose example is another sentence note the prompt
+    shows it in; and 買う, linked to its vocab note already but not rated, whose example is
+    this sentence."""
+    fields = VOCAB_FIELDS
+
+    def vocab_note(form: str, reading: str, meaning: str, english: str) -> Any:
+        return real_anki.add_note(
+            col,
+            NOTETYPE,
+            {fields["word_kanjified_field"]: form, fields["word_normal_field"]: form,
+             fields["word_reading_field"]: reading, fields["word_sort_field"]: form,
+             fields["meaning_field"]: meaning, fields["english_meaning_field"]: english},
+            tags=[MEANING_MAPPED_TAG],
+        )
+
+    def give_example(note: Any, example: Any) -> None:
+        # As the migration and the match op leave a vocab note (note_roles.copy_example)
+        note[fields["example_sentence_id_field"]] = str(example.id)
+        note[fields["translated_sentence_field"]] = example[
+            SENTENCE_FIELDS["translated_sentence_field"]
+        ]
+        note[fields["sentence_audio_field"]] = example[SENTENCE_FIELDS["sentence_audio_field"]]
+        col.update_note(note)
+
+    book = vocab_note("本", "ほん", "書物", "book")
+    buy = vocab_note("買う", "かう", "代金を払って物を得る", "buy")
+    older = add_sentence_note(
+        col, "本が好き。", "本[ほん]が好[す]き。", "I like books.", "[sound:older.mp3]",
+        [word("本", "名詞", "本", "ほん", [book.id, 4]), ["が"],
+         word("好き", "形状詞", "好き", "すき", ["dontmatch"]), ["。"]],
+    )
+    sentence = add_sentence_note(
+        col, "箱の本を買う。", "箱[はこ]の本[ほん]を買[か]う。", "I buy the book in the box.",
+        "[sound:box.mp3]",
+        [word("箱", "名詞", "箱", "はこ", ["match"]), ["の"],
+         word("本", "名詞", "本", "ほん", ["match"]), ["を"],
+         word("買う", "動詞", "買う", "かう", [buy.id]), ["。"]],
+    )
+    give_example(book, older)
+    give_example(buy, sentence)
+    ids = {"book": book.id, "buy": buy.id, "older": older.id, "sentence": sentence.id}
+    return sentence.id, ids
+
+
+def two_type_scripted(request: Any) -> Any:
+    """`scripted`'s answers, and `generated`'s meaning for the word the run makes a note for."""
+    if request.kind == "clean_meaning.generate":
+        return generated(request)
+    return scripted(request)
+
+
+@pytest.fixture
+def two_type_captured(tmp_path: Path):
+    """The capture run in the two-type layout: its store and run id, and the ids of its notes.
+    Its collection stays at tmp_path / "collection.anki2"."""
+    yield capture_run(
+        tmp_path, build_box_book_and_buy, TWO_TYPE_CONFIG, two_type_scripted, TWO_TYPE_NOTETYPES
+    )
+
+
+def test_a_two_type_run_makes_a_vocab_note_holding_its_example_and_links_it(
+    two_type_captured, tmp_path
+):
+    _, _, ids = two_type_captured
+    col = real_anki.open_collection(tmp_path / "collection.anki2")
+    try:
+        [new_id] = set(col.find_notes(f'"note:{NOTETYPE}"')) - {ids["book"], ids["buy"]}
+        new = col.get_note(new_id)
+        notetype = new.note_type()
+        sentence = col.get_note(ids["sentence"])
+    finally:
+        col.close()
+
+    fields = VOCAB_FIELDS
+    assert notetype is not None and notetype["name"] == NOTETYPE
+    assert new[fields["word_kanjified_field"]] == "箱"
+    assert new[fields["meaning_field"]] == "物を入れる器。"
+    # Its example is the sentence note the run processed, copied (note_roles.copy_example)
+    assert new[fields["example_sentence_id_field"]] == str(ids["sentence"])
+    assert new[fields["translated_sentence_field"]] == "I buy the book in the box."
+    assert new[fields["sentence_audio_field"]] == "[sound:box.mp3]"
+    # Neither an array nor anything of the sentence but its own word
+    assert [value for value in new.values() if read_word_array(value)[0] is not None] == []
+    assert not any("買" in value for value in new.values())
+    array = json.loads(sentence[SENTENCE_FIELDS["word_list_field"]])
+    # Linked by the link ID the note was made with and holds (SPEC D16): never its note id
+    held = int(new[fields["new_note_id_field"]])
+    assert held >= 10**15 and held != new_id
+    assert array[0][4][0] == held
+    assert array[2][4] == [ids["book"], 4]
+    assert array[4][4] == [ids["buy"], 3]
+
+
+def test_a_two_type_run_replays_from_a_fixture_naming_its_types_as_its_corpus_does(
+    two_type_captured, tmp_path
+):
+    store, run_id, _ = two_type_captured
+    fixture = replay.export_fixture(store, run_id)
+    fixture.write(tmp_path / "fixture")
+    fixture = replay.Fixture.read(tmp_path / "fixture")
+
+    config = fixture.corpus["config"]
+    # The sentence type's name is the user's; the vocab type's the addon's own
+    sentence_type = config[NOTETYPE]["sentence_note_type"]
+    assert sentence_type.startswith(f"{replay.GENERIC_NOTETYPE} ")
+    assert config[sentence_type]["vocab_note_type"] == NOTETYPE
+    assert {notetype["name"] for notetype in fixture.corpus["notetypes"]} == {
+        sentence_type, NOTETYPE
+    }
+    text = json.dumps(fixture.corpus, ensure_ascii=False)
+    assert SENTENCE_TYPE not in text and "private-" not in text
+    kinds = sorted(entry["kind"] for entry in fixture.cassette["entries"])
+    assert kinds == ["clean_meaning.generate", "match.meanings", "match.rating"]
+    # The other sentence note, read for the example the prompt shows 本 in
+    assert sorted(note["notetype"] for note in fixture.corpus["notes"]) == [
+        NOTETYPE, NOTETYPE, sentence_type, sentence_type
+    ]
+    [sentence] = [note for note in fixture.corpus["notes"] if note["selected"]]
+    [new] = [note for note in fixture.expected["notes"] if note["note"] == "new-1"]
+    assert new["notetype"] == NOTETYPE
+    assert new["fields"][VOCAB_FIELDS["example_sentence_id_field"]] == str(sentence["id"])
+    # Named by what the array links it by, its link ID (SPEC 10 P14); its note id nowhere
+    assert new["fields"][VOCAB_FIELDS["new_note_id_field"]] == "new-1"
+    [linking] = [note for note in fixture.expected["notes"] if note["note"] == str(sentence["id"])]
+    assert linking["fields"][SENTENCE_FIELDS["word_list_field"]].count("[new-1") == 1
+    assert "nid:" not in json.dumps(fixture.expected["notes"], ensure_ascii=False)
+    assert fixture.expected["new_notes"] == 1
+
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
+        assert result.new_notes == 1
+
+
+def build_box_and_cat(col: Any) -> tuple[int, dict]:
+    """A sentence note whose two words, 箱 and 猫, have no vocab note: the run makes two, which
+    differ in nothing but their word and their link ID, the scripted meaning being the same."""
+    array = [word("箱", "名詞", "箱", "はこ", ["match"]), ["と"],
+             word("猫", "名詞", "猫", "ねこ", ["match"]), ["。"]]
+    sentence = add_sentence_note(col, "箱と猫。", "箱[はこ]と猫[ねこ]。", "A box and a cat.", "", array)
+    return sentence.id, {"sentence": sentence.id}
+
+
+def test_a_run_s_two_new_notes_are_named_by_their_words_in_the_capture_and_every_replay(tmp_path):
+    # Their link IDs are keyed by the sentence's note id, which the corpus makes synthetic, so
+    # they compare one way in every replay and either way in the capture run; and the ID field
+    # sorts before the word fields. Numbered by their IDs, the two swapped symbols about every
+    # other capture
+    store, run_id, _ = capture_run(
+        tmp_path, build_box_and_cat, TWO_TYPE_CONFIG, generated, TWO_TYPE_NOTETYPES
+    )
+
+    fixture = replay.export_fixture(store, run_id)
+
+    fields = VOCAB_FIELDS
+    new = {n["note"]: n["fields"] for n in fixture.expected["notes"] if n["notetype"] == NOTETYPE}
+    assert {key: values[fields["word_kanjified_field"]] for key, values in new.items()} == {
+        "new-1": "猫", "new-2": "箱"
+    }
+    assert [new[key][fields["new_note_id_field"]] for key in ("new-1", "new-2")] == [
+        "new-1", "new-2"
+    ]
+    [sentence] = [n for n in fixture.expected["notes"] if n["notetype"] != NOTETYPE]
+    array = sentence["fields"][SENTENCE_FIELDS["word_list_field"]]
+    assert array.index("箱") < array.index("[new-2") < array.index("猫") < array.index("[new-1")
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
+        assert result.new_notes == 2
+
+
+def build_box_alone(col: Any) -> tuple[int, dict]:
+    """A sentence note whose one word 箱 has no vocab note, in a collection holding none."""
+    array = [word("箱", "名詞", "箱", "はこ", ["match"]), ["。"]]
+    sentence = add_sentence_note(col, "箱。", "箱[はこ]。", "A box.", "", array)
+    return sentence.id, {"sentence": sentence.id}
+
+
+def test_a_two_type_run_that_recorded_no_vocab_note_replays_in_a_stand_in_vocab_type(tmp_path):
+    # The new vocab note's deck is missing, so its add fails, and the run read no vocab note:
+    # it recorded nothing of the vocab type. Without its block the sentence note failed the
+    # replay's layout check, and without the type the new note could not be made
+    vocab_config = {**TWO_TYPE_CONFIG[NOTETYPE], "insert_deck": "No such deck"}
+    config = {**TWO_TYPE_CONFIG, NOTETYPE: vocab_config}
+    store, run_id, _ = capture_run(
+        tmp_path, build_box_alone, config, generated, TWO_TYPE_NOTETYPES
+    )
+
+    fixture = replay.export_fixture(store, run_id)
+
+    sentence_type = fixture.corpus["config"][NOTETYPE]["sentence_note_type"]
+    assert [note["notetype"] for note in fixture.corpus["notes"]] == [sentence_type]
+    [stand_in] = [nt for nt in fixture.corpus["notetypes"] if nt["name"] == NOTETYPE]
+    assert set(stand_in["fields"]) == set(VOCAB_FIELDS.values())
+    [sentence] = fixture.expected["notes"]
+    # The failed add's link ID taken out again: the word is matched again
+    array = read_word_array(sentence["fields"][SENTENCE_FIELDS["word_list_field"]])[0]
+    assert array[0][4] == ["match"]
+    assert fixture.expected["new_notes"] == 0
+    for _ in range(2):
+        result = replay.replay(fixture)
+        assert result.differences(fixture.expected) == []
+
+
+# --- new notes' symbols (SPEC 10 P14) --------------------------------------------------------
+# A run before link IDs made a new note under a negative placeholder, and its word arrays and its
+# own ID field held its note id once it was added; a run since holds its generated link ID from
+# the start. A fixture's `new-N` is what the arrays link the note by, so that one recorded before
+# link IDs replays as it did. Notes made up as normalized_notes takes them, a sentence note under
+# its id in the capture's collection or under the synthetic id a corpus gives it, and the events
+# of a run recorded by hand.
+
+SENTENCE_ID, SYNTHETIC_SENTENCE_ID = 1_690_000_000_000, replay.SYNTHETIC_BASE
+
+
+def linked_note(nid: int, word_text: str, link_id: object = "", links: tuple = ()) -> dict:
+    """A note: its link ID field, its word, and a word array linking 箱 and then 猫 by `links`.
+    The ID field sorts before the word."""
+    array = [word(raw, "名詞", raw, "", [link, 4]) for raw, link in zip("箱猫", links)]
+    return {
+        "id": nid,
+        "notetype": NOTETYPE,
+        "deck": "Default",
+        "fields": {"ID": str(link_id), "Word": word_text,
+                   "Words": json.dumps(array, ensure_ascii=False) if array else ""},
+        "tags": [],
+    }
+
+
+def run_events(store: Path, added: Mapping[int, int], failed: Mapping[int, str]) -> Any:
+    """What a replay reads of its run (`replay._run_events`), here a run recorded by hand: the
+    notes it added (note id -> the link ID or placeholder it was made under), and the notes it
+    proposed (link ID or placeholder -> word) whose add failed."""
+    assert capture.install(str(store), keep_days=None)
+    try:
+        run_id = capture.begin_run("notes", ops=[replay.MATCH_OP], notes=True)
+        with capture.run_scope(run_id):
+            for link_id, word_text in failed.items():
+                note = linked_note(0, word_text, link_id=link_id)
+                capture.snapshot_note("proposed", link_id, lambda: note)
+                capture.event("note.add", {"placeholder": link_id, "add_error": "no deck"})
+            for note_id, made_under in added.items():
+                capture.note_added(made_under, note_id)
+        capture.end_run(run_id, "completed")
+    finally:
+        capture.shutdown(timeout=10.0)
+    return replay._run_events(store)
+
+
+def test_a_new_note_is_named_alike_by_a_capture_before_link_ids_and_a_replay_since(tmp_path):
+    box = 1_700_000_000_001
+    before = replay.normalized_notes(
+        [linked_note(SENTENCE_ID, "店", links=(box,)), linked_note(box, "箱", link_id=box)],
+        run_events(tmp_path / "before.sqlite3", {box: -4242424}, {}).added,
+        ids=replay._IdMap([SENTENCE_ID]),
+    )
+    box, box_link_id = 1_800_000_000_001, 4_000_000_000_000_001
+    since = replay.normalized_notes(
+        [linked_note(SYNTHETIC_SENTENCE_ID, "店", links=(box_link_id,)),
+         linked_note(box, "箱", link_id=box_link_id)],
+        run_events(tmp_path / "since.sqlite3", {box: box_link_id}, {}).added,
+    )
+
+    assert since == before
+    fields = {note["note"]: note["fields"] for note in since}
+    assert fields["new-1"]["ID"] == "new-1"
+    assert "[new-1, 4]" in fields[str(SYNTHETIC_SENTENCE_ID)]["Words"]
+
+
+def test_an_array_linking_a_new_note_by_its_note_id_since_link_ids_is_a_difference():
+    # Its note id is not what the run links it by: another collection gives that to another note
+    # (SPEC D14), so it must not read as the new-1 the fixture's arrays hold
+    box, box_link_id = 1_800_000_000_001, 4_000_000_000_000_001
+
+    def linked_by(link: int) -> list[dict]:
+        return replay.normalized_notes(
+            [linked_note(SYNTHETIC_SENTENCE_ID, "店", links=(link,)),
+             linked_note(box, "箱", link_id=box_link_id)],
+            {box: box_link_id},
+        )
+
+    by_note_id = linked_by(box)
+
+    assert by_note_id != linked_by(box_link_id)
+    [sentence] = [note for note in by_note_id if note["note"] == str(SYNTHETIC_SENTENCE_ID)]
+    assert "[nid:new-1, 4]" in sentence["fields"]["Words"]
+
+
+def test_two_new_notes_are_numbered_by_their_content_whatever_ids_they_were_made_with():
+    # Keyed by note ids, which a corpus makes synthetic, the replay's link IDs come in the other
+    # order to the capture's here: numbered by them, 箱's note and 猫's would swap symbols
+    def normalized(
+        sentence: int, box: tuple[int, int], cat: tuple[int, int], ids: Any = None
+    ) -> list[dict]:
+        (box_id, box_link_id), (cat_id, cat_link_id) = box, cat
+        notes = [
+            linked_note(sentence, "店", links=(box_link_id, cat_link_id)),
+            linked_note(box_id, "箱", link_id=box_link_id),
+            linked_note(cat_id, "猫", link_id=cat_link_id),
+        ]
+        return replay.normalized_notes(notes, dict([box, cat]), ids=ids)
+
+    captured_notes = normalized(
+        SENTENCE_ID, (1_700_000_000_001, 4_000_000_000_000_002),
+        (1_700_000_000_002, 4_000_000_000_000_001), ids=replay._IdMap([SENTENCE_ID]),
+    )
+    replayed = normalized(
+        SYNTHETIC_SENTENCE_ID, (1_800_000_000_001, 5_000_000_000_000_001),
+        (1_800_000_000_002, 5_000_000_000_000_002),
+    )
+
+    assert replayed == captured_notes
+    assert {n["fields"]["Word"]: n["note"] for n in replayed if n["note"].startswith("new-")} == {
+        "猫": "new-1", "箱": "new-2"
+    }
+
+
+def test_failed_adds_are_numbered_by_their_content_whatever_ids_they_were_made_with(tmp_path):
+    captured_order = run_events(
+        tmp_path / "capture.sqlite3", {}, {4_000_000_000_000_002: "箱", 4_000_000_000_000_001: "猫"}
+    ).failed
+    replayed_order = run_events(
+        tmp_path / "replay.sqlite3", {}, {5_000_000_000_000_001: "箱", 5_000_000_000_000_002: "猫"}
+    ).failed
+
+    # 猫's first in both
+    assert captured_order == [4_000_000_000_000_001, 4_000_000_000_000_002]
+    assert replayed_order == [5_000_000_000_000_002, 5_000_000_000_000_001]
+    # Named by number wherever one is left (its words are unlinked, so in no array), and a
+    # placeholder of a run before link IDs as it was
+    links = (5_000_000_000_000_001, 5_000_000_000_000_002)
+    [left] = replay.normalized_notes(
+        [linked_note(SYNTHETIC_SENTENCE_ID, "店", links=links)], {}, failed=replayed_order
+    )
+    words = left["fields"]["Words"]
+    assert words.index("箱") < words.index("[failed-2, 4]") < words.index("[failed-1, 4]")
+    [legacy] = replay.normalized_notes(
+        [linked_note(SYNTHETIC_SENTENCE_ID, "店", links=(-4242424,))], {}, failed=[-4242424]
+    )
+    assert "[placeholder:failed-1, 4]" in legacy["fields"]["Words"]

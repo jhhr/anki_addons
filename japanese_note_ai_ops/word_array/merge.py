@@ -27,7 +27,7 @@ misread (小枝 read しょうえだ). A step only carries where exactly one old
 of the region still hold that key. Two candidates is the case the migration already decided not to
 guess at: the judge can judge such a word again and match_words_to_notes can find its note again
 from the sentence, and a coin toss here cannot be undone. Whatever is dropped is reported with
-the note id it had, for the caller to log - a lost link is the only part of this worth anyone's
+the link ID it had, for the caller to log - a lost link is the only part of this worth anyone's
 attention.
 """
 
