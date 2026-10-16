@@ -331,6 +331,22 @@ def example_id_field(config: Mapping[str, Any], vocab_type_name: str) -> Optiona
     return _name(vocab_block, "example_sentence_id_field") or None
 
 
+def link_id_field(config: Mapping[str, Any], note_type_name: str) -> Optional[str]:
+    """The field holding this type's notes' link IDs (link_ids.py): `sentence_id_field` when
+    its block names one, else `new_note_id_field`, else None, and every note's link ID is its
+    note id. Never raises.
+
+    Two keys because the vocab type's field already had a key, the one the match op wrote its
+    placeholders to; a sentence block has no such key, and the one-type layout's block keeps
+    `new_note_id_field`. Read from the type's own block alone, so a type outside any layout
+    answers as well as one in a pair.
+    """
+    block = _block(config, note_type_name)
+    if block is None:
+        return None
+    return _name(block, "sentence_id_field") or _name(block, "new_note_id_field") or None
+
+
 def copy_example(
     config: Mapping[str, Any],
     vocab_type_name: str,

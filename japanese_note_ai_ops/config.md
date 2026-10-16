@@ -239,7 +239,7 @@ You need to define
   6. `meaning_field`
   7. `english_meaning_field`
   8. `part_of_speech_field`
-  9. `new_note_id_field`
+  9. `new_note_id_field`: the field holding the note's link ID (see "link IDs" below)
   10. `insert_deck` (optional) The deck new notes are added to. If omitted or empty, they go
       into the "Default" deck
 
@@ -265,8 +265,10 @@ The roles can be in one note type or in two.
   - `vocab_note_type` (sentence block): the note type the words of its arrays are notes of.
     The match op creates new vocab notes in it.
   - `sentence_note_type` (vocab block): the note type whose arrays link its notes.
-  - `example_sentence_id_field` (vocab block, optional): the field a vocab note keeps the id of
-    its **example sentence** in, the sentence note its word was found in.
+  - `sentence_id_field` (sentence block): the field holding each sentence note's link ID (see
+    "link IDs" below). The vocab block's is `new_note_id_field`.
+  - `example_sentence_id_field` (vocab block, optional): the field a vocab note keeps the link
+    ID of its **example sentence** in, the sentence note its word was found in.
   - `sentence_seen_count_field` (sentence block, optional): a field counting how many times the
     sentence has been seen in review on a vocab note. "Move sentences to sentence notes" sets it
     to the review count of the vocab note the sentence came from; nothing else writes it, and
@@ -291,7 +293,7 @@ The roles can be in one note type or in two.
     below.
 
   A vocab note keeps a copy of its example sentence's fields for each sentence key **both**
-  blocks name: the sentence note's field is copied into the vocab note's, and its id into
+  blocks name: the sentence note's field is copied into the vocab note's, and its link ID into
   `example_sentence_id_field`. Of the sentence keys, name only `translated_sentence_field` and
   `sentence_audio_field` on the vocab block to keep just the translation and the audio. Each
   block names its own type's fields, so the two names need not match. Each block's
@@ -309,12 +311,14 @@ The roles can be in one note type or in two.
     "translated_sentence_field": "Sentence translation",
     "sentence_audio_field": "Sentence audio",
     "sentence_seen_count_field": "Times seen",
+    "sentence_id_field": "Sentence ID",
     "migration_move_tags": ["redo-audio", "Made_Up_Show"],
     "migration_copy_tags": ["freq-band-a"],
     "insert_deck": "My deck::sentences"
   },
   "Japanese vocab note": {
     "sentence_note_type": "Sentence note",
+    "new_note_id_field": "Word ID",
     "example_sentence_id_field": "Example sentence id",
     "translated_sentence_field": "Example translation",
     "sentence_audio_field": "Example audio",
@@ -344,6 +348,39 @@ both types:
 reads every note type that has a field of one of those names, so sentence notes would become
 candidates for the words of their own arrays. A sentence type made by copying the vocab type
 has those fields: delete or rename them.
+
+### link IDs
+
+Notes link each other by a **link ID**, a number kept in a field of the note: each word of a
+sentence's word array holds the link ID of the vocab note it is linked to, and a vocab note's
+`example_sentence_id_field` holds the link ID of its example sentence note. A field goes with
+the note through an export and an import, which Anki's own note id does not: an `.apkg` import
+keeps a note's id only when the collection it goes into has no note with that id (otherwise the
+note gets a new one, and a link holding the old id points at whichever note has it there), and
+a text export has no note ids at all.
+
+- **The field**: on the sentence note type, the one the sentence block names as
+  `sentence_id_field`; on the vocab note type, the vocab block's `new_note_id_field`. In the
+  one-type layout, its block's `new_note_id_field`. A note type whose block names neither has
+  no link ID field.
+- **A note's link ID** is the number in that field, when the field holds a whole number above
+  0 and nothing else. When it is empty or holds anything else (0, a negative number, text, a
+  number with spaces or formatting around it), the note's link ID is its note id. So the notes
+  you have need nothing written: every link they have holds a note id today, and stays valid.
+  A note's empty field may be filled with its note id when the addon saves the note anyway:
+  the same link ID, now carried by an export.
+- **A note the addon creates** gets a new link ID of 16 digits written into its field before it
+  is added, made from what the note is made from (the sentence and the word, say).
+- **Nothing else may write the field.** Do not edit it by hand, copy it into another note, or
+  have a CopyAnywhere definition fill it: a note whose link ID changes loses every link to it,
+  and two notes holding one link ID share every link to it, which all lead to the older of the
+  two. Anki's Create Copy copies every field: empty the link ID field of the copy, and the copy's
+  link ID is its own note id.
+- A link ID field cannot have the name of one of Anki's search keywords, in any case: `added`,
+  `card`, `cid`, `deck`, `did`, `dupe`, `edited`, `flag`, `has-cd`, `introduced`, `is`, `mid`,
+  `nc`, `nid`, `note`, `preset`, `prop`, `rated`, `re`, `resched`, `tag`, `w`. Anki reads
+  `nid:...` as its own search, so no search can find a value in a field called "nid"; an op
+  reading the link IDs of such a type stops with an error saying to rename the field.
 
 ### Moving to sentence notes
 

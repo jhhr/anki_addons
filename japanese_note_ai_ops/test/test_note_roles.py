@@ -495,6 +495,39 @@ class RoleErrorTests(unittest.TestCase):
             roles.role_error(two_type_config(), VOCAB, "sentences")
 
 
+class LinkIdFieldTests(unittest.TestCase):
+    def test_the_one_type_block_keeps_new_note_id_field(self):
+        self.assertEqual(roles.link_id_field(one_type_config(), VOCAB), "Note id")
+
+    def test_each_block_of_a_pair_names_its_own(self):
+        config = two_type_config()
+        config[SENTENCE]["sentence_id_field"] = "Text id"
+        self.assertEqual(roles.link_id_field(config, SENTENCE), "Text id")
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
+
+    def test_sentence_id_field_wins_over_new_note_id_field(self):
+        config = one_type_config()
+        config[VOCAB]["sentence_id_field"] = "Sentence id"
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Sentence id")
+        config[VOCAB]["sentence_id_field"] = ""
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
+
+    def test_a_type_naming_neither_has_none(self):
+        # Every note's link ID is then its note id: a sentence block before the user names its
+        # field, a type with no role, one not configured, a plain setting
+        config = two_type_config()
+        for name in [SENTENCE, "Kanji draw", "Basic", "log_level"]:
+            with self.subTest(name):
+                self.assertIsNone(roles.link_id_field(config, name))
+
+    def test_a_broken_layout_does_not_stop_it(self):
+        # It reads the type's own block only, as an op reading its notes' IDs needs
+        config = two_type_config()
+        config[VOCAB]["sentence_note_type"] = "Elsewhere"
+        self.assertIsNotNone(roles.layout_error(config, VOCAB))
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
+
+
 class NoteTypeSearchTests(unittest.TestCase):
     def test_a_plain_name_is_the_term_the_ops_have_always_built(self):
         self.assertEqual(roles.note_type_search(VOCAB), '"note:Japanese vocab note"')
