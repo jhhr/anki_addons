@@ -30,6 +30,7 @@ from anki.notes import NoteId
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops import call_logging, note_hooks
 from japanese_note_ai_ops.async_api_ops import base_ops
+from japanese_note_ai_ops.link_ids import new_link_id
 from japanese_note_ai_ops.sync_local_ops import migrate_to_sentence_notes as migrate_module
 from japanese_note_ai_ops.note_roles import note_type_search
 from japanese_note_ai_ops.sync_local_ops.migrate_to_sentence_notes import (
@@ -63,6 +64,7 @@ CONFIG = {
         "vocab_note_type": VOCAB,
         **SENTENCE_FIELDS,
         "sentence_seen_count_field": "Times seen",
+        "sentence_id_field": "Sentence ID",
         "migration_move_tags": [SHOW],
         "migration_copy_tags": [BAND],
         "insert_deck": "Sentences",
@@ -76,6 +78,7 @@ CONFIG = {
         "word_normal_field": "Word",
         "word_reading_field": "Word reading",
         "word_sort_field": "Word sort key",
+        "new_note_id_field": "Word ID",
         "insert_deck": "Vocab",
     },
     "log_to_console": False,
@@ -87,12 +90,13 @@ VOCAB_FIELDS = [
     "Word",
     "Word kanjified",
     "Word reading",
+    "Word ID",
     "Example sentence id",
     "Example translation",
     "Example audio",
     *SENTENCE_FIELDS.values(),
 ]
-SENTENCE_TYPE_FIELDS = [*SENTENCE_FIELDS.values(), "Times seen"]
+SENTENCE_TYPE_FIELDS = [*SENTENCE_FIELDS.values(), "Times seen", "Sentence ID"]
 
 CAT_FISH = "猫が魚を食べた。"
 DOG_RUNS = "犬が走る。"
@@ -149,6 +153,8 @@ def add_vocab(
     tags: tuple = (),
     array: Any = None,
     reps: int = 0,
+    word_id: str = "",
+    example_id: str = "",
 ) -> int:
     """A vocab note as the one-type layout made them: `sentence` and `furigana` with its word in
     <b>; `array(own_id)` its old array, which may link the note itself."""
@@ -157,6 +163,8 @@ def add_vocab(
         "Word": form,
         "Word kanjified": form,
         "Word reading": reading,
+        "Word ID": word_id,
+        "Example sentence id": example_id,
         "Sentence": sentence,
         "Sentence furigana": furigana,
         "Sentence kanjified": sentence,
@@ -331,6 +339,11 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
     assert notes[BOOK]["Times seen"] == "2"
     assert notes[BOOK].tags == [MISMATCH]
 
+    # Each holds the ID generated for it, the first from its origin's link ID, its note id
+    assert cat_fish["Sentence ID"] == str(new_link_id(f"sentence|{ids['fish']}", set()))
+    sentence_ids = {note["Sentence ID"] for note in notes.values()}
+    assert len(sentence_ids) == 4 and all(len(held) == 16 for held in sentence_ids)
+
     after = state(col, ids.values())
     example = {
         "cat": cat_fish,
@@ -343,9 +356,11 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
     for name, sentence_note in example.items():
         fields, tags = after[ids[name]]
         old_fields, old_tags = before[ids[name]]
-        assert fields["Example sentence id"] == str(sentence_note.id), name
+        assert fields["Example sentence id"] == sentence_note["Sentence ID"], name
         assert fields["Example translation"] == sentence_note["Sentence translation"], name
         assert fields["Example audio"] == sentence_note["Sentence audio"], name
+        # Its ID field held none: it holds the note id now, the link ID it had all along
+        assert fields["Word ID"] == str(ids[name]), name
         # The old fields stay until the user deletes them
         for field in SENTENCE_FIELDS.values():
             assert fields[field] == old_fields[field], (name, field)
@@ -353,11 +368,13 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
     assert after[ids["cat"]][1] == {DEPENDENT, BAND}
     assert after[ids["fish"]][1] == {BAND}
     assert after[ids["read"]][1] == {DEPENDENT}
-    assert after[ids["book"]][0] == before[ids["book"]][0]
+    # Saved for the tag it loses, its ID field filled with that
+    assert after[ids["book"]][0] == {**before[ids["book"]][0], "Word ID": str(ids["book"])}
     assert after[ids["book"]][1] == {SHOW}
 
     report = Path(migration.report_path).read_text(encoding="utf-8")
     assert "sentence notes to add: 4" in report
+    assert "vocab notes whose ID field gets their note id: 7" in report
     assert f'tag "{SHOW}" moved from vocab notes: 2' in report
     assert f'tag "{BAND}" copied from vocab notes: 1' in report
     assert f"Linked to its word by the link check (1)\n  {ids['fish']}: " in report
@@ -412,12 +429,13 @@ def test_a_rerun_over_every_note_joins_the_sentence_notes_a_first_run_made(col, 
     notes = sentence_notes(col)
     assert {sentence: note.id for sentence, note in notes.items()} == first
     cat_fields, cat_tags = state(col, [ids["cat"]])[ids["cat"]]
-    assert cat_fields["Example sentence id"] == str(first[CAT_FISH])
+    assert cat_fields["Example sentence id"] == notes[CAT_FISH]["Sentence ID"]
+    assert cat_fields["Word ID"] == str(ids["cat"])
     assert cat_tags == {DEPENDENT, BAND}
     # The dependent's moved tag goes to the sentence note it joins
     assert SHOW in notes[CAT_FISH].tags
     read_fields, _ = state(col, [ids["read"]])[ids["read"]]
-    assert read_fields["Example sentence id"] == str(first[BOOK])
+    assert read_fields["Example sentence id"] == notes[BOOK]["Sentence ID"]
     report = Path(migration.report_path).read_text(encoding="utf-8")
     assert "sentence notes to add: 0" in report
     assert "existing sentence notes joined: 2" in report
@@ -437,7 +455,9 @@ def every_note_has_its_example(col: Any, ids: dict[str, int]) -> None:
         "book": BOOK,
     }
     for name, sentence in sentence_of.items():
-        assert col.get_note(ids[name])["Example sentence id"] == str(notes[sentence].id), name
+        note = col.get_note(ids[name])
+        assert note["Example sentence id"] == notes[sentence]["Sentence ID"], name
+        assert note["Word ID"] == str(ids[name]), name
 
 
 def test_a_cancelled_adding_leaves_the_rest_untouched_and_a_rerun_finishes(
@@ -568,3 +588,207 @@ def test_the_run_refuses_the_one_type_layout(col, tmp_path):
     with pytest.raises(PreflightError, match="names no sentence_note_type"):
         migrate(col, list(ids.values()), tmp_path / "refused")
     assert sentence_notes(col) == {}
+
+
+# Link IDs no note has as its note id (link_ids.py), and a legacy placeholder: the negative id a
+# match op from before link IDs linked a new note by until it was added
+FISH_ID = 1160697660039337
+DOG_RUNS_ID = 4000000000000001
+PLACEHOLDER = -777
+
+
+def add_sentence(col: Any, sentence: str, furigana: str, array: list, sentence_id: str = "") -> int:
+    """A sentence note already there, as a first run or the user made it."""
+    fields = {
+        "Sentence": sentence,
+        "Sentence furigana": furigana,
+        "Sentence kanjified": sentence,
+        "Sentence for extraction": furigana,
+        "Word array": format_word_array(array),
+        "Sentence ID": sentence_id,
+    }
+    return int(real_anki.add_note(col, SENTENCE, fields, deck_name="Sentences").id)
+
+
+def eating(cat: list, fish: list, eat: list) -> list:
+    arr = cat_fish_array(cat, fish)
+    arr[4][4] = eat
+    return arr
+
+
+def test_links_are_read_as_link_ids_and_each_note_written_holds_its_own(col, tmp_path):
+    """IDs other than note ids: the source 魚 holds a generated ID, which its array links it
+    by; the dependent 食べる's add was never resolved, so its field and that array hold a
+    legacy placeholder; the sentence note of 犬が走る。 holds an ID of its own, which 犬 names
+    as its example (migrated by a first run), and the one of 本を読む。 holds none."""
+    ids: dict[str, int] = {}
+    ids["cat"] = add_vocab(
+        col,
+        "猫",
+        "ねこ",
+        "<b>猫</b>が魚を食べた。",
+        "<b> 猫[ねこ]</b>が 魚[さかな]を 食[た]べた。",
+        tags=(DEPENDENT,),
+    )
+    ids["eat"] = add_vocab(
+        col,
+        "食べる",
+        "たべる",
+        "猫が魚を<b>食べた</b>。",
+        " 猫[ねこ]が 魚[さかな]を<b> 食[た]べた</b>。",
+        tags=(DEPENDENT,),
+        word_id=str(PLACEHOLDER),
+    )
+    ids["fish"] = add_vocab(
+        col,
+        "魚",
+        "さかな",
+        "猫が<b>魚</b>を食べた。",
+        " 猫[ねこ]が<b> 魚[さかな]</b>を 食[た]べた。",
+        word_id=str(FISH_ID),
+        array=lambda _own: eating([ids["cat"]], [FISH_ID], [PLACEHOLDER]),
+    )
+    ids["dog"] = add_vocab(
+        col,
+        "犬",
+        "いぬ",
+        "<b>犬</b>が走る。",
+        "<b> 犬[いぬ]</b>が 走[はし]る。",
+        array=lambda own: dog_runs_array([own], []),
+        example_id=str(DOG_RUNS_ID),
+    )
+    ids["runs"] = add_vocab(
+        col,
+        "走る",
+        "はしる",
+        "犬が<b>走る</b>。",
+        " 犬[いぬ]が<b> 走[はし]る</b>。",
+        array=lambda own: dog_runs_array([], [own]),
+    )
+    ids["book"] = add_vocab(
+        col,
+        "本",
+        "ほん",
+        "<b>本</b>を読む。",
+        "<b> 本[ほん]</b>を 読[よ]む。",
+        array=lambda own: book_array([own], ["match"]),
+    )
+    dog_runs = add_sentence(
+        col,
+        DOG_RUNS,
+        " 犬[いぬ]が 走[はし]る。",
+        dog_runs_array([ids["dog"]], ["match"]),
+        str(DOG_RUNS_ID),
+    )
+    book = add_sentence(col, BOOK, " 本[ほん]を 読[よ]む。", book_array(["match"], ["match"]))
+    everything = [*ids.values(), dog_runs, book]
+    before = state(col, everything)
+
+    migration, result = migrate(col, list(ids.values()), tmp_path / "reports")
+
+    assert result.new_notes == base_ops.NewNotesCounts(added=1)
+    notes = sentence_notes(col)
+    cat_fish = notes[CAT_FISH]
+    # From its origin's ID, and none a sentence note holds: the one held, the other's note id
+    assert cat_fish["Sentence ID"] == str(
+        new_link_id(f"sentence|{FISH_ID}", {DOG_RUNS_ID, book})
+    )
+    # The placeholder is the ID of the note holding it: its note id
+    assert cat_fish["Word array"] == format_word_array(
+        eating([ids["cat"]], [FISH_ID], [ids["eat"]])
+    )
+    for name in ("cat", "eat", "fish"):
+        assert col.get_note(ids[name])["Example sentence id"] == cat_fish["Sentence ID"], name
+    # Joined by the IDs they hold
+    assert col.get_note(ids["runs"])["Example sentence id"] == str(DOG_RUNS_ID)
+    assert notes[DOG_RUNS]["Word array"] == format_word_array(
+        dog_runs_array([ids["dog"]], [ids["runs"]])
+    )
+    assert notes[DOG_RUNS]["Sentence ID"] == str(DOG_RUNS_ID)
+    assert col.get_note(ids["book"])["Example sentence id"] == str(book)
+    # Written for its link to 本, and holding no ID: its note id
+    assert notes[BOOK]["Sentence ID"] == str(book)
+    word_ids = {name: col.get_note(nid)["Word ID"] for name, nid in ids.items()}
+    assert word_ids == {
+        "cat": str(ids["cat"]),
+        "eat": str(ids["eat"]),
+        "fish": str(FISH_ID),
+        # Migrated already: not written
+        "dog": "",
+        "runs": str(ids["runs"]),
+        "book": str(ids["book"]),
+    }
+    report = Path(migration.report_path).read_text(encoding="utf-8")
+    assert "legacy placeholders linked to the note holding them: 1" in report
+    assert "existing sentence notes whose ID field gets their note id: 1" in report
+    assert "skipped: already migrated: 1" in report
+
+    col.undo()
+    assert state(col, everything) == before
+    assert set(sentence_notes(col)) == {DOG_RUNS, BOOK}
+
+
+def assert_refused_unchanged(col: Any, nids: list[int], tmp_path: Path, *in_error: str) -> None:
+    """The pre-flight's message holds each of `in_error`, and the run refuses with it before
+    writing anything."""
+    config = real_anki.install().addonManager.configs[PACKAGE]
+    error = collection_preflight_error(col, config, [NoteId(nid) for nid in nids])
+    assert error is not None
+    for text in in_error:
+        assert text in error
+    undo_before = col.undo_status().undo
+    count_before = col.note_count()
+    with pytest.raises(PreflightError) as refused:
+        migrate(col, nids, tmp_path / "refused")
+    assert str(refused.value) == error
+    assert col.note_count() == count_before
+    assert col.undo_status().undo == undo_before
+    assert not (tmp_path / "refused").exists()
+
+
+def test_the_run_refuses_while_two_vocab_notes_hold_one_link_id(col, tmp_path):
+    # Anki's Create Copy of a note whose ID field holds its note id, as the match op left the
+    # notes it made: the copy holds the original's
+    ids = build(col)
+    fish = col.get_note(ids["fish"])
+    fish["Word ID"] = str(fish.id)
+    col.update_note(fish)
+    copy = real_anki.add_note(col, VOCAB, dict(fish.items()), deck_name="Vocab")
+    assert_refused_unchanged(
+        col,
+        [*ids.values(), copy.id],
+        tmp_path,
+        f'Notes of "{VOCAB}" hold the same link ID in their field "Word ID"',
+        f"{fish.id} by notes {fish.id}, {copy.id}",
+        'Run "Fill link IDs" on these notes first',
+    )
+
+
+def test_the_run_refuses_while_two_sentence_notes_hold_one_link_id(col, tmp_path):
+    ids = build(col)
+    first, second = (
+        add_sentence(col, sentence, sentence, [], str(DOG_RUNS_ID))
+        for sentence in ("猫だ。", "犬だ。")
+    )
+    assert_refused_unchanged(
+        col,
+        list(ids.values()),
+        tmp_path,
+        f'Notes of "{SENTENCE}" hold the same link ID in their field "Sentence ID"',
+        f"{DOG_RUNS_ID} by notes {first}, {second}",
+        'Run "Fill link IDs" on these notes first',
+    )
+
+
+def test_the_run_refuses_a_link_id_field_no_search_can_name(col, tmp_path):
+    ids = build(col)
+    notetype = col.models.by_name(VOCAB)
+    col.models.add_field(notetype, col.models.new_field("nid"))
+    col.models.update_dict(notetype)
+    real_anki.install().addonManager.configs[PACKAGE][VOCAB]["new_note_id_field"] = "nid"
+    assert_refused_unchanged(
+        col,
+        list(ids.values()),
+        tmp_path,
+        f'The link ID field "nid" of note type "{VOCAB}" cannot be searched',
+    )

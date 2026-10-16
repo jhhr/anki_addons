@@ -18,6 +18,7 @@ from anki.notes import NoteId
 
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops.async_api_ops import base_ops
+from japanese_note_ai_ops.link_ids import DuplicateLinkIdsError
 from japanese_note_ai_ops.sync_local_ops.find_missing_matched_note_ids import (
     bulk_find_missing_matched_note_ids_op,
 )
@@ -165,3 +166,30 @@ def test_a_link_is_kept_while_a_note_holds_its_link_id(col):
         [PLACEHOLDER],
         ["match"],
     ]
+
+
+def test_the_run_refuses_while_two_notes_of_a_type_hold_one_link_id(col):
+    """Anki's Create Copy of a note whose ID field holds its note id, as the match op left the
+    notes it made: the copy holds the original's ID, and an array written before link IDs links
+    the copy by its own note id, which no note holds as its ID. Run, the op would unlink that
+    word; it refuses, naming "Fill link IDs", and changes nothing."""
+    set_config(TWO_TYPE_IDS)
+    original = vocab(col, "cat")
+    original["Word ID"] = str(original.id)
+    col.update_note(original)
+    copy = vocab(col, "cat", word_id=str(original.id))
+    gone = vocab(col, "dog")
+    col.remove_notes([gone.id])
+    words = [word("cat", [original.id]), word("cat", [copy.id]), word("dog", [gone.id])]
+    processed = real_anki.add_note(
+        col, SENTENCE, {"Sentence": "s", "Words": format_word_array(words)}
+    )
+    before = col.get_note(processed.id)["Words"]
+
+    with pytest.raises(DuplicateLinkIdsError) as refused:
+        find_missing(col, [processed.id])
+
+    assert col.get_note(processed.id)["Words"] == before
+    message = str(refused.value)
+    assert f"{original.id} by notes {original.id}, {copy.id}" in message
+    assert 'Run "Fill link IDs" on these notes first' in message

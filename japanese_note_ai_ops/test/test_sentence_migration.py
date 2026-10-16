@@ -7,10 +7,11 @@ sentence, so each case says exactly what a note holds. No SudachiPy, JMdict or c
 import json
 import unittest
 
-from addon_modules import load_ops_module
+from addon_modules import load_addon_module, load_ops_module
 
 sm = load_ops_module("sentence_migration", subdir="sync_local_ops")
 match_flags = load_ops_module("match_flags", subdir="word_array")
+link_ids = load_addon_module("link_ids", subdir="")
 
 EXTRACTION = "word_extraction_sentence_field"
 FURIGANA = "furigana_sentence_field"
@@ -628,7 +629,12 @@ class RerunTests(unittest.TestCase):
             result.updates,
             [
                 sm.SentenceUpdate(
-                    note_id=500, word_list=None, tags_to_add=[], source_ids=[], vocab_ids=[2]
+                    note_id=500,
+                    link_id=500,
+                    word_list=None,
+                    tags_to_add=[],
+                    source_ids=[],
+                    vocab_ids=[2],
                 )
             ],
         )
@@ -926,6 +932,218 @@ class ChangedWithNewTests(unittest.TestCase):
         self.assertEqual(rerun.tags_to_remove, {1: ["redo-audio"]})
 
 
+# Link IDs no note has as its note id, as a note holds once the match op or this migration has
+# given it one (link_ids.py)
+FISH_ID = 1160697660039337
+EAT_ID = 1841288010442579
+SENTENCE_ID = 4000000000000001
+
+
+def existing_cat_fish(link_id_value="", **match_data):
+    """The sentence note 500 of CAT_FISH's sentence, as a first run made it."""
+    return sm.SentenceRecord(
+        note_id=500,
+        fields=fields(sm.strip_bold(CAT_FISH)),
+        word_list=match_flags.format_word_array(cat_fish_array(**match_data)),
+        link_id_value=link_id_value,
+    )
+
+
+class LinkIdTests(unittest.TestCase):
+    """Every link is read as a link ID: what a note's ID field holds, else its note id."""
+
+    def test_arrays_link_a_note_by_the_id_it_holds_and_one_holding_none_by_its_note_id(self):
+        # 魚's note and the dependent 食べる's hold IDs; the dependent 猫's holds none
+        arr = cat_fish_array(cat=[2], fish=[FISH_ID], eat=[EAT_ID])
+        vocab = [
+            source(1, CAT_FISH, arr, link_id_value=str(FISH_ID)),
+            dependent(2, CAT_FISH, ("猫", "ねこ")),
+            dependent(3, CAT_FISH, ("食べる", "たべる"), link_id_value=str(EAT_ID)),
+        ]
+        result = plan(vocab)
+        (new,) = result.new_sentences
+        # Each is linked already, so the link check has nothing to do or to report
+        self.assertEqual(array_of(new), arr)
+        self.assertEqual(result.report.cases, {})
+        self.assertEqual(result.examples, {nid: sm.Example(new_index=0) for nid in (1, 2, 3)})
+        self.assertEqual(result.link_id_fills, {2: "2"})
+
+    def test_the_link_check_links_a_word_by_its_notes_link_id(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(), link_id_value=str(FISH_ID)),
+            source(2, CAT_FISH_ON_CAT, cat_fish_array(), ("猫", "ねこ")),
+        ]
+        result = plan(vocab)
+        (new,) = result.new_sentences
+        self.assertEqual(array_of(new), cat_fish_array(cat=[2], fish=[FISH_ID]))
+        self.assertEqual(result.report.note_ids("linked"), [1, 2])
+
+    def test_an_example_names_a_sentence_note_by_its_link_id(self):
+        # The sentence note 500 holds an ID of its own: naming it is a migrated vocab note's
+        # example, its note id is no example
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1]), example_id=str(SENTENCE_ID)),
+            dependent(2, CAT_FISH, ("食べる", "たべる"), example_id="500"),
+        ]
+        result = plan(vocab, [existing_cat_fish(str(SENTENCE_ID), fish=[1], eat=["match"])])
+        self.assertEqual(result.report.counts["skipped: already migrated"], 1)
+        self.assertEqual(result.report.cases["example_id_unknown"], [(2, "500")])
+        (update,) = result.updates
+        self.assertEqual(
+            (update.note_id, update.link_id, update.vocab_ids), (500, SENTENCE_ID, [2])
+        )
+        self.assertEqual(result.examples, {2: sm.Example(note_id=500)})
+        self.assertEqual(json.loads(update.word_list), cat_fish_array(fish=[1], eat=[2]))
+        # Written, but holding its ID already
+        self.assertEqual(result.link_id_fills, {2: "2"})
+
+    def test_new_sentence_ids_are_generated_from_the_origins_link_ids(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1]), link_id_value=str(FISH_ID)),
+            source(3, KOEDA, koeda_array(koeda=[3]), ("小枝", "こえだ")),
+            dependent(4, KOEDA, ("柊", "ひいらぎ")),
+        ]
+        result = plan(vocab)
+        first, second = result.new_sentences
+        self.assertEqual(first.link_id, link_ids.new_link_id(f"sentence|{FISH_ID}", set()))
+        self.assertEqual(second.link_id, link_ids.new_link_id("sentence|3", set()))
+        self.assertNotEqual(first.link_id, second.link_id)
+        self.assertEqual([len(str(new.link_id)) for new in result.new_sentences], [16, 16])
+        # The vocab notes name their example by it (the op writes new.link_id for new_index)
+        self.assertEqual(
+            result.examples,
+            {1: sm.Example(new_index=0), 3: sm.Example(new_index=1), 4: sm.Example(new_index=1)},
+        )
+        self.assertEqual(
+            [new.link_id for new in plan(vocab).new_sentences], [first.link_id, second.link_id]
+        )
+
+    def test_a_new_sentence_id_is_none_a_sentence_note_holds(self):
+        first_choice = link_ids.new_link_id("sentence|1", set())
+        # A sentence note no group joins (it has no text) holding that ID
+        holder = sm.SentenceRecord(note_id=500, link_id_value=str(first_choice))
+        result = plan([source(1, CAT_FISH, cat_fish_array(fish=[1]))], [holder])
+        (new,) = result.new_sentences
+        self.assertEqual(new.link_id, link_ids.new_link_id("sentence|1", {first_choice}))
+        self.assertNotEqual(new.link_id, first_choice)
+        self.assertEqual(result.report.note_ids("existing_no_text"), [500])
+
+    def test_each_vocab_note_the_plan_changes_gets_its_note_id_in_a_field_holding_no_id(self):
+        vocab = [
+            # Not selected: the origin of the dependents' sentence, losing the addon's tag
+            source(
+                1, CAT_FISH, cat_fish_array(fish=[1]), tags=("kanjify_sentence_mismatch",)
+            ),
+            dependent(2, CAT_FISH, ("x", "x")),
+            dependent(3, CAT_FISH, ("x", "x"), link_id_value="0"),
+            dependent(4, CAT_FISH, ("x", "x"), link_id_value="-1234"),
+            dependent(5, CAT_FISH, ("x", "x"), link_id_value="an id"),
+            dependent(6, CAT_FISH, ("x", "x"), link_id_value=str(EAT_ID)),
+            # Changed by nothing: neither selected nor the origin of a sentence made
+            source(7, KOEDA, koeda_array(koeda=[7]), ("小枝", "こえだ")),
+        ]
+        result = plan(vocab, selected=[2, 3, 4, 5, 6])
+        self.assertEqual(sorted(result.examples), [2, 3, 4, 5, 6])
+        self.assertEqual(result.tags_to_remove, {1: ["kanjify_sentence_mismatch"]})
+        self.assertEqual(result.link_id_fills, {1: "1", 2: "2", 3: "3", 4: "4", 5: "5"})
+        self.assertEqual(result.report.counts["vocab notes whose ID field gets their note id"], 5)
+
+    def test_a_joined_sentence_notes_field_holding_no_id_is_filled_when_it_is_written(self):
+        eater = dependent(2, CAT_FISH, ("食べる", "たべる"))
+        # (its field, its 食べる: ["match"] is linked by the check, which writes the note)
+        for value, eat, filled in [
+            ("", ["match"], True),
+            ("0", ["match"], True),
+            ("", [2], False),
+            (str(SENTENCE_ID), ["match"], False),
+        ]:
+            with self.subTest(value=value, eat=eat):
+                result = plan([eater], [existing_cat_fish(value, fish=[1], eat=eat)])
+                (update,) = result.updates
+                self.assertEqual(update.word_list is not None, eat == ["match"])
+                self.assertEqual(result.link_id_fills.get(500), "500" if filled else None)
+                self.assertEqual(update.link_id, SENTENCE_ID if value == str(SENTENCE_ID) else 500)
+                self.assertEqual(
+                    result.report.counts[
+                        "existing sentence notes whose ID field gets their note id"
+                    ],
+                    int(filled),
+                )
+
+
+class LegacyPlaceholderTests(unittest.TestCase):
+    """A legacy placeholder: the negative id a match op from before link IDs linked a new note
+    by until the note was added. The note made for it holds it in its ID field still when its
+    resolving found nothing (a hook wrote over the field); a failed add left no note."""
+
+    def test_a_placeholder_becomes_its_holders_link_id_else_match(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(cat=[-111, 4], fish=[1], eat=[-222])),
+            # The note made for 猫, whose field holds the placeholder: its note id is its ID
+            source(7, KOEDA, koeda_array(koeda=[7]), ("猫", "ねこ"), link_id_value="-111"),
+        ]
+        result = plan(vocab, selected=[1])
+        (new,) = result.new_sentences
+        self.assertEqual(array_of(new), cat_fish_array(cat=[7, 4], fish=[1], eat=["match"]))
+        cases = result.report.cases
+        self.assertEqual(cases["placeholder_linked"], [(1, "猫: -111 -> 7 (the sentence of 1)")])
+        self.assertEqual(cases["placeholder_unheld"], [(1, "食べる: -222 (the sentence of 1)")])
+        counts = result.report.counts
+        self.assertEqual(counts["legacy placeholders linked to the note holding them"], 1)
+        self.assertEqual(counts["legacy placeholders no note holds, set to match"], 1)
+        self.assertEqual(counts["legacy placeholders several notes hold, left"], 0)
+
+    def test_a_placeholder_several_notes_hold_is_left_and_reported(self):
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(cat=[-333], fish=[1])),
+            dependent(5, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
+            dependent(6, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
+        ]
+        result = plan(vocab, selected=[1])
+        self.assertEqual(array_of(result.new_sentences[0])[0][4], [-333])
+        self.assertEqual(
+            result.report.cases["placeholder_several"],
+            [(1, "猫: -333, held by 5, 6 (the sentence of 1)")],
+        )
+
+    def test_a_dependent_linked_by_its_placeholder_gets_its_example(self):
+        # Its add was never resolved: the array and its own field hold the placeholder
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[-555])),
+            dependent(2, KOEDA, ("食べる", "たべる"), link_id_value="-555"),
+        ]
+        result = plan(vocab)
+        self.assertEqual(result.examples[2], sm.Example(new_index=0))
+        self.assertEqual(array_of(result.new_sentences[0])[4][4], [2])
+        self.assertEqual(result.report.note_ids("dependent_other_sentence"), [2])
+        self.assertEqual(result.link_id_fills, {1: "1", 2: "2"})
+
+    def test_an_unused_array_reports_none(self):
+        # 7's sentence is made for no selected note, so its array is copied nowhere
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1])),
+            source(7, KOEDA, koeda_array(koeda=[-111])),
+        ]
+        result = plan(vocab, selected=[1])
+        self.assertNotIn("placeholder_unheld", result.report.cases)
+        self.assertEqual(result.report.counts["legacy placeholders no note holds, set to match"], 0)
+
+    def test_a_joined_sentence_notes_placeholder_is_resolved_before_its_links_are_combined(self):
+        # The sentence note holds the placeholder where the source links the note made for it
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(cat=[7], fish=[1])),
+            source(7, KOEDA, koeda_array(koeda=[7]), ("猫", "ねこ"), link_id_value="-111"),
+        ]
+        existing = existing_cat_fish(cat=[-111], fish=[1])
+        result = plan(vocab, [existing], selected=[1])
+        (update,) = result.updates
+        self.assertEqual(json.loads(update.word_list), cat_fish_array(cat=[7], fish=[1]))
+        self.assertNotIn("conflict", result.report.cases)
+        self.assertEqual(update.tags_to_add, [])
+        self.assertEqual(result.report.cases["placeholder_linked"], [(500, "猫: -111 -> 7")])
+        self.assertEqual(result.link_id_fills, {1: "1", 500: "500"})
+
+
 PREFLIGHT_SENTENCE = {
     "vocab_note_type": "Japanese vocab note",
     "word_list_field": "Word array",
@@ -934,6 +1152,7 @@ PREFLIGHT_SENTENCE = {
     "translated_sentence_field": "Sentence translation",
     "sentence_audio_field": "Sentence audio",
     "sentence_seen_count_field": "Times seen",
+    "sentence_id_field": "Sentence ID",
     "migration_move_tags": ["redo-audio"],
     "migration_copy_tags": ["freq-band-a"],
     "insert_deck": "My deck::sentences",
@@ -947,6 +1166,7 @@ PREFLIGHT_VOCAB = {
     "word_normal_field": "Word",
     "word_reading_field": "Word reading",
     "word_sort_field": "Word sort key",
+    "new_note_id_field": "Word ID",
     "insert_deck": "My deck::vocab",
 }
 # The fields each type has: the vocab type still has the old sentence fields
@@ -962,12 +1182,13 @@ VOCAB_OWN_FIELDS = [
     "Word",
     "Word kanjified",
     "Word reading",
+    "Word ID",
     "Example sentence id",
     "Example translation",
     "Example audio",
 ]
 PREFLIGHT_TYPES = {
-    "Sentence note": [*OLD_FIELDS, "Times seen"],
+    "Sentence note": [*OLD_FIELDS, "Times seen", "Sentence ID"],
     "Japanese vocab note": [*VOCAB_OWN_FIELDS, *OLD_FIELDS],
     "Kanji draw": ["Kanji"],
 }
@@ -1023,6 +1244,30 @@ class PreflightTests(unittest.TestCase):
     def test_the_vocab_block_names_the_word_it_is_linked_by(self):
         del self.config["Japanese vocab note"]["word_reading_field"]
         self.assertIn("has no word_reading_field in the settings", self.error())
+
+    def test_the_sentence_block_names_its_link_id_field_and_the_type_has_it(self):
+        self.types["Sentence note"].remove("Sentence ID")
+        self.assertIn('"Sentence ID" (sentence_id_field)', self.error())
+        del self.config["Sentence note"]["sentence_id_field"]
+        self.assertIn('"Sentence note" has no sentence_id_field in the settings', self.error())
+
+    def test_the_vocab_block_names_its_link_id_field_and_the_type_has_it(self):
+        self.types["Japanese vocab note"].remove("Word ID")
+        self.assertIn('"Word ID" (new_note_id_field)', self.error())
+        del self.config["Japanese vocab note"]["new_note_id_field"]
+        self.assertIn(
+            '"Japanese vocab note" has no new_note_id_field in the settings', self.error()
+        )
+
+    def test_a_link_id_key_the_layout_refuses_is_refused(self):
+        # note_roles' layout check: the run would write IDs into the wrong field
+        self.config["Japanese vocab note"]["sentence_id_field"] = "Word ID"
+        self.assertIn('"Japanese vocab note" has sentence_id_field "Word ID"', self.error())
+        self.setUp()
+        self.config["Japanese vocab note"]["example_sentence_id_field"] = "Word ID"
+        self.assertIn(
+            "as both its example_sentence_id_field and its new_note_id_field", self.error()
+        )
 
     def test_the_vocab_type_has_the_fields_the_example_is_copied_into(self):
         self.types["Japanese vocab note"].remove("Example audio")

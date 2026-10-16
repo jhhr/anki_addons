@@ -32,8 +32,9 @@ from typing import Any, Optional
 
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
+from ..link_ids import LinkIndex, link_id, parse_link_id
 from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, sentence_type_of
-from ..word_array import match_flags, merge
+from ..word_array import match_flags, match_targets, merge
 from ..word_array.match_flags import MatchState
 
 # The tags this concerns. The first three are the addon's own, spelled as the ops that set them
@@ -50,6 +51,10 @@ MOVED_TAGS = (KANJIFY_MISMATCH_TAG, INVALID_ARRAY_TAG)
 WORD_LIST_KEY = "word_list_field"
 SEEN_COUNT_KEY = "sentence_seen_count_field"
 EXAMPLE_ID_KEY = "example_sentence_id_field"
+# The link ID fields (link_ids.py, note_roles.link_id_field), which the migration requires: it
+# writes a link ID into every note it makes or changes
+VOCAB_ID_KEY = "new_note_id_field"
+SENTENCE_ID_KEY = "sentence_id_field"
 # The vocab block's keys naming the word the link check compares elements with
 WORD_KEYS = ("word_kanjified_field", "word_normal_field", "word_reading_field")
 # The sentence block's lists of the user's tags (D13), read by the migration only
@@ -78,14 +83,17 @@ _KANJI_TAIL_RE = re.compile(r"[\d々ヶヵ一-龯㐀-䶿]+$")
 class VocabRecord:
     """A vocab note as the planner needs it. `fields` holds the old sentence fields by
     SENTENCE_KEYS key (those the sentence block names), `word_list` the old array field's text;
-    the word values are the vocab block's `word_kanjified_field`, `word_normal_field` and
-    `word_reading_field`; `reps` is the sum of its cards' review counts."""
+    `link_id_value` is its link ID field's text (the vocab block's `new_note_id_field`), from
+    which its link ID follows (link_ids.link_id: that, else its note id); the word values are
+    the vocab block's `word_kanjified_field`, `word_normal_field` and `word_reading_field`;
+    `reps` is the sum of its cards' review counts."""
 
     note_id: int
     tags: Sequence[str] = ()
     fields: Mapping[str, str] = field(default_factory=dict)
     word_list: str = ""
     example_id: str = ""
+    link_id_value: str = ""
     kanjified: str = ""
     normal: str = ""
     reading: str = ""
@@ -95,12 +103,14 @@ class VocabRecord:
 
 @dataclass(frozen=True)
 class SentenceRecord:
-    """A note of the sentence type already in the collection: a rerun's, or the user's own."""
+    """A note of the sentence type already in the collection: a rerun's, or the user's own.
+    `link_id_value` is its link ID field's text (the sentence block's `sentence_id_field`)."""
 
     note_id: int
     tags: Sequence[str] = ()
     fields: Mapping[str, str] = field(default_factory=dict)
     word_list: str = ""
+    link_id_value: str = ""
 
 
 # --- the plan --------------------------------------------------------------------------------
@@ -108,12 +118,14 @@ class SentenceRecord:
 
 @dataclass
 class NewSentence:
-    """A sentence note to add. `fields` by config key: every SENTENCE_KEYS key the origin's
-    record has, `word_list_field`, and `sentence_seen_count_field` when it is counted.
-    `vocab_ids`: the selected vocab notes that get it as their example once it is added;
-    `source_ids`: every source whose sentence it is, selected or not."""
+    """A sentence note to add. `link_id`: the ID generated for it, which goes into its link ID
+    field and is the example its vocab notes name. `fields` by config key: every SENTENCE_KEYS
+    key the origin's record has, `word_list_field`, and `sentence_seen_count_field` when it is
+    counted. `vocab_ids`: the selected vocab notes that get it as their example once it is
+    added; `source_ids`: every source whose sentence it is, selected or not."""
 
     origin_id: int
+    link_id: int
     fields: dict[str, str]
     tags: list[str]
     source_ids: list[int]
@@ -122,10 +134,12 @@ class NewSentence:
 
 @dataclass
 class SentenceUpdate:
-    """An existing sentence note the run joins vocab notes to. `word_list` is its new array
-    field text, None when the array stays as it is; `tags_to_add` holds none it has already."""
+    """An existing sentence note the run joins vocab notes to. `link_id` is its link ID, the
+    example its vocab notes name; `word_list` is its new array field text, None when the array
+    stays as it is; `tags_to_add` holds none it has already."""
 
     note_id: int
+    link_id: int
     word_list: Optional[str]
     tags_to_add: list[str]
     source_ids: list[int]
@@ -135,7 +149,7 @@ class SentenceUpdate:
 @dataclass(frozen=True)
 class Example:
     """A vocab note's example: `new_index` into `MigrationPlan.new_sentences`, or the `note_id`
-    of an existing sentence note."""
+    of an existing sentence note. The vocab note names it by that sentence note's `link_id`."""
 
     new_index: Optional[int] = None
     note_id: Optional[int] = None
@@ -166,6 +180,12 @@ CASES: dict[str, str] = {
     "links_lost": "Links of another source the alignment could not place",
     "combine_failed": "Another source's array could not be combined: its links not taken",
     "unknown_match_data": "Word whose match_data is in no known state (left as it was)",
+    "placeholder_linked": "Legacy placeholder in a word array: linked to the vocab note whose ID"
+    " field holds it",
+    "placeholder_unheld": "Legacy placeholder in a word array that no vocab note holds: its word"
+    " set to match",
+    "placeholder_several": "Legacy placeholder in a word array that several vocab notes hold: left"
+    " as it was",
     "several_cards": "Origin with more than one card: the seen count sums them",
     "linked": "Linked to its word by the link check",
     "link_no_array": "Not linked: its example has no readable word array",
@@ -219,6 +239,11 @@ class MigrationPlan:
     examples: dict[int, Example]
     # Per vocab note: the tags it loses (as it spells them), once its sentence note exists
     tags_to_remove: dict[int, list[str]]
+    # Per note the plan changes (a vocab note above, or an existing sentence note whose array or
+    # tags change) whose link ID field holds no link ID, empty or not: what the run writes there
+    # along with its change, its note id. That is its link ID already (link_ids.link_id); in
+    # the field it travels with the note (D17)
+    link_id_fills: dict[int, str]
     report: Report
 
     def changed_with_new(self) -> list[list[int]]:
@@ -385,12 +410,18 @@ def _example_note_id(value: str) -> Optional[int]:
 @dataclass(eq=False)
 class _Vocab:
     record: VocabRecord
+    # What an array links it by (link_ids.link_id)
+    link_id: int
     dependent: bool
     extraction_key: str
     # Its sentence's key from its fields: the extraction field's, else the furigana field's
     text_key: str
+    # Its legacy placeholders resolved (_resolve_placeholders)
     array: Optional[list]
     array_problem: Optional[str]
+    # Report lines (case, detail) for the placeholders resolved in `array`, given only where
+    # the array is copied into a sentence note
+    placeholder_lines: list[tuple[str, str]]
     # A source's group key: its array's when it holds one, else text_key
     key: str
     forms: frozenset[str]
@@ -418,7 +449,9 @@ class _Vocab:
         return bool(self.reading) and to_hiragana(_norm(elem[3])) == self.reading
 
 
-def _read_vocab(records: Iterable[VocabRecord]) -> dict[int, _Vocab]:
+def _read_vocab(
+    records: Iterable[VocabRecord], placeholders: Mapping[str, list[int]]
+) -> dict[int, _Vocab]:
     out: dict[int, _Vocab] = {}
     for record in sorted(records, key=lambda r: r.note_id):
         if record.note_id in out:
@@ -430,11 +463,13 @@ def _read_vocab(records: Iterable[VocabRecord]) -> dict[int, _Vocab]:
         arr, problem = (None, None) if dependent else _read_array(record.word_list)
         out[record.note_id] = _Vocab(
             record=record,
+            link_id=link_id(record.link_id_value, record.note_id),
             dependent=dependent,
             extraction_key=extraction_key,
             text_key=text_key,
             array=arr,
             array_problem=problem,
+            placeholder_lines=[] if arr is None else _resolve_placeholders(arr, placeholders),
             key=array_key(arr) if arr is not None else text_key,
             forms=frozenset(
                 form for form in (_norm(record.kanjified), _norm(record.normal)) if form
@@ -442,6 +477,47 @@ def _read_vocab(records: Iterable[VocabRecord]) -> dict[int, _Vocab]:
             reading=to_hiragana(_norm(record.reading)),
         )
     return out
+
+
+def _placeholder_holders(vocab_index: LinkIndex) -> dict[str, list[int]]:
+    """Per text a vocab note's link ID field holds that is no link ID, the link IDs of the
+    notes holding it, in note id order: their note ids, since such a field gives none of its
+    own (link_ids.link_id). A legacy placeholder is looked up here as the match op's field
+    search found it, by the field's whole text."""
+    holders: dict[str, list[int]] = {}
+    for note_id, value in sorted(vocab_index.invalid.items()):
+        holders.setdefault(value, []).append(note_id)
+    return holders
+
+
+def _resolve_placeholders(arr: list, holders: Mapping[str, list[int]]) -> list[tuple[str, str]]:
+    """Swap each legacy placeholder in `arr` for the link ID of the vocab note whose link ID
+    field holds it (match_targets.resolve_placeholder_ids: none -> `["match"]`, several ->
+    left), returning a report line (case, detail) per word it was on.
+
+    A placeholder is the negative id a match op from before link IDs linked a new note by until
+    the note was added; one still in an array is a note whose add failed, or whose field a hook
+    wrote over before the id could be put in. Read as a link ID it links no note: the link
+    check would take the word for another note's, and two sources linking one word, by the
+    placeholder and by the note's ID, would be a conflict."""
+    found = [
+        (elem[2], match_flags.matched_note_id(elem)) for _, elem in match_flags.iter_words(arr)
+    ]
+    placeholders = [(form, held) for form, held in found if held is not None and held < 0]
+    if not placeholders:
+        return []
+    match_targets.resolve_placeholder_ids(arr, lambda held: holders.get(str(held), []))
+    lines: list[tuple[str, str]] = []
+    for form, held in placeholders:
+        notes = holders.get(str(held), [])
+        if len(notes) == 1:
+            lines.append(("placeholder_linked", f"{form}: {held} -> {notes[0]}"))
+        elif not notes:
+            lines.append(("placeholder_unheld", f"{form}: {held}"))
+        else:
+            held_by = ", ".join(str(note_id) for note_id in notes)
+            lines.append(("placeholder_several", f"{form}: {held}, held by {held_by}"))
+    return lines
 
 
 @dataclass(eq=False)
@@ -460,6 +536,8 @@ class _Target:
     # Which of several is the oldest: the origin's id, or the existing note's
     age_id: int
     existing: Optional[SentenceRecord] = None
+    # An existing note's link ID; a new one's is generated once it is known to be made
+    link_id: Optional[int] = None
     origin: Optional[_Vocab] = None
     sources: list[_Vocab] = field(default_factory=list)
     # What its array field will hold: a copy combined from the sources' arrays, or None
@@ -506,13 +584,27 @@ def plan_migration(
     `migration_copy_tags`, the user's tags that go to the sentence note (`_UserTags.carry`).
     A listed tag also covers its `::` children, case aside, as a `tag:` search does. Raises
     TypeError when either is not a list of strings.
+
+    Notes are linked by link ID (link_ids.py), so every link is read as one: an array's
+    element names the vocab note holding that ID, an example id the sentence note holding it.
+    A new sentence note gets an ID generated from its origin's (`sentence|<origin's link ID>`,
+    so the same records plan the same IDs) that no sentence note holds, which its vocab notes
+    then name. The op refuses to run while two notes of either type hold one ID; given such
+    records anyway, an ID names its oldest holder, as `LinkIndex` answers.
     """
     user_tags = _UserTags(
         _tag_list(move_tags, MOVE_TAGS_KEY), _tag_list(copy_tags, COPY_TAGS_KEY)
     )
     report = Report()
-    targets, by_key, existing_ids = _existing_targets(sentence_notes, report)
-    vocab = _read_vocab(vocab_notes)
+    vocab_records = list(vocab_notes)
+    sentence_records = list(sentence_notes)
+    vocab_index = LinkIndex.from_rows((r.note_id, r.link_id_value) for r in vocab_records)
+    # Every sentence note's ID, those of notes no group joins included: a new one's must be
+    # none of them
+    sentence_index = LinkIndex.from_rows((r.note_id, r.link_id_value) for r in sentence_records)
+    placeholders = _placeholder_holders(vocab_index)
+    targets, by_key, existing_ids = _existing_targets(sentence_records, placeholders, report)
+    vocab = _read_vocab(vocab_records, placeholders)
     migrated = {
         nid for nid, v in vocab.items() if _example_note_id(v.record.example_id) in existing_ids
     }
@@ -538,35 +630,44 @@ def plan_migration(
         target.sources = sources
         _combine_sources(target)
 
-    _assign(vocab, selected_ids, migrated, targets, by_key, report)
+    _assign(vocab, vocab_index, selected_ids, migrated, targets, by_key, report)
     for target in targets:
         for vocab_id in target.vocab_ids:
             _link_check(target, vocab[vocab_id], report)
-    return _plan(targets, vocab, count_seen, user_tags, report)
+    return _plan(targets, vocab, sentence_index, count_seen, user_tags, report)
 
 
 def _existing_targets(
-    sentence_notes: Iterable[SentenceRecord], report: Report
+    sentence_notes: Iterable[SentenceRecord],
+    placeholders: Mapping[str, list[int]],
+    report: Report,
 ) -> tuple[list[_Target], dict[str, _Target], set[int]]:
     """The existing sentence notes keyed the same way as the sources, first, so that a group with
-    the same sentence joins its note rather than making another; and the ids of all of them,
-    those without text included (a vocab note naming one has been migrated all the same)."""
+    the same sentence joins its note rather than making another; and the link IDs of all of
+    them, those without text included (a vocab note naming one has been migrated all the same).
+    Their arrays' legacy placeholders are resolved as the sources' are, so that links compare
+    alike; the array is written only if the note is joined."""
     targets: list[_Target] = []
     by_key: dict[str, _Target] = {}
     ids: set[int] = set()
     for record in sorted(sentence_notes, key=lambda r: r.note_id):
-        ids.add(record.note_id)
+        held = link_id(record.link_id_value, record.note_id)
+        ids.add(held)
         arr, _problem = _read_array(record.word_list)
         key = array_key(arr) if arr is not None else _text_key(record.fields)
         if not key:
             report.add("existing_no_text", record.note_id)
             continue
+        array = copy.deepcopy(arr)
+        placeholder_lines = [] if array is None else _resolve_placeholders(array, placeholders)
         target = _Target(
             key=key,
             age_id=record.note_id,
             existing=record,
-            array=copy.deepcopy(arr),
+            link_id=held,
+            array=array,
             original=arr,
+            pending=[(case, record.note_id, detail) for case, detail in placeholder_lines],
         )
         targets.append(target)
         older = by_key.get(key)
@@ -597,6 +698,7 @@ def _combine_sources(target: _Target) -> None:
         origin = target.origin = _origin(target.sources)
         if origin.array is not None:
             target.array = copy.deepcopy(origin.array)
+            _placeholders_copied(target, origin)
             if array_key(origin.array) != origin.extraction_key:
                 target.pending.append(("array_text_differs", origin.id, ""))
         elif origin.array_problem is not None:
@@ -647,6 +749,7 @@ def _combine_into(target: _Target, source: _Vocab) -> None:
         target.pending.append(("combine_failed", source.id, f"{e} ({target.label})"))
         return
     target.array = combined
+    _placeholders_copied(target, source)
     for case, detail in events:
         target.pending.append((case, source.id, f"{detail} ({target.label})"))
         if case == "conflict":
@@ -659,6 +762,13 @@ def _combine_into(target: _Target, source: _Vocab) -> None:
         target.pending.append(
             ("links_lost", source.id, f"{', '.join(map(str, lost))} ({target.label})")
         )
+
+
+def _placeholders_copied(target: _Target, source: _Vocab) -> None:
+    # Only a source whose array the sentence note takes: one whose array is not taken has had
+    # its placeholders resolved for nothing
+    for case, detail in source.placeholder_lines:
+        target.pending.append((case, source.id, f"{detail} ({target.label})"))
 
 
 def _raw(arr: list) -> str:
@@ -712,6 +822,7 @@ def _combine_match_data(base: list, other: list, events: list[tuple[str, str]]) 
 
 def _assign(
     vocab: dict[int, _Vocab],
+    vocab_index: LinkIndex,
     selected: list[int],
     migrated: set[int],
     targets: list[_Target],
@@ -722,7 +833,7 @@ def _assign(
     selected note is assigned to it, so a selection of sources alone makes every sentence note
     and leaves the dependents for a later run."""
     linking = _linking_targets(
-        targets, {nid for nid in selected if nid in vocab and vocab[nid].dependent}
+        targets, {nid for nid in selected if nid in vocab and vocab[nid].dependent}, vocab_index
     )
     for nid in selected:
         v = vocab.get(nid)
@@ -748,14 +859,17 @@ def _assign(
             target.vocab_ids.append(nid)
 
 
-def _linking_targets(targets: list[_Target], dependents: set[int]) -> dict[int, list[_Target]]:
-    """Per dependent, the sentences whose array (as combined) links it."""
+def _linking_targets(
+    targets: list[_Target], dependents: set[int], vocab_index: LinkIndex
+) -> dict[int, list[_Target]]:
+    """Per dependent, the sentences whose array (as combined) links it, by its link ID."""
     linking: dict[int, list[_Target]] = {}
     for target in targets:
         if target.array is None:
             continue
         for _, elem in match_flags.iter_words(target.array):
-            nid = match_flags.matched_note_id(elem)
+            held = match_flags.matched_note_id(elem)
+            nid = None if held is None else vocab_index.note_id(held)
             if nid is not None and nid in dependents:
                 found = linking.setdefault(nid, [])
                 if target not in found:
@@ -813,12 +927,15 @@ def _entries(arr: list) -> list[_Entry]:
 
 
 def _link_check(target: _Target, v: _Vocab, report: Report) -> None:
-    """Link V's word in its example's array when nothing there links V yet, by V's <b>."""
+    """Link V's word in its example's array to V's link ID when nothing there links V yet, by
+    V's <b>."""
     arr = target.array
     if arr is None:
         report.add("link_no_array", v.id, target.label)
         return
-    if any(match_flags.matched_note_id(elem) == v.id for _, elem in match_flags.iter_words(arr)):
+    if any(
+        match_flags.matched_note_id(elem) == v.link_id for _, elem in match_flags.iter_words(arr)
+    ):
         return
     if v.extraction_key != target.key:
         report.add("link_text_differs", v.id, target.label)
@@ -843,7 +960,7 @@ def _link_check(target: _Target, v: _Vocab, report: Report) -> None:
         linked = match_flags.matched_note_id(elem)
         report.add("link_other_note", v.id, f"{elem[2]} links {linked} ({target.label})")
         return
-    elem[4] = [v.id]
+    elem[4] = [v.link_id]
     report.add("linked", v.id, f"{elem[2]}[{elem[3]}] {how} ({target.label})")
     report.count("links set by the link check")
 
@@ -957,6 +1074,7 @@ class _UserTags:
 def _plan(
     targets: list[_Target],
     vocab: Mapping[int, _Vocab],
+    sentence_index: LinkIndex,
     count_seen: bool,
     user_tags: _UserTags,
     report: Report,
@@ -965,6 +1083,7 @@ def _plan(
     updates: list[SentenceUpdate] = []
     examples: dict[int, Example] = {}
     tags_to_remove: dict[int, list[str]] = {}
+    link_id_fills: dict[int, str] = {}
     needed = [t for t in targets if t.vocab_ids]
     for target in needed:
         for case, note_id, detail in target.pending:
@@ -1005,6 +1124,9 @@ def _plan(
         new_sentences.append(
             NewSentence(
                 origin_id=origin.id,
+                # Keyed by its origin's link ID, so that the same records plan the same IDs, and
+                # none that a sentence note holds or that went to an older origin before it
+                link_id=sentence_index.new_link_id(f"sentence|{origin.link_id}"),
                 fields=fields,
                 tags=tags,
                 source_ids=[s.id for s in target.sources],
@@ -1016,7 +1138,7 @@ def _plan(
 
     for target in (t for t in needed if t.existing is not None):
         existing = target.existing
-        assert existing is not None
+        assert existing is not None and target.link_id is not None
         word_list = None
         if target.array is not None and target.array != target.original:
             word_list = match_flags.format_word_array(target.array)
@@ -1029,6 +1151,7 @@ def _plan(
         updates.append(
             SentenceUpdate(
                 note_id=existing.note_id,
+                link_id=target.link_id,
                 word_list=word_list,
                 tags_to_add=tags_to_add,
                 source_ids=[s.id for s in target.sources],
@@ -1037,6 +1160,15 @@ def _plan(
         )
         for vocab_id in target.vocab_ids:
             examples[vocab_id] = Example(note_id=existing.note_id)
+        # Only a note the run saves anyway: filling the field alone would be a write of its own
+        # to every sentence note a rerun joins
+        written = word_list is not None or bool(tags_to_add)
+        if written and parse_link_id(existing.link_id_value) is None:
+            link_id_fills[existing.note_id] = str(existing.note_id)
+
+    for vocab_id in sorted({*examples, *tags_to_remove}):
+        if parse_link_id(vocab[vocab_id].record.link_id_value) is None:
+            link_id_fills[vocab_id] = str(vocab_id)
 
     report.count("sentence notes to add", len(new_sentences))
     report.count("existing sentence notes joined", len(updates))
@@ -1048,11 +1180,32 @@ def _plan(
         "examples: new sentence notes", sum(len(s.vocab_ids) for s in new_sentences)
     )
     report.count("examples: existing sentence notes", sum(len(u.vocab_ids) for u in updates))
+    report.count(
+        "vocab notes whose ID field gets their note id",
+        sum(1 for note_id in link_id_fills if note_id in vocab),
+    )
+    report.count(
+        "existing sentence notes whose ID field gets their note id",
+        sum(1 for note_id in link_id_fills if note_id not in vocab),
+    )
+    for case, name in (
+        ("placeholder_linked", "legacy placeholders linked to the note holding them"),
+        ("placeholder_unheld", "legacy placeholders no note holds, set to match"),
+        ("placeholder_several", "legacy placeholders several notes hold, left"),
+    ):
+        report.count(name, len(report.cases.get(case, [])))
     for listed, notes in user_tags.moved_from.items():
         report.count(f'tag "{listed}" moved from vocab notes', notes)
     for listed, notes in user_tags.copied_from.items():
         report.count(f'tag "{listed}" copied from vocab notes', notes)
-    return MigrationPlan(new_sentences, updates, examples, tags_to_remove, report)
+    return MigrationPlan(
+        new_sentences=new_sentences,
+        updates=updates,
+        examples=examples,
+        tags_to_remove=tags_to_remove,
+        link_id_fills=link_id_fills,
+        report=report,
+    )
 
 
 # --- pre-flight ------------------------------------------------------------------------------
@@ -1082,7 +1235,9 @@ def preflight_error(
     nothing would fail it note by note (a field the copy writes), or plan wrongly without a
     word (an old field read as empty is a vocab note with no sentence). The old sentence fields
     are read off the vocab notes by the sentence block's names, since by now the vocab block
-    names none of them, so the vocab type must still have each under that name."""
+    names none of them, so the vocab type must still have each under that name. What only the
+    notes can say, a link ID two of them hold, is the op's to check (and a link ID field named
+    like a search keyword, which link_lookup refuses)."""
     if not selected_types:
         return "No notes are selected."
     if len(selected_types) > 1:
@@ -1120,11 +1275,22 @@ def preflight_error(
             f'The sentence note type "{sentence_type}" has no field {", ".join(missing)}, as'
             " its settings name."
         )
+    if not _named_fields(sentence_block, [SENTENCE_ID_KEY]):
+        return (
+            f'"{sentence_type}" has no {SENTENCE_ID_KEY} in the settings: the migration writes'
+            " each new sentence note's link ID into that field, the ID its vocab notes name"
+            " their example by."
+        )
 
     if not _named_fields(vocab_block, [EXAMPLE_ID_KEY]):
         return (
             f'"{vocab_type}" has no {EXAMPLE_ID_KEY} in the settings: the migration writes the id'
             " of each vocab note's example sentence note into that field."
+        )
+    if not _named_fields(vocab_block, [VOCAB_ID_KEY]):
+        return (
+            f'"{vocab_type}" has no {VOCAB_ID_KEY} in the settings: the migration writes each'
+            " vocab note's link ID into that field, the ID the word arrays link it by."
         )
     unset = [key for key in WORD_KEYS if not _named_fields(vocab_block, [key])]
     if unset:
@@ -1136,7 +1302,8 @@ def preflight_error(
     # The fields copy_example writes: the id, and each sentence key both blocks name
     copied = [key for key, _ in _named_fields(sentence_block, SENTENCE_KEYS)]
     missing = _missing(
-        _named_fields(vocab_block, [EXAMPLE_ID_KEY, *WORD_KEYS, *copied]), vocab_fields
+        _named_fields(vocab_block, [EXAMPLE_ID_KEY, VOCAB_ID_KEY, *WORD_KEYS, *copied]),
+        vocab_fields,
     )
     if missing:
         return (

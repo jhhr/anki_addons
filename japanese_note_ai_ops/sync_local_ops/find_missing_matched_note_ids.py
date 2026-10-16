@@ -22,8 +22,8 @@ from ..async_api_ops.base_ops import (
 from ..async_api_ops.link_lookup import link_index
 from ..async_api_ops.match_words_to_notes import decode_word_array_field
 from ..async_api_ops.role_gate import notes_of_role
-from ..link_ids import LinkIndex
-from ..note_roles import SENTENCE_ROLE
+from ..link_ids import DuplicateLinkIdsError, LinkIndex, duplicates_error
+from ..note_roles import SENTENCE_ROLE, link_id_field
 from ..word_array.match_flags import format_word_array
 from ..word_array.match_targets import unlink_missing_notes
 
@@ -63,6 +63,28 @@ def find_missing_matched_note_ids_for_note(
     return True
 
 
+def link_indexes(config: dict, col: Collection) -> list[LinkIndex]:
+    """The link IDs of every note type, read once for the run before any note is looked at.
+    Every type, not just the vocab type: in the one-type layout a word can be linked to a note
+    of another type (the match op's candidates are the notes of every type with the vocab
+    type's word fields, and a CREATE NEW copy takes its candidate's type), and the `nid:` search
+    this replaces kept a link to a note of any type.
+
+    Raises DuplicateLinkIdsError while two notes of a type hold one link ID: a copy holding its
+    original's ID (Create Copy of a note the match op made) is linked by its own note id in the
+    arrays written before link IDs, which no note holds as its ID then, so the run would unlink
+    every one of its words. "Fill link IDs" gives it an ID of its own first."""
+    indexes = []
+    for notetype in col.models.all_names_and_ids():
+        index = link_index(config, notetype.name, col=col)
+        error = duplicates_error(notetype.name, link_id_field(config, notetype.name), index)
+        if error is not None:
+            logger.error(error)
+            raise DuplicateLinkIdsError(error)
+        indexes.append(index)
+    return indexes
+
+
 def bulk_find_missing_matched_note_ids_op(
     col: Collection,
     notes: Sequence[Note],
@@ -76,20 +98,10 @@ def bulk_find_missing_matched_note_ids_op(
         showWarning("Missing addon configuration")
         return
     message = "Finding missing matched note ids"
-    # The link IDs of every note type, read once for the run when the first note asks. Every
-    # type, not just the vocab type: in the one-type layout a word can be linked to a note of
-    # another type (the match op's candidates are the notes of every type with the vocab type's
-    # word fields, and a CREATE NEW copy takes its candidate's type), and the `nid:` search this
-    # replaces kept a link to a note of any type
-    indexes: Optional[list[LinkIndex]] = None
+    # Raising here, before the first note, fails the run with nothing changed
+    indexes = link_indexes(config, col)
 
     def held(held_id: int) -> bool:
-        nonlocal indexes
-        if indexes is None:
-            indexes = [
-                link_index(config, notetype.name, col=mw.col)
-                for notetype in mw.col.models.all_names_and_ids()
-            ]
         return any(held_id in index for index in indexes)
 
     op = functools.partial(find_missing_matched_note_ids_for_note, held=held)
